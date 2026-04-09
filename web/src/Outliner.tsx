@@ -56,7 +56,9 @@ interface OutlinerProps {
 
 export function Outliner({ store, state }: OutlinerProps) {
   const handleRowClick = (e: MouseEvent, id: number) => {
-    if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey) {
+      store.selectRangeTo(id);
+    } else if (e.ctrlKey || e.metaKey) {
       store.toggleSelect(id);
     } else {
       store.selectOnly(id);
@@ -106,6 +108,19 @@ export function Outliner({ store, state }: OutlinerProps) {
                   {KIND_GLYPH[feature.kind] ?? "?"}
                 </span>
                 <span className="fielddraft-feature-name">{feature.name}</span>
+                {(feature.translate[0] !== 0 ||
+                  feature.translate[1] !== 0 ||
+                  feature.translate[2] !== 0 ||
+                  feature.scale !== 1) && (
+                  <span
+                    className="fielddraft-feature-meta"
+                    data-testid={`feature-meta-${feature.id}`}
+                  >
+                    [{feature.translate[0].toFixed(0)},{" "}
+                    {feature.translate[1].toFixed(0)},{" "}
+                    {feature.translate[2].toFixed(0)}]
+                  </span>
+                )}
                 <button
                   type="button"
                   className="fielddraft-row-delete"

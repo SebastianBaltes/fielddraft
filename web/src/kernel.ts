@@ -16,9 +16,10 @@ interface WasmExports {
   memory: WebAssembly.Memory;
 }
 
-/** 8 floats per feature in the packed buffer. Mirrors `FEATURE_STRIDE` in
- *  `crates/kernel/src/lib.rs`. */
-export const FEATURE_STRIDE = 8;
+/** 16 floats per feature in the packed buffer. Mirrors `FEATURE_STRIDE`
+ *  in `crates/kernel/src/lib.rs`. Each feature occupies four `vec4f`s
+ *  in shader land. */
+export const FEATURE_STRIDE = 16;
 
 /** Numeric tags for primitive kinds. Mirror `Primitive::KIND_*` in protocol. */
 export const PrimitiveKind = {
@@ -44,6 +45,8 @@ export interface FeatureSummary {
   name: string;
   op: BoolOpName;
   kind: PrimitiveKindName;
+  translate: [number, number, number];
+  scale: number;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;
@@ -105,15 +108,15 @@ export class Kernel {
 
   addBox(
     op: BoolOpTagValue,
-    center: [number, number, number],
+    translate: [number, number, number],
     halfExtents: [number, number, number],
   ): number {
     return this.inner.addPrimitive(
       PrimitiveKind.Box,
       op,
-      center[0],
-      center[1],
-      center[2],
+      translate[0],
+      translate[1],
+      translate[2],
       halfExtents[0],
       halfExtents[1],
       halfExtents[2],
@@ -122,15 +125,15 @@ export class Kernel {
 
   addSphere(
     op: BoolOpTagValue,
-    center: [number, number, number],
+    translate: [number, number, number],
     radius: number,
   ): number {
     return this.inner.addPrimitive(
       PrimitiveKind.Sphere,
       op,
-      center[0],
-      center[1],
-      center[2],
+      translate[0],
+      translate[1],
+      translate[2],
       radius,
       0,
       0,
@@ -139,16 +142,16 @@ export class Kernel {
 
   addCylinder(
     op: BoolOpTagValue,
-    center: [number, number, number],
+    translate: [number, number, number],
     radius: number,
     halfHeight: number,
   ): number {
     return this.inner.addPrimitive(
       PrimitiveKind.Cylinder,
       op,
-      center[0],
-      center[1],
-      center[2],
+      translate[0],
+      translate[1],
+      translate[2],
       radius,
       halfHeight,
       0,
@@ -165,6 +168,14 @@ export class Kernel {
 
   reorderFeature(id: number, targetIndex: number): boolean {
     return this.inner.reorderFeature(id, targetIndex);
+  }
+
+  setFeatureTranslate(id: number, x: number, y: number, z: number): boolean {
+    return this.inner.setFeatureTranslate(id, x, y, z);
+  }
+
+  nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {
+    return this.inner.nudgeFeature(id, dx, dy, dz);
   }
 
   // ── undo / redo ─────────────────────────────────────────────────────

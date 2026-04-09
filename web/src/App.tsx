@@ -3,7 +3,6 @@ import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
-import "./App.css";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -32,6 +31,28 @@ export function App() {
       }
       if (ctrl && (e.key === "y" || e.key === "Y")) {
         if (store.redo()) e.preventDefault();
+        return;
+      }
+
+      // Arrow keys nudge the selection along the world axes. Shift =
+      // larger step. Alt = move along Z (up the world Y in CAD parlance
+      // is screen-up; Z lifts the part). Plain arrows move on the XY
+      // plane: Right/Left = X, Up/Down = Y.
+      const step = e.shiftKey ? 10 : 1;
+      let dx = 0,
+        dy = 0,
+        dz = 0;
+      if (e.key === "ArrowRight") dx = step;
+      else if (e.key === "ArrowLeft") dx = -step;
+      else if (e.key === "ArrowUp") {
+        if (e.altKey) dz = step;
+        else dy = step;
+      } else if (e.key === "ArrowDown") {
+        if (e.altKey) dz = -step;
+        else dy = -step;
+      }
+      if (dx !== 0 || dy !== 0 || dz !== 0) {
+        if (store.nudgeSelected(dx, dy, dz)) e.preventDefault();
       }
     };
     window.addEventListener("keydown", onKey);

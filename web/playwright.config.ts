@@ -14,6 +14,11 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [["list"]],
+  // The TSL raymarcher is *very* slow under headless swiftshader (the
+  // dev box has no real Vulkan device). Real-hardware runs are
+  // sub-second; CI defaults of 30s are tight here.
+  timeout: 120_000,
+  expect: { timeout: 15_000 },
   use: {
     baseURL: "http://localhost:5173",
     trace: "retain-on-failure",

@@ -4,20 +4,27 @@
 //! composite SDF over its feature spine (with boolean ops), and exposes
 //! a packed buffer for the renderer plus a mutation/undo API for the UI.
 
-use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive};
+use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
 
 /// Packed representation of one feature for the zero-copy bridge.
 ///
-/// Layout (8 × f32, 32 bytes — fits two `vec4f`s in a shader):
-///   [0]     primitive kind tag (0 = box, 1 = sphere, 2 = cylinder)
-///   [1..=3] center xyz (mm, world space)
-///   [4..=6] shape parameters
-///             box      → half-extents xyz
-///             sphere   → (radius, 0, 0)
-///             cylinder → (radius, half_height, 0)
-///   [7]     boolean op tag (0 = union, 1 = difference, 2 = intersect)
-pub const FEATURE_STRIDE: usize = 8;
+/// Layout (16 × f32, 64 bytes — exactly four `vec4f`s in a shader, with
+/// no field straddling a vec4 boundary):
+///
+///   vec4 0  [0..=3]   = (kind_tag, center.x, center.y, center.z)
+///   vec4 1  [4..=7]   = (param0, param1, param2, op_tag)
+///   vec4 2  [8..=11]  = (translate.x, translate.y, translate.z, scale)
+///   vec4 3  [12..=15] = (quat.x, quat.y, quat.z, quat.w)
+///
+/// Primitive parameters per kind:
+///   box      → param = half-extents xyz
+///   sphere   → param = (radius, 0, 0)
+///   cylinder → param = (radius, half_height, 0)
+///
+/// Op tags: 0 = union, 1 = difference, 2 = intersect.
+/// Kind tags: 0 = box, 1 = sphere, 2 = cylinder.
+pub const FEATURE_STRIDE: usize = 16;
 
 /// Maximum undo / redo depth. The whole document is snapshotted per
 /// edit, so depth × document-size ≈ memory cost. For M2 (small linear
@@ -25,6 +32,41 @@ pub const FEATURE_STRIDE: usize = 8;
 const HISTORY_DEPTH: usize = 64;
 
 // ─── Pure-Rust SDF evaluation (used by tests and the future CPU mesher) ──
+
+/// Rotate a vector by the conjugate of a unit quaternion `(x, y, z, w)`.
+/// This is the inverse rotation of `q`, used to map a world-space point
+/// into the primitive's local frame.
+fn quat_inverse_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    // For unit q, q⁻¹ = (-x, -y, -z, w). We then apply the standard
+    // p' = q⁻¹ * p * q rotation, optimised via the cross-product form.
+    let qx = -q[0];
+    let qy = -q[1];
+    let qz = -q[2];
+    let qw = q[3];
+    let t = [
+        2.0 * (qy * v[2] - qz * v[1]),
+        2.0 * (qz * v[0] - qx * v[2]),
+        2.0 * (qx * v[1] - qy * v[0]),
+    ];
+    [
+        v[0] + qw * t[0] + qy * t[2] - qz * t[1],
+        v[1] + qw * t[1] + qz * t[0] - qx * t[2],
+        v[2] + qw * t[2] + qx * t[1] - qy * t[0],
+    ]
+}
+
+/// Bring a world-space point into a feature's primitive-local frame
+/// using its transform: untranslate, unrotate, unscale.
+pub fn world_to_local(t: &Transform, p_world: [f32; 3]) -> [f32; 3] {
+    let p = [
+        p_world[0] - t.translate[0],
+        p_world[1] - t.translate[1],
+        p_world[2] - t.translate[2],
+    ];
+    let p = quat_inverse_rotate(t.rotation, p);
+    let inv = 1.0 / t.scale;
+    [p[0] * inv, p[1] * inv, p[2] * inv]
+}
 
 /// SDF of a single primitive at world point `p`.
 pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
@@ -71,17 +113,26 @@ pub fn apply_op(acc: f32, di: f32, op: BoolOp) -> f32 {
     }
 }
 
+/// SDF of one transformed feature at a world-space point.
+pub fn sdf_feature(feature: &Feature, p_world: [f32; 3]) -> f32 {
+    let p_local = world_to_local(&feature.transform, p_world);
+    // Multiplying by the uniform scale restores the world-space distance
+    // metric — without it the SDF would report distances in the
+    // primitive's pre-scale frame.
+    sdf_primitive(&feature.primitive, p_local) * feature.transform.scale
+}
+
 /// Composite SDF of an entire feature spine.
 pub fn sdf_features(features: &[Feature], p: [f32; 3]) -> f32 {
     let mut acc = f32::INFINITY;
     for feature in features {
-        let di = sdf_primitive(&feature.primitive, p);
+        let di = sdf_feature(feature, p);
         acc = apply_op(acc, di, feature.op);
     }
     acc
 }
 
-/// Pack one feature into an 8-float slot of the renderer buffer.
+/// Pack one feature into a 16-float slot of the renderer buffer.
 pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
     *out = [0.0; FEATURE_STRIDE];
     out[0] = feature.primitive.kind_tag() as f32;
@@ -101,6 +152,11 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
         }
     }
     out[7] = feature.op.tag() as f32;
+
+    let t = &feature.transform;
+    out[8..11].copy_from_slice(&t.translate);
+    out[11] = t.scale;
+    out[12..16].copy_from_slice(&t.rotation);
 }
 
 /// Pack an entire feature list to a flat `Vec<f32>`.
@@ -125,6 +181,8 @@ struct FeatureSummary {
     name: String,
     op: &'static str,
     kind: &'static str,
+    translate: [f32; 3],
+    scale: f32,
 }
 
 /// Owned by the JS side. Holds the canonical document, the packed
@@ -244,6 +302,8 @@ impl Kernel {
                 name: f.name.clone(),
                 op: Self::op_label(f.op),
                 kind: Self::kind_label(&f.primitive),
+                translate: f.transform.translate,
+                scale: f.transform.scale,
             })
             .collect();
         serde_json::to_string(&summaries).map_err(|e| JsError::new(&e.to_string()))
@@ -251,8 +311,12 @@ impl Kernel {
 
     // ── mutations ─────────────────────────────────────────────────────
 
-    /// Append a primitive feature with the given kind, op, center and
-    /// shape parameters. Returns the new feature's id.
+    /// Append a primitive feature.
+    ///
+    /// The `tx`/`ty`/`tz` arguments populate the new feature's transform
+    /// (`Transform.translate`); the primitive itself is created at its
+    /// own origin so that future transform edits remain a single source
+    /// of truth.
     ///
     /// `params` is interpreted per kind:
     ///   - box      → (half_x, half_y, half_z)
@@ -263,24 +327,24 @@ impl Kernel {
         &mut self,
         kind: u32,
         op: u32,
-        cx: f32,
-        cy: f32,
-        cz: f32,
+        tx: f32,
+        ty: f32,
+        tz: f32,
         p0: f32,
         p1: f32,
         p2: f32,
     ) -> Result<FeatureId, JsError> {
         let primitive = match kind {
             Primitive::KIND_BOX => Primitive::Box {
-                center: [cx, cy, cz],
+                center: [0.0, 0.0, 0.0],
                 half_extents: [p0, p1, p2],
             },
             Primitive::KIND_SPHERE => Primitive::Sphere {
-                center: [cx, cy, cz],
+                center: [0.0, 0.0, 0.0],
                 radius: p0,
             },
             Primitive::KIND_CYLINDER => Primitive::Cylinder {
-                center: [cx, cy, cz],
+                center: [0.0, 0.0, 0.0],
                 radius: p0,
                 half_height: p1,
             },
@@ -291,9 +355,88 @@ impl Kernel {
         self.snapshot();
         let id = self.document.allocate_id();
         let name = format!("{} {}", primitive.default_name(), id);
-        self.document.features.push(Feature { id, name, op: bool_op, primitive });
+        let transform = Transform {
+            translate: [tx, ty, tz],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+        };
+        self.document.features.push(Feature {
+            id,
+            name,
+            op: bool_op,
+            primitive,
+            transform,
+        });
         self.rebuild_packed();
         Ok(id)
+    }
+
+    /// Replace the translate component of a feature's transform.
+    #[wasm_bindgen(js_name = setFeatureTranslate)]
+    pub fn set_feature_translate(
+        &mut self,
+        id: FeatureId,
+        tx: f32,
+        ty: f32,
+        tz: f32,
+    ) -> bool {
+        let pos = self.document.features.iter().position(|f| f.id == id);
+        let Some(idx) = pos else { return false };
+        if self.document.features[idx].transform.translate == [tx, ty, tz] {
+            return false;
+        }
+        self.snapshot();
+        self.document.features[idx].transform.translate = [tx, ty, tz];
+        self.rebuild_packed();
+        true
+    }
+
+    /// Add `(dx, dy, dz)` to a feature's translate. Convenience for
+    /// keyboard nudging.
+    #[wasm_bindgen(js_name = nudgeFeature)]
+    pub fn nudge_feature(&mut self, id: FeatureId, dx: f32, dy: f32, dz: f32) -> bool {
+        let pos = self.document.features.iter().position(|f| f.id == id);
+        let Some(idx) = pos else { return false };
+        if dx == 0.0 && dy == 0.0 && dz == 0.0 {
+            return false;
+        }
+        self.snapshot();
+        let t = &mut self.document.features[idx].transform;
+        t.translate[0] += dx;
+        t.translate[1] += dy;
+        t.translate[2] += dz;
+        self.rebuild_packed();
+        true
+    }
+
+    /// Replace the full transform (translate, quaternion, scale).
+    #[wasm_bindgen(js_name = setFeatureTransform)]
+    pub fn set_feature_transform(
+        &mut self,
+        id: FeatureId,
+        tx: f32,
+        ty: f32,
+        tz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        scale: f32,
+    ) -> bool {
+        let pos = self.document.features.iter().position(|f| f.id == id);
+        let Some(idx) = pos else { return false };
+        let new = Transform {
+            translate: [tx, ty, tz],
+            rotation: [qx, qy, qz, qw],
+            scale,
+        };
+        if self.document.features[idx].transform == new {
+            return false;
+        }
+        self.snapshot();
+        self.document.features[idx].transform = new;
+        self.rebuild_packed();
+        true
     }
 
     /// Remove the feature with the given id. Returns true if anything
@@ -403,6 +546,7 @@ mod tests {
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box { center, half_extents: half },
+            transform: Transform::IDENTITY,
         }
     }
 
@@ -412,6 +556,21 @@ mod tests {
             name: format!("Sphere {id}"),
             op,
             primitive: Primitive::Sphere { center, radius: r },
+            transform: Transform::IDENTITY,
+        }
+    }
+
+    fn transformed_sphere(id: FeatureId, translate: [f32; 3], r: f32) -> Feature {
+        Feature {
+            id,
+            name: format!("Sphere {id}"),
+            op: BoolOp::Union,
+            primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: r },
+            transform: Transform {
+                translate,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: 1.0,
+            },
         }
     }
 
@@ -510,6 +669,103 @@ mod tests {
         assert_eq!(&slot[1..4], &[1.0, 2.0, 3.0]);
         assert_eq!(slot[4], 4.0);
         assert_eq!(slot[7], BoolOp::TAG_DIFFERENCE as f32);
+    }
+
+    #[test]
+    fn pack_writes_transform_into_tail() {
+        let mut slot = [0.0_f32; FEATURE_STRIDE];
+        let f = transformed_sphere(1, [10.0, 20.0, -5.0], 4.0);
+        pack_feature(&f, &mut slot);
+        // vec4 2: translate xyz + uniform scale
+        assert_eq!(&slot[8..11], &[10.0, 20.0, -5.0]);
+        assert_eq!(slot[11], 1.0);
+        // vec4 3: quaternion xyzw
+        assert_eq!(&slot[12..16], &[0.0, 0.0, 0.0, 1.0]);
+    }
+
+    // ─── transform-aware SDF ─────────────────────────────────────────
+
+    #[test]
+    fn translated_sphere_matches_origin_sphere() {
+        // A sphere translated to (50, 0, 0) should give exactly the same
+        // SDF at (55, 0, 0) as a sphere at the origin gives at (5, 0, 0).
+        let translated = transformed_sphere(1, [50.0, 0.0, 0.0], 5.0);
+        let at_origin = sphere_feature(2, BoolOp::Union, [0.0, 0.0, 0.0], 5.0);
+        let d_t = sdf_feature(&translated, [55.0, 0.0, 0.0]);
+        let d_o = sdf_feature(&at_origin, [5.0, 0.0, 0.0]);
+        assert!((d_t - d_o).abs() < 1e-5, "{d_t} vs {d_o}");
+        assert!(d_t.abs() < 1e-4, "should be on the surface");
+    }
+
+    #[test]
+    fn uniform_scale_preserves_distance_property() {
+        // A unit sphere scaled by 4 should behave like a radius-4 sphere.
+        let scaled = Feature {
+            id: 1,
+            name: "S".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
+            transform: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: 4.0,
+            },
+        };
+        // On the (scaled) surface.
+        assert!(sdf_feature(&scaled, [4.0, 0.0, 0.0]).abs() < 1e-5);
+        // 2 units inside.
+        assert!((sdf_feature(&scaled, [2.0, 0.0, 0.0]) + 2.0).abs() < 1e-5);
+        // 2 units outside.
+        assert!((sdf_feature(&scaled, [6.0, 0.0, 0.0]) - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rotation_keeps_box_axis_aligned_to_local_frame() {
+        // A unit box rotated 90° about Z should still report distance 0
+        // at world point (0, 1, 0) — because in the rotated frame the
+        // box still extends ±1 in every axis.
+        // Quaternion for 90° about Z: (0, 0, sin45°, cos45°)
+        let s = (std::f32::consts::FRAC_PI_4).sin();
+        let c = (std::f32::consts::FRAC_PI_4).cos();
+        let f = Feature {
+            id: 1,
+            name: "B".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [1.0, 1.0, 1.0],
+            },
+            transform: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, s, c],
+                scale: 1.0,
+            },
+        };
+        // Surface in any axis direction.
+        assert!((sdf_feature(&f, [1.0, 0.0, 0.0])).abs() < 1e-5);
+        assert!((sdf_feature(&f, [0.0, 1.0, 0.0])).abs() < 1e-5);
+        // Origin still inside.
+        assert!(sdf_feature(&f, [0.0, 0.0, 0.0]) < 0.0);
+    }
+
+    #[test]
+    fn translate_then_difference_carves_an_offset_hole() {
+        // A big box at origin with a translated subtractive sphere at
+        // its corner should have a hole biased toward that corner.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            transformed_sphere(2, [10.0, 10.0, 10.0], 5.0),
+        ];
+        // At the corner the carved sphere has scooped material away.
+        // Use Difference: replace second feature's op.
+        let mut features = features;
+        features[1].op = BoolOp::Difference;
+
+        // Right at the center of the carving sphere we are outside the
+        // remaining body.
+        assert!(sdf_features(&features, [10.0, 10.0, 10.0]) > 0.0);
+        // Origin of the box is still safely inside.
+        assert!(sdf_features(&features, [0.0, 0.0, 0.0]) < 0.0);
     }
 
     #[test]

@@ -23,6 +23,9 @@ import { createAutoSave, loadPersisted, type AutoSaveHandle } from "./persistenc
 export interface StoreState {
   features: FeatureSummary[];
   selection: ReadonlySet<number>;
+  /** Anchor for shift-click range selection — id of the last single-clicked
+   *  feature. `null` while nothing has been clicked yet. */
+  selectionAnchor: number | null;
   canUndo: boolean;
   canRedo: boolean;
   /** Default op applied when adding the next primitive. */
@@ -41,6 +44,7 @@ export class KernelStore {
     this.state = {
       features: kernel.listFeatures(),
       selection: new Set(),
+      selectionAnchor: null,
       canUndo: kernel.canUndo(),
       canRedo: kernel.canRedo(),
       nextOp: BoolOpTag.Union,
@@ -62,10 +66,11 @@ export class KernelStore {
     return this.kernel.primitivesView();
   }
 
-  private commit(nextSelection?: ReadonlySet<number>): void {
+  private commit(nextSelection?: ReadonlySet<number>, nextAnchor?: number | null): void {
     this.state = {
       features: this.kernel.listFeatures(),
       selection: nextSelection ?? this.state.selection,
+      selectionAnchor: nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
       canUndo: this.kernel.canUndo(),
       canRedo: this.kernel.canRedo(),
       nextOp: this.state.nextOp,
@@ -81,6 +86,13 @@ export class KernelStore {
         this.state = { ...this.state, selection: filtered };
       }
     }
+    // Anchor must point at a still-living feature, or be cleared.
+    if (
+      this.state.selectionAnchor !== null &&
+      !this.state.features.some((f) => f.id === this.state.selectionAnchor)
+    ) {
+      this.state = { ...this.state, selectionAnchor: null };
+    }
     this.autosave.schedule(this.kernel.toJson());
     for (const listener of this.listeners) listener();
   }
@@ -94,20 +106,40 @@ export class KernelStore {
   }
 
   addPrimitive(kind: PrimitiveKindName, op: BoolOpTagValue = this.state.nextOp): number {
+    // Default sizes are tuned to be clearly readable inside the
+    // ~600 mm build volume, and the per-add stagger pulls each new
+    // feature off the previous one so freshly clicked primitives
+    // aren't hidden inside their predecessors.
+    const offset: [number, number, number] = [
+      this.state.features.length * 80,
+      0,
+      0,
+    ];
     let id: number;
     switch (kind) {
       case "box":
-        id = this.kernel.addBox(op, [0, 0, 0], [10, 10, 10]);
+        id = this.kernel.addBox(op, offset, [50, 50, 50]);
         break;
       case "sphere":
-        id = this.kernel.addSphere(op, [0, 0, 0], 10);
+        id = this.kernel.addSphere(op, offset, 50);
         break;
       case "cylinder":
-        id = this.kernel.addCylinder(op, [0, 0, 0], 8, 10);
+        id = this.kernel.addCylinder(op, offset, 40, 60);
         break;
     }
-    this.commit(new Set([id]));
+    this.commit(new Set([id]), id);
     return id;
+  }
+
+  /** Move every selected feature by `(dx, dy, dz)`. */
+  nudgeSelected(dx: number, dy: number, dz: number): boolean {
+    if (this.state.selection.size === 0) return false;
+    let any = false;
+    for (const id of this.state.selection) {
+      if (this.kernel.nudgeFeature(id, dx, dy, dz)) any = true;
+    }
+    if (any) this.commit();
+    return any;
   }
 
   removeSelected(): boolean {
@@ -116,7 +148,7 @@ export class KernelStore {
     for (const id of this.state.selection) {
       if (this.kernel.removeFeature(id)) removed = true;
     }
-    if (removed) this.commit(new Set());
+    if (removed) this.commit(new Set(), null);
     return removed;
   }
 
@@ -124,7 +156,8 @@ export class KernelStore {
     if (!this.kernel.removeFeature(id)) return false;
     const next = new Set(this.state.selection);
     next.delete(id);
-    this.commit(next);
+    const nextAnchor = this.state.selectionAnchor === id ? null : this.state.selectionAnchor;
+    this.commit(next, nextAnchor);
     return true;
   }
 
@@ -149,7 +182,11 @@ export class KernelStore {
   // ── selection ─────────────────────────────────────────────────────
 
   selectOnly(id: number): void {
-    this.state = { ...this.state, selection: new Set([id]) };
+    this.state = {
+      ...this.state,
+      selection: new Set([id]),
+      selectionAnchor: id,
+    };
     for (const listener of this.listeners) listener();
   }
 
@@ -157,13 +194,50 @@ export class KernelStore {
     const next = new Set(this.state.selection);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    this.state = { ...this.state, selection: next };
+    this.state = {
+      ...this.state,
+      selection: next,
+      selectionAnchor: id,
+    };
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * Shift+Click range selection: select every feature between the
+   * current anchor (inclusive) and the clicked id (inclusive). If no
+   * anchor exists yet this falls back to a single selection.
+   */
+  selectRangeTo(id: number): void {
+    const features = this.state.features;
+    const targetIdx = features.findIndex((f) => f.id === id);
+    if (targetIdx === -1) return;
+
+    const anchor = this.state.selectionAnchor;
+    if (anchor === null) {
+      this.selectOnly(id);
+      return;
+    }
+    const anchorIdx = features.findIndex((f) => f.id === anchor);
+    if (anchorIdx === -1) {
+      // Anchor stale; reset.
+      this.selectOnly(id);
+      return;
+    }
+    const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+    const next = new Set<number>();
+    for (let i = lo; i <= hi; i++) next.add(features[i].id);
+    this.state = {
+      ...this.state,
+      selection: next,
+      // Anchor stays put — that's the standard finder/Onshape behaviour.
+      selectionAnchor: anchor,
+    };
     for (const listener of this.listeners) listener();
   }
 
   clearSelection(): void {
-    if (this.state.selection.size === 0) return;
-    this.state = { ...this.state, selection: new Set() };
+    if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
+    this.state = { ...this.state, selection: new Set(), selectionAnchor: null };
     for (const listener of this.listeners) listener();
   }
 }

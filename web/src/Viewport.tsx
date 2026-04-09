@@ -1,146 +1,75 @@
 /**
  * Main 3D viewport.
  *
- * React Three Fiber + WebGPU renderer, populated from the kernel's
- * zero-copy packed feature buffer.
+ * React Three Fiber + WebGPU + a TSL sphere-tracing raymarcher reading
+ * the kernel's packed feature buffer directly. The raymarched scene is
+ * the only visualization — there are no per-feature meshes anymore.
  *
- * **M2 rendering note:** the renderer still draws each feature as an
- * individual mesh (one boxGeometry / sphereGeometry / cylinderGeometry
- * per feature) and tints it by its boolean op (Union = solid blue,
- * Difference = translucent red, Intersect = translucent yellow). This is
- * a *preview* — it makes the feature spine visually legible (you can
- * see what each feature is and what it's supposed to do) without
- * actually solving the composite SDF on the GPU. The proper SDF
- * raymarching shader, which would render the *result* of the booleans
- * directly off the kernel's packed buffer, is the immediate follow-up
- * inside M2 once TSL raymarching is dialed in. The kernel evaluation in
- * `sdf_features` is already correct and exhaustively tested; only the
- * realtime visualization is stubbed.
+ * The world-bounding mesh is a `BackSide` cube the size of the build
+ * volume. Its NodeMaterial overrides `colorNode` to sphere-trace the
+ * composite SDF every fragment; OrbitControls orbits the camera around
+ * it just like a normal mesh in the scene.
  */
 
-import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Canvas, type ThreeElements } from "@react-three/fiber";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useRef } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { BoolOpTag, FEATURE_STRIDE, PrimitiveKind } from "./kernel";
+import * as THREE from "three";
 import { useKernelStore } from "./store";
-import type { FeatureSummary } from "./kernel";
+import {
+  RAYMARCH_VOLUME_SIZE,
+  createRaymarchMaterial,
+  uploadFeatures,
+  type RaymarchHandle,
+} from "./raymarch";
 
-interface RenderedFeature {
-  id: number;
-  op: number; // 0 union, 1 difference, 2 intersect
-  kind: number; // 0 box, 1 sphere, 2 cylinder
-  center: [number, number, number];
-  params: [number, number, number];
-}
+function RaymarchMesh() {
+  const { store, state } = useKernelStore();
+  const handleRef = useRef<RaymarchHandle | null>(null);
 
-function readFeatures(view: Float32Array, summaries: FeatureSummary[]): RenderedFeature[] {
-  const out: RenderedFeature[] = [];
-  for (let i = 0; i < summaries.length; i++) {
-    const base = i * FEATURE_STRIDE;
-    out.push({
-      id: summaries[i].id,
-      kind: view[base],
-      center: [view[base + 1], view[base + 2], view[base + 3]],
-      params: [view[base + 4], view[base + 5], view[base + 6]],
-      op: view[base + 7],
-    });
-  }
-  return out;
-}
+  const handle = useMemo<RaymarchHandle>(() => {
+    const h = createRaymarchMaterial();
+    handleRef.current = h;
+    return h;
+  }, []);
 
-interface MaterialDescriptor {
-  color: string;
-  transparent: boolean;
-  opacity: number;
-  wireframe: boolean;
-}
+  // Push the latest features into the uniform array on every render.
+  // We re-upload on `useFrame` rather than only on store mutations so
+  // that any in-place mutation of the WASM-backed view is picked up.
+  useFrame(() => {
+    if (!store) return;
+    const view = store.primitivesView();
+    uploadFeatures(handle, view, store.kernel.featureCount());
+  });
 
-function materialFor(op: number): MaterialDescriptor {
-  switch (op) {
-    case BoolOpTag.Difference:
-      return { color: "#e25555", transparent: true, opacity: 0.35, wireframe: false };
-    case BoolOpTag.Intersect:
-      return { color: "#e6c14f", transparent: true, opacity: 0.5, wireframe: false };
-    case BoolOpTag.Union:
-    default:
-      return { color: "#9ac3ff", transparent: false, opacity: 1, wireframe: false };
-  }
-}
+  // Also push immediately when the feature list changes — useFrame
+  // gets us continuous freshness, this gets us a one-shot for the very
+  // first frame after a mutation.
+  useEffect(() => {
+    if (!store || !state) return;
+    const view = store.primitivesView();
+    uploadFeatures(handle, view, store.kernel.featureCount());
+  }, [store, state, handle]);
 
-interface PrimitiveMeshProps {
-  feature: RenderedFeature;
-  selected: boolean;
-}
-
-function PrimitiveMesh({ feature, selected }: PrimitiveMeshProps) {
-  const mat = materialFor(feature.op);
-  const meshProps: ThreeElements["mesh"] = {
-    position: feature.center,
-  };
-  const matProps = {
-    color: selected ? "#ffffff" : mat.color,
-    transparent: mat.transparent,
-    opacity: mat.opacity,
-    metalness: 0.05,
-    roughness: 0.45,
-    emissive: selected ? mat.color : "#000000",
-    emissiveIntensity: selected ? 0.4 : 0,
-  };
-
-  if (feature.kind === PrimitiveKind.Box) {
-    const [hx, hy, hz] = feature.params;
-    return (
-      <mesh {...meshProps}>
-        <boxGeometry args={[hx * 2, hy * 2, hz * 2]} />
-        <meshStandardMaterial {...matProps} />
-      </mesh>
-    );
-  }
-  if (feature.kind === PrimitiveKind.Sphere) {
-    const r = feature.params[0];
-    return (
-      <mesh {...meshProps}>
-        <sphereGeometry args={[r, 48, 32]} />
-        <meshStandardMaterial {...matProps} />
-      </mesh>
-    );
-  }
-  if (feature.kind === PrimitiveKind.Cylinder) {
-    const r = feature.params[0];
-    const hh = feature.params[1];
-    return (
-      <mesh {...meshProps}>
-        <cylinderGeometry args={[r, r, hh * 2, 48]} />
-        <meshStandardMaterial {...matProps} />
-      </mesh>
-    );
-  }
-  return null;
+  return (
+    <mesh frustumCulled={false} renderOrder={-1}>
+      <boxGeometry
+        args={[RAYMARCH_VOLUME_SIZE, RAYMARCH_VOLUME_SIZE, RAYMARCH_VOLUME_SIZE]}
+      />
+      <primitive object={handle.material} attach="material" />
+    </mesh>
+  );
 }
 
 function Scene() {
-  const { store, state } = useKernelStore();
-
-  if (!store || !state) return null;
-
-  const view = store.primitivesView();
-  const features = readFeatures(view, state.features);
-
+  const { store } = useKernelStore();
+  if (!store) return null;
   return (
     <>
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[50, 80, 40]} intensity={1.2} castShadow />
-      <directionalLight position={[-60, 30, -20]} intensity={0.5} />
-
-      <gridHelper args={[500, 50, "#3a3a46", "#2a2a32"]} />
-
-      {features.map((f) => (
-        <PrimitiveMesh
-          key={f.id}
-          feature={f}
-          selected={state.selection.has(f.id)}
-        />
-      ))}
+      <RaymarchMesh />
+      {/* Build-volume floor reference. WebGPU-friendly LineSegments
+          via three.js GridHelper. */}
+      <gridHelper args={[RAYMARCH_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
     </>
   );
 }
@@ -162,19 +91,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
   render() {
     if (this.state.error) {
       return (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "100%",
-            height: "100%",
-            color: "#ff6b6b",
-            fontFamily: "monospace",
-            padding: "16px",
-            textAlign: "center",
-          }}
-        >
+        <div className="fielddraft-viewport-error">
           viewport error: {this.state.error.message}
         </div>
       );
@@ -191,11 +108,11 @@ export function Viewport() {
   }
 
   return (
-    <div data-testid="fielddraft-canvas" style={{ width: "100%", height: "100%" }}>
+    <div className="fielddraft-canvas-host" data-testid="fielddraft-canvas">
       <CanvasErrorBoundary>
         <Canvas
-          shadows
-          camera={{ position: [60, 50, 60], fov: 45, near: 0.1, far: 2000 }}
+          shadows={false}
+          camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
             const renderer = new WebGPURenderer({
@@ -203,6 +120,7 @@ export function Viewport() {
               antialias: true,
             });
             await renderer.init();
+            renderer.setClearColor(new THREE.Color("#f6f6f4"), 1);
             return renderer;
           }}
         >

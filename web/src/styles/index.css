@@ -1,0 +1,15 @@
+/* FieldDraft style entry point.
+ *
+ * Imports the full hierarchy: tokens → base → layout → components.
+ * Components do *not* import their own CSS; this file is loaded once
+ * from `main.tsx`.
+ */
+
+@import "./tokens.css";
+@import "./base.css";
+
+@import "./layout/shell.css";
+
+@import "./components/toolbar.css";
+@import "./components/outliner.css";
+@import "./components/viewport.css";

@@ -1,0 +1,17 @@
+.fielddraft-canvas-host {
+  width: 100%;
+  height: 100%;
+}
+
+.fielddraft-viewport-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-error);
+  font-family: var(--font-family-mono);
+  font-size: var(--fs-base);
+  padding: var(--space-4);
+  text-align: center;
+}

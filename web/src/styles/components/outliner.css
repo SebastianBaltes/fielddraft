@@ -1,0 +1,112 @@
+.fielddraft-outliner {
+  width: var(--outliner-width);
+  flex: 0 0 var(--outliner-width);
+  background: var(--color-bg-elevated);
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.fielddraft-outliner-header {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text);
+  border-bottom: 1px solid var(--color-divider);
+  background: var(--color-bg-elevated);
+}
+
+.fielddraft-outliner-empty {
+  padding: var(--space-4);
+  font-size: var(--fs-base);
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
+
+.fielddraft-outliner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fielddraft-outliner-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-base);
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-divider);
+  user-select: none;
+  transition: background var(--motion-fast);
+}
+.fielddraft-outliner-row:hover {
+  background: var(--color-bg-hover);
+}
+.fielddraft-outliner-row.is-selected {
+  background: var(--color-accent-soft);
+}
+
+.fielddraft-op {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  color: var(--color-text-on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fielddraft-op-union {
+  background: var(--color-union);
+}
+.fielddraft-op-difference {
+  background: var(--color-difference);
+}
+.fielddraft-op-intersect {
+  background: var(--color-intersect);
+}
+
+.fielddraft-kind {
+  width: 1.25rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  font-size: var(--fs-md);
+}
+
+.fielddraft-feature-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-base);
+}
+
+.fielddraft-feature-meta {
+  font-size: var(--fs-base);
+  color: var(--color-text-subtle);
+  margin-left: var(--space-2);
+}
+
+.fielddraft-row-delete {
+  background: transparent;
+  border: none;
+  color: var(--color-text-subtle);
+  font-size: var(--fs-lg);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.fielddraft-row-delete:hover {
+  color: var(--color-error);
+  background: var(--color-difference-soft);
+}

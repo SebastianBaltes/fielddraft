@@ -79,6 +79,39 @@ impl BoolOp {
     }
 }
 
+/// Affine placement of a feature in world space.
+///
+/// Stored as **translate + unit-quaternion rotation + uniform scale**.
+/// Per-axis scale would break the SDF distance property (the field
+/// stops being a true Euclidean distance), so we keep scale uniform.
+/// Quaternion order is `(x, y, z, w)`; identity is `(0, 0, 0, 1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Transform {
+    pub translate: [f32; 3],
+    pub rotation: [f32; 4],
+    pub scale: f32,
+}
+
+impl Transform {
+    pub const IDENTITY: Self = Self {
+        translate: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: 1.0,
+    };
+
+    pub fn is_identity(&self) -> bool {
+        self.translate == [0.0, 0.0, 0.0]
+            && self.rotation == [0.0, 0.0, 0.0, 1.0]
+            && self.scale == 1.0
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
 /// One node in the feature spine. At M2 the spine is linear; later
 /// milestones (Pattern, Group, Mirror) will introduce nested children
 /// that share the same `Feature` envelope.
@@ -88,6 +121,11 @@ pub struct Feature {
     pub name: String,
     pub op: BoolOp,
     pub primitive: Primitive,
+    /// Affine placement of the primitive in world space.
+    /// `#[serde(default)]` lets us roll forward older documents that
+    /// predate transforms — they load with identity placement.
+    #[serde(default)]
+    pub transform: Transform,
 }
 
 /// Project document root.
@@ -147,11 +185,41 @@ mod tests {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [10.0, 10.0, 10.0],
             },
+            transform: Transform::IDENTITY,
         });
 
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: Document = serde_json::from_str(&json).unwrap();
         assert_eq!(doc, parsed);
+    }
+
+    #[test]
+    fn transform_default_is_identity() {
+        let t = Transform::default();
+        assert!(t.is_identity());
+        assert_eq!(t.translate, [0.0, 0.0, 0.0]);
+        assert_eq!(t.rotation, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(t.scale, 1.0);
+    }
+
+    #[test]
+    fn legacy_feature_without_transform_loads_with_identity() {
+        // A document that predates the transform field should still parse,
+        // gaining `Transform::IDENTITY` via `#[serde(default)]`.
+        let json = r#"{
+            "schema_version": 2,
+            "name": "legacy",
+            "features": [{
+                "id": 1,
+                "name": "Base",
+                "op": "union",
+                "primitive": {"kind":"box","center":[0,0,0],"half_extents":[1,1,1]}
+            }],
+            "next_feature_id": 2
+        }"#;
+        let parsed: Document = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.features.len(), 1);
+        assert!(parsed.features[0].transform.is_identity());
     }
 
     #[test]

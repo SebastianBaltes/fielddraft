@@ -100,6 +100,108 @@ test.describe("FieldDraft smoke", () => {
     await expect(row).toHaveAttribute("data-feature-op", "union");
   });
 
+  test("M2: raymarcher renders the SDF result of two-primitive subtraction", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    // Wait for the WASM kernel + WebGPU pipeline to be live.
+    await page.waitForTimeout(1000);
+
+    // Build a known scene: a base sphere, then a box subtracted from it.
+    await page.getByTestId("add-sphere").click();
+    await page.getByTestId("op-1").click(); // Difference
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    // Give the raymarcher several frames to settle. Headless WebGPU on
+    // swiftshader is slow but deterministic.
+    await page.waitForTimeout(2500);
+
+    // Screenshot the canvas via Playwright. We can't use a 2D-context
+    // drawImage on a WebGPU-backed canvas — its drawing buffer is
+    // invalidated immediately after present, so a CPU read returns an
+    // empty image. Playwright's `screenshot` captures from the OS
+    // compositor and works regardless of the canvas backend.
+    const buf = await page.getByTestId("fielddraft-canvas").screenshot();
+
+    // Decode the PNG inside the page (using a fresh blob → ImageBitmap
+    // → 2D canvas) to read pixels. This is run in the page context
+    // because Node has no built-in PNG decoder.
+    const stats = await page.evaluate(async (b64: string) => {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bin], { type: "image/png" });
+      const bitmap = await createImageBitmap(blob);
+      const cv = document.createElement("canvas");
+      cv.width = Math.min(bitmap.width, 256);
+      cv.height = Math.min(bitmap.height, 256);
+      const ctx = cv.getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0, cv.width, cv.height);
+      const data = ctx.getImageData(0, 0, cv.width, cv.height).data;
+
+      let lightPixels = 0;
+      let bluePixels = 0;
+      let darkPixels = 0;
+      let rSum = 0,
+        gSum = 0,
+        bSum = 0;
+      const total = cv.width * cv.height;
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        rSum += r;
+        gSum += g;
+        bSum += b;
+        if (r < 30 && g < 30 && b < 30) darkPixels++;
+        // "Light" — anywhere in the upper-right of the value triangle.
+        // The background, anti-aliased grid, and bright sky shading
+        // all qualify. Anything below this is from the raymarched
+        // primitive's lit geometry.
+        if (r > 200 && g > 200 && b > 200) {
+          lightPixels++;
+          continue;
+        }
+        // Lit primitive material is blueish (base ~ rgb(140,166,217)
+        // modulated by lambert + ambient).
+        if (b > r && b > g && r < 200 && g < 200) {
+          bluePixels++;
+        }
+      }
+      return {
+        total,
+        lightPixels,
+        bluePixels,
+        darkPixels,
+        avg: [
+          Math.round(rSum / total),
+          Math.round(gSum / total),
+          Math.round(bSum / total),
+        ],
+      };
+    }, buf.toString("base64"));
+
+
+    // Loose thresholds — exact counts depend on viewport size and
+    // camera framing. The point is "raymarcher actually drew SDF
+    // pixels into the canvas, into a light-mode background".
+    expect(stats.total).toBeGreaterThan(1000);
+    // Avg luminance should be clearly in the upper half (light-mode UI)
+    // and not just black emptiness.
+    const avgLum = (stats.avg[0] + stats.avg[1] + stats.avg[2]) / 3;
+    expect(avgLum, `viewport not light-mode: ${JSON.stringify(stats)}`).toBeGreaterThan(150);
+    // Most of the canvas should be light (background + sky shading).
+    expect(
+      stats.lightPixels,
+      `not enough light pixels: ${JSON.stringify(stats)}`,
+    ).toBeGreaterThan(stats.total * 0.4);
+    // And the raymarcher must have drawn at least *some* lit primitive
+    // pixels — proves the SDF eval ran on the GPU and produced a hit.
+    expect(
+      stats.bluePixels,
+      `no lit primitive pixels: ${JSON.stringify(stats)}`,
+    ).toBeGreaterThan(0);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
