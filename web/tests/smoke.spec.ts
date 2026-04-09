@@ -105,7 +105,7 @@ test.describe("FieldDraft smoke", () => {
   }) => {
     await page.goto("/");
     // Wait for the WASM kernel + WebGPU pipeline to be live.
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(400);
 
     // Build a known scene: a base sphere, then a box subtracted from it.
     await page.getByTestId("add-sphere").click();
@@ -113,9 +113,9 @@ test.describe("FieldDraft smoke", () => {
     await page.getByTestId("add-box").click();
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
-    // Give the raymarcher several frames to settle. Headless WebGPU on
-    // swiftshader is slow but deterministic.
-    await page.waitForTimeout(2500);
+    // A handful of frames is enough — the headless shader is coarse
+    // enough that one upload + present cycle settles immediately.
+    await page.waitForTimeout(600);
 
     // Screenshot the canvas via Playwright. We can't use a 2D-context
     // drawImage on a WebGPU-backed canvas — its drawing buffer is

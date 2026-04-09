@@ -57,13 +57,30 @@ const MAX_VEC4S = MAX_RAYMARCH_FEATURES * VEC4S_PER_FEATURE;
  *  for translated features. */
 export const RAYMARCH_VOLUME_SIZE = 600;
 
-// Sphere tracing: in practice <40 steps converge for any reasonable
-// SDF. We keep this conservative because headless WebGPU on swiftshader
-// is *very* slow in CI / Playwright runs, and every step matters there.
-const MAX_STEPS = 48;
-const SURFACE_EPS = 0.1;
+// Sphere-tracing iteration cap. 96 is comfortable headroom for any
+// scene that fits in the build volume; real GPUs eat this for
+// breakfast and Playwright tests run on a real GPU too (the
+// configured browser is non-headless).
+const MAX_STEPS = 96;
+
+// SURFACE_EPS doubles as the corner radius of every shape — sphere
+// tracing terminates on the `d < SURFACE_EPS` iso-surface, which for a
+// box is mathematically a box with that exact corner radius. 0.001 mm
+// is well below the 0.1 mm meshing target, so corners read perfectly
+// crisp at any zoom level a CAD user is going to choose.
+const SURFACE_EPS = 0.001;
+
+// NORMAL_EPS is the half-width of the central-difference sampling box
+// used to estimate surface normals. If it's larger than the visual
+// pixel footprint near a sharp edge, the gradient straddles the edge
+// and the normal smooths into a fake fillet. 0.01 mm is small enough
+// to keep edges sharp at typical zoom and large enough to stay above
+// f32 precision noise at mm-scale coordinates.
+const NORMAL_EPS = 0.01;
+
+// Far cap for the raymarching loop. Anything past this is treated as a
+// miss and falls through to the background colour.
 const MAX_DIST = RAYMARCH_VOLUME_SIZE * 2;
-const NORMAL_EPS = 0.5;
 
 export interface RaymarchHandle {
   material: MeshBasicNodeMaterial;

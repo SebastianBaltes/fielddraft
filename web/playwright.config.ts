@@ -14,11 +14,8 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [["list"]],
-  // The TSL raymarcher is *very* slow under headless swiftshader (the
-  // dev box has no real Vulkan device). Real-hardware runs are
-  // sub-second; CI defaults of 30s are tight here.
-  timeout: 120_000,
-  expect: { timeout: 15_000 },
+  timeout: 30_000,
+  expect: { timeout: 5_000 },
   use: {
     baseURL: "http://localhost:5173",
     trace: "retain-on-failure",
@@ -28,14 +25,14 @@ export default defineConfig({
       name: "chromium-webgpu",
       use: {
         ...devices["Desktop Chrome"],
+        // Real GPU only — no swiftshader fallback. Playwright launches
+        // a visible browser window so the test browser hits the host's
+        // actual graphics stack. WebGPU is enabled by default in
+        // current Chrome builds; the only flag we still pass widens
+        // adapter discovery on Linux (Mesa, NVidia, AMD).
+        headless: false,
         launchOptions: {
-          args: [
-            "--enable-unsafe-webgpu",
-            "--enable-features=Vulkan",
-            "--use-vulkan=swiftshader",
-            "--use-gl=angle",
-            "--use-angle=swiftshader",
-          ],
+          args: ["--enable-features=Vulkan,WebGPU"],
         },
       },
     },
