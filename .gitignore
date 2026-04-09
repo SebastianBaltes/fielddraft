@@ -1,0 +1,30 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# wasm-pack output
+/crates/kernel/pkg/
+/web/src/wasm/
+
+# Editor / OS
+.DS_Store
+*.log
+.vscode/
+!.vscode/extensions.json
+.idea/
+
+# Test artifacts
+/web/coverage/
+/web/playwright-report/
+/web/test-results/
+/web/.playwright/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

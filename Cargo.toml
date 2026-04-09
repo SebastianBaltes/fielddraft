@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/kernel"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
