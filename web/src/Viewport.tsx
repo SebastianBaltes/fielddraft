@@ -2,65 +2,116 @@
  * Main 3D viewport.
  *
  * React Three Fiber + WebGPU renderer, populated from the kernel's
- * zero-copy packed primitive buffer. At M1 the primitives are drawn as
- * straight Three.js meshes (one per entry) — exactly the same parameters
- * the SDF uses, just rendered the classical way.
+ * zero-copy packed feature buffer.
  *
- * The raymarching fragment shader that will eventually replace mesh
- * rendering (so the viewport hits the composite distance field directly)
- * is intentionally deferred to a follow-up iteration within M1, because
- * Three.js' WebGPU/TSL path is still evolving and we want M1 shippable
- * with both WebGPU and the zero-copy bridge demonstrably working first.
- * See the inline TODO near `<PrimitiveMesh>`.
+ * **M2 rendering note:** the renderer still draws each feature as an
+ * individual mesh (one boxGeometry / sphereGeometry / cylinderGeometry
+ * per feature) and tints it by its boolean op (Union = solid blue,
+ * Difference = translucent red, Intersect = translucent yellow). This is
+ * a *preview* — it makes the feature spine visually legible (you can
+ * see what each feature is and what it's supposed to do) without
+ * actually solving the composite SDF on the GPU. The proper SDF
+ * raymarching shader, which would render the *result* of the booleans
+ * directly off the kernel's packed buffer, is the immediate follow-up
+ * inside M2 once TSL raymarching is dialed in. The kernel evaluation in
+ * `sdf_features` is already correct and exhaustively tested; only the
+ * realtime visualization is stubbed.
  */
 
-import { Component, type ErrorInfo, type ReactNode, useMemo } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Canvas, type ThreeElements } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { PRIMITIVE_STRIDE, PrimitiveKind } from "./kernel";
+import { BoolOpTag, FEATURE_STRIDE, PrimitiveKind } from "./kernel";
 import { useKernelStore } from "./store";
+import type { FeatureSummary } from "./kernel";
 
-interface PrimitiveMeshProps {
-  slot: Float32Array; // 8-float view into the packed buffer
-  index: number;
+interface RenderedFeature {
+  id: number;
+  op: number; // 0 union, 1 difference, 2 intersect
+  kind: number; // 0 box, 1 sphere, 2 cylinder
+  center: [number, number, number];
+  params: [number, number, number];
 }
 
-function PrimitiveMesh({ slot, index }: PrimitiveMeshProps) {
-  const kind = slot[0];
-  const center: [number, number, number] = [slot[1], slot[2], slot[3]];
+function readFeatures(view: Float32Array, summaries: FeatureSummary[]): RenderedFeature[] {
+  const out: RenderedFeature[] = [];
+  for (let i = 0; i < summaries.length; i++) {
+    const base = i * FEATURE_STRIDE;
+    out.push({
+      id: summaries[i].id,
+      kind: view[base],
+      center: [view[base + 1], view[base + 2], view[base + 3]],
+      params: [view[base + 4], view[base + 5], view[base + 6]],
+      op: view[base + 7],
+    });
+  }
+  return out;
+}
 
-  // TODO(M1-raymarch): replace this mesh-based rendering with a single
-  // fullscreen raymarching pass that reads the whole packed buffer in one
-  // shader invocation. For M1's foundation we ship traditional meshes so
-  // the WebGPU renderer, zero-copy bridge, and autosave path can be
-  // verified end-to-end without also debugging a new TSL shader.
-  if (kind === PrimitiveKind.Box) {
-    const hx = slot[4];
-    const hy = slot[5];
-    const hz = slot[6];
+interface MaterialDescriptor {
+  color: string;
+  transparent: boolean;
+  opacity: number;
+  wireframe: boolean;
+}
+
+function materialFor(op: number): MaterialDescriptor {
+  switch (op) {
+    case BoolOpTag.Difference:
+      return { color: "#e25555", transparent: true, opacity: 0.35, wireframe: false };
+    case BoolOpTag.Intersect:
+      return { color: "#e6c14f", transparent: true, opacity: 0.5, wireframe: false };
+    case BoolOpTag.Union:
+    default:
+      return { color: "#9ac3ff", transparent: false, opacity: 1, wireframe: false };
+  }
+}
+
+interface PrimitiveMeshProps {
+  feature: RenderedFeature;
+  selected: boolean;
+}
+
+function PrimitiveMesh({ feature, selected }: PrimitiveMeshProps) {
+  const mat = materialFor(feature.op);
+  const meshProps: ThreeElements["mesh"] = {
+    position: feature.center,
+  };
+  const matProps = {
+    color: selected ? "#ffffff" : mat.color,
+    transparent: mat.transparent,
+    opacity: mat.opacity,
+    metalness: 0.05,
+    roughness: 0.45,
+    emissive: selected ? mat.color : "#000000",
+    emissiveIntensity: selected ? 0.4 : 0,
+  };
+
+  if (feature.kind === PrimitiveKind.Box) {
+    const [hx, hy, hz] = feature.params;
     return (
-      <mesh position={center} key={index}>
+      <mesh {...meshProps}>
         <boxGeometry args={[hx * 2, hy * 2, hz * 2]} />
-        <meshStandardMaterial color="#9ac3ff" metalness={0.1} roughness={0.4} />
+        <meshStandardMaterial {...matProps} />
       </mesh>
     );
   }
-  if (kind === PrimitiveKind.Sphere) {
-    const r = slot[4];
+  if (feature.kind === PrimitiveKind.Sphere) {
+    const r = feature.params[0];
     return (
-      <mesh position={center} key={index}>
+      <mesh {...meshProps}>
         <sphereGeometry args={[r, 48, 32]} />
-        <meshStandardMaterial color="#9ac3ff" metalness={0.1} roughness={0.4} />
+        <meshStandardMaterial {...matProps} />
       </mesh>
     );
   }
-  if (kind === PrimitiveKind.Cylinder) {
-    const r = slot[4];
-    const hh = slot[5];
+  if (feature.kind === PrimitiveKind.Cylinder) {
+    const r = feature.params[0];
+    const hh = feature.params[1];
     return (
-      <mesh position={center} key={index}>
+      <mesh {...meshProps}>
         <cylinderGeometry args={[r, r, hh * 2, 48]} />
-        <meshStandardMaterial color="#9ac3ff" metalness={0.1} roughness={0.4} />
+        <meshStandardMaterial {...matProps} />
       </mesh>
     );
   }
@@ -68,27 +119,12 @@ function PrimitiveMesh({ slot, index }: PrimitiveMeshProps) {
 }
 
 function Scene() {
-  const { store, error } = useKernelStore();
+  const { store, state } = useKernelStore();
 
-  const slices = useMemo(() => {
-    if (!store) return [] as Float32Array[];
-    const view = store.primitives();
-    const count = store.kernel.primitiveCount();
-    const out: Float32Array[] = [];
-    for (let i = 0; i < count; i++) {
-      out.push(view.subarray(i * PRIMITIVE_STRIDE, (i + 1) * PRIMITIVE_STRIDE));
-    }
-    return out;
-  }, [store, store?.version]);
+  if (!store || !state) return null;
 
-  if (error) {
-    return (
-      <mesh>
-        <boxGeometry args={[5, 5, 5]} />
-        <meshStandardMaterial color="#ff5050" />
-      </mesh>
-    );
-  }
+  const view = store.primitivesView();
+  const features = readFeatures(view, state.features);
 
   return (
     <>
@@ -96,23 +132,19 @@ function Scene() {
       <directionalLight position={[50, 80, 40]} intensity={1.2} castShadow />
       <directionalLight position={[-60, 30, -20]} intensity={0.5} />
 
-      {/* GridHelper is a line-based primitive — WebGPU-compatible as of
-          three r183. drei's <Grid> will replace this once its ShaderMaterial
-          is ported to NodeMaterial. */}
       <gridHelper args={[500, 50, "#3a3a46", "#2a2a32"]} />
 
-      {slices.map((slot, i) => (
-        <PrimitiveMesh slot={slot} index={i} key={i} />
+      {features.map((f) => (
+        <PrimitiveMesh
+          key={f.id}
+          feature={f}
+          selected={state.selection.has(f.id)}
+        />
       ))}
     </>
   );
 }
 
-/**
- * Small error boundary scoped to the 3D canvas. Keeps the app shell
- * (header, primitive counter, future panels) alive if R3F / WebGPU /
- * drei throws during scene construction or render.
- */
 interface CanvasBoundaryProps {
   children: ReactNode;
 }
@@ -152,9 +184,6 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
 }
 
 export function Viewport() {
-  // WebGPU renderer via R3F 9's async `gl` factory. `three/webgpu` exports
-  // `WebGPURenderer`, which we initialize asynchronously (required by the
-  // WebGPU adapter handshake) before R3F mounts the scene.
   if (typeof navigator !== "undefined" && !("gpu" in navigator)) {
     console.warn(
       "fielddraft: navigator.gpu not available. WebGPU is a hard requirement — the viewport will fail to initialize on this browser.",
@@ -178,13 +207,13 @@ export function Viewport() {
           }}
         >
           <Scene />
-          <OrbitControls makeDefault />
-          {/*
-           * NOTE: drei's GizmoViewcube / GizmoViewport still call
-           * WebGLRenderer-only APIs (`getMaxAnisotropy`), so the view cube
-           * is deliberately deferred until drei's WebGPU compatibility
-           * catches up. Tracked as a small follow-up inside M1.
-           */}
+          <OrbitControls
+            makeDefault
+            enableDamping={false}
+            rotateSpeed={1.4}
+            zoomSpeed={1.6}
+            panSpeed={1.2}
+          />
         </Canvas>
       </CanvasErrorBoundary>
     </div>

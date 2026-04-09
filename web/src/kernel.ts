@@ -2,44 +2,48 @@
  * Thin TypeScript wrapper around the Rust WASM kernel.
  *
  * The central concern here is the **zero-copy memory bridge**: the kernel
- * owns a packed `Vec<f32>` of primitive parameters in WASM linear memory;
+ * owns a packed `Vec<f32>` of feature parameters in WASM linear memory;
  * JS reads it through a `Float32Array` view that aliases that same memory,
  * with no intermediate JSON serialization. The view must be re-acquired
- * whenever the underlying `Vec` could have been reallocated (e.g. after a
- * document load), since WASM memory growth invalidates old views.
+ * whenever the underlying `Vec` could have been reallocated (every
+ * mutating call), since WASM memory growth invalidates old views.
  */
 
 // eslint-disable-next-line import/no-unresolved
 import initWasm, { Kernel as WasmKernel } from "./wasm/fielddraft_kernel.js";
 
-/** Shape of the wasm-pack init() return: the instance's exports object. */
 interface WasmExports {
   memory: WebAssembly.Memory;
 }
 
-export const PRIMITIVE_STRIDE = 8;
+/** 8 floats per feature in the packed buffer. Mirrors `FEATURE_STRIDE` in
+ *  `crates/kernel/src/lib.rs`. */
+export const FEATURE_STRIDE = 8;
 
-/** Kinds must match `KIND_*` constants in `crates/kernel/src/lib.rs`. */
+/** Numeric tags for primitive kinds. Mirror `Primitive::KIND_*` in protocol. */
 export const PrimitiveKind = {
   Box: 0,
   Sphere: 1,
   Cylinder: 2,
 } as const;
+export type PrimitiveKindTag = (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
 
-export type Primitive =
-  | { kind: "box"; center: [number, number, number]; half_extents: [number, number, number] }
-  | { kind: "sphere"; center: [number, number, number]; radius: number }
-  | {
-      kind: "cylinder";
-      center: [number, number, number];
-      radius: number;
-      half_height: number;
-    };
+/** Numeric tags for boolean ops. Mirror `BoolOp::TAG_*` in protocol. */
+export const BoolOpTag = {
+  Union: 0,
+  Difference: 1,
+  Intersect: 2,
+} as const;
+export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
-export interface Document {
-  schema_version: number;
+export type BoolOpName = "union" | "difference" | "intersect";
+export type PrimitiveKindName = "box" | "sphere" | "cylinder";
+
+export interface FeatureSummary {
+  id: number;
   name: string;
-  primitives: Primitive[];
+  op: BoolOpName;
+  kind: PrimitiveKindName;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;
@@ -53,8 +57,7 @@ async function ensureInit(): Promise<WasmExports> {
 
 /**
  * High-level kernel handle owned by the React app. Wraps the wasm-bindgen
- * `Kernel` class and re-projects its packed primitive buffer as a
- * `Float32Array` view on demand.
+ * `Kernel` class.
  */
 export class Kernel {
   private readonly inner: WasmKernel;
@@ -74,36 +77,126 @@ export class Kernel {
     return new Kernel(inner, exports.memory);
   }
 
+  // ── packed buffer (zero-copy bridge) ────────────────────────────────
+
   /**
-   * Re-acquire a view on the packed primitive buffer. **Do not cache** across
-   * document mutations — wasm-bindgen may grow the `memory` buffer, which
+   * Re-acquire a view on the packed feature buffer. **Do not cache**
+   * across mutations — wasm-bindgen may grow the `memory` buffer, which
    * invalidates any `Float32Array` aliasing it.
    */
   primitivesView(): Float32Array {
     const ptr = this.inner.primitivesPtr();
-    const count = this.inner.primitiveCount();
-    return new Float32Array(this.memory.buffer, ptr, count * PRIMITIVE_STRIDE);
+    const count = this.inner.featureCount();
+    return new Float32Array(this.memory.buffer, ptr, count * FEATURE_STRIDE);
   }
 
-  /** Number of primitives in the current document. */
-  primitiveCount(): number {
-    return this.inner.primitiveCount();
+  featureCount(): number {
+    return this.inner.featureCount();
   }
 
-  /** Serialize the current document to a JSON string. */
+  // ── outliner ────────────────────────────────────────────────────────
+
+  listFeatures(): FeatureSummary[] {
+    const json = this.inner.listFeatures();
+    return JSON.parse(json) as FeatureSummary[];
+  }
+
+  // ── mutations ───────────────────────────────────────────────────────
+
+  addBox(
+    op: BoolOpTagValue,
+    center: [number, number, number],
+    halfExtents: [number, number, number],
+  ): number {
+    return this.inner.addPrimitive(
+      PrimitiveKind.Box,
+      op,
+      center[0],
+      center[1],
+      center[2],
+      halfExtents[0],
+      halfExtents[1],
+      halfExtents[2],
+    );
+  }
+
+  addSphere(
+    op: BoolOpTagValue,
+    center: [number, number, number],
+    radius: number,
+  ): number {
+    return this.inner.addPrimitive(
+      PrimitiveKind.Sphere,
+      op,
+      center[0],
+      center[1],
+      center[2],
+      radius,
+      0,
+      0,
+    );
+  }
+
+  addCylinder(
+    op: BoolOpTagValue,
+    center: [number, number, number],
+    radius: number,
+    halfHeight: number,
+  ): number {
+    return this.inner.addPrimitive(
+      PrimitiveKind.Cylinder,
+      op,
+      center[0],
+      center[1],
+      center[2],
+      radius,
+      halfHeight,
+      0,
+    );
+  }
+
+  removeFeature(id: number): boolean {
+    return this.inner.removeFeature(id);
+  }
+
+  setFeatureOp(id: number, op: BoolOpTagValue): boolean {
+    return this.inner.setFeatureOp(id, op);
+  }
+
+  reorderFeature(id: number, targetIndex: number): boolean {
+    return this.inner.reorderFeature(id, targetIndex);
+  }
+
+  // ── undo / redo ─────────────────────────────────────────────────────
+
+  undo(): boolean {
+    return this.inner.undo();
+  }
+
+  redo(): boolean {
+    return this.inner.redo();
+  }
+
+  canUndo(): boolean {
+    return this.inner.canUndo();
+  }
+
+  canRedo(): boolean {
+    return this.inner.canRedo();
+  }
+
+  // ── document I/O ────────────────────────────────────────────────────
+
   toJson(): string {
     return this.inner.toJson();
   }
 
-  /**
-   * Replace the current document with one parsed from JSON. Returns the new
-   * primitive count. Invalidates any previously-held `primitivesView()`.
-   */
   loadJson(json: string): number {
     return this.inner.loadJson(json);
   }
 
-  /** Debug helper: evaluate the composite SDF at a point. */
+  // ── debug helper ────────────────────────────────────────────────────
+
   evalSdf(x: number, y: number, z: number): number {
     return this.inner.evalSdf(x, y, z);
   }
