@@ -46,6 +46,14 @@ use fielddraft_protocol::{
     BoolOp, Document, Feature as SpineFeature, FeatureId, Primitive, Transform,
 };
 
+/// Derive macro that generates `TYPE_NAME`, `type_name()`,
+/// `schema_json()` and `parse()` helpers on a feature definition
+/// struct. See `fielddraft_features_macros` for the attribute
+/// vocabulary — K4.5 step 3 supports `#[feature(type = "...")]`
+/// at the struct level and auto-detects field types, every field
+/// is implicitly required.
+pub use fielddraft_features_macros::FeatureSchema;
+
 /// Errors that can happen while looking up a feature in the registry
 /// or while a feature's `execute` validates its parameter JSON.
 #[derive(Debug, Clone, PartialEq)]
@@ -779,6 +787,186 @@ mod tests {
         assert_eq!(wire.get("type"), Some(&json!("box")));
         assert!(wire.get("type_name").is_none());
     }
+
+    // ─── K4.5.3: FeatureSchema derive ──────────────────────────
+
+    /// Tiny fixture that exercises every field type the K4.5.3
+    /// derive supports. When a future step grows the derive to
+    /// cover `Length`, `Angle`, `Query` and friends, those can
+    /// slot in here alongside the existing four.
+    #[derive(FeatureSchema, Debug, PartialEq)]
+    #[schema(type = "fixture")]
+    struct FixtureDef {
+        depth: f32,
+        origin: [f32; 3],
+        enabled: bool,
+        label: String,
+    }
+
+    #[test]
+    fn derive_generates_type_name_constant_and_method() {
+        assert_eq!(FixtureDef::TYPE_NAME, "fixture");
+        assert_eq!(FixtureDef::type_name(), "fixture");
+    }
+
+    #[test]
+    fn derive_emits_schema_with_every_field() {
+        let schema = FixtureDef::schema_json();
+        assert_eq!(schema["type"], json!("fixture"));
+        let params = schema["params"]
+            .as_array()
+            .expect("params must be an array");
+        assert_eq!(params.len(), 4);
+
+        let depth = &params[0];
+        assert_eq!(depth["key"], json!("depth"));
+        assert_eq!(depth["name"], json!("Depth"));
+        assert_eq!(depth["type"], json!("f32"));
+        assert_eq!(depth["required"], json!(true));
+
+        let origin = &params[1];
+        assert_eq!(origin["key"], json!("origin"));
+        assert_eq!(origin["type"], json!("vec3"));
+
+        let enabled = &params[2];
+        assert_eq!(enabled["key"], json!("enabled"));
+        assert_eq!(enabled["type"], json!("bool"));
+
+        let label = &params[3];
+        assert_eq!(label["key"], json!("label"));
+        assert_eq!(label["type"], json!("string"));
+    }
+
+    #[test]
+    fn derive_prettifies_multi_word_identifiers() {
+        // `half_extents` → `Half extents`: separate words with a
+        // space and capitalise only the first word. This is what
+        // the FeatureDialog UI will display (K6a).
+        #[derive(FeatureSchema)]
+        #[schema(type = "multi_word")]
+        #[allow(dead_code)]
+        struct MultiWordDef {
+            half_extents: [f32; 3],
+        }
+        let schema = MultiWordDef::schema_json();
+        let params = schema["params"].as_array().unwrap();
+        assert_eq!(params[0]["name"], json!("Half extents"));
+    }
+
+    #[test]
+    fn derive_parse_accepts_well_formed_json() {
+        let def = json!({
+            "depth": 10.5,
+            "origin": [1.0, 2.0, 3.0],
+            "enabled": true,
+            "label": "greeting"
+        });
+        let parsed = FixtureDef::parse(&def).unwrap();
+        assert_eq!(
+            parsed,
+            FixtureDef {
+                depth: 10.5,
+                origin: [1.0, 2.0, 3.0],
+                enabled: true,
+                label: "greeting".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn derive_parse_reports_missing_fields() {
+        let def = json!({
+            "depth": 10.5,
+            "origin": [1.0, 2.0, 3.0],
+            "enabled": true
+            // missing `label`
+        });
+        let err = FixtureDef::parse(&def).unwrap_err();
+        assert_eq!(
+            err,
+            FeatureError::MissingParameter {
+                feature: "fixture",
+                name: "label"
+            }
+        );
+    }
+
+    #[test]
+    fn derive_parse_reports_wrong_types() {
+        // number where string is expected
+        let def = json!({
+            "depth": 10.5,
+            "origin": [1.0, 2.0, 3.0],
+            "enabled": true,
+            "label": 42
+        });
+        let err = FixtureDef::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "fixture",
+                name: "label",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `label`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_parse_reports_wrong_vec3_shape() {
+        let def = json!({
+            "depth": 10.5,
+            "origin": [1.0, 2.0], // only two elements
+            "enabled": true,
+            "label": "greeting"
+        });
+        let err = FixtureDef::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "fixture",
+                name: "origin",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `origin`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_parse_rejects_non_number_vec3_element() {
+        let def = json!({
+            "depth": 10.5,
+            "origin": [1.0, "oops", 3.0],
+            "enabled": true,
+            "label": "greeting"
+        });
+        let err = FixtureDef::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "fixture",
+                name: "origin",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `origin`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derive_parse_reports_missing_f32_field() {
+        let def = json!({
+            "origin": [1.0, 2.0, 3.0],
+            "enabled": true,
+            "label": "greeting"
+        });
+        let err = FixtureDef::parse(&def).unwrap_err();
+        assert_eq!(
+            err,
+            FeatureError::MissingParameter {
+                feature: "fixture",
+                name: "depth"
+            }
+        );
+    }
+
+    // ─── legacy equivalence (K4.5.2) ───────────────────────────
 
     #[test]
     fn feature_tree_matches_legacy_add_primitive_path() {
