@@ -38,6 +38,13 @@
 // eslint-disable-next-line import/no-unresolved
 import initWasm, { Kernel as WasmKernel } from "./wasm/fielddraft_kernel.js";
 import { MESH_CONTRIBUTOR_STRIDE } from "./kernel";
+import {
+  freezeGlobals,
+  hashDocumentJson,
+  installInnerApi,
+  reseedRandom,
+  type SandboxScope,
+} from "./workerSandbox";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -82,6 +89,10 @@ let readyPromise: Promise<ReadyKernel> | null = null;
 async function ensureKernel(): Promise<ReadyKernel> {
   if (!readyPromise) {
     readyPromise = (async () => {
+      // wasm-bindgen's default init path calls `fetch` to load the
+      // kernel binary, so we MUST drive the freeze *after* init
+      // returns. Freezing earlier would strip `fetch` from under
+      // the loader and break the worker on boot.
       const exports = (await initWasm()) as WasmExports;
       if (!exports?.memory) {
         throw new Error("fielddraft mesher worker: wasm memory export not found");
@@ -94,6 +105,17 @@ async function ensureKernel(): Promise<ReadyKernel> {
       if (!kernel.syncMeshing()) {
         kernel.setSyncMeshing(true);
       }
+
+      // K4.5.5: from this point on, the worker's global scope is
+      // the Regeneration Worker sandbox — no network, no timers,
+      // frozen wall clock, and `globalThis.fd` is the Inner API
+      // that feature bodies will call into as K4.5.6+ lands the
+      // dispatch path. `reseedRandom` is deferred to each rebuild
+      // so the PRNG tracks the document state.
+      const sandboxScope = self as unknown as SandboxScope;
+      freezeGlobals(sandboxScope);
+      installInnerApi(sandboxScope);
+
       return { kernel, memory: exports.memory };
     })();
   }
@@ -171,6 +193,18 @@ function snapshotBodies(
 
 async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   const { kernel, memory } = await ensureKernel();
+
+  // K4.5.5: reseed the PRNG at the start of every rebuild so that
+  // any feature body consuming `Math.random` during this
+  // regeneration draws from a sequence that's fully determined by
+  // the current document state. Two regenerations of the same
+  // document JSON hit the same seed and therefore observe the
+  // same random sequence — the determinism invariant §4.6
+  // formalises.
+  reseedRandom(
+    self as unknown as SandboxScope,
+    hashDocumentJson(msg.documentJson),
+  );
 
   // Load the document — this triggers the worker kernel's own
   // `rebuild_mesh_internal`, which walks the partition pass and
