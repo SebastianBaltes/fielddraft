@@ -12,6 +12,7 @@ pub mod body;
 pub mod bvh;
 pub mod csg;
 pub mod dc;
+pub mod features;
 pub mod raycast;
 pub mod sketch2d;
 
