@@ -65,7 +65,11 @@ Verantwortlich für alles, was Mathematik und Zustand ist — läuft ohne DOM‑
 
 - **SDF‑Auswertung mit Provenance:** Jede Punkt‑Auswertung `f(p)` liefert nicht nur den Distanzwert, sondern zusätzlich die Liste der **Contributors** — die Leaf‑IDs, deren Distanzfeld am Punkt `p` aktiv den Wert dominiert (innerhalb eines Epsilons ε). Die Auswertung von `min(f_A, f_B)` propagiert beide IDs, sobald `|f_A − f_B| < ε`; sonst nur die ID des dominanten Terms. Aus dieser Contributor‑Menge entsteht der B‑Rep‑Proxy. Boolesche Operationen bleiben mathematisch trivial: Union = `min`, Intersection = `max`, Difference = `max(f_A, −f_B)` — alle hart.
 
-- **Keine Smooth Booleans:** Der Kernel implementiert **keinen** `smin`‑Operator und keine smooth blends. Begründung: weiche Verschmelzungen zerstören die Provenance in der Übergangszone — die dort entstehende emergente Geometrie gehört weder zu Körper A noch zu B, wodurch der B‑Rep‑Proxy keine eindeutige Face/Edge‑Zerlegung mehr liefern kann. Smooth‑Fillets und ‑Blends sind damit auf lange Zeit ausgeschlossen; siehe §6.1 und §11.
+- **Fillets und Chamfers via räumlicher Maskierung:** Kanten‑Operationen (Fillet, Chamfer, organischer Smooth‑Blend) werden **nie global** auf den CSG‑Baum angewandt, sondern lokal über eine **Spatial Mask** — eine unsichtbare Zylinder‑ oder Kapsel‑SDF, die der Kernel entlang der selektierten B‑Rep‑Edge (aus dem Proxy, siehe weiter unten) legt. Innerhalb der Maske ersetzt der Operator das harte `min`/`max` durch den weichen Gegenpart: Fillet als Quadrat‑Summe der Distanzen `r − √(max(r−f_A, 0)² + max(r−f_B, 0)²)`, Chamfer als lineare Mittelung `min(min(f_A, f_B), (f_A + f_B − c)·0.5^½)`, organischer Blend als `smin`. Außerhalb der Maske bleibt das Feld bit‑identisch zum harten Baum, der Operator fällt transparent auf den harten Unteroperator zurück. Der Mechanismus ist für emergente Kanten (CSG‑Schnitte zweier Körper) und intrinsische Kanten (z. B. die vertikale Kante eines extrudierten Quaders) **einheitlich** — es gibt genau einen Code‑Pfad. 2D‑Verrundungen im Sketcher laufen nicht über diesen Pfad, sondern werden vom Solver als explizite Linien‑/Kreisbogen‑Segmente geführt (siehe §4.4), was den 3D‑Baum sauber hält.
+
+- **Ghost Topology (zweigeteilter Evaluator):** Smooth Blends und Fillet‑Masken zerstören die Provenance in der Übergangszone — auf der verrundeten Oberfläche ist weder `f_A = 0` noch `f_B = 0`, die Kante zwischen beiden Contributors existiert mathematisch nicht mehr, und der B‑Rep‑Proxy liefert dort keine Face/Edge/Vertex‑Zerlegung. Damit Picking und Snapping trotzdem funktionieren, fährt der Kernel den CSG‑Baum in **zwei Modi**: Der **visual path** (für Mesher und Render‑Buffer) wertet alle `smin`‑Operatoren und Spatial Masks voll aus und erzeugt die weichen Übergänge. Der **logical path** (für Picking, Snapping und die B‑Rep‑Proxy‑Konstruktion) degradiert `smin → min` und überspringt alle Fillet‑/Chamfer‑Masken — für die Sensorik besteht das Bauteil ausschließlich aus harten Grundkörpern und scharfen Original‑Kanten. Das ist kein zweiter Baum und kein zweites Mesh, sondern ein Flag am CSG‑Walker; die Implementierung kostet einen zusätzlichen Codepfad pro verrundendem Operator, keine doppelte Datenstruktur. Jede verrundete Kante behält damit ihre ursprüngliche Contributor‑Identität, und der User snappt beim Skizzieren auf die virtuelle scharfe Original‑Ecke — funktional äquivalent zu den „Virtual Sharps" klassischer B‑Rep‑Systeme, nur als Nebeneffekt der Dual‑Path‑Evaluation statt als separat gepflegtes Datenmodell.
+
+- **History‑Rollback bei Skizzen auf Ghost‑Edges:** Klickt der User auf eine virtuelle scharfe Kante, die durch ein nachgelagertes Fillet/Chamfer erzeugt wurde, darf das neue Feature (Skizze, Bohrung, Extrude) nicht hinter dem Fillet in die Historie gehängt werden — sonst läge sein Verankerungspunkt auf einer Kante, die im visual path nicht existiert. Stattdessen zieht der Feature‑Tree den Einfüge‑Zeitpunkt automatisch **vor** den ältesten Fillet/Chamfer‑Knoten, dessen Spatial Mask die Contributor‑IDs der geklickten Ghost‑Edge berührt, fügt das neue Feature dort ein und rechnet die Historie bis zum Ende neu. Die Bohrung wird dadurch vom nachgelagerten Fillet automatisch mit‑verrundet, so wie der User es erwartet. Dieser Rollback ist die logische Konsequenz der Ghost Topology und wird vom Feature‑Tree als stiller Schritt ausgeführt — kein Modal, keine User‑Bestätigung.
 
 - **BVH als Pflicht‑Basistechnologie, nicht Optimierung:** Jeder CSG‑Knoten trägt eine axis‑aligned Bounding Box (AABB), die bei jeder Parameter‑Änderung des Sub‑Baums neu berechnet wird. Mesher und Picking traversieren den Graphen ausschließlich über diese BVH; ganze Subtrees werden weggeschnitten, sobald `f_AABB(p) > Schrittweite`. Komplexität sinkt damit von O(N) auf O(log N). Ein Bauteil mit 500 Bohrungen evaluiert pro Sample‑Punkt nur die zwei oder drei tatsächlich relevanten Loch‑Knoten, nicht alle 500. Ohne BVH ist das System bei realistischen Bauteilen nicht nutzbar — sie ist deshalb von Anfang an Pflicht‑Bestandteil des Kernels, nicht eine spätere Optimierung.
 
@@ -77,8 +81,6 @@ Verantwortlich für alles, was Mathematik und Zustand ist — läuft ohne DOM‑
 
 - **B‑Rep‑Proxy aus Provenance:** Aus der Contributor‑Analyse über das gemeshte Volumen entsteht ein dünner topologischer Layer: **Faces** sind zusammenhängende Mesh‑Regionen mit identischem dominanten Contributor; **Edges** sind die Punktmengen, an denen exakt zwei Contributors simultan den Distanz‑Nullwert bestimmen (Schnittkurven zwischen zwei Leaf‑Feldern); **Vertices** sind Punkte mit ≥3 gleichzeitig aktiven Contributors. Edge‑Sample‑Punkte werden zu Polylinien geclustert und auf die mathematisch exakte Schnittkurve der beteiligten Sub‑SDFs zurückprojiziert (Newton‑Iteration entlang `f_A = f_B = 0`), damit die finalen Snap‑Koordinaten nicht auf den ungenauen Mesh‑Vertices liegen. Dieser Proxy ist das einzige Zielobjekt jeder Selektion und jedes Snappings im Frontend. Faces, Edges und Vertices werden über ihre Provenance‑Rezepte gespeichert (z. B. `Edge = Intersection(Node_12, Node_15)`), nicht über Koordinaten — bei Re‑Evaluation des Baums wandern die Bezüge automatisch mit.
 
-- **Lokale Modifikatoren (harte Chamfers, Spätfeature):** Parametrische Chamfer‑Knoten werden — falls überhaupt umgesetzt — als rein harte, lokale CSG‑Masken implementiert, die an Sketch‑Vektoren oder B‑Rep‑Edges des Proxys gebunden sind. Smooth‑Fillets bleiben dauerhaft ausgeschlossen (siehe oben). Siehe §6.1 und Roadmap K10.
-
 - **Export:** STL (Ascii/Binary) und GLB (glTF 2.0) werden direkt aus dem ohnehin vorhandenen Body‑Mesh‑Cache erzeugt — kein separater Export‑Meshing‑Lauf nötig. Später STEP via dediziertem B‑Rep‑Exporter (M14+).
 
 - **Konstanten‑Cache und Undo/Redo:** Da der CSG‑Graph die Ground Truth ist, kommt Undo/Redo praktisch geschenkt — man spult den Baum einen Schritt zurück, der BVH wird inkrementell invalidiert, und nur die betroffenen Bodies werden neu gemesht.
@@ -89,9 +91,9 @@ Verantwortlich für Darstellung, Interaktion und Gizmos. Das UI wird komplett in
 
 - **Rendering:** **Klassische Rasterisierung** der vom Kernel gelieferten Body‑Meshes über die WebGPU‑Pipeline (kein WebGL‑Fallback). **Kein globales Raymarching im Viewport.** Begründung: Sphere Tracing eines verschachtelten CSG‑AST mit mehreren Bodies sprengt den Instruction‑Cache der GPU und führt zu Register Spilling — ein Bauteil mit 50 Features rendert auf der vorhandenen Hardware nicht mehr in Echtzeit. Stattdessen streamt der Kernel nach jeder Parameter‑Änderung neue Vertex/Index‑Buffer pro betroffenem Body an die GPU, und Three.js zeichnet sie wie jedes andere statische Mesh.
 - **Kamera‑Steuerung:** Orbit/Pan/Zoom, Ansichts‑Würfel oben rechts zum Ausrichten auf Standardansichten.
-- **Picking via Raymarching‑Sensor:** Raymarching wird nicht eliminiert, sondern auf eine spezifische Aufgabe reduziert: **ein einzelner Strahl pro Mausklick**. Die Kamera schießt den Strahl in den Kernel‑CSG‑Graphen, BVH‑beschleunigtes Sphere Tracing findet den ersten Treffpunkt, und der Kernel liefert die Contributor‑Liste an diesem Punkt zurück. Aus den Contributors wird der zugehörige Face/Edge/Vertex des B‑Rep‑Proxys (siehe §4.1) ermittelt. Bei einer komplexen Szene bleibt das selbst mit tausenden Features im Sub‑Millisekunden‑Bereich, weil pro Klick eben nur ein Strahl gerechnet wird, nicht acht Millionen. Mesh‑basiertes Picking gegen die Dreiecke wird **nicht** verwendet — das Mesh ist nur Anzeigelayer und liegt nicht auf den mathematisch exakten Oberflächen.
+- **Picking via Raymarching‑Sensor:** Raymarching wird nicht eliminiert, sondern auf eine spezifische Aufgabe reduziert: **ein einzelner Strahl pro Mausklick**. Die Kamera schießt den Strahl in den Kernel‑CSG‑Graphen, BVH‑beschleunigtes Sphere Tracing findet den ersten Treffpunkt, und der Kernel liefert die Contributor‑Liste an diesem Punkt zurück. Aus den Contributors wird der zugehörige Face/Edge/Vertex des B‑Rep‑Proxys (siehe §4.1) ermittelt. Bei einer komplexen Szene bleibt das selbst mit tausenden Features im Sub‑Millisekunden‑Bereich, weil pro Klick eben nur ein Strahl gerechnet wird, nicht acht Millionen. Mesh‑basiertes Picking gegen die Dreiecke wird **nicht** verwendet — das Mesh ist nur Anzeigelayer und liegt nicht auf den mathematisch exakten Oberflächen. Der Picking‑Ray läuft dabei auf dem **logical path** des Evaluators (§4.1, Ghost Topology): smooth Blends werden zu harten Booleans degradiert und Fillet‑/Chamfer‑Masken übersprungen. Der Strahl trifft damit die virtuelle scharfe Original‑Kante an der Stelle, an der der User visuell eine verrundete Fläche sieht — und der Cursor snappt zuverlässig auf die Contributor‑IDs, die der harte CSG‑Baum an diesem Punkt hinterlassen hat.
 - **Gizmos:** Translate, Rotate, Scale und Mirror‑Achse für ganze Feature‑Tree‑Knoten. **Keine** Push/Pull‑Gizmos auf einzelnen Faces — der Workflow ist strikt parametrisch, geändert wird ausschließlich über Skizzen, Maße und die Parameter‑Tabelle (siehe §6.3).
-- **Snapping:** Snaps fangen ausschließlich gegen den B‑Rep‑Proxy aus §4.1 — Faces, Edges, Edge‑Mittelpunkte, Vertices, Achsen, Mate‑Connectors. Niemals gegen die Dreiecke des gerenderten Meshes (das Mesh ist eine ungenaue Hülle). Die Snap‑Punkte werden bei Bedarf aus den Contributor‑Rezepten des Proxys analytisch nachberechnet, sodass sie exakt auf den mathematischen Oberflächen liegen, nicht auf den Mesh‑Vertices.
+- **Snapping:** Snaps fangen ausschließlich gegen den B‑Rep‑Proxy aus §4.1 — Faces, Edges, Edge‑Mittelpunkte, Vertices, Achsen, Mate‑Connectors. Niemals gegen die Dreiecke des gerenderten Meshes (das Mesh ist eine ungenaue Hülle). Die Snap‑Punkte werden bei Bedarf aus den Contributor‑Rezepten des Proxys analytisch nachberechnet, sodass sie exakt auf den mathematischen Oberflächen liegen, nicht auf den Mesh‑Vertices. Da der Proxy über den logical path der Ghost Topology konstruiert wird, liefert Snapping auch auf verrundeten Bauteilen die scharfen Original‑Edges — die aus klassischem CAD bekannten „Virtual Sharps" fallen in dieser Architektur als Nebeneffekt an, ohne ein zweites Datenmodell zu benötigen.
 - **Auto‑Save im Browser:** Jede Änderung am Feature‑Tree erzeugt einen Dirty‑Marker; nach einer kurzen Debounce‑Phase (ca. 500 ms) wird der aktuelle Projektzustand als JSON in `localStorage` persistiert. Beim Seiten‑Reload wird der letzte lokale Stand automatisch wiederhergestellt. Ein späterer Sync an einen Backend‑Server ist vorgesehen, aber nicht Teil des MVPs — die `localStorage`‑Schicht ist zunächst die einzige Persistenz.
 
 ### 4.3 Memory‑Brücke
@@ -189,9 +191,14 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 | Plane (Referenzebenen) | ✅ | |
 | Variable / Expressions | ✅ | |
 | Mate Connector (als Ankerpunkt, nicht Kinematik) | ✅ | |
-| Fillet (smooth) | ❌ | Dauerhaft ausgeschlossen — `smin` zerstört Provenance, siehe §4.1 |
-| Chamfer (hart, an Sketch‑Kanten/B‑Rep‑Edges gebunden) | ❌ | K10 — ferne Zukunft, falls überhaupt |
-| Sweep | ❌ | M14+ |
+| Fillet (via Spatial Mask + Ghost Topology) | ✅ | |
+| Chamfer (via Spatial Mask + Ghost Topology) | ✅ | |
+| Thread (analytisches Gewinde‑Primitiv) | ✅ | |
+| Gyroid / TPMS‑Infill | ✅ | |
+| Procedural Noise / Displacement (Terminal Feature) | ✅ | |
+| Domain Deformation (Bend / Twist, Lipschitz‑korrigiert) | ✅ | |
+| Morph (Lerp zwischen SDFs) | ✅ | |
+| Sweep (via Mesh‑to‑SDF, gemeinsamer Pfad mit Mesh‑Import) | ✅ | |
 | Loft | ❌ | M14+ |
 | Curved Pattern | ❌ | M14+ |
 
@@ -245,13 +252,14 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
    - **STL, GLB, OBJ** als **visuelle Referenzgeometrie** für COTS‑Teile (Motoren, Platinen, Sensoren). Import‑Verhalten in drei Stufen:
      1. **Import & Darstellung:** Standardmäßig wird das Mesh roh an Three.js übergeben und auf die GPU geschoben — null Rechenaufwand, keine SDF‑Konvertierung, funktioniert auch mit kaputten Meshes. Ziel: Der User sieht das Teil, ohne dass das System crashen kann.
      2. **Messen & Snapping:** Obwohl das Mesh nicht Teil des SDF‑Kernels ist, kennt der Three.js‑Raycaster jedes Dreieck, jede Kante, jeden Vertex. Maßband‑Tool und Sketch‑Snapping greifen darauf zu und schicken die getroffenen Koordinaten als feste Vektoren an den Rust‑Kernel. Für den User fühlt sich das Referenzmesh normal an.
-     3. **Boolean (Opt‑in, „Convert to Solid"):** Nur auf expliziten Wunsch wird das Mesh via Mesh‑to‑SDF (BVH‑basiert) in ein Distanzfeld überführt und damit ein echter Feature‑Tree‑Knoten, der in Booleans teilnehmen kann. Vorher läuft ein Wasserdichtigkeits‑Check (Manifold‑Prüfung); bei kaputten COTS‑Meshes warnt das UI, bevor Artefakte entstehen. Rationale: COTS‑Downloads von Thingiverse/GrabCAD haben oft Self‑Intersections, Zero‑Thickness‑Flächen und umgedrehte Normalen — ein pauschales Mesh‑to‑SDF bei jedem Import würde den WASM‑Speicher mit fehlerhaften Feldern fluten. Außerdem zieht man in der Praxis fast nie eine ganze COTS‑Platine als „Stempel" ab, sondern baut einfache Aussparungen drumherum.
+     3. **Boolean (Opt‑in, „Convert to Solid"):** Nur auf expliziten Wunsch wird das Mesh via Mesh‑to‑SDF (BVH‑basiert, Winding‑Number/Pseudo‑Normal‑Innentest) in ein Distanzfeld überführt und damit ein echter Feature‑Tree‑Knoten, der in Booleans teilnehmen kann. Vorher läuft ein Wasserdichtigkeits‑Check (Manifold‑Prüfung); bei kaputten COTS‑Meshes warnt das UI, bevor Artefakte entstehen. Rationale: COTS‑Downloads von Thingiverse/GrabCAD haben oft Self‑Intersections, Zero‑Thickness‑Flächen und umgedrehte Normalen — ein pauschales Mesh‑to‑SDF bei jedem Import würde den WASM‑Speicher mit fehlerhaften Feldern fluten. Außerdem zieht man in der Praxis fast nie eine ganze COTS‑Platine als „Stempel" ab, sondern baut einfache Aussparungen drumherum. **Derselbe Mesh‑to‑SDF‑Knoten trägt auch das Sweep‑Feature aus §6.1:** Ein Sweep entlang eines 3D‑Pfades mit Twist wird vom Kernel zunächst mit klassischen Polygon‑Algorithmen als wasserdichtes Dreiecks‑Mesh erzeugt (das ist ein gelöstes Problem der Computergrafik) und dann über exakt diesen Mesh‑to‑SDF‑Pfad in den CSG‑Baum eingehängt. Import und Sweep teilen sich damit Code, BVH und Test‑Suite — die Investition in einen robusten Mesh‑to‑SDF‑Knoten bringt beide Features gleichzeitig und erspart dem Kernel einen dedizierten analytischen Sweep‑Operator, der für verdrehte 3D‑Pfade die Lipschitz‑Bedingung ohnehin verletzen würde.
    - **DXF, SVG** in den Sketch‑Editor.
    - **STEP (Ausblick, nicht im MVP):** Ein echter STEP‑Import würde B‑Rep‑Daten in ein SDF umwandeln (Mesh‑to‑SDF), was wasserdichte Eingangs‑Meshes voraussetzt — in der Praxis sind COTS‑STEP‑Dateien oft fehlerhaft. Außerdem bedeutet OpenCASCADE im WASM‑Payload 20–30 MB zusätzlich. Der Weg wird erst angegangen, wenn das MVP steht. Bis dahin lautet der Workaround: STEP extern (z. B. in FreeCAD) zu STL/OBJ konvertieren und als Referenz laden.
 
 ## 8. Datenhoheit, Deployment und Lizenz
 
 - **Client‑Only im MVP:** Alle Berechnungen (CSG‑Auswertung, Mesher, Solver, Picking‑Raymarch) laufen im Browser, Persistenz nach `localStorage`. Es gibt keinen Server — das Tool kann vollständig als statisches Bundle ausgeliefert werden (GitHub Pages, Netlify, beliebiger Webserver). Ein Backend wird erst in einer späteren Phase ergänzt (siehe §4.6 und Roadmap).
+- **Tauri als Escape Hatch:** Falls der Browser‑Kontext an harte Grenzen stößt — 2–4 GB WASM‑RAM, eingeschränktes Multithreading über Web Worker, WebGPU‑Reifegrad in Firefox — ist ein Port nach Tauri vorgesehen. Das React/R3F‑Frontend bleibt bitgenau erhalten, und der Rust‑Kernel zieht aus WASM in den nativen Rust‑Prozess um: voller Prozess‑RAM statt 2–4 GB, echtes Multithreading via `rayon` für paralleles Meshing mehrerer Bodies, direkter `wgpu`‑Zugriff auf Vulkan/Metal/DirectX. Tauri statt Electron, weil es den nativen Webview des Betriebssystems nutzt (App‑Größe ca. 5–10 MB statt 150 MB) und Rust‑Backend und Webview‑Frontend über einen nativen Message‑Bus koppelt, ohne N‑API‑Brücken oder Shared‑Memory‑Tricks. Der Umstieg kostet Code‑Duplizierung nur an der Persistenz‑Schicht (`localStorage` vs. Dateisystem); der Kernel, der Solver, der Feature‑Tree und die gesamte UI bleiben unverändert. Das MVP wird aber zuerst im Browser gebaut — Tauri ist eine Trumpfkarte für später, kein aktueller Entwicklungsstrang.
 - **Client‑Heavy, Server‑Light (spätere Phase):** Sobald der Server existiert, übernimmt er nur Auth, Projekt‑CRUD und Sync — keine Geometrie‑Dienste, damit die Cloud‑Kosten minimal bleiben und Self‑Hosting trivial wird.
 - **Self‑Hostable (spätere Phase):** Ein einzelnes statisches Go‑Binary + MariaDB‑Container reicht. `docker-compose.yml` im Repo startet dann Server, DB und Web‑Frontend mit einem Befehl.
 - **IP‑Schutz:** Projekte sind standardmäßig privat; der Sichtbarkeits‑Schalter muss explizit umgelegt werden, um etwas zu publizieren. Damit ist FieldDraft — anders als Onshape Free — für Hardware‑Startups mit Patent‑Ambitionen unbedenklich.
@@ -282,7 +290,7 @@ Tests werden **von Anfang an** mitentwickelt, nicht nachgezogen. Die Pyramide si
 
 Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Umsetzung in kleinen, testbaren Vertical Slices vorantreiben kann. Jeder Meilenstein endet mit grünen Tests, einem lauffähigen Artefakt und einem nachvollziehbaren Commit‑Verlauf. Keine „Big Bang”‑Phasen.
 
-**Erledigt vor Architektur‑Wechsel (M0–M2) sowie K1, K2:**
+**Erledigt vor Architektur‑Wechsel (M0–M2) sowie K1, K2, K3 (Teil 1):**
 
 - **M0:** Repo‑Scaffold, Build‑Tooling (`just`, `wasm-pack`, `npm`), Test‑Harnesses (`cargo test`, Vitest, Playwright), CI‑freier lokaler Workflow, `crates/kernel`, `crates/protocol`, `web/`.
 - **M1:** Erste WebGPU‑Viewport‑Iteration mit TSL‑Raymarcher und festen Primitiven, Zero‑Copy‑Memory‑Brücke, debounced Auto‑Save in `localStorage`.
@@ -291,6 +299,10 @@ Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Um
 - **K2:** Provenance‑getragene `CsgNode::evaluate(p, eps) → (distance, Contributors)` mit stabilen `NodeId`s auf jedem Leaf (übernommen aus `FeatureId`), inline `Contributors`‑Set (Kapazität 4) und `ProxyElement`‑Klassifikation (Face / Edge / Vertex). Sphere‑Tracing‑Raycaster in `crates/kernel/src/raycast.rs` plus `Kernel::pick(origin, dir)` wasm‑bindgen‑Export mit JSON‑Antwort. Der DC‑Mesher taggt jeden Vertex mit Klassifikationsbyte + flachem Contributor‑Array (`MAX_CONTRIBUTORS` Slots, `u32::MAX`‑Sentinel); Zero‑Copy via `meshClassificationsPtr`/`meshContributorsPtr`. Im Frontend treibt `PickProbe` einen `THREE.Raycaster` über die Pointer‑Bewegung, ruft `kernel.pick()` auf, zeigt das Ergebnis in einem `PickHud`‑Overlay (Farbkodierung face/edge/vertex) und setzt einen kleinen Debug‑Marker an den Trefferpunkt. Tests: Contributor‑Klassifikation auf Face/Edge/Vertex‑Punkten, Difference‑Randkurve, Raycast‑Miss/Face‑Hits, Mesh‑Klassifikation auf Union(Quader, Zylinder).
 
 **Zu K2 offen (bewusst verschoben):** Clusterung der Edge‑Vertices zu Polylinien und Newton‑Projektion auf die exakte Schnittkurve `f_A = f_B = 0` sind in K2 noch nicht umgesetzt. Die Sample‑basierte Klassifikation pro Mesh‑Vertex liefert den groben Proxy, der für Hover‑Debug‑Anzeigen reicht; präzises Snapping braucht diese beiden Nachbesserungen und wandert mit K6 (Sketch‑Editor) bzw. dediziertem K2.1‑Slice zurück in den Kernel.
+
+- **K3 (Teil 1, BVH‑Pfad):** Dual‑Path‑Evaluator‑Infrastruktur über ein neues `EvalMode::{Visual, Logical}`‑Enum, das durch alle SDF‑ und Contributor‑Call‑Sites gefädelt ist — Mesher bekommt `Visual`, Raycaster/Picking bekommen `Logical`, beide Pfade sind bis K10 bit‑identisch. Parallel dazu ein `BoundedCsg`‑Wrapper (`crates/kernel/src/bvh.rs`), der die logische `CsgNode`‑Form einmal pro Mutation in eine query‑optimierte Baumform überführt: jeder Knoten trägt seine Welt‑AABB gecached, `CsgNode::Transform`‑Ketten werden beim Build in den `world_transform` jedes Leaves gefaltet (via neuer `compose_transforms` und `quat_multiply` in `lib.rs`), und die hot‑path‑Methoden `sdf(p, mode)` und `evaluate(p, eps, mode)` prunen Sub‑Bäume, deren AABB‑Lower‑Bound den aktuellen Akkumulator bereits dominiert (Union + Difference; Intersection bleibt naiv, weil die AABB dort keinen Upper Bound liefert). `rebuild_mesh_internal` und `Kernel::pick` bauen die `BoundedCsg` einmal und reichen sie an `dual_contour` bzw. `raycast`. Tests: Leaf‑Transform‑Flattening, Union/Difference‑AABB‑Semantik, Äquivalenz `BoundedCsg::sdf == CsgNode::sdf` auf gemischten Szenen, Pruning‑Korrektheit bei weit auseinander liegenden Bodies, `distance_point_to_aabb` innen/außen.
+
+**Zu K3 offen (für die nächste Session):** Multi‑Body‑Isolation (eigener Baum + Mesh‑Cache pro disjunktem Body), Web‑Worker‑Mesher mit Channel‑basiertem `BufferGeometry`‑Hot‑Swap, Active‑vs‑Context‑Body‑LOD, und die Performance‑Assertion „≥50 Bodies, Re‑Meshing blockiert UI nicht”. Die BVH‑Infrastruktur aus Teil 1 ist so gebaut, dass der Multi‑Body‑Schritt nur `BoundedCsg` pro Body statt pro Dokument braucht — keine weiteren API‑Änderungen im Mesher oder Raycaster nötig.
 
 **Hinweis zum Architektur‑Wechsel:** Mit dem Übergang in die Kernel‑Phase wird der TSL‑Raymarcher‑Renderpfad aus M1 stillgelegt und durch einen Mesh‑basierten Renderpfad ersetzt. Begründung in §4.1, §4.2 und §11 — kurz: globales Raymarching skaliert nicht über mehrere Bodies und komplexe Sketches hinaus, und ohne einen B‑Rep‑Proxy aus Provenance lassen sich Faces/Edges/Vertices nicht zuverlässig selektieren. Die übrigen Artefakte aus M0–M2 (Repo, Tooling, Tests, Auto‑Save, Feature‑Tree, Outliner, Undo/Redo, CSS) bleiben unverändert in Verwendung.
 
@@ -368,11 +380,33 @@ Diese Phase ersetzt die alten Meilensteine M3–M8 vollständig. Sie baut den hy
 - Mate‑Connector als anheftbares lokales Koordinatensystem an Faces/Edges/Vertices des Proxys.
 - Visual‑Regression‑Suite für den gesamten Part‑Editor.
 
-**K10 — Harte Chamfers (Spätfeature, optional, ferne Zukunft)**
-- Parametrische Chamfer‑Knoten als rein harte CSG‑Masken, gebunden an Sketch‑Vektoren oder B‑Rep‑Edges des Proxys.
-- Re‑Evaluation der Maske bei Änderungen vorgelagerter Features, inklusive Goldfile‑Tests, die eine 50→100 mm‑Extrusion mit gleichbleibender abgeschrägter Kante verifizieren.
-- Smooth‑Fillets bleiben dauerhaft ausgeschlossen — siehe §4.1.
-- Ob K10 jemals umgesetzt wird, hängt davon ab, wie häufig User in der Praxis nach Chamfers fragen, sobald K1–K9 stehen. Im Zweifel: nicht umsetzen.
+**K10 — Fillets, Chamfers, Spatial Masks, Ghost Topology**
+- Spatial‑Mask‑Operator im CSG‑AST: Zylinder‑/Kapsel‑SDF entlang einer selektierten Proxy‑Edge, weicher Auslauf an den Kapsel‑Enden. Innerhalb der Maske ersetzt der Operator das harte `min`/`max` durch die Fillet‑Formel (Quadrat‑Summe) oder die Chamfer‑Formel (lineare Mittelung); außerhalb fällt er transparent auf den harten Unteroperator zurück.
+- Masken‑AABB wird als eigener Knoten im 3D‑BVH registriert, damit die Punkt‑Auswertung außerhalb der Masken‑Hülle den Mix‑Operator komplett überspringt und die Rechenlast logarithmisch mit der Masken‑Dichte skaliert (siehe §11 Risiko 6).
+- Ghost Topology: Dual‑Path‑Flag am CSG‑Walker. Der *visual path* wertet `smin` und alle Spatial Masks voll aus und erzeugt die weichen Übergänge für Mesher und Render‑Buffer. Der *logical path* degradiert `smin → min` und überspringt alle Masken — Picking, Snapping und B‑Rep‑Proxy‑Konstruktion laufen ausschließlich auf diesem Pfad und sehen harte Original‑Kanten (siehe §4.1, §4.2).
+- History‑Rollback beim Klick auf Ghost‑Edges: Der Feature‑Tree fügt neue Features automatisch **vor** den ältesten Fillet/Chamfer‑Knoten ein, dessen Maske die Contributor‑IDs der geklickten Edge berührt, und rechnet die Historie neu. Eine Bohrung auf einer verrundeten Kante wird damit vom nachgelagerten Fillet mit‑verrundet, ohne dass der User den Zeitstempel manuell verschieben muss.
+- UI: Fillet‑ und Chamfer‑Tool in der Part‑Editor‑Toolbar, Einzelsegment‑Selektion auf dem Proxy, Radius‑/Distanz‑Eingabe mit Live‑Preview. Edge‑Chaining entlang tangentialer Nachbarn bleibt zunächst manuell über Mehrfach‑Selektion (siehe §11 Risiko 8).
+- Tests: Goldfiles für Einzelkanten‑Fillets auf Würfel und Zylinder, Zimmerecken‑Regression als Baseline für den weichen Auslauf, Overlap‑Detection zwischen benachbarten Masken (Warnung bei Interferenz, siehe §11 Risiko 7), Ghost‑Topology‑Picking auf einem zweifach verrundeten Bauteil (Klick muss die scharfe Original‑Edge treffen, nicht die verrundete Oberfläche), History‑Rollback‑Test (Bohrung auf Ghost‑Edge wird vom Fillet automatisch mit‑verrundet).
+
+**K11 — Native SDF‑Superkräfte**
+- Gyroid / TPMS‑Infill als Leaf‑Knoten mit der Standardgleichung `sin(p.x)·cos(p.y) + sin(p.y)·cos(p.z) + sin(p.z)·cos(p.x)`, per Boolean mit dem Host‑Körper verschnitten. Parameter: Zellengröße, Wandstärke, optionale Clipping‑Domain. Kosten im Speicher: null Bytes — die gesamte Gitterstruktur lebt ausschließlich als Formel.
+- Procedural Noise / Displacement als Terminal‑Operator: `f_result(p) = f_body(p) − noise(uv(p)) · tiefe`, mit Triplanar‑Projektion als UV‑loses Default‑Mapping und zylindrischer Projektion als Option für Handgriffe und Knöpfe. Der Operator ist im *logical path* als Terminal markiert und wird übersprungen — der B‑Rep‑Proxy sieht weiterhin die glatte Grundform, und das Snapping fängt auf der Ur‑Oberfläche.
+- Domain Deformation (Bend, Twist) als Transform‑Knoten mit Lipschitz‑Korrektur: Der Raum wird vor der Auswertung verbogen, der zurückgegebene Distanzwert um den Verzerrungsfaktor skaliert, damit Raymarcher und Mesher nicht an falschen Metriken hängen bleiben.
+- Morph (Lerp zwischen zwei SDFs): `f_morph = (1−t)·f_A + t·f_B` mit animierbarem `t`. Für `t ∈ {0, 1}` greift Ghost Topology ungebrochen; für Zwischenwerte ist der Knoten Terminal, weil beide Contributor‑Mengen in der Übergangszone verschmelzen.
+- Tests: Gyroid‑Wasserdichtigkeit nach Dual Contouring, Displacement‑Terminal‑Verhalten (Snapping liefert glatte Ur‑Fläche auf gerändeltem Knopf), Twist‑Zahnrad‑Goldfile gegen Referenz, Morph‑Animation über 10 Zwischenschritte.
+
+**K12 — Analytisches Gewinde‑Tool**
+- Thread‑Primitiv als Leaf‑Knoten mit direkter mathematischer Gewinde‑Formel (metrisch M3–M64, Trapez, Zoll). Kosten: O(1) pro Sample‑Punkt. Kein Sweep entlang einer Helix‑Kurve — dieser Weg scheitert im SDF an der Metrik‑Verzerrung der Raum‑Rotation.
+- Der B‑Rep‑Proxy behandelt das Thread‑Feature im *logical path* als glatten Referenzzylinder mit Kerndurchmesser. Snapping fängt auf Mittelachse, Stirnfläche und Steigungs‑Parameter, nicht auf den spiraligen Gewindeflanken des *visual path*.
+- UI: Thread‑Tool auf Zylinder‑Face angewandt, Gewinde‑Dropdown (M3, M4, …), Richtung (innen/außen), Länge. Schraube und Mutter teilen sich dieselbe Formel mit umgekehrtem Vorzeichen.
+- Tests: Wasserdichtigkeits‑Check, Schraube‑in‑Mutter‑Goldfile mit definierter Spielpassung, Stirnflächen‑Snap‑Test, Thread‑Boolean‑Kombination mit gefastem Zylinder.
+
+**K13 — Mesh‑to‑SDF: Convert‑to‑Solid und Sweep**
+- Mesh‑to‑SDF‑Knoten: BVH gegen Dreiecke, kürzeste Distanz plus Winding‑Number oder Pseudo‑Normal‑Check für Innen/Außen. Ein einziger Knotentyp, der sowohl den Import‑Convert‑to‑Solid‑Pfad aus §7 als auch das neue Sweep‑Feature trägt.
+- Wasserdichtigkeits‑Check und optionaler Manifold‑Repair‑Pass vor der SDF‑Konvertierung; UI‑Warnung bei kaputten COTS‑Meshes.
+- Sweep‑Feature: Der Kernel erzeugt unsichtbar im Hintergrund ein geschlossenes Dreiecks‑Mesh des Sweeps (Profil entlang Pfad, inklusive Twist) mit klassischen Polygon‑Algorithmen und hängt das Resultat als Mesh‑to‑SDF‑Knoten in den Baum. Pfad und Profil behalten ihre IDs im Feature‑Tree und bleiben nach‑bearbeitbar — der Sweep wird bei Änderung neu gebacken.
+- Ghost Topology für Mesh‑to‑SDF‑Knoten: Da der Knoten keine „harte Alternative" hat, liefert der *logical path* für Picking die Dreiecke des zugrundeliegenden Input‑Meshes selbst zurück (sie sind mathematisch exakt zum Profil und Pfad verankert, im Gegensatz zum Dual‑Contouring‑Output der SDF‑Konvertierung).
+- Tests: STL‑Import‑Rundlauf (Import → Boolean → Export, Goldfile), Sweep‑Goldfile entlang Kreisbogen und 3D‑Spline mit Twist, Performance‑Test gegen 100k‑Dreieck‑Input‑Mesh, Manifold‑Repair auf kaputtem COTS‑Download als Regressions‑Fixture.
 
 ---
 
@@ -403,8 +437,46 @@ Diese Phase ersetzt die alten Meilensteine M3–M8 vollständig. Sie baut den hy
 - Öffentliche Projektgalerie mit Thumbnails.
 - Dokumentation, Self‑Host‑Anleitung.
 
+---
+
+### Phase 3 — Interaktions‑Export, Simulation, Physik
+
+Diese Phase hebt FieldDraft vom reinen Konstruktionswerkzeug zur Entwicklungs‑Plattform für interaktive 3D‑Applikationen. Sie nutzt Fähigkeiten, die aus der SDF‑Architektur „gratis" abfallen — Kollisionsabfragen in O(1), netzfreie FEM, direkte Toolpath‑Generierung — und verpackt sie in User‑sichtbare Features. Die Reihenfolge ist grob priorisiert, aber weniger zwingend verkettet als K1–K13.
+
+**P1 — Assemblies und Scene Graph**
+- Paradigmenwechsel vom CSG‑Baum zum Scene Graph auf der Assembly‑Ebene: Jedes Einzelteil bleibt ein isolierter Part Studio mit eigenem CSG‑Baum, eigenem BVH und eigenem Mesh‑Cache. Die Assembly verknüpft diese Parts über Transformations‑Hierarchien und mechanische Freiheitsgrade (Mates, Joints).
+- Mate‑Typen: Fixed, Revolute (1 Rotationsfreiheitsgrad), Prismatic (1 Translationsfreiheitsgrad), Cylindrical, Ball. Jeder Mate bindet zwei Mate‑Connectors aus den Part‑Studios, die in K9 eingeführt wurden.
+- Hierarchische Bewegung: Dreht sich die Roboter‑Schulter, wandern Ellenbogen und Greifer als Kinder mit. Der Scene Graph ist parametrisch und debounced persistiert wie der Feature‑Tree.
+- Tests: Goldfile‑Szenen für Roboterarm, Linearachse und Scherenmechanik; Mate‑Constraint‑Solver‑Test gegen Referenz‑Positionen.
+
+**P2 — Kinematik: FK und IK**
+- Forward Kinematics: Slider in der UI bewegen einzelne Joint‑Winkel, der Scene Graph rechnet die Transformations‑Kette.
+- Inverse Kinematics: Der User gibt eine Zielkoordinate im Raum an, ein IK‑Solver im Rust‑Kernel berechnet die Joint‑Winkel. Joint‑Limits aus P1 werden als Constraints mitgegeben.
+- Selbstkollisions‑Prüfung während der Bewegung: Die SDFs der beteiligten Parts liefern den Abstand zwischen beliebigen Punkten in O(1) — der IK‑Solver kann Pfade verwerfen, bei denen ein Part durch ein anderes hindurchschwingt.
+- Tests: 6‑DoF‑Roboterarm greift eine Zielkiste, Kollision mit dem eigenen Sockel wird automatisch vermieden.
+
+**P3 — Code‑First‑Export: React Three Fiber**
+- Export‑Button erzeugt nicht nur ein STL, sondern ein Paket aus: optimierten Meshes (GLTF/DRACO), einer generierten `.tsx`‑Datei mit dem Scene Graph als R3F‑Komponentenbaum, Props für jeden Joint‑Winkel, und optional einem kleinen `leva`‑basierten Slider‑Panel.
+- Beispiel‑Output: Ein `<RobotArm shoulderAngle={…} elbowAngle={…}/>`‑Root‑Element mit verschachtelten `<group rotation={…}>`‑Knoten, die die Kinematik aus P1/P2 nachbilden. Der Developer kann den Code direkt in eine eigene React‑App einbauen, ohne GLTF manuell animieren zu müssen.
+- USP‑Formulierung: *FieldDraft exportiert Interaktion, nicht nur Geometrie.* Das ist der architektonische Hebel, der die Brücke vom CAD‑Werkzeug zum Web‑Native‑Entwicklungs‑Tool schlägt.
+- Tests: Snapshot‑Test des generierten TSX‑Codes gegen Goldfiles, Laufzeit‑Test des exportierten Bundles in einer Dummy‑React‑App (Playwright).
+
+**P4 — Physikalische Abfragen: Masse, Kollision, Toolpaths**
+- Volumen und Massenschwerpunkt: Klassisch via Divergenztheorem auf dem gemesheten Anzeige‑Mesh berechnet — das SDF liefert kein exaktes Volumen ohne Monte‑Carlo‑Integration, aber das DC‑Mesh ist für Maker‑Präzision mehr als ausreichend. Dichte pro Material konfigurierbar, Ausgabe im Measure‑Panel.
+- Kollisionserkennung als generisches O(1)‑Primitiv: Die SDF jedes Körpers beantwortet die Frage „liegt Punkt P im Inneren und wie tief?" direkt. Wird dem Assembly‑Modul als API freigegeben und ist die Grundlage für die IK‑Selbstkollisions‑Prüfung aus P2.
+- SDF‑direkte CNC‑/Slicer‑Toolpaths: Werkzeugpfade als Iso‑Fläche `f(p) = werkzeugradius` — der Fräskopf fährt entlang dieser Iso‑Fläche, ohne Umweg über STEP oder G‑Code‑Nachbearbeitung. Im MVP als experimentelles CAM‑Modul für simple 2.5D‑Fräsvorgänge; aufwändige 5‑Achs‑Strategien bleiben explizit out of scope.
+- Tests: Massenschwerpunkt‑Goldfile gegen analytisch berechnete Referenzkörper, Kollisions‑API‑Fuzz‑Test, Toolpath‑Visualisierung als Linien‑Overlay im Viewport.
+
+**P5 — Netzfreie FEM via Finite Cell Method**
+- Netzfreie Finite‑Element‑Simulation direkt auf einem regelmäßigen Voxel‑Gitter über dem SDF: Jede Zelle bekommt vom SDF einen Füllgrad (0 % bis 100 %), und die Belastungs‑Gleichungen werden auf diesem Gitter gelöst. Damit entfällt der fehleranfällige Tetraeder‑Mesher klassischer FEM‑Tools — komplexe Gyroid‑ und TPMS‑Strukturen aus K11 werden erst dadurch simulierbar.
+- Lasten und Randbedingungen werden auf den B‑Rep‑Proxy gelegt (fixierte Face, aufgebrachte Kraft auf Face), damit sie parametrisch an den Modell‑IDs hängen und eine Parameter‑Änderung die Simulation‑Setups nicht invalidiert.
+- Das Feature ist groß und steht bewusst am Ende der Phase. Realistisches Ziel: statische Linear‑Elastizität für einfache Leichtbau‑Parts, nicht Crash‑Simulation.
+- Tests: Goldfile gegen analytische Referenzen (Biegebalken, Zugstab), Vergleich gegen eine CalculiX‑Rechnung für einen nicht‑trivialen Referenz‑Part.
+
+---
+
 **Spätere Meilensteine (M14+)**
-- Sweep, Loft, Curved Patterns, 3MF‑Export.
+- Loft, Curved Patterns, 3MF‑Export.
 - **STEP‑Import** via OpenCASCADE im Web‑Worker oder `truck`‑Experiment, inklusive Mesh‑to‑SDF‑Konvertierung und Robustheits‑Pass gegen kaputte COTS‑Dateien. Bewusst weit hinten: erst wenn das MVP steht und es echte User‑Nachfrage gibt.
 - **Direct‑Manipulation‑Modus** (Push/Pull auf B‑Rep‑Proxy‑Faces), sobald ein robustes Heuristik‑Modell für die Push/Pull‑zu‑Parameter‑Auflösung existiert.
 - Kollaborative Sessions via CRDT (Yjs o. ä.).
@@ -422,19 +494,37 @@ Diese Phase ersetzt die alten Meilensteine M3–M8 vollständig. Sie baut den hy
 
 4. **BVH‑Invalidierung und Re‑Meshing‑Kaskaden:** Eine Parameter‑Änderung an einem hoch referenzierten Variablen‑Knoten kann viele Bodies invalidieren. Auch wenn jeder Body‑Re‑Mesh asynchron im Web Worker läuft, summieren sich die Latenzen bei großen Baugruppen zu sichtbaren Wartezeiten, ähnlich dem Onshape‑„Regenerating"‑Spinner. Gegenmaßnahme: inkrementelles BVH‑Update statt Komplett‑Rebuild, Sub‑Tree‑Hashing zum Erkennen, ob ein Body wirklich invalidiert wurde, Priorisierung des aktiven Bodies vor Context‑Bodies. Akzeptanz: ≥1 s Wartezeit bei 100‑Body‑Szenen ist im MVP OK.
 
-5. **Verlust der Smooth‑Fillets als Scope‑Entscheidung:** Mit dem expliziten Verzicht auf `smin` (siehe §4.1) verliert FieldDraft eine UX‑Komponente, die SDF‑Modeller wie MagicaCSG attraktiv macht. Konstrukteure, die organische Übergänge brauchen, sind in FieldDraft falsch — das ist eine bewusste Scope‑Entscheidung, kein technischer Mangel. Gegenmaßnahme: in Marketing und Doku klar als „mechanisches CAD für 3D‑Druck" positionieren, nicht als Sculpt‑Tool.
+5. **Vertex Blending / Setbacks (Zimmerecke):** Eine Spatial Mask muss am Kantenende irgendwo aufhören. Hartes Abschneiden der Maske am Boden einer Zimmerecke verletzt die Lipschitz‑Bedingung — der Mesher erzeugt Löcher, Zacken oder doppelte Normalen. Weicher Auslauf hält das Feld stetig, lässt die Fase/Rundung aber organisch in die angrenzenden Flächen ausschmelzen, statt in einem messerscharfen Dreieck zu enden. FieldDraft wählt den weichen Auslauf als Default; scharfe Kanten‑Enden im Stil klassischer B‑Rep‑Kernel sind in dieser Architektur nicht erreichbar, und automatisch generierte CSG‑Schnittkörper als Ersatz sind bewusst verworfen (sie funktionieren nur für triviale, gerade Kanten und wären für den allgemeinen Fall kryptisch). User, die exakt geometrische Enden brauchen, müssen den Fasen‑/Stufenkörper manuell im Sketcher modellieren und per harter Boolean abziehen — das ist ein bewusster Workaround, keine System‑Automatik. Goldfile‑Tests fixieren den Auslauf‑Look als Regression‑Baseline.
 
-6. **Sketch‑Ebenen auf gekrümmten Faces (deferred):** Klickt der User in der Zukunft auf eine gekrümmte Face (z. B. eine Revolve‑Außenseite), gibt es keine kanonische planare Ebene, an die sich die neue Skizze auto‑locken ließe. Die geplante Lösung über „unconstrained planes" mit harten Maßen zum 3D‑Origin ist in K6 noch nicht enthalten und wird erst implementiert, wenn der MVP steht und konkrete Anwendungsfälle es erzwingen.
+6. **Masken‑Stacking‑Performance:** Jedes Fillet und jeder Chamfer fügt dem CSG‑Baum einen Masken‑Test plus Interpolations‑Operator hinzu. Bei 50 Verrundungen an einem Gehäuse läuft die Punkt‑Auswertung naiv linear mit der Anzahl der Masken. Gegenmaßnahme: Jede Masken‑SDF erhält eine eigene AABB im BVH — außerhalb der Masken‑Hülle wird der Mix‑Operator nicht ausgewertet, der Punkt fällt transparent auf den harten Unteroperator zurück. Die Rechenlast skaliert damit wieder logarithmisch mit der Anzahl räumlich nahe beieinanderliegender Masken, nicht mit der Gesamtanzahl im Baum.
 
-7. **STEP‑Import als B‑Rep‑Mauer:** Mesh‑to‑SDF‑Konvertierung von STEP‑Daten setzt wasserdichte Meshes voraus — COTS‑STEP‑Dateien aus Fernost sind es oft nicht. OpenCASCADE in WASM kostet 20–30 MB Payload. Deshalb ist STEP‑Import bewusst aus K9 herausgeschoben (siehe M14+). Im MVP reicht STL/OBJ‑Referenz, bei Bedarf extern konvertiert.
+7. **Masken‑Kollision benachbarter Fillets:** Überlappen zwei Fillet‑Masken räumlich (z. B. zwei parallele Kanten im Abstand von 3 mm mit Radius 2 mm), interferieren ihre Mix‑Operatoren unvorhersehbar an der Schnittstelle — mal gewinnt A, mal B, und in der Übergangszone entstehen Artefakte. Gegenmaßnahme: Overlap‑Detection beim Anlegen einer neuen Maske mit UI‑Warnung und Vorschlag zur Radius‑Reduktion; deterministische Interferenz‑Regel („innerer Operator gewinnt") als Fallback, wenn der User die Warnung ignoriert; Property‑Tests mit zufälligen Masken‑Paarungen gegen Referenz‑Auswertungen.
 
-8. **WebAssembly‑Speicherlimits:** 2–4 GB Linear Memory pro WASM‑Instanz reicht für Maker‑Bauteile sehr gut, könnte aber bei sehr großen Baugruppen mit hochaufgelösten Body‑Meshes ein Thema werden. Sparse‑Grids (z. B. OpenVDB‑Ansatz) im Mesher und Mesh‑Decimation für Context‑Bodies sind die Plan‑B‑Pfade. Konkrete Schätzung: ein typisches Maker‑Bauteil mit 100 k–300 k Dreiecken belegt unter 5 % des verfügbaren WASM‑RAMs.
+8. **Edge Chaining tangentialer Kanten (MVP deferred):** In Onshape wählt der User eine Kante, und das System findet automatisch alle tangential angrenzenden Kanten und zieht das Fillet als geschlossene Schleife herum. Im SDF‑Modell müsste die Spatial Mask einer durch mehrere CSG‑Schnitte erzeugten, gekrümmten 3D‑Kurve folgen — analytisch schwer, weil der exakte Kurvenverlauf nicht ohne eine aufwendige Edge‑Propagation entlang tangentialer Proxy‑Nachbarn vorliegt. MVP‑Ausweg: Fillet/Chamfer wirken nur auf einzelne selektierte Edge‑Segmente des Proxys; tangentiales Chaining wird durch Mehrfach‑Selektion simuliert. Automatisches Chaining ist ein Later‑Feature und wird erst angegangen, sobald die Proxy‑Edge‑Propagation robust steht.
 
-9. **WebGPU‑Browser‑Support:** WebGPU ist in Chromium und Safari stabil, in Firefox teilweise. Da FieldDraft bewusst kein WebGL‑Fallback pflegt, ist die Browser‑Matrix enger. Gegenmaßnahme: klare System‑Requirements‑Seite und eine Feature‑Detection beim Ladezeitpunkt.
+9. **Sketch‑Ebenen auf gekrümmten Faces (deferred):** Klickt der User in der Zukunft auf eine gekrümmte Face (z. B. eine Revolve‑Außenseite), gibt es keine kanonische planare Ebene, an die sich die neue Skizze auto‑locken ließe. Die geplante Lösung über „unconstrained planes" mit harten Maßen zum 3D‑Origin ist in K6 noch nicht enthalten und wird erst implementiert, wenn der MVP steht und konkrete Anwendungsfälle es erzwingen.
 
-10. **Auto‑Save‑Konflikte:** Wenn derselbe User zwei Tabs parallel öffnet, können lokale Stände divergieren. Gegenmaßnahme: Last‑Writer‑Wins mit Warnung plus versionierte Snapshots im Backend, damit nichts verloren geht.
+10. **STEP‑Import als B‑Rep‑Mauer:** Mesh‑to‑SDF‑Konvertierung von STEP‑Daten setzt wasserdichte Meshes voraus — COTS‑STEP‑Dateien aus Fernost sind es oft nicht. OpenCASCADE in WASM kostet 20–30 MB Payload. Deshalb ist STEP‑Import bewusst aus K9 herausgeschoben (siehe M14+). Im MVP reicht STL/OBJ‑Referenz, bei Bedarf extern konvertiert.
 
-## 12. Verwandtes / Inspiration
+11. **WebAssembly‑Speicherlimits:** 2–4 GB Linear Memory pro WASM‑Instanz reicht für Maker‑Bauteile sehr gut, könnte aber bei sehr großen Baugruppen mit hochaufgelösten Body‑Meshes ein Thema werden. Sparse‑Grids (z. B. OpenVDB‑Ansatz) im Mesher und Mesh‑Decimation für Context‑Bodies sind die Plan‑B‑Pfade. Konkrete Schätzung: ein typisches Maker‑Bauteil mit 100 k–300 k Dreiecken belegt unter 5 % des verfügbaren WASM‑RAMs.
+
+12. **WebGPU‑Browser‑Support:** WebGPU ist in Chromium und Safari stabil, in Firefox teilweise. Da FieldDraft bewusst kein WebGL‑Fallback pflegt, ist die Browser‑Matrix enger. Gegenmaßnahme: klare System‑Requirements‑Seite und eine Feature‑Detection beim Ladezeitpunkt.
+
+13. **Auto‑Save‑Konflikte:** Wenn derselbe User zwei Tabs parallel öffnet, können lokale Stände divergieren. Gegenmaßnahme: Last‑Writer‑Wins mit Warnung plus versionierte Snapshots im Backend, damit nichts verloren geht.
+
+## 12. Harte Architektur‑Grenzen (permanente Scope‑Ausschlüsse)
+
+Die folgenden drei Limitierungen sind keine Risiken im Sinne von §11, sondern **permanente, bewusst akzeptierte Architektur‑Grenzen**. Sie ergeben sich aus der Entscheidung für einen SDF‑basierten Kern und sind in diesem Kern nicht auflösbar, ohne einen vollständigen B‑Rep/NURBS‑Zweitkernel danebenzustellen — was den USP des Systems zerstören würde. Wer diese Features braucht, braucht nicht FieldDraft.
+
+1. **STEP‑/NURBS‑Export für die klassische Fertigungsindustrie.** Die globale Fertigungskette (Spritzguss, CNC‑Fräserei in klassischen CAM‑Systemen, Blechbearbeitung, Toleranz‑Management in Mastercam/Edgecam) spricht genau eine Sprache: STEP mit exakten B‑Rep‑Flächen und NURBS‑Oberflächen. FieldDraft kann Meshes exportieren (STL, GLB, 3MF), aber kein STEP mit parametrischen Flächen. Ein „Auto‑Surfacing"‑Algorithmus, der aus einem SDF‑Mesh wieder tangentenstetige NURBS‑Patches rekonstruiert, ist eines der schwersten ungelösten Probleme der Computergrafik — die existierenden Lösungen liefern fragmentierte „Patchworks", die Industriedesigner in Sekunden als ungeeignet erkennen. FieldDraft geht diesen Weg bewusst **nicht**. Die strategische Alternative lautet: **Direct Digital Manufacturing** — additive Fertigung (FDM, SLA, SLS), SDF‑direktes CAM (siehe Phase 3, P4), Dentaltechnik‑ähnliche Workflows, bei denen das B‑Rep‑Format nie zwischengeschaltet wird.
+
+2. **Normgerechte technische Zeichnungsableitung.** Verträge, Qualitätskontrolle und Werkstatt‑Kommunikation in klassischen Branchen laufen zu 90 % über 2D‑Zeichnungen nach DIN ISO 128: Silhouetten‑Projektionen, Schnittansichten, Bemaßungen mit Passungen, Oberflächenangaben. Eine saubere 2D‑Ableitung setzt voraus, dass der Kernel Silhouetten als analytische Vektor‑Kurven aus dem CSG‑Baum extrahieren kann (Raytracing der Flächen‑Gradienten, nicht der Mesh‑Dreiecke) — theoretisch machbar, aber bei verrundeten `smin`‑Übergängen und Ghost‑Topology‑Edges in der Praxis kaum in saubere DIN‑konforme Vektor‑Konturen zu übersetzen, weil der Unterschied zwischen visual path und logical path genau hier aufeinanderprallt. Grobe 2D‑Schnitte und Projektionen für Lasercutter sind weiterhin möglich (§7 DXF/SVG‑Export), normgerechte Fertigungs‑Zeichnungen nicht.
+
+3. **ISO‑Toleranzen, Passungen, Metrologie.** In SolidWorks oder Onshape definiert man eine Welle nicht als `10 mm`, sondern als `10.000 mm h7` — eine Passungstoleranz, die in der Qualitätskontrolle gegen eine exakte theoretisch‑mathematische Referenzfläche mit einer eindeutigen, persistenten ID gemessen wird. Unsere Ghost Topology hält Original‑Kanten identifizierbar, aber die Toleranz‑/Metrologie‑Welt verlangt mehr: referenzierbare Flächen mit GD&T‑Annotationen (Form‑, Lage‑, Richtungs‑Toleranzen), die über den gesamten Produktlebenszyklus bis zur Laserscanner‑Messung bestehen bleiben. Dieses Datenmodell ist nicht mit dem Provenance‑basierten Proxy vereinbar und wird in FieldDraft nicht nachgebaut. Für Maker‑, Prototyping‑ und 3D‑Druck‑Toleranzen reicht die numerische Präzision des Kernels vollkommen; für Serienfertigung mit SPC‑Qualitätskontrolle ist das Tool nicht gedacht.
+
+**Positionierung:** Diese drei Ausschlüsse sind keine Mängel, sondern die Kehrseite der Architektur‑Stärken (unkaputtbare Booleans, native TPMS/Gyroid/Displacement, SDF‑direktes CAM, R3F‑Code‑Export). Marketing und Doku sollten FieldDraft konsequent als **„CAD für Direct Digital Manufacturing"** positionieren — Maker, Hardware‑Startups, Robotik‑Entwickler, Industriedesigner, 3D‑Druck‑Pioniere — und die klassische Maschinenbau‑Welt (Motorenblöcke, Spritzgussformen, Dreh‑/Frästeile mit ISO‑Passungen) explizit **nicht** als Zielgruppe.
+
+## 13. Verwandtes / Inspiration
 
 - **Onshape** — UX‑Referenz, Feature‑Tree‑Vorbild.
 - **Shapr3D** — Vorbild für „Direkt auf Fläche skizzieren" ohne expliziten Sketch‑Button.
@@ -445,86 +535,86 @@ Diese Phase ersetzt die alten Meilensteine M3–M8 vollständig. Sie baut den hy
 - **MagicaCSG, Dreams (PS)** — kreative SDF‑Modeller als UX‑Inspiration.
 - **Fornjot, Truck** — Rust‑native B‑Rep‑Kernel, als Fallback oder Ergänzung interessant.
 
-## 13. Namensgebung und Schwesterprojekt
+## 14. Namensgebung und Schwesterprojekt
 
 - **FieldDraft** — Distanz‑**Field**‑basiertes CAD‑**Draft**‑Tool.
 - **BeamDraft** — eigenständiges Laser‑Projektor‑Projekt, das denselben 2D‑Constraint‑Solver als Kern nutzt. Durch die gemeinsame geometrische Engine entsteht ein strategischer Hebel: Ein investierter Entwicklungs‑Euro dient zwei Produkten.
 
-## 14. Domains
+## 15. Domains
 
 Die TLDs .eu, .de und .xyz sind frei.
 FieldDraft.com ist bereits registriert („for sale“ bei GoDaddy). 
 Markenrechtlich gibt es keine Eintragungen.
 Keine Github- oder NPM-Projekte mit diesem Namen.
 
-## 15. Literatur und Referenzen für Implementierungs‑Agenten
+## 16. Literatur und Referenzen für Implementierungs‑Agenten
 
 Diese Sektion ist Pflichtlektüre für jeden Pair‑Programming‑Agent, der an der Kernel‑Phase (K1–K10) arbeitet. Die folgenden Quellen sind kuratiert und decken die zentralen Datenstrukturen und Algorithmen ab. Wer einen K‑Slice anfasst, ohne die zugehörigen Abschnitte gelesen zu haben, baut zwangsläufig in die falsche Richtung.
 
-### 15.1 Dual Contouring
+### 16.1 Dual Contouring
 
 - [Ju, Losasso, Schaefer, Warren — „Dual Contouring of Hermite Data" (SIGGRAPH 2002, PDF)](https://www.cs.rice.edu/~jwarren/papers/dualcontour.pdf) — Originalarbeit, definiert das Verfahren, das im FieldDraft‑Kernel zur Mesh‑Extraktion aus dem SDF‑Feld eingesetzt wird. Pflichtlektüre für alle, die am Vernetzer arbeiten.
 - [Schaefer, Ju, Warren — „Manifold Dual Contouring" (TVCG 2007, PDF)](https://people.engr.tamu.edu/schaefer/research/dualsimp_tvcg.pdf) — Erweiterung mit Garantie für mannigfaltige Meshes auch unter adaptiver Vereinfachung; relevant, sobald wir Octree‑Adaption brauchen.
 - [swiftcoder/isosurface (Rust crate)](https://github.com/swiftcoder/isosurface) — Wartungsaktive, dependency‑freie Rust‑Implementierung von Marching Cubes und Dual Contouring; gute Referenz für Datenstrukturen und Octree‑Layout.
 - [nickgildea/fast_dual_contouring](https://github.com/nickgildea/fast_dual_contouring) — Praxiserprobte Variante ohne Octree, demonstriert eine flache Datenstruktur, die sich gut auf WASM portieren lässt.
 
-### 15.2 Quadratic Error Function (QEF) Solver
+### 16.2 Quadratic Error Function (QEF) Solver
 
 - [BorisTheBrave — „Dual Contouring Tutorial"](https://www.boristhebrave.com/2018/04/15/dual-contouring-tutorial/) und [zugehöriger QEF‑Code](https://github.com/BorisTheBrave/mc-dc/blob/master/qef.py) — Die kanonische didaktische Quelle. Erklärt QEF‑Aufbau, SVD‑Lösung und Bias‑Term, jeweils mit lauffähigem Python.
 - [Lindstrom — „Out‑of‑Core Simplification of Large Polygonal Models" (SIGGRAPH 2000, PDF)](http://evasion.imag.fr/Membres/Franck.Hetroy/Teaching/Geo3D/Articles/lindstrom2000.pdf) — Begründet die SVD‑basierte robuste QEF‑Minimierung, die bis heute Stand der Technik ist.
 - [Matt Keeter — „QEF Explainer"](https://www.mattkeeter.com/projects/qef/) und [nickgildea/qef (SVD‑Implementierungen)](https://github.com/nickgildea/qef) — Kompakte numerische Erklärung plus C/GLSL/OpenCL‑Solver, an denen sich eine numerisch stabile Rust‑Variante gut spiegeln lässt.
 
-### 15.3 SDF‑Primitive (3D)
+### 16.3 SDF‑Primitive (3D)
 
 - [Inigo Quilez — „3D Signed Distance Functions"](https://iquilezles.org/articles/distfunctions/) — De‑facto‑Referenz für exakte 3D‑SDF‑Formeln (Box, Zylinder, Kegel, Torus, Kapsel, …). Quelle der Wahrheit für alle Primitive im FieldDraft‑Kernel.
 - [Inigo Quilez — „Raymarching Distance Fields"](https://iquilezles.org/articles/raymarchingdf/) — Hintergrund zu Distanzeigenschaften (Lipschitz‑Bound, exakte vs. begrenzende SDFs); wichtig, weil unser BVH und der Picking‑Raymarcher nur mit echten SDFs korrekt funktionieren.
 - [Inigo Quilez — „SDF Bounding Volumes"](https://iquilezles.org/articles/sdfbounding/) — Beschreibt das Sketch‑Extrude‑ und Revolve‑Pattern (2D‑Profil → 3D‑Volumen) inklusive Bounding‑Box‑Ableitung, das genau dem FieldDraft‑Feature‑Tree entspricht.
 
-### 15.4 SDF‑Primitive (2D) und Komposition
+### 16.4 SDF‑Primitive (2D) und Komposition
 
 - [Inigo Quilez — „2D Distance Functions"](https://iquilezles.org/articles/distfunctions2d/) — Vollständige Sammlung exakter 2D‑SDFs (Linie, Kreis, Bogen, Ellipse, Polygon) mit Shadertoy‑Demos. Direkte Vorlage für den 2D‑Sketch‑Solver.
 - [Inigo Quilez — „Distance + Gradient 2D SDF"](https://iquilezles.org/articles/distgradfunctions2d/) — Liefert analytische Gradienten zusammen mit der Distanz; entscheidend, damit Hermite‑Daten für Dual Contouring direkt aus dem 2D‑Profil propagiert werden können.
 
-### 15.5 BVH‑Beschleunigung für SDF‑/CSG‑Trees
+### 16.5 BVH‑Beschleunigung für SDF‑/CSG‑Trees
 
 - [Inigo Quilez — „SDF Bounding Volumes"](https://iquilezles.org/articles/sdfbounding/) — Erklärt, wie man Subtrees mit AABBs ummantelt und Punktanfragen früh abbricht. Direkt anwendbar auf unseren CSG‑Tree.
 - [PBR Book — Bounding Volume Hierarchies (3rd ed.)](https://pbr-book.org/3ed-2018/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies) — Goldstandard für BVH‑Konstruktion (SAH, Traversal). Auch wenn das Buch ray‑zentriert ist, sind Aufbau und Speicher‑Layout 1:1 für Punktanfragen verwertbar.
 - [Liktor et al. — „Synchronized‑Tracing of Implicit Surfaces" (arXiv 2304.09673)](https://arxiv.org/pdf/2304.09673) — Modernes Paper über räumliche Pruning‑Strukturen für CSG‑/Blobtree‑Auswertung; gute Referenz für Pruned‑Tree‑Auswertung pro Region.
 
-### 15.6 CSG‑Provenance und Feature‑Labeling
+### 16.6 CSG‑Provenance und Feature‑Labeling
 
 - [Rossignac, Voelcker — „Active Zones in CSG" (ACM TOG 1989)](https://dl.acm.org/doi/abs/10.1145/49155.51123) — Klassiker; definiert „active zones" als räumliche Regionen, in denen ein Primitiv die Boolean‑Auswertung dominiert. Theoretisches Fundament für unser Contributor‑Tracking.
 - [Hoffmann — „How Solid Is Solid Modeling?" (PDF)](https://www.cs.purdue.edu/cgvlab/www/resources/papers/Hoffmann-Workshop_on_App_Comp_geo-1996-How_SolidIs_Solid_Modeling.pdf) — Hoffmanns Übersicht zu Boundary Evaluation, Feature‑Persistenz und numerischer Robustheit. Kontextpapier für alle persistenten ID‑Schemata.
 - [Matt Keeter — „Massively Parallel Rendering of Complex Closed‑Form Implicit Surfaces" (libfive Kernel‑Paper, PDF)](https://www.mattkeeter.com/research/kernels.pdf) und [libfive Repository](https://github.com/libfive/libfive) — Modernste implizite CAD‑Kernel‑Architektur in der Praxis; libfive trackt Sub‑Expression‑Dominanz pro Region und ist die beste lebende Referenz für FieldDraft.
 
-### 15.7 SolveSpace / libslvs
+### 16.7 SolveSpace / libslvs
 
 - [solvespace/solvespace (GitHub)](https://github.com/solvespace/solvespace) und [include/slvs.h (Library‑API)](https://github.com/solvespace/solvespace/blob/master/include/slvs.h) — Quellcode des einzigen erprobten Open‑Source‑Constraint‑Solvers für parametrisches CAD; relevant, sobald der 2D‑Sketcher echte Constraints bekommt.
 - [SolveSpace Reference (Westhues)](https://solvespace.com/ref.pl) — Westhues' originale Notizen zur Architektur (Newton‑Verfahren, symbolisches Algebra‑System, Jacobi‑Aufbau).
 
-### 15.8 wgpu (Rust‑WebGPU‑Bindings)
+### 16.8 wgpu (Rust‑WebGPU‑Bindings)
 
 - [wgpu.rs (offizielle Projektseite)](https://wgpu.rs/) und [docs.rs/wgpu](https://docs.rs/wgpu/) — Maßgebliche API‑Dokumentation für den Rust‑WebGPU‑Stack, den der FieldDraft‑Viewport nutzt.
 - [sotrh — „Learn Wgpu"](https://sotrh.github.io/learn-wgpu/) — Das De‑facto‑Lehrbuch zur Bibliothek; deckt Pipelines, Bind Groups, Compute‑Shader und WASM‑Targeting ab.
 - [W3C WebGPU Specification](https://www.w3.org/TR/webgpu/) und [W3C WGSL Specification](https://www.w3.org/TR/WGSL/) — Normative Quelle für Semantik von Buffers, Bind Groups und Shadern; bei jeder Unklarheit gilt die Spec, nicht der Wrapper.
 
-### 15.9 wasm‑bindgen Zero‑Copy‑Patterns
+### 16.9 wasm‑bindgen Zero‑Copy‑Patterns
 
 - [The wasm‑bindgen Guide](https://rustwasm.github.io/docs/wasm-bindgen/) — Offizielle Dokumentation; insbesondere die Abschnitte über `js_sys::Float32Array::view` zeigen, wie man ohne Kopie auf den linearen WASM‑Speicher mappt.
 - [rustwasm/wasm‑bindgen Issue #2456 — „need example of sharing memory"](https://github.com/rustwasm/wasm-bindgen/issues/2456) — Konkrete Beispiele zur Lebensdauer‑Verwaltung von Views (Achtung: kein `alloc` während ein View existiert), exakt das Pattern, das FieldDraft für Mesh‑Buffer braucht.
 
-### 15.10 React Three Fiber + BufferGeometry
+### 16.10 React Three Fiber + BufferGeometry
 
 - [React Three Fiber — „Objects, Properties and Constructor Arguments"](https://r3f.docs.pmnd.rs/api/objects) — Offizielle R3F‑Doku zum `attach="attributes-position"`‑Pattern, mit dem externe Float32Arrays an `<bufferGeometry>` angebunden werden.
 - [three.js — BufferGeometry (offizielle Doku)](https://threejs.org/docs/#api/en/core/BufferGeometry) und [Custom BufferGeometry Manual](https://threejs.org/manual/en/custom-buffergeometry.html) — Maßgebliche Beschreibung von Attributen, Indices, Bounding‑Spheres und Update‑Flags. Pflicht, bevor jemand `setAttribute` aufruft.
 
-### 15.11 Sharp‑Feature‑Preservation in Dual Contouring
+### 16.11 Sharp‑Feature‑Preservation in Dual Contouring
 
-- [Ju et al. — „Dual Contouring of Hermite Data" (siehe §15.1)](https://www.cs.rice.edu/~jwarren/papers/dualcontour.pdf) — Originaldarstellung der scharfen Kanten über QEF‑Minimierung mit Edge‑Normalen.
+- [Ju et al. — „Dual Contouring of Hermite Data" (siehe §16.1)](https://www.cs.rice.edu/~jwarren/papers/dualcontour.pdf) — Originaldarstellung der scharfen Kanten über QEF‑Minimierung mit Edge‑Normalen.
 - [Schaefer, Warren — „Dual Contouring: The Secret Sauce" (PDF)](https://people.eecs.berkeley.edu/~jrs/meshpapers/SchaeferWarren2.pdf) — Zusatzpapier mit Implementierungsdetails (Bias‑Term, Constraint Box, Feature‑Klassifikation), die im Originalpaper fehlen.
 - [Ho et al. — „Cubical Marching Squares" (PDF)](https://www.csie.ntu.edu.tw/~cyy/publications/papers/Ho2005CMS.pdf) — Alternative Sicht auf adaptive Feature‑Erhaltung; nützlich für Heuristiken bei mehreren Kanten in einer Zelle.
 
-### 15.12 Polyline‑Approximation von Splines
+### 16.12 Polyline‑Approximation von Splines
 
 - [Cao, Wang — „Approximate Computation of Curves on B‑Spline Surfaces" (PDF)](https://www.cs.cornell.edu/~caosong/index_files/surface_cad08.pdf) — Beschreibt adaptive Subdivision unter Hausdorff‑Toleranz; Grundlage für chord‑error‑getriebenes Sampling.
 - [Liutaio Mottola — „Calculating Arc Parameters" (Sagitta‑Formeln)](https://liutaiomottola.com/formulae/sag.htm) — Praktische Formelsammlung zu Sagitta/Versine; direkt verwendbar für Bogen‑zu‑Polyline‑Konvertierung im Sketch‑Modul.
