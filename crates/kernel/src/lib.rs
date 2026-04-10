@@ -8,17 +8,53 @@
 //! the legacy TSL viewport path but is no longer the primary render
 //! input.
 
+pub mod body;
 pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod raycast;
 
+use body::{build_bounded_for_body, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
 use raycast::{raycast, RaycastParams};
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
+
+/// Concatenate every body's mesh into a single flat `Mesh`, with
+/// triangle indices offset so they still address the correct
+/// vertices in the combined vertex list. Used by the aggregate
+/// `meshPositionsPtr` / `meshIndicesPtr` surface that the current
+/// frontend still reads; a later slice will retire this in favour
+/// of per-body BufferGeometry on the JS side.
+fn concat_body_meshes(bodies: &[Body]) -> Mesh {
+    if bodies.is_empty() {
+        return Mesh::default();
+    }
+    let total_vertices: usize = bodies.iter().map(|b| b.mesh.vertex_count()).sum();
+    let total_indices: usize = bodies.iter().map(|b| b.mesh.indices.len()).sum();
+
+    let mut out = Mesh {
+        positions: Vec::with_capacity(total_vertices * 3),
+        normals: Vec::with_capacity(total_vertices * 3),
+        indices: Vec::with_capacity(total_indices),
+        classifications: Vec::with_capacity(total_vertices),
+        contributors: Vec::with_capacity(total_vertices * csg::MAX_CONTRIBUTORS),
+    };
+    let mut base: u32 = 0;
+    for b in bodies {
+        out.positions.extend_from_slice(&b.mesh.positions);
+        out.normals.extend_from_slice(&b.mesh.normals);
+        out.classifications.extend_from_slice(&b.mesh.classifications);
+        out.contributors.extend_from_slice(&b.mesh.contributors);
+        for &idx in &b.mesh.indices {
+            out.indices.push(idx + base);
+        }
+        base += b.mesh.vertex_count() as u32;
+    }
+    out
+}
 
 /// Default voxel grid resolution for the K1 mesher. 48 cells along the
 /// longest AABB axis strikes a balance between rebuild latency (a
@@ -273,6 +309,19 @@ pub struct Kernel {
     packed: Vec<f32>,
     undo: Vec<Document>,
     redo: Vec<Document>,
+    /// Multi-body mesh cache (K3 part 2). Each body has its own
+    /// feature subset, BVH and mesh buffer. Mutations that only
+    /// touch body `A` leave body `B`'s mesh — and its per-body
+    /// `version` counter — untouched.
+    bodies: Vec<Body>,
+    /// Concatenated aggregate of every body's mesh, rebuilt after
+    /// each partition pass by appending positions/normals/indices
+    /// (with per-body index offsets) and per-vertex classification
+    /// /contributors. The zero-copy `meshPositionsPtr` bridge from
+    /// K1 still points at this single flat buffer so the current
+    /// frontend keeps working unchanged; a future slice will switch
+    /// the viewport to iterating per-body buffers directly and drop
+    /// the aggregate.
     mesh: Mesh,
     mesh_resolution: u32,
     mesh_version: u32,
@@ -294,19 +343,80 @@ impl Kernel {
         self.rebuild_mesh_internal();
     }
 
-    /// Re-mesh the current document at the current resolution and bump
-    /// `mesh_version` so observers can skip stale uploads. Called by
-    /// `rebuild_packed` (after every mutation) and by the explicit
-    /// `setMeshResolution` API.
+    /// Re-mesh the current document at the current resolution and
+    /// bump `mesh_version`. Called by `rebuild_packed` (after every
+    /// mutation) and by the explicit `setMeshResolution` API.
     ///
-    /// The path is `features → CsgNode → BoundedCsg → Mesh`. The
-    /// `CsgNode` is the diff-friendly logical IR; `BoundedCsg` folds
-    /// transforms into leaves and caches AABBs so the mesher's
-    /// per-cell queries cost the minimum.
+    /// K3 part 2: the pipeline is `features → partition → bodies`,
+    /// and each body only gets re-meshed when its payload hash
+    /// actually changed. Bodies whose seed feature disappeared are
+    /// dropped; bodies whose hash matches an existing one keep their
+    /// cached mesh verbatim. The aggregate `mesh` buffer is then
+    /// reassembled from the per-body meshes so the legacy `meshPtr`
+    /// surface keeps working.
     fn rebuild_mesh_internal(&mut self) {
-        let csg = CsgNode::from_features(&self.document.features);
-        let bounded = BoundedCsg::from_csg(&csg);
-        self.mesh = dual_contour(&bounded, self.mesh_resolution);
+        let partitions = partition(&self.document.features);
+
+        // Build a lookup of existing bodies keyed by stable id so we
+        // can tell which partitions just shuffled vs. which actually
+        // changed. `std::mem::take` lets us move meshes out of the
+        // old Vec without cloning their potentially-large buffers.
+        let mut previous: std::collections::HashMap<u32, Body> =
+            std::mem::take(&mut self.bodies)
+                .into_iter()
+                .map(|b| (b.id, b))
+                .collect();
+
+        let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
+        for part in partitions {
+            let id = part.seed_id(&self.document.features);
+            let payload_hash =
+                hash_body_payload(&self.document.features, &part.feature_indices);
+            if let Some(mut prev) = previous.remove(&id) {
+                if prev.payload_hash == payload_hash {
+                    // Identical payload → reuse the cached mesh as-is.
+                    // Feature indices may have shifted because other
+                    // bodies were removed around it; refresh the
+                    // bookkeeping without touching the mesh buffers
+                    // or the per-body `version` counter.
+                    prev.feature_indices = part.feature_indices;
+                    prev.aabb = part.aabb;
+                    new_bodies.push(prev);
+                    continue;
+                }
+                // Payload changed → re-mesh and bump this body's
+                // version counter.
+                let bounded =
+                    build_bounded_for_body(&self.document.features, &part.feature_indices);
+                let mesh = dual_contour(&bounded, self.mesh_resolution);
+                prev.feature_indices = part.feature_indices;
+                prev.aabb = part.aabb;
+                prev.payload_hash = payload_hash;
+                prev.mesh = mesh;
+                prev.version = prev.version.wrapping_add(1);
+                new_bodies.push(prev);
+            } else {
+                // Fresh body — mesh from scratch.
+                let bounded =
+                    build_bounded_for_body(&self.document.features, &part.feature_indices);
+                let mesh = dual_contour(&bounded, self.mesh_resolution);
+                new_bodies.push(Body {
+                    id,
+                    feature_indices: part.feature_indices,
+                    aabb: part.aabb,
+                    payload_hash,
+                    mesh,
+                    version: 1,
+                });
+            }
+        }
+        // Anything left in `previous` corresponds to bodies that no
+        // longer exist (their seed was removed / merged). They're
+        // dropped along with their meshes automatically when the
+        // map goes out of scope.
+
+        self.bodies = new_bodies;
+        self.mesh = concat_body_meshes(&self.bodies);
         self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
@@ -351,6 +461,7 @@ impl Kernel {
             packed,
             undo: Vec::new(),
             redo: Vec::new(),
+            bodies: Vec::new(),
             mesh: Mesh::default(),
             mesh_resolution: DEFAULT_MESH_RESOLUTION,
             mesh_version: 0,
@@ -668,6 +779,77 @@ impl Kernel {
     #[wasm_bindgen(js_name = meshTriangleCount)]
     pub fn mesh_triangle_count(&self) -> usize {
         self.mesh.triangle_count()
+    }
+
+    // ── per-body mesh surface (K3 part 2) ─────────────────────────────
+    //
+    // The aggregate `meshPositionsPtr` family above still exists so
+    // the current viewport keeps working unchanged. The per-body API
+    // below lets a future frontend slice bind one `BufferGeometry`
+    // per body and only re-upload the bodies whose `bodyVersion`
+    // advanced — that's the GPU-side half of the multi-body
+    // isolation promise.
+
+    #[wasm_bindgen(js_name = bodyCount)]
+    pub fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Stable identifier for the i-th body (= lowest `FeatureId` in
+    /// its feature set). Panics only if `i` is out of range — tests
+    /// and the wasm-bindgen bridge should always gate the call on
+    /// `bodyCount()`.
+    #[wasm_bindgen(js_name = bodyId)]
+    pub fn body_id(&self, i: usize) -> u32 {
+        self.bodies[i].id
+    }
+
+    /// Per-body version counter. Bumps only when the body's own
+    /// mesh was actually rebuilt — not when unrelated bodies
+    /// mutated around it.
+    #[wasm_bindgen(js_name = bodyVersion)]
+    pub fn body_version(&self, i: usize) -> u32 {
+        self.bodies[i].version
+    }
+
+    #[wasm_bindgen(js_name = bodyVertexCount)]
+    pub fn body_vertex_count(&self, i: usize) -> usize {
+        self.bodies[i].mesh.vertex_count()
+    }
+
+    #[wasm_bindgen(js_name = bodyIndexCount)]
+    pub fn body_index_count(&self, i: usize) -> usize {
+        self.bodies[i].mesh.indices.len()
+    }
+
+    #[wasm_bindgen(js_name = bodyTriangleCount)]
+    pub fn body_triangle_count(&self, i: usize) -> usize {
+        self.bodies[i].mesh.triangle_count()
+    }
+
+    #[wasm_bindgen(js_name = bodyPositionsPtr)]
+    pub fn body_positions_ptr(&self, i: usize) -> *const f32 {
+        self.bodies[i].mesh.positions.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyNormalsPtr)]
+    pub fn body_normals_ptr(&self, i: usize) -> *const f32 {
+        self.bodies[i].mesh.normals.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyIndicesPtr)]
+    pub fn body_indices_ptr(&self, i: usize) -> *const u32 {
+        self.bodies[i].mesh.indices.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyClassificationsPtr)]
+    pub fn body_classifications_ptr(&self, i: usize) -> *const u8 {
+        self.bodies[i].mesh.classifications.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyContributorsPtr)]
+    pub fn body_contributors_ptr(&self, i: usize) -> *const u32 {
+        self.bodies[i].mesh.contributors.as_ptr()
     }
 
     /// Pointer to the per-vertex classification byte array (stride 1:
@@ -1232,6 +1414,180 @@ mod tests {
         assert!(k.mesh_index_count() > 0);
         assert_eq!(k.mesh_index_count() % 3, 0);
         assert!(k.mesh_version() > v0);
+    }
+
+    #[test]
+    fn empty_document_has_zero_bodies() {
+        let k = Kernel::new();
+        assert_eq!(k.body_count(), 0);
+    }
+
+    #[test]
+    fn two_disjoint_boxes_produce_two_bodies() {
+        let mut k = Kernel::new();
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                // 500 mm away — completely disjoint.
+                500.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(k.body_count(), 2);
+        // Bodies are ordered by first appearance in the spine, so
+        // body 0 is always the origin box.
+        assert_eq!(k.body_id(0), id_a);
+        assert_eq!(k.body_id(1), id_b);
+        assert!(k.body_vertex_count(0) > 0);
+        assert!(k.body_vertex_count(1) > 0);
+        // Aggregate mesh concatenates both bodies.
+        let aggregate = k.mesh_vertex_count();
+        assert_eq!(aggregate, k.body_vertex_count(0) + k.body_vertex_count(1));
+    }
+
+    #[test]
+    fn mutating_one_body_leaves_the_other_bodys_version_unchanged() {
+        let mut k = Kernel::new();
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+
+        // Snapshot the per-body versions.
+        let version_a_before = k.body_version(0);
+        let version_b_before = k.body_version(1);
+        assert_eq!(k.body_id(0), id_a);
+        assert_eq!(k.body_id(1), id_b);
+
+        // Nudge body B — its payload hash changes, A's doesn't.
+        assert!(k.nudge_feature(id_b, 5.0, 0.0, 0.0));
+
+        // A is untouched, B got re-meshed.
+        assert_eq!(k.body_version(0), version_a_before, "body A must not remesh");
+        assert!(
+            k.body_version(1) > version_b_before,
+            "body B must remesh on its own nudge"
+        );
+    }
+
+    #[test]
+    fn body_id_is_stable_across_an_unrelated_mutation() {
+        let mut k = Kernel::new();
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(k.body_id(0), id_a);
+        assert_eq!(k.body_id(1), id_b);
+
+        // Mutate B. A's id and position in the bodies list must
+        // survive unchanged.
+        assert!(k.nudge_feature(id_b, 5.0, 0.0, 0.0));
+        assert_eq!(k.body_id(0), id_a);
+        assert_eq!(k.body_id(1), id_b);
+    }
+
+    #[test]
+    fn bridging_union_merges_two_bodies_into_one() {
+        let mut k = Kernel::new();
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let _id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                60.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(k.body_count(), 2);
+        // Add a bridge that overlaps both — they merge into one.
+        let _id_bridge = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                30.0,
+                0.0,
+                0.0,
+                40.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        assert_eq!(k.body_count(), 1);
+        // Merged body keeps the lowest seed id.
+        assert_eq!(k.body_id(0), id_a);
     }
 
     #[test]
