@@ -44,10 +44,17 @@ export interface SandboxScope {
 
 /**
  * Shape of the `globalThis.fd` Inner API that feature bodies see at
- * runtime. K4.5.5 lands the injection hook; the methods that
- * `sketch`/`extrude`/`query`/… will eventually hang here arrive as
- * K4.5.6+ land the dispatch path. For now the surface is a marker
- * plus a deterministic `log` sink that tests can inspect.
+ * runtime. K4.5.5 lands the injection hook and the deterministic
+ * `log` sink. K4.5.6 adds two pure round-trip methods — `ping` and
+ * `echo` — whose only job is to prove that the Outer → Inner RPC
+ * plumbing transports arguments and return values correctly, so
+ * the Dual-API shells can be landed and tested before real
+ * feature dispatch (K4.5.8) lights up.
+ *
+ * Future slices will hang `sketch` / `extrude` / `query` / … on
+ * this same object; the RPC dispatcher in `workerRpc.ts` routes
+ * messages to any method that lives on `fd` by name, so new
+ * methods become wire-reachable as soon as they're installed.
  */
 export interface FdInnerApi {
   /** API version string — bumped when a breaking Inner-API change ships. */
@@ -56,6 +63,19 @@ export interface FdInnerApi {
   log: (...args: unknown[]) => void;
   /** Snapshot of every log call since the worker started, in order. */
   readonly logs: ReadonlyArray<ReadonlyArray<unknown>>;
+  /**
+   * Round-trip probe: returns `"pong: <msg>"`. Exists so the Outer
+   * API client in the main thread can verify that arguments reach
+   * the worker and a textual response comes back.
+   */
+  ping: (msg: string) => string;
+  /**
+   * Round-trip probe: returns its argument unchanged. Exists so
+   * tests can verify that arbitrary structured-cloneable values
+   * (numbers, arrays, nested objects) survive a round-trip
+   * through the postMessage channel without shape drift.
+   */
+  echo: <T>(value: T) => T;
 }
 
 export const FD_INNER_API_VERSION = "0.1.0";
@@ -130,6 +150,8 @@ export function installInnerApi(scope: SandboxScope): FdInnerApi {
       logs.push(args);
     },
     logs,
+    ping: (msg) => `pong: ${msg}`,
+    echo: (value) => value,
   };
   scope.fd = api;
   return api;

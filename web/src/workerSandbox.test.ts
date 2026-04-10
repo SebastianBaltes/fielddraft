@@ -180,6 +180,22 @@ describe("workerSandbox.installInnerApi", () => {
     expect(second.logs.length).toBe(0);
     expect(scope.fd).toBe(second);
   });
+
+  it("ping returns 'pong: <msg>' for the Outer API round-trip probe", () => {
+    const scope = mockScope();
+    const api = installInnerApi(scope);
+    expect(api.ping("hello")).toBe("pong: hello");
+    expect(api.ping("")).toBe("pong: ");
+  });
+
+  it("echo returns its argument unchanged", () => {
+    const scope = mockScope();
+    const api = installInnerApi(scope);
+    expect(api.echo(42)).toBe(42);
+    expect(api.echo("hi")).toBe("hi");
+    const payload = { a: 1, b: [2, 3] };
+    expect(api.echo(payload)).toBe(payload);
+  });
 });
 
 describe("workerSandbox integration: freeze + seed + install", () => {

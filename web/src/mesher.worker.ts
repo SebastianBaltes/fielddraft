@@ -43,8 +43,14 @@ import {
   hashDocumentJson,
   installInnerApi,
   reseedRandom,
+  type FdInnerApi,
   type SandboxScope,
 } from "./workerSandbox";
+import {
+  handleFdCallRequest,
+  isFdCallRequest,
+  type FdCallResponse,
+} from "./workerRpc";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -86,6 +92,18 @@ export type MesherResponse = MesherBodiesResponse;
 
 let readyPromise: Promise<ReadyKernel> | null = null;
 
+/**
+ * The Inner API instance installed on `globalThis.fd` once
+ * `ensureKernel` has finished booting. The `fd_call` message
+ * handler below reads it synchronously, which is safe because the
+ * worker's message loop never fires before the first `rebuild`
+ * resolves — and the first `rebuild` itself awaits `ensureKernel`.
+ * For extra safety the handler explicitly checks for `null` and
+ * responds with an error if an `fd_call` somehow arrives before
+ * boot is complete.
+ */
+let innerApi: FdInnerApi | null = null;
+
 async function ensureKernel(): Promise<ReadyKernel> {
   if (!readyPromise) {
     readyPromise = (async () => {
@@ -114,7 +132,7 @@ async function ensureKernel(): Promise<ReadyKernel> {
       // so the PRNG tracks the document state.
       const sandboxScope = self as unknown as SandboxScope;
       freezeGlobals(sandboxScope);
-      installInnerApi(sandboxScope);
+      innerApi = installInnerApi(sandboxScope);
 
       return { kernel, memory: exports.memory };
     })();
@@ -233,10 +251,46 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   self.postMessage(response, transfers);
 }
 
-self.addEventListener("message", (event: MessageEvent<MesherRequest>) => {
+async function handleFdCall(
+  msg: import("./workerRpc").FdCallRequest,
+): Promise<void> {
+  // Awaiting `ensureKernel` here guarantees the Inner API has
+  // been installed before we dispatch, regardless of whether
+  // `fd_call` or `rebuild` is the first message the worker sees.
+  await ensureKernel();
+  const response: FdCallResponse = innerApi
+    ? handleFdCallRequest(innerApi, msg)
+    : {
+        type: "fd_result",
+        requestId: msg.requestId,
+        ok: false,
+        error: "fd Inner API not yet initialised",
+      };
+  self.postMessage(response);
+}
+
+self.addEventListener("message", (event: MessageEvent<unknown>) => {
   const msg = event.data;
-  if (!msg || msg.type !== "rebuild") return;
-  handleRebuild(msg).catch((err) => {
+  if (!msg || typeof msg !== "object") return;
+
+  // K4.5.6: the worker now speaks two message types. Mesh
+  // rebuilds stay on the K3 path; fd_call messages route the
+  // Dual-API shell's Outer-→Inner round-trip through the pure
+  // dispatcher in workerRpc.ts. Worker-side errors never throw
+  // out of the message loop — they come back as structured
+  // responses so the Outer API client can reject the pending
+  // promise cleanly.
+  if (isFdCallRequest(msg)) {
+    handleFdCall(msg).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft mesher worker: fd_call failed", err);
+    });
+    return;
+  }
+
+  const rebuild = msg as MesherRequest;
+  if (rebuild.type !== "rebuild") return;
+  handleRebuild(rebuild).catch((err) => {
     // Surface worker-side failures to the main thread's console
     // instead of dying silently — the store has no way to detect
     // a crash otherwise.
