@@ -283,6 +283,8 @@ impl FeatureKind for BoxPrimitive {
     ) -> Result<(), FeatureError> {
         let d = BoxDef::parse(def)?;
         let name = optional_display_name(def, || format!("Box {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
@@ -293,8 +295,8 @@ impl FeatureKind for BoxPrimitive {
             },
             transform: Transform {
                 translate: d.translate,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                rotation,
+                scale,
             },
         });
         Ok(())
@@ -330,6 +332,8 @@ impl FeatureKind for SpherePrimitive {
         let d = SphereDef::parse(def)?;
         positive_f32(d.radius, SphereDef::TYPE_NAME, "radius")?;
         let name = optional_display_name(def, || format!("Sphere {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
@@ -340,8 +344,8 @@ impl FeatureKind for SpherePrimitive {
             },
             transform: Transform {
                 translate: d.translate,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                rotation,
+                scale,
             },
         });
         Ok(())
@@ -379,6 +383,8 @@ impl FeatureKind for CylinderPrimitive {
         positive_f32(d.radius, CylinderDef::TYPE_NAME, "radius")?;
         positive_f32(d.half_height, CylinderDef::TYPE_NAME, "half_height")?;
         let name = optional_display_name(def, || format!("Cylinder {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
@@ -390,8 +396,8 @@ impl FeatureKind for CylinderPrimitive {
             },
             transform: Transform {
                 translate: d.translate,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                rotation,
+                scale,
             },
         });
         Ok(())
@@ -411,6 +417,40 @@ fn optional_display_name(def: &Value, fallback: impl FnOnce() -> String) -> Stri
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(fallback)
+}
+
+/// Extract an optional `"rotation"` quaternion (`[x, y, z, w]`) from
+/// the definition JSON, falling back to the identity quaternion
+/// when missing or malformed. Used by the K1 primitives'
+/// `execute` so that a `FeatureCall → Feature` regeneration pass
+/// preserves any rotation the user set via `setFeatureTransform`.
+/// Without this helper, K4.5.4d's bootstrap would silently reset
+/// every rotation to identity.
+fn optional_rotation(def: &Value) -> [f32; 4] {
+    def.get("rotation")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            if arr.len() != 4 {
+                return None;
+            }
+            let mut out = [0.0_f32; 4];
+            for (i, item) in arr.iter().enumerate() {
+                out[i] = item.as_f64()? as f32;
+            }
+            Some(out)
+        })
+        .unwrap_or([0.0, 0.0, 0.0, 1.0])
+}
+
+/// Extract an optional `"scale"` value from the definition JSON,
+/// falling back to the identity scale (`1.0`) when missing or
+/// malformed. Mirrors [`optional_rotation`] — both close the
+/// lossy-round-trip gap in the K4.5.4d bootstrap path.
+fn optional_scale(def: &Value) -> f32 {
+    def.get("scale")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(1.0)
 }
 
 /// Post-parse guard for numeric fields that must be strictly

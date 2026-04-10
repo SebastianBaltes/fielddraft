@@ -550,11 +550,58 @@ impl Kernel {
         let document: Document =
             serde_json::from_str(json).map_err(|e| JsError::new(&e.to_string()))?;
         self.document = document;
+
+        // K4.5.4d: if the loaded document uses the Feature-as-
+        // Function wire form (`feature_calls` populated, `features`
+        // empty), bootstrap the spine by running the calls through
+        // the feature registry. Legacy K1 documents with populated
+        // `features` keep their current loading behaviour
+        // unchanged — the K4.5.4c dual-write hook in
+        // `rebuild_packed` below still derives `feature_calls`
+        // from `features` in that case. Any error from the
+        // registry walk is surfaced as a load failure (fail-stop
+        // semantics per §4.6).
+        if self.document.features.is_empty()
+            && !self.document.feature_calls.is_empty()
+        {
+            self.bootstrap_features_from_calls()
+                .map_err(|e| JsError::new(&format!("feature regeneration failed: {e}")))?;
+        }
+
         self.rebuild_packed();
         // Loading is a fresh start: history is irrelevant.
         self.undo.clear();
         self.redo.clear();
         Ok(self.document.features.len())
+    }
+
+    /// K4.5.4d internal helper. Takes the current
+    /// `document.feature_calls` list, clears `document.features`,
+    /// and regenerates the spine by walking each call through a
+    /// fresh `FeatureRegistry::with_builtins()`. Used by
+    /// [`Kernel::load_json`] when the loaded document uses the
+    /// step-4d wire shape. Fail-stop per §4.6: the first
+    /// registry error halts the walk and bubbles up as a
+    /// `FeatureError`.
+    ///
+    /// The call list is temporarily `mem::take`n out of the
+    /// document so the registry's mutable borrow can point at
+    /// `self.document` without aliasing the call list itself;
+    /// it's restored before the function returns. The subsequent
+    /// `rebuild_packed` call (from `load_json`) overwrites it
+    /// again via `sync_feature_calls`, but leaving the restore
+    /// in place keeps this helper independent of its caller's
+    /// sequencing.
+    fn bootstrap_features_from_calls(&mut self) -> Result<(), features::FeatureError> {
+        let registry = features::FeatureRegistry::with_builtins();
+        let calls = std::mem::take(&mut self.document.feature_calls);
+        self.document.features.clear();
+        let result = {
+            let mut ctx = features::Context::new(&mut self.document);
+            registry.regenerate(&mut ctx, &calls)
+        };
+        self.document.feature_calls = calls;
+        result
     }
 
     #[wasm_bindgen(js_name = toJson)]
@@ -2246,6 +2293,192 @@ mod tests {
         assert_eq!(k.document.features.len(), 1);
         assert_eq!(k.document.feature_calls.len(), 1);
         assert_feature_calls_match_spine(&k);
+    }
+
+    // ─── K4.5.4d: bootstrap from feature_calls ─────────────────
+
+    #[test]
+    fn load_json_bootstraps_features_from_feature_calls() {
+        // Fabricated step-4d wire form: `feature_calls` populated,
+        // `features` empty. The loader detects the heuristic,
+        // walks the registry, and populates `features` before
+        // `rebuild_packed` runs.
+        let mut k = Kernel::new();
+        let json = r#"{
+            "schema_version": 2,
+            "name": "step4d",
+            "features": [],
+            "feature_calls": [
+                {
+                    "type": "box",
+                    "id": 1,
+                    "params": {
+                        "half_extents": [5, 5, 5],
+                        "center": [0, 0, 0],
+                        "translate": [0, 0, 0],
+                        "rotation": [0, 0, 0, 1],
+                        "scale": 1.0,
+                        "op": "union",
+                        "name": "Base"
+                    }
+                },
+                {
+                    "type": "sphere",
+                    "id": 2,
+                    "params": {
+                        "radius": 3.0,
+                        "center": [0, 0, 0],
+                        "translate": [20, 0, 0],
+                        "rotation": [0, 0, 0, 1],
+                        "scale": 1.0,
+                        "op": "difference",
+                        "name": "Hole"
+                    }
+                }
+            ],
+            "next_feature_id": 3
+        }"#;
+
+        k.load_json(json).unwrap();
+        assert_eq!(k.document.features.len(), 2);
+
+        let box_f = &k.document.features[0];
+        assert_eq!(box_f.name, "Base");
+        assert!(matches!(
+            box_f.primitive,
+            Primitive::Box { half_extents, .. } if half_extents == [5.0, 5.0, 5.0]
+        ));
+
+        let sphere_f = &k.document.features[1];
+        assert_eq!(sphere_f.name, "Hole");
+        assert!(matches!(
+            sphere_f.primitive,
+            Primitive::Sphere { radius, .. } if radius == 3.0
+        ));
+        assert_eq!(sphere_f.transform.translate, [20.0, 0.0, 0.0]);
+        assert_eq!(sphere_f.op, BoolOp::Difference);
+
+        // feature_calls should still be populated after rebuild_packed
+        // — the dual-write hook rebuilds them from the freshly
+        // regenerated features, which is a round-trip no-op thanks
+        // to the lossless primitive execute impls.
+        assert_feature_calls_match_spine(&k);
+    }
+
+    #[test]
+    fn bootstrap_preserves_rotation_and_scale_for_box() {
+        // Build a document with a non-identity transform on a box,
+        // capture its feature_calls, then load them fresh via the
+        // bootstrap path (with `features` cleared) and verify
+        // rotation and scale survive the round-trip.
+        let mut k1 = Kernel::new();
+        let id = k1
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                10.0,
+                20.0,
+                30.0,
+                5.0,
+                5.0,
+                5.0,
+            )
+            .unwrap();
+        // Rotation for 45° about Z: (0, 0, sin(22.5°), cos(22.5°))
+        let s = (std::f32::consts::FRAC_PI_4 / 2.0).sin();
+        let c = (std::f32::consts::FRAC_PI_4 / 2.0).cos();
+        assert!(k1.set_feature_transform(
+            id, 100.0, 200.0, 300.0, 0.0, 0.0, s, c, 2.5,
+        ));
+
+        // Capture the JSON, zero out `features` to simulate a
+        // step-4d wire form, and reload.
+        let json = k1.to_json().unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["features"] = serde_json::json!([]);
+        let bootstrap_json = serde_json::to_string(&value).unwrap();
+
+        let mut k2 = Kernel::new();
+        k2.load_json(&bootstrap_json).unwrap();
+        assert_eq!(k2.document.features.len(), 1);
+
+        let loaded = &k2.document.features[0];
+        assert_eq!(loaded.transform.translate, [100.0, 200.0, 300.0]);
+        assert!((loaded.transform.rotation[0]).abs() < 1e-6);
+        assert!((loaded.transform.rotation[1]).abs() < 1e-6);
+        assert!((loaded.transform.rotation[2] - s).abs() < 1e-6);
+        assert!((loaded.transform.rotation[3] - c).abs() < 1e-6);
+        assert!((loaded.transform.scale - 2.5).abs() < 1e-6);
+        assert_eq!(loaded.op, BoolOp::Union);
+    }
+
+    #[test]
+    fn bootstrap_preserves_mixed_scene_across_primitive_types() {
+        // One box, one sphere, one cylinder, each with a unique
+        // translate and a custom op. Round-trip via the bootstrap
+        // path and check every field.
+        let mut k1 = Kernel::new();
+        k1.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_UNION,
+            10.0,
+            0.0,
+            0.0,
+            5.0,
+            5.0,
+            5.0,
+        )
+        .unwrap();
+        let id_sphere = k1
+            .add_primitive(
+                Primitive::KIND_SPHERE,
+                BoolOp::TAG_DIFFERENCE,
+                20.0,
+                0.0,
+                0.0,
+                3.0,
+                0.0,
+                0.0,
+            )
+            .unwrap();
+        let _ = id_sphere;
+        k1.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_INTERSECT,
+            0.0,
+            30.0,
+            0.0,
+            2.0,
+            4.0,
+            0.0,
+        )
+        .unwrap();
+        let original_features = k1.document.features.clone();
+
+        // Zero out `features` and reload.
+        let json = k1.to_json().unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["features"] = serde_json::json!([]);
+        let bootstrap_json = serde_json::to_string(&value).unwrap();
+
+        let mut k2 = Kernel::new();
+        k2.load_json(&bootstrap_json).unwrap();
+        assert_eq!(k2.document.features.len(), 3);
+
+        // Every reloaded feature should match its pre-bootstrap
+        // counterpart byte for byte.
+        for (original, loaded) in
+            original_features.iter().zip(k2.document.features.iter())
+        {
+            assert_eq!(loaded.id, original.id);
+            assert_eq!(loaded.name, original.name);
+            assert_eq!(loaded.op, original.op);
+            assert_eq!(loaded.primitive, original.primitive);
+            assert_eq!(loaded.transform.translate, original.transform.translate);
+            assert_eq!(loaded.transform.rotation, original.transform.rotation);
+            assert_eq!(loaded.transform.scale, original.transform.scale);
+        }
+        assert_feature_calls_match_spine(&k2);
     }
 
     #[test]
