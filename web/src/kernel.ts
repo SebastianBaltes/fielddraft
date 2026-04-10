@@ -243,6 +243,48 @@ export class Kernel {
     return this.inner.setMeshResolution(resolution);
   }
 
+  // ── LOD (K3 part 4) ─────────────────────────────────────────────────
+  //
+  // Context bodies — everything that isn't the body the user is
+  // currently editing — run at a coarser voxel grid, so a single
+  // context re-mesh (for example after a bridging Union that merges
+  // two bodies) is a fraction of the cost of an active re-mesh.
+  // `activeBodyId === 0` means "no LOD hint set" — every body runs
+  // at active resolution, identical to the K3 part 1–3 behaviour.
+
+  contextMeshResolution(): number {
+    return this.inner.contextMeshResolution();
+  }
+
+  setContextMeshResolution(resolution: number): boolean {
+    return this.inner.setContextMeshResolution(resolution);
+  }
+
+  activeBodyId(): number {
+    return this.inner.activeBodyId();
+  }
+
+  /**
+   * Mark the body with the given stable id as the active one.
+   * Pass `0` (or call `clearActiveBodyId()`) to disable LOD again.
+   */
+  setActiveBodyId(bodyId: number): boolean {
+    return this.inner.setActiveBodyId(bodyId);
+  }
+
+  clearActiveBodyId(): boolean {
+    return this.inner.clearActiveBodyId();
+  }
+
+  /**
+   * Convenience: look up whichever body owns the given feature id
+   * and mark that body as active. No-op when the feature doesn't
+   * exist or already lives in the active body.
+   */
+  setActiveBodyByFeature(featureId: number): boolean {
+    return this.inner.setActiveBodyByFeature(featureId);
+  }
+
   // ── outliner ────────────────────────────────────────────────────────
 
   listFeatures(): FeatureSummary[] {

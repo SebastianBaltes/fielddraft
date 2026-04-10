@@ -93,8 +93,29 @@ export class KernelStore {
     ) {
       this.state = { ...this.state, selectionAnchor: null };
     }
+    this.syncActiveBody();
     this.autosave.schedule(this.kernel.toJson());
     for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * K3 part 4 LOD hook: push the selection anchor's body to the
+   * kernel as the active body, or clear the active body when the
+   * anchor is gone. Called from `commit()` after every mutation and
+   * from every selection helper. The kernel's
+   * `setActiveBodyByFeature` takes care of looking up which body
+   * owns the feature and triggers a re-mesh only when the active
+   * body actually changes.
+   */
+  private syncActiveBody(): void {
+    const anchor = this.state.selectionAnchor;
+    if (anchor === null) {
+      if (this.kernel.activeBodyId() !== 0) {
+        this.kernel.clearActiveBodyId();
+      }
+      return;
+    }
+    this.kernel.setActiveBodyByFeature(anchor);
   }
 
   // ── mutations ─────────────────────────────────────────────────────
@@ -187,6 +208,7 @@ export class KernelStore {
       selection: new Set([id]),
       selectionAnchor: id,
     };
+    this.syncActiveBody();
     for (const listener of this.listeners) listener();
   }
 
@@ -199,6 +221,7 @@ export class KernelStore {
       selection: next,
       selectionAnchor: id,
     };
+    this.syncActiveBody();
     for (const listener of this.listeners) listener();
   }
 
@@ -232,12 +255,14 @@ export class KernelStore {
       // Anchor stays put — that's the standard finder/Onshape behaviour.
       selectionAnchor: anchor,
     };
+    this.syncActiveBody();
     for (const listener of this.listeners) listener();
   }
 
   clearSelection(): void {
     if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
     this.state = { ...this.state, selection: new Set(), selectionAnchor: null };
+    this.syncActiveBody();
     for (const listener of this.listeners) listener();
   }
 }

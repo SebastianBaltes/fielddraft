@@ -95,10 +95,15 @@ pub struct Body {
     /// successful mesh rebuild. `rebuild_bodies` skips re-meshing
     /// when the hash still matches after a partition.
     pub payload_hash: u64,
+    /// Voxel grid resolution this body's cached mesh was built at.
+    /// Stored alongside the hash so a change from active to context
+    /// LOD (or vice versa) correctly invalidates the cache even
+    /// when the feature payload is unchanged.
+    pub mesh_resolution: u32,
     pub mesh: Mesh,
     /// Per-body version counter. Bumps whenever the mesh is
-    /// actually rebuilt (payload hash changed), not on bookkeeping
-    /// updates like feature-index renumbering.
+    /// actually rebuilt (payload hash changed or LOD switched),
+    /// not on bookkeeping updates like feature-index renumbering.
     pub version: u32,
 }
 

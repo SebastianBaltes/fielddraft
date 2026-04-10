@@ -22,11 +22,18 @@ use raycast::{raycast, RaycastParams};
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
 
-/// Default voxel grid resolution for the K1 mesher. 48 cells along the
-/// longest AABB axis strikes a balance between rebuild latency (a
-/// handful of ms for a small spine) and visible smoothness for a
-/// 300 mm build volume. Later slices expose this as a knob.
+/// Default voxel grid resolution for the *active* body — the one the
+/// user is currently editing. 48 cells along the longest AABB axis
+/// strikes a balance between rebuild latency (a handful of ms for a
+/// small spine) and visible smoothness for a 300 mm build volume.
 pub const DEFAULT_MESH_RESOLUTION: u32 = 48;
+
+/// Default voxel grid resolution for *context* bodies — the ones
+/// that aren't currently being edited. Half of the active
+/// resolution means ≈ 8× fewer cells and ≈ 8× less meshing work
+/// when the partition pass sweeps across them, while still looking
+/// identifiable enough on screen to serve as background reference.
+pub const DEFAULT_CONTEXT_MESH_RESOLUTION: u32 = 24;
 
 /// Packed representation of one feature for the zero-copy bridge.
 ///
@@ -280,7 +287,22 @@ pub struct Kernel {
     /// touch body `A` leave body `B`'s mesh — and its per-body
     /// `version` counter — untouched.
     bodies: Vec<Body>,
-    mesh_resolution: u32,
+    /// Voxel grid resolution for the currently-edited body (the
+    /// active body). Defaults to [`DEFAULT_MESH_RESOLUTION`]. The
+    /// legacy `mesh_resolution()` / `setMeshResolution()` API maps
+    /// onto this field so existing tests keep working.
+    active_mesh_resolution: u32,
+    /// Voxel grid resolution for bodies that aren't currently being
+    /// edited. Defaults to [`DEFAULT_CONTEXT_MESH_RESOLUTION`] —
+    /// half the active resolution, ≈ 8× fewer cells = a meaningful
+    /// speedup on every re-mesh that touches a context body.
+    context_mesh_resolution: u32,
+    /// Id of the body the user is currently editing, if any. `None`
+    /// disables LOD entirely: every body is treated as active and
+    /// uses `active_mesh_resolution`. When a body id is set, only
+    /// that body stays at active resolution; every other body
+    /// drops to the context resolution.
+    active_body_id: Option<u32>,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
@@ -311,9 +333,17 @@ impl Kernel {
     /// and each body only gets re-meshed when its payload hash
     /// actually changed. Bodies whose seed feature disappeared are
     /// dropped; bodies whose hash matches an existing one keep their
-    /// cached mesh verbatim. The aggregate `mesh` buffer is then
-    /// reassembled from the per-body meshes so the legacy `meshPtr`
-    /// surface keeps working.
+    /// cached mesh verbatim.
+    ///
+    /// K3 part 4 adds per-body LOD on top: each body picks between
+    /// `active_mesh_resolution` and `context_mesh_resolution` based
+    /// on whether its id matches `active_body_id`. When no active
+    /// body is set, every body runs at active resolution (backward
+    /// compatible with the K3 part 1–3 behaviour). The cache reuse
+    /// check compares both the payload hash *and* the resolution
+    /// the cached mesh was built at, so switching the active body
+    /// correctly re-meshes the two bodies that changed LOD and
+    /// leaves the rest untouched.
     fn rebuild_mesh_internal(&mut self) {
         let partitions = partition(&self.document.features);
 
@@ -332,39 +362,45 @@ impl Kernel {
             let id = part.seed_id(&self.document.features);
             let payload_hash =
                 hash_body_payload(&self.document.features, &part.feature_indices);
+            let target_resolution = self.target_resolution_for(id);
+
             if let Some(mut prev) = previous.remove(&id) {
-                if prev.payload_hash == payload_hash {
-                    // Identical payload → reuse the cached mesh as-is.
-                    // Feature indices may have shifted because other
-                    // bodies were removed around it; refresh the
-                    // bookkeeping without touching the mesh buffers
-                    // or the per-body `version` counter.
+                if prev.payload_hash == payload_hash
+                    && prev.mesh_resolution == target_resolution
+                {
+                    // Identical payload and LOD → reuse the cached
+                    // mesh as-is. Feature indices may have shifted
+                    // because other bodies were removed around it;
+                    // refresh the bookkeeping without touching the
+                    // mesh buffers or the per-body `version`.
                     prev.feature_indices = part.feature_indices;
                     prev.aabb = part.aabb;
                     new_bodies.push(prev);
                     continue;
                 }
-                // Payload changed → re-mesh and bump this body's
-                // version counter.
+                // Either the payload *or* the LOD changed → re-mesh
+                // and bump this body's version counter.
                 let bounded =
                     build_bounded_for_body(&self.document.features, &part.feature_indices);
-                let mesh = dual_contour(&bounded, self.mesh_resolution);
+                let mesh = dual_contour(&bounded, target_resolution);
                 prev.feature_indices = part.feature_indices;
                 prev.aabb = part.aabb;
                 prev.payload_hash = payload_hash;
+                prev.mesh_resolution = target_resolution;
                 prev.mesh = mesh;
                 prev.version = prev.version.wrapping_add(1);
                 new_bodies.push(prev);
             } else {
-                // Fresh body — mesh from scratch.
+                // Fresh body — mesh from scratch at the target LOD.
                 let bounded =
                     build_bounded_for_body(&self.document.features, &part.feature_indices);
-                let mesh = dual_contour(&bounded, self.mesh_resolution);
+                let mesh = dual_contour(&bounded, target_resolution);
                 new_bodies.push(Body {
                     id,
                     feature_indices: part.feature_indices,
                     aabb: part.aabb,
                     payload_hash,
+                    mesh_resolution: target_resolution,
                     mesh,
                     version: 1,
                 });
@@ -377,6 +413,33 @@ impl Kernel {
 
         self.bodies = new_bodies;
         self.mesh_version = self.mesh_version.wrapping_add(1);
+    }
+
+    /// Pick the voxel grid resolution a body should use right now:
+    /// the active resolution when no LOD hint is set or when the
+    /// body id matches `active_body_id`, the context resolution
+    /// otherwise.
+    fn target_resolution_for(&self, body_id: u32) -> u32 {
+        match self.active_body_id {
+            Some(active_id) if active_id != body_id => self.context_mesh_resolution,
+            _ => self.active_mesh_resolution,
+        }
+    }
+
+    /// Walk the current bodies and return the stable id of the one
+    /// that owns `feature_id`, if any. O(bodies × features_per_body).
+    fn body_containing_feature(&self, feature_id: FeatureId) -> Option<u32> {
+        // Translate the FeatureId to an index into the document's
+        // feature list first, then search the bodies for that index.
+        let idx = self
+            .document
+            .features
+            .iter()
+            .position(|f| f.id == feature_id)?;
+        self.bodies
+            .iter()
+            .find(|b| b.feature_indices.iter().any(|&i| i == idx))
+            .map(|b| b.id)
     }
 
     fn op_label(op: BoolOp) -> &'static str {
@@ -421,7 +484,9 @@ impl Kernel {
             undo: Vec::new(),
             redo: Vec::new(),
             bodies: Vec::new(),
-            mesh_resolution: DEFAULT_MESH_RESOLUTION,
+            active_mesh_resolution: DEFAULT_MESH_RESOLUTION,
+            context_mesh_resolution: DEFAULT_CONTEXT_MESH_RESOLUTION,
+            active_body_id: None,
             mesh_version: 0,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
@@ -810,22 +875,89 @@ impl Kernel {
         self.mesh_version
     }
 
+    /// Voxel grid resolution for the active body. Aliased as
+    /// `meshResolution` for backward compatibility with callers
+    /// that don't care about LOD yet.
     #[wasm_bindgen(js_name = meshResolution)]
     pub fn mesh_resolution(&self) -> u32 {
-        self.mesh_resolution
+        self.active_mesh_resolution
     }
 
-    /// Change the voxel grid resolution and re-mesh. No-op if the
-    /// resolution is unchanged or zero. Returns true if the mesh was
-    /// actually rebuilt.
+    /// Change the active-body voxel grid resolution and re-mesh.
+    /// No-op if the resolution is unchanged or zero. Returns true
+    /// if the mesh was actually rebuilt. Aliased as
+    /// `setMeshResolution` for backward compatibility.
     #[wasm_bindgen(js_name = setMeshResolution)]
     pub fn set_mesh_resolution(&mut self, resolution: u32) -> bool {
-        if resolution == 0 || resolution == self.mesh_resolution {
+        if resolution == 0 || resolution == self.active_mesh_resolution {
             return false;
         }
-        self.mesh_resolution = resolution;
+        self.active_mesh_resolution = resolution;
         self.rebuild_mesh_internal();
         true
+    }
+
+    // ── LOD controls (K3 part 4) ──────────────────────────────────────
+
+    #[wasm_bindgen(js_name = contextMeshResolution)]
+    pub fn context_mesh_resolution(&self) -> u32 {
+        self.context_mesh_resolution
+    }
+
+    /// Change the context-body voxel grid resolution and re-mesh
+    /// every body that's currently running at context LOD. No-op
+    /// if unchanged or zero.
+    #[wasm_bindgen(js_name = setContextMeshResolution)]
+    pub fn set_context_mesh_resolution(&mut self, resolution: u32) -> bool {
+        if resolution == 0 || resolution == self.context_mesh_resolution {
+            return false;
+        }
+        self.context_mesh_resolution = resolution;
+        self.rebuild_mesh_internal();
+        true
+    }
+
+    /// Currently active body id, or `0` when LOD is disabled (every
+    /// body treated as active). The zero sentinel keeps the
+    /// wasm-bindgen signature a simple `u32` — feature ids are
+    /// allocated starting at `1` so `0` is unambiguous.
+    #[wasm_bindgen(js_name = activeBodyId)]
+    pub fn active_body_id(&self) -> u32 {
+        self.active_body_id.unwrap_or(0)
+    }
+
+    /// Mark the given body id as the active one. Triggers a re-mesh
+    /// that promotes `body_id` to active resolution and demotes
+    /// whichever body was active before (if any) to context
+    /// resolution. Passing `0` clears the active body.
+    #[wasm_bindgen(js_name = setActiveBodyId)]
+    pub fn set_active_body_id(&mut self, body_id: u32) -> bool {
+        let new_active = if body_id == 0 { None } else { Some(body_id) };
+        if new_active == self.active_body_id {
+            return false;
+        }
+        self.active_body_id = new_active;
+        self.rebuild_mesh_internal();
+        true
+    }
+
+    /// Convenience: set the active body to whichever body owns the
+    /// given feature. Returns true if the active body actually
+    /// changed. No-op (returns false) when the feature doesn't
+    /// exist or already lives in the active body.
+    #[wasm_bindgen(js_name = setActiveBodyByFeature)]
+    pub fn set_active_body_by_feature(&mut self, feature_id: FeatureId) -> bool {
+        match self.body_containing_feature(feature_id) {
+            Some(id) => self.set_active_body_id(id),
+            None => false,
+        }
+    }
+
+    /// Clear the active body so every body runs at active LOD
+    /// again. Equivalent to `setActiveBodyId(0)`.
+    #[wasm_bindgen(js_name = clearActiveBodyId)]
+    pub fn clear_active_body_id(&mut self) -> bool {
+        self.set_active_body_id(0)
     }
 
     // ── picking / provenance ──────────────────────────────────────────
@@ -1516,6 +1648,194 @@ mod tests {
         assert_eq!(k.body_count(), 1);
         // Merged body keeps the lowest seed id.
         assert_eq!(k.body_id(0), id_a);
+    }
+
+    #[test]
+    fn lod_is_off_by_default_every_body_uses_active_resolution() {
+        let mut k = Kernel::new();
+        assert_eq!(k.active_body_id(), 0);
+        let _ = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let _ = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        // Two same-size boxes under identical resolution land in the
+        // same order of magnitude — their exact vertex counts diverge
+        // slightly because the voxel grid is anchored in world space
+        // and f32 rounding treats `x ≈ 25` differently from `x ≈ 525`,
+        // but they should be within 1% of each other.
+        let a = k.body_vertex_count(0) as f32;
+        let b = k.body_vertex_count(1) as f32;
+        let ratio = (a - b).abs() / a.max(b);
+        assert!(
+            ratio < 0.02,
+            "vertex counts drifted more than 2% ({a} vs {b})",
+        );
+    }
+
+    #[test]
+    fn setting_active_body_drops_other_bodies_to_context_resolution() {
+        let mut k = Kernel::new();
+        // Context res is deliberately much smaller than active res
+        // so the effect is clearly visible in vertex counts.
+        assert!(k.set_context_mesh_resolution(8));
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+
+        // Baseline: no active body → every body at active (48) res.
+        let baseline_a = k.body_vertex_count(0);
+        let baseline_b = k.body_vertex_count(1);
+
+        // Set A as active → B should drop to context (8) resolution
+        // and lose vertices. A stays near the baseline (bitwise
+        // identical, since its LOD didn't change).
+        assert!(k.set_active_body_id(id_a));
+        assert_eq!(k.active_body_id(), id_a);
+        assert_eq!(k.body_vertex_count(0), baseline_a, "active body unchanged");
+        // Same-topology box at res 8 has ≈ 8×–12× fewer vertices.
+        assert!(
+            k.body_vertex_count(1) * 4 < baseline_b,
+            "context res should be meaningfully coarser ({} vs baseline {})",
+            k.body_vertex_count(1),
+            baseline_b,
+        );
+
+        // Setting the same active body again is a no-op.
+        assert!(!k.set_active_body_id(id_a));
+
+        // Clearing the active body restores both to active res.
+        assert!(k.clear_active_body_id());
+        assert_eq!(k.body_vertex_count(0), baseline_a);
+        assert_eq!(k.body_vertex_count(1), baseline_b);
+        let _ = id_b;
+    }
+
+    #[test]
+    fn switching_active_body_remeshes_only_the_two_that_changed_lod() {
+        let mut k = Kernel::new();
+        assert!(k.set_context_mesh_resolution(8));
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let id_c = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                1000.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        // A is the active body; B and C fall to context LOD.
+        assert!(k.set_active_body_id(id_a));
+        let v_a = k.body_version(0);
+        let v_b = k.body_version(1);
+        let v_c = k.body_version(2);
+
+        // Switch active from A to B. A drops to context, B gets
+        // promoted to active. C's LOD is unchanged — still context.
+        assert!(k.set_active_body_id(id_b));
+        assert!(k.body_version(0) > v_a, "A re-meshed at context res");
+        assert!(k.body_version(1) > v_b, "B re-meshed at active res");
+        assert_eq!(k.body_version(2), v_c, "C untouched");
+        let _ = id_c;
+    }
+
+    #[test]
+    fn set_active_body_by_feature_finds_the_owning_body() {
+        let mut k = Kernel::new();
+        assert!(k.set_context_mesh_resolution(8));
+        let _id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        assert!(k.set_active_body_by_feature(id_b));
+        assert_eq!(k.active_body_id(), id_b);
     }
 
     #[test]
