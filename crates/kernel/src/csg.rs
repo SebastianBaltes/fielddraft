@@ -11,6 +11,7 @@
 
 use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
+use crate::sketch2d::Sketch2d;
 use crate::{quat_rotate, sdf_primitive, world_to_local};
 
 /// Stable identifier of a CSG leaf. Inherited from `FeatureId` so
@@ -304,11 +305,38 @@ impl Aabb {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CsgNode {
     Empty,
-    Leaf { id: NodeId, primitive: Primitive },
+    Leaf {
+        id: NodeId,
+        primitive: Primitive,
+    },
     Transform(Transform, Box<CsgNode>),
     Union(Box<CsgNode>, Box<CsgNode>),
     Difference(Box<CsgNode>, Box<CsgNode>),
     Intersection(Box<CsgNode>, Box<CsgNode>),
+    /// Lift a 2D sketch into a 3D slab of `±half_height` along the
+    /// local Z axis. The whole extruded region contributes a
+    /// single [`NodeId`] to the provenance set — sub-primitives
+    /// inside the sketch don't get individual ids until the K5/K6
+    /// sketcher gives them identities. Use the extrude's own `id`
+    /// in the feature tree to trace back to the originating
+    /// outliner entry.
+    Extrude {
+        id: NodeId,
+        sketch: Box<Sketch2d>,
+        half_height: f32,
+    },
+    /// Revolve a 2D sketch around the local Y axis. The sketch's
+    /// `x` coordinate maps to the radial distance
+    /// `√(x² + z²)` in 3D, its `y` stays vertical. Authoring
+    /// convention: sketch primitives should live at `x ≥ 0`;
+    /// a primitive that crosses the axis of revolution produces
+    /// a valid SDF but geometrically silly results (the axis
+    /// sweeps through the centre). Single [`NodeId`] in the
+    /// contributor set, same rationale as Extrude.
+    Revolve {
+        id: NodeId,
+        sketch: Box<Sketch2d>,
+    },
 }
 
 impl CsgNode {
@@ -360,6 +388,15 @@ impl CsgNode {
             CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
             CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
             CsgNode::Intersection(a, b) => a.sdf(p, mode).max(b.sdf(p, mode)),
+            CsgNode::Extrude {
+                sketch,
+                half_height,
+                ..
+            } => sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height),
+            CsgNode::Revolve { sketch, .. } => {
+                let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                sketch.sdf([r, p[1]])
+            }
         }
     }
 
@@ -417,6 +454,18 @@ impl CsgNode {
                 let (db, cb) = b.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
             }
+            CsgNode::Extrude {
+                id,
+                sketch,
+                half_height,
+            } => {
+                let d = sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height);
+                (d, Contributors::single(*id))
+            }
+            CsgNode::Revolve { id, sketch } => {
+                let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                (sketch.sdf([r, p[1]]), Contributors::single(*id))
+            }
         }
     }
 
@@ -434,8 +483,53 @@ impl CsgNode {
             // so the bound stays well-defined even when the right child
             // is empty or unbounded.
             CsgNode::Intersection(a, _) => a.aabb(),
+            CsgNode::Extrude {
+                sketch,
+                half_height,
+                ..
+            } => {
+                let s = sketch.aabb();
+                if s.is_empty() {
+                    Aabb::EMPTY
+                } else {
+                    Aabb {
+                        min: [s.min[0], s.min[1], -half_height],
+                        max: [s.max[0], s.max[1], *half_height],
+                    }
+                }
+            }
+            CsgNode::Revolve { sketch, .. } => {
+                let s = sketch.aabb();
+                if s.is_empty() {
+                    Aabb::EMPTY
+                } else {
+                    // Radial extent = max distance from the axis
+                    // the sketch reaches. A sketch authored purely
+                    // at x ≥ 0 gives `r_max = s.max[0]`; if a user
+                    // crosses the axis we conservatively take the
+                    // farther of the two edges.
+                    let r_max = s.max[0].abs().max(s.min[0].abs());
+                    Aabb {
+                        min: [-r_max, s.min[1], -r_max],
+                        max: [r_max, s.max[1], r_max],
+                    }
+                }
+            }
         }
     }
+}
+
+/// Lift a 2D signed distance `d2` into 3D extrude space along the
+/// local Z axis with `half_height`. Mirrors Inigo Quilez's
+/// `opExtrusion` from <https://iquilezles.org/articles/distfunctions/>:
+/// treats `(d2, |z| − h)` as a 2D "rectangle SDF" so the corners
+/// of the extruded solid report exact Euclidean distances instead
+/// of an over-conservative Chebyshev approximation.
+pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
+    let wz = z.abs() - half_height;
+    let outside = (d2.max(0.0).powi(2) + wz.max(0.0).powi(2)).sqrt();
+    let inside = d2.max(wz).min(0.0);
+    outside + inside
 }
 
 /// Boolean-min fold with contributor propagation: within `eps` the
@@ -716,6 +810,153 @@ mod tests {
         let mut got: Vec<u32> = c.as_slice().to_vec();
         got.sort();
         assert_eq!(got, vec![1, 2, 3, 4]);
+    }
+
+    // ─── extrude / revolve ─────────────────────────────────────────
+
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+
+    fn rect_sketch(cx: f32, cy: f32, hx: f32, hy: f32) -> Sketch2d {
+        Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [cx, cy],
+            half_extents: [hx, hy],
+        })
+    }
+
+    fn circle_sketch(cx: f32, cy: f32, r: f32) -> Sketch2d {
+        Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [cx, cy],
+            radius: r,
+        })
+    }
+
+    #[test]
+    fn extrude_of_rectangle_matches_3d_box_primitive() {
+        // Extruding an XY rectangle of half-extents (hx, hy) by
+        // half_height hh should give exactly the same signed
+        // distance as a 3D Box primitive of half-extents
+        // (hx, hy, hh). The corner-handling matches iq's
+        // `opExtrusion` which computes the true Euclidean distance.
+        let hx = 7.0;
+        let hy = 4.0;
+        let hh = 3.0;
+        let sketch = rect_sketch(0.0, 0.0, hx, hy);
+        let extrude = CsgNode::Extrude {
+            id: 1,
+            sketch: Box::new(sketch),
+            half_height: hh,
+        };
+        let boxy = CsgNode::Leaf {
+            id: 2,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [hx, hy, hh],
+            },
+        };
+
+        // Inside (centre), deep negative.
+        let center = [0.0, 0.0, 0.0];
+        assert!(
+            (extrude.sdf(center, EvalMode::Visual) - boxy.sdf(center, EvalMode::Visual)).abs() < 1e-5,
+        );
+        // On each of the three face midpoints → 0.
+        for p in [[hx, 0.0, 0.0], [0.0, hy, 0.0], [0.0, 0.0, hh]] {
+            let a = extrude.sdf(p, EvalMode::Visual);
+            let b = boxy.sdf(p, EvalMode::Visual);
+            assert!((a - b).abs() < 1e-4, "surface mismatch at {p:?}: {a} vs {b}");
+            assert!(a.abs() < 1e-4);
+        }
+        // Diagonal corner — true Euclidean distance to corner.
+        let corner = [hx + 3.0, hy + 4.0, hh + 12.0];
+        let a = extrude.sdf(corner, EvalMode::Visual);
+        let b = boxy.sdf(corner, EvalMode::Visual);
+        assert!((a - b).abs() < 1e-3, "corner mismatch: {a} vs {b}");
+        assert!(a > 12.0); // definitely outside
+    }
+
+    #[test]
+    fn extrude_aabb_lifts_sketch_by_half_height() {
+        let extrude = CsgNode::Extrude {
+            id: 1,
+            sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
+            half_height: 3.0,
+        };
+        let bb = extrude.aabb();
+        assert_eq!(bb.min, [-5.0, -2.0, -3.0]);
+        assert_eq!(bb.max, [5.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn extrude_returns_single_contributor() {
+        let extrude = CsgNode::Extrude {
+            id: 42,
+            sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
+            half_height: 3.0,
+        };
+        let (d, c) = extrude.evaluate([5.0, 0.0, 0.0], 0.5, EvalMode::Visual);
+        assert!(d.abs() < 1e-4);
+        assert_eq!(c.as_slice(), &[42]);
+        assert_eq!(c.element(), ProxyElement::Face);
+    }
+
+    #[test]
+    fn revolve_of_offset_rectangle_gives_a_hollow_tube() {
+        // A 4 mm × 20 mm rectangle parked at (r=5, y=0) revolves
+        // around Y into a tube: inner radius 3, outer radius 7,
+        // axial extent ±10.
+        let rect = rect_sketch(5.0, 0.0, 2.0, 10.0);
+        let tube = CsgNode::Revolve {
+            id: 1,
+            sketch: Box::new(rect),
+        };
+
+        // Outer surface (r=7, y=0).
+        assert!(tube.sdf([7.0, 0.0, 0.0], EvalMode::Visual).abs() < 1e-4);
+        // Inner surface (r=3, y=0) is also on the 2D rectangle's
+        // inner edge → distance 0.
+        assert!(tube.sdf([3.0, 0.0, 0.0], EvalMode::Visual).abs() < 1e-4);
+        // Midway between the two walls → deep inside the tube.
+        assert!(tube.sdf([5.0, 0.0, 0.0], EvalMode::Visual) < -1.9);
+        // On the central axis → well outside the tube.
+        assert!(tube.sdf([0.0, 0.0, 0.0], EvalMode::Visual) > 2.9);
+        // Different angular direction — rotational symmetry check.
+        assert!(tube.sdf([0.0, 0.0, 7.0], EvalMode::Visual).abs() < 1e-4);
+        assert!(tube.sdf([0.0, 0.0, 3.0], EvalMode::Visual).abs() < 1e-4);
+    }
+
+    #[test]
+    fn revolve_aabb_is_the_radial_sweep_of_the_sketch() {
+        let tube = CsgNode::Revolve {
+            id: 1,
+            sketch: Box::new(rect_sketch(5.0, 0.0, 2.0, 10.0)),
+        };
+        let bb = tube.aabb();
+        // Sketch x in [3, 7] → radial extent r_max = 7.
+        assert_eq!(bb.min, [-7.0, -10.0, -7.0]);
+        assert_eq!(bb.max, [7.0, 10.0, 7.0]);
+    }
+
+    #[test]
+    fn difference_of_two_extrudes_carves_a_washer() {
+        // Extrude-of-difference ≈ difference-of-extrudes here
+        // because the sketch difference is the natural "ring"
+        // region, and extruding the ring gives a washer.
+        let outer = circle_sketch(0.0, 0.0, 10.0);
+        let inner = circle_sketch(0.0, 0.0, 4.0);
+        let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
+        let washer = CsgNode::Extrude {
+            id: 1,
+            sketch: Box::new(ring),
+            half_height: 2.0,
+        };
+        // Between the two radii, on the mid-plane → inside.
+        assert!(washer.sdf([7.0, 0.0, 0.0], EvalMode::Visual) < 0.0);
+        // Inside the hole → outside the body.
+        assert!(washer.sdf([0.0, 0.0, 0.0], EvalMode::Visual) > 0.0);
+        // Top face at r=7 → on the surface. Note the extrude axis
+        // is Z, not Y — [7, 0, 2] means "sketch point (7,0) lifted
+        // to the top face of the slab".
+        assert!(washer.sdf([7.0, 0.0, 2.0], EvalMode::Visual).abs() < 1e-4);
     }
 
     #[test]

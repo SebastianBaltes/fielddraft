@@ -26,7 +26,8 @@
 
 use fielddraft_protocol::{Primitive, Transform};
 
-use crate::csg::{Aabb, Contributors, CsgNode, EvalMode, NodeId};
+use crate::csg::{sdf_extrude, Aabb, Contributors, CsgNode, EvalMode, NodeId};
+use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
 
 /// BVH-annotated CSG node. Every variant carries a world-space AABB
@@ -61,6 +62,27 @@ pub enum BoundedCsg {
         right: Box<BoundedCsg>,
         aabb: Aabb,
     },
+    /// BVH-wrapped extrude. The 2D sketch is materialised into a
+    /// [`BoundedSketch2d`] at construction time so every 3D query
+    /// hits the pruned 2D path. `world_transform` carries the
+    /// accumulated [`CsgNode::Transform`] chain that led here —
+    /// exactly like [`BoundedCsg::Leaf`].
+    Extrude {
+        id: NodeId,
+        sketch: Box<BoundedSketch2d>,
+        half_height: f32,
+        world_transform: Transform,
+        aabb: Aabb,
+    },
+    /// BVH-wrapped revolve. Same sketch-bounding and transform
+    /// collapse as [`BoundedCsg::Extrude`]; the query maps 3D to
+    /// `(√(x² + z²), y)` before hitting the 2D tree.
+    Revolve {
+        id: NodeId,
+        sketch: Box<BoundedSketch2d>,
+        world_transform: Transform,
+        aabb: Aabb,
+    },
 }
 
 impl BoundedCsg {
@@ -78,7 +100,9 @@ impl BoundedCsg {
             BoundedCsg::Leaf { aabb, .. }
             | BoundedCsg::Union { aabb, .. }
             | BoundedCsg::Difference { aabb, .. }
-            | BoundedCsg::Intersection { aabb, .. } => *aabb,
+            | BoundedCsg::Intersection { aabb, .. }
+            | BoundedCsg::Extrude { aabb, .. }
+            | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
     }
 
@@ -145,6 +169,25 @@ impl BoundedCsg {
                 // Kept naive for K3; K10 may revisit.
                 left.sdf(p, mode).max(right.sdf(p, mode))
             }
+            BoundedCsg::Extrude {
+                sketch,
+                half_height,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let d2 = sketch.sdf([local[0], local[1]]);
+                sdf_extrude(d2, local[2], *half_height) * world_transform.scale
+            }
+            BoundedCsg::Revolve {
+                sketch,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
+                sketch.sdf([r, local[1]]) * world_transform.scale
+            }
         }
     }
 
@@ -188,6 +231,29 @@ impl BoundedCsg {
                 let (da, ca) = left.evaluate(p, eps, mode);
                 let (db, cb) = right.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
+            }
+            BoundedCsg::Extrude {
+                id,
+                sketch,
+                half_height,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let d2 = sketch.sdf([local[0], local[1]]);
+                let d = sdf_extrude(d2, local[2], *half_height) * world_transform.scale;
+                (d, Contributors::single(*id))
+            }
+            BoundedCsg::Revolve {
+                id,
+                sketch,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
+                let d = sketch.sdf([r, local[1]]) * world_transform.scale;
+                (d, Contributors::single(*id))
             }
         }
     }
@@ -246,6 +312,50 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             BoundedCsg::Intersection {
                 left: Box::new(left),
                 right: Box::new(right),
+                aabb,
+            }
+        }
+        CsgNode::Extrude {
+            id,
+            sketch,
+            half_height,
+        } => {
+            let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
+            let s2 = bounded_sketch.aabb();
+            let local_aabb = if s2.is_empty() {
+                Aabb::EMPTY
+            } else {
+                Aabb {
+                    min: [s2.min[0], s2.min[1], -*half_height],
+                    max: [s2.max[0], s2.max[1], *half_height],
+                }
+            };
+            let aabb = local_aabb.transformed(carry);
+            BoundedCsg::Extrude {
+                id: *id,
+                sketch: Box::new(bounded_sketch),
+                half_height: *half_height,
+                world_transform: *carry,
+                aabb,
+            }
+        }
+        CsgNode::Revolve { id, sketch } => {
+            let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
+            let s2 = bounded_sketch.aabb();
+            let local_aabb = if s2.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let r_max = s2.max[0].abs().max(s2.min[0].abs());
+                Aabb {
+                    min: [-r_max, s2.min[1], -r_max],
+                    max: [r_max, s2.max[1], r_max],
+                }
+            };
+            let aabb = local_aabb.transformed(carry);
+            BoundedCsg::Revolve {
+                id: *id,
+                sketch: Box::new(bounded_sketch),
+                world_transform: *carry,
                 aabb,
             }
         }
@@ -478,6 +588,128 @@ mod tests {
         // pruned result should equal its own sdf (5 mm inside the
         // +x face).
         assert!((a - (-5.0)).abs() < 1e-4);
+    }
+
+    // ─── K4: extrude / revolve through the BVH ────────────────────
+
+    use crate::csg::ProxyElement;
+    use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+
+    #[test]
+    fn bvh_extrude_matches_raw_csg_extrude() {
+        // A rectangle lifted into a slab — BoundedCsg and CsgNode
+        // must agree on every sample point because K4 has no
+        // pruning to miss; the BVH form only folds in the
+        // transform chain and caches the AABB.
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [5.0, 3.0],
+        });
+        let csg = CsgNode::Extrude {
+            id: 1,
+            sketch: Box::new(sketch),
+            half_height: 2.0,
+        };
+        let bvh = BoundedCsg::from_csg(&csg);
+        let samples = [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [5.0, 3.0, 2.0],
+            [7.0, 0.0, 0.0],
+            [10.0, 10.0, 10.0],
+            [-1.0, -1.0, -1.0],
+        ];
+        for p in samples {
+            let a = bvh.sdf(p, EvalMode::Visual);
+            let b = csg.sdf(p, EvalMode::Visual);
+            assert!((a - b).abs() < 1e-4, "mismatch at {p:?}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn bvh_extrude_returns_single_contributor_in_evaluate() {
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 5.0,
+        });
+        let csg = CsgNode::Extrude {
+            id: 7,
+            sketch: Box::new(sketch),
+            half_height: 2.0,
+        };
+        let bvh = BoundedCsg::from_csg(&csg);
+        // Top face centre → surface, contributor = {7}, Face.
+        let (d, c) = bvh.evaluate([0.0, 0.0, 2.0], 0.25, EvalMode::Logical);
+        assert!(d.abs() < 1e-4);
+        assert_eq!(c.as_slice(), &[7]);
+        assert_eq!(c.element(), ProxyElement::Face);
+    }
+
+    #[test]
+    fn bvh_revolve_aabb_sweeps_the_sketch_radially() {
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [5.0, 0.0],
+            half_extents: [2.0, 10.0],
+        });
+        let csg = CsgNode::Revolve {
+            id: 1,
+            sketch: Box::new(sketch),
+        };
+        let bvh = BoundedCsg::from_csg(&csg);
+        let bb = bvh.aabb();
+        assert_eq!(bb.min, [-7.0, -10.0, -7.0]);
+        assert_eq!(bb.max, [7.0, 10.0, 7.0]);
+    }
+
+    #[test]
+    fn dual_contour_produces_a_mesh_from_an_extruded_ring() {
+        // Integration test: a ring sketch extruded into a washer,
+        // BVH-wrapped and fed to the DC mesher. We don't check
+        // exact vertex counts — just that a non-trivial mesh falls
+        // out and every vertex lies near the surface of the CSG.
+        use crate::dc::dual_contour;
+
+        let outer = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 20.0,
+        });
+        let inner = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 10.0,
+        });
+        let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
+        let csg = CsgNode::Extrude {
+            id: 1,
+            sketch: Box::new(ring),
+            half_height: 5.0,
+        };
+        let bvh = BoundedCsg::from_csg(&csg);
+        let mesh = dual_contour(&bvh, 32);
+        assert!(
+            mesh.vertex_count() > 200,
+            "expected a non-trivial washer mesh, got {}",
+            mesh.vertex_count(),
+        );
+        assert!(mesh.triangle_count() > 0);
+
+        // Every vertex should hug the SDF zero level. Cell size at
+        // resolution 32 on a 40-mm-square footprint is ≈ 1.25 mm,
+        // so we allow drift up to a few cells.
+        let mut worst = 0.0_f32;
+        for i in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[i * 3],
+                mesh.positions[i * 3 + 1],
+                mesh.positions[i * 3 + 2],
+            ];
+            let d = bvh.sdf(p, EvalMode::Visual).abs();
+            if d > worst {
+                worst = d;
+            }
+        }
+        assert!(worst < 3.0, "washer mesh drifted off the surface by {worst}");
     }
 
     #[test]

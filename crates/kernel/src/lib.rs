@@ -13,6 +13,7 @@ pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod raycast;
+pub mod sketch2d;
 
 use body::{build_bounded_for_body, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
