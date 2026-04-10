@@ -336,6 +336,15 @@ impl Kernel {
 
     fn rebuild_packed(&mut self) {
         self.packed = pack_features(&self.document.features);
+        // K4.5.4c dual-write: rebuild the K4.5 Feature-as-Function
+        // `feature_calls` mirror after every mutation that ran
+        // through `rebuild_packed`. Every public mutator funnels
+        // through this call (add / remove / nudge /
+        // set_feature_{translate,transform,op} / reorder / undo /
+        // redo / load_json), so the invariant "`features` and
+        // `feature_calls` are in sync after any mutation returns"
+        // holds automatically without instrumenting each path.
+        self.document.sync_feature_calls();
         self.rebuild_mesh_internal();
     }
 
@@ -2029,6 +2038,214 @@ mod tests {
         let after = k.mesh_version();
         assert!(!k.set_mesh_resolution(32));
         assert_eq!(k.mesh_version(), after);
+    }
+
+    // ─── K4.5.4c: Document.feature_calls dual-write invariant ─
+
+    /// Helper: assert that `document.feature_calls` is a
+    /// byte-identical projection of `document.features` via
+    /// `FeatureCall::from_spine_feature`. The dual-write hook in
+    /// `rebuild_packed` is supposed to hold this invariant after
+    /// every mutation.
+    fn assert_feature_calls_match_spine(k: &Kernel) {
+        let doc = &k.document;
+        assert_eq!(
+            doc.feature_calls.len(),
+            doc.features.len(),
+            "feature_calls length diverged from features",
+        );
+        for (i, f) in doc.features.iter().enumerate() {
+            let expected = fielddraft_protocol::FeatureCall::from_spine_feature(f);
+            assert_eq!(
+                doc.feature_calls[i], expected,
+                "feature_calls[{i}] drifted from its spine feature",
+            );
+        }
+    }
+
+    #[test]
+    fn add_primitive_populates_feature_calls() {
+        let mut k = Kernel::new();
+        assert!(k.document.feature_calls.is_empty());
+        let _ = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                5.0,
+                5.0,
+                5.0,
+            )
+            .unwrap();
+        assert_eq!(k.document.feature_calls.len(), 1);
+        assert_eq!(k.document.feature_calls[0].type_name, "box");
+        assert_feature_calls_match_spine(&k);
+    }
+
+    #[test]
+    fn every_mutation_keeps_feature_calls_in_sync() {
+        let mut k = Kernel::new();
+        let id_box = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                5.0,
+                5.0,
+                5.0,
+            )
+            .unwrap();
+        let id_sphere = k
+            .add_primitive(
+                Primitive::KIND_SPHERE,
+                BoolOp::TAG_UNION,
+                100.0,
+                0.0,
+                0.0,
+                3.0,
+                0.0,
+                0.0,
+            )
+            .unwrap();
+        let id_cyl = k
+            .add_primitive(
+                Primitive::KIND_CYLINDER,
+                BoolOp::TAG_UNION,
+                0.0,
+                200.0,
+                0.0,
+                2.0,
+                4.0,
+                0.0,
+            )
+            .unwrap();
+        assert_feature_calls_match_spine(&k);
+
+        // Mutation 1: translate the box — feature_calls[0].params
+        // must pick up the new translate.
+        assert!(k.set_feature_translate(id_box, 10.0, 20.0, 30.0));
+        assert_feature_calls_match_spine(&k);
+        assert_eq!(
+            k.document.feature_calls[0].params["translate"],
+            serde_json::json!([10.0, 20.0, 30.0])
+        );
+
+        // Mutation 2: nudge the sphere.
+        assert!(k.nudge_feature(id_sphere, 1.0, 2.0, 3.0));
+        assert_feature_calls_match_spine(&k);
+
+        // Mutation 3: change the cylinder's op.
+        k.set_feature_op(id_cyl, BoolOp::TAG_DIFFERENCE).unwrap();
+        assert_feature_calls_match_spine(&k);
+        let cyl_call_idx = k
+            .document
+            .features
+            .iter()
+            .position(|f| f.id == FeatureId::from_u32(id_cyl))
+            .unwrap();
+        assert_eq!(
+            k.document.feature_calls[cyl_call_idx].params["op"],
+            serde_json::json!("difference")
+        );
+
+        // Mutation 4: reorder the cylinder to the front.
+        assert!(k.reorder_feature(id_cyl, 0));
+        assert_feature_calls_match_spine(&k);
+        assert_eq!(k.document.features[0].id, FeatureId::from_u32(id_cyl));
+
+        // Mutation 5: remove the box.
+        assert!(k.remove_feature(id_box));
+        assert_feature_calls_match_spine(&k);
+        assert_eq!(k.document.features.len(), 2);
+
+        // Mutation 6: full transform write on the sphere.
+        assert!(k.set_feature_transform(
+            id_sphere, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0, 2.0
+        ));
+        assert_feature_calls_match_spine(&k);
+    }
+
+    #[test]
+    fn undo_and_redo_restore_feature_calls_in_sync() {
+        // Undo/redo swaps the whole document snapshot, so
+        // `feature_calls` travels with it automatically — no extra
+        // instrumentation needed. This test locks that behaviour.
+        let mut k = Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_UNION,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        assert_feature_calls_match_spine(&k);
+
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_UNION,
+            0.0,
+            0.0,
+            0.0,
+            2.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(k.document.feature_calls.len(), 2);
+        assert_feature_calls_match_spine(&k);
+
+        assert!(k.undo());
+        assert_eq!(k.document.feature_calls.len(), 1);
+        assert_feature_calls_match_spine(&k);
+
+        assert!(k.redo());
+        assert_eq!(k.document.feature_calls.len(), 2);
+        assert_feature_calls_match_spine(&k);
+
+        // A mutation after an undo/redo cycle also stays in sync.
+        assert!(k.nudge_feature(1, 1.0, 0.0, 0.0));
+        assert_feature_calls_match_spine(&k);
+    }
+
+    #[test]
+    fn load_json_rebuilds_feature_calls_from_features() {
+        // Loading a legacy K1 JSON (no feature_calls field) goes
+        // through `rebuild_packed`, which calls
+        // `sync_feature_calls`, so the mirror is populated before
+        // the loaded document is exposed to any caller.
+        let mut k = Kernel::new();
+        let legacy = r#"{
+            "schema_version": 2,
+            "name": "legacy",
+            "features": [{
+                "id": 1,
+                "name": "Base",
+                "op": "union",
+                "primitive": {
+                    "kind": "box",
+                    "center": [0, 0, 0],
+                    "half_extents": [5, 5, 5]
+                },
+                "transform": {
+                    "translate": [0, 0, 0],
+                    "rotation": [0, 0, 0, 1],
+                    "scale": 1
+                }
+            }],
+            "next_feature_id": 2
+        }"#;
+        k.load_json(legacy).unwrap();
+        assert_eq!(k.document.features.len(), 1);
+        assert_eq!(k.document.feature_calls.len(), 1);
+        assert_feature_calls_match_spine(&k);
     }
 
     #[test]
