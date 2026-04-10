@@ -32,13 +32,16 @@
 //!   fielddraft_kernel::features::FeatureError>` — validates the
 //!   definition JSON and extracts typed field values.
 //!
-//! ## Supported scope (K4.5.4a)
+//! ## Supported scope (K4.5.4f)
 //!
-//! * **Field types:** `f32`, `[f32; 3]`, `bool`, `String`, and
-//!   `BoolOp` (the protocol boolean-op enum, parsed from
-//!   `"union"`/`"difference"`/`"intersect"`). `Length` / `Angle` /
-//!   `Query` / `Option<T>` come in later steps when the kernel
-//!   grows the corresponding runtime types.
+//! * **Field types:** `f32`, `[f32; 3]`, `bool`, `String`, `BoolOp`
+//!   (K4.5.4a), and — as of K4.5.4f — the typed runtime
+//!   parameters `Length`, `Angle`, and `Query` from
+//!   `fielddraft_protocol`. Any other type path falls through to a
+//!   generic `serde_json::from_value` dispatch, which means user-
+//!   defined enums (and other `Serialize + Deserialize` types) can
+//!   be used as feature parameters without touching this derive.
+//!   `Option<T>` still comes later.
 //! * **Struct-level attribute:** `#[schema(type = "…")]` sets the
 //!   type name that goes into the registry and the on-wire JSON.
 //! * **Field-level `#[param(...)]` attribute:**
@@ -178,23 +181,41 @@ fn parse_schema_attr(input: &DeriveInput) -> syn::Result<String> {
 
 // ─── parameter metadata ─────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone)]
 enum ParamType {
     F32,
     Vec3,
     Bool,
     String,
     BoolOp,
+    /// K4.5.4f: `fielddraft_protocol::Length`.
+    Length,
+    /// K4.5.4f: `fielddraft_protocol::Angle`.
+    Angle,
+    /// K4.5.4f: `fielddraft_protocol::Query`.
+    Query,
+    /// K4.5.4f: fallback for any other type. The derive emits a
+    /// generic `serde_json::from_value::<T>(...)` parse call using
+    /// the field's declared type verbatim, which lets user-defined
+    /// `Deserialize` types (notably custom enums — the "Enum"
+    /// vocabulary slot in the K4.5 roadmap) flow through the
+    /// feature schema without any macro changes. Schema emission
+    /// reports `"generic"` as the type hint.
+    Generic(Box<Type>),
 }
 
 impl ParamType {
-    fn json_type_name(self) -> &'static str {
+    fn json_type_name(&self) -> &'static str {
         match self {
             ParamType::F32 => "f32",
             ParamType::Vec3 => "vec3",
             ParamType::Bool => "bool",
             ParamType::String => "string",
             ParamType::BoolOp => "bool_op",
+            ParamType::Length => "length",
+            ParamType::Angle => "angle",
+            ParamType::Query => "query",
+            ParamType::Generic(_) => "generic",
         }
     }
 }
@@ -307,20 +328,24 @@ impl ParamInfo {
 
 impl ParamType {
     /// Rust type token that the generated `let` binding uses.
-    fn emit_rust_type(self) -> TokenStream2 {
+    fn emit_rust_type(&self) -> TokenStream2 {
         match self {
             ParamType::F32 => quote! { f32 },
             ParamType::Vec3 => quote! { [f32; 3] },
             ParamType::Bool => quote! { bool },
             ParamType::String => quote! { ::std::string::String },
             ParamType::BoolOp => quote! { ::fielddraft_protocol::BoolOp },
+            ParamType::Length => quote! { ::fielddraft_protocol::Length },
+            ParamType::Angle => quote! { ::fielddraft_protocol::Angle },
+            ParamType::Query => quote! { ::fielddraft_protocol::Query },
+            ParamType::Generic(ty) => quote! { #ty },
         }
     }
 
     /// Parse a `&serde_json::Value` named `slot` into the Rust
     /// value of this type. The emitted expression evaluates to
     /// the typed value (via `?` on error).
-    fn emit_slot_parser(self, key: &str) -> TokenStream2 {
+    fn emit_slot_parser(&self, key: &str) -> TokenStream2 {
         match self {
             ParamType::F32 => quote! {
                 slot.as_f64().map(|v| v as f32).ok_or_else(|| {
@@ -408,6 +433,66 @@ impl ParamType {
                     }
                 }
             }},
+            // The Length/Angle/Query/Generic arms all route through
+            // serde — each target type implements `Deserialize` and
+            // `from_value` gives us typed parsing plus a single
+            // unified error path. We clone the slot because
+            // `from_value` takes an owned `Value`; the feature
+            // definition JSON is typically small, so a shallow
+            // clone per parameter is cheap.
+            ParamType::Length => quote! {{
+                ::serde_json::from_value::<::fielddraft_protocol::Length>(
+                    slot.clone(),
+                )
+                .map_err(|e| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: ::std::format!(
+                            "expected a Length ({{\"value\": …, \"unit\": …}}): {e}"
+                        ),
+                    }
+                })?
+            }},
+            ParamType::Angle => quote! {{
+                ::serde_json::from_value::<::fielddraft_protocol::Angle>(
+                    slot.clone(),
+                )
+                .map_err(|e| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: ::std::format!(
+                            "expected an Angle ({{\"value\": …, \"unit\": …}}): {e}"
+                        ),
+                    }
+                })?
+            }},
+            ParamType::Query => quote! {{
+                ::serde_json::from_value::<::fielddraft_protocol::Query>(
+                    slot.clone(),
+                )
+                .map_err(|e| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: ::std::format!(
+                            "expected a Query string: {e}"
+                        ),
+                    }
+                })?
+            }},
+            ParamType::Generic(ty) => quote! {{
+                ::serde_json::from_value::<#ty>(slot.clone()).map_err(|e| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: ::std::format!(
+                            "failed to deserialise: {e}"
+                        ),
+                    }
+                })?
+            }},
         }
     }
 }
@@ -420,16 +505,29 @@ impl ParamType {
                     "f32" => return Ok(ParamType::F32),
                     "bool" => return Ok(ParamType::Bool),
                     "String" => return Ok(ParamType::String),
-                    // `BoolOp` is matched by trailing identifier so
-                    // the field type can be written as `BoolOp` (with
-                    // a `use` in scope) or
-                    // `fielddraft_protocol::BoolOp` (fully
-                    // qualified). Both resolve through the final
-                    // segment.
+                    // The typed runtime parameter types from
+                    // `fielddraft_protocol` are matched by trailing
+                    // identifier, so feature definitions can write
+                    // the short form (with a `use` in scope) or the
+                    // fully qualified path. Both resolve through
+                    // the final segment.
                     "BoolOp" => return Ok(ParamType::BoolOp),
+                    "Length" => return Ok(ParamType::Length),
+                    "Angle" => return Ok(ParamType::Angle),
+                    "Query" => return Ok(ParamType::Query),
                     _ => {}
                 }
             }
+            // K4.5.4f: fallback for any other type path. The
+            // generated parse code dispatches to
+            // `serde_json::from_value::<T>(...)`, which works for
+            // any `Deserialize` type — notably user-defined enums,
+            // which are the "Enum" slot of the K4.5 feature-type
+            // roadmap. The derive never sees the type definition,
+            // only the path, so it can't check bounds; callers who
+            // need stricter validation still hand-write their
+            // parse path.
+            return Ok(ParamType::Generic(Box::new(ty.clone())));
         }
         if let Type::Array(TypeArray { elem, len, .. }) = ty {
             // We only recognise `[f32; 3]` for now.
@@ -454,8 +552,10 @@ impl ParamType {
         Err(syn::Error::new(
             ty.span(),
             format!(
-                "FeatureSchema does not yet support field type `{}`. \
-                 Supported: f32, [f32; 3], bool, String, BoolOp.",
+                "FeatureSchema does not support field type `{}`. \
+                 Named path types (including custom enums) fall back \
+                 to a generic `serde_json::from_value` parse; other \
+                 shapes such as `[f32; 3]` are recognised explicitly.",
                 ty.to_token_stream()
             ),
         ))

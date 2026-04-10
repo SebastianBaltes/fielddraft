@@ -287,6 +287,129 @@ impl BoolOp {
     }
 }
 
+// ─── K4.5.4f: typed runtime parameter types ──────────────────────
+//
+// Length, Angle, and Query are the first typed parameter values in
+// the FieldDraft feature system. They grow the FeatureSchema derive
+// beyond the plain-scalar vocabulary of K4.5.4a (f32, [f32;3], bool,
+// String, BoolOp) so that upcoming Rust-native feature definitions
+// (Extrude, Revolve, hole patterns, …) can describe their parameters
+// in terms of physical quantities and geometric references rather
+// than bare numbers and strings.
+//
+// The model unit for lengths is millimetres (the kernel's native
+// distance scale); `Length::to_mm` resolves any unit to this scale
+// so feature execute paths can always work in model space. The
+// model unit for angles is radians. Conversions are lossy (f32),
+// matching the rest of the kernel.
+//
+// `Query` is a placeholder for K4.5.7's query minimum
+// (`qCreatedBy`/`qFaceOf`/`qEdgeBetween`). Step 4f only introduces
+// the wire type so features can declare query-shaped parameters;
+// the actual evaluation against the contributor graph lands with
+// the runtime K4.5.7 work.
+
+/// Length unit, wire-encoded as a lowercase string (`"mm"`, `"cm"`,
+/// `"m"`, `"in"`). The model unit is millimetres — [`Length::to_mm`]
+/// converts any unit to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LengthUnit {
+    Mm,
+    Cm,
+    M,
+    In,
+}
+
+/// A length value with an explicit unit. Wire form is
+/// `{"value": 10.0, "unit": "mm"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Length {
+    pub value: f32,
+    pub unit: LengthUnit,
+}
+
+impl Length {
+    pub const fn mm(value: f32) -> Self {
+        Self { value, unit: LengthUnit::Mm }
+    }
+    pub const fn cm(value: f32) -> Self {
+        Self { value, unit: LengthUnit::Cm }
+    }
+    pub const fn m(value: f32) -> Self {
+        Self { value, unit: LengthUnit::M }
+    }
+    pub const fn inches(value: f32) -> Self {
+        Self { value, unit: LengthUnit::In }
+    }
+
+    /// Convert to the kernel's native model unit (millimetres).
+    pub fn to_mm(&self) -> f32 {
+        match self.unit {
+            LengthUnit::Mm => self.value,
+            LengthUnit::Cm => self.value * 10.0,
+            LengthUnit::M => self.value * 1000.0,
+            LengthUnit::In => self.value * 25.4,
+        }
+    }
+}
+
+/// Angle unit, wire-encoded as a lowercase string (`"deg"`, `"rad"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AngleUnit {
+    Deg,
+    Rad,
+}
+
+/// An angle value with an explicit unit. Wire form is
+/// `{"value": 45.0, "unit": "deg"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Angle {
+    pub value: f32,
+    pub unit: AngleUnit,
+}
+
+impl Angle {
+    pub const fn deg(value: f32) -> Self {
+        Self { value, unit: AngleUnit::Deg }
+    }
+    pub const fn rad(value: f32) -> Self {
+        Self { value, unit: AngleUnit::Rad }
+    }
+
+    /// Convert to the kernel's native model unit (radians).
+    pub fn to_rad(&self) -> f32 {
+        match self.unit {
+            AngleUnit::Deg => self.value * std::f32::consts::PI / 180.0,
+            AngleUnit::Rad => self.value,
+        }
+    }
+}
+
+/// A geometry-selection query that a feature parameter references.
+///
+/// Wire form is a bare string — `"qCreatedBy(box_1)"`,
+/// `"qFaceOf(extrude_3, top)"`, etc. K4.5.4f only introduces the
+/// type so features can declare query parameters; actual
+/// evaluation against the contributor graph is K4.5.7's
+/// responsibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Query {
+    pub expr: String,
+}
+
+impl Query {
+    pub fn new(expr: impl Into<String>) -> Self {
+        Self { expr: expr.into() }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.expr
+    }
+}
+
 /// Affine placement of a feature in world space.
 ///
 /// Stored as **translate + unit-quaternion rotation + uniform scale**.
@@ -983,5 +1106,63 @@ mod tests {
         assert_eq!(BoolOp::Union.tag(), BoolOp::TAG_UNION);
         assert_eq!(BoolOp::Difference.tag(), BoolOp::TAG_DIFFERENCE);
         assert_eq!(BoolOp::Intersect.tag(), BoolOp::TAG_INTERSECT);
+    }
+
+    // ─── K4.5.4f: Length / Angle / Query runtime types ────────
+
+    #[test]
+    fn length_wire_form_is_value_plus_unit() {
+        let l = Length::mm(12.5);
+        let wire = serde_json::to_value(&l).unwrap();
+        assert_eq!(wire, serde_json::json!({"value": 12.5, "unit": "mm"}));
+        let parsed: Length =
+            serde_json::from_value(serde_json::json!({"value": 5.0, "unit": "cm"}))
+                .unwrap();
+        assert_eq!(parsed, Length::cm(5.0));
+    }
+
+    #[test]
+    fn length_to_mm_converts_every_unit() {
+        assert_eq!(Length::mm(10.0).to_mm(), 10.0);
+        assert_eq!(Length::cm(1.0).to_mm(), 10.0);
+        assert_eq!(Length::m(2.5).to_mm(), 2500.0);
+        assert!((Length::inches(1.0).to_mm() - 25.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn length_rejects_unknown_unit() {
+        let err = serde_json::from_value::<Length>(
+            serde_json::json!({"value": 1.0, "unit": "furlong"}),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn angle_wire_form_is_value_plus_unit() {
+        let a = Angle::deg(90.0);
+        let wire = serde_json::to_value(&a).unwrap();
+        assert_eq!(wire, serde_json::json!({"value": 90.0, "unit": "deg"}));
+        let parsed: Angle = serde_json::from_value(
+            serde_json::json!({"value": 1.5, "unit": "rad"}),
+        )
+        .unwrap();
+        assert_eq!(parsed, Angle::rad(1.5));
+    }
+
+    #[test]
+    fn angle_to_rad_converts_both_units() {
+        assert!((Angle::deg(180.0).to_rad() - std::f32::consts::PI).abs() < 1e-6);
+        assert_eq!(Angle::rad(1.23).to_rad(), 1.23);
+    }
+
+    #[test]
+    fn query_wire_form_is_bare_string() {
+        let q = Query::new("qCreatedBy(box_1)");
+        let wire = serde_json::to_value(&q).unwrap();
+        assert_eq!(wire, serde_json::json!("qCreatedBy(box_1)"));
+        let parsed: Query =
+            serde_json::from_value(serde_json::json!("qFaceOf(extrude_3, top)"))
+                .unwrap();
+        assert_eq!(parsed.as_str(), "qFaceOf(extrude_3, top)");
     }
 }

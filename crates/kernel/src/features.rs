@@ -1131,4 +1131,174 @@ mod tests {
         // directly rather than the whole document.
         assert_eq!(legacy_doc.features, registry_doc.features);
     }
+
+    // ─── K4.5.4f: Length / Angle / Query / generic enum ───────
+
+    /// K4.5.4f fixture that exercises every new param type the
+    /// derive learned in this slice: `Length`, `Angle`, `Query`,
+    /// plus a user-defined enum that falls through to the generic
+    /// `serde_json::from_value` path — standing in for the §4.6
+    /// "Enum" parameter slot.
+    #[derive(
+        Debug,
+        PartialEq,
+        ::serde::Serialize,
+        ::serde::Deserialize,
+    )]
+    #[serde(rename_all = "snake_case")]
+    enum Finish {
+        Anodised,
+        Polished,
+        Brushed,
+    }
+
+    #[derive(FeatureSchema, Debug, PartialEq)]
+    #[schema(type = "runtime_fixture")]
+    #[allow(dead_code)]
+    struct RuntimeFixture {
+        depth: ::fielddraft_protocol::Length,
+        sweep: ::fielddraft_protocol::Angle,
+        seed: ::fielddraft_protocol::Query,
+        finish: Finish,
+    }
+
+    #[test]
+    fn runtime_fixture_schema_reports_typed_param_names() {
+        let schema = RuntimeFixture::schema_json();
+        let params = schema["params"].as_array().unwrap();
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0]["key"], json!("depth"));
+        assert_eq!(params[0]["type"], json!("length"));
+        assert_eq!(params[1]["key"], json!("sweep"));
+        assert_eq!(params[1]["type"], json!("angle"));
+        assert_eq!(params[2]["key"], json!("seed"));
+        assert_eq!(params[2]["type"], json!("query"));
+        // The user-defined enum lands in the generic fallback
+        // slot; the schema hint is `"generic"`.
+        assert_eq!(params[3]["key"], json!("finish"));
+        assert_eq!(params[3]["type"], json!("generic"));
+    }
+
+    #[test]
+    fn runtime_fixture_round_trips_all_new_types() {
+        let def = json!({
+            "depth": {"value": 25.0, "unit": "mm"},
+            "sweep": {"value": 90.0, "unit": "deg"},
+            "seed": "qCreatedBy(box_1)",
+            "finish": "polished"
+        });
+        let parsed = RuntimeFixture::parse(&def).unwrap();
+        assert_eq!(parsed.depth, ::fielddraft_protocol::Length::mm(25.0));
+        assert_eq!(parsed.sweep, ::fielddraft_protocol::Angle::deg(90.0));
+        assert_eq!(parsed.seed.as_str(), "qCreatedBy(box_1)");
+        assert_eq!(parsed.finish, Finish::Polished);
+    }
+
+    #[test]
+    fn length_param_rejects_missing_unit_field() {
+        // serde's `from_value` errors out when the Length struct
+        // is missing a required field — the derive maps that to
+        // InvalidParameter with the offending field name.
+        let def = json!({
+            "depth": {"value": 10.0},
+            "sweep": {"value": 0.0, "unit": "rad"},
+            "seed": "q",
+            "finish": "brushed"
+        });
+        let err = RuntimeFixture::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "runtime_fixture",
+                name: "depth",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `depth`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn angle_param_rejects_unknown_unit() {
+        let def = json!({
+            "depth": {"value": 1.0, "unit": "mm"},
+            "sweep": {"value": 100.0, "unit": "gradian"},
+            "seed": "q",
+            "finish": "brushed"
+        });
+        let err = RuntimeFixture::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "runtime_fixture",
+                name: "sweep",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `sweep`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_param_rejects_non_string() {
+        let def = json!({
+            "depth": {"value": 1.0, "unit": "mm"},
+            "sweep": {"value": 0.0, "unit": "rad"},
+            "seed": 42,
+            "finish": "brushed"
+        });
+        let err = RuntimeFixture::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "runtime_fixture",
+                name: "seed",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `seed`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_enum_fallback_rejects_unknown_variant() {
+        let def = json!({
+            "depth": {"value": 1.0, "unit": "mm"},
+            "sweep": {"value": 0.0, "unit": "rad"},
+            "seed": "q",
+            "finish": "chromed"
+        });
+        let err = RuntimeFixture::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "runtime_fixture",
+                name: "finish",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `finish`, got {other:?}"),
+        }
+    }
+
+    /// A second fixture that proves `#[param(default = ...)]`
+    /// still works when the field type is a runtime typed param
+    /// (K4.5.4f × K4.5.4a interaction).
+    #[derive(FeatureSchema, Debug, PartialEq)]
+    #[schema(type = "runtime_defaults")]
+    #[allow(dead_code)]
+    struct RuntimeDefaults {
+        #[param(default = ::fielddraft_protocol::Length::mm(5.0))]
+        depth: ::fielddraft_protocol::Length,
+        #[param(default = ::fielddraft_protocol::Angle::deg(0.0))]
+        sweep: ::fielddraft_protocol::Angle,
+    }
+
+    #[test]
+    fn runtime_defaults_apply_on_missing_keys() {
+        let parsed = RuntimeDefaults::parse(&json!({})).unwrap();
+        assert_eq!(parsed.depth, ::fielddraft_protocol::Length::mm(5.0));
+        assert_eq!(parsed.sweep, ::fielddraft_protocol::Angle::deg(0.0));
+    }
+
+    #[test]
+    fn runtime_defaults_marked_optional_in_schema() {
+        let schema = RuntimeDefaults::schema_json();
+        let params = schema["params"].as_array().unwrap();
+        for p in params {
+            assert_eq!(p["required"], json!(false), "param {p:?}");
+        }
+    }
 }
