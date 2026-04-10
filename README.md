@@ -23,10 +23,10 @@ Die zugrundeliegende Recherche (siehe `README.md`) hat gezeigt, dass es unter Li
 
 Gleichzeitig zeigt die Analyse der benötigten Funktionen, dass für den **3D‑Druck‑Use‑Case** die Schwächen klassischer B‑Rep‑Kernel (TNP, co‑planare Booleans, Fillet‑Edge‑Cases, Single‑Thread‑Performance) **strukturell vermieden** werden können, wenn man auf einen SDF‑Kern umschwenkt:
 
-- Boolesche Operationen sind in SDFs trivial und mathematisch robust (`min`, `max`, `−`).
-- Offsets sind eine einfache Konstanten‑Subtraktion `f(x) − d`.
-- Raycasting erfolgt performant via Sphere Tracing direkt auf der Feldfunktion.
-- Bei 0,1 mm Mesh‑Auflösung ist der „Potato‑Meshing“‑Effekt des Marching‑Cubes‑Algorithmus für FDM‑Druck praktisch irrelevant, da eine 0,4‑mm‑Düse ohnehin keine perfekt scharfen Kanten druckt.
+- Boolesche Operationen sind in SDFs trivial und mathematisch robust (`min`, `max`, `−`) — sie kennen die topologischen Grenzfälle von B‑Rep‑Solvern (co‑planare Flächen, Zero‑Thickness‑Berührungen, TNP) strukturell nicht.
+- Offsets sind eine einfache Konstanten‑Subtraktion `f(x) − d`, ohne Self‑Intersection‑Probleme.
+- Garantierte Wasserdichtigkeit: Aus einem SDF‑Graphen lässt sich per Dual Contouring ein Mesh ableiten, das mathematisch garantiert keine Löcher oder Self‑Intersections enthält — der Slicer bekommt immer ein druckbares STL.
+- Bei 0,1 mm Mesh‑Auflösung ist der „Potato‑Meshing”‑Effekt der klassischen Marching‑Cubes‑Variante für FDM‑Druck praktisch irrelevant, da eine 0,4‑mm‑Düse ohnehin keine perfekt scharfen Kanten druckt; Dual Contouring statt Marching Cubes erhält scharfe mechanische Kanten zusätzlich.
 
 FieldDraft zielt damit auf die Lücke: **Onshape‑artige UX, Plasticity‑artige Geschwindigkeit, FreeCAD‑artige Datenhoheit — nativ im Browser, offline‑fähig, unter Linux.**
 
@@ -57,30 +57,48 @@ FieldDraft besteht zunächst aus zwei Schichten: einem **Rust/WASM‑Geometrieke
 
 ### 4.1 Rust/WASM‑Kernel (Backend im Browser)
 
-Verantwortlich für alles, was Mathematik und Zustand ist — läuft ohne DOM‑Zugriff im Linear Memory von WebAssembly.
+Verantwortlich für alles, was Mathematik und Zustand ist — läuft ohne DOM‑Zugriff im Linear Memory von WebAssembly. Der Kernel ist kein reiner SDF‑Evaluator, sondern ein **hybrider Kern** aus drei eng gekoppelten Schichten: ein **CSG‑Graph mit Provenance‑Tracking** (mathematische Wahrheit), ein **Dual‑Contouring‑Mesher** (skalierbare Anzeigegeometrie) und ein daraus abgeleiteter **B‑Rep‑Proxy** (topologische Selektions‑ und Snapping‑Schicht). Diese Drei‑Schichten‑Architektur ist zwingend, weil reines Raymarching auf CSG‑Bäumen über mehrere Bodies und komplexe Sketches nicht skaliert (Instruction‑Cache‑Kollaps der GPU, siehe §11) und ein klassischer B‑Rep‑Kernel im WASM‑Payload zu groß und an Booleschen Grenzfällen zu fragil wäre.
 
-- **Feature‑Tree / Ground Truth:** Der Kernel speichert den parametrischen Baum aus Sketches, Extrusionen, Booleans, Patterns, Transformationen, Variablen und Parametern als **Genealogy Graph**. Kanten und Flächen werden **nicht** durchnummeriert, sondern über ihre Entstehungsgeschichte referenziert — das vermeidet das Topological Naming Problem (TNP) strukturell.
-- **SDF‑Auswertung:** Jede Operation im Feature‑Tree trägt zu einer zusammengesetzten Distanzfunktion bei. Boolesche Operationen sind `min`/`max`/`−`, Patterns sind Modulo‑Transformationen des Raumes, Spiegelungen sind Vorzeichen­spiegelungen.
-- **Lokale Modifikatoren (Fillets/Chamfers):** Realisiert über **parametrische SDF‑Masken**. Die Maske ist **keine** statische Box im Weltraum, sondern ein Feature‑Tree‑Knoten, dessen Geometrie zwingend an Vektoren der zugrundeliegenden Skizzen bzw. Extrusions‑Endpunkte gebunden ist. Wenn eine vorgelagerte Extrusion von 50 mm auf 100 mm wächst, wandert die Maske mit — sie rundet weiterhin die korrekte Kante ab, nicht plötzlich ein flaches Wandstück. Innerhalb der Maske wirkt `smin` (smooth minimum) für Fillets bzw. lineare Interpolation für Chamfers; außerhalb harte Booleans. Ein alternativer UX‑Modus („Kanten bemalen") ist angedacht, setzt aber eine robuste Kanten‑Identifikation voraus — siehe Risiko‑Abschnitt TNP.
-- **Meshing:** Dual Contouring oder Surface Nets, um scharfe mechanische Kanten zu bewahren. Einzelne Körper werden **separat** gemesht — der Slicer kann überlappende Meshes selbst als einen Körper interpretieren, was Rechenzeit spart.
-- **Export:** STL (Ascii/Binary), GLB (glTF 2.0), später STEP via Roundtrip‑Bridge oder einen dedizierten B‑Rep‑Exporter.
-- **Konstanten‑Cache:** Da der Feature‑Tree die Ground Truth ist, kommt Undo/Redo praktisch geschenkt — man spult den Baum einen Schritt zurück und rechnet neu.
+- **Feature‑Tree / CSG‑Graph als Ground Truth:** Der Kernel speichert den parametrischen Baum aus Sketches, Extrusionen, Revolves, Booleans, Patterns, Transformationen, Variablen und Parametern als annotierten DAG. Jeder Leaf‑Knoten (Primitiv oder Sketch‑Extrusion) hat eine eindeutige `node_id`; jeder innere Knoten beschreibt eine Operation (`Union`, `Difference`, `Intersection`, `Transform`, `Pattern`). Geometrische Features werden **nicht** über Koordinaten, sondern über Provenance‑Rezepte aus diesen IDs referenziert (siehe B‑Rep‑Proxy weiter unten). Damit ist das Topological Naming Problem (TNP) für Booleans strukturell gelöst — ohne separates Genealogy‑Naming‑Schema.
+
+- **Multi‑Body‑Isolation:** Jeder eigenständige Körper im Part Studio besitzt seinen **eigenen** CSG‑Graphen, eigenen BVH und eigenen Mesh‑Cache. Es gibt keine globale „Monster‑Gleichung", die alle Bodies verknüpft. Zwei Bodies werden mathematisch nur dann gekoppelt, wenn der User explizit eine Boolean‑Operation zwischen ihnen ausführt. Ohne diese Isolation würde die SDF‑Auswertung bei mehreren Bodies an der Instruction‑Cache‑Grenze der GPU und am asymptotischen O(N) der naiven Punkt‑Auswertung kollabieren.
+
+- **SDF‑Auswertung mit Provenance:** Jede Punkt‑Auswertung `f(p)` liefert nicht nur den Distanzwert, sondern zusätzlich die Liste der **Contributors** — die Leaf‑IDs, deren Distanzfeld am Punkt `p` aktiv den Wert dominiert (innerhalb eines Epsilons ε). Die Auswertung von `min(f_A, f_B)` propagiert beide IDs, sobald `|f_A − f_B| < ε`; sonst nur die ID des dominanten Terms. Aus dieser Contributor‑Menge entsteht der B‑Rep‑Proxy. Boolesche Operationen bleiben mathematisch trivial: Union = `min`, Intersection = `max`, Difference = `max(f_A, −f_B)` — alle hart.
+
+- **Keine Smooth Booleans:** Der Kernel implementiert **keinen** `smin`‑Operator und keine smooth blends. Begründung: weiche Verschmelzungen zerstören die Provenance in der Übergangszone — die dort entstehende emergente Geometrie gehört weder zu Körper A noch zu B, wodurch der B‑Rep‑Proxy keine eindeutige Face/Edge‑Zerlegung mehr liefern kann. Smooth‑Fillets und ‑Blends sind damit auf lange Zeit ausgeschlossen; siehe §6.1 und §11.
+
+- **BVH als Pflicht‑Basistechnologie, nicht Optimierung:** Jeder CSG‑Knoten trägt eine axis‑aligned Bounding Box (AABB), die bei jeder Parameter‑Änderung des Sub‑Baums neu berechnet wird. Mesher und Picking traversieren den Graphen ausschließlich über diese BVH; ganze Subtrees werden weggeschnitten, sobald `f_AABB(p) > Schrittweite`. Komplexität sinkt damit von O(N) auf O(log N). Ein Bauteil mit 500 Bohrungen evaluiert pro Sample‑Punkt nur die zwei oder drei tatsächlich relevanten Loch‑Knoten, nicht alle 500. Ohne BVH ist das System bei realistischen Bauteilen nicht nutzbar — sie ist deshalb von Anfang an Pflicht‑Bestandteil des Kernels, nicht eine spätere Optimierung.
+
+- **2D‑Kernel mit 2D‑BVH (immer, ohne Ausnahme):** Skizzen sind ihre eigene 2D‑SDF‑Welt: Linien, Kreisbögen, Polygone und Offset‑Regionen werden als 2D‑SDF‑Bäume gespeichert, mit identischer CSG‑Semantik (`min`/`max` über 2D‑Primitive) und einem dedizierten 2D‑BVH. **Jede** Skizze bekommt diesen BVH, auch triviale — keine Sonderfälle, keine adaptive Wahl. Alternative Strategien wie 2D‑SDF‑Baking in Float32‑Texturen oder Domain Repetition via Modulo werden bewusst **nicht** verwendet: Texturen kosten VRAM, blockieren parametrische Updates und verlieren bei jeder Maßänderung ihren Cache; Domain Repetition funktioniert nur für regelmäßige Muster und passt nicht in das parametrische CAD‑Modell. Die Extrude‑ und Revolve‑Knoten heben das fertige 2D‑Feld in den 3D‑Raum.
+
+- **Splines als Polylinien (im 3D‑Kernel):** Splines (B‑Splines, Bézier) und Kreisbögen werden im 2D‑Solver (siehe §4.4) weiterhin exakt als Kurven gehalten — der Constraint‑Solver braucht die mathematische Form, und auch die Sketch‑Visualisierung im 2D‑Editor zeigt sie exakt. Für die SDF‑Auswertung im 3D‑Kernel werden sie aber in **Polylinien‑Approximationen** mit konfigurierbarer Sehnenfehler‑Toleranz (Default 0,05 mm — feiner als die FDM‑Druckauflösung) zerlegt. Das hält den 2D‑SDF‑AST geschlossen über wenigen einfachen Primitiv‑Typen (Linie, Kreisbogen) und erspart dem Mesher exotische Spline‑SDFs mit transzendenten Distanzformeln, die sich gegen analytisches Provenance‑Tracking nur schwer verteidigen lassen.
+
+- **Dual Contouring als Pflicht‑Renderpfad (nicht Export‑only):** Der Kernel meshet jeden Body kontinuierlich in einem Web Worker und hält das aktuelle Mesh im VRAM gecacht. Bei jeder Parameter‑Änderung im CSG‑Sub‑Baum eines Body wird **nur dieser Body** neu gemesht; alle anderen Bodies bleiben unangetastet. Dual Contouring (statt Marching Cubes) ist Pflicht, weil es scharfe mechanische Kanten erhält und Hermite‑Daten aus den SDF‑Gradienten direkt nutzt. Inaktive Bodies bleiben als statische Meshes im Kontext; aktive Bodies (gerade in Bearbeitung) werden inkrementell re‑meshed. Manifold‑Verletzungen sind ein bekannter DC‑Edge‑Case und werden in einem Post‑Processing‑Pass repariert, siehe §11.
+
+- **B‑Rep‑Proxy aus Provenance:** Aus der Contributor‑Analyse über das gemeshte Volumen entsteht ein dünner topologischer Layer: **Faces** sind zusammenhängende Mesh‑Regionen mit identischem dominanten Contributor; **Edges** sind die Punktmengen, an denen exakt zwei Contributors simultan den Distanz‑Nullwert bestimmen (Schnittkurven zwischen zwei Leaf‑Feldern); **Vertices** sind Punkte mit ≥3 gleichzeitig aktiven Contributors. Edge‑Sample‑Punkte werden zu Polylinien geclustert und auf die mathematisch exakte Schnittkurve der beteiligten Sub‑SDFs zurückprojiziert (Newton‑Iteration entlang `f_A = f_B = 0`), damit die finalen Snap‑Koordinaten nicht auf den ungenauen Mesh‑Vertices liegen. Dieser Proxy ist das einzige Zielobjekt jeder Selektion und jedes Snappings im Frontend. Faces, Edges und Vertices werden über ihre Provenance‑Rezepte gespeichert (z. B. `Edge = Intersection(Node_12, Node_15)`), nicht über Koordinaten — bei Re‑Evaluation des Baums wandern die Bezüge automatisch mit.
+
+- **Lokale Modifikatoren (harte Chamfers, Spätfeature):** Parametrische Chamfer‑Knoten werden — falls überhaupt umgesetzt — als rein harte, lokale CSG‑Masken implementiert, die an Sketch‑Vektoren oder B‑Rep‑Edges des Proxys gebunden sind. Smooth‑Fillets bleiben dauerhaft ausgeschlossen (siehe oben). Siehe §6.1 und Roadmap K10.
+
+- **Export:** STL (Ascii/Binary) und GLB (glTF 2.0) werden direkt aus dem ohnehin vorhandenen Body‑Mesh‑Cache erzeugt — kein separater Export‑Meshing‑Lauf nötig. Später STEP via dediziertem B‑Rep‑Exporter (M14+).
+
+- **Konstanten‑Cache und Undo/Redo:** Da der CSG‑Graph die Ground Truth ist, kommt Undo/Redo praktisch geschenkt — man spult den Baum einen Schritt zurück, der BVH wird inkrementell invalidiert, und nur die betroffenen Bodies werden neu gemesht.
 
 ### 4.2 React‑Three‑Fiber‑Frontend (TypeScript)
 
 Verantwortlich für Darstellung, Interaktion und Gizmos. Das UI wird komplett in **React** gebaut; die 3D‑Szene über **React Three Fiber** (`@react-three/fiber`) mit Unterstützung durch **`@react-three/drei`** für Helper (Kamera, Gizmos, Ansichts‑Würfel, Controls). R3F wickelt Three.js deklarativ in den React‑Komponentenbaum ein, sodass Viewport‑State, Outliner, Panels und Feature‑Tree dieselbe State‑Management‑Welt teilen.
 
-- **Rendering:** React Three Fiber auf Three.js mit **WebGPU von Anfang an** (kein WebGL‑Fallback). Viewport, Beleuchtung, Materialien, Schatten.
+- **Rendering:** **Klassische Rasterisierung** der vom Kernel gelieferten Body‑Meshes über die WebGPU‑Pipeline (kein WebGL‑Fallback). **Kein globales Raymarching im Viewport.** Begründung: Sphere Tracing eines verschachtelten CSG‑AST mit mehreren Bodies sprengt den Instruction‑Cache der GPU und führt zu Register Spilling — ein Bauteil mit 50 Features rendert auf der vorhandenen Hardware nicht mehr in Echtzeit. Stattdessen streamt der Kernel nach jeder Parameter‑Änderung neue Vertex/Index‑Buffer pro betroffenem Body an die GPU, und Three.js zeichnet sie wie jedes andere statische Mesh.
 - **Kamera‑Steuerung:** Orbit/Pan/Zoom, Ansichts‑Würfel oben rechts zum Ausrichten auf Standardansichten.
-- **Raycasting:** Mausklicks treffen Geometrie; der Kernel liefert die zugehörige Feature‑ID aus dem Genealogy Graph zurück.
-- **Gizmos:** Translate, Rotate, Scale und Mirror‑Achse für ganze Feature‑Tree‑Knoten. **Keine** Push/Pull‑Gizmos auf einzelnen SDF‑Flächen — der Workflow ist strikt parametrisch, geändert wird ausschließlich über Skizzen, Maße und die Parameter‑Tabelle (siehe §6.3).
-- **Snapping:** Snaps fangen nicht auf dem (kartoffeligen) Mesh, sondern auf den **Vektordaten des Feature‑Trees** — Mittelpunkt eines Zylinders, Extrusions‑Punkt eines Sketches, Linienmittelpunkte etc.
-- **WebGPU‑Raymarching:** Das SDF wird direkt per Fragment‑ bzw. Compute‑Shader in Echtzeit vorvisualisiert. Erst beim Export wird der teurere Mesher im Rust‑Kernel gestartet.
+- **Picking via Raymarching‑Sensor:** Raymarching wird nicht eliminiert, sondern auf eine spezifische Aufgabe reduziert: **ein einzelner Strahl pro Mausklick**. Die Kamera schießt den Strahl in den Kernel‑CSG‑Graphen, BVH‑beschleunigtes Sphere Tracing findet den ersten Treffpunkt, und der Kernel liefert die Contributor‑Liste an diesem Punkt zurück. Aus den Contributors wird der zugehörige Face/Edge/Vertex des B‑Rep‑Proxys (siehe §4.1) ermittelt. Bei einer komplexen Szene bleibt das selbst mit tausenden Features im Sub‑Millisekunden‑Bereich, weil pro Klick eben nur ein Strahl gerechnet wird, nicht acht Millionen. Mesh‑basiertes Picking gegen die Dreiecke wird **nicht** verwendet — das Mesh ist nur Anzeigelayer und liegt nicht auf den mathematisch exakten Oberflächen.
+- **Gizmos:** Translate, Rotate, Scale und Mirror‑Achse für ganze Feature‑Tree‑Knoten. **Keine** Push/Pull‑Gizmos auf einzelnen Faces — der Workflow ist strikt parametrisch, geändert wird ausschließlich über Skizzen, Maße und die Parameter‑Tabelle (siehe §6.3).
+- **Snapping:** Snaps fangen ausschließlich gegen den B‑Rep‑Proxy aus §4.1 — Faces, Edges, Edge‑Mittelpunkte, Vertices, Achsen, Mate‑Connectors. Niemals gegen die Dreiecke des gerenderten Meshes (das Mesh ist eine ungenaue Hülle). Die Snap‑Punkte werden bei Bedarf aus den Contributor‑Rezepten des Proxys analytisch nachberechnet, sodass sie exakt auf den mathematischen Oberflächen liegen, nicht auf den Mesh‑Vertices.
 - **Auto‑Save im Browser:** Jede Änderung am Feature‑Tree erzeugt einen Dirty‑Marker; nach einer kurzen Debounce‑Phase (ca. 500 ms) wird der aktuelle Projektzustand als JSON in `localStorage` persistiert. Beim Seiten‑Reload wird der letzte lokale Stand automatisch wiederhergestellt. Ein späterer Sync an einen Backend‑Server ist vorgesehen, aber nicht Teil des MVPs — die `localStorage`‑Schicht ist zunächst die einzige Persistenz.
 
 ### 4.3 Memory‑Brücke
 
-Keine JSON‑Serialisierung zwischen Rust und JS. Der Rust‑Mesher legt Vertices/Normals/Indices als fortlaufenden Block im WASM Linear Memory ab; JavaScript erzeugt einen `Float32Array`‑View direkt auf diesen Speicherbereich und übergibt ihn an eine `THREE.BufferGeometry`. Damit landet das Mesh ohne Kopiervorgang auf der GPU.
+Keine JSON‑Serialisierung zwischen Rust und JS auf dem Geometrie‑Pfad. Der Rust‑Mesher legt Vertices, Normals und Indices **pro Body** als fortlaufende Blöcke im WASM Linear Memory ab; JavaScript erzeugt `Float32Array`‑ und `Uint32Array`‑Views direkt auf diese Speicherbereiche und bindet sie an `THREE.BufferGeometry`‑Instanzen. Damit landet jedes Mesh ohne Kopiervorgang auf der GPU.
+
+Die Brücke ist außerdem **inkrementell**: Bei jeder Parameter‑Änderung, die einen Body invalidiert, streamt der Kernel ausschließlich für diesen Body neue Buffer ans Frontend (über einen Web‑Worker‑Channel), und das Frontend tauscht die `BufferGeometry` dieses Bodies atomar aus. Alle anderen Bodies bleiben unberührt — keine Re‑Allocation, kein GPU‑Upload für inaktiven Kontext. Alte Buffer werden verworfen, sobald der nächste Render‑Frame durch ist; die Lebenszeit‑Verwaltung läuft über Reference‑Counts im Rust‑Kernel und kontrollierte `free()`‑Calls aus dem JS‑Wrapper.
 
 ### 4.4 2D‑Constraint‑Solver
 
@@ -105,7 +123,7 @@ Variablen sind **keine** bloßen Zahlwerte, sondern vollwertige **Formeln** — 
 
 ### 4.6 Backend‑Server (spätere Phase, nicht im MVP)
 
-> **Hinweis:** Das MVP läuft komplett clientseitig, persistiert wird ausschließlich in `localStorage`. Ein Backend‑Server wird erst nach Abschluss des Modelliers‑Kerns (siehe Roadmap, nach M8) eingeführt. Der folgende Abschnitt beschreibt die geplante Architektur dieser späteren Phase — inklusive MariaDB, Auth und Projekt‑CRUD.
+> **Hinweis:** Das MVP läuft komplett clientseitig, persistiert wird ausschließlich in `localStorage`. Ein Backend‑Server wird erst nach Abschluss der Kernel‑Phase (siehe Roadmap, nach K9) eingeführt. Der folgende Abschnitt beschreibt die geplante Architektur dieser späteren Phase — inklusive MariaDB, Auth und Projekt‑CRUD.
 
 Der Server wird bewusst schlank gehalten und hat nur wenige Aufgaben:
 
@@ -121,7 +139,7 @@ Der Server wird bewusst schlank gehalten und hat nur wenige Aufgaben:
 
 ## 5. User‑ und Projektverwaltung (spätere Phase)
 
-> **Hinweis:** User‑Accounts, ein serverseitiges Dashboard und öffentliche Galerien sind ebenfalls erst Teil der Backend‑Phase (nach M8). Im MVP gibt es genau einen impliziten „lokalen Workspace" im Browser, dessen gesamter Zustand in `localStorage` liegt. Die folgende Spezifikation beschreibt den Zielzustand, nicht den MVP‑Stand.
+> **Hinweis:** User‑Accounts, ein serverseitiges Dashboard und öffentliche Galerien sind ebenfalls erst Teil der Backend‑Phase (nach K9). Im MVP gibt es genau einen impliziten „lokalen Workspace" im Browser, dessen gesamter Zustand in `localStorage` liegt. Die folgende Spezifikation beschreibt den Zielzustand, nicht den MVP‑Stand.
 
 ### 5.1 Accounts
 
@@ -171,11 +189,11 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 | Plane (Referenzebenen) | ✅ | |
 | Variable / Expressions | ✅ | |
 | Mate Connector (als Ankerpunkt, nicht Kinematik) | ✅ | |
-| Fillet (parametrisch, via SDF‑Masken an Skizzen gebunden) | ❌ | Phase 2 |
-| Chamfer (parametrisch, via SDF‑Masken an Skizzen gebunden) | ❌ | Phase 2 |
-| Sweep | ❌ | Phase 2 |
-| Loft | ❌ | Phase 2 |
-| Curved Pattern | ❌ | Phase 2 |
+| Fillet (smooth) | ❌ | Dauerhaft ausgeschlossen — `smin` zerstört Provenance, siehe §4.1 |
+| Chamfer (hart, an Sketch‑Kanten/B‑Rep‑Edges gebunden) | ❌ | K10 — ferne Zukunft, falls überhaupt |
+| Sweep | ❌ | M14+ |
+| Loft | ❌ | M14+ |
+| Curved Pattern | ❌ | M14+ |
 
 ### 6.2 Sketch‑Editor (2D)
 
@@ -206,8 +224,8 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 
 ### 6.3 UX‑Vereinfachungen gegenüber Onshape
 
-- **Kein expliziter „Neue Skizze“‑Button.** Statt User zu zwingen, zuerst eine Ebene zu definieren, reicht es, das Sketch‑Tool zu aktivieren und direkt auf eine 3D‑Fläche zu klicken. Der Raycast liefert Schnittpunkt und Normale; Kernel und Frontend bauen die Sketch‑Ebene automatisch im Hintergrund (Vorbild: Shapr3D).
-- **Strikt parametrischer Workflow.** Änderungen laufen **ausschließlich** über Skizzen, Bemaßungen und Variablen — bewusst kein Direct‑Manipulation‑Modus im MVP. Der Grund: In einem SDF gibt es mathematisch keine Flächen, Kanten oder Ecken, sondern nur ein Distanzfeld. Push/Pull auf „Flächen" würde eine robuste Topologie‑Extraktion aus dem Feld erfordern, inklusive einer Feature‑ID‑Berechnung im Raymarcher und eines konsistenten Rückwegs in den Feature‑Tree. Das ist lösbar, aber nicht MVP‑würdig. Stattdessen wird das Onshape‑Modell zitiert: Skizze → Extrusion → Maß ändern → Baum rechnet neu. Ein Direct‑Mode kann in einer späteren Phase nachgeliefert werden, sobald die Feature‑ID‑Infrastruktur im Shader existiert.
+- **Kein expliziter „Neue Skizze”‑Button.** Statt User zu zwingen, zuerst eine Ebene zu definieren, reicht es, das Sketch‑Tool zu aktivieren und direkt auf eine Face im Viewport zu klicken. Der Picking‑Raymarch (siehe §4.2) liefert den Treffpunkt, die Provenance liefert das zugehörige Face des B‑Rep‑Proxys, und der Kernel verankert die neue Sketch‑Ebene **strukturell an diesem Face** (Auto‑Lock): wandert das Face später durch eine Parameter‑Änderung im Raum, wandert die Skizzenebene mit. Das funktioniert verlässlich für planare Faces aus Extrusions‑ und Revolve‑Knoten (Vorbild: Shapr3D). Klicks auf gekrümmte/organische Faces würden eine „unconstrained” Ebene erzeugen, die der User mit harten Maßen im 3D‑Raum verankern müsste — diese Variante ist im MVP bewusst noch nicht implementiert (siehe §11).
+- **Strikt parametrischer Workflow.** Änderungen laufen **ausschließlich** über Skizzen, Bemaßungen und Variablen — bewusst kein Direct‑Manipulation‑Modus im MVP. Der B‑Rep‑Proxy aus §4.1 liefert zwar Faces, Edges und Vertices als selektierbare Objekte, aber ein Push/Pull‑Gizmo auf einer Face bräuchte einen konsistenten Rückweg von der gezogenen Distanz in das richtige numerische Feld eines Upstream‑Sketch‑ oder Extrude‑Knotens. Diese Abbildung ist im allgemeinen Fall mehrdeutig (welcher Parameter soll wachsen?) und in Multi‑Body‑Szenen instabil. Das Onshape‑Modell ist sauberer: Skizze → Extrusion → Maß ändern → Baum rechnet neu. Ein Direct‑Mode kann später nachgeliefert werden (M14+), sobald ein robustes Heuristik‑Modell für die Push/Pull‑zu‑Parameter‑Auflösung existiert.
 - **Respekt vor Augen und Tastatur:** vollwertiger Light/Dark/High‑Contrast‑Mode, Respekt der Default-Fontsize, konfigurierbare Keybindings. Das sind bewusste Lehren aus dem Plasticity‑Debakel im Kontext‑Chat.
 
 ## 7. Daten und Dateiformate
@@ -233,7 +251,7 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 
 ## 8. Datenhoheit, Deployment und Lizenz
 
-- **Client‑Only im MVP:** Alle Berechnungen (SDF, Mesher, Solver, Raymarching) laufen im Browser, Persistenz nach `localStorage`. Es gibt keinen Server — das Tool kann vollständig als statisches Bundle ausgeliefert werden (GitHub Pages, Netlify, beliebiger Webserver). Ein Backend wird erst in einer späteren Phase ergänzt (siehe §4.6 und Roadmap).
+- **Client‑Only im MVP:** Alle Berechnungen (CSG‑Auswertung, Mesher, Solver, Picking‑Raymarch) laufen im Browser, Persistenz nach `localStorage`. Es gibt keinen Server — das Tool kann vollständig als statisches Bundle ausgeliefert werden (GitHub Pages, Netlify, beliebiger Webserver). Ein Backend wird erst in einer späteren Phase ergänzt (siehe §4.6 und Roadmap).
 - **Client‑Heavy, Server‑Light (spätere Phase):** Sobald der Server existiert, übernimmt er nur Auth, Projekt‑CRUD und Sync — keine Geometrie‑Dienste, damit die Cloud‑Kosten minimal bleiben und Self‑Hosting trivial wird.
 - **Self‑Hostable (spätere Phase):** Ein einzelnes statisches Go‑Binary + MariaDB‑Container reicht. `docker-compose.yml` im Repo startet dann Server, DB und Web‑Frontend mit einem Befehl.
 - **IP‑Schutz:** Projekte sind standardmäßig privat; der Sichtbarkeits‑Schalter muss explizit umgelegt werden, um etwas zu publizieren. Damit ist FieldDraft — anders als Onshape Free — für Hardware‑Startups mit Patent‑Ambitionen unbedenklich.
@@ -243,7 +261,7 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 
 Tests werden **von Anfang an** mitentwickelt, nicht nachgezogen. Die Pyramide sieht so aus:
 
-- **Rust‑Unit‑Tests** (`cargo test`) für den Geometriekern: SDF‑Primitive, Booleans, Feature‑Tree‑Evaluation, Genealogy‑Graph, Meshing‑Algorithmen, Serde‑Roundtrips des Projektformats. Numerische Vergleiche mit Referenztabellen.
+- **Rust‑Unit‑Tests** (`cargo test`) für den Geometriekern: SDF‑Primitive (3D und 2D), harte Booleans, CSG‑Graph mit Provenance‑Auswertung (Contributor‑Mengen für Single‑Face/Edge/Vertex‑Punkte), 3D‑BVH‑Korrektheit (BVH‑Cull‑Ergebnis identisch zur naiven O(N)‑Referenz für zufällige CSG‑Bäume), 2D‑BVH‑Korrektheit, Dual‑Contouring‑Goldfiles (Mesh‑Hash gegen Referenz für kanonische Bauteile), Manifold‑Check des DC‑Outputs auf kritischen Topologien, Multi‑Body‑Isolation (eine Body‑Änderung darf andere Body‑Meshes nicht invalidieren), B‑Rep‑Proxy‑Ableitung aus Provenance, Polyline‑Approximation von Splines mit Sehnenfehler‑Toleranz, Serde‑Roundtrips des Projektformats. Numerische Vergleiche mit Referenztabellen.
 - **Go‑Tests** (spätere Backend‑Phase, `go test ./...`): Auth‑Flows, Projekt‑CRUD, Sichtbarkeits‑Transitionen, Quotas, Rate‑Limits, Sync‑Endpoints gegen eine echte MariaDB‑Instanz. `httptest.Server` für die HTTP‑Schicht, `testify` für Assertions, Table‑Driven Tests als Standard. Im MVP noch nicht aktiv, da kein Backend existiert.
 - **Solver‑Property‑Tests** (`proptest`): Zufallsgenerierte Sketches werden gegen invariante Eigenschaften geprüft (z. B. „nach Setzen eines Parallel‑Constraints liegen die Liniensteigungen innerhalb ε identisch“).
 - **TypeScript‑Unit‑Tests** (`vitest`) für Frontend‑Logik: Projekt‑Store, Auto‑Save‑Debouncing, `localStorage`‑Wrapper, UI‑Reducer, Command‑Dispatcher. Komponententests für R3F‑Szenen via `@react-three/test-renderer`.
@@ -256,82 +274,111 @@ Tests werden **von Anfang an** mitentwickelt, nicht nachgezogen. Die Pyramide si
    - Offline/Online‑Sync: Netzwerk mocken, Edits machen, wieder online gehen, Server‑Stand prüfen.
    - Sketch‑Constraint‑Workflow: Rechteck zeichnen, bemaßen, Maß ändern, Viewport‑Snapshot.
    - Extrude und STL‑Export: Download‑Artefakt byteweise gegen Goldfile prüfen.
-- **Visual‑Regression** via Playwright‑Screenshots für kritische Viewport‑States (Rohbauteil, gemeshtes Bauteil, Raymarching‑Preview).
+- **Visual‑Regression** via Playwright‑Screenshots für kritische Viewport‑States (frisch gemeshtes Bauteil, Hover‑Highlight auf Face/Edge/Vertex, Sketch‑Editor‑Snapshot).
 - **Lokaler Testlauf:** Ein einzelner Befehl `just test` führt `cargo test` (Kernel), Vitest und Playwright nacheinander aus. Pro Commit grün oder nicht gemerged. Eine CI‑Pipeline (GitHub Actions o. ä.) wird bewusst erst aufgesetzt, sobald das Projekt auf GitHub landet.
 - **Test‑Fixtures:** Ein Satz kanonischer Beispielprojekte (`fixtures/`) als Goldfiles für Regression und Bootstrapping neuer Tests.
 
 ## 10. Roadmap
 
-Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Umsetzung in kleinen, testbaren Vertical Slices vorantreiben kann. Jeder Meilenstein endet mit grünen Tests, einem lauffähigen Artefakt und einem nachvollziehbaren Commit‑Verlauf. Keine „Big Bang“‑Phasen.
+Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Umsetzung in kleinen, testbaren Vertical Slices vorantreiben kann. Jeder Meilenstein endet mit grünen Tests, einem lauffähigen Artefakt und einem nachvollziehbaren Commit‑Verlauf. Keine „Big Bang”‑Phasen.
 
-**Meilenstein M0 — Repo und Testgerüst**
-- Lokales Git‑Repo (kein GitHub, kein Remote in dieser Phase).
-- Monorepo mit `crates/kernel` (Rust→WASM), `crates/protocol` (Rust, JSON‑Schema‑Export), `web/` (Vite + TypeScript + React + React Three Fiber). Der `server/`‑Ordner wird erst in der Backend‑Phase angelegt.
-- Build‑Tooling: `just`, `wasm-pack`, `npm` (kein pnpm).
-- Vitest, Playwright und `cargo test` von Commit 1 an eingerichtet, lokal lauffähig via `just test`.
-- `just dev` startet das Web‑Frontend mit einem Befehl — keine Datenbank, kein Docker‑Compose, keine CI‑Pipeline im MVP.
+**Erledigt vor Architektur‑Wechsel (M0–M2) sowie K1, K2:**
 
-**Meilenstein M1 — WebGPU‑Viewport und erste Primitive**
-- React Three Fiber mit WebGPU‑Renderer, Kamera, Ansichts‑Würfel (via `@react-three/drei`).
-- Kernel liefert feste Primitive (Box, Sphere, Cylinder) als SDF.
-- Raymarching‑Shader rendert das zusammengesetzte Feld in Echtzeit.
-- Zero‑Copy‑Memory‑Brücke für SDF‑Parameter.
-- Debounced Auto‑Save des Projektzustands nach `localStorage`; Wiederherstellung beim Reload.
-- Snapshot‑Tests: gerendertes Bild gegen Goldfile.
+- **M0:** Repo‑Scaffold, Build‑Tooling (`just`, `wasm-pack`, `npm`), Test‑Harnesses (`cargo test`, Vitest, Playwright), CI‑freier lokaler Workflow, `crates/kernel`, `crates/protocol`, `web/`.
+- **M1:** Erste WebGPU‑Viewport‑Iteration mit TSL‑Raymarcher und festen Primitiven, Zero‑Copy‑Memory‑Brücke, debounced Auto‑Save in `localStorage`.
+- **M2:** Feature‑Tree, Boolean‑Knoten, Transform‑Knoten, Undo/Redo, Outliner, Range‑Select, Light‑Mode‑CSS.
+- **K1:** CSG‑AST in Rust (`crates/kernel/src/csg.rs`) mit Box/Sphere/Cylinder‑Leaves und Union/Difference/Intersection/Transform‑Inner‑Nodes; naives uniformes Dual Contouring (`crates/kernel/src/dc.rs`) inklusive Goldfile‑Test „Quader mit zwei Bohrungen”; Zero‑Copy‑Bridge für Positionen/Normalen/Indices via `meshPositionsPtr`/`meshIndicesPtr`; `Viewport.tsx` rendert jetzt eine `BufferGeometry` aus den Kernel‑Puffern, der TSL‑Raymarcher (`raymarch.ts`) bleibt als Referenz im Repo, ist aber nicht mehr in den Render‑Pfad eingebunden.
+- **K2:** Provenance‑getragene `CsgNode::evaluate(p, eps) → (distance, Contributors)` mit stabilen `NodeId`s auf jedem Leaf (übernommen aus `FeatureId`), inline `Contributors`‑Set (Kapazität 4) und `ProxyElement`‑Klassifikation (Face / Edge / Vertex). Sphere‑Tracing‑Raycaster in `crates/kernel/src/raycast.rs` plus `Kernel::pick(origin, dir)` wasm‑bindgen‑Export mit JSON‑Antwort. Der DC‑Mesher taggt jeden Vertex mit Klassifikationsbyte + flachem Contributor‑Array (`MAX_CONTRIBUTORS` Slots, `u32::MAX`‑Sentinel); Zero‑Copy via `meshClassificationsPtr`/`meshContributorsPtr`. Im Frontend treibt `PickProbe` einen `THREE.Raycaster` über die Pointer‑Bewegung, ruft `kernel.pick()` auf, zeigt das Ergebnis in einem `PickHud`‑Overlay (Farbkodierung face/edge/vertex) und setzt einen kleinen Debug‑Marker an den Trefferpunkt. Tests: Contributor‑Klassifikation auf Face/Edge/Vertex‑Punkten, Difference‑Randkurve, Raycast‑Miss/Face‑Hits, Mesh‑Klassifikation auf Union(Quader, Zylinder).
 
-**Meilenstein M2 — Feature‑Tree und Booleans**
-- Feature‑Tree‑Datenstruktur im Kernel, Serde‑Roundtrip‑Tests.
-- Boolean‑Nodes (Union, Difference, Intersect), Transform‑Nodes.
-- Undo/Redo über Tree‑Navigation.
-- UI: Part‑List/Outliner, Multiselect.
-- E2E‑Test: zwei Primitive erstellen, subtrahieren, Ergebnis visuell prüfen.
+**Zu K2 offen (bewusst verschoben):** Clusterung der Edge‑Vertices zu Polylinien und Newton‑Projektion auf die exakte Schnittkurve `f_A = f_B = 0` sind in K2 noch nicht umgesetzt. Die Sample‑basierte Klassifikation pro Mesh‑Vertex liefert den groben Proxy, der für Hover‑Debug‑Anzeigen reicht; präzises Snapping braucht diese beiden Nachbesserungen und wandert mit K6 (Sketch‑Editor) bzw. dediziertem K2.1‑Slice zurück in den Kernel.
 
-**Meilenstein M3 — 2D‑Constraint‑Solver**
-- Portierung von `libslvs` nach Rust, Test‑Harness gegen C‑Referenz. Bei Stabilitätsproblemen Fallback auf `libslvs` in C++ via Emscripten/`cc` (siehe §4.4).
-- Auf jeden Fall benötigte Constraints: Coincident, Parallel, Horizontal/Vertical, Dimension (Länge, Winkel), Tangent, Concentric, Equal, Midpoint, Symmetric.
+**Hinweis zum Architektur‑Wechsel:** Mit dem Übergang in die Kernel‑Phase wird der TSL‑Raymarcher‑Renderpfad aus M1 stillgelegt und durch einen Mesh‑basierten Renderpfad ersetzt. Begründung in §4.1, §4.2 und §11 — kurz: globales Raymarching skaliert nicht über mehrere Bodies und komplexe Sketches hinaus, und ohne einen B‑Rep‑Proxy aus Provenance lassen sich Faces/Edges/Vertices nicht zuverlässig selektieren. Die übrigen Artefakte aus M0–M2 (Repo, Tooling, Tests, Auto‑Save, Feature‑Tree, Outliner, Undo/Redo, CSS) bleiben unverändert in Verwendung.
+
+---
+
+### Kernel‑Phase (K1–K10): Hybrider SDF/Provenance/B‑Rep‑Kernel
+
+Diese Phase ersetzt die alten Meilensteine M3–M8 vollständig. Sie baut den hybriden Kernel aus §4.1 in sieben aufeinander aufbauenden Slices auf, dann folgen drei nachgelagerte Feature‑Slices (K8–K10).
+
+**K1 — Kernel‑Skelett und statisches Mesh‑Rendering**
+- CSG‑AST in Rust (enum mit Box/Sphere/Cylinder als Leafs, Union/Difference/Intersection/Transform als Inner Nodes).
+- Punkt‑Auswertung `f(p) → distance` ohne Provenance, ohne BVH (naiv O(N) — bewusst, um die Render‑Pipeline isoliert verifizieren zu können).
+- Naives Dual Contouring auf einem uniformen Voxel‑Grid (grobe Auflösung, single‑threaded, kein Manifold‑Pass).
+- Mesh‑Brücke nach Three.js: Vertex/Index‑Buffer als `Float32Array`/`Uint32Array`‑Views auf WASM Linear Memory.
+- WebGPU‑Viewport rendert das Mesh wie jedes andere statische Geometrie‑Objekt; Kamera‑Controls bleiben aus M1 erhalten.
+- TSL‑Raymarcher‑Renderpfad wird stillgelegt (Code bleibt vorerst für Referenz‑Tests im Repo, ist aber nicht mehr aktiv).
+- Test: hartkodierte CSG‑Szene (Quader mit zwei Bohrungen) wird als Mesh gerendert; Snapshot‑Vergleich gegen Goldfile.
+
+**K2 — Provenance, Picking, B‑Rep‑Proxy**
+- Punkt‑Auswertung erweitert auf `(distance, contributors[])`: jeder Leaf‑Knoten hat eine `node_id`, `min`/`max`/`difference` propagieren die ID des dominanten Operanden bzw. beide IDs bei Gleichstand innerhalb ε.
+- Picking‑Pfad: Mausklick → Kamera‑Strahl → Sphere‑Trace (vorerst ohne BVH) → Trefferpunkt → Contributor‑Auswertung.
+- B‑Rep‑Proxy‑Konstruktion aus dem ohnehin gemeshten Volumen: Sample‑Pass über die Mesh‑Vertices, Klassifikation in Face (1 Contributor), Edge (2 Contributors), Vertex (≥3 Contributors), Clusterung benachbarter Edge‑Punkte zu Polylinien, Newton‑Projektion auf die exakte Schnittkurve `f_A = f_B = 0`.
+- Frontend: Hover im Viewport hebt das getroffene Face/Edge/Vertex visuell hervor.
+- Test: hartkodierte Union(Quader, Zylinder) — Klick auf die emergente Schnittkante liefert die korrekten zwei Leaf‑IDs und das richtige Edge‑Element des Proxys.
+
+**K3 — BVH, Multi‑Body, asynchrones Meshing**
+- 3D‑AABB pro CSG‑Knoten; BVH‑Konstruktion bei jeder Tree‑Mutation, BVH‑beschleunigte Punkt‑Auswertung sowohl für Mesher als auch für Picking.
+- Multi‑Body: jeder eigenständige Körper bekommt einen eigenen CSG‑Graphen, eigenen BVH und eigenen Mesh‑Cache. Body‑übergreifende Booleans nur auf expliziten User‑Wunsch.
+- Meshing wandert in einen Web Worker; Body‑Updates streamen über einen Channel ins Frontend, das die `BufferGeometry` dieses Bodies atomar austauscht (siehe §4.3).
+- Active‑Body vs. Context‑Body‑LOD: aktive Bodies werden bei Parameter‑Änderung sofort neu gemesht, Context‑Bodies bleiben statisch im VRAM.
+- Test: 50+ Primitive‑Bodies in einer Szene, Re‑Meshing eines einzelnen Bodies blockiert das UI nicht (Playwright‑Frame‑Rate‑Assertion), Picking liefert in <5 ms das korrekte Body/Face‑Paar.
+
+**K4 — 2D‑Kernel, 2D‑BVH, Extrude, Revolve**
+- 2D‑SDF‑AST: Linie, Kreisbogen, Polygon, Offset‑Region; Composing über `min`/`max` analog zu 3D.
+- 2D‑BVH als Pflicht‑Pfad für **jede** Skizze, ohne adaptive Sonderfälle (kein Baking, kein Modulo).
+- Splines werden im Solver (kommt in K5) exakt geführt; für die SDF‑Auswertung im 3D‑Kernel werden sie in Polylinien mit konfigurierbarer Sehnenfehler‑Toleranz (Default 0,05 mm) zerlegt. In K4 reicht ein Stub für die Polyline‑Approximation, da der Solver noch fehlt.
+- Extrude‑ und Revolve‑Knoten heben das 2D‑Feld in den 3D‑Raum (`max(f_2D(x,y), |z| − h/2)` bzw. `f_2D(√(x²+z²), y)`).
+- Skizzen werden in dieser Phase noch programmatisch in Rust‑Tests aufgebaut, keine UI.
+- Test: extrudiertes 200‑Loch‑Polygon rendert; Picking trifft korrekt einzelne Loch‑Wände; 2D‑BVH‑Cull beschleunigt die Punkt‑Auswertung gegen die naive O(N)‑Referenz um ≥ 50× bei 200 Löchern.
+
+**K5 — Constraint‑Solver (libslvs‑Portierung)**
+- Portierung von `libslvs` nach Rust, Test‑Harness gegen die C‑Referenz inkl. Übernahme der Tests aus `solvespace/test`. Die portierten Tests müssen fehlerfrei laufen. Bei nicht behebbaren Stabilitätsproblemen Fallback auf `libslvs` in C++ via Emscripten/`cc` (siehe §4.4).
+- Pflicht‑Constraints: Coincident, Parallel, Horizontal/Vertical, Dimension (Länge, Winkel), Tangent, Concentric, Equal, Midpoint, Symmetric.
 - DoF‑Analyse und strukturierte Diagnostics (over/under‑constrained).
-- Property‑Tests für invariante Eigenschaften.
+- `proptest`‑Suite für invariante Eigenschaften.
 - Headless‑Smoke‑Test: programmatisch aufgebaute Sketches werden gelöst, ohne dass UI existiert.
-- Portierung auch der Testfälle aus solvespace/test. Die portierten Tests müssen fehlerfrei laufen.
 
-**Meilenstein M4 — 2D‑Sketcher (UI auf dem Solver)**
-- Sketch‑Ebene via Klick auf Fläche.
-- Werkzeuge: Line, Rectangle, Circle, Point, Trim, Mirror, Offset.
-- Vektor‑basiertes Snapping auf Kernel‑Feature‑Daten.
-- Live‑Einbindung des in M3 portierten Solvers: Bemaßungen und Constraints wirken direkt beim Zeichnen und beim Dragging.
+**K6 — Sketch‑Editor‑UI**
+- lies zum Beginn dieses Meilensteins onshape-ux.md
+- Sketch‑Ebene via Klick auf Face: Picking‑Pfad aus K2 + Auto‑Lock an das Face des B‑Rep‑Proxys (siehe §6.3).
+- Werkzeuge: Line, Rectangle, Circle, Arc, Point, Trim, Mirror, Offset.
+- Vektor‑basiertes Snapping ausschließlich gegen den B‑Rep‑Proxy (Faces, Edges, Edge‑Mittelpunkte, Vertices) und gegen Sketch‑interne Punkte.
+- Live‑Einbindung des Solvers aus K5: Bemaßungen und Constraints wirken direkt beim Zeichnen und beim Dragging.
 - Fehleranzeige für over/under‑constrained Sketches am betroffenen Element.
 - Playwright‑Tests für Zeichenwerkzeuge (Canvas‑Koordinaten‑Assertions).
 
-**Meilenstein M5 — Extrude, Revolve, Meshing, STL‑Export**
-- Extrude (Add, Subtract, Intersect, New), Revolve.
-- Dual Contouring / Surface Nets im Kernel.
-- STL‑Ascii‑ und Binary‑Export, Goldfile‑Tests.
-- GLB‑Export via `gltf`‑Crate.
-- Vollständiger E2E‑Workflow: Rechteck → extrudieren → exportieren → Download‑Datei verifizieren.
+**K7 — Feature‑Tree‑UI, Booleans, Export**
+- Outliner und Feature‑Tree‑Panel im Frontend (baut auf der M2‑Implementierung auf).
+- Boolean‑Knoten (Union/Difference/Intersection — **nur hart**, kein `smin`), Transform‑Knoten, Pattern‑Stub.
+- Undo/Redo über Tree‑Navigation, integriert mit dem inkrementellen BVH‑Update aus K3.
+- Vollständiger E2E‑Workflow: Sketch → Extrude → Boolean → Export.
+- STL‑Ascii‑/Binary‑Export und GLB‑Export direkt aus den Body‑Mesh‑Caches (kein separater Export‑Mesher); Goldfile‑Tests gegen kanonische Bauteile.
 
-**Meilenstein M6 — Patterns, Mirror, Variablen**
-- Linear/Circular Pattern, Mirror als Feature‑Tree‑Knoten.
+**K8 — Patterns, Mirror, Variablen, Formel‑Engine**
+- Linear/Circular Pattern, Mirror als Feature‑Tree‑Knoten — Patterns werden als wiederholte CSG‑Sub‑Bäume mit Transform‑Wrappern realisiert (keine Modulo‑Tricks im SDF, siehe §4.1).
 - Vollwertige Formel‑Engine im Kernel (siehe §4.5): Expression‑Parser mit AST, Einheiten‑System (`mm`, `deg`, …), Funktionsbibliothek (`sin`, `sqrt`, `min`, …), Referenzen auf andere Variablen, Zyklen‑Erkennung, strukturierte Fehler‑Diagnostics. Maßfelder im Sketch‑Editor akzeptieren Formeln direkt (`=width/2 + 5 mm`).
 - `proptest`‑Suite für Parser‑Roundtrip, Einheiten‑Arithmetik und Zyklen; Goldfiles für kanonische Onshape‑ähnliche Ausdrücke.
 - Abhängigkeitsgraph‑basierte Re‑Evaluation des Baumes bei Variablen‑Änderung (nur betroffene Downstream‑Knoten).
 - E2E‑Test: parametrisches Schrankelement aus den Assets.
 
-**Meilenstein M7 — Parametrische Fillets und Chamfers**
-- Feature‑Tree‑Knoten für Fillet/Chamfer, dessen SDF‑Maske zwingend an Skizzen‑Vektoren bzw. Extrusions‑Endpunkte gebunden ist.
-- Re‑Evaluation der Maske bei Änderungen vorgelagerter Features, inklusive Goldfile‑Tests, die eine 50→100 mm‑Extrusion mit gleichbleibender abgerundeter Kante verifizieren.
-- Kein Direct‑Modeling — die Fillet‑Kante wird durch Klick im Sketch bzw. Auswahl einer Feature‑ID referenziert.
-
-**Meilenstein M8 — Referenz‑Import, Measure, Mate Connector**
+**K9 — Referenz‑Import, Measure, Mate Connector**
 - **STL/OBJ‑Import als visuelle Referenzgeometrie** (keine SDF‑Konvertierung, keine Booleans gegen das Referenzmesh).
 - GLB‑Import für Demo‑ und Galerie‑Zwecke.
-- Maßband‑Tool, Mate‑Connector als Ankerpunkt für Skizzen.
+- Maßband‑Tool über den B‑Rep‑Proxy.
+- Mate‑Connector als anheftbares lokales Koordinatensystem an Faces/Edges/Vertices des Proxys.
 - Visual‑Regression‑Suite für den gesamten Part‑Editor.
+
+**K10 — Harte Chamfers (Spätfeature, optional, ferne Zukunft)**
+- Parametrische Chamfer‑Knoten als rein harte CSG‑Masken, gebunden an Sketch‑Vektoren oder B‑Rep‑Edges des Proxys.
+- Re‑Evaluation der Maske bei Änderungen vorgelagerter Features, inklusive Goldfile‑Tests, die eine 50→100 mm‑Extrusion mit gleichbleibender abgeschrägter Kante verifizieren.
+- Smooth‑Fillets bleiben dauerhaft ausgeschlossen — siehe §4.1.
+- Ob K10 jemals umgesetzt wird, hängt davon ab, wie häufig User in der Praxis nach Chamfers fragen, sobald K1–K9 stehen. Im Zweifel: nicht umsetzen.
 
 ---
 
-*Ab hier beginnt die Backend‑Phase. Der clientseitige Modeller ist an diesem Punkt funktional komplett; die folgenden drei Meilensteine (M9–M11) ergänzen Server, Accounts und Sync, bevor M12 den Hardening‑Pass durchführt.*
+*Ab hier beginnt die Backend‑Phase. Der clientseitige Modeller ist nach K9 funktional komplett; die folgenden drei Meilensteine ergänzen Server, Accounts und Sync, bevor M13 den Hardening‑Pass durchführt.*
 
-**Meilenstein M9 — Backend‑Grundgerüst: Auth, User, leeres Projekt**
+**M11 — Backend‑Grundgerüst: Auth, User, leeres Projekt**
 - `server/`‑Ordner mit Go + `chi` + `sqlc` + `golang-migrate` anlegen.
 - `docker-compose.yml` mit MariaDB (Dev‑DB, persistiertes Volume), Server und Web. `just dev` startet jetzt den kompletten Stack.
 - `users`‑Tabelle, Argon2id‑Hashing, Session‑Cookies.
@@ -339,33 +386,27 @@ Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Um
 - Frontend: Registrierungs‑, Login‑, Logout‑Views (React‑Komponenten).
 - `go test ./...` gegen echte MariaDB im CI; Integration‑Tests für Auth‑Flows, E2E‑Tests für die UI‑Pfade.
 
-**Meilenstein M10 — Projekt‑CRUD und Sichtbarkeit**
+**M12 — Projekt‑CRUD, Sichtbarkeit, Sync**
 - `projects`‑Tabelle, Endpunkte für Create/List/Read/Update/Delete.
 - Dashboard: Projektliste, Neu, Umbenennen, Löschen, Sichtbarkeits‑Toggle.
 - Öffentliche Galerie (read‑only View ohne Login).
-- E2E‑Tests für alle CRUD‑ und Sichtbarkeits‑Transitionen.
-
-**Meilenstein M11 — Sync: `localStorage` → Server**
 - Sync‑State‑Machine (Clean, Dirty, Syncing, Error) im Frontend‑Store.
 - `POST /api/projects/:id/snapshot` mit JSON‑Body (`Content-Encoding: gzip` optional auf HTTP‑Ebene).
 - Gast‑Modus: der bisherige `localStorage`‑Stand wird beim ersten Login optional in den Account übernommen.
 - Migration von reiner `localStorage`‑Persistenz auf Hybrid‑Modus: `localStorage` bleibt Offline‑Cache, Server wird kanonisch.
-- Unit‑Tests für die State‑Machine, E2E‑Tests für Reload‑Persistenz und Offline→Online‑Sync.
+- E2E‑Tests für CRUD, Sichtbarkeits‑Transitionen, Reload‑Persistenz und Offline→Online‑Sync.
 
----
-
-**Meilenstein M12 — Hardening und öffentliche Beta**
+**M13 — Hardening und öffentliche Beta**
 - Passwort‑Reset via E‑Mail.
 - Quotas, Rate‑Limits‑Tuning.
-- Performance‑Pass: WASM‑Profiling, WebGPU‑Compute‑Paths.
+- Performance‑Pass: WASM‑Profiling, Mesher‑Compute‑Paths, BVH‑Update‑Inkremente.
 - Öffentliche Projektgalerie mit Thumbnails.
 - Dokumentation, Self‑Host‑Anleitung.
 
-**Spätere Meilensteine (M13+)**
+**Spätere Meilensteine (M14+)**
 - Sweep, Loft, Curved Patterns, 3MF‑Export.
 - **STEP‑Import** via OpenCASCADE im Web‑Worker oder `truck`‑Experiment, inklusive Mesh‑to‑SDF‑Konvertierung und Robustheits‑Pass gegen kaputte COTS‑Dateien. Bewusst weit hinten: erst wenn das MVP steht und es echte User‑Nachfrage gibt.
-- **Direct‑Manipulation‑Modus** (Push/Pull auf SDF‑Flächen), sobald Feature‑ID‑Tagging im Raymarcher stabil läuft.
-- Alternativer UX‑Modus „Fillet auf Kante malen" — benötigt vorher eine robuste Kanten‑Identifikation aus dem SDF.
+- **Direct‑Manipulation‑Modus** (Push/Pull auf B‑Rep‑Proxy‑Faces), sobald ein robustes Heuristik‑Modell für die Push/Pull‑zu‑Parameter‑Auflösung existiert.
 - Kollaborative Sessions via CRDT (Yjs o. ä.).
 - Optionale Ende‑zu‑Ende‑Verschlüsselung privater Projekte.
 - STEP‑Export via B‑Rep‑Rekonstruktion.
@@ -373,15 +414,25 @@ Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Um
 
 ## 11. Offene Risiken
 
-1. **Meshing‑Qualität an scharfen Kanten:** Dual Contouring ist bekannt anspruchsvoll und erzeugt artefaktanfällig. Prototyping muss früh klären, ob die Qualität für FDM ausreichend ist — bei 0,1 mm Auflösung ist der Toleranzspielraum groß, aber nicht unendlich.
-2. **Solver‑Portierung C++ → Rust:** Bei Solvern geht es um numerische Stabilität (Floating‑Point‑Epsilons, Konvergenz). Ein winziger Rundungsunterschied in Rust kann eine Skizze „over‑constrained" melden lassen, obwohl sie es nicht ist. Gegenmaßnahme: differential‑Fuzz‑Testing gegen die C‑Referenz und harte Goldfiles. **Fallback:** `libslvs` bleibt C++ und wird zusammen mit dem Rust‑Kernel in ein gemeinsames WASM‑Modul kompiliert (siehe §4.4).
-3. **Topological Naming Problem bei referenzierten Skizzen:** Der Genealogy Graph löst TNP für Booleans, **nicht** aber für den Fall, dass eine Folge‑Skizze auf „der Stirnfläche oben rechts" eines Bauteils sitzt und eine vorgelagerte Skizze diese Fläche strukturell wegkonstruiert (U → L). Gegenmaßnahme: Feature‑Tree‑Knoten referenzieren nicht „Flächen", sondern **Skizzen‑Features mit Seiten‑Label** aus dem Genealogy Graph. Wenn die Referenz bei Re‑Evaluation nicht auflösbar ist, wird der Folge‑Knoten sauber als „broken reference" markiert und im UI hervorgehoben — kein stiller Fehler, kein Crash.
-4. **Feature‑ID‑Tagging im Raymarcher:** Damit ein User im Viewport eine „Fläche" oder „Kante" anklicken kann, muss der Shader zu jedem Oberflächen‑Treffer die dominierende Feature‑Tree‑ID zurückgeben. Das ist rechenintensiv und bis heute Forschungsgebiet. Im MVP bewusst eingeschränkt: Auswahl erfolgt primär über Feature‑Tree/Outliner und Skizzen‑Elemente, nicht über direktes Flächen‑Picking am Distanzfeld.
-5. **Parametrische Fillets:** Eine Fillet‑Maske darf keine dumme Box im Weltraum sein — sie muss an Skizzen‑Vektoren gebunden bleiben, damit sie bei Änderungen vorgelagerter Extrusionen mitwandert. Das macht den Fillet‑Knoten deutlich komplexer als eine reine statische Maske und ist der Grund, warum Fillet/Chamfer erst ab M7 stehen.
-6. **STEP‑Import als B‑Rep‑Mauer:** Mesh‑to‑SDF‑Konvertierung von STEP‑Daten setzt wasserdichte Meshes voraus — COTS‑STEP‑Dateien aus Fernost sind es oft nicht. OpenCASCADE in WASM kostet 20–30 MB Payload. Deshalb ist STEP‑Import bewusst aus M8 herausgeschoben (siehe M13+). Im MVP reicht STL/OBJ‑Referenz, bei Bedarf extern konvertiert.
-7. **WebAssembly‑Speicherlimits:** 4 GB Linear Memory pro WASM‑Instanz reicht für Maker‑Bauteile sehr gut, könnte aber bei sehr hochauflösenden Voxel‑Feldern ein Thema werden. Sparse‑Grids (z. B. OpenVDB‑Ansatz) sind der Plan B.
-8. **WebGPU‑Browser‑Support:** WebGPU ist 2026 in Chromium und Safari stabil, in Firefox teilweise. Da FieldDraft bewusst kein WebGL‑Fallback pflegt, ist die Browser‑Matrix enger. Gegenmaßnahme: klare System‑Requirements‑Seite und eine Feature‑Detection beim Ladezeitpunkt.
-9. **Auto‑Save‑Konflikte:** Wenn derselbe User zwei Tabs parallel öffnet, können lokale Stände divergieren. Gegenmaßnahme: Last‑Writer‑Wins mit Warnung plus versionierte Snapshots im Backend, damit nichts verloren geht.
+1. **Meshing‑Qualität an scharfen Kanten und Manifold‑Verletzungen:** Dual Contouring ist bekannt anspruchsvoll und erzeugt an Drei‑ und Vier‑Flächen‑Schnitten artefakt­anfällige Übergänge. Manifold‑Verletzungen (zwei Faces, die sich an einer einzigen Kante berühren) können beim STL‑Export Slicer‑Probleme erzeugen. Gegenmaßnahme: Manifold‑Variante des DC‑Algorithmus implementieren oder einen Post‑Processing‑Pass, der nicht‑manifolde Kanten entdeckt und durch Vertex‑Splitting auflöst. Goldfile‑Tests gegen kanonische Bauteile (z. B. drei orthogonal verschnittene Quader) erkennen Regressions früh.
+
+2. **Provenance‑Epsilon‑Stabilität:** Die Klassifikation eines Punkts als „auf einer Edge" beruht auf `|f_A − f_B| < ε`. Ein zu großes ε liefert Falsch‑Positive (Faces werden fälschlich als Edges markiert), ein zu kleines verfehlt echte Edges in numerisch verrauschten Regionen. Gegenmaßnahme: ε proportional zur lokalen Mesh‑Auflösung wählen, nicht absolut; Property‑Tests, die für zufällige CSG‑Bäume die Konsistenz der Klassifikation gegen Referenz‑Berechnungen prüfen.
+
+3. **Solver‑Portierung C++ → Rust:** Bei Solvern geht es um numerische Stabilität (Floating‑Point‑Epsilons, Konvergenz). Ein winziger Rundungsunterschied in Rust kann eine Skizze „over‑constrained" melden lassen, obwohl sie es nicht ist. Gegenmaßnahme: differential Fuzz‑Testing gegen die C‑Referenz und harte Goldfiles. **Fallback:** `libslvs` bleibt C++ und wird zusammen mit dem Rust‑Kernel in ein gemeinsames WASM‑Modul kompiliert (siehe §4.4).
+
+4. **BVH‑Invalidierung und Re‑Meshing‑Kaskaden:** Eine Parameter‑Änderung an einem hoch referenzierten Variablen‑Knoten kann viele Bodies invalidieren. Auch wenn jeder Body‑Re‑Mesh asynchron im Web Worker läuft, summieren sich die Latenzen bei großen Baugruppen zu sichtbaren Wartezeiten, ähnlich dem Onshape‑„Regenerating"‑Spinner. Gegenmaßnahme: inkrementelles BVH‑Update statt Komplett‑Rebuild, Sub‑Tree‑Hashing zum Erkennen, ob ein Body wirklich invalidiert wurde, Priorisierung des aktiven Bodies vor Context‑Bodies. Akzeptanz: ≥1 s Wartezeit bei 100‑Body‑Szenen ist im MVP OK.
+
+5. **Verlust der Smooth‑Fillets als Scope‑Entscheidung:** Mit dem expliziten Verzicht auf `smin` (siehe §4.1) verliert FieldDraft eine UX‑Komponente, die SDF‑Modeller wie MagicaCSG attraktiv macht. Konstrukteure, die organische Übergänge brauchen, sind in FieldDraft falsch — das ist eine bewusste Scope‑Entscheidung, kein technischer Mangel. Gegenmaßnahme: in Marketing und Doku klar als „mechanisches CAD für 3D‑Druck" positionieren, nicht als Sculpt‑Tool.
+
+6. **Sketch‑Ebenen auf gekrümmten Faces (deferred):** Klickt der User in der Zukunft auf eine gekrümmte Face (z. B. eine Revolve‑Außenseite), gibt es keine kanonische planare Ebene, an die sich die neue Skizze auto‑locken ließe. Die geplante Lösung über „unconstrained planes" mit harten Maßen zum 3D‑Origin ist in K6 noch nicht enthalten und wird erst implementiert, wenn der MVP steht und konkrete Anwendungsfälle es erzwingen.
+
+7. **STEP‑Import als B‑Rep‑Mauer:** Mesh‑to‑SDF‑Konvertierung von STEP‑Daten setzt wasserdichte Meshes voraus — COTS‑STEP‑Dateien aus Fernost sind es oft nicht. OpenCASCADE in WASM kostet 20–30 MB Payload. Deshalb ist STEP‑Import bewusst aus K9 herausgeschoben (siehe M14+). Im MVP reicht STL/OBJ‑Referenz, bei Bedarf extern konvertiert.
+
+8. **WebAssembly‑Speicherlimits:** 2–4 GB Linear Memory pro WASM‑Instanz reicht für Maker‑Bauteile sehr gut, könnte aber bei sehr großen Baugruppen mit hochaufgelösten Body‑Meshes ein Thema werden. Sparse‑Grids (z. B. OpenVDB‑Ansatz) im Mesher und Mesh‑Decimation für Context‑Bodies sind die Plan‑B‑Pfade. Konkrete Schätzung: ein typisches Maker‑Bauteil mit 100 k–300 k Dreiecken belegt unter 5 % des verfügbaren WASM‑RAMs.
+
+9. **WebGPU‑Browser‑Support:** WebGPU ist in Chromium und Safari stabil, in Firefox teilweise. Da FieldDraft bewusst kein WebGL‑Fallback pflegt, ist die Browser‑Matrix enger. Gegenmaßnahme: klare System‑Requirements‑Seite und eine Feature‑Detection beim Ladezeitpunkt.
+
+10. **Auto‑Save‑Konflikte:** Wenn derselbe User zwei Tabs parallel öffnet, können lokale Stände divergieren. Gegenmaßnahme: Last‑Writer‑Wins mit Warnung plus versionierte Snapshots im Backend, damit nichts verloren geht.
 
 ## 12. Verwandtes / Inspiration
 
@@ -405,4 +456,77 @@ Die TLDs .eu, .de und .xyz sind frei.
 FieldDraft.com ist bereits registriert („for sale“ bei GoDaddy). 
 Markenrechtlich gibt es keine Eintragungen.
 Keine Github- oder NPM-Projekte mit diesem Namen.
+
+## 15. Literatur und Referenzen für Implementierungs‑Agenten
+
+Diese Sektion ist Pflichtlektüre für jeden Pair‑Programming‑Agent, der an der Kernel‑Phase (K1–K10) arbeitet. Die folgenden Quellen sind kuratiert und decken die zentralen Datenstrukturen und Algorithmen ab. Wer einen K‑Slice anfasst, ohne die zugehörigen Abschnitte gelesen zu haben, baut zwangsläufig in die falsche Richtung.
+
+### 15.1 Dual Contouring
+
+- [Ju, Losasso, Schaefer, Warren — „Dual Contouring of Hermite Data" (SIGGRAPH 2002, PDF)](https://www.cs.rice.edu/~jwarren/papers/dualcontour.pdf) — Originalarbeit, definiert das Verfahren, das im FieldDraft‑Kernel zur Mesh‑Extraktion aus dem SDF‑Feld eingesetzt wird. Pflichtlektüre für alle, die am Vernetzer arbeiten.
+- [Schaefer, Ju, Warren — „Manifold Dual Contouring" (TVCG 2007, PDF)](https://people.engr.tamu.edu/schaefer/research/dualsimp_tvcg.pdf) — Erweiterung mit Garantie für mannigfaltige Meshes auch unter adaptiver Vereinfachung; relevant, sobald wir Octree‑Adaption brauchen.
+- [swiftcoder/isosurface (Rust crate)](https://github.com/swiftcoder/isosurface) — Wartungsaktive, dependency‑freie Rust‑Implementierung von Marching Cubes und Dual Contouring; gute Referenz für Datenstrukturen und Octree‑Layout.
+- [nickgildea/fast_dual_contouring](https://github.com/nickgildea/fast_dual_contouring) — Praxiserprobte Variante ohne Octree, demonstriert eine flache Datenstruktur, die sich gut auf WASM portieren lässt.
+
+### 15.2 Quadratic Error Function (QEF) Solver
+
+- [BorisTheBrave — „Dual Contouring Tutorial"](https://www.boristhebrave.com/2018/04/15/dual-contouring-tutorial/) und [zugehöriger QEF‑Code](https://github.com/BorisTheBrave/mc-dc/blob/master/qef.py) — Die kanonische didaktische Quelle. Erklärt QEF‑Aufbau, SVD‑Lösung und Bias‑Term, jeweils mit lauffähigem Python.
+- [Lindstrom — „Out‑of‑Core Simplification of Large Polygonal Models" (SIGGRAPH 2000, PDF)](http://evasion.imag.fr/Membres/Franck.Hetroy/Teaching/Geo3D/Articles/lindstrom2000.pdf) — Begründet die SVD‑basierte robuste QEF‑Minimierung, die bis heute Stand der Technik ist.
+- [Matt Keeter — „QEF Explainer"](https://www.mattkeeter.com/projects/qef/) und [nickgildea/qef (SVD‑Implementierungen)](https://github.com/nickgildea/qef) — Kompakte numerische Erklärung plus C/GLSL/OpenCL‑Solver, an denen sich eine numerisch stabile Rust‑Variante gut spiegeln lässt.
+
+### 15.3 SDF‑Primitive (3D)
+
+- [Inigo Quilez — „3D Signed Distance Functions"](https://iquilezles.org/articles/distfunctions/) — De‑facto‑Referenz für exakte 3D‑SDF‑Formeln (Box, Zylinder, Kegel, Torus, Kapsel, …). Quelle der Wahrheit für alle Primitive im FieldDraft‑Kernel.
+- [Inigo Quilez — „Raymarching Distance Fields"](https://iquilezles.org/articles/raymarchingdf/) — Hintergrund zu Distanzeigenschaften (Lipschitz‑Bound, exakte vs. begrenzende SDFs); wichtig, weil unser BVH und der Picking‑Raymarcher nur mit echten SDFs korrekt funktionieren.
+- [Inigo Quilez — „SDF Bounding Volumes"](https://iquilezles.org/articles/sdfbounding/) — Beschreibt das Sketch‑Extrude‑ und Revolve‑Pattern (2D‑Profil → 3D‑Volumen) inklusive Bounding‑Box‑Ableitung, das genau dem FieldDraft‑Feature‑Tree entspricht.
+
+### 15.4 SDF‑Primitive (2D) und Komposition
+
+- [Inigo Quilez — „2D Distance Functions"](https://iquilezles.org/articles/distfunctions2d/) — Vollständige Sammlung exakter 2D‑SDFs (Linie, Kreis, Bogen, Ellipse, Polygon) mit Shadertoy‑Demos. Direkte Vorlage für den 2D‑Sketch‑Solver.
+- [Inigo Quilez — „Distance + Gradient 2D SDF"](https://iquilezles.org/articles/distgradfunctions2d/) — Liefert analytische Gradienten zusammen mit der Distanz; entscheidend, damit Hermite‑Daten für Dual Contouring direkt aus dem 2D‑Profil propagiert werden können.
+
+### 15.5 BVH‑Beschleunigung für SDF‑/CSG‑Trees
+
+- [Inigo Quilez — „SDF Bounding Volumes"](https://iquilezles.org/articles/sdfbounding/) — Erklärt, wie man Subtrees mit AABBs ummantelt und Punktanfragen früh abbricht. Direkt anwendbar auf unseren CSG‑Tree.
+- [PBR Book — Bounding Volume Hierarchies (3rd ed.)](https://pbr-book.org/3ed-2018/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies) — Goldstandard für BVH‑Konstruktion (SAH, Traversal). Auch wenn das Buch ray‑zentriert ist, sind Aufbau und Speicher‑Layout 1:1 für Punktanfragen verwertbar.
+- [Liktor et al. — „Synchronized‑Tracing of Implicit Surfaces" (arXiv 2304.09673)](https://arxiv.org/pdf/2304.09673) — Modernes Paper über räumliche Pruning‑Strukturen für CSG‑/Blobtree‑Auswertung; gute Referenz für Pruned‑Tree‑Auswertung pro Region.
+
+### 15.6 CSG‑Provenance und Feature‑Labeling
+
+- [Rossignac, Voelcker — „Active Zones in CSG" (ACM TOG 1989)](https://dl.acm.org/doi/abs/10.1145/49155.51123) — Klassiker; definiert „active zones" als räumliche Regionen, in denen ein Primitiv die Boolean‑Auswertung dominiert. Theoretisches Fundament für unser Contributor‑Tracking.
+- [Hoffmann — „How Solid Is Solid Modeling?" (PDF)](https://www.cs.purdue.edu/cgvlab/www/resources/papers/Hoffmann-Workshop_on_App_Comp_geo-1996-How_SolidIs_Solid_Modeling.pdf) — Hoffmanns Übersicht zu Boundary Evaluation, Feature‑Persistenz und numerischer Robustheit. Kontextpapier für alle persistenten ID‑Schemata.
+- [Matt Keeter — „Massively Parallel Rendering of Complex Closed‑Form Implicit Surfaces" (libfive Kernel‑Paper, PDF)](https://www.mattkeeter.com/research/kernels.pdf) und [libfive Repository](https://github.com/libfive/libfive) — Modernste implizite CAD‑Kernel‑Architektur in der Praxis; libfive trackt Sub‑Expression‑Dominanz pro Region und ist die beste lebende Referenz für FieldDraft.
+
+### 15.7 SolveSpace / libslvs
+
+- [solvespace/solvespace (GitHub)](https://github.com/solvespace/solvespace) und [include/slvs.h (Library‑API)](https://github.com/solvespace/solvespace/blob/master/include/slvs.h) — Quellcode des einzigen erprobten Open‑Source‑Constraint‑Solvers für parametrisches CAD; relevant, sobald der 2D‑Sketcher echte Constraints bekommt.
+- [SolveSpace Reference (Westhues)](https://solvespace.com/ref.pl) — Westhues' originale Notizen zur Architektur (Newton‑Verfahren, symbolisches Algebra‑System, Jacobi‑Aufbau).
+
+### 15.8 wgpu (Rust‑WebGPU‑Bindings)
+
+- [wgpu.rs (offizielle Projektseite)](https://wgpu.rs/) und [docs.rs/wgpu](https://docs.rs/wgpu/) — Maßgebliche API‑Dokumentation für den Rust‑WebGPU‑Stack, den der FieldDraft‑Viewport nutzt.
+- [sotrh — „Learn Wgpu"](https://sotrh.github.io/learn-wgpu/) — Das De‑facto‑Lehrbuch zur Bibliothek; deckt Pipelines, Bind Groups, Compute‑Shader und WASM‑Targeting ab.
+- [W3C WebGPU Specification](https://www.w3.org/TR/webgpu/) und [W3C WGSL Specification](https://www.w3.org/TR/WGSL/) — Normative Quelle für Semantik von Buffers, Bind Groups und Shadern; bei jeder Unklarheit gilt die Spec, nicht der Wrapper.
+
+### 15.9 wasm‑bindgen Zero‑Copy‑Patterns
+
+- [The wasm‑bindgen Guide](https://rustwasm.github.io/docs/wasm-bindgen/) — Offizielle Dokumentation; insbesondere die Abschnitte über `js_sys::Float32Array::view` zeigen, wie man ohne Kopie auf den linearen WASM‑Speicher mappt.
+- [rustwasm/wasm‑bindgen Issue #2456 — „need example of sharing memory"](https://github.com/rustwasm/wasm-bindgen/issues/2456) — Konkrete Beispiele zur Lebensdauer‑Verwaltung von Views (Achtung: kein `alloc` während ein View existiert), exakt das Pattern, das FieldDraft für Mesh‑Buffer braucht.
+
+### 15.10 React Three Fiber + BufferGeometry
+
+- [React Three Fiber — „Objects, Properties and Constructor Arguments"](https://r3f.docs.pmnd.rs/api/objects) — Offizielle R3F‑Doku zum `attach="attributes-position"`‑Pattern, mit dem externe Float32Arrays an `<bufferGeometry>` angebunden werden.
+- [three.js — BufferGeometry (offizielle Doku)](https://threejs.org/docs/#api/en/core/BufferGeometry) und [Custom BufferGeometry Manual](https://threejs.org/manual/en/custom-buffergeometry.html) — Maßgebliche Beschreibung von Attributen, Indices, Bounding‑Spheres und Update‑Flags. Pflicht, bevor jemand `setAttribute` aufruft.
+
+### 15.11 Sharp‑Feature‑Preservation in Dual Contouring
+
+- [Ju et al. — „Dual Contouring of Hermite Data" (siehe §15.1)](https://www.cs.rice.edu/~jwarren/papers/dualcontour.pdf) — Originaldarstellung der scharfen Kanten über QEF‑Minimierung mit Edge‑Normalen.
+- [Schaefer, Warren — „Dual Contouring: The Secret Sauce" (PDF)](https://people.eecs.berkeley.edu/~jrs/meshpapers/SchaeferWarren2.pdf) — Zusatzpapier mit Implementierungsdetails (Bias‑Term, Constraint Box, Feature‑Klassifikation), die im Originalpaper fehlen.
+- [Ho et al. — „Cubical Marching Squares" (PDF)](https://www.csie.ntu.edu.tw/~cyy/publications/papers/Ho2005CMS.pdf) — Alternative Sicht auf adaptive Feature‑Erhaltung; nützlich für Heuristiken bei mehreren Kanten in einer Zelle.
+
+### 15.12 Polyline‑Approximation von Splines
+
+- [Cao, Wang — „Approximate Computation of Curves on B‑Spline Surfaces" (PDF)](https://www.cs.cornell.edu/~caosong/index_files/surface_cad08.pdf) — Beschreibt adaptive Subdivision unter Hausdorff‑Toleranz; Grundlage für chord‑error‑getriebenes Sampling.
+- [Liutaio Mottola — „Calculating Arc Parameters" (Sagitta‑Formeln)](https://liutaiomottola.com/formulae/sag.htm) — Praktische Formelsammlung zu Sagitta/Versine; direkt verwendbar für Bogen‑zu‑Polyline‑Konvertierung im Sketch‑Modul.
+- [Lee Mac — „Bulge Conversion Functions"](https://www.lee-mac.com/bulgeconversion.html) — Klassische Notizen zur Bulge/Sagitta‑Beziehung; nützlich, weil DXF‑Importe Bögen genau in dieser Form transportieren.
 

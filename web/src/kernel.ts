@@ -21,6 +21,29 @@ interface WasmExports {
  *  in shader land. */
 export const FEATURE_STRIDE = 16;
 
+/** Number of contributor id slots per mesh vertex. Mirrors
+ *  `csg::MAX_CONTRIBUTORS` on the Rust side. */
+export const MESH_CONTRIBUTOR_STRIDE = 4;
+
+/** Sentinel written into unused contributor slots (= `u32::MAX`). */
+export const CONTRIBUTOR_SENTINEL = 0xffffffff;
+
+/** B-Rep proxy element classification returned by `pick()` and stored
+ *  per mesh vertex. */
+export type ProxyElement = "face" | "edge" | "vertex";
+
+export interface PickHit {
+  hit: true;
+  point: [number, number, number];
+  t: number;
+  element: ProxyElement;
+  contributors: number[];
+}
+export interface PickMiss {
+  hit: false;
+}
+export type PickResult = PickHit | PickMiss;
+
 /** Numeric tags for primitive kinds. Mirror `Primitive::KIND_*` in protocol. */
 export const PrimitiveKind = {
   Box: 0,
@@ -95,6 +118,89 @@ export class Kernel {
 
   featureCount(): number {
     return this.inner.featureCount();
+  }
+
+  // ── mesh bridge (zero-copy) ─────────────────────────────────────────
+  //
+  // The kernel re-runs the Dual Contouring pass on every mutation and
+  // stores positions / normals / indices as three flat `Vec`s. These
+  // views alias those `Vec`s directly — **never cache them** across a
+  // mutating call, because `Vec::push` can relocate the backing
+  // allocation and invalidate the view's buffer/offset pair.
+
+  meshPositionsView(): Float32Array {
+    const ptr = this.inner.meshPositionsPtr();
+    const count = this.inner.meshVertexCount();
+    return new Float32Array(this.memory.buffer, ptr, count * 3);
+  }
+
+  meshNormalsView(): Float32Array {
+    const ptr = this.inner.meshNormalsPtr();
+    const count = this.inner.meshVertexCount();
+    return new Float32Array(this.memory.buffer, ptr, count * 3);
+  }
+
+  meshIndicesView(): Uint32Array {
+    const ptr = this.inner.meshIndicesPtr();
+    const count = this.inner.meshIndexCount();
+    return new Uint32Array(this.memory.buffer, ptr, count);
+  }
+
+  meshVertexCount(): number {
+    return this.inner.meshVertexCount();
+  }
+
+  meshIndexCount(): number {
+    return this.inner.meshIndexCount();
+  }
+
+  meshTriangleCount(): number {
+    return this.inner.meshTriangleCount();
+  }
+
+  meshVersion(): number {
+    return this.inner.meshVersion();
+  }
+
+  meshClassificationsView(): Uint8Array {
+    const ptr = this.inner.meshClassificationsPtr();
+    const count = this.inner.meshVertexCount();
+    return new Uint8Array(this.memory.buffer, ptr, count);
+  }
+
+  meshContributorsView(): Uint32Array {
+    const ptr = this.inner.meshContributorsPtr();
+    const count = this.inner.meshVertexCount();
+    return new Uint32Array(this.memory.buffer, ptr, count * MESH_CONTRIBUTOR_STRIDE);
+  }
+
+  /**
+   * Cast a world-space ray through the current CSG tree and return
+   * the first surface hit, or `{ hit: false }` on a miss. Delegates
+   * to the Rust kernel's sphere-tracing raycaster and parses its
+   * compact JSON payload.
+   */
+  pick(
+    origin: [number, number, number],
+    direction: [number, number, number],
+  ): PickResult {
+    const json = this.inner.pick(
+      origin[0],
+      origin[1],
+      origin[2],
+      direction[0],
+      direction[1],
+      direction[2],
+    );
+    return JSON.parse(json) as PickResult;
+  }
+
+  meshResolution(): number {
+    return this.inner.meshResolution();
+  }
+
+  setMeshResolution(resolution: number): boolean {
+    return this.inner.setMeshResolution(resolution);
   }
 
   // ── outliner ────────────────────────────────────────────────────────

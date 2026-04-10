@@ -1,11 +1,28 @@
 //! FieldDraft geometry kernel.
 //!
-//! At M2 the kernel owns the canonical `Document`, evaluates the
-//! composite SDF over its feature spine (with boolean ops), and exposes
-//! a packed buffer for the renderer plus a mutation/undo API for the UI.
+//! After K1 the kernel owns the canonical `Document`, builds a CSG tree
+//! from its feature spine, and meshes it with a naive uniform-grid
+//! Dual Contouring pass. The mesh buffers are held inside the kernel
+//! and exposed to JavaScript through a zero-copy pointer interface;
+//! the old raymarcher-era packed feature buffer is still shipped for
+//! the legacy TSL viewport path but is no longer the primary render
+//! input.
 
+pub mod csg;
+pub mod dc;
+pub mod raycast;
+
+use csg::CsgNode;
+use dc::{dual_contour, Mesh};
+use raycast::{raycast, RaycastParams};
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
+
+/// Default voxel grid resolution for the K1 mesher. 48 cells along the
+/// longest AABB axis strikes a balance between rebuild latency (a
+/// handful of ms for a small spine) and visible smoothness for a
+/// 300 mm build volume. Later slices expose this as a knob.
+pub const DEFAULT_MESH_RESOLUTION: u32 = 48;
 
 /// Packed representation of one feature for the zero-copy bridge.
 ///
@@ -42,6 +59,27 @@ fn quat_inverse_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
     let qx = -q[0];
     let qy = -q[1];
     let qz = -q[2];
+    let qw = q[3];
+    let t = [
+        2.0 * (qy * v[2] - qz * v[1]),
+        2.0 * (qz * v[0] - qx * v[2]),
+        2.0 * (qx * v[1] - qy * v[0]),
+    ];
+    [
+        v[0] + qw * t[0] + qy * t[2] - qz * t[1],
+        v[1] + qw * t[1] + qz * t[0] - qx * t[2],
+        v[2] + qw * t[2] + qx * t[1] - qy * t[0],
+    ]
+}
+
+/// Rotate a vector by a unit quaternion `(x, y, z, w)`. Counterpart to
+/// [`quat_inverse_rotate`] — this one applies the rotation itself,
+/// used when mapping an already-local point (or an AABB corner) out to
+/// world space.
+pub fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let qx = q[0];
+    let qy = q[1];
+    let qz = q[2];
     let qw = q[3];
     let t = [
         2.0 * (qy * v[2] - qz * v[1]),
@@ -196,6 +234,9 @@ pub struct Kernel {
     packed: Vec<f32>,
     undo: Vec<Document>,
     redo: Vec<Document>,
+    mesh: Mesh,
+    mesh_resolution: u32,
+    mesh_version: u32,
 }
 
 impl Kernel {
@@ -211,6 +252,17 @@ impl Kernel {
 
     fn rebuild_packed(&mut self) {
         self.packed = pack_features(&self.document.features);
+        self.rebuild_mesh_internal();
+    }
+
+    /// Re-mesh the current document at the current resolution and bump
+    /// `mesh_version` so observers can skip stale uploads. Called by
+    /// `rebuild_packed` (after every mutation) and by the explicit
+    /// `setMeshResolution` API.
+    fn rebuild_mesh_internal(&mut self) {
+        let tree = CsgNode::from_features(&self.document.features);
+        self.mesh = dual_contour(&tree, self.mesh_resolution);
+        self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
     fn op_label(op: BoolOp) -> &'static str {
@@ -249,7 +301,19 @@ impl Kernel {
 
         let document = Document::default();
         let packed = pack_features(&document.features);
-        Self { document, packed, undo: Vec::new(), redo: Vec::new() }
+        let mut k = Self {
+            document,
+            packed,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            mesh: Mesh::default(),
+            mesh_resolution: DEFAULT_MESH_RESOLUTION,
+            mesh_version: 0,
+        };
+        // Seed the mesh buffer (empty document → empty mesh, but we
+        // still want the version counter and buffers initialised).
+        k.rebuild_mesh_internal();
+        k
     }
 
     // ── document I/O ──────────────────────────────────────────────────
@@ -519,6 +583,143 @@ impl Kernel {
             true
         } else {
             false
+        }
+    }
+
+    // ── mesh bridge (zero-copy) ───────────────────────────────────────
+    //
+    // The Dual Contouring mesher writes flat positions/normals/indices
+    // into the kernel's `mesh` field on every mutation. JS binds
+    // `Float32Array`/`Uint32Array` views straight onto WASM linear
+    // memory via these pointers — callers MUST re-acquire the views
+    // after every mutating call, because the underlying `Vec`s can be
+    // reallocated.
+
+    #[wasm_bindgen(js_name = meshPositionsPtr)]
+    pub fn mesh_positions_ptr(&self) -> *const f32 {
+        self.mesh.positions.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = meshNormalsPtr)]
+    pub fn mesh_normals_ptr(&self) -> *const f32 {
+        self.mesh.normals.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = meshIndicesPtr)]
+    pub fn mesh_indices_ptr(&self) -> *const u32 {
+        self.mesh.indices.as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = meshVertexCount)]
+    pub fn mesh_vertex_count(&self) -> usize {
+        self.mesh.vertex_count()
+    }
+
+    #[wasm_bindgen(js_name = meshIndexCount)]
+    pub fn mesh_index_count(&self) -> usize {
+        self.mesh.indices.len()
+    }
+
+    #[wasm_bindgen(js_name = meshTriangleCount)]
+    pub fn mesh_triangle_count(&self) -> usize {
+        self.mesh.triangle_count()
+    }
+
+    /// Pointer to the per-vertex classification byte array (stride 1:
+    /// one byte per vertex; 1 = face, 2 = edge, 3 = vertex).
+    #[wasm_bindgen(js_name = meshClassificationsPtr)]
+    pub fn mesh_classifications_ptr(&self) -> *const u8 {
+        self.mesh.classifications.as_ptr()
+    }
+
+    /// Pointer to the flat contributor ids (stride
+    /// `MAX_CONTRIBUTORS` × `u32` per vertex; unused slots hold the
+    /// `CONTRIBUTOR_SENTINEL` = `u32::MAX`).
+    #[wasm_bindgen(js_name = meshContributorsPtr)]
+    pub fn mesh_contributors_ptr(&self) -> *const u32 {
+        self.mesh.contributors.as_ptr()
+    }
+
+    /// Number of `u32` slots reserved per vertex in the contributor
+    /// flat buffer. Matches `csg::MAX_CONTRIBUTORS`.
+    #[wasm_bindgen(js_name = meshContributorStride)]
+    pub fn mesh_contributor_stride() -> usize {
+        csg::MAX_CONTRIBUTORS
+    }
+
+    /// Monotonic counter bumped every time the mesh is rebuilt. JS can
+    /// use it to debounce uploads ("only rebind the BufferGeometry when
+    /// this changes since the last frame").
+    #[wasm_bindgen(js_name = meshVersion)]
+    pub fn mesh_version(&self) -> u32 {
+        self.mesh_version
+    }
+
+    #[wasm_bindgen(js_name = meshResolution)]
+    pub fn mesh_resolution(&self) -> u32 {
+        self.mesh_resolution
+    }
+
+    /// Change the voxel grid resolution and re-mesh. No-op if the
+    /// resolution is unchanged or zero. Returns true if the mesh was
+    /// actually rebuilt.
+    #[wasm_bindgen(js_name = setMeshResolution)]
+    pub fn set_mesh_resolution(&mut self, resolution: u32) -> bool {
+        if resolution == 0 || resolution == self.mesh_resolution {
+            return false;
+        }
+        self.mesh_resolution = resolution;
+        self.rebuild_mesh_internal();
+        true
+    }
+
+    // ── picking / provenance ──────────────────────────────────────────
+    //
+    // K2 wire-format: the kernel takes a world-space ray (origin +
+    // direction) and returns a small JSON blob that the frontend can
+    // decode without touching the provenance structs directly. On a
+    // miss the payload is `{"hit":false}`.
+
+    /// Sphere-trace a ray through the current CSG tree and return a
+    /// JSON description of the first hit, if any. See `raycast.rs`
+    /// for the numerical scheme.
+    #[wasm_bindgen(js_name = pick)]
+    pub fn pick(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+    ) -> String {
+        let tree = CsgNode::from_features(&self.document.features);
+        let params = RaycastParams::default();
+        match raycast(&tree, [ox, oy, oz], [dx, dy, dz], params) {
+            None => r#"{"hit":false}"#.to_string(),
+            Some(hit) => {
+                // `contributors` is a small inline array; serialise as
+                // a JSON array of ids. Avoid serde_json::Value churn
+                // and just format manually — the schema is tiny and
+                // stable.
+                let mut contributors = String::from("[");
+                for (i, id) in hit.contributors.as_slice().iter().enumerate() {
+                    if i > 0 {
+                        contributors.push(',');
+                    }
+                    contributors.push_str(&id.to_string());
+                }
+                contributors.push(']');
+                format!(
+                    r#"{{"hit":true,"point":[{},{},{}],"t":{},"element":"{}","contributors":{}}}"#,
+                    hit.point[0],
+                    hit.point[1],
+                    hit.point[2],
+                    hit.t,
+                    hit.element.label(),
+                    contributors,
+                )
+            }
         }
     }
 
@@ -923,6 +1124,91 @@ mod tests {
         let json = k.list_features().unwrap();
         assert!(json.contains("\"kind\":\"box\""));
         assert!(json.contains("\"op\":\"union\""));
+    }
+
+    #[test]
+    fn pick_returns_miss_when_document_empty() {
+        let k = Kernel::new();
+        let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
+        assert!(json.contains("\"hit\":false"), "{json}");
+    }
+
+    #[test]
+    fn pick_returns_face_with_single_contributor_for_box_top() {
+        let mut k = Kernel::new();
+        let id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
+        assert!(json.contains("\"hit\":true"), "{json}");
+        assert!(json.contains("\"element\":\"face\""), "{json}");
+        assert!(
+            json.contains(&format!("\"contributors\":[{id}]")),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn new_kernel_has_empty_mesh_at_default_resolution() {
+        let k = Kernel::new();
+        assert_eq!(k.mesh_resolution(), DEFAULT_MESH_RESOLUTION);
+        assert_eq!(k.mesh_vertex_count(), 0);
+        assert_eq!(k.mesh_index_count(), 0);
+        // Version starts at 1 because `new` seeds the mesh once.
+        assert_eq!(k.mesh_version(), 1);
+    }
+
+    #[test]
+    fn adding_a_primitive_rebuilds_the_mesh_and_bumps_version() {
+        let mut k = Kernel::new();
+        let v0 = k.mesh_version();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_UNION,
+            0.0,
+            0.0,
+            0.0,
+            25.0,
+            25.0,
+            25.0,
+        )
+        .unwrap();
+        assert!(k.mesh_vertex_count() > 0);
+        assert!(k.mesh_index_count() > 0);
+        assert_eq!(k.mesh_index_count() % 3, 0);
+        assert!(k.mesh_version() > v0);
+    }
+
+    #[test]
+    fn set_mesh_resolution_rebuilds_and_skips_noop() {
+        let mut k = Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_UNION,
+            0.0,
+            0.0,
+            0.0,
+            25.0,
+            25.0,
+            25.0,
+        )
+        .unwrap();
+        let before = k.mesh_version();
+        assert!(k.set_mesh_resolution(32));
+        assert!(k.mesh_version() > before);
+        // Same value → no-op, version unchanged.
+        let after = k.mesh_version();
+        assert!(!k.set_mesh_resolution(32));
+        assert_eq!(k.mesh_version(), after);
     }
 
     #[test]

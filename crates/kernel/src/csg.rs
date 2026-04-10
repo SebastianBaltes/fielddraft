@@ -1,0 +1,703 @@
+//! CSG abstract syntax tree.
+//!
+//! K1 introduces the CSG graph as a sibling representation of the
+//! existing linear feature spine. `CsgNode::from_features` folds a
+//! `Feature` list into a binary tree whose `sdf` evaluator is
+//! mathematically identical to the linear `sdf_features` fold — the
+//! tree is just a richer form that later kernel slices (provenance,
+//! BVH, multi-body isolation) will extend. For K1 the tree only exists
+//! so that the Dual Contouring mesher can traverse it polymorphically
+//! instead of special-casing the linear list.
+
+use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+
+use crate::{quat_rotate, sdf_primitive, world_to_local};
+
+/// Stable identifier of a CSG leaf. Inherited from `FeatureId` so
+/// provenance survives outliner reorders, undo/redo and serialisation
+/// without a separate naming scheme (the README's TNP-solution).
+pub type NodeId = FeatureId;
+
+/// Maximum number of leaves that can simultaneously be "active" at a
+/// single SDF evaluation. Three is the theoretical lower bound for a
+/// `Vertex` of the B-Rep proxy (three faces meeting at a point); four
+/// leaves us headroom for near-degenerate configurations without ever
+/// forcing a heap allocation on the hot evaluate path.
+pub const MAX_CONTRIBUTORS: usize = 4;
+
+/// Small inline set of leaf ids that dominate a particular SDF
+/// evaluation within the provenance epsilon. Ordering inside the set
+/// is insertion order; duplicates are silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Contributors {
+    ids: [NodeId; MAX_CONTRIBUTORS],
+    len: u8,
+}
+
+impl Contributors {
+    pub const EMPTY: Self = Self {
+        ids: [0; MAX_CONTRIBUTORS],
+        len: 0,
+    };
+
+    pub const fn empty() -> Self {
+        Self::EMPTY
+    }
+
+    pub fn single(id: NodeId) -> Self {
+        let mut out = Self::EMPTY;
+        out.ids[0] = id;
+        out.len = 1;
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn as_slice(&self) -> &[NodeId] {
+        &self.ids[..self.len as usize]
+    }
+
+    pub fn contains(&self, id: NodeId) -> bool {
+        self.as_slice().iter().any(|x| *x == id)
+    }
+
+    /// Insert `id` if not already present. Silently drops additions
+    /// past `MAX_CONTRIBUTORS` — extremely high multiplicities are a
+    /// sign of numerical trouble (too large an epsilon), not real
+    /// geometry, and we prefer a stable upper bound to a panic.
+    pub fn push(&mut self, id: NodeId) {
+        if self.contains(id) {
+            return;
+        }
+        if (self.len as usize) < MAX_CONTRIBUTORS {
+            self.ids[self.len as usize] = id;
+            self.len += 1;
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        for &id in other.as_slice() {
+            self.push(id);
+        }
+    }
+
+    /// Classification of a mesh vertex or picking hit based on
+    /// contributor multiplicity — the heart of the B-Rep proxy.
+    pub fn element(&self) -> ProxyElement {
+        match self.len() {
+            0 => ProxyElement::None,
+            1 => ProxyElement::Face,
+            2 => ProxyElement::Edge,
+            _ => ProxyElement::Vertex,
+        }
+    }
+}
+
+impl Default for Contributors {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// Classification of a point on the CSG boundary. Mirrors the README's
+/// B-Rep proxy taxonomy: `Face` = single dominant contributor, `Edge`
+/// = two simultaneously dominant contributors (the intersection curve
+/// of two leaf surfaces), `Vertex` = three or more (the crossing of
+/// three or more surfaces). `None` is returned only for points far
+/// from any surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyElement {
+    None,
+    Face,
+    Edge,
+    Vertex,
+}
+
+impl ProxyElement {
+    /// Compact numeric tag for the zero-copy mesh bridge: 0 = off-
+    /// surface, 1 = face, 2 = edge, 3 = vertex. Matches
+    /// `Contributors::element()` by construction.
+    pub fn tag(self) -> u8 {
+        match self {
+            ProxyElement::None => 0,
+            ProxyElement::Face => 1,
+            ProxyElement::Edge => 2,
+            ProxyElement::Vertex => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxyElement::None => "none",
+            ProxyElement::Face => "face",
+            ProxyElement::Edge => "edge",
+            ProxyElement::Vertex => "vertex",
+        }
+    }
+}
+
+/// Axis-aligned bounding box in world space. The `EMPTY` sentinel
+/// carries inverted extents so that `union(empty, x) == x`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aabb {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl Aabb {
+    pub const EMPTY: Self = Self {
+        min: [f32::INFINITY; 3],
+        max: [f32::NEG_INFINITY; 3],
+    };
+
+    pub fn is_empty(&self) -> bool {
+        self.min[0] > self.max[0] || self.min[1] > self.max[1] || self.min[2] > self.max[2]
+    }
+
+    pub fn union(a: Self, b: Self) -> Self {
+        if a.is_empty() {
+            return b;
+        }
+        if b.is_empty() {
+            return a;
+        }
+        Self {
+            min: [
+                a.min[0].min(b.min[0]),
+                a.min[1].min(b.min[1]),
+                a.min[2].min(b.min[2]),
+            ],
+            max: [
+                a.max[0].max(b.max[0]),
+                a.max[1].max(b.max[1]),
+                a.max[2].max(b.max[2]),
+            ],
+        }
+    }
+
+    pub fn expanded(&self, margin: f32) -> Self {
+        if self.is_empty() {
+            return *self;
+        }
+        Self {
+            min: [self.min[0] - margin, self.min[1] - margin, self.min[2] - margin],
+            max: [self.max[0] + margin, self.max[1] + margin, self.max[2] + margin],
+        }
+    }
+
+    pub fn size(&self) -> [f32; 3] {
+        [
+            self.max[0] - self.min[0],
+            self.max[1] - self.min[1],
+            self.max[2] - self.min[2],
+        ]
+    }
+
+    /// Local-frame bounding box of a primitive.
+    pub fn of_primitive(p: &Primitive) -> Self {
+        match p {
+            Primitive::Box { center, half_extents } => Self {
+                min: [
+                    center[0] - half_extents[0],
+                    center[1] - half_extents[1],
+                    center[2] - half_extents[2],
+                ],
+                max: [
+                    center[0] + half_extents[0],
+                    center[1] + half_extents[1],
+                    center[2] + half_extents[2],
+                ],
+            },
+            Primitive::Sphere { center, radius } => Self {
+                min: [center[0] - radius, center[1] - radius, center[2] - radius],
+                max: [center[0] + radius, center[1] + radius, center[2] + radius],
+            },
+            Primitive::Cylinder { center, radius, half_height } => Self {
+                min: [
+                    center[0] - radius,
+                    center[1] - half_height,
+                    center[2] - radius,
+                ],
+                max: [
+                    center[0] + radius,
+                    center[1] + half_height,
+                    center[2] + radius,
+                ],
+            },
+        }
+    }
+
+    /// Conservative AABB after applying an affine transform: all eight
+    /// corners are mapped into world space and re-bounded. Looser than
+    /// the tightest post-rotation box, but trivially correct.
+    pub fn transformed(&self, t: &Transform) -> Self {
+        if self.is_empty() {
+            return *self;
+        }
+        let corners = [
+            [self.min[0], self.min[1], self.min[2]],
+            [self.max[0], self.min[1], self.min[2]],
+            [self.min[0], self.max[1], self.min[2]],
+            [self.max[0], self.max[1], self.min[2]],
+            [self.min[0], self.min[1], self.max[2]],
+            [self.max[0], self.min[1], self.max[2]],
+            [self.min[0], self.max[1], self.max[2]],
+            [self.max[0], self.max[1], self.max[2]],
+        ];
+        let mut out = Self::EMPTY;
+        for c in corners {
+            let scaled = [c[0] * t.scale, c[1] * t.scale, c[2] * t.scale];
+            let rotated = quat_rotate(t.rotation, scaled);
+            let world = [
+                rotated[0] + t.translate[0],
+                rotated[1] + t.translate[1],
+                rotated[2] + t.translate[2],
+            ];
+            out = Self::union(
+                out,
+                Self {
+                    min: world,
+                    max: world,
+                },
+            );
+        }
+        out
+    }
+}
+
+/// One node of the CSG graph. `Empty` is the identity element of union
+/// (SDF ≡ +∞, i.e. nothing exists), used as the seed of
+/// `from_features`. Each `Leaf` carries a stable [`NodeId`] that
+/// propagates through the provenance-aware `evaluate` fold, so every
+/// surface hit can be traced back to the primitives that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CsgNode {
+    Empty,
+    Leaf { id: NodeId, primitive: Primitive },
+    Transform(Transform, Box<CsgNode>),
+    Union(Box<CsgNode>, Box<CsgNode>),
+    Difference(Box<CsgNode>, Box<CsgNode>),
+    Intersection(Box<CsgNode>, Box<CsgNode>),
+}
+
+impl CsgNode {
+    /// Fold a linear feature spine into a binary CSG tree.
+    ///
+    /// The first feature seeds the accumulator regardless of its op
+    /// (exactly matching the `sdf_features` rule that the empty-space
+    /// start means union/difference/intersection all degenerate to
+    /// "take this feature as-is"). Each subsequent feature combines
+    /// with the accumulator via its own op.
+    ///
+    /// Each leaf inherits the feature's id as its `NodeId`, so
+    /// contributor analysis can always name the original outliner row
+    /// that produced a face/edge/vertex.
+    pub fn from_features(features: &[Feature]) -> Self {
+        let mut acc = Self::Empty;
+        for f in features {
+            let leaf = Self::Transform(
+                f.transform,
+                Box::new(Self::Leaf {
+                    id: f.id,
+                    primitive: f.primitive.clone(),
+                }),
+            );
+            acc = match (acc, f.op) {
+                (Self::Empty, _) => leaf,
+                (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
+                (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
+                (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
+            };
+        }
+        acc
+    }
+
+    /// Evaluate the signed distance at a world-space point. Matches
+    /// `sdf_features` when built from the same feature list.
+    pub fn sdf(&self, p: [f32; 3]) -> f32 {
+        match self {
+            CsgNode::Empty => f32::INFINITY,
+            CsgNode::Leaf { primitive, .. } => sdf_primitive(primitive, p),
+            CsgNode::Transform(t, inner) => {
+                let local = world_to_local(t, p);
+                inner.sdf(local) * t.scale
+            }
+            CsgNode::Union(a, b) => a.sdf(p).min(b.sdf(p)),
+            CsgNode::Difference(a, b) => a.sdf(p).max(-b.sdf(p)),
+            CsgNode::Intersection(a, b) => a.sdf(p).max(b.sdf(p)),
+        }
+    }
+
+    /// Provenance-aware SDF evaluation.
+    ///
+    /// Returns `(distance, contributors)`. The contributor set is the
+    /// list of leaf ids whose individual distance fields are within
+    /// `eps` of the dominating value at `p`, i.e. the leaves whose
+    /// surface passes (approximately) through that point.
+    ///
+    /// For a point well inside a single leaf the set has one element;
+    /// for a point on the intersection curve of two surfaces it has
+    /// two; for a point at the meeting of three or more surfaces it
+    /// grows further — modulo the `MAX_CONTRIBUTORS` cap.
+    ///
+    /// The epsilon must be chosen by the caller. The raycaster and
+    /// mesher scale it to the local sampling resolution (cell size
+    /// for DC, a fraction of the ray step for picking). A fixed
+    /// absolute value would either miss real intersections on coarse
+    /// grids or flood faces with spurious neighbours on fine ones.
+    pub fn evaluate(&self, p: [f32; 3], eps: f32) -> (f32, Contributors) {
+        match self {
+            CsgNode::Empty => (f32::INFINITY, Contributors::empty()),
+            CsgNode::Leaf { id, primitive } => {
+                (sdf_primitive(primitive, p), Contributors::single(*id))
+            }
+            CsgNode::Transform(t, inner) => {
+                let local = world_to_local(t, p);
+                let (d, c) = inner.evaluate(local, eps);
+                (d * t.scale, c)
+            }
+            CsgNode::Union(a, b) => {
+                let (da, ca) = a.evaluate(p, eps);
+                let (db, cb) = b.evaluate(p, eps);
+                combine_min(da, ca, db, cb, eps)
+            }
+            CsgNode::Difference(a, b) => {
+                // result = max(da, -db). Sign flip on `db` does NOT
+                // change the contributor identity — it still names
+                // the subtracted leaf.
+                let (da, ca) = a.evaluate(p, eps);
+                let (db, cb) = b.evaluate(p, eps);
+                combine_max(da, ca, -db, cb, eps)
+            }
+            CsgNode::Intersection(a, b) => {
+                let (da, ca) = a.evaluate(p, eps);
+                let (db, cb) = b.evaluate(p, eps);
+                combine_max(da, ca, db, cb, eps)
+            }
+        }
+    }
+
+    /// World-space AABB (loose — good enough to bound the mesher grid).
+    pub fn aabb(&self) -> Aabb {
+        match self {
+            CsgNode::Empty => Aabb::EMPTY,
+            CsgNode::Leaf { primitive, .. } => Aabb::of_primitive(primitive),
+            CsgNode::Transform(t, inner) => inner.aabb().transformed(t),
+            CsgNode::Union(a, b) => Aabb::union(a.aabb(), b.aabb()),
+            // Difference can only shrink the left operand — left AABB
+            // is always a conservative bound.
+            CsgNode::Difference(a, _) => a.aabb(),
+            // Intersection is a subset of either child; keep the left
+            // so the bound stays well-defined even when the right child
+            // is empty or unbounded.
+            CsgNode::Intersection(a, _) => a.aabb(),
+        }
+    }
+}
+
+/// Boolean-min fold with contributor propagation: within `eps` the
+/// two sides are considered tied and both contribute.
+fn combine_min(
+    da: f32,
+    ca: Contributors,
+    db: f32,
+    cb: Contributors,
+    eps: f32,
+) -> (f32, Contributors) {
+    if (da - db).abs() <= eps {
+        let mut c = ca;
+        c.extend(cb);
+        (da.min(db), c)
+    } else if da < db {
+        (da, ca)
+    } else {
+        (db, cb)
+    }
+}
+
+/// Boolean-max fold with contributor propagation (same tie rule as
+/// `combine_min` but picking the larger branch).
+fn combine_max(
+    da: f32,
+    ca: Contributors,
+    db: f32,
+    cb: Contributors,
+    eps: f32,
+) -> (f32, Contributors) {
+    if (da - db).abs() <= eps {
+        let mut c = ca;
+        c.extend(cb);
+        (da.max(db), c)
+    } else if da > db {
+        (da, ca)
+    } else {
+        (db, cb)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdf_features;
+    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
+        Feature {
+            id,
+            name: format!("Box {id}"),
+            op,
+            primitive: Primitive::Box {
+                center,
+                half_extents: half,
+            },
+            transform: Transform::IDENTITY,
+        }
+    }
+
+    #[test]
+    fn empty_tree_has_infinite_sdf_and_empty_aabb() {
+        let tree = CsgNode::from_features(&[]);
+        assert!(tree.sdf([0.0, 0.0, 0.0]).is_infinite());
+        assert!(tree.aabb().is_empty());
+    }
+
+    #[test]
+    fn single_box_tree_matches_primitive_sdf() {
+        let features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 10.0],
+        )];
+        let tree = CsgNode::from_features(&features);
+        for &p in &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]] {
+            let a = tree.sdf(p);
+            let b = sdf_features(&features, p);
+            assert!((a - b).abs() < 1e-5, "{a} vs {b} at {p:?}");
+        }
+    }
+
+    #[test]
+    fn tree_sdf_matches_linear_fold_for_difference() {
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            Feature {
+                id: 2,
+                name: "hole".into(),
+                op: BoolOp::Difference,
+                primitive: Primitive::Sphere {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 3.0,
+                },
+                transform: Transform::IDENTITY,
+            },
+        ];
+        let tree = CsgNode::from_features(&features);
+        let samples = [
+            [0.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [-5.0, -5.0, -5.0],
+            [50.0, 0.0, 0.0],
+        ];
+        for p in samples {
+            let a = tree.sdf(p);
+            let b = sdf_features(&features, p);
+            assert!(
+                (a - b).abs() < 1e-4,
+                "tree {a} vs linear {b} at {p:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn aabb_of_box_matches_half_extents() {
+        let tree = CsgNode::from_features(&[box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [5.0, 7.0, 9.0],
+        )]);
+        let bb = tree.aabb();
+        assert_eq!(bb.min, [-5.0, -7.0, -9.0]);
+        assert_eq!(bb.max, [5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn union_aabb_covers_both_children() {
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+        ];
+        let bb = CsgNode::from_features(&features).aabb();
+        assert_eq!(bb.min, [-5.0, -5.0, -5.0]);
+        assert_eq!(bb.max, [25.0, 5.0, 5.0]);
+    }
+
+    // ─── provenance / evaluate ─────────────────────────────────────
+
+    fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Feature {
+        Feature {
+            id,
+            name: format!("Cyl {id}"),
+            op: BoolOp::Union,
+            primitive: Primitive::Cylinder {
+                center,
+                radius,
+                half_height,
+            },
+            transform: Transform::IDENTITY,
+        }
+    }
+
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
+        Feature {
+            id,
+            name: format!("Sphere {id}"),
+            op: BoolOp::Union,
+            primitive: Primitive::Sphere { center, radius },
+            transform: Transform::IDENTITY,
+        }
+    }
+
+    #[test]
+    fn evaluate_on_solo_face_returns_single_contributor() {
+        // Union(Box=1, Cylinder=2) with the cylinder poking out the
+        // top of the box. Point on the box top, but outside the
+        // cylinder footprint → only the box contributes.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
+        ];
+        let tree = CsgNode::from_features(&features);
+        let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5);
+        assert!(d.abs() < 1e-4, "point should sit on box top, got d={d}");
+        assert_eq!(c.element(), ProxyElement::Face);
+        assert_eq!(c.as_slice(), &[1]);
+    }
+
+    #[test]
+    fn evaluate_on_emergent_edge_returns_two_contributors() {
+        // The cylinder's lateral surface (x²+z²=100) meets the box's
+        // top face (y=20) along the circle x²+z²=100 at y=20. At
+        // (10, 20, 0) both leaves' individual SDFs are zero → the
+        // point is an Edge in the B-Rep proxy.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
+        ];
+        let tree = CsgNode::from_features(&features);
+        let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5);
+        assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
+        assert_eq!(c.element(), ProxyElement::Edge);
+        let mut got: Vec<u32> = c.as_slice().to_vec();
+        got.sort();
+        assert_eq!(got, vec![1, 2]);
+    }
+
+    #[test]
+    fn evaluate_on_triple_intersection_returns_vertex() {
+        // Three axis-aligned boxes meeting at a single corner (+x,+y,
+        // +z). At the shared corner (10, 10, 10) all three box
+        // surfaces pass through the same point → contributors = 3 →
+        // classification = Vertex.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(3, BoolOp::Union, [10.0, 20.0, 0.0], [10.0, 10.0, 10.0]),
+        ];
+        let tree = CsgNode::from_features(&features);
+        // All three boxes meet at (10, 10, 10).
+        let (d, c) = tree.evaluate([10.0, 10.0, 10.0], 0.5);
+        assert!(d.abs() < 1e-4);
+        assert_eq!(c.element(), ProxyElement::Vertex);
+        assert_eq!(c.len(), 3);
+        let mut got: Vec<u32> = c.as_slice().to_vec();
+        got.sort();
+        assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn difference_preserves_both_contributors_on_hole_rim() {
+        // Box (id=1) minus a sphere (id=2) punched out of its corner.
+        // On the circle where the sphere exits the box's +x face the
+        // point lies on *both* the box's +x face and the sphere's
+        // lateral surface → the difference SDF is zero via the tie
+        // `max(box_sdf, -sphere_sdf)`.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            {
+                let mut f = sphere_feature(2, [10.0, 0.0, 0.0], 4.0);
+                f.op = BoolOp::Difference;
+                f
+            },
+        ];
+        let tree = CsgNode::from_features(&features);
+        // (10, 0, 4) is on the box's +x face (x=10) AND on the
+        // sphere's surface (distance from (10,0,0) = 4).
+        let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5);
+        assert!(d.abs() < 1e-4, "should lie on both boundaries, got d={d}");
+        assert_eq!(c.element(), ProxyElement::Edge);
+        let mut got: Vec<u32> = c.as_slice().to_vec();
+        got.sort();
+        assert_eq!(got, vec![1, 2]);
+    }
+
+    #[test]
+    fn evaluate_far_from_surface_still_has_one_contributor() {
+        // Deep inside a single leaf — the dominant contributor is
+        // unambiguous, but provenance still records which leaf owns
+        // that slab of space.
+        let features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 10.0],
+        )];
+        let tree = CsgNode::from_features(&features);
+        let (d, c) = tree.evaluate([0.0, 0.0, 0.0], 0.5);
+        assert!(d < 0.0);
+        assert_eq!(c.as_slice(), &[1]);
+    }
+
+    #[test]
+    fn contributors_push_dedupes_and_caps() {
+        let mut c = Contributors::empty();
+        c.push(1);
+        c.push(2);
+        c.push(1); // dup
+        c.push(3);
+        c.push(4);
+        c.push(5); // over cap — silently dropped
+        assert_eq!(c.len(), MAX_CONTRIBUTORS);
+        let mut got: Vec<u32> = c.as_slice().to_vec();
+        got.sort();
+        assert_eq!(got, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn difference_aabb_stays_with_left_operand() {
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            Feature {
+                id: 2,
+                name: "hole".into(),
+                op: BoolOp::Difference,
+                primitive: Primitive::Sphere {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 3.0,
+                },
+                transform: Transform::IDENTITY,
+            },
+        ];
+        let bb = CsgNode::from_features(&features).aabb();
+        assert_eq!(bb.min, [-10.0, -10.0, -10.0]);
+        assert_eq!(bb.max, [10.0, 10.0, 10.0]);
+    }
+}

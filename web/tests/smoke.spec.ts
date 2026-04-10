@@ -100,7 +100,7 @@ test.describe("FieldDraft smoke", () => {
     await expect(row).toHaveAttribute("data-feature-op", "union");
   });
 
-  test("M2: raymarcher renders the SDF result of two-primitive subtraction", async ({
+  test("K1: mesh renderer shows the dual-contoured two-primitive subtraction", async ({
     page,
   }) => {
     await page.goto("/");
@@ -113,8 +113,9 @@ test.describe("FieldDraft smoke", () => {
     await page.getByTestId("add-box").click();
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
-    // A handful of frames is enough — the headless shader is coarse
-    // enough that one upload + present cycle settles immediately.
+    // K1 pipeline: the kernel re-meshed on each mutation; the viewport
+    // polls `meshVersion` once per frame and rebinds BufferGeometry
+    // attributes. A short wait lets the first post-mutation frame land.
     await page.waitForTimeout(600);
 
     // Screenshot the canvas via Playwright. We can't use a 2D-context
@@ -182,8 +183,8 @@ test.describe("FieldDraft smoke", () => {
 
 
     // Loose thresholds — exact counts depend on viewport size and
-    // camera framing. The point is "raymarcher actually drew SDF
-    // pixels into the canvas, into a light-mode background".
+    // camera framing. The point is "the DC mesh actually drew shaded
+    // pixels into the canvas, against a light-mode background".
     expect(stats.total).toBeGreaterThan(1000);
     // Avg luminance should be clearly in the upper half (light-mode UI)
     // and not just black emptiness.
@@ -194,8 +195,9 @@ test.describe("FieldDraft smoke", () => {
       stats.lightPixels,
       `not enough light pixels: ${JSON.stringify(stats)}`,
     ).toBeGreaterThan(stats.total * 0.4);
-    // And the raymarcher must have drawn at least *some* lit primitive
-    // pixels — proves the SDF eval ran on the GPU and produced a hit.
+    // And the mesh pass must have drawn at least *some* lit primitive
+    // pixels — proves the kernel produced a DC mesh and the WebGPU
+    // pipeline rasterised it.
     expect(
       stats.bluePixels,
       `no lit primitive pixels: ${JSON.stringify(stats)}`,
