@@ -17,44 +17,10 @@ pub mod raycast;
 use body::{build_bounded_for_body, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
 use csg::CsgNode;
-use dc::{dual_contour, Mesh};
+use dc::dual_contour;
 use raycast::{raycast, RaycastParams};
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
-
-/// Concatenate every body's mesh into a single flat `Mesh`, with
-/// triangle indices offset so they still address the correct
-/// vertices in the combined vertex list. Used by the aggregate
-/// `meshPositionsPtr` / `meshIndicesPtr` surface that the current
-/// frontend still reads; a later slice will retire this in favour
-/// of per-body BufferGeometry on the JS side.
-fn concat_body_meshes(bodies: &[Body]) -> Mesh {
-    if bodies.is_empty() {
-        return Mesh::default();
-    }
-    let total_vertices: usize = bodies.iter().map(|b| b.mesh.vertex_count()).sum();
-    let total_indices: usize = bodies.iter().map(|b| b.mesh.indices.len()).sum();
-
-    let mut out = Mesh {
-        positions: Vec::with_capacity(total_vertices * 3),
-        normals: Vec::with_capacity(total_vertices * 3),
-        indices: Vec::with_capacity(total_indices),
-        classifications: Vec::with_capacity(total_vertices),
-        contributors: Vec::with_capacity(total_vertices * csg::MAX_CONTRIBUTORS),
-    };
-    let mut base: u32 = 0;
-    for b in bodies {
-        out.positions.extend_from_slice(&b.mesh.positions);
-        out.normals.extend_from_slice(&b.mesh.normals);
-        out.classifications.extend_from_slice(&b.mesh.classifications);
-        out.contributors.extend_from_slice(&b.mesh.contributors);
-        for &idx in &b.mesh.indices {
-            out.indices.push(idx + base);
-        }
-        base += b.mesh.vertex_count() as u32;
-    }
-    out
-}
 
 /// Default voxel grid resolution for the K1 mesher. 48 cells along the
 /// longest AABB axis strikes a balance between rebuild latency (a
@@ -314,16 +280,10 @@ pub struct Kernel {
     /// touch body `A` leave body `B`'s mesh — and its per-body
     /// `version` counter — untouched.
     bodies: Vec<Body>,
-    /// Concatenated aggregate of every body's mesh, rebuilt after
-    /// each partition pass by appending positions/normals/indices
-    /// (with per-body index offsets) and per-vertex classification
-    /// /contributors. The zero-copy `meshPositionsPtr` bridge from
-    /// K1 still points at this single flat buffer so the current
-    /// frontend keeps working unchanged; a future slice will switch
-    /// the viewport to iterating per-body buffers directly and drop
-    /// the aggregate.
-    mesh: Mesh,
     mesh_resolution: u32,
+    /// Global version counter bumped on every mesh rebuild (any body
+    /// touched). Frontend uses this to detect "anything changed";
+    /// per-body freshness is tracked by each `Body`'s own `version`.
     mesh_version: u32,
 }
 
@@ -416,7 +376,6 @@ impl Kernel {
         // map goes out of scope.
 
         self.bodies = new_bodies;
-        self.mesh = concat_body_meshes(&self.bodies);
         self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
@@ -462,7 +421,6 @@ impl Kernel {
             undo: Vec::new(),
             redo: Vec::new(),
             bodies: Vec::new(),
-            mesh: Mesh::default(),
             mesh_resolution: DEFAULT_MESH_RESOLUTION,
             mesh_version: 0,
         };
@@ -742,53 +700,38 @@ impl Kernel {
         }
     }
 
-    // ── mesh bridge (zero-copy) ───────────────────────────────────────
+    // ── per-body mesh bridge (zero-copy) ──────────────────────────────
     //
     // The Dual Contouring mesher writes flat positions/normals/indices
-    // into the kernel's `mesh` field on every mutation. JS binds
+    // into each `Body`'s own `Mesh` on every mutation. JS binds
     // `Float32Array`/`Uint32Array` views straight onto WASM linear
-    // memory via these pointers — callers MUST re-acquire the views
-    // after every mutating call, because the underlying `Vec`s can be
-    // reallocated.
+    // memory via the per-body pointers — callers MUST re-acquire the
+    // views after every mutating call, because the underlying `Vec`s
+    // can be reallocated.
+    //
+    // Aggregate counts (`meshVertexCount` / `meshIndexCount` /
+    // `meshTriangleCount`) are provided as cheap sums over the body
+    // list for callers that only need a total (tests, status bars).
+    // There is no aggregate pointer buffer any more — the frontend
+    // iterates `bodyCount()` and binds one `BufferGeometry` per body.
 
-    #[wasm_bindgen(js_name = meshPositionsPtr)]
-    pub fn mesh_positions_ptr(&self) -> *const f32 {
-        self.mesh.positions.as_ptr()
-    }
-
-    #[wasm_bindgen(js_name = meshNormalsPtr)]
-    pub fn mesh_normals_ptr(&self) -> *const f32 {
-        self.mesh.normals.as_ptr()
-    }
-
-    #[wasm_bindgen(js_name = meshIndicesPtr)]
-    pub fn mesh_indices_ptr(&self) -> *const u32 {
-        self.mesh.indices.as_ptr()
-    }
-
+    /// Sum of vertex counts across every body. O(bodies).
     #[wasm_bindgen(js_name = meshVertexCount)]
     pub fn mesh_vertex_count(&self) -> usize {
-        self.mesh.vertex_count()
+        self.bodies.iter().map(|b| b.mesh.vertex_count()).sum()
     }
 
+    /// Sum of index counts across every body. O(bodies).
     #[wasm_bindgen(js_name = meshIndexCount)]
     pub fn mesh_index_count(&self) -> usize {
-        self.mesh.indices.len()
+        self.bodies.iter().map(|b| b.mesh.indices.len()).sum()
     }
 
+    /// Sum of triangle counts across every body. O(bodies).
     #[wasm_bindgen(js_name = meshTriangleCount)]
     pub fn mesh_triangle_count(&self) -> usize {
-        self.mesh.triangle_count()
+        self.bodies.iter().map(|b| b.mesh.triangle_count()).sum()
     }
-
-    // ── per-body mesh surface (K3 part 2) ─────────────────────────────
-    //
-    // The aggregate `meshPositionsPtr` family above still exists so
-    // the current viewport keeps working unchanged. The per-body API
-    // below lets a future frontend slice bind one `BufferGeometry`
-    // per body and only re-upload the bodies whose `bodyVersion`
-    // advanced — that's the GPU-side half of the multi-body
-    // isolation promise.
 
     #[wasm_bindgen(js_name = bodyCount)]
     pub fn body_count(&self) -> usize {
@@ -852,23 +795,8 @@ impl Kernel {
         self.bodies[i].mesh.contributors.as_ptr()
     }
 
-    /// Pointer to the per-vertex classification byte array (stride 1:
-    /// one byte per vertex; 1 = face, 2 = edge, 3 = vertex).
-    #[wasm_bindgen(js_name = meshClassificationsPtr)]
-    pub fn mesh_classifications_ptr(&self) -> *const u8 {
-        self.mesh.classifications.as_ptr()
-    }
-
-    /// Pointer to the flat contributor ids (stride
-    /// `MAX_CONTRIBUTORS` × `u32` per vertex; unused slots hold the
-    /// `CONTRIBUTOR_SENTINEL` = `u32::MAX`).
-    #[wasm_bindgen(js_name = meshContributorsPtr)]
-    pub fn mesh_contributors_ptr(&self) -> *const u32 {
-        self.mesh.contributors.as_ptr()
-    }
-
-    /// Number of `u32` slots reserved per vertex in the contributor
-    /// flat buffer. Matches `csg::MAX_CONTRIBUTORS`.
+    /// Number of `u32` slots reserved per vertex in the per-body
+    /// contributor flat buffer. Matches `csg::MAX_CONTRIBUTORS`.
     #[wasm_bindgen(js_name = meshContributorStride)]
     pub fn mesh_contributor_stride() -> usize {
         csg::MAX_CONTRIBUTORS

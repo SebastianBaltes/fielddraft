@@ -128,23 +128,11 @@ export class Kernel {
   // mutating call, because `Vec::push` can relocate the backing
   // allocation and invalidate the view's buffer/offset pair.
 
-  meshPositionsView(): Float32Array {
-    const ptr = this.inner.meshPositionsPtr();
-    const count = this.inner.meshVertexCount();
-    return new Float32Array(this.memory.buffer, ptr, count * 3);
-  }
-
-  meshNormalsView(): Float32Array {
-    const ptr = this.inner.meshNormalsPtr();
-    const count = this.inner.meshVertexCount();
-    return new Float32Array(this.memory.buffer, ptr, count * 3);
-  }
-
-  meshIndicesView(): Uint32Array {
-    const ptr = this.inner.meshIndicesPtr();
-    const count = this.inner.meshIndexCount();
-    return new Uint32Array(this.memory.buffer, ptr, count);
-  }
+  // ── aggregate counts (sum over bodies) ──────────────────────────────
+  //
+  // The aggregate pointer buffer from K3 part 1 is gone — the viewport
+  // iterates bodies via the per-body views below. These counts stay
+  // around as cheap totals for status bars and tests.
 
   meshVertexCount(): number {
     return this.inner.meshVertexCount();
@@ -162,15 +150,67 @@ export class Kernel {
     return this.inner.meshVersion();
   }
 
-  meshClassificationsView(): Uint8Array {
-    const ptr = this.inner.meshClassificationsPtr();
-    const count = this.inner.meshVertexCount();
+  // ── per-body mesh bridge (K3 part 3) ───────────────────────────────
+  //
+  // Each body owns its own contiguous positions / normals / indices /
+  // classifications / contributors buffers inside WASM linear memory.
+  // `bodyCount()` changes only when bodies are added, removed or
+  // merged; `bodyVersion(i)` bumps only when body `i` was actually
+  // re-meshed, so the viewport can rebind exactly the bodies that
+  // changed. All views alias the WASM buffers directly — never cache
+  // them across a mutating call.
+
+  bodyCount(): number {
+    return this.inner.bodyCount();
+  }
+
+  bodyId(i: number): number {
+    return this.inner.bodyId(i);
+  }
+
+  bodyVersion(i: number): number {
+    return this.inner.bodyVersion(i);
+  }
+
+  bodyVertexCount(i: number): number {
+    return this.inner.bodyVertexCount(i);
+  }
+
+  bodyIndexCount(i: number): number {
+    return this.inner.bodyIndexCount(i);
+  }
+
+  bodyTriangleCount(i: number): number {
+    return this.inner.bodyTriangleCount(i);
+  }
+
+  bodyPositionsView(i: number): Float32Array {
+    const ptr = this.inner.bodyPositionsPtr(i);
+    const count = this.inner.bodyVertexCount(i);
+    return new Float32Array(this.memory.buffer, ptr, count * 3);
+  }
+
+  bodyNormalsView(i: number): Float32Array {
+    const ptr = this.inner.bodyNormalsPtr(i);
+    const count = this.inner.bodyVertexCount(i);
+    return new Float32Array(this.memory.buffer, ptr, count * 3);
+  }
+
+  bodyIndicesView(i: number): Uint32Array {
+    const ptr = this.inner.bodyIndicesPtr(i);
+    const count = this.inner.bodyIndexCount(i);
+    return new Uint32Array(this.memory.buffer, ptr, count);
+  }
+
+  bodyClassificationsView(i: number): Uint8Array {
+    const ptr = this.inner.bodyClassificationsPtr(i);
+    const count = this.inner.bodyVertexCount(i);
     return new Uint8Array(this.memory.buffer, ptr, count);
   }
 
-  meshContributorsView(): Uint32Array {
-    const ptr = this.inner.meshContributorsPtr();
-    const count = this.inner.meshVertexCount();
+  bodyContributorsView(i: number): Uint32Array {
+    const ptr = this.inner.bodyContributorsPtr(i);
+    const count = this.inner.bodyVertexCount(i);
     return new Uint32Array(this.memory.buffer, ptr, count * MESH_CONTRIBUTOR_STRIDE);
   }
 

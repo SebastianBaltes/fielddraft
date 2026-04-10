@@ -1,17 +1,20 @@
 /**
  * Main 3D viewport.
  *
- * K1 onwards: the kernel owns the mesh. On every mutation it re-runs
- * the Dual Contouring pass and writes flat positions/normals/indices
- * into WASM linear memory. This component binds those buffers to a
- * `THREE.BufferGeometry` on the JS side via zero-copy `Float32Array`
- * and `Uint32Array` views — nothing is serialized across the bridge,
- * and the geometry is rebuilt only when the kernel's `mesh_version`
- * advances.
+ * K3 part 3: the kernel partitions the document into independent
+ * bodies. For every body it owns a separate positions/normals/indices
+ * buffer in WASM linear memory plus a stable `bodyId` and a per-body
+ * `bodyVersion` that bumps only when that body's mesh was actually
+ * re-meshed. This component mirrors the body list on the JS side as
+ * a `Map<body_id, BufferGeometry>` and, on every frame, rebinds
+ * attributes only for the bodies whose version advanced — unchanged
+ * bodies keep their BufferGeometry and their GPU buffers untouched.
+ * Bodies that disappear from the kernel (e.g. because their seed
+ * feature was deleted or they merged into a neighbour) have their
+ * geometries disposed.
  *
  * The TSL raymarcher lives on in `raymarch.ts` but is no longer wired
- * into the scene — it's kept as a reference implementation for future
- * tests of the 3D picking ray (K2).
+ * into the scene — kept as reference for the K2 picking ray only.
  */
 
 import {
@@ -35,37 +38,43 @@ import type { PickResult } from "./kernel";
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
 const BUILD_VOLUME_SIZE = 600;
 
+interface BodyEntry {
+  geometry: THREE.BufferGeometry;
+  /** Last `bodyVersion(i)` we uploaded to the GPU. Stays put when
+   *  other bodies mutate around this one; bumps only when the
+   *  kernel actually re-meshed this body. */
+  version: number;
+}
+
 /**
- * Live mesh driven by the kernel.
+ * Live per-body mesh driven by the kernel.
  *
- * We allocate one `BufferGeometry` up front, then on every frame check
- * whether the kernel's `meshVersion()` has advanced since our last
- * upload. When it has, we grab fresh zero-copy views of positions,
- * normals and indices and rebind them as attributes. React Three Fiber
- * picks up the new attribute buffers automatically on the next render.
+ * One `BufferGeometry` per body, keyed by the kernel's stable
+ * `bodyId`. On every frame we walk `kernel.bodyCount()`, create a
+ * geometry for any new body id, re-upload attributes for any body
+ * whose `bodyVersion(i)` advanced, and dispose geometries whose
+ * body disappeared from the kernel (its seed feature was removed
+ * or it merged into a neighbour). Unchanged bodies touch neither
+ * CPU nor GPU — that's the whole point of the K3 multi-body cut.
  */
 function KernelMesh() {
   const { store } = useKernelStore();
 
-  const geometry = useMemo(() => new THREE.BufferGeometry(), []);
-
-  // Simple Lambert-ish shader over the kernel's smoothed normals.
-  // Implemented in a sidecar module because the TSL API is loose-typed
-  // and the rest of this file stays under strict TS.
+  // Single material shared by every body mesh. Cheap — Three.js
+  // re-binds the shader once and the bodies differ only in their
+  // vertex attributes.
   const material = useMemo(() => createKernelMeshMaterial(), []);
 
-  const lastVersionRef = useRef<number>(-1);
+  // Ref-based map so we can mutate inside `useFrame` without
+  // triggering a React re-render on every poll. React re-renders
+  // are forced explicitly via `bodySetVersion` whenever the set of
+  // live body ids changes (add / remove), not on every version bump.
+  const bodyEntriesRef = useRef<Map<number, BodyEntry>>(new Map());
+  const [bodySetVersion, setBodySetVersion] = useState(0);
 
-  const upload = (): void => {
-    if (!store) return;
-    const k = store.kernel;
-    const version = k.meshVersion();
-    if (version === lastVersionRef.current) return;
-    lastVersionRef.current = version;
-
-    const vertexCount = k.meshVertexCount();
-    const indexCount = k.meshIndexCount();
-
+  const uploadBody = (kernel: typeof store extends null ? never : NonNullable<typeof store>["kernel"], i: number, geometry: THREE.BufferGeometry): void => {
+    const vertexCount = kernel.bodyVertexCount(i);
+    const indexCount = kernel.bodyIndexCount(i);
     if (vertexCount === 0 || indexCount === 0) {
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(0), 3));
@@ -74,17 +83,13 @@ function KernelMesh() {
       geometry.boundingSphere = null;
       return;
     }
-
-    // `.slice()` snapshots the WASM-aliased view into a JS-owned
-    // buffer. Keeping an alias instead would be tempting but unsafe:
-    // the next kernel mutation can reallocate the underlying `Vec`,
-    // which would silently corrupt the geometry's attribute data on
-    // the GPU. A per-rebuild copy is cheap (tens of kB for K1 meshes)
-    // and buys us lifetime safety.
-    const positions = k.meshPositionsView().slice();
-    const normals = k.meshNormalsView().slice();
-    const indices = k.meshIndicesView().slice();
-
+    // `.slice()` detaches the WASM-aliased view from linear memory:
+    // the next kernel mutation may reallocate the underlying `Vec`
+    // and silently corrupt any retained alias. Per-rebuild copies
+    // are a few tens of kB per body — cheap and lifetime-safe.
+    const positions = kernel.bodyPositionsView(i).slice();
+    const normals = kernel.bodyNormalsView(i).slice();
+    const indices = kernel.bodyIndicesView(i).slice();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
     geometry.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -92,32 +97,79 @@ function KernelMesh() {
     geometry.computeBoundingSphere();
   };
 
-  // One-shot upload on mount / store change so the very first paint
-  // has the correct geometry.
-  useEffect(() => {
-    lastVersionRef.current = -1;
-    upload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store]);
-
-  // Pick up later mutations. We cannot subscribe directly to the
-  // kernel's mesh_version, so we poll it once per frame — this is
-  // O(1) work per frame and only triggers an upload when the version
-  // actually changed.
+  // Poll the kernel once per frame. The actual work is gated on
+  // `bodyVersion(i)` differences, so steady-state (no mutation) is
+  // O(bodies) reads and no GPU traffic.
   useFrame(() => {
-    upload();
+    if (!store) return;
+    const kernel = store.kernel;
+    const count = kernel.bodyCount();
+    const seen = new Set<number>();
+    let idSetChanged = false;
+
+    for (let i = 0; i < count; i++) {
+      const id = kernel.bodyId(i);
+      seen.add(id);
+      const version = kernel.bodyVersion(i);
+      const existing = bodyEntriesRef.current.get(id);
+      if (!existing) {
+        const geometry = new THREE.BufferGeometry();
+        uploadBody(kernel, i, geometry);
+        bodyEntriesRef.current.set(id, { geometry, version });
+        idSetChanged = true;
+      } else if (existing.version !== version) {
+        uploadBody(kernel, i, existing.geometry);
+        existing.version = version;
+      }
+    }
+
+    // Drop bodies that no longer exist in the kernel.
+    for (const [id, entry] of bodyEntriesRef.current) {
+      if (!seen.has(id)) {
+        entry.geometry.dispose();
+        bodyEntriesRef.current.delete(id);
+        idSetChanged = true;
+      }
+    }
+
+    if (idSetChanged) {
+      setBodySetVersion((v) => v + 1);
+    }
   });
 
-  useEffect(
-    () => () => {
-      geometry.dispose();
+  // Dispose everything on unmount.
+  useEffect(() => {
+    return () => {
+      for (const entry of bodyEntriesRef.current.values()) {
+        entry.geometry.dispose();
+      }
+      bodyEntriesRef.current.clear();
       material.dispose();
-    },
-    [geometry, material],
-  );
+    };
+  }, [material]);
 
+  // Render one `<mesh>` per body. Depending on `bodySetVersion`
+  // forces React to re-read `bodyEntriesRef.current.keys()` whenever
+  // the id set mutates; version-only bumps (same ids, different
+  // meshes) don't trigger a React render — the BufferGeometry
+  // mutation in `useFrame` is picked up by R3F on the next paint.
+  void bodySetVersion;
+  const ids = Array.from(bodyEntriesRef.current.keys());
   return (
-    <mesh geometry={geometry} material={material} frustumCulled={false} />
+    <>
+      {ids.map((id) => {
+        const entry = bodyEntriesRef.current.get(id);
+        if (!entry) return null;
+        return (
+          <mesh
+            key={id}
+            geometry={entry.geometry}
+            material={material}
+            frustumCulled={false}
+          />
+        );
+      })}
+    </>
   );
 }
 
