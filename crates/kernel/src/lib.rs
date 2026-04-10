@@ -8,10 +8,12 @@
 //! the legacy TSL viewport path but is no longer the primary render
 //! input.
 
+pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod raycast;
 
+use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
 use raycast::{raycast, RaycastParams};
@@ -70,6 +72,43 @@ fn quat_inverse_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
         v[1] + qw * t[1] + qz * t[0] - qx * t[2],
         v[2] + qw * t[2] + qx * t[1] - qy * t[0],
     ]
+}
+
+/// Hamilton product of two unit quaternions, both in the project's
+/// `(x, y, z, w)` storage order. Used when collapsing chains of
+/// `CsgNode::Transform` into a single accumulated world transform at
+/// each BVH leaf (see `bvh.rs`).
+pub fn quat_multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let [ax, ay, az, aw] = a;
+    let [bx, by, bz, bw] = b;
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+}
+
+/// Compose two affine transforms into one that applies `child` first,
+/// then `parent`: the resulting transform is equivalent to the chain
+/// `parent ∘ child`. Used to fold nested `CsgNode::Transform` nodes
+/// into each leaf's accumulated world transform.
+pub fn compose_transforms(parent: &Transform, child: &Transform) -> Transform {
+    let scaled_child_t = [
+        child.translate[0] * parent.scale,
+        child.translate[1] * parent.scale,
+        child.translate[2] * parent.scale,
+    ];
+    let rotated = quat_rotate(parent.rotation, scaled_child_t);
+    Transform {
+        translate: [
+            parent.translate[0] + rotated[0],
+            parent.translate[1] + rotated[1],
+            parent.translate[2] + rotated[2],
+        ],
+        rotation: quat_multiply(parent.rotation, child.rotation),
+        scale: parent.scale * child.scale,
+    }
 }
 
 /// Rotate a vector by a unit quaternion `(x, y, z, w)`. Counterpart to
@@ -259,9 +298,15 @@ impl Kernel {
     /// `mesh_version` so observers can skip stale uploads. Called by
     /// `rebuild_packed` (after every mutation) and by the explicit
     /// `setMeshResolution` API.
+    ///
+    /// The path is `features → CsgNode → BoundedCsg → Mesh`. The
+    /// `CsgNode` is the diff-friendly logical IR; `BoundedCsg` folds
+    /// transforms into leaves and caches AABBs so the mesher's
+    /// per-cell queries cost the minimum.
     fn rebuild_mesh_internal(&mut self) {
-        let tree = CsgNode::from_features(&self.document.features);
-        self.mesh = dual_contour(&tree, self.mesh_resolution);
+        let csg = CsgNode::from_features(&self.document.features);
+        let bounded = BoundedCsg::from_csg(&csg);
+        self.mesh = dual_contour(&bounded, self.mesh_resolution);
         self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
@@ -693,9 +738,10 @@ impl Kernel {
         dy: f32,
         dz: f32,
     ) -> String {
-        let tree = CsgNode::from_features(&self.document.features);
+        let csg = CsgNode::from_features(&self.document.features);
+        let bounded = BoundedCsg::from_csg(&csg);
         let params = RaycastParams::default();
-        match raycast(&tree, [ox, oy, oz], [dx, dy, dz], params) {
+        match raycast(&bounded, [ox, oy, oz], [dx, dy, dz], params) {
             None => r#"{"hit":false}"#.to_string(),
             Some(hit) => {
                 // `contributors` is a small inline array; serialise as

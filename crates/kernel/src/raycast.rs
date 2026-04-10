@@ -12,7 +12,8 @@
 //!   * K6+ will Newton-refine edge hits onto the mathematically exact
 //!     intersection curve so snaps don't land on mesh-level drift.
 
-use crate::csg::{Contributors, CsgNode, ProxyElement};
+use crate::bvh::BoundedCsg;
+use crate::csg::{Contributors, EvalMode, ProxyElement};
 
 /// Result of a successful raycast.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -66,8 +67,13 @@ fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
 /// any non-zero vector. A zero-length direction or an origin that's
 /// already deep inside a solid beyond the trace budget returns
 /// `None`.
+///
+/// K3: walks the BVH-wrapped form so the per-step SDF uses cached
+/// AABBs and pruned branches. Both the surface test and the
+/// contributor lookup use [`EvalMode::Logical`] — picking always
+/// wants the unsmoothed B-Rep-proxy ground truth.
 pub fn raycast(
-    node: &CsgNode,
+    node: &BoundedCsg,
     origin: [f32; 3],
     direction: [f32; 3],
     params: RaycastParams,
@@ -80,9 +86,10 @@ pub fn raycast(
             origin[1] + dir[1] * t,
             origin[2] + dir[2] * t,
         ];
-        let d = node.sdf(p);
+        let d = node.sdf(p, EvalMode::Logical);
         if d.abs() <= params.surface_eps {
-            let (_, contributors) = node.evaluate(p, params.contributor_eps);
+            let (_, contributors) =
+                node.evaluate(p, params.contributor_eps, EvalMode::Logical);
             let element = contributors.element();
             if element == ProxyElement::None {
                 return None;
@@ -112,6 +119,10 @@ mod tests {
     use super::*;
     use crate::csg::CsgNode;
     use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+
+    fn bounded(features: &[Feature]) -> BoundedCsg {
+        BoundedCsg::from_csg(&CsgNode::from_features(features))
+    }
 
     fn box_feature(id: u32, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
@@ -143,7 +154,7 @@ mod tests {
     #[test]
     fn ray_misses_when_aimed_away() {
         let tree =
-            CsgNode::from_features(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
+            bounded(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
         let hit = raycast(
             &tree,
             [0.0, 100.0, 0.0],
@@ -156,7 +167,7 @@ mod tests {
     #[test]
     fn ray_from_above_hits_box_top_as_face() {
         let tree =
-            CsgNode::from_features(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
+            bounded(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
         let hit = raycast(
             &tree,
             [0.0, 100.0, 0.0],
@@ -173,7 +184,7 @@ mod tests {
     #[test]
     fn ray_zero_direction_returns_none() {
         let tree =
-            CsgNode::from_features(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
+            bounded(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
         assert!(raycast(
             &tree,
             [0.0, 100.0, 0.0],
@@ -193,7 +204,7 @@ mod tests {
             box_feature(1, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 30.0),
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = bounded(&features);
         let hit = raycast(
             &tree,
             [0.0, 200.0, 0.0],
@@ -213,7 +224,7 @@ mod tests {
     #[test]
     fn ray_honours_max_distance_budget() {
         let tree =
-            CsgNode::from_features(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
+            bounded(&[box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]);
         let tight = RaycastParams {
             max_distance: 10.0,
             ..Default::default()

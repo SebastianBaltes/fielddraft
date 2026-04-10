@@ -119,6 +119,31 @@ pub enum ProxyElement {
     Vertex,
 }
 
+/// Dual-path evaluation mode for the CSG graph.
+///
+/// K2/K3 collapse both paths to the same bit-identical evaluator —
+/// there are no smooth operators in the language yet. The distinction
+/// is introduced now, ahead of K10, so every call site can already be
+/// tagged and the divergence can land as a pure code change instead of
+/// a flood-the-world API sweep. The rules, once K10 ships (see
+/// README §4.1 "Ghost Topology"):
+///
+/// * `Visual` — what the mesher renders: Spatial Masks, smooth
+///   blends, displacement and morph terminal-features are all active.
+///   This is the path that feeds Dual Contouring.
+/// * `Logical` — the underlying hard CSG, unmasked. Contributor sets
+///   stay well-defined across every surface because no operator has
+///   smeared the boundary. This is the path that feeds picking, the
+///   raycaster and the B-Rep proxy construction.
+///
+/// Rule of thumb: "what does the user see?" → `Visual`. "what leaf
+/// actually owns this surface?" → `Logical`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalMode {
+    Visual,
+    Logical,
+}
+
 impl ProxyElement {
     /// Compact numeric tag for the zero-copy mesh bridge: 0 = off-
     /// surface, 1 = face, 2 = edge, 3 = vertex. Matches
@@ -320,17 +345,21 @@ impl CsgNode {
 
     /// Evaluate the signed distance at a world-space point. Matches
     /// `sdf_features` when built from the same feature list.
-    pub fn sdf(&self, p: [f32; 3]) -> f32 {
+    ///
+    /// `mode` is threaded through for future Ghost-Topology dual-path
+    /// support (see [`EvalMode`]). Until K10 lands both modes return
+    /// bit-identical values.
+    pub fn sdf(&self, p: [f32; 3], mode: EvalMode) -> f32 {
         match self {
             CsgNode::Empty => f32::INFINITY,
             CsgNode::Leaf { primitive, .. } => sdf_primitive(primitive, p),
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
-                inner.sdf(local) * t.scale
+                inner.sdf(local, mode) * t.scale
             }
-            CsgNode::Union(a, b) => a.sdf(p).min(b.sdf(p)),
-            CsgNode::Difference(a, b) => a.sdf(p).max(-b.sdf(p)),
-            CsgNode::Intersection(a, b) => a.sdf(p).max(b.sdf(p)),
+            CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
+            CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
+            CsgNode::Intersection(a, b) => a.sdf(p, mode).max(b.sdf(p, mode)),
         }
     }
 
@@ -351,7 +380,15 @@ impl CsgNode {
     /// for DC, a fraction of the ray step for picking). A fixed
     /// absolute value would either miss real intersections on coarse
     /// grids or flood faces with spurious neighbours on fine ones.
-    pub fn evaluate(&self, p: [f32; 3], eps: f32) -> (f32, Contributors) {
+    ///
+    /// `mode` is threaded through for the K10 Ghost-Topology split;
+    /// see [`EvalMode`]. Until then, Visual == Logical.
+    pub fn evaluate(
+        &self,
+        p: [f32; 3],
+        eps: f32,
+        mode: EvalMode,
+    ) -> (f32, Contributors) {
         match self {
             CsgNode::Empty => (f32::INFINITY, Contributors::empty()),
             CsgNode::Leaf { id, primitive } => {
@@ -359,25 +396,25 @@ impl CsgNode {
             }
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
-                let (d, c) = inner.evaluate(local, eps);
+                let (d, c) = inner.evaluate(local, eps, mode);
                 (d * t.scale, c)
             }
             CsgNode::Union(a, b) => {
-                let (da, ca) = a.evaluate(p, eps);
-                let (db, cb) = b.evaluate(p, eps);
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
                 combine_min(da, ca, db, cb, eps)
             }
             CsgNode::Difference(a, b) => {
                 // result = max(da, -db). Sign flip on `db` does NOT
                 // change the contributor identity — it still names
                 // the subtracted leaf.
-                let (da, ca) = a.evaluate(p, eps);
-                let (db, cb) = b.evaluate(p, eps);
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
                 combine_max(da, ca, -db, cb, eps)
             }
             CsgNode::Intersection(a, b) => {
-                let (da, ca) = a.evaluate(p, eps);
-                let (db, cb) = b.evaluate(p, eps);
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
             }
         }
@@ -463,7 +500,7 @@ mod tests {
     #[test]
     fn empty_tree_has_infinite_sdf_and_empty_aabb() {
         let tree = CsgNode::from_features(&[]);
-        assert!(tree.sdf([0.0, 0.0, 0.0]).is_infinite());
+        assert!(tree.sdf([0.0, 0.0, 0.0], EvalMode::Logical).is_infinite());
         assert!(tree.aabb().is_empty());
     }
 
@@ -477,7 +514,7 @@ mod tests {
         )];
         let tree = CsgNode::from_features(&features);
         for &p in &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]] {
-            let a = tree.sdf(p);
+            let a = tree.sdf(p, EvalMode::Logical);
             let b = sdf_features(&features, p);
             assert!((a - b).abs() < 1e-5, "{a} vs {b} at {p:?}");
         }
@@ -507,7 +544,7 @@ mod tests {
             [50.0, 0.0, 0.0],
         ];
         for p in samples {
-            let a = tree.sdf(p);
+            let a = tree.sdf(p, EvalMode::Logical);
             let b = sdf_features(&features, p);
             assert!(
                 (a - b).abs() < 1e-4,
@@ -576,7 +613,7 @@ mod tests {
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
         let tree = CsgNode::from_features(&features);
-        let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5);
+        let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "point should sit on box top, got d={d}");
         assert_eq!(c.element(), ProxyElement::Face);
         assert_eq!(c.as_slice(), &[1]);
@@ -593,7 +630,7 @@ mod tests {
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
         let tree = CsgNode::from_features(&features);
-        let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5);
+        let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
         let mut got: Vec<u32> = c.as_slice().to_vec();
@@ -614,7 +651,7 @@ mod tests {
         ];
         let tree = CsgNode::from_features(&features);
         // All three boxes meet at (10, 10, 10).
-        let (d, c) = tree.evaluate([10.0, 10.0, 10.0], 0.5);
+        let (d, c) = tree.evaluate([10.0, 10.0, 10.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4);
         assert_eq!(c.element(), ProxyElement::Vertex);
         assert_eq!(c.len(), 3);
@@ -641,7 +678,7 @@ mod tests {
         let tree = CsgNode::from_features(&features);
         // (10, 0, 4) is on the box's +x face (x=10) AND on the
         // sphere's surface (distance from (10,0,0) = 4).
-        let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5);
+        let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both boundaries, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
         let mut got: Vec<u32> = c.as_slice().to_vec();
@@ -661,7 +698,7 @@ mod tests {
             [10.0, 10.0, 10.0],
         )];
         let tree = CsgNode::from_features(&features);
-        let (d, c) = tree.evaluate([0.0, 0.0, 0.0], 0.5);
+        let (d, c) = tree.evaluate([0.0, 0.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d < 0.0);
         assert_eq!(c.as_slice(), &[1]);
     }

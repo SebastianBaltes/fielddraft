@@ -17,7 +17,8 @@
 //! Everything here operates on a [`CsgNode`]; the kernel's linear
 //! feature list is lifted into a tree first.
 
-use crate::csg::{CsgNode, ProxyElement, MAX_CONTRIBUTORS};
+use crate::bvh::BoundedCsg;
+use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
 
 /// Triangulated mesh in the layout expected by the zero-copy bridge to
 /// Three.js.
@@ -72,7 +73,12 @@ const DC_MARGIN_CELLS: f32 = 2.0;
 /// `resolution` is the number of cells along the *longest* AABB axis;
 /// shorter axes get fewer cells so voxels stay cubic. An empty scene
 /// (or `resolution == 0`) yields an empty mesh.
-pub fn dual_contour(node: &CsgNode, resolution: u32) -> Mesh {
+///
+/// K3: takes a [`BoundedCsg`] so cell-by-cell SDF queries hit the
+/// BVH-pruned, transform-flattened hot path. The mesher uses
+/// [`EvalMode::Visual`] — see the module docs on `csg.rs` for the
+/// dual-path rationale.
+pub fn dual_contour(node: &BoundedCsg, resolution: u32) -> Mesh {
     if resolution == 0 {
         return Mesh::default();
     }
@@ -116,7 +122,8 @@ pub fn dual_contour(node: &CsgNode, resolution: u32) -> Mesh {
     for k in 0..cnz {
         for j in 0..cny {
             for i in 0..cnx {
-                sdf_grid[corner_index(i, j, k)] = node.sdf(corner_point(i, j, k));
+                sdf_grid[corner_index(i, j, k)] =
+                    node.sdf(corner_point(i, j, k), EvalMode::Visual);
             }
         }
     }
@@ -197,7 +204,7 @@ pub fn dual_contour(node: &CsgNode, resolution: u32) -> Mesh {
                 // Off-surface fallback (shouldn't happen for a clean
                 // DC pass) gets tagged as Face with an empty leaf —
                 // keeping the arrays strictly parallel to positions.
-                let (_, cs) = node.evaluate(vp, contributor_eps);
+                let (_, cs) = node.evaluate(vp, contributor_eps, EvalMode::Visual);
                 let mut element = cs.element();
                 if element == ProxyElement::None {
                     element = ProxyElement::Face;
@@ -351,18 +358,19 @@ pub fn dual_contour(node: &CsgNode, resolution: u32) -> Mesh {
     }
 }
 
-/// Surface normal at `p` by central differences on the CSG SDF. Returns
-/// a unit vector; collapses to `+Y` when the gradient is numerically
-/// zero (only possible in degenerate cases like an empty tree, which
-/// the caller already guards against).
-fn sdf_normal(node: &CsgNode, p: [f32; 3], eps: f32) -> [f32; 3] {
+/// Surface normal at `p` by central differences on the BVH SDF.
+/// Returns a unit vector; collapses to `+Y` when the gradient is
+/// numerically zero (only possible in degenerate cases like an empty
+/// tree, which the caller already guards against).
+fn sdf_normal(node: &BoundedCsg, p: [f32; 3], eps: f32) -> [f32; 3] {
     let eps = eps.max(1e-4);
-    let dx =
-        node.sdf([p[0] + eps, p[1], p[2]]) - node.sdf([p[0] - eps, p[1], p[2]]);
-    let dy =
-        node.sdf([p[0], p[1] + eps, p[2]]) - node.sdf([p[0], p[1] - eps, p[2]]);
-    let dz =
-        node.sdf([p[0], p[1], p[2] + eps]) - node.sdf([p[0], p[1], p[2] - eps]);
+    let m = EvalMode::Visual;
+    let dx = node.sdf([p[0] + eps, p[1], p[2]], m)
+        - node.sdf([p[0] - eps, p[1], p[2]], m);
+    let dy = node.sdf([p[0], p[1] + eps, p[2]], m)
+        - node.sdf([p[0], p[1] - eps, p[2]], m);
+    let dz = node.sdf([p[0], p[1], p[2] + eps], m)
+        - node.sdf([p[0], p[1], p[2] - eps], m);
     let len = (dx * dx + dy * dy + dz * dz).sqrt();
     if len > 1e-12 {
         [dx / len, dy / len, dz / len]
@@ -436,13 +444,14 @@ mod tests {
     }
 
     fn mesh_for(features: &[Feature], resolution: u32) -> Mesh {
-        let tree = CsgNode::from_features(features);
-        dual_contour(&tree, resolution)
+        let csg = crate::csg::CsgNode::from_features(features);
+        let bounded = BoundedCsg::from_csg(&csg);
+        dual_contour(&bounded, resolution)
     }
 
     #[test]
     fn empty_tree_has_empty_mesh() {
-        let mesh = dual_contour(&CsgNode::Empty, 16);
+        let mesh = dual_contour(&BoundedCsg::Empty, 16);
         assert!(mesh.is_empty());
         assert_eq!(mesh.vertex_count(), 0);
         assert_eq!(mesh.triangle_count(), 0);
@@ -461,7 +470,11 @@ mod tests {
 
         // Every vertex should lie near the sphere surface (|sdf| small
         // relative to the cell size, which is ~20*2/24 ≈ 1.67).
-        let tree = CsgNode::from_features(&[sphere_feature(1, [0.0, 0.0, 0.0], 20.0)]);
+        let tree = crate::csg::CsgNode::from_features(&[sphere_feature(
+            1,
+            [0.0, 0.0, 0.0],
+            20.0,
+        )]);
         let mut max_err = 0.0_f32;
         for i in 0..mesh.vertex_count() {
             let p = [
@@ -469,7 +482,7 @@ mod tests {
                 mesh.positions[i * 3 + 1],
                 mesh.positions[i * 3 + 2],
             ];
-            let d = tree.sdf(p).abs();
+            let d = tree.sdf(p, EvalMode::Logical).abs();
             if d > max_err {
                 max_err = d;
             }
@@ -651,7 +664,7 @@ mod tests {
         // Every vertex must sit near the zero-level set of the CSG
         // (proves the mesher actually tracked the surface; the holes
         // are present because their SDF is negative inside the box).
-        let tree = CsgNode::from_features(&features);
+        let tree = crate::csg::CsgNode::from_features(&features);
         let mut off_surface = 0usize;
         for i in 0..mesh.vertex_count() {
             let p = [
@@ -659,7 +672,7 @@ mod tests {
                 mesh.positions[i * 3 + 1],
                 mesh.positions[i * 3 + 2],
             ];
-            if tree.sdf(p).abs() > 3.0 {
+            if tree.sdf(p, EvalMode::Logical).abs() > 3.0 {
                 off_surface += 1;
             }
         }
@@ -672,8 +685,8 @@ mod tests {
         // must have sdf > 0 (outside the body) — if the hole weren't
         // actually carved, these points would be deep inside the box.
         for y in [-20.0_f32, -10.0, 0.0, 10.0, 20.0] {
-            let in_left = tree.sdf([-25.0, y, 0.0]);
-            let in_right = tree.sdf([25.0, y, 0.0]);
+            let in_left = tree.sdf([-25.0, y, 0.0], EvalMode::Logical);
+            let in_right = tree.sdf([25.0, y, 0.0], EvalMode::Logical);
             assert!(
                 in_left > 0.0 && in_right > 0.0,
                 "holes not carved at y={y}: left={in_left}, right={in_right}",
