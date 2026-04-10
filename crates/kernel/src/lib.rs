@@ -2492,4 +2492,115 @@ mod tests {
         assert!(!k.can_undo());
         assert!(!k.can_redo());
     }
+
+    // ─── K4.5.4e: features-only wire form ──────────────────────
+
+    #[test]
+    fn to_json_does_not_emit_features_field() {
+        // K4.5.4e: the Kernel's save path must emit a document
+        // whose JSON contains `feature_calls` but no top-level
+        // `features` key. The spine lives in-memory only.
+        let mut k = Kernel::new();
+        k.add_primitive(
+            Primitive::KIND_BOX,
+            BoolOp::TAG_UNION,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+        )
+        .unwrap();
+        k.add_primitive(
+            Primitive::KIND_SPHERE,
+            BoolOp::TAG_DIFFERENCE,
+            7.0,
+            8.0,
+            9.0,
+            1.5,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+
+        let json = k.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = value.as_object().expect("document is a JSON object");
+        assert!(
+            !obj.contains_key("features"),
+            "K4.5.4e wire form must omit `features`: {json}"
+        );
+        let calls = obj
+            .get("feature_calls")
+            .and_then(|v| v.as_array())
+            .expect("feature_calls must be present");
+        assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn kernel_save_load_roundtrips_via_feature_calls_only() {
+        // Build a non-trivial scene, save, load into a fresh
+        // kernel, and verify the spine is fully rehydrated from
+        // the feature_calls wire form alone (no `features` field
+        // in the JSON).
+        let mut k1 = Kernel::new();
+        let box_id = k1
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        k1.add_primitive(
+            Primitive::KIND_CYLINDER,
+            BoolOp::TAG_DIFFERENCE,
+            5.0,
+            0.0,
+            0.0,
+            2.0,
+            12.0,
+            0.0,
+        )
+        .unwrap();
+        // Give the box a non-identity transform so we exercise
+        // the lossless rotation/scale bootstrap path.
+        let s = (std::f32::consts::FRAC_PI_4 / 2.0).sin();
+        let c = (std::f32::consts::FRAC_PI_4 / 2.0).cos();
+        assert!(k1.set_feature_transform(
+            box_id, 1.0, 2.0, 3.0, 0.0, 0.0, s, c, 1.75,
+        ));
+        let original_features = k1.document.features.clone();
+
+        // Save through the kernel and reality-check that the
+        // wire form doesn't carry the spine.
+        let json = k1.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("features"));
+
+        // Load into a fresh kernel and verify the spine.
+        let mut k2 = Kernel::new();
+        k2.load_json(&json).unwrap();
+        assert_eq!(k2.document.features.len(), 2);
+        for (original, loaded) in
+            original_features.iter().zip(k2.document.features.iter())
+        {
+            assert_eq!(loaded.id, original.id);
+            assert_eq!(loaded.name, original.name);
+            assert_eq!(loaded.op, original.op);
+            assert_eq!(loaded.primitive, original.primitive);
+            assert_eq!(loaded.transform.translate, original.transform.translate);
+            assert_eq!(loaded.transform.rotation, original.transform.rotation);
+            assert_eq!(loaded.transform.scale, original.transform.scale);
+        }
+        assert_feature_calls_match_spine(&k2);
+        // And the meshing pipeline woke up — rebuild_packed ran
+        // on load, so the mesh has real geometry.
+        assert!(k2.mesh_vertex_count() > 0);
+    }
 }

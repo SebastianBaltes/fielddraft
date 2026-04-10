@@ -472,27 +472,31 @@ fn bool_op_wire_name(op: BoolOp) -> &'static str {
 pub struct Document {
     pub schema_version: u32,
     pub name: String,
-    /// Linear feature list, evaluated top-to-bottom. K4.5.4c
-    /// still treats this as the authoritative storage the
-    /// mesher walks; [`Document::feature_calls`] is a derived
-    /// mirror rebuilt by [`Document::sync_feature_calls`] after
-    /// every mutation. Step 4d will flip the authority the
-    /// other way around.
+    /// Linear feature list, evaluated top-to-bottom. Stays the
+    /// authoritative in-memory working storage the mesher walks
+    /// and the kernel mutates; K4.5.4e strips it from the JSON
+    /// wire form via `skip_serializing`, so save/load now flow
+    /// exclusively through [`Document::feature_calls`]. The
+    /// `default` lets legacy K1 JSON that still carries a
+    /// top-level `features` array deserialise cleanly — those
+    /// documents never hit the bootstrap path because their
+    /// `feature_calls` list is empty, and `sync_feature_calls`
+    /// repopulates it on the next mutation.
+    #[serde(skip_serializing, default)]
     pub features: Vec<Feature>,
-    /// K4.5 Feature-as-Function mirror of [`Document::features`].
+    /// K4.5 Feature-as-Function canonical wire form.
     ///
-    /// K4.5.4c makes this a second-class, dual-written field:
-    /// every kernel mutation rebuilds it from `features` via
-    /// [`Document::sync_feature_calls`] so the two lists are
-    /// always byte-identical in meaning. K1-era JSON documents
-    /// that predate this field still load cleanly — the
-    /// `#[serde(default)]` lets the deserialiser accept missing
-    /// values — and the next mutation will repopulate the list
-    /// anyway.
-    ///
-    /// Step 4d will make this the *authoritative* feature tree,
-    /// with `features` demoted to a derived cache computed by
-    /// walking the registry during regeneration.
+    /// K4.5.4e promotes this to the **only** feature list that
+    /// round-trips through JSON. On serialize, `sync_feature_calls`
+    /// keeps it in lock-step with the in-memory
+    /// [`Document::features`] spine after every mutation. On
+    /// deserialize, the kernel detects a populated `feature_calls`
+    /// with empty `features` and rehydrates the spine via
+    /// `FeatureRegistry::regenerate` (K4.5.4d bootstrap). Legacy
+    /// K1 documents without this field still load — the
+    /// `default` gives them an empty list, and the loader falls
+    /// through the bootstrap branch because `features` is
+    /// already populated.
     #[serde(default)]
     pub feature_calls: Vec<FeatureCall>,
     /// Monotonic counter that seeds the next flat-numeric
@@ -670,6 +674,12 @@ mod tests {
 
     #[test]
     fn document_round_trips_feature_calls_through_json() {
+        // K4.5.4e: the only feature list that survives a JSON
+        // round-trip is `feature_calls`. `features` is
+        // `skip_serializing`, so the parsed document comes back
+        // with an empty spine — the kernel bootstraps it from
+        // `feature_calls` in `load_json`. At the protocol level
+        // we assert only the wire-carried fields.
         let mut doc = Document::default();
         let id = doc.allocate_id();
         doc.features.push(Feature {
@@ -686,9 +696,44 @@ mod tests {
 
         let wire = serde_json::to_string(&doc).unwrap();
         let parsed: Document = serde_json::from_str(&wire).unwrap();
-        assert_eq!(parsed, doc);
+        assert_eq!(parsed.schema_version, doc.schema_version);
+        assert_eq!(parsed.name, doc.name);
+        assert_eq!(parsed.next_feature_id, doc.next_feature_id);
+        assert!(parsed.features.is_empty());
+        assert_eq!(parsed.feature_calls, doc.feature_calls);
         assert_eq!(parsed.feature_calls.len(), 1);
         assert_eq!(parsed.feature_calls[0].id, id);
+    }
+
+    #[test]
+    fn document_json_wire_form_omits_features_field() {
+        // K4.5.4e: serialize a populated document and assert the
+        // wire-form JSON contains `feature_calls` but no
+        // `features` key at the top level.
+        let mut doc = Document::default();
+        let id = doc.allocate_id();
+        doc.features.push(Feature {
+            id,
+            name: "Base".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [1.0, 1.0, 1.0],
+            },
+            transform: Transform::IDENTITY,
+        });
+        doc.sync_feature_calls();
+
+        let wire = serde_json::to_value(&doc).unwrap();
+        let obj = wire.as_object().expect("document serialises to object");
+        assert!(
+            !obj.contains_key("features"),
+            "K4.5.4e must not emit the features field: {wire}"
+        );
+        assert!(
+            obj.contains_key("feature_calls"),
+            "K4.5.4e must emit feature_calls: {wire}"
+        );
     }
 
     #[test]
@@ -724,6 +769,11 @@ mod tests {
 
     #[test]
     fn document_roundtrips_through_json() {
+        // K4.5.4e: the top-level `features` array no longer
+        // survives serialize; the kernel carries the bootstrap.
+        // At the protocol level we verify that syncing first,
+        // then round-tripping, leaves all wire-carried fields
+        // intact.
         let mut doc = Document::default();
         let id = doc.allocate_id();
         doc.features.push(Feature {
@@ -736,10 +786,15 @@ mod tests {
             },
             transform: Transform::IDENTITY,
         });
+        doc.sync_feature_calls();
 
         let json = serde_json::to_string(&doc).unwrap();
         let parsed: Document = serde_json::from_str(&json).unwrap();
-        assert_eq!(doc, parsed);
+        assert_eq!(parsed.schema_version, doc.schema_version);
+        assert_eq!(parsed.name, doc.name);
+        assert_eq!(parsed.next_feature_id, doc.next_feature_id);
+        assert_eq!(parsed.feature_calls, doc.feature_calls);
+        assert!(parsed.features.is_empty());
     }
 
     #[test]
