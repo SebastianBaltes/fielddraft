@@ -60,12 +60,12 @@ export function App() {
   }, [store]);
 
   return (
-    <div className="fielddraft-shell">
-      <header className="fielddraft-topbar">
-        <div className="fielddraft-title">FieldDraft</div>
-        <div className="fielddraft-meta">
+    <div className="fd-shell">
+      <header className="topbar">
+        <div className="title">FieldDraft</div>
+        <div className="meta">
           {error ? (
-            <span className="fielddraft-error">kernel error: {error.message}</span>
+            <span className="error">kernel error: {error.message}</span>
           ) : state ? (
             <span data-testid="feature-count">
               {state.features.length} feature{state.features.length === 1 ? "" : "s"}
@@ -76,10 +76,8 @@ export function App() {
         </div>
       </header>
       {store && state ? <Toolbar store={store} state={state} /> : null}
-      <main className="fielddraft-main">
-        <div className="fielddraft-viewport">
-          <Viewport />
-        </div>
+      <main className="main">
+        <Viewport />
         {store && state ? <Outliner store={store} state={state} /> : null}
       </main>
     </div>

@@ -19,11 +19,11 @@ const OP_BUTTONS: { tag: BoolOpTagValue; label: string; tooltip: string }[] = [
 
 export function Toolbar({ store, state }: ToolbarProps) {
   return (
-    <div className="fielddraft-toolbar" data-testid="fielddraft-toolbar">
-      <div className="fielddraft-toolbar-group">
+    <div className="fd-toolbar" data-testid="fielddraft-toolbar">
+      <div className="group">
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Add Box"
           data-testid="add-box"
           onClick={() => store.addPrimitive("box")}
@@ -32,7 +32,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Add Sphere"
           data-testid="add-sphere"
           onClick={() => store.addPrimitive("sphere")}
@@ -41,7 +41,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Add Cylinder"
           data-testid="add-cylinder"
           onClick={() => store.addPrimitive("cylinder")}
@@ -50,15 +50,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
       </div>
 
-      <div className="fielddraft-toolbar-group">
-        <span className="fielddraft-toolbar-label">Op:</span>
+      <div className="group">
+        <span className="label">Op:</span>
         {OP_BUTTONS.map((b) => (
           <button
             key={b.tag}
             type="button"
-            className={
-              "fielddraft-op-toggle" + (state.nextOp === b.tag ? " is-active" : "")
-            }
+            className={"op-toggle" + (state.nextOp === b.tag ? " is-active" : "")}
             title={b.tooltip}
             data-testid={`op-${b.tag}`}
             onClick={() => store.setNextOp(b.tag)}
@@ -68,10 +66,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
         ))}
       </div>
 
-      <div className="fielddraft-toolbar-group">
+      <div className="group">
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Delete selection (Del)"
           data-testid="delete-selection"
           disabled={state.selection.size === 0}
@@ -81,7 +79,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Undo (Ctrl+Z)"
           data-testid="undo"
           disabled={!state.canUndo}
@@ -91,7 +89,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
-          className="fielddraft-tool"
+          className="tool"
           title="Redo (Ctrl+Shift+Z)"
           data-testid="redo"
           disabled={!state.canRedo}

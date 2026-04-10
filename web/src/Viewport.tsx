@@ -302,7 +302,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
   render() {
     if (this.state.error) {
       return (
-        <div className="fielddraft-viewport-error">
+        <div className="error">
           viewport error: {this.state.error.message}
         </div>
       );
@@ -344,7 +344,7 @@ export function Viewport() {
   return (
     <div
       ref={hostRef}
-      className="fielddraft-canvas-host"
+      className="fd-viewport"
       data-testid="fielddraft-canvas"
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
@@ -389,7 +389,7 @@ function PickHud({ result }: { result: PickResult | null }) {
   if (!result || !result.hit) {
     return (
       <div
-        className="fielddraft-pick-hud"
+        className="pick-hud"
         data-testid="fielddraft-pick-hud"
         data-pick-hit="false"
       >
@@ -400,14 +400,14 @@ function PickHud({ result }: { result: PickResult | null }) {
   const contributors = result.contributors.join(", ");
   return (
     <div
-      className="fielddraft-pick-hud"
+      className="pick-hud"
       data-testid="fielddraft-pick-hud"
       data-pick-hit="true"
       data-pick-element={result.element}
       data-pick-contributors={contributors}
     >
-      <span className="fielddraft-pick-hud__kind">{result.element}</span>
-      <span className="fielddraft-pick-hud__ids">{contributors}</span>
+      <span className="kind">{result.element}</span>
+      <span className="ids">{contributors}</span>
     </div>
   );
 }

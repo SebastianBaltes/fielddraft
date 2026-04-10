@@ -91,7 +91,7 @@ test.describe("FieldDraft smoke", () => {
     await expect(row).toHaveAttribute("data-feature-op", "union");
 
     // Click the op button (the small "+" / "−" / "∩" inside the row).
-    const opButton = row.locator(".fielddraft-op");
+    const opButton = row.locator(".op");
     await opButton.click();
     await expect(row).toHaveAttribute("data-feature-op", "difference");
     await opButton.click();

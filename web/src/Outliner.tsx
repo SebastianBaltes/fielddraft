@@ -76,21 +76,19 @@ export function Outliner({ store, state }: OutlinerProps) {
   };
 
   return (
-    <aside className="fielddraft-outliner" data-testid="fielddraft-outliner">
-      <div className="fielddraft-outliner-header">Features</div>
+    <aside className="fd-outliner" data-testid="fielddraft-outliner">
+      <div className="header">Features</div>
       {state.features.length === 0 ? (
-        <div className="fielddraft-outliner-empty">No features yet.</div>
+        <div className="empty">No features yet.</div>
       ) : (
-        <ul className="fielddraft-outliner-list">
+        <ul className="list">
           {state.features.map((feature) => {
             const selected = state.selection.has(feature.id);
             const tagOp = feature.op;
             return (
               <li
                 key={feature.id}
-                className={
-                  "fielddraft-outliner-row" + (selected ? " is-selected" : "")
-                }
+                className={"row" + (selected ? " is-selected" : "")}
                 data-testid={`feature-row-${feature.id}`}
                 data-feature-id={feature.id}
                 data-feature-op={tagOp}
@@ -98,22 +96,22 @@ export function Outliner({ store, state }: OutlinerProps) {
               >
                 <button
                   type="button"
-                  className={`fielddraft-op fielddraft-op-${tagOp}`}
+                  className={`op op-${tagOp}`}
                   title={OP_TOOLTIP[tagOp]}
                   onClick={(e) => handleOpClick(e, feature)}
                 >
                   {OP_LABEL[tagOp]}
                 </button>
-                <span className="fielddraft-kind">
+                <span className="kind">
                   {KIND_GLYPH[feature.kind] ?? "?"}
                 </span>
-                <span className="fielddraft-feature-name">{feature.name}</span>
+                <span className="feature-name">{feature.name}</span>
                 {(feature.translate[0] !== 0 ||
                   feature.translate[1] !== 0 ||
                   feature.translate[2] !== 0 ||
                   feature.scale !== 1) && (
                   <span
-                    className="fielddraft-feature-meta"
+                    className="feature-meta"
                     data-testid={`feature-meta-${feature.id}`}
                   >
                     [{feature.translate[0].toFixed(0)},{" "}
@@ -123,7 +121,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                 )}
                 <button
                   type="button"
-                  className="fielddraft-row-delete"
+                  className="row-delete"
                   title="Delete"
                   onClick={(e) => handleDelete(e, feature.id)}
                 >
