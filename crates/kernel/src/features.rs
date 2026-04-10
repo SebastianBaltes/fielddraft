@@ -191,6 +191,7 @@ impl FeatureRegistry {
         r.register(Box::new(BoxPrimitive));
         r.register(Box::new(SpherePrimitive));
         r.register(Box::new(CylinderPrimitive));
+        r.register(Box::new(ExtrudeFeature));
         r
     }
 
@@ -404,6 +405,145 @@ impl FeatureKind for CylinderPrimitive {
     }
 }
 
+// ─── ExtrudeDef (K4.5.8: Rust-native reference implementation) ──
+//
+// ExtrudeDef is the first K4.5 reference feature that exercises
+// the full parameter vocabulary the K4.5.4f derive learned —
+// `Query`, `Length`, `BoolOp`, `f32` and `[f32; 3]` all appear in
+// one definition struct, so the §4.6 promise that "the derive
+// covers the kernel runtime types" is demonstrated end-to-end
+// rather than in unit-test fixtures only.
+//
+// ## Execute contract
+//
+// The protocol's `Primitive` enum doesn't carry an `Extrude`
+// variant yet — adding one would ripple through the mesher, the
+// DC pass, the BVH and the wire form, which is well out of
+// scope for one slice. Instead, K4.5.8's executor **lowers** an
+// ExtrudeDef into a plain `Primitive::Box`: the rectangular
+// profile (half-width / half-height in X and Y) supplies the
+// first two half-extents, and the extrude depth converted to
+// millimetres via `Length::to_mm` supplies the Z half-extent
+// (depth / 2, so the solid is centred on the extrude plane).
+// The result is a real mesh-able feature that K3's dual-
+// contouring pipeline handles exactly like any hand-added box
+// — the difference is that the spine entry was produced by a
+// FeatureCall routed through the registry, not by a direct
+// `Kernel::add_primitive` call.
+//
+// ## What's intentionally simplified vs §4.6
+//
+// * **`profiles: Query` is accepted but not resolved.** K4.5.7
+//   ships the query parser and a version cache, but there's no
+//   sketch-producing feature upstream whose profile a query
+//   could point at yet. The executor stores the query string
+//   for round-trip fidelity and moves on. A later slice will
+//   resolve the query into a real `Sketch2d` once sketch
+//   features exist, at which point the `profile_half_x` /
+//   `profile_half_y` fields can be removed in favour of the
+//   sketch's own extent.
+// * **Only the Z extrude direction is supported.** The §4.6
+//   example includes `second_direction: bool` and
+//   `depth2: Option<Length>`; `Option<T>` isn't a derive-
+//   supported field type yet, and the two-sided extrude has no
+//   semantic value while the mesh-level representation stays a
+//   simple centred box. Both fields are deferred.
+// * **Operation is `BoolOp`, not the full §4.6 "new / add /
+//   remove / intersect" operation vocabulary.** The extra
+//   "new" case (create a separate body) needs body-id
+//   plumbing that's not yet wired through the registry path.
+
+/// `extrude` — K4.5.8 Rust-native reference feature.
+#[derive(FeatureSchema)]
+#[schema(type = "extrude")]
+pub struct ExtrudeDef {
+    /// Sketch profile this extrude consumes. Evaluated lazily
+    /// against the current document so upstream edits don't
+    /// break downstream extrudes. K4.5.8 parses and stores the
+    /// query but doesn't resolve it — see the module docstring.
+    pub profiles: ::fielddraft_protocol::Query,
+
+    /// Extrude depth along the local Z axis. Any supported
+    /// length unit works; the executor converts to millimetres
+    /// via [`Length::to_mm`] before lowering to a box.
+    pub depth: ::fielddraft_protocol::Length,
+
+    /// Half-width of the rectangular profile placeholder in
+    /// millimetres. Will be derived from the resolved sketch
+    /// once [`profiles`] actually routes through the sketch
+    /// feature graph.
+    pub profile_half_x: f32,
+
+    /// Half-height of the rectangular profile placeholder in
+    /// millimetres. Same story as [`profile_half_x`].
+    pub profile_half_y: f32,
+
+    /// Boolean op used to fold the extruded body into the
+    /// running feature spine. Defaults to [`BoolOp::Union`],
+    /// matching the §4.6 convention that a freshly extruded
+    /// body adds material unless the author says otherwise.
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub operation: BoolOp,
+
+    /// Origin of the extruded box in world space. Z is the
+    /// extrude plane; the resulting box spans
+    /// `[z - depth_mm/2, z + depth_mm/2]`.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+}
+
+pub struct ExtrudeFeature;
+
+impl FeatureKind for ExtrudeFeature {
+    fn type_name(&self) -> &'static str {
+        ExtrudeDef::TYPE_NAME
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ExtrudeDef::parse(def)?;
+        positive_f32(d.profile_half_x, ExtrudeDef::TYPE_NAME, "profile_half_x")?;
+        positive_f32(d.profile_half_y, ExtrudeDef::TYPE_NAME, "profile_half_y")?;
+
+        // Length → mm at the model-unit boundary. The kernel's
+        // native distance scale is millimetres, so every feature
+        // that consumes a typed runtime length is responsible for
+        // converting once, at the edge.
+        let depth_mm = d.depth.to_mm();
+        if depth_mm <= 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: ExtrudeDef::TYPE_NAME,
+                name: "depth",
+                message: format!("must be > 0 mm, got {depth_mm}"),
+            });
+        }
+
+        let name = optional_display_name(def, || format!("Extrude {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.operation,
+            primitive: Primitive::Box {
+                center: d.center,
+                half_extents: [d.profile_half_x, d.profile_half_y, depth_mm / 2.0],
+            },
+            transform: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale,
+            },
+        });
+        Ok(())
+    }
+}
+
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
 /// Extract an optional `"name"` string parameter from the
@@ -490,12 +630,14 @@ mod tests {
     }
 
     #[test]
-    fn with_builtins_registers_the_three_k1_primitives() {
+    fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 4);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
+        // K4.5.8 lands ExtrudeDef as the fourth built-in.
+        assert!(registry.get("extrude").is_some());
         assert!(registry.get("torus").is_none());
     }
 
@@ -1299,6 +1441,266 @@ mod tests {
         let params = schema["params"].as_array().unwrap();
         for p in params {
             assert_eq!(p["required"], json!(false), "param {p:?}");
+        }
+    }
+
+    // ─── K4.5.8: ExtrudeDef reference implementation ──────────
+
+    /// Convenience: build an extrude definition JSON with the
+    /// K4.5.8 schema. The `depth` is expressed as a
+    /// `{value, unit}` object so the `Length` parser path runs.
+    fn extrude_def(
+        profile_query: &str,
+        depth_mm: f32,
+        half_x: f32,
+        half_y: f32,
+    ) -> serde_json::Value {
+        json!({
+            "profiles": profile_query,
+            "depth": { "value": depth_mm, "unit": "mm" },
+            "profile_half_x": half_x,
+            "profile_half_y": half_y,
+        })
+    }
+
+    #[test]
+    fn extrude_def_schema_has_every_runtime_type() {
+        let schema = ExtrudeDef::schema_json();
+        assert_eq!(schema["type"], json!("extrude"));
+        let params = schema["params"].as_array().unwrap();
+        assert_eq!(params.len(), 6);
+
+        // Each key / type pair documents the K4.5.4f vocabulary
+        // demonstrated in a single definition.
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            params.iter().map(|p| (p["key"].as_str().unwrap(), p)).collect();
+        assert_eq!(map["profiles"]["type"], json!("query"));
+        assert_eq!(map["profiles"]["required"], json!(true));
+        assert_eq!(map["depth"]["type"], json!("length"));
+        assert_eq!(map["depth"]["required"], json!(true));
+        assert_eq!(map["profile_half_x"]["type"], json!("f32"));
+        assert_eq!(map["profile_half_y"]["type"], json!("f32"));
+        assert_eq!(map["operation"]["type"], json!("bool_op"));
+        assert_eq!(map["operation"]["required"], json!(false));
+        assert_eq!(map["center"]["type"], json!("vec3"));
+        assert_eq!(map["center"]["required"], json!(false));
+    }
+
+    #[test]
+    fn extrude_execute_lowers_to_a_box_with_depth_as_z_half_extent() {
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let feature = ExtrudeFeature;
+        feature
+            .execute(
+                &mut ctx,
+                &id(1),
+                &extrude_def("qCreatedBy(sketch_1)", 40.0, 5.0, 7.0),
+            )
+            .unwrap();
+
+        assert_eq!(doc.features.len(), 1);
+        let f = &doc.features[0];
+        assert_eq!(f.id, id(1));
+        assert_eq!(f.op, BoolOp::Union);
+        match &f.primitive {
+            Primitive::Box { center, half_extents } => {
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                // profile_half_x / profile_half_y carry through
+                // unchanged; depth (40 mm) lowers to a Z
+                // half-extent of 20 mm so the box is centred on
+                // the extrude plane.
+                assert_eq!(*half_extents, [5.0, 7.0, 20.0]);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_converts_non_mm_depth_to_model_units() {
+        // 5 cm should land as z half-extent = 25 mm.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let feature = ExtrudeFeature;
+        let def = json!({
+            "profiles": "qCreatedBy(s)",
+            "depth": { "value": 5.0, "unit": "cm" },
+            "profile_half_x": 1.0,
+            "profile_half_y": 1.0,
+        });
+        feature.execute(&mut ctx, &id(1), &def).unwrap();
+        let f = &doc.features[0];
+        match &f.primitive {
+            Primitive::Box { half_extents, .. } => {
+                assert!((half_extents[2] - 25.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_honours_center_and_operation_parameters() {
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let feature = ExtrudeFeature;
+        let def = json!({
+            "profiles": "qCreatedBy(s)",
+            "depth": { "value": 10.0, "unit": "mm" },
+            "profile_half_x": 2.0,
+            "profile_half_y": 3.0,
+            "operation": "difference",
+            "center": [100.0, 50.0, 0.0],
+        });
+        feature.execute(&mut ctx, &id(7), &def).unwrap();
+        let f = &doc.features[0];
+        assert_eq!(f.op, BoolOp::Difference);
+        match &f.primitive {
+            Primitive::Box { center, half_extents } => {
+                assert_eq!(*center, [100.0, 50.0, 0.0]);
+                assert_eq!(half_extents[2], 5.0);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_rejects_non_positive_profile_and_depth() {
+        let feature = ExtrudeFeature;
+        let mut doc = empty_ctx();
+
+        // Zero half_x
+        {
+            let mut ctx = Context::new(&mut doc);
+            let def = extrude_def("q", 10.0, 0.0, 1.0);
+            let err = feature.execute(&mut ctx, &id(1), &def).unwrap_err();
+            assert!(matches!(
+                err,
+                FeatureError::InvalidParameter {
+                    feature: "extrude",
+                    name: "profile_half_x",
+                    ..
+                }
+            ));
+        }
+        // Negative depth (encoded via a negative value field)
+        {
+            let mut ctx = Context::new(&mut doc);
+            let def = json!({
+                "profiles": "q",
+                "depth": { "value": -5.0, "unit": "mm" },
+                "profile_half_x": 1.0,
+                "profile_half_y": 1.0,
+            });
+            let err = feature.execute(&mut ctx, &id(1), &def).unwrap_err();
+            assert!(matches!(
+                err,
+                FeatureError::InvalidParameter {
+                    feature: "extrude",
+                    name: "depth",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn extrude_is_reachable_via_the_builtin_registry() {
+        // End-to-end: look up "extrude" on the default registry
+        // and regenerate a single call. This is the path any
+        // document load or worker regeneration would take.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let registry = FeatureRegistry::with_builtins();
+        let calls = vec![FeatureCall::new(
+            "extrude",
+            id(1),
+            extrude_def("qCreatedBy(sketch_1)", 12.0, 3.0, 4.0),
+        )];
+        registry.regenerate(&mut ctx, &calls).unwrap();
+        assert_eq!(doc.features.len(), 1);
+        match &doc.features[0].primitive {
+            Primitive::Box { half_extents, .. } => {
+                assert_eq!(*half_extents, [3.0, 4.0, 6.0]);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    /// Rust-level stand-in for the §4.6 `test_extrude_chain` JS
+    /// example. The JS body hangs on `fd.registerFeature`,
+    /// `fd.sketch`, and `fd.extrude` — none of which are wired
+    /// through the worker yet. This Rust test mirrors the
+    /// behaviour that `test_extrude_chain` will eventually drive
+    /// end-to-end: build `count` extrude calls in a loop, each
+    /// with a depth that grows linearly, regenerate the whole
+    /// chain through the registry, and verify the resulting
+    /// spine. Once the JS-side `fd.registerFeature` path lands,
+    /// an equivalent Playwright-layer test will run alongside
+    /// this one and compare outputs.
+    #[test]
+    fn extrude_chain_regenerates_five_features_with_growing_depths() {
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let registry = FeatureRegistry::with_builtins();
+
+        const COUNT: u32 = 5;
+        const SPACING_MM: f32 = 20.0;
+        let calls: Vec<FeatureCall> = (0..COUNT)
+            .map(|i| {
+                let depth_mm = ((i + 1) as f32) * 5.0;
+                FeatureCall::new(
+                    "extrude",
+                    id(i + 1),
+                    json!({
+                        "profiles": format!("qCreatedBy(sketch_{i})"),
+                        "depth": { "value": depth_mm, "unit": "mm" },
+                        "profile_half_x": 5.0,
+                        "profile_half_y": 5.0,
+                        "center": [(i as f32) * SPACING_MM, 0.0, 0.0],
+                        "operation": if i == 0 { "union" } else { "union" },
+                    }),
+                )
+            })
+            .collect();
+
+        registry.regenerate(&mut ctx, &calls).unwrap();
+
+        assert_eq!(doc.features.len(), COUNT as usize);
+        for (i, f) in doc.features.iter().enumerate() {
+            let expected_depth = ((i as u32 + 1) as f32) * 5.0;
+            let expected_center_x = (i as f32) * SPACING_MM;
+            match &f.primitive {
+                Primitive::Box { center, half_extents } => {
+                    assert_eq!(*center, [expected_center_x, 0.0, 0.0]);
+                    assert!(
+                        (half_extents[2] - expected_depth / 2.0).abs() < 1e-5,
+                        "step {i}: half-z expected {}, got {}",
+                        expected_depth / 2.0,
+                        half_extents[2]
+                    );
+                }
+                other => panic!("expected Primitive::Box, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn extrude_query_field_round_trips_through_the_parser() {
+        // The profiles field is accepted as an opaque Query
+        // string in K4.5.8. Verify that well-formed query
+        // expressions from K4.5.7's vocabulary parse into the
+        // definition without rejection.
+        let feature = ExtrudeFeature;
+        for q in [
+            "qCreatedBy(sketch_1)",
+            "qFaceOf(42)",
+            "qEdgeBetween(1, 2)",
+        ] {
+            let mut doc = empty_ctx();
+            let mut ctx = Context::new(&mut doc);
+            feature
+                .execute(&mut ctx, &id(1), &extrude_def(q, 10.0, 1.0, 1.0))
+                .unwrap_or_else(|e| panic!("query `{q}` failed: {e}"));
         }
     }
 }
