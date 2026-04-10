@@ -17,7 +17,7 @@ pub mod raycast;
 use body::{build_bounded_for_body, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
 use csg::CsgNode;
-use dc::dual_contour;
+use dc::{dual_contour, Mesh};
 use raycast::{raycast, RaycastParams};
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
@@ -303,6 +303,18 @@ pub struct Kernel {
     /// that body stays at active resolution; every other body
     /// drops to the context resolution.
     active_body_id: Option<u32>,
+    /// When `false`, `rebuild_mesh_internal` still partitions the
+    /// feature spine into bodies but skips the Dual Contouring
+    /// pass, leaving every body with an empty mesh buffer. The
+    /// frontend flips this off at startup so the main-thread
+    /// kernel only maintains document state (and the CSG tree
+    /// used by `pick`), while a dedicated Web Worker owns a
+    /// second kernel instance that actually does the meshing and
+    /// streams the result back through the store.
+    ///
+    /// Default `true` so every Rust test keeps producing real
+    /// meshes without needing to opt in.
+    sync_meshing: bool,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
@@ -380,9 +392,7 @@ impl Kernel {
                 }
                 // Either the payload *or* the LOD changed → re-mesh
                 // and bump this body's version counter.
-                let bounded =
-                    build_bounded_for_body(&self.document.features, &part.feature_indices);
-                let mesh = dual_contour(&bounded, target_resolution);
+                let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
                 prev.feature_indices = part.feature_indices;
                 prev.aabb = part.aabb;
                 prev.payload_hash = payload_hash;
@@ -392,9 +402,7 @@ impl Kernel {
                 new_bodies.push(prev);
             } else {
                 // Fresh body — mesh from scratch at the target LOD.
-                let bounded =
-                    build_bounded_for_body(&self.document.features, &part.feature_indices);
-                let mesh = dual_contour(&bounded, target_resolution);
+                let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
                 new_bodies.push(Body {
                     id,
                     feature_indices: part.feature_indices,
@@ -413,6 +421,19 @@ impl Kernel {
 
         self.bodies = new_bodies;
         self.mesh_version = self.mesh_version.wrapping_add(1);
+    }
+
+    /// Build a mesh for a body's feature subset at the requested
+    /// resolution — or short-circuit to an empty `Mesh` when
+    /// `sync_meshing` is off, so the main-thread kernel stops
+    /// paying the Dual Contouring cost while the web worker
+    /// handles it out-of-process.
+    fn build_mesh_for(&self, feature_indices: &[usize], resolution: u32) -> Mesh {
+        if !self.sync_meshing {
+            return Mesh::default();
+        }
+        let bounded = build_bounded_for_body(&self.document.features, feature_indices);
+        dual_contour(&bounded, resolution)
     }
 
     /// Pick the voxel grid resolution a body should use right now:
@@ -487,6 +508,7 @@ impl Kernel {
             active_mesh_resolution: DEFAULT_MESH_RESOLUTION,
             context_mesh_resolution: DEFAULT_CONTEXT_MESH_RESOLUTION,
             active_body_id: None,
+            sync_meshing: true,
             mesh_version: 0,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
@@ -958,6 +980,38 @@ impl Kernel {
     #[wasm_bindgen(js_name = clearActiveBodyId)]
     pub fn clear_active_body_id(&mut self) -> bool {
         self.set_active_body_id(0)
+    }
+
+    // ── sync meshing toggle (K3 part 5) ───────────────────────────────
+
+    /// Whether this kernel instance runs the Dual Contouring pass
+    /// itself on every mutation. The frontend flips this off on the
+    /// main-thread kernel once the mesher web worker is up — the
+    /// worker owns its own kernel instance that meshes for real.
+    #[wasm_bindgen(js_name = syncMeshing)]
+    pub fn sync_meshing(&self) -> bool {
+        self.sync_meshing
+    }
+
+    /// Enable or disable the synchronous DC pass. Toggling forces a
+    /// rebuild so the body list's mesh buffers match the new
+    /// setting: enabling meshes every body from scratch, disabling
+    /// clears every mesh to the default empty buffer. No-op if the
+    /// setting is already at the requested value.
+    #[wasm_bindgen(js_name = setSyncMeshing)]
+    pub fn set_sync_meshing(&mut self, enabled: bool) -> bool {
+        if self.sync_meshing == enabled {
+            return false;
+        }
+        self.sync_meshing = enabled;
+        // Drop the body cache so `rebuild_mesh_internal` goes
+        // through the fresh-mesh path for every body — otherwise
+        // the cache-reuse check (`hash + resolution match`) would
+        // keep populated meshes around after disabling, or empty
+        // meshes after enabling.
+        self.bodies.clear();
+        self.rebuild_mesh_internal();
+        true
     }
 
     // ── picking / provenance ──────────────────────────────────────────
@@ -1804,6 +1858,72 @@ mod tests {
         assert!(k.body_version(1) > v_b, "B re-meshed at active res");
         assert_eq!(k.body_version(2), v_c, "C untouched");
         let _ = id_c;
+    }
+
+    #[test]
+    fn sync_meshing_off_keeps_bodies_partitioned_but_meshes_empty() {
+        // K3 part 5: after the frontend disables sync meshing, the
+        // main-thread kernel should still maintain the body list
+        // (it's needed for setActiveBodyByFeature and the CSG tree
+        // used by pick), but every body's mesh buffer must be
+        // empty. Flipping sync meshing back on re-meshes everything.
+        let mut k = Kernel::new();
+        let id_a = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        let id_b = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                500.0,
+                0.0,
+                0.0,
+                25.0,
+                25.0,
+                25.0,
+            )
+            .unwrap();
+        assert!(k.sync_meshing());
+        assert_eq!(k.body_count(), 2);
+        let populated_a = k.body_vertex_count(0);
+        let populated_b = k.body_vertex_count(1);
+        assert!(populated_a > 0 && populated_b > 0);
+
+        // Flip off — body list survives, meshes vanish.
+        assert!(k.set_sync_meshing(false));
+        assert!(!k.sync_meshing());
+        assert_eq!(k.body_count(), 2);
+        assert_eq!(k.body_vertex_count(0), 0, "body A mesh cleared");
+        assert_eq!(k.body_vertex_count(1), 0, "body B mesh cleared");
+        // Setting to the same value again is a no-op.
+        assert!(!k.set_sync_meshing(false));
+
+        // Picking still works because it reads the feature list
+        // directly, not the mesh — raycast from above hits the box.
+        let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
+        assert!(json.contains("\"hit\":true"), "{json}");
+        assert!(
+            json.contains(&format!("\"contributors\":[{id_a}]")),
+            "{json}"
+        );
+
+        // Mutations go through without meshing.
+        assert!(k.nudge_feature(id_b, 5.0, 0.0, 0.0));
+        assert_eq!(k.body_vertex_count(1), 0, "still empty after mutation");
+
+        // Flip back on — bodies get re-meshed from scratch.
+        assert!(k.set_sync_meshing(true));
+        assert!(k.body_vertex_count(0) > 0);
+        assert!(k.body_vertex_count(1) > 0);
     }
 
     #[test]

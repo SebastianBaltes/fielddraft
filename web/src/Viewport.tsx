@@ -47,18 +47,25 @@ interface BodyEntry {
 }
 
 /**
- * Live per-body mesh driven by the kernel.
+ * Live per-body mesh driven by the store's worker-populated cache.
  *
- * One `BufferGeometry` per body, keyed by the kernel's stable
- * `bodyId`. On every frame we walk `kernel.bodyCount()`, create a
- * geometry for any new body id, re-upload attributes for any body
- * whose `bodyVersion(i)` advanced, and dispose geometries whose
- * body disappeared from the kernel (its seed feature was removed
- * or it merged into a neighbour). Unchanged bodies touch neither
- * CPU nor GPU — that's the whole point of the K3 multi-body cut.
+ * One `BufferGeometry` per body, keyed by the stable `bodyId` that
+ * survives partition rebuilds. On every frame we walk the cache,
+ * create a geometry for any new id, re-upload attributes for any
+ * body whose `version` advanced, and dispose geometries whose body
+ * disappeared from the cache (seed removed or merged into a
+ * neighbour). Unchanged bodies touch neither CPU nor GPU — that's
+ * the whole point of the K3 multi-body cut.
+ *
+ * The body payloads come from `store.state.meshedBodies`, which is
+ * populated either by the mesher worker (normal path) or by a
+ * fallback snapshot of the main-thread kernel (when the Worker
+ * constructor couldn't spin up). Either way the TypedArrays are
+ * main-thread-owned — no WASM-memory aliases, no `.slice()` needed
+ * inside this component.
  */
 function KernelMesh() {
-  const { store } = useKernelStore();
+  const { state } = useKernelStore();
 
   // Single material shared by every body mesh. Cheap — Three.js
   // re-binds the shader once and the bodies differ only in their
@@ -72,9 +79,12 @@ function KernelMesh() {
   const bodyEntriesRef = useRef<Map<number, BodyEntry>>(new Map());
   const [bodySetVersion, setBodySetVersion] = useState(0);
 
-  const uploadBody = (kernel: typeof store extends null ? never : NonNullable<typeof store>["kernel"], i: number, geometry: THREE.BufferGeometry): void => {
-    const vertexCount = kernel.bodyVertexCount(i);
-    const indexCount = kernel.bodyIndexCount(i);
+  const uploadBody = (
+    body: NonNullable<typeof state>["meshedBodies"][number],
+    geometry: THREE.BufferGeometry,
+  ): void => {
+    const vertexCount = body.positions.length / 3;
+    const indexCount = body.indices.length;
     if (vertexCount === 0 || indexCount === 0) {
       geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(0), 3));
@@ -83,47 +93,42 @@ function KernelMesh() {
       geometry.boundingSphere = null;
       return;
     }
-    // `.slice()` detaches the WASM-aliased view from linear memory:
-    // the next kernel mutation may reallocate the underlying `Vec`
-    // and silently corrupt any retained alias. Per-rebuild copies
-    // are a few tens of kB per body — cheap and lifetime-safe.
-    const positions = kernel.bodyPositionsView(i).slice();
-    const normals = kernel.bodyNormalsView(i).slice();
-    const indices = kernel.bodyIndicesView(i).slice();
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    // Bodies from the worker are already main-thread-owned
+    // TypedArrays (they arrived via the structured clone transfer
+    // list), and fallback-mode bodies are already copies out of
+    // WASM memory — either way, no extra slice() needed here.
+    geometry.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
+    geometry.setIndex(new THREE.BufferAttribute(body.indices, 1));
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
   };
 
-  // Poll the kernel once per frame. The actual work is gated on
-  // `bodyVersion(i)` differences, so steady-state (no mutation) is
-  // O(bodies) reads and no GPU traffic.
+  // Poll the store's mesh cache once per frame. Steady state
+  // (no mutation) is O(bodies) reads and no GPU traffic because
+  // the per-body `version` gate rejects uploads for unchanged
+  // bodies.
   useFrame(() => {
-    if (!store) return;
-    const kernel = store.kernel;
-    const count = kernel.bodyCount();
+    if (!state) return;
+    const bodies = state.meshedBodies;
     const seen = new Set<number>();
     let idSetChanged = false;
 
-    for (let i = 0; i < count; i++) {
-      const id = kernel.bodyId(i);
-      seen.add(id);
-      const version = kernel.bodyVersion(i);
-      const existing = bodyEntriesRef.current.get(id);
+    for (const body of bodies) {
+      seen.add(body.id);
+      const existing = bodyEntriesRef.current.get(body.id);
       if (!existing) {
         const geometry = new THREE.BufferGeometry();
-        uploadBody(kernel, i, geometry);
-        bodyEntriesRef.current.set(id, { geometry, version });
+        uploadBody(body, geometry);
+        bodyEntriesRef.current.set(body.id, { geometry, version: body.version });
         idSetChanged = true;
-      } else if (existing.version !== version) {
-        uploadBody(kernel, i, existing.geometry);
-        existing.version = version;
+      } else if (existing.version !== body.version) {
+        uploadBody(body, existing.geometry);
+        existing.version = body.version;
       }
     }
 
-    // Drop bodies that no longer exist in the kernel.
+    // Drop bodies that no longer exist in the store cache.
     for (const [id, entry] of bodyEntriesRef.current) {
       if (!seen.has(id)) {
         entry.geometry.dispose();

@@ -285,6 +285,21 @@ export class Kernel {
     return this.inner.setActiveBodyByFeature(featureId);
   }
 
+  // ── sync meshing toggle (K3 part 5) ─────────────────────────────────
+  //
+  // The main-thread kernel flips this off once the mesher web worker
+  // is ready. After that, mutations still update the document (and
+  // the CSG tree used by `pick`) but skip the Dual Contouring pass
+  // — a second kernel instance inside the worker owns the meshing.
+
+  syncMeshing(): boolean {
+    return this.inner.syncMeshing();
+  }
+
+  setSyncMeshing(enabled: boolean): boolean {
+    return this.inner.setSyncMeshing(enabled);
+  }
+
   // ── outliner ────────────────────────────────────────────────────────
 
   listFeatures(): FeatureSummary[] {

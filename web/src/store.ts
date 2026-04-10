@@ -19,6 +19,20 @@ import {
   type PrimitiveKindName,
 } from "./kernel";
 import { createAutoSave, loadPersisted, type AutoSaveHandle } from "./persistence";
+import type {
+  MesherBodiesResponse,
+  MesherBodyPayload,
+  MesherRebuildRequest,
+} from "./mesher.worker";
+
+/**
+ * One mesh-ready body as cached by the store after a worker response.
+ * The TypedArrays are owned by the main thread (they were transferred
+ * from the worker), so they're safe to retain across future kernel
+ * mutations — unlike the WASM-aliased views you'd get from the
+ * kernel's own `body*View` accessors.
+ */
+export type MeshedBody = MesherBodyPayload;
 
 export interface StoreState {
   features: FeatureSummary[];
@@ -30,6 +44,12 @@ export interface StoreState {
   canRedo: boolean;
   /** Default op applied when adding the next primitive. */
   nextOp: BoolOpTagValue;
+  /** Latest per-body mesh cache streamed in from the mesher worker.
+   *  A fresh array object is written on every worker response so
+   *  React's useSyncExternalStore detects the change and re-renders
+   *  the viewport — even though the contents only care about the
+   *  delta per body id. */
+  meshedBodies: readonly MeshedBody[];
 }
 
 export class KernelStore {
@@ -37,6 +57,25 @@ export class KernelStore {
   private readonly autosave: AutoSaveHandle;
   private listeners = new Set<() => void>();
   private state: StoreState;
+  private worker: Worker | null = null;
+  private workerRequestCounter = 0;
+  /** Latest requestId handed to the worker. Responses with a lower
+   *  id are stale (the user mutated faster than the worker could
+   *  keep up) and get dropped on arrival. */
+  private latestWorkerRequestId = 0;
+  /** True while a worker request is in flight; set back to false on
+   *  response. Used to coalesce rapid-fire mutations into a single
+   *  worker job: we always post the *most recent* document, never a
+   *  stale one, by tracking whether another rebuild is queued while
+   *  the current one is still meshing. */
+  private workerInflight = false;
+  private workerRebuildQueued = false;
+  /** Fallback mode: when the Worker constructor throws (e.g. the
+   *  bundler didn't emit the worker chunk), we keep sync meshing on
+   *  the main-thread kernel and drive the meshedBodies cache from
+   *  its own `body*` views. Loses the off-thread benefit but keeps
+   *  the app rendering. */
+  private workerAvailable = false;
 
   constructor(kernel: Kernel, autosave: AutoSaveHandle) {
     this.kernel = kernel;
@@ -48,7 +87,41 @@ export class KernelStore {
       canUndo: kernel.canUndo(),
       canRedo: kernel.canRedo(),
       nextOp: BoolOpTag.Union,
+      meshedBodies: [],
     };
+
+    // Bring up the mesher worker. On success, disable sync meshing
+    // on the main-thread kernel so every mutation goes straight
+    // through to document + partition without the DC pass. On
+    // failure (Vite didn't emit the worker, CSP blocked it,
+    // whatever), fall back to sync meshing and read body buffers
+    // from the main-thread kernel directly — functionally correct,
+    // just blocks the UI on every mesh rebuild.
+    try {
+      this.worker = new Worker(
+        new URL("./mesher.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.worker.addEventListener("message", (event) => {
+        this.handleWorkerMessage(event);
+      });
+      this.workerAvailable = true;
+      this.kernel.setSyncMeshing(false);
+      // Kick off the first worker rebuild so the initial document
+      // (possibly rehydrated from localStorage) becomes visible.
+      this.scheduleWorkerRebuild();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "fielddraft: could not start mesher worker, falling back to sync meshing on the main thread",
+        err,
+      );
+      this.workerAvailable = false;
+      this.state = {
+        ...this.state,
+        meshedBodies: this.snapshotMainThreadBodies(),
+      };
+    }
   }
 
   // ── pub-sub ───────────────────────────────────────────────────────
@@ -74,6 +147,7 @@ export class KernelStore {
       canUndo: this.kernel.canUndo(),
       canRedo: this.kernel.canRedo(),
       nextOp: this.state.nextOp,
+      meshedBodies: this.state.meshedBodies,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -95,7 +169,107 @@ export class KernelStore {
     }
     this.syncActiveBody();
     this.autosave.schedule(this.kernel.toJson());
+    this.refreshMeshCache();
     for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * Pull the latest meshes into `state.meshedBodies`. In worker mode
+   * this posts a rebuild request and waits for the response
+   * asynchronously; in fallback mode (no worker) it snapshots the
+   * main-thread kernel's already-synced body buffers right now.
+   * Callers are responsible for notifying listeners after — the
+   * worker path notifies from inside `handleWorkerMessage`, the
+   * fallback path mutates state inline so the caller's post-call
+   * listener sweep picks it up.
+   */
+  private refreshMeshCache(): void {
+    if (this.workerAvailable) {
+      this.scheduleWorkerRebuild();
+      return;
+    }
+    this.state = {
+      ...this.state,
+      meshedBodies: this.snapshotMainThreadBodies(),
+    };
+  }
+
+  /**
+   * Hand off the current document to the mesher worker. Rapid-fire
+   * mutations coalesce: while a rebuild is in flight, subsequent
+   * calls just flip the `workerRebuildQueued` flag; when the
+   * current rebuild's response lands, we post one new rebuild with
+   * the *latest* document instead of a backlog of stale ones.
+   */
+  private scheduleWorkerRebuild(): void {
+    if (!this.worker || !this.workerAvailable) return;
+    if (this.workerInflight) {
+      this.workerRebuildQueued = true;
+      return;
+    }
+    this.postWorkerRebuild();
+  }
+
+  private postWorkerRebuild(): void {
+    if (!this.worker) return;
+    this.workerRequestCounter += 1;
+    this.latestWorkerRequestId = this.workerRequestCounter;
+    this.workerInflight = true;
+    this.workerRebuildQueued = false;
+    const request: MesherRebuildRequest = {
+      type: "rebuild",
+      requestId: this.workerRequestCounter,
+      documentJson: this.kernel.toJson(),
+      activeMeshResolution: this.kernel.meshResolution(),
+      contextMeshResolution: this.kernel.contextMeshResolution(),
+      activeBodyId: this.kernel.activeBodyId(),
+    };
+    this.worker.postMessage(request);
+  }
+
+  private handleWorkerMessage(event: MessageEvent): void {
+    const data = event.data as MesherBodiesResponse | undefined;
+    if (!data || data.type !== "bodies") return;
+    this.workerInflight = false;
+    if (data.requestId < this.latestWorkerRequestId) {
+      // Stale response — a newer rebuild is already in flight or
+      // queued. Drop it; we'll render the fresh one shortly.
+      if (this.workerRebuildQueued) {
+        this.postWorkerRebuild();
+      }
+      return;
+    }
+    this.state = {
+      ...this.state,
+      meshedBodies: data.bodies,
+    };
+    for (const listener of this.listeners) listener();
+    if (this.workerRebuildQueued) {
+      this.postWorkerRebuild();
+    }
+  }
+
+  /**
+   * Fallback path for when the worker couldn't start: read per-body
+   * meshes from the main-thread kernel's sync-meshing output
+   * directly, copying each TypedArray out of WASM linear memory so
+   * the store can retain it across future mutations.
+   */
+  private snapshotMainThreadBodies(): MeshedBody[] {
+    const count = this.kernel.bodyCount();
+    const out: MeshedBody[] = [];
+    for (let i = 0; i < count; i++) {
+      out.push({
+        id: this.kernel.bodyId(i),
+        version: this.kernel.bodyVersion(i),
+        positions: this.kernel.bodyPositionsView(i).slice(),
+        normals: this.kernel.bodyNormalsView(i).slice(),
+        indices: this.kernel.bodyIndicesView(i).slice(),
+        classifications: this.kernel.bodyClassificationsView(i).slice(),
+        contributors: this.kernel.bodyContributorsView(i).slice(),
+      });
+    }
+    return out;
   }
 
   /**
@@ -209,6 +383,7 @@ export class KernelStore {
       selectionAnchor: id,
     };
     this.syncActiveBody();
+    this.refreshMeshCache();
     for (const listener of this.listeners) listener();
   }
 
@@ -222,6 +397,7 @@ export class KernelStore {
       selectionAnchor: id,
     };
     this.syncActiveBody();
+    this.refreshMeshCache();
     for (const listener of this.listeners) listener();
   }
 
@@ -256,6 +432,7 @@ export class KernelStore {
       selectionAnchor: anchor,
     };
     this.syncActiveBody();
+    this.refreshMeshCache();
     for (const listener of this.listeners) listener();
   }
 
@@ -263,6 +440,7 @@ export class KernelStore {
     if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
     this.state = { ...this.state, selection: new Set(), selectionAnchor: null };
     this.syncActiveBody();
+    this.refreshMeshCache();
     for (const listener of this.listeners) listener();
   }
 }
