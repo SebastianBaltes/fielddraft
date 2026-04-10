@@ -307,6 +307,28 @@ export class Kernel {
     return JSON.parse(json) as FeatureSummary[];
   }
 
+  // ── K6a: feature-schema lookup ─────────────────────────────────────
+
+  /**
+   * List every feature type name the built-in registry knows
+   * about. Sorted alphabetically by the Rust side so the result
+   * is stable across calls and safe to key React lists on.
+   */
+  listFeatureTypes(): string[] {
+    return JSON.parse(this.inner.listFeatureTypes()) as string[];
+  }
+
+  /**
+   * Load the JSON schema a feature type declares via the Rust
+   * `FeatureSchema` derive. The shape is
+   * `{ type: string, params: Array<{ key, name, type, required }> }`
+   * — see `FeatureSchemaJson` in `web/src/widgets/schema.ts`
+   * for the TypeScript type.
+   */
+  schemaForType(typeName: string): unknown {
+    return JSON.parse(this.inner.schemaForType(typeName));
+  }
+
   // ── mutations ───────────────────────────────────────────────────────
 
   addBox(

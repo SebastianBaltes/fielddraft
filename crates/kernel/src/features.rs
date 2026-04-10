@@ -149,6 +149,14 @@ pub trait FeatureKind: Send + Sync {
     /// in the serialised feature tree.
     fn type_name(&self) -> &'static str;
 
+    /// K6a: the JSON schema shape the K4.5.4a `FeatureSchema`
+    /// derive generates for the definition struct this feature
+    /// kind consumes. Returned as `serde_json::Value` so the
+    /// wasm-bindgen surface can serialise it straight through
+    /// to the TypeScript FeatureDialog generator without the
+    /// kernel needing to know about the widget layer.
+    fn schema_json(&self) -> Value;
+
     /// Validate the definition JSON and mutate the context. On
     /// success every side effect is already baked into the context;
     /// on error the side effects accumulated so far stay, but the
@@ -218,6 +226,22 @@ impl FeatureRegistry {
         self.features.is_empty()
     }
 
+    /// K6a: list every type name the registry knows about. The
+    /// order is hash-map-defined and must not be relied on by
+    /// callers that need a stable ordering (the FeatureDialog
+    /// generator sorts the result before rendering).
+    pub fn type_names(&self) -> Vec<String> {
+        self.features.keys().cloned().collect()
+    }
+
+    /// K6a: look up a feature kind's schema by type name. Returns
+    /// the raw [`Value`] the `FeatureSchema` derive emits —
+    /// wasm-bindgen callers re-serialise it as a string before
+    /// handing it across the JS boundary.
+    pub fn schema_for(&self, type_name: &str) -> Option<Value> {
+        self.features.get(type_name).map(|f| f.schema_json())
+    }
+
     /// Walk a feature-call list in order and execute each entry
     /// against the context. Fails fast on the first error: nothing
     /// after the failing call runs, and the caller can inspect the
@@ -276,6 +300,10 @@ impl FeatureKind for BoxPrimitive {
         BoxDef::TYPE_NAME
     }
 
+    fn schema_json(&self) -> Value {
+        BoxDef::schema_json()
+    }
+
     fn execute(
         &self,
         ctx: &mut Context<'_>,
@@ -322,6 +350,10 @@ pub struct SpherePrimitive;
 impl FeatureKind for SpherePrimitive {
     fn type_name(&self) -> &'static str {
         SphereDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SphereDef::schema_json()
     }
 
     fn execute(
@@ -372,6 +404,10 @@ pub struct CylinderPrimitive;
 impl FeatureKind for CylinderPrimitive {
     fn type_name(&self) -> &'static str {
         CylinderDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        CylinderDef::schema_json()
     }
 
     fn execute(
@@ -497,6 +533,10 @@ pub struct ExtrudeFeature;
 impl FeatureKind for ExtrudeFeature {
     fn type_name(&self) -> &'static str {
         ExtrudeDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ExtrudeDef::schema_json()
     }
 
     fn execute(
@@ -641,6 +681,39 @@ mod tests {
         assert!(registry.get("torus").is_none());
     }
 
+    // ─── K6a: schema lookup on the registry ───────────────────
+
+    #[test]
+    fn schema_for_returns_the_derive_generated_schema_per_type() {
+        let registry = FeatureRegistry::with_builtins();
+        let box_schema = registry.schema_for("box").expect("box schema");
+        // The derive emits `{"type": "...", "params": [...]}`.
+        assert_eq!(box_schema["type"], json!("box"));
+        assert!(box_schema["params"].is_array());
+
+        let extrude_schema = registry
+            .schema_for("extrude")
+            .expect("extrude schema");
+        assert_eq!(extrude_schema["type"], json!("extrude"));
+        // Six params matching the K4.5.8 ExtrudeDef shape.
+        let params = extrude_schema["params"].as_array().unwrap();
+        assert_eq!(params.len(), 6);
+    }
+
+    #[test]
+    fn schema_for_returns_none_for_unknown_types() {
+        let registry = FeatureRegistry::with_builtins();
+        assert!(registry.schema_for("torus").is_none());
+    }
+
+    #[test]
+    fn type_names_contains_all_four_builtins() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut names = registry.type_names();
+        names.sort();
+        assert_eq!(names, vec!["box", "cylinder", "extrude", "sphere"]);
+    }
+
     #[test]
     fn register_is_last_wins() {
         // A test stub that succeeds unconditionally and returns the
@@ -649,6 +722,9 @@ mod tests {
         impl FeatureKind for StubBox {
             fn type_name(&self) -> &'static str {
                 "box"
+            }
+            fn schema_json(&self) -> Value {
+                json!({"type": "box", "params": []})
             }
             fn execute(
                 &self,

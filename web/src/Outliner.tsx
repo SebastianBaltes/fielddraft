@@ -4,9 +4,15 @@
  * a flat spine for M2.
  */
 
-import type { MouseEvent } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
 import type { KernelStore, StoreState } from "./store";
+import { createFdApi } from "./api/fd";
+import { FeatureDialog } from "./widgets/FeatureDialog";
+import {
+  buildDefaultDefinition,
+  type FeatureSchema,
+} from "./widgets/schema";
 
 const OP_LABEL: Record<BoolOpName, string> = {
   union: "+",
@@ -55,6 +61,57 @@ interface OutlinerProps {
 }
 
 export function Outliner({ store, state }: OutlinerProps) {
+  // K6a: memoised Outer API façade over the store's kernel. The
+  // `createFdApi` return value is a tiny object of method refs,
+  // so re-creating it per render is cheap — but memoising keeps
+  // React's reference identity stable for downstream hooks.
+  const fd = useMemo(() => createFdApi(store.kernel), [store]);
+
+  // K6a: the generic FeatureDialog's working copy. Keyed on the
+  // currently-selected feature's kind so switching between two
+  // features of the same kind reuses the edit buffer, while
+  // switching to a different kind reinitialises it from the
+  // schema defaults. Full "commit edits back to the kernel"
+  // plumbing is K6b territory — the dialog in this slice
+  // renders the schema and lets the user type into it, but
+  // doesn't yet round-trip values into the feature spine.
+  const [dialogDraft, setDialogDraft] = useState<
+    Record<string, unknown>
+  >({});
+  const selectedFeature = useMemo<FeatureSummary | undefined>(
+    () =>
+      state.selection.size === 1
+        ? state.features.find((f) => state.selection.has(f.id))
+        : undefined,
+    [state.selection, state.features],
+  );
+  const selectedSchema = useMemo<FeatureSchema | null>(() => {
+    if (!selectedFeature) return null;
+    try {
+      return fd.schemaForType(selectedFeature.kind);
+    } catch {
+      // The kernel may report a kind name the schema lookup
+      // doesn't know about (future feature types, stale caches).
+      // Silently skip the dialog in that case — the rest of the
+      // outliner still functions.
+      return null;
+    }
+  }, [fd, selectedFeature]);
+
+  // Reset the dialog draft whenever the selection changes to a
+  // feature of a different kind. Keying by kind rather than id
+  // means navigating through a row of identical primitives
+  // reuses the in-progress edits without the React reconciler
+  // thrashing.
+  const draftKey = selectedSchema?.type ?? null;
+  const [lastDraftKey, setLastDraftKey] = useState<string | null>(null);
+  if (draftKey !== lastDraftKey) {
+    setLastDraftKey(draftKey);
+    setDialogDraft(
+      selectedSchema ? buildDefaultDefinition(selectedSchema) : {},
+    );
+  }
+
   const handleRowClick = (e: MouseEvent, id: number) => {
     if (e.shiftKey) {
       store.selectRangeTo(id);
@@ -77,6 +134,13 @@ export function Outliner({ store, state }: OutlinerProps) {
 
   return (
     <aside className="fd-outliner" data-testid="fielddraft-outliner">
+      {selectedSchema ? (
+        <FeatureDialog
+          schema={selectedSchema}
+          definition={dialogDraft}
+          onChange={setDialogDraft}
+        />
+      ) : null}
       <div className="header">Features</div>
       {state.features.length === 0 ? (
         <div className="empty">No features yet.</div>

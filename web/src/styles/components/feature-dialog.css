@@ -1,0 +1,106 @@
+/* K6a generic FeatureDialog + widget kit.
+ *
+ * One top-level class `.fd-feature-dialog` per the CLAUDE.md
+ * nesting rule; every child selector lives inside this block
+ * scoped by native CSS nesting, and every child class is
+ * unprefixed (`.field`, `.label`, `.input`, …).
+ *
+ * Colours, spacing, radii and typography are pulled from the
+ * shared tokens — no hard-coded values here.
+ */
+
+.fd-feature-dialog {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  gap: var(--space-3);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+
+  & .header {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-divider);
+  }
+
+  & .title {
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text);
+    text-transform: capitalize;
+  }
+
+  & .body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  & .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  & .label {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+    font-weight: var(--fw-medium);
+  }
+
+  & .required {
+    color: var(--color-accent);
+    margin-left: var(--space-1);
+  }
+
+  & .input,
+  & .select,
+  & .textarea {
+    font-family: var(--font-family-sans);
+    font-size: var(--fs-base);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    color: var(--color-text);
+    min-width: 0;
+  }
+
+  & .textarea {
+    font-family: var(--font-family-mono);
+    resize: vertical;
+  }
+
+  & .input:focus,
+  & .select:focus,
+  & .textarea:focus {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  & .vec3-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-2);
+  }
+
+  & .unit-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-2);
+  }
+
+  & .query-input {
+    font-family: var(--font-family-mono);
+  }
+
+  & .error {
+    font-size: var(--fs-base);
+    color: var(--color-error);
+  }
+}

@@ -629,6 +629,40 @@ impl Kernel {
 
     // ── outliner queries ──────────────────────────────────────────────
 
+    // ── K6a feature-schema lookup ────────────────────────────────────
+    //
+    // The FeatureDialog generator on the TypeScript side consumes
+    // the JSON schema that the K4.5.4a `FeatureSchema` derive
+    // emits for every definition struct. These two accessors
+    // walk the built-in `FeatureRegistry` to expose the schema
+    // and the list of known types to the wasm-bindgen surface;
+    // the schemas are serialised as strings so wasm-bindgen
+    // doesn't need to learn about `serde_json::Value`.
+
+    /// K6a: list every feature type name the built-in registry
+    /// knows about, sorted for deterministic UI rendering. The
+    /// result is a JSON array of strings, e.g. `["box", "cylinder",
+    /// "extrude", "sphere"]`.
+    #[wasm_bindgen(js_name = listFeatureTypes)]
+    pub fn list_feature_types(&self) -> Result<String, JsError> {
+        let registry = features::FeatureRegistry::with_builtins();
+        let mut names = registry.type_names();
+        names.sort();
+        serde_json::to_string(&names).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// K6a: look up the FeatureSchema-generated JSON schema for
+    /// a feature type. Returns the serialised JSON string or an
+    /// error if the type isn't registered.
+    #[wasm_bindgen(js_name = schemaForType)]
+    pub fn schema_for_type(&self, type_name: &str) -> Result<String, JsError> {
+        let registry = features::FeatureRegistry::with_builtins();
+        let value = registry
+            .schema_for(type_name)
+            .ok_or_else(|| JsError::new(&format!("unknown feature type `{type_name}`")))?;
+        serde_json::to_string(&value).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Return a JSON array of feature summaries (id, name, op, kind).
     #[wasm_bindgen(js_name = listFeatures)]
     pub fn list_features(&self) -> Result<String, JsError> {
