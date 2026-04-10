@@ -303,7 +303,7 @@ pub struct Kernel {
     /// uses `active_mesh_resolution`. When a body id is set, only
     /// that body stays at active resolution; every other body
     /// drops to the context resolution.
-    active_body_id: Option<u32>,
+    active_body_id: Option<FeatureId>,
     /// When `false`, `rebuild_mesh_internal` still partitions the
     /// feature spine into bodies but skips the Dual Contouring
     /// pass, leaving every body with an empty mesh buffer. The
@@ -364,10 +364,10 @@ impl Kernel {
         // can tell which partitions just shuffled vs. which actually
         // changed. `std::mem::take` lets us move meshes out of the
         // old Vec without cloning their potentially-large buffers.
-        let mut previous: std::collections::HashMap<u32, Body> =
+        let mut previous: std::collections::HashMap<FeatureId, Body> =
             std::mem::take(&mut self.bodies)
                 .into_iter()
-                .map(|b| (b.id, b))
+                .map(|b| (b.id.clone(), b))
                 .collect();
 
         let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
@@ -375,7 +375,7 @@ impl Kernel {
             let id = part.seed_id(&self.document.features);
             let payload_hash =
                 hash_body_payload(&self.document.features, &part.feature_indices);
-            let target_resolution = self.target_resolution_for(id);
+            let target_resolution = self.target_resolution_for(&id);
 
             if let Some(mut prev) = previous.remove(&id) {
                 if prev.payload_hash == payload_hash
@@ -441,27 +441,42 @@ impl Kernel {
     /// the active resolution when no LOD hint is set or when the
     /// body id matches `active_body_id`, the context resolution
     /// otherwise.
-    fn target_resolution_for(&self, body_id: u32) -> u32 {
-        match self.active_body_id {
+    fn target_resolution_for(&self, body_id: &FeatureId) -> u32 {
+        match &self.active_body_id {
             Some(active_id) if active_id != body_id => self.context_mesh_resolution,
             _ => self.active_mesh_resolution,
         }
     }
 
+    /// Internal active-body setter that works directly on
+    /// `FeatureId` values (no wasm-bindgen u32 shim). All three
+    /// public entry points — [`Kernel::set_active_body_id`],
+    /// [`Kernel::set_active_body_by_feature`] and
+    /// [`Kernel::clear_active_body_id`] — go through here so the
+    /// rebuild / no-op rules live in exactly one place.
+    fn set_active_body_id_internal(&mut self, new_active: Option<FeatureId>) -> bool {
+        if new_active == self.active_body_id {
+            return false;
+        }
+        self.active_body_id = new_active;
+        self.rebuild_mesh_internal();
+        true
+    }
+
     /// Walk the current bodies and return the stable id of the one
     /// that owns `feature_id`, if any. O(bodies × features_per_body).
-    fn body_containing_feature(&self, feature_id: FeatureId) -> Option<u32> {
+    fn body_containing_feature(&self, feature_id: &FeatureId) -> Option<FeatureId> {
         // Translate the FeatureId to an index into the document's
         // feature list first, then search the bodies for that index.
         let idx = self
             .document
             .features
             .iter()
-            .position(|f| f.id == feature_id)?;
+            .position(|f| &f.id == feature_id)?;
         self.bodies
             .iter()
             .find(|b| b.feature_indices.iter().any(|&i| i == idx))
-            .map(|b| b.id)
+            .map(|b| b.id.clone())
     }
 
     fn op_label(op: BoolOp) -> &'static str {
@@ -564,7 +579,7 @@ impl Kernel {
             .features
             .iter()
             .map(|f| FeatureSummary {
-                id: f.id,
+                id: f.id.clone(),
                 name: f.name.clone(),
                 op: Self::op_label(f.op),
                 kind: Self::kind_label(&f.primitive),
@@ -599,7 +614,7 @@ impl Kernel {
         p0: f32,
         p1: f32,
         p2: f32,
-    ) -> Result<FeatureId, JsError> {
+    ) -> Result<u32, JsError> {
         let primitive = match kind {
             Primitive::KIND_BOX => Primitive::Box {
                 center: [0.0, 0.0, 0.0],
@@ -626,6 +641,14 @@ impl Kernel {
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: 1.0,
         };
+        // K4.5.1 still issues flat-numeric FeatureIds, so the shim
+        // call at the bottom is guaranteed to succeed. When the
+        // Feature Registry starts issuing prefix-style ids in a
+        // later slice, `addPrimitive` will need to move to a
+        // String return value.
+        let flat_u32 = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
         self.document.features.push(Feature {
             id,
             name,
@@ -634,18 +657,19 @@ impl Kernel {
             transform,
         });
         self.rebuild_packed();
-        Ok(id)
+        Ok(flat_u32)
     }
 
     /// Replace the translate component of a feature's transform.
     #[wasm_bindgen(js_name = setFeatureTranslate)]
     pub fn set_feature_translate(
         &mut self,
-        id: FeatureId,
+        id: u32,
         tx: f32,
         ty: f32,
         tz: f32,
     ) -> bool {
+        let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         let Some(idx) = pos else { return false };
         if self.document.features[idx].transform.translate == [tx, ty, tz] {
@@ -660,7 +684,8 @@ impl Kernel {
     /// Add `(dx, dy, dz)` to a feature's translate. Convenience for
     /// keyboard nudging.
     #[wasm_bindgen(js_name = nudgeFeature)]
-    pub fn nudge_feature(&mut self, id: FeatureId, dx: f32, dy: f32, dz: f32) -> bool {
+    pub fn nudge_feature(&mut self, id: u32, dx: f32, dy: f32, dz: f32) -> bool {
+        let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         let Some(idx) = pos else { return false };
         if dx == 0.0 && dy == 0.0 && dz == 0.0 {
@@ -679,7 +704,7 @@ impl Kernel {
     #[wasm_bindgen(js_name = setFeatureTransform)]
     pub fn set_feature_transform(
         &mut self,
-        id: FeatureId,
+        id: u32,
         tx: f32,
         ty: f32,
         tz: f32,
@@ -689,6 +714,7 @@ impl Kernel {
         qw: f32,
         scale: f32,
     ) -> bool {
+        let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         let Some(idx) = pos else { return false };
         let new = Transform {
@@ -708,7 +734,8 @@ impl Kernel {
     /// Remove the feature with the given id. Returns true if anything
     /// was removed.
     #[wasm_bindgen(js_name = removeFeature)]
-    pub fn remove_feature(&mut self, id: FeatureId) -> bool {
+    pub fn remove_feature(&mut self, id: u32) -> bool {
+        let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         if let Some(idx) = pos {
             self.snapshot();
@@ -722,8 +749,9 @@ impl Kernel {
 
     /// Change the boolean op of an existing feature.
     #[wasm_bindgen(js_name = setFeatureOp)]
-    pub fn set_feature_op(&mut self, id: FeatureId, op: u32) -> Result<bool, JsError> {
+    pub fn set_feature_op(&mut self, id: u32, op: u32) -> Result<bool, JsError> {
         let bool_op = Self::parse_op(op)?;
+        let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         if let Some(idx) = pos {
             if self.document.features[idx].op == bool_op {
@@ -740,7 +768,8 @@ impl Kernel {
 
     /// Move a feature to a new index. Indices clamp into bounds.
     #[wasm_bindgen(js_name = reorderFeature)]
-    pub fn reorder_feature(&mut self, id: FeatureId, target_index: usize) -> bool {
+    pub fn reorder_feature(&mut self, id: u32, target_index: usize) -> bool {
+        let id = FeatureId::from_u32(id);
         let from = self.document.features.iter().position(|f| f.id == id);
         let Some(from) = from else { return false };
         let to = target_index.min(self.document.features.len().saturating_sub(1));
@@ -830,9 +859,16 @@ impl Kernel {
     /// its feature set). Panics only if `i` is out of range — tests
     /// and the wasm-bindgen bridge should always gate the call on
     /// `bodyCount()`.
+    ///
+    /// K4.5.1 compat shim: the return type stays `u32` because every
+    /// id this slice issues is still flat-numeric. A later slice that
+    /// introduces prefix-style ids will move this to `String`.
     #[wasm_bindgen(js_name = bodyId)]
     pub fn body_id(&self, i: usize) -> u32 {
-        self.bodies[i].id
+        self.bodies[i]
+            .id
+            .as_u32_if_flat()
+            .expect("K4.5.1 body ids are still flat-numeric")
     }
 
     /// Per-body version counter. Bumps only when the body's own
@@ -946,7 +982,10 @@ impl Kernel {
     /// allocated starting at `1` so `0` is unambiguous.
     #[wasm_bindgen(js_name = activeBodyId)]
     pub fn active_body_id(&self) -> u32 {
-        self.active_body_id.unwrap_or(0)
+        self.active_body_id
+            .as_ref()
+            .and_then(|id| id.as_u32_if_flat())
+            .unwrap_or(0)
     }
 
     /// Mark the given body id as the active one. Triggers a re-mesh
@@ -955,13 +994,12 @@ impl Kernel {
     /// resolution. Passing `0` clears the active body.
     #[wasm_bindgen(js_name = setActiveBodyId)]
     pub fn set_active_body_id(&mut self, body_id: u32) -> bool {
-        let new_active = if body_id == 0 { None } else { Some(body_id) };
-        if new_active == self.active_body_id {
-            return false;
-        }
-        self.active_body_id = new_active;
-        self.rebuild_mesh_internal();
-        true
+        let new_active = if body_id == 0 {
+            None
+        } else {
+            Some(FeatureId::from_u32(body_id))
+        };
+        self.set_active_body_id_internal(new_active)
     }
 
     /// Convenience: set the active body to whichever body owns the
@@ -969,9 +1007,10 @@ impl Kernel {
     /// changed. No-op (returns false) when the feature doesn't
     /// exist or already lives in the active body.
     #[wasm_bindgen(js_name = setActiveBodyByFeature)]
-    pub fn set_active_body_by_feature(&mut self, feature_id: FeatureId) -> bool {
-        match self.body_containing_feature(feature_id) {
-            Some(id) => self.set_active_body_id(id),
+    pub fn set_active_body_by_feature(&mut self, feature_id: u32) -> bool {
+        let feature_id = FeatureId::from_u32(feature_id);
+        match self.body_containing_feature(&feature_id) {
+            Some(id) => self.set_active_body_id_internal(Some(id)),
             None => false,
         }
     }
@@ -980,7 +1019,7 @@ impl Kernel {
     /// again. Equivalent to `setActiveBodyId(0)`.
     #[wasm_bindgen(js_name = clearActiveBodyId)]
     pub fn clear_active_body_id(&mut self) -> bool {
-        self.set_active_body_id(0)
+        self.set_active_body_id_internal(None)
     }
 
     // ── sync meshing toggle (K3 part 5) ───────────────────────────────
@@ -1045,12 +1084,21 @@ impl Kernel {
                 // a JSON array of ids. Avoid serde_json::Value churn
                 // and just format manually — the schema is tiny and
                 // stable.
+                // Serialise contributor ids as bare integers to stay
+                // byte-compatible with the K2 frontend parser that
+                // expects `contributors: number[]`. K4.5.1 still only
+                // produces flat-numeric ids, so the `expect` never
+                // fires; when a future slice introduces hierarchical
+                // ids the JSON schema will have to widen to strings.
                 let mut contributors = String::from("[");
                 for (i, id) in hit.contributors.as_slice().iter().enumerate() {
                     if i > 0 {
                         contributors.push(',');
                     }
-                    contributors.push_str(&id.to_string());
+                    let flat = id
+                        .as_u32_if_flat()
+                        .expect("K4.5.1 pick hit has flat-numeric contributors");
+                    contributors.push_str(&flat.to_string());
                 }
                 contributors.push(']');
                 format!(
@@ -1084,9 +1132,9 @@ impl Default for Kernel {
 mod tests {
     use super::*;
 
-    fn box_feature(id: FeatureId, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box { center, half_extents: half },
@@ -1094,9 +1142,9 @@ mod tests {
         }
     }
 
-    fn sphere_feature(id: FeatureId, op: BoolOp, center: [f32; 3], r: f32) -> Feature {
+    fn sphere_feature(id: u32, op: BoolOp, center: [f32; 3], r: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op,
             primitive: Primitive::Sphere { center, radius: r },
@@ -1104,9 +1152,9 @@ mod tests {
         }
     }
 
-    fn transformed_sphere(id: FeatureId, translate: [f32; 3], r: f32) -> Feature {
+    fn transformed_sphere(id: u32, translate: [f32; 3], r: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: r },
@@ -1245,7 +1293,7 @@ mod tests {
     fn uniform_scale_preserves_distance_property() {
         // A unit sphere scaled by 4 should behave like a radius-4 sphere.
         let scaled = Feature {
-            id: 1,
+            id: FeatureId::from_u32(1),
             name: "S".into(),
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
@@ -1272,7 +1320,7 @@ mod tests {
         let s = (std::f32::consts::FRAC_PI_4).sin();
         let c = (std::f32::consts::FRAC_PI_4).cos();
         let f = Feature {
-            id: 1,
+            id: FeatureId::from_u32(1),
             name: "B".into(),
             op: BoolOp::Union,
             primitive: Primitive::Box {

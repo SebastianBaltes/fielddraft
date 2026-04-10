@@ -46,7 +46,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use fielddraft_protocol::{BoolOp, Feature, Primitive};
+use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive};
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, CsgNode};
@@ -75,11 +75,19 @@ impl BodyPartition {
     /// as the feature lives in the document, so the frontend can
     /// keep the body's BufferGeometry around even after unrelated
     /// mutations reorder the body list.
-    pub fn seed_id(&self, features: &[Feature]) -> u32 {
+    ///
+    /// K4.5.1 still issues only flat-numeric [`FeatureId`]s, so
+    /// "lowest" means the smallest `u32`. A later slice that
+    /// introduces hierarchical ids will have to replace this with
+    /// a richer ordering scheme.
+    pub fn seed_id(&self, features: &[Feature]) -> FeatureId {
         self.feature_indices
             .iter()
-            .map(|&i| features[i].id)
-            .min()
+            .map(|&i| features[i].id.clone())
+            .min_by_key(|id| {
+                id.as_u32_if_flat()
+                    .expect("K4.5.1 only issues flat-numeric feature ids")
+            })
             .expect("BodyPartition is always non-empty")
     }
 }
@@ -88,7 +96,7 @@ impl BodyPartition {
 #[derive(Debug, Clone)]
 pub struct Body {
     /// Stable identifier — see [`BodyPartition::seed_id`].
-    pub id: u32,
+    pub id: FeatureId,
     pub feature_indices: Vec<usize>,
     pub aabb: Aabb,
     /// Hash of the per-feature payload at the time of the last
@@ -285,7 +293,7 @@ mod tests {
 
     fn box_feat(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box {
@@ -298,7 +306,7 @@ mod tests {
 
     fn sphere_feat(id: u32, op: BoolOp, center: [f32; 3], radius: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op,
             primitive: Primitive::Sphere { center, radius },
@@ -312,7 +320,7 @@ mod tests {
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].feature_indices, vec![0]);
-        assert_eq!(bodies[0].seed_id(&features), 1);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
     }
 
     #[test]
@@ -405,7 +413,7 @@ mod tests {
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
-        assert_eq!(bodies[0].seed_id(&features), 3);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(3));
     }
 
     #[test]

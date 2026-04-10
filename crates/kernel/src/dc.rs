@@ -212,11 +212,18 @@ pub fn dual_contour(node: &BoundedCsg, resolution: u32) -> Mesh {
                 classifications.push(element.tag());
                 // Flatten contributor ids into a fixed stride so the
                 // zero-copy bridge can hand them to JS as a single
-                // Uint32Array view.
+                // Uint32Array view. K4.5.1 still issues only flat-
+                // numeric [`FeatureId`]s, so each contributor maps
+                // back to a `u32`. When hierarchical ids land in a
+                // later slice, the mesh contributor buffer will grow
+                // a side table indexed by a compact u32 handle.
                 let slice = cs.as_slice();
                 for slot in 0..MAX_CONTRIBUTORS {
                     if slot < slice.len() {
-                        contributors.push(slice[slot]);
+                        let compact = slice[slot]
+                            .as_u32_if_flat()
+                            .expect("K4.5.1 mesh contributors are flat-numeric");
+                        contributors.push(compact);
                     } else {
                         contributors.push(CONTRIBUTOR_SENTINEL);
                     }
@@ -382,11 +389,11 @@ fn sdf_normal(node: &BoundedCsg, p: [f32; 3], eps: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center, radius },
@@ -396,7 +403,7 @@ mod tests {
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box {
@@ -415,7 +422,7 @@ mod tests {
         half_height: f32,
     ) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Cyl {id}"),
             op,
             primitive: Primitive::Cylinder {

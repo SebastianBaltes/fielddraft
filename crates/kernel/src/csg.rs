@@ -29,24 +29,28 @@ pub const MAX_CONTRIBUTORS: usize = 4;
 /// Small inline set of leaf ids that dominate a particular SDF
 /// evaluation within the provenance epsilon. Ordering inside the set
 /// is insertion order; duplicates are silently ignored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// After K4.5.1 this is `Clone`-only rather than `Copy`, because
+/// [`FeatureId`] carries a heap pointer for hierarchical ids. The
+/// per-vertex allocation cost is still minimal for flat-numeric ids
+/// (SmolStr inlines strings ≤22 chars), but every caller that used
+/// to copy a Contributors now has to `.clone()` it explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contributors {
     ids: [NodeId; MAX_CONTRIBUTORS],
     len: u8,
 }
 
 impl Contributors {
-    pub const EMPTY: Self = Self {
-        ids: [0; MAX_CONTRIBUTORS],
-        len: 0,
-    };
-
-    pub const fn empty() -> Self {
-        Self::EMPTY
+    pub fn empty() -> Self {
+        Self {
+            ids: Default::default(),
+            len: 0,
+        }
     }
 
     pub fn single(id: NodeId) -> Self {
-        let mut out = Self::EMPTY;
+        let mut out = Self::empty();
         out.ids[0] = id;
         out.len = 1;
         out
@@ -64,8 +68,8 @@ impl Contributors {
         &self.ids[..self.len as usize]
     }
 
-    pub fn contains(&self, id: NodeId) -> bool {
-        self.as_slice().iter().any(|x| *x == id)
+    pub fn contains(&self, id: &NodeId) -> bool {
+        self.as_slice().iter().any(|x| x == id)
     }
 
     /// Insert `id` if not already present. Silently drops additions
@@ -73,7 +77,7 @@ impl Contributors {
     /// sign of numerical trouble (too large an epsilon), not real
     /// geometry, and we prefer a stable upper bound to a panic.
     pub fn push(&mut self, id: NodeId) {
-        if self.contains(id) {
+        if self.contains(&id) {
             return;
         }
         if (self.len as usize) < MAX_CONTRIBUTORS {
@@ -83,9 +87,16 @@ impl Contributors {
     }
 
     pub fn extend(&mut self, other: Self) {
-        for &id in other.as_slice() {
+        for id in other.into_iter_owned() {
             self.push(id);
         }
+    }
+
+    /// Consume the set and yield its ids. Used by [`Contributors::extend`]
+    /// to move the inner ids into the target set without cloning.
+    fn into_iter_owned(self) -> impl Iterator<Item = NodeId> {
+        let len = self.len as usize;
+        self.ids.into_iter().take(len)
     }
 
     /// Classification of a mesh vertex or picking hit based on
@@ -102,7 +113,7 @@ impl Contributors {
 
 impl Default for Contributors {
     fn default() -> Self {
-        Self::EMPTY
+        Self::empty()
     }
 }
 
@@ -357,7 +368,7 @@ impl CsgNode {
             let leaf = Self::Transform(
                 f.transform,
                 Box::new(Self::Leaf {
-                    id: f.id,
+                    id: f.id.clone(),
                     primitive: f.primitive.clone(),
                 }),
             );
@@ -429,7 +440,7 @@ impl CsgNode {
         match self {
             CsgNode::Empty => (f32::INFINITY, Contributors::empty()),
             CsgNode::Leaf { id, primitive } => {
-                (sdf_primitive(primitive, p), Contributors::single(*id))
+                (sdf_primitive(primitive, p), Contributors::single(id.clone()))
             }
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
@@ -460,11 +471,11 @@ impl CsgNode {
                 half_height,
             } => {
                 let d = sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height);
-                (d, Contributors::single(*id))
+                (d, Contributors::single(id.clone()))
             }
             CsgNode::Revolve { id, sketch } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
-                (sketch.sdf([r, p[1]]), Contributors::single(*id))
+                (sketch.sdf([r, p[1]]), Contributors::single(id.clone()))
             }
         }
     }
@@ -576,11 +587,11 @@ fn combine_max(
 mod tests {
     use super::*;
     use crate::sdf_features;
-    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box {
@@ -619,7 +630,7 @@ mod tests {
         let features = vec![
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             Feature {
-                id: 2,
+                id: FeatureId::from_u32(2),
                 name: "hole".into(),
                 op: BoolOp::Difference,
                 primitive: Primitive::Sphere {
@@ -675,7 +686,7 @@ mod tests {
 
     fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Cyl {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Cylinder {
@@ -689,12 +700,18 @@ mod tests {
 
     fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
         }
+    }
+
+    /// Tiny convenience used in the contributor-equality assertions:
+    /// build a `Vec<FeatureId>` from a slice of bare `u32` literals.
+    fn ids(raw: &[u32]) -> Vec<FeatureId> {
+        raw.iter().copied().map(FeatureId::from_u32).collect()
     }
 
     #[test]
@@ -710,7 +727,7 @@ mod tests {
         let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "point should sit on box top, got d={d}");
         assert_eq!(c.element(), ProxyElement::Face);
-        assert_eq!(c.as_slice(), &[1]);
+        assert_eq!(c.as_slice(), ids(&[1]).as_slice());
     }
 
     #[test]
@@ -727,9 +744,9 @@ mod tests {
         let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
-        let mut got: Vec<u32> = c.as_slice().to_vec();
-        got.sort();
-        assert_eq!(got, vec![1, 2]);
+        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
+        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
+        assert_eq!(got, ids(&[1, 2]));
     }
 
     #[test]
@@ -749,9 +766,9 @@ mod tests {
         assert!(d.abs() < 1e-4);
         assert_eq!(c.element(), ProxyElement::Vertex);
         assert_eq!(c.len(), 3);
-        let mut got: Vec<u32> = c.as_slice().to_vec();
-        got.sort();
-        assert_eq!(got, vec![1, 2, 3]);
+        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
+        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
+        assert_eq!(got, ids(&[1, 2, 3]));
     }
 
     #[test]
@@ -775,9 +792,9 @@ mod tests {
         let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both boundaries, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
-        let mut got: Vec<u32> = c.as_slice().to_vec();
-        got.sort();
-        assert_eq!(got, vec![1, 2]);
+        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
+        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
+        assert_eq!(got, ids(&[1, 2]));
     }
 
     #[test]
@@ -794,22 +811,22 @@ mod tests {
         let tree = CsgNode::from_features(&features);
         let (d, c) = tree.evaluate([0.0, 0.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d < 0.0);
-        assert_eq!(c.as_slice(), &[1]);
+        assert_eq!(c.as_slice(), ids(&[1]).as_slice());
     }
 
     #[test]
     fn contributors_push_dedupes_and_caps() {
         let mut c = Contributors::empty();
-        c.push(1);
-        c.push(2);
-        c.push(1); // dup
-        c.push(3);
-        c.push(4);
-        c.push(5); // over cap — silently dropped
+        c.push(FeatureId::from_u32(1));
+        c.push(FeatureId::from_u32(2));
+        c.push(FeatureId::from_u32(1)); // dup
+        c.push(FeatureId::from_u32(3));
+        c.push(FeatureId::from_u32(4));
+        c.push(FeatureId::from_u32(5)); // over cap — silently dropped
         assert_eq!(c.len(), MAX_CONTRIBUTORS);
-        let mut got: Vec<u32> = c.as_slice().to_vec();
-        got.sort();
-        assert_eq!(got, vec![1, 2, 3, 4]);
+        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
+        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
+        assert_eq!(got, ids(&[1, 2, 3, 4]));
     }
 
     // ─── extrude / revolve ─────────────────────────────────────────
@@ -842,12 +859,12 @@ mod tests {
         let hh = 3.0;
         let sketch = rect_sketch(0.0, 0.0, hx, hy);
         let extrude = CsgNode::Extrude {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height: hh,
         };
         let boxy = CsgNode::Leaf {
-            id: 2,
+            id: FeatureId::from_u32(2),
             primitive: Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [hx, hy, hh],
@@ -877,7 +894,7 @@ mod tests {
     #[test]
     fn extrude_aabb_lifts_sketch_by_half_height() {
         let extrude = CsgNode::Extrude {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
             half_height: 3.0,
         };
@@ -889,13 +906,13 @@ mod tests {
     #[test]
     fn extrude_returns_single_contributor() {
         let extrude = CsgNode::Extrude {
-            id: 42,
+            id: FeatureId::from_u32(42),
             sketch: Box::new(rect_sketch(0.0, 0.0, 5.0, 2.0)),
             half_height: 3.0,
         };
         let (d, c) = extrude.evaluate([5.0, 0.0, 0.0], 0.5, EvalMode::Visual);
         assert!(d.abs() < 1e-4);
-        assert_eq!(c.as_slice(), &[42]);
+        assert_eq!(c.as_slice(), ids(&[42]).as_slice());
         assert_eq!(c.element(), ProxyElement::Face);
     }
 
@@ -906,7 +923,7 @@ mod tests {
         // axial extent ±10.
         let rect = rect_sketch(5.0, 0.0, 2.0, 10.0);
         let tube = CsgNode::Revolve {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(rect),
         };
 
@@ -927,7 +944,7 @@ mod tests {
     #[test]
     fn revolve_aabb_is_the_radial_sweep_of_the_sketch() {
         let tube = CsgNode::Revolve {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(rect_sketch(5.0, 0.0, 2.0, 10.0)),
         };
         let bb = tube.aabb();
@@ -945,7 +962,7 @@ mod tests {
         let inner = circle_sketch(0.0, 0.0, 4.0);
         let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
         let washer = CsgNode::Extrude {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(ring),
             half_height: 2.0,
         };
@@ -964,7 +981,7 @@ mod tests {
         let features = vec![
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             Feature {
-                id: 2,
+                id: FeatureId::from_u32(2),
                 name: "hole".into(),
                 op: BoolOp::Difference,
                 primitive: Primitive::Sphere {

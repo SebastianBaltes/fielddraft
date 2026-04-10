@@ -4,17 +4,225 @@
 //! so the same types can be consumed from the kernel crate and (later) a
 //! JSON-schema export for the TypeScript side.
 
+use std::fmt;
+use std::num::ParseIntError;
+use std::str::FromStr;
+
+use serde::de::{self, Deserializer, Visitor};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 /// Current on-disk / on-wire schema version for the project document.
 pub const SCHEMA_VERSION: u32 = 2;
 
-/// Stable identifier for a feature within a document.
+/// Hierarchical, typed identifier for a feature or one of its sub-nodes.
 ///
-/// Ids are assigned monotonically and never reused, so the outliner can
-/// rely on them for selection state and React reconciliation across
-/// reorders, undo, and redo.
-pub type FeatureId = u32;
+/// The K4.5 "Feature-as-Function" refactor replaces the flat `u32` ids
+/// from K1/K2/K4 with a tree-structured id so sub-operations inside a
+/// feature body can carve out their own stable namespace. Concretely:
+///
+/// * `parent` is an optional ancestor id — `None` for top-level
+///   feature entries in the document, `Some` for sub-nodes created
+///   inside a feature body.
+/// * `local` is the short per-level name stored as [`SmolStr`] so
+///   the common flat-numeric form (`"1"`, `"42"`) stays inline-
+///   allocated without hitting the heap.
+///
+/// Pretty-printed as a dotted path (`extrude_3.op`, `fillet_7.mask_0`)
+/// via the [`fmt::Display`] impl. Parseable back via [`FromStr`] with
+/// the mirror rules.
+///
+/// ## Backward compatibility with K1 documents
+///
+/// Old `fielddraft` JSON documents serialise feature ids as bare
+/// integers (`"id": 3`). The custom [`Serialize`] / [`Deserialize`]
+/// impls below keep that shape for flat-numeric ids (those with no
+/// parent whose `local` parses as `u32`), and reject nothing on the
+/// deserialiser side — bare numbers, dotted strings, and bare strings
+/// are all accepted. The K4.5.1 slice never creates hierarchical
+/// ids, so every document in the wild still round-trips to the
+/// exact same bytes it had under K1.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
+pub struct FeatureId {
+    pub parent: Option<Box<FeatureId>>,
+    pub local: SmolStr,
+}
+
+impl FeatureId {
+    /// Build a top-level id from a textual local name.
+    pub fn root(local: impl Into<SmolStr>) -> Self {
+        Self {
+            parent: None,
+            local: local.into(),
+        }
+    }
+
+    /// Build a top-level id from a flat numeric counter — the
+    /// classic K1-style id, just typed. Used by
+    /// [`Document::allocate_id`] to keep the existing
+    /// monotonic-counter allocation scheme alive inside the new
+    /// type.
+    pub fn from_u32(n: u32) -> Self {
+        Self::root(n.to_string())
+    }
+
+    /// Build a child id underneath this one. The new id keeps the
+    /// whole ancestor chain so `Display` can emit the full path.
+    pub fn child(&self, local: impl Into<SmolStr>) -> Self {
+        Self {
+            parent: Some(Box::new(self.clone())),
+            local: local.into(),
+        }
+    }
+
+    /// Return the parent id, if any.
+    pub fn parent(&self) -> Option<&FeatureId> {
+        self.parent.as_deref()
+    }
+
+    /// `true` when this id has no parent and the local part parses
+    /// cleanly as a `u32`. This is the "compat-shim" predicate:
+    /// [`Self::as_u32_if_flat`] uses it to decide whether the id
+    /// can still go through the K1-era `u32` wasm-bindgen surface.
+    pub fn is_flat_numeric(&self) -> bool {
+        self.parent.is_none() && self.local.parse::<u32>().is_ok()
+    }
+
+    /// Collapse the id back to a `u32`, assuming it's flat-numeric.
+    /// Returns `None` for hierarchical or non-numeric ids. The
+    /// wasm-bindgen surface in `crates/kernel/src/lib.rs` uses this
+    /// to keep the existing `u32` signatures working during K4.5.1
+    /// — every id issued in this slice is still flat-numeric, so
+    /// the `.expect` paths are unreachable for well-behaved inputs.
+    pub fn as_u32_if_flat(&self) -> Option<u32> {
+        if self.parent.is_some() {
+            return None;
+        }
+        self.local.parse::<u32>().ok()
+    }
+}
+
+impl fmt::Display for FeatureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(parent) = &self.parent {
+            write!(f, "{parent}.{}", self.local)
+        } else {
+            f.write_str(&self.local)
+        }
+    }
+}
+
+/// Parse error for [`FeatureId`]. A future hierarchical slice may
+/// grow this with richer variants (empty segments, forbidden chars).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureIdParseError {
+    pub message: &'static str,
+}
+
+impl fmt::Display for FeatureIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message)
+    }
+}
+
+impl std::error::Error for FeatureIdParseError {}
+
+impl From<ParseIntError> for FeatureIdParseError {
+    fn from(_: ParseIntError) -> Self {
+        Self {
+            message: "invalid numeric feature id",
+        }
+    }
+}
+
+impl FromStr for FeatureId {
+    type Err = FeatureIdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Err(FeatureIdParseError {
+                message: "empty feature id",
+            });
+        }
+        // Split at the *last* dot so parent chains parse left-
+        // to-right but build right-to-left, matching the
+        // [`Display`] shape `"grandparent.parent.local"`.
+        match s.rsplit_once('.') {
+            None => Ok(FeatureId::root(s)),
+            Some((head, tail)) => {
+                if tail.is_empty() {
+                    return Err(FeatureIdParseError {
+                        message: "empty local segment in feature id",
+                    });
+                }
+                let parent = FeatureId::from_str(head)?;
+                Ok(FeatureId {
+                    parent: Some(Box::new(parent)),
+                    local: SmolStr::from(tail),
+                })
+            }
+        }
+    }
+}
+
+impl Serialize for FeatureId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Keep byte-identical shape with K1 documents: a flat
+        // numeric id serialises as a bare integer, anything else
+        // as the dotted-path string form.
+        if let Some(n) = self.as_u32_if_flat() {
+            serializer.serialize_u32(n)
+        } else {
+            serializer.collect_str(self)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FeatureId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FeatureIdVisitor;
+
+        impl<'de> Visitor<'de> for FeatureIdVisitor {
+            type Value = FeatureId;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a feature id: integer or dotted string")
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<FeatureId, E> {
+                Ok(FeatureId::from_u32(v as u32))
+            }
+
+            fn visit_u32<E: de::Error>(self, v: u32) -> Result<FeatureId, E> {
+                Ok(FeatureId::from_u32(v))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<FeatureId, E> {
+                if v < 0 {
+                    return Err(E::custom("negative feature id"));
+                }
+                Ok(FeatureId::from_u32(v as u32))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<FeatureId, E> {
+                FeatureId::from_str(v).map_err(E::custom)
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<FeatureId, E> {
+                FeatureId::from_str(&v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(FeatureIdVisitor)
+    }
+}
 
 /// A single SDF primitive shape. The primitive itself carries no
 /// boolean operation — that lives on its enclosing `Feature`.
@@ -135,8 +343,14 @@ pub struct Document {
     pub name: String,
     /// Linear feature list, evaluated top-to-bottom.
     pub features: Vec<Feature>,
-    /// Monotonic id allocator. Persisted so reloads keep stable ids.
-    pub next_feature_id: FeatureId,
+    /// Monotonic counter that seeds the next flat-numeric
+    /// [`FeatureId`]. Persisted so reloads keep stable ids. The
+    /// field name stays as `next_feature_id` for JSON backward
+    /// compatibility with K1 documents that wrote it as a bare
+    /// integer; the type is a plain counter because K4.5.1 still
+    /// only issues flat-numeric ids. A future K4.5 slice will
+    /// grow a proper hierarchical allocator on top.
+    pub next_feature_id: u32,
 }
 
 impl Default for Document {
@@ -153,11 +367,14 @@ impl Default for Document {
 }
 
 impl Document {
-    /// Allocate the next feature id and bump the counter.
+    /// Allocate the next flat-numeric [`FeatureId`] and bump the
+    /// counter. K4.5.1 still uses the K1 allocation scheme (`"1"`,
+    /// `"2"`, `"3"` in the new typed form). Hierarchical allocation
+    /// via the Feature Registry will come in a later slice.
     pub fn allocate_id(&mut self) -> FeatureId {
-        let id = self.next_feature_id;
+        let n = self.next_feature_id;
         self.next_feature_id = self.next_feature_id.saturating_add(1);
-        id
+        FeatureId::from_u32(n)
     }
 }
 
@@ -228,8 +445,59 @@ mod tests {
         let a = doc.allocate_id();
         let b = doc.allocate_id();
         let c = doc.allocate_id();
-        assert!(a < b && b < c);
-        assert_eq!(doc.next_feature_id, c + 1);
+        // K4.5 still issues flat-numeric ids, so we can round-trip
+        // them through u32 for the ordering assertion.
+        let an = a.as_u32_if_flat().unwrap();
+        let bn = b.as_u32_if_flat().unwrap();
+        let cn = c.as_u32_if_flat().unwrap();
+        assert!(an < bn && bn < cn);
+        assert_eq!(doc.next_feature_id, cn + 1);
+    }
+
+    #[test]
+    fn feature_id_display_and_parse_round_trip() {
+        let flat = FeatureId::from_u32(42);
+        assert_eq!(flat.to_string(), "42");
+        assert_eq!(FeatureId::from_str("42").unwrap(), flat);
+        assert!(flat.is_flat_numeric());
+
+        let child = flat.child("op");
+        assert_eq!(child.to_string(), "42.op");
+        assert_eq!(FeatureId::from_str("42.op").unwrap(), child);
+        assert!(!child.is_flat_numeric());
+        assert!(child.as_u32_if_flat().is_none());
+
+        let grand = child.child("mask_0");
+        assert_eq!(grand.to_string(), "42.op.mask_0");
+        assert_eq!(FeatureId::from_str("42.op.mask_0").unwrap(), grand);
+    }
+
+    #[test]
+    fn feature_id_serializes_flat_numeric_as_bare_integer() {
+        // Backward-compat with K1 JSON documents that stored ids
+        // as bare integers.
+        let id = FeatureId::from_u32(7);
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "7");
+        let parsed: FeatureId = serde_json::from_str("7").unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn feature_id_serializes_hierarchical_as_string() {
+        let id = FeatureId::from_u32(3).child("op");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"3.op\"");
+        let parsed: FeatureId = serde_json::from_str("\"3.op\"").unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn feature_id_deserializer_accepts_both_shapes() {
+        let from_int: FeatureId = serde_json::from_str("5").unwrap();
+        assert_eq!(from_int, FeatureId::from_u32(5));
+        let from_str: FeatureId = serde_json::from_str("\"5\"").unwrap();
+        assert_eq!(from_str, FeatureId::from_u32(5));
     }
 
     #[test]

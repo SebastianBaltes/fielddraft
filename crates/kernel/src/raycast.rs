@@ -16,7 +16,7 @@ use crate::bvh::BoundedCsg;
 use crate::csg::{Contributors, EvalMode, ProxyElement};
 
 /// Result of a successful raycast.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RayHit {
     pub point: [f32; 3],
     /// Distance from the ray origin along the (normalised) direction.
@@ -118,7 +118,7 @@ pub fn raycast(
 mod tests {
     use super::*;
     use crate::csg::CsgNode;
-    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     fn bounded(features: &[Feature]) -> BoundedCsg {
         BoundedCsg::from_csg(&CsgNode::from_features(features))
@@ -126,7 +126,7 @@ mod tests {
 
     fn box_feature(id: u32, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Box {
@@ -139,7 +139,7 @@ mod tests {
 
     fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Cyl {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Cylinder {
@@ -178,7 +178,7 @@ mod tests {
         // Surface eps default is 0.05 mm, hit should be at y≈10.
         assert!((hit.point[1] - 10.0).abs() < 0.2, "hit at y={}", hit.point[1]);
         assert_eq!(hit.element, ProxyElement::Face);
-        assert_eq!(hit.contributors.as_slice(), &[1]);
+        assert_eq!(hit.contributors.as_slice(), &[FeatureId::from_u32(1)]);
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
             "expected cap at y≈30, got {}",
             hit.point[1],
         );
-        assert_eq!(hit.contributors.as_slice(), &[2]);
+        assert_eq!(hit.contributors.as_slice(), &[FeatureId::from_u32(2)]);
         assert_eq!(hit.element, ProxyElement::Face);
     }
 

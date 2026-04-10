@@ -215,7 +215,7 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let d = sdf_primitive(primitive, local) * world_transform.scale;
-                (d, Contributors::single(*id))
+                (d, Contributors::single(id.clone()))
             }
             BoundedCsg::Union { left, right, .. } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
@@ -242,7 +242,7 @@ impl BoundedCsg {
                 let local = world_to_local(world_transform, p);
                 let d2 = sketch.sdf([local[0], local[1]]);
                 let d = sdf_extrude(d2, local[2], *half_height) * world_transform.scale;
-                (d, Contributors::single(*id))
+                (d, Contributors::single(id.clone()))
             }
             BoundedCsg::Revolve {
                 id,
@@ -253,7 +253,7 @@ impl BoundedCsg {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
                 let d = sketch.sdf([r, local[1]]) * world_transform.scale;
-                (d, Contributors::single(*id))
+                (d, Contributors::single(id.clone()))
             }
         }
     }
@@ -270,7 +270,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             let local_aabb = Aabb::of_primitive(primitive);
             let aabb = local_aabb.transformed(carry);
             BoundedCsg::Leaf {
-                id: *id,
+                id: id.clone(),
                 primitive: primitive.clone(),
                 world_transform: *carry,
                 aabb,
@@ -332,7 +332,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             };
             let aabb = local_aabb.transformed(carry);
             BoundedCsg::Extrude {
-                id: *id,
+                id: id.clone(),
                 sketch: Box::new(bounded_sketch),
                 half_height: *half_height,
                 world_transform: *carry,
@@ -353,7 +353,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             };
             let aabb = local_aabb.transformed(carry);
             BoundedCsg::Revolve {
-                id: *id,
+                id: id.clone(),
                 sketch: Box::new(bounded_sketch),
                 world_transform: *carry,
                 aabb,
@@ -417,11 +417,11 @@ fn combine_max(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
             primitive: Primitive::Box {
@@ -434,7 +434,7 @@ mod tests {
 
     fn translated_box_feature(id: u32, translate: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("TBox {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Box {
@@ -451,7 +451,7 @@ mod tests {
 
     fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
         Feature {
-            id,
+            id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center, radius },
@@ -482,7 +482,7 @@ mod tests {
             BoundedCsg::Leaf {
                 id, world_transform, aabb, ..
             } => {
-                assert_eq!(*id, 1);
+                assert_eq!(*id, FeatureId::from_u32(1));
                 assert_eq!(world_transform.translate, [10.0, 20.0, 30.0]);
                 assert_eq!(aabb.min, [5.0, 15.0, 25.0]);
                 assert_eq!(aabb.max, [15.0, 25.0, 35.0]);
@@ -564,7 +564,7 @@ mod tests {
         let (cb, cc) = csg.evaluate(p, 0.5, EvalMode::Logical);
         assert!((ba - cb).abs() < 1e-4);
         assert_eq!(ca.as_slice(), cc.as_slice());
-        assert_eq!(ca.as_slice(), &[1]);
+        assert_eq!(ca.as_slice(), &[FeatureId::from_u32(1)]);
     }
 
     #[test]
@@ -606,7 +606,7 @@ mod tests {
             half_extents: [5.0, 3.0],
         });
         let csg = CsgNode::Extrude {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
             half_height: 2.0,
         };
@@ -635,7 +635,7 @@ mod tests {
             radius: 5.0,
         });
         let csg = CsgNode::Extrude {
-            id: 7,
+            id: FeatureId::from_u32(7),
             sketch: Box::new(sketch),
             half_height: 2.0,
         };
@@ -643,7 +643,7 @@ mod tests {
         // Top face centre → surface, contributor = {7}, Face.
         let (d, c) = bvh.evaluate([0.0, 0.0, 2.0], 0.25, EvalMode::Logical);
         assert!(d.abs() < 1e-4);
-        assert_eq!(c.as_slice(), &[7]);
+        assert_eq!(c.as_slice(), &[FeatureId::from_u32(7)]);
         assert_eq!(c.element(), ProxyElement::Face);
     }
 
@@ -654,7 +654,7 @@ mod tests {
             half_extents: [2.0, 10.0],
         });
         let csg = CsgNode::Revolve {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(sketch),
         };
         let bvh = BoundedCsg::from_csg(&csg);
@@ -681,7 +681,7 @@ mod tests {
         });
         let ring = Sketch2d::Difference(Box::new(outer), Box::new(inner));
         let csg = CsgNode::Extrude {
-            id: 1,
+            id: FeatureId::from_u32(1),
             sketch: Box::new(ring),
             half_height: 5.0,
         };
