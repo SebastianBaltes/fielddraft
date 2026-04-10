@@ -383,6 +383,88 @@ impl FeatureCall {
             params,
         }
     }
+
+    /// Lossless conversion from a baked-in [`Feature`] (the K1 spine
+    /// entry) into the K4.5 Feature-as-Function wire form.
+    ///
+    /// K4.5.4c uses this to drive [`Document::sync_feature_calls`]:
+    /// after every mutation that touches `document.features`, the
+    /// `feature_calls` mirror is rebuilt by calling this conversion
+    /// on each feature. *Every* `Feature` field ends up in
+    /// `params`, including the full `Transform` (translate,
+    /// rotation, scale) and the display `name`, so step 4d can flip
+    /// to `feature_calls` as the authoritative form without losing
+    /// information that the hand-rolled K4.5.4a primitive derives
+    /// don't know about yet (the derives only model the parameters
+    /// the UI dialog will eventually touch).
+    pub fn from_spine_feature(f: &Feature) -> Self {
+        let type_name = match &f.primitive {
+            Primitive::Box { .. } => "box",
+            Primitive::Sphere { .. } => "sphere",
+            Primitive::Cylinder { .. } => "cylinder",
+        };
+        let op = bool_op_wire_name(f.op);
+        let translate = f.transform.translate;
+        let rotation = f.transform.rotation;
+        let scale = f.transform.scale;
+        let name = &f.name;
+
+        let params = match &f.primitive {
+            Primitive::Box {
+                center,
+                half_extents,
+            } => serde_json::json!({
+                "half_extents": half_extents,
+                "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Sphere { center, radius } => serde_json::json!({
+                "radius": radius,
+                "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Cylinder {
+                center,
+                radius,
+                half_height,
+            } => serde_json::json!({
+                "radius": radius,
+                "half_height": half_height,
+                "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+        };
+
+        Self {
+            type_name: type_name.to_string(),
+            id: f.id.clone(),
+            params,
+        }
+    }
+}
+
+/// Wire-format name for a boolean operation. Mirrors the
+/// `#[serde(rename_all = "snake_case")]` on [`BoolOp`] so the K4.5
+/// `FeatureCall::params.op` field uses the same spelling as the
+/// top-level `Feature.op` field does in the legacy K1 JSON.
+fn bool_op_wire_name(op: BoolOp) -> &'static str {
+    match op {
+        BoolOp::Union => "union",
+        BoolOp::Difference => "difference",
+        BoolOp::Intersect => "intersect",
+    }
 }
 
 /// Project document root.
@@ -390,8 +472,29 @@ impl FeatureCall {
 pub struct Document {
     pub schema_version: u32,
     pub name: String,
-    /// Linear feature list, evaluated top-to-bottom.
+    /// Linear feature list, evaluated top-to-bottom. K4.5.4c
+    /// still treats this as the authoritative storage the
+    /// mesher walks; [`Document::feature_calls`] is a derived
+    /// mirror rebuilt by [`Document::sync_feature_calls`] after
+    /// every mutation. Step 4d will flip the authority the
+    /// other way around.
     pub features: Vec<Feature>,
+    /// K4.5 Feature-as-Function mirror of [`Document::features`].
+    ///
+    /// K4.5.4c makes this a second-class, dual-written field:
+    /// every kernel mutation rebuilds it from `features` via
+    /// [`Document::sync_feature_calls`] so the two lists are
+    /// always byte-identical in meaning. K1-era JSON documents
+    /// that predate this field still load cleanly — the
+    /// `#[serde(default)]` lets the deserialiser accept missing
+    /// values — and the next mutation will repopulate the list
+    /// anyway.
+    ///
+    /// Step 4d will make this the *authoritative* feature tree,
+    /// with `features` demoted to a derived cache computed by
+    /// walking the registry during regeneration.
+    #[serde(default)]
+    pub feature_calls: Vec<FeatureCall>,
     /// Monotonic counter that seeds the next flat-numeric
     /// [`FeatureId`]. Persisted so reloads keep stable ids. The
     /// field name stays as `next_feature_id` for JSON backward
@@ -410,6 +513,7 @@ impl Default for Document {
             schema_version: SCHEMA_VERSION,
             name: "Untitled".to_string(),
             features: Vec::new(),
+            feature_calls: Vec::new(),
             next_feature_id: 1,
         }
     }
@@ -425,6 +529,21 @@ impl Document {
         self.next_feature_id = self.next_feature_id.saturating_add(1);
         FeatureId::from_u32(n)
     }
+
+    /// Rebuild [`Document::feature_calls`] from the current
+    /// [`Document::features`] list via
+    /// [`FeatureCall::from_spine_feature`]. Called by the kernel's
+    /// `rebuild_packed` after every mutation, so the two
+    /// representations never drift. `O(features)` per call — each
+    /// feature walked once, small JSON blob allocated for its
+    /// params.
+    pub fn sync_feature_calls(&mut self) {
+        self.feature_calls = self
+            .features
+            .iter()
+            .map(FeatureCall::from_spine_feature)
+            .collect();
+    }
 }
 
 #[cfg(test)]
@@ -437,6 +556,170 @@ mod tests {
         assert_eq!(doc.schema_version, SCHEMA_VERSION);
         assert!(doc.features.is_empty());
         assert_eq!(doc.next_feature_id, 1);
+    }
+
+    // ─── Document.feature_calls (K4.5.4c) ──────────────────────
+
+    #[test]
+    fn default_document_has_empty_feature_calls() {
+        let doc = Document::default();
+        assert!(doc.feature_calls.is_empty());
+    }
+
+    #[test]
+    fn sync_feature_calls_derives_one_entry_per_feature() {
+        let mut doc = Document::default();
+        let id1 = doc.allocate_id();
+        let id2 = doc.allocate_id();
+        doc.features.push(Feature {
+            id: id1.clone(),
+            name: "Base".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+            transform: Transform::IDENTITY,
+        });
+        doc.features.push(Feature {
+            id: id2.clone(),
+            name: "Hole".into(),
+            op: BoolOp::Difference,
+            primitive: Primitive::Sphere {
+                center: [0.0, 0.0, 0.0],
+                radius: 3.0,
+            },
+            transform: Transform::IDENTITY,
+        });
+
+        doc.sync_feature_calls();
+        assert_eq!(doc.feature_calls.len(), 2);
+        assert_eq!(doc.feature_calls[0].type_name, "box");
+        assert_eq!(doc.feature_calls[0].id, id1);
+        assert_eq!(doc.feature_calls[1].type_name, "sphere");
+        assert_eq!(doc.feature_calls[1].id, id2);
+    }
+
+    #[test]
+    fn from_spine_feature_encodes_every_box_field_in_params() {
+        let feature = Feature {
+            id: FeatureId::from_u32(1),
+            name: "Corner".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [1.0, 2.0, 3.0],
+                half_extents: [5.0, 6.0, 7.0],
+            },
+            transform: Transform {
+                translate: [10.0, 20.0, 30.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: 2.0,
+            },
+        };
+        let call = FeatureCall::from_spine_feature(&feature);
+        assert_eq!(call.type_name, "box");
+        assert_eq!(call.id, FeatureId::from_u32(1));
+        assert_eq!(
+            call.params,
+            serde_json::json!({
+                "half_extents": [5.0, 6.0, 7.0],
+                "center": [1.0, 2.0, 3.0],
+                "translate": [10.0, 20.0, 30.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": 2.0,
+                "op": "union",
+                "name": "Corner"
+            })
+        );
+    }
+
+    #[test]
+    fn from_spine_feature_encodes_sphere_and_cylinder() {
+        let sphere = Feature {
+            id: FeatureId::from_u32(1),
+            name: "Ball".into(),
+            op: BoolOp::Difference,
+            primitive: Primitive::Sphere {
+                center: [0.0, 0.0, 0.0],
+                radius: 4.0,
+            },
+            transform: Transform::IDENTITY,
+        };
+        let call = FeatureCall::from_spine_feature(&sphere);
+        assert_eq!(call.type_name, "sphere");
+        assert_eq!(call.params["radius"], serde_json::json!(4.0));
+        assert_eq!(call.params["op"], serde_json::json!("difference"));
+
+        let cylinder = Feature {
+            id: FeatureId::from_u32(2),
+            name: "Pin".into(),
+            op: BoolOp::Intersect,
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: 1.5,
+                half_height: 10.0,
+            },
+            transform: Transform::IDENTITY,
+        };
+        let call = FeatureCall::from_spine_feature(&cylinder);
+        assert_eq!(call.type_name, "cylinder");
+        assert_eq!(call.params["radius"], serde_json::json!(1.5));
+        assert_eq!(call.params["half_height"], serde_json::json!(10.0));
+        assert_eq!(call.params["op"], serde_json::json!("intersect"));
+    }
+
+    #[test]
+    fn document_round_trips_feature_calls_through_json() {
+        let mut doc = Document::default();
+        let id = doc.allocate_id();
+        doc.features.push(Feature {
+            id: id.clone(),
+            name: "Base".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+            transform: Transform::IDENTITY,
+        });
+        doc.sync_feature_calls();
+
+        let wire = serde_json::to_string(&doc).unwrap();
+        let parsed: Document = serde_json::from_str(&wire).unwrap();
+        assert_eq!(parsed, doc);
+        assert_eq!(parsed.feature_calls.len(), 1);
+        assert_eq!(parsed.feature_calls[0].id, id);
+    }
+
+    #[test]
+    fn legacy_k1_document_without_feature_calls_loads_with_empty_list() {
+        // K1-era documents predate the K4.5.4c dual-write field.
+        // The `#[serde(default)]` attribute on feature_calls lets
+        // them deserialise cleanly with an empty list — the next
+        // kernel mutation will fill it in via sync_feature_calls.
+        let json = r#"{
+            "schema_version": 2,
+            "name": "legacy",
+            "features": [{
+                "id": 1,
+                "name": "Base",
+                "op": "union",
+                "primitive": {
+                    "kind": "box",
+                    "center": [0, 0, 0],
+                    "half_extents": [1, 1, 1]
+                },
+                "transform": {
+                    "translate": [0, 0, 0],
+                    "rotation": [0, 0, 0, 1],
+                    "scale": 1
+                }
+            }],
+            "next_feature_id": 2
+        }"#;
+        let parsed: Document = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.features.len(), 1);
+        assert!(parsed.feature_calls.is_empty());
     }
 
     #[test]

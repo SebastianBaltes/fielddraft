@@ -1,5 +1,12 @@
 # FieldDraft — Projektbeschreibung
 
+![image](assets/logo.png)
+
+> © 2026 Sebastian Leonardo Baltes, Deutschland. Alle Rechte vorbehalten.
+> Dieses Dokument einschließlich aller Inhalte, Konzepte und technischen Beschreibungen ist urheberrechtlich geschützt.
+> Jede Vervielfältigung, Verbreitung, öffentliche Zugänglichmachung oder sonstige Verwertung – ganz oder teilweise – bedarf
+> der vorherigen schriftlichen Zustimmung des Rechteinhabers. Vertraulich – nicht zur Weitergabe bestimmt.
+
 ## 1. Kurzfassung
 
 **FieldDraft** ist ein browserbasierter, parametrischer 3D‑Modeller, der sich in Bedienung und Funktionsumfang an **Onshape** orientiert, technisch aber einen radikal anderen Weg geht: Statt eines klassischen B‑Rep/NURBS‑Kernels (OpenCASCADE, Parasolid, ACIS) setzt FieldDraft auf einen **SDF‑basierten Geometriekern** (Signed Distance Fields / Implicit Modeling).
@@ -659,6 +666,16 @@ Diese Phase hebt FieldDraft vom reinen Konstruktionswerkzeug zur Entwicklungs‑
 - Selbstkollisions‑Prüfung während der Bewegung: Die SDFs der beteiligten Parts liefern den Abstand zwischen beliebigen Punkten in O(1) — der IK‑Solver kann Pfade verwerfen, bei denen ein Part durch ein anderes hindurchschwingt.
 - Tests: 6‑DoF‑Roboterarm greift eine Zielkiste, Kollision mit dem eigenen Sockel wird automatisch vermieden.
 
+**P2.5 — Shareable 3D-Viewer und IFrame-Embeds**
+- **Publishing-Workflow:** Nutzer erstellen einen persistenten JSON-Snapshot (in MariaDB) und erhalten eine URL (z. B. fielddraft.io/v/123) oder ein fertiges `<iframe src="...">`-Snippet.
+- **Leichtbau-Viewer:** Die Viewport-Komponente wird in einem „Read-Only“-Modus (R3F) gerendert. Da kein schwerer Geometrie-Kernel im Web-Worker laufen muss, bleiben die Ladezeiten für den Endnutzer minimal.
+- **Interaktive Dokumentation:** Perfekt für Hardware-Startups (Pitch-Decks, Online-Montageanleitungen), da Betrachter das 3D-Modell im Browser drehen, wenden und (dank FieldScript) Gelenke direkt im IFrame zusammen mit Explosionszeichnungen interaktiv bewegen können.
+
+**P2.8 — FieldScript (fd) für Assembly-Kinematik**
+- **Integration:** Ein `fd`-Skript im Assembly-Kontext fungiert als Controller, der direkt auf Mates und Joints zugreift, um Modelle funktional interagierbar zu machen.
+- **UI-Generierung:** Das Skript deklariert Parameter im Header (z. B. angle, speed, color). Daraus rendert das generische Dialog-System (aus K6a) im Viewer automatisch Steuer-Elemente wie Slider und Buttons.
+- **Runtime:** Nutzt die deterministische JS-Runtime im Web Worker. Für Entwickler bietet FieldScript Standard-JavaScript-Syntax, optional ergänzt um eine Standard-Library für Mechanik-Animationen (Sinus-Oszillation, Schrittketten).
+
 **P3 — Code‑First‑Export: React Three Fiber**
 - Export‑Button erzeugt nicht nur ein STL, sondern ein Paket aus: optimierten Meshes (GLTF/DRACO), einer generierten `.tsx`‑Datei mit dem Scene Graph als R3F‑Komponentenbaum, Props für jeden Joint‑Winkel, und optional einem kleinen `leva`‑basierten Slider‑Panel.
 - Beispiel‑Output: Ein `<RobotArm shoulderAngle={…} elbowAngle={…}/>`‑Root‑Element mit verschachtelten `<group rotation={…}>`‑Knoten, die die Kinematik aus P1/P2 nachbilden. Der Developer kann den Code direkt in eine eigene React‑App einbauen, ohne GLTF manuell animieren zu müssen.
@@ -699,7 +716,11 @@ Diese Phase hebt FieldDraft vom reinen Konstruktionswerkzeug zur Entwicklungs‑
 
 5. **Determinismus‑Disziplin bei JS‑Feature‑Bodies:** JS‑Features sind von Tag eins im Runtime (§4.6), und der Regeneration Worker hat vollen JavaScript‑Zugriff. Die Determinismus‑Invariante („zweimal Regeneration desselben Feature‑Trees liefert bit‑identische Meshes") ist damit nicht mehr rein architektonisch, sondern hängt an der Disziplin der Feature‑Autoren. Ein `Date.now()`‑Aufruf, ein nicht‑seedbarer Zufallsgenerator, ein vergessener `Math.random()` im Feature‑Body bricht die Wiederherstellbarkeit von Projekten über Zeit und Browser hinweg. Gegenmaßnahme: Der Regeneration Worker friert beim Start die globalen Scope‑Einträge ein (`fetch`, `setTimeout`, `setInterval`, `Date.now`, `Math.random` entfernt oder durch deterministische Varianten ersetzt — `Math.random` wird zu einem seeded PRNG, dessen Seed aus dem Hash des Projekt‑Dokuments abgeleitet ist). Property‑Tests prüfen die Invariante systematisch: zufällig generierte Feature‑Tree‑Sequenzen werden zweimal regeneriert, die Mesh‑Hashes müssen übereinstimmen. Das ist kein harter Sandbox — ein motivierter Angreifer könnte ihn umgehen — aber für den CAD‑Zweck reicht die Global‑Freeze‑Disziplin vollständig.
 
-6. **Custom‑Features können Kernel crashen oder Performance ruinieren (Phase 2+ Hardening):** Ein JS‑Feature‑Body ist beliebiger User‑Code. Eine Endlos‑Schleife hängt den Regeneration Worker auf, eine rekursive Funktion ohne Abbruch‑Bedingung sprengt den Stack, ein `fd.extrude`‑Aufruf mit absurden Parametern produziert Millionen Dreiecke und füllt den WASM‑RAM bis zum Out‑of‑Memory‑Absturz. Im MVP ist das **akzeptiert und nicht adressiert**, weil die einzige Möglichkeit, ein Custom‑Feature zu registrieren, über eine Test‑API läuft, die nicht im produktiven UI exponiert ist — JS‑Features sind in Phase 1 ein Entwickler‑ und Test‑Werkzeug, kein User‑Feature. Die Härtung wird in **Phase 2+** angegangen, parallel zur Einführung des User‑sichtbaren Feature‑Editors („Feature Studio", siehe M14+): Execution‑Budget und Iteration‑Limits pro Feature‑Call, Watchdog‑Timer auf dem Worker mit hartem Abbruch, Memory‑Quotas pro Feature (verfügbar via WASM‑Linear‑Memory‑Accounting), Sandbox‑Verschärfung über einen eingebetteten Interpreter (QuickJS als Fallback, falls der Browser‑V8‑Scope‑Freeze nicht ausreicht), und ein abbruch‑fähiger Regeneration‑Loop, der den User nicht zwingt, den Tab zu schließen. Wer vor Phase 2+ JS‑Features registriert, tut das auf eigene Verantwortung und muss wissen, was er tut.
+6. **Custom‑Features können Kernel crashen oder Performance ruinieren (Phase 2+ Hardening):** Ein JS‑Feature‑Body ist beliebiger User‑Code. Eine Endlos‑Schleife hängt den Regeneration Worker auf, eine rekursive Funktion ohne Abbruch‑Bedingung sprengt den Stack, ein `fd.extrude`‑Aufruf mit absurden Parametern produziert Millionen Dreiecke und füllt den WASM‑RAM bis zum Out‑of‑Memory‑Absturz. Im MVP ist das **akzeptiert und nicht adressiert**, weil die einzige Möglichkeit, ein Custom‑Feature zu registrieren, über eine Test‑API läuft, die nicht im produktiven UI exponiert ist — JS‑Features sind in Phase 1 ein Entwickler‑ und Test‑Werkzeug, kein User‑Feature. Die Härtung wird in **Phase 2+** angegangen, parallel zur Einführung des User‑sichtbaren Feature‑Editors („Feature Studio", siehe M14+):
+   - **AST-Validator per Acorn:** Eingehender KI-generierter oder User-Code wird vor Ausführung als Abstract Syntax Tree geparst und gegen eine strikte Blockliste validiert (Verbot von `ImportExpression`, dynamischem Module-Import, globalen Objekten wie `window`, Manipulation via Computed Properties, Object/Array-Patterns gegen Destructuring-Escapes).
+   - **Strict Mode Enforcement:** Die Ausführung via `new Function('fd', 'ctx', 'id', 'def', '"use strict";\n' + userCode)` schließt das this-Binding auf das globale Objekt auf Engine-Ebene aus.
+   - **DoS-Protection (AST-Rewriting):** Loop-Knoten (While, For) erhalten einen injizierten Timestamp-Check, der bei Endlosschleifen einen Timeout-Error wirft (z. B. >1000ms Laufzeit).
+   - Ergänzend greifen Watchdog‑Timer, Execution‑Budgets und Memory‑Quotas (via WASM‑Linear‑Memory‑Accounting). Wer vor Phase 2+ JS‑Features registriert, tut das auf eigene Verantwortung und muss wissen, was er tut.
 
 7. **BVH‑Invalidierung und Re‑Meshing‑Kaskaden:** Eine Parameter‑Änderung an einem hoch referenzierten Variablen‑Knoten kann viele Bodies invalidieren. Auch wenn jeder Body‑Re‑Mesh asynchron im Web Worker läuft, summieren sich die Latenzen bei großen Baugruppen zu sichtbaren Wartezeiten, ähnlich dem Onshape‑„Regenerating"‑Spinner. Gegenmaßnahme: inkrementelles BVH‑Update statt Komplett‑Rebuild, Sub‑Tree‑Hashing zum Erkennen, ob ein Body wirklich invalidiert wurde, Priorisierung des aktiven Bodies vor Context‑Bodies. Akzeptanz: ≥1 s Wartezeit bei 100‑Body‑Szenen ist im MVP OK.
 
