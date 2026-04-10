@@ -263,22 +263,40 @@ impl FeatureRegistry {
 }
 
 // ─── built-in K1 primitives ──────────────────────────────────────
+//
+// These are the reference `FeatureKind` impls for the three K1
+// primitives. Their parameter parsing is now driven by the
+// `FeatureSchema` derive from `fielddraft-features-macros`
+// (K4.5.3), so each `execute` body shrinks to a two-step recipe:
+// parse the definition JSON into the typed `{Box,Sphere,Cylinder}
+// Def` struct, then assemble a `SpineFeature` record and push it
+// onto the document.
+//
+// The display name still has to be assembled at runtime because
+// it depends on the `FeatureId` that's passed into `execute` —
+// the derive's `default` attribute can only quote Rust rvalues,
+// it can't capture closures over the id. That one extra line at
+// the top of each execute function is the only hand-written
+// parameter logic that remains in these three built-ins.
 
 /// `box` — K1 axis-aligned box primitive.
-///
-/// Parameters:
-/// * `half_extents` — required `[f32; 3]`
-/// * `center`       — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `translate`    — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `op`           — optional `"union" | "difference" | "intersect"`,
-///                    default `"union"`
-/// * `name`         — optional display name; falls back to
-///                    `"Box <id>"`
+#[derive(FeatureSchema)]
+#[schema(type = "box")]
+pub struct BoxDef {
+    pub half_extents: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(name = "Op", default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+}
+
 pub struct BoxPrimitive;
 
 impl FeatureKind for BoxPrimitive {
     fn type_name(&self) -> &'static str {
-        "box"
+        BoxDef::TYPE_NAME
     }
 
     fn execute(
@@ -287,22 +305,18 @@ impl FeatureKind for BoxPrimitive {
         id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
-        let half_extents = read_vec3_required(def, "box", "half_extents")?;
-        let center = read_vec3_or(def, "box", "center", [0.0; 3])?;
-        let translate = read_vec3_or(def, "box", "translate", [0.0; 3])?;
-        let op = read_op_or(def, "box", BoolOp::Union)?;
-        let name = read_string_or(def, "name", format!("Box {id}"));
-
+        let d = BoxDef::parse(def)?;
+        let name = optional_display_name(def, || format!("Box {id}"));
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
-            op,
+            op: d.op,
             primitive: Primitive::Box {
-                center,
-                half_extents,
+                center: d.center,
+                half_extents: d.half_extents,
             },
             transform: Transform {
-                translate,
+                translate: d.translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 1.0,
             },
@@ -312,18 +326,23 @@ impl FeatureKind for BoxPrimitive {
 }
 
 /// `sphere` — K1 sphere primitive.
-///
-/// Parameters:
-/// * `radius`    — required `f32`, must be `> 0`
-/// * `center`    — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `translate` — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `op`        — optional, default `"union"`
-/// * `name`      — optional, default `"Sphere <id>"`
+#[derive(FeatureSchema)]
+#[schema(type = "sphere")]
+pub struct SphereDef {
+    pub radius: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+}
+
 pub struct SpherePrimitive;
 
 impl FeatureKind for SpherePrimitive {
     fn type_name(&self) -> &'static str {
-        "sphere"
+        SphereDef::TYPE_NAME
     }
 
     fn execute(
@@ -332,19 +351,19 @@ impl FeatureKind for SpherePrimitive {
         id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
-        let radius = read_positive_f32_required(def, "sphere", "radius")?;
-        let center = read_vec3_or(def, "sphere", "center", [0.0; 3])?;
-        let translate = read_vec3_or(def, "sphere", "translate", [0.0; 3])?;
-        let op = read_op_or(def, "sphere", BoolOp::Union)?;
-        let name = read_string_or(def, "name", format!("Sphere {id}"));
-
+        let d = SphereDef::parse(def)?;
+        positive_f32(d.radius, SphereDef::TYPE_NAME, "radius")?;
+        let name = optional_display_name(def, || format!("Sphere {id}"));
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
-            op,
-            primitive: Primitive::Sphere { center, radius },
+            op: d.op,
+            primitive: Primitive::Sphere {
+                center: d.center,
+                radius: d.radius,
+            },
             transform: Transform {
-                translate,
+                translate: d.translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 1.0,
             },
@@ -354,19 +373,24 @@ impl FeatureKind for SpherePrimitive {
 }
 
 /// `cylinder` — K1 Y-axis-aligned cylinder primitive.
-///
-/// Parameters:
-/// * `radius`      — required `f32`, must be `> 0`
-/// * `half_height` — required `f32`, must be `> 0`
-/// * `center`      — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `translate`   — optional `[f32; 3]`, default `[0, 0, 0]`
-/// * `op`          — optional, default `"union"`
-/// * `name`        — optional, default `"Cylinder <id>"`
+#[derive(FeatureSchema)]
+#[schema(type = "cylinder")]
+pub struct CylinderDef {
+    pub radius: f32,
+    pub half_height: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+}
+
 pub struct CylinderPrimitive;
 
 impl FeatureKind for CylinderPrimitive {
     fn type_name(&self) -> &'static str {
-        "cylinder"
+        CylinderDef::TYPE_NAME
     }
 
     fn execute(
@@ -375,25 +399,21 @@ impl FeatureKind for CylinderPrimitive {
         id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
-        let radius = read_positive_f32_required(def, "cylinder", "radius")?;
-        let half_height =
-            read_positive_f32_required(def, "cylinder", "half_height")?;
-        let center = read_vec3_or(def, "cylinder", "center", [0.0; 3])?;
-        let translate = read_vec3_or(def, "cylinder", "translate", [0.0; 3])?;
-        let op = read_op_or(def, "cylinder", BoolOp::Union)?;
-        let name = read_string_or(def, "name", format!("Cylinder {id}"));
-
+        let d = CylinderDef::parse(def)?;
+        positive_f32(d.radius, CylinderDef::TYPE_NAME, "radius")?;
+        positive_f32(d.half_height, CylinderDef::TYPE_NAME, "half_height")?;
+        let name = optional_display_name(def, || format!("Cylinder {id}"));
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
-            op,
+            op: d.op,
             primitive: Primitive::Cylinder {
-                center,
-                radius,
-                half_height,
+                center: d.center,
+                radius: d.radius,
+                half_height: d.half_height,
             },
             transform: Transform {
-                translate,
+                translate: d.translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 1.0,
             },
@@ -402,123 +422,40 @@ impl FeatureKind for CylinderPrimitive {
     }
 }
 
-// ─── parameter helpers ───────────────────────────────────────────
+// ─── parameter helpers for the K1 primitives ─────────────────────
 
-fn read_vec3_required(
-    def: &Value,
-    feature: &'static str,
-    name: &'static str,
-) -> Result<[f32; 3], FeatureError> {
-    let slot = def
-        .get(name)
-        .ok_or(FeatureError::MissingParameter { feature, name })?;
-    parse_vec3(slot, feature, name)
+/// Extract an optional `"name"` string parameter from the
+/// definition JSON, falling back to a runtime-derived label that
+/// depends on the `FeatureId` being passed into `execute`. The
+/// derive can't express this fallback because its `default`
+/// attribute quotes Rust rvalues statically — the id isn't in
+/// scope at attribute-parse time.
+fn optional_display_name(def: &Value, fallback: impl FnOnce() -> String) -> String {
+    def.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(fallback)
 }
 
-fn read_vec3_or(
-    def: &Value,
+/// Post-parse guard for numeric fields that must be strictly
+/// positive. The derive's `f32` slot parser only checks "is it a
+/// number"; domain constraints like "radius > 0" are re-checked
+/// here so the K1 primitives still reject zero and negative
+/// values the same way the K4.5.2 hand-rolled versions did.
+fn positive_f32(
+    value: f32,
     feature: &'static str,
     name: &'static str,
-    fallback: [f32; 3],
-) -> Result<[f32; 3], FeatureError> {
-    match def.get(name) {
-        None => Ok(fallback),
-        Some(Value::Null) => Ok(fallback),
-        Some(slot) => parse_vec3(slot, feature, name),
-    }
-}
-
-fn parse_vec3(
-    value: &Value,
-    feature: &'static str,
-    name: &'static str,
-) -> Result<[f32; 3], FeatureError> {
-    let arr = value
-        .as_array()
-        .ok_or_else(|| FeatureError::InvalidParameter {
-            feature,
-            name,
-            message: "expected a 3-element array".to_string(),
-        })?;
-    if arr.len() != 3 {
-        return Err(FeatureError::InvalidParameter {
-            feature,
-            name,
-            message: format!("expected 3 elements, got {}", arr.len()),
-        });
-    }
-    let mut out = [0.0_f32; 3];
-    for (i, item) in arr.iter().enumerate() {
-        out[i] = item.as_f64().map(|v| v as f32).ok_or_else(|| {
-            FeatureError::InvalidParameter {
-                feature,
-                name,
-                message: format!("element {i} is not a number"),
-            }
-        })?;
-    }
-    Ok(out)
-}
-
-fn read_positive_f32_required(
-    def: &Value,
-    feature: &'static str,
-    name: &'static str,
-) -> Result<f32, FeatureError> {
-    let slot = def
-        .get(name)
-        .ok_or(FeatureError::MissingParameter { feature, name })?;
-    let value = slot
-        .as_f64()
-        .ok_or_else(|| FeatureError::InvalidParameter {
-            feature,
-            name,
-            message: "expected a number".to_string(),
-        })? as f32;
-    if !(value > 0.0) {
-        return Err(FeatureError::InvalidParameter {
+) -> Result<(), FeatureError> {
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(FeatureError::InvalidParameter {
             feature,
             name,
             message: format!("must be > 0, got {value}"),
-        });
+        })
     }
-    Ok(value)
-}
-
-fn read_op_or(
-    def: &Value,
-    feature: &'static str,
-    fallback: BoolOp,
-) -> Result<BoolOp, FeatureError> {
-    let Some(slot) = def.get("op") else {
-        return Ok(fallback);
-    };
-    if slot.is_null() {
-        return Ok(fallback);
-    }
-    let s = slot
-        .as_str()
-        .ok_or_else(|| FeatureError::InvalidParameter {
-            feature,
-            name: "op",
-            message: "expected a string".to_string(),
-        })?;
-    match s {
-        "union" => Ok(BoolOp::Union),
-        "difference" => Ok(BoolOp::Difference),
-        "intersect" => Ok(BoolOp::Intersect),
-        other => Err(FeatureError::InvalidOp {
-            feature,
-            value: other.to_string(),
-        }),
-    }
-}
-
-fn read_string_or(def: &Value, name: &str, fallback: String) -> String {
-    def.get(name)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or(fallback)
 }
 
 // ─── tests ───────────────────────────────────────────────────────
@@ -947,6 +884,149 @@ mod tests {
             } => {}
             other => panic!("expected InvalidParameter on `origin`, got {other:?}"),
         }
+    }
+
+    // ─── K4.5.4a: #[param] attribute ──────────────────────────
+
+    /// Every field carries a default or a name override, so the
+    /// K4.5.4a attribute vocabulary gets exercised end-to-end.
+    #[derive(FeatureSchema, Debug, PartialEq)]
+    #[schema(type = "param_fixture")]
+    #[allow(dead_code)]
+    struct ParamFixture {
+        #[param(name = "Pretty Depth", default = 5.0)]
+        depth: f32,
+        #[param(default = [1.0, 2.0, 3.0])]
+        origin: [f32; 3],
+        #[param(default = ::fielddraft_protocol::BoolOp::Difference)]
+        op: BoolOp,
+    }
+
+    #[test]
+    fn param_name_attribute_overrides_display_name() {
+        let schema = ParamFixture::schema_json();
+        let params = schema["params"].as_array().unwrap();
+        let depth = &params[0];
+        assert_eq!(depth["key"], json!("depth"));
+        assert_eq!(depth["name"], json!("Pretty Depth"));
+        // Other fields keep the auto-prettified snake_case name.
+        assert_eq!(params[1]["name"], json!("Origin"));
+        assert_eq!(params[2]["name"], json!("Op"));
+    }
+
+    #[test]
+    fn param_default_marks_field_as_optional_in_schema() {
+        let schema = ParamFixture::schema_json();
+        let params = schema["params"].as_array().unwrap();
+        // Every field has a default → required: false.
+        for p in params {
+            assert_eq!(p["required"], json!(false), "param {:?}", p);
+        }
+    }
+
+    #[test]
+    fn param_default_falls_back_on_missing_keys() {
+        // Empty JSON → every field takes its default.
+        let parsed = ParamFixture::parse(&json!({})).unwrap();
+        assert_eq!(
+            parsed,
+            ParamFixture {
+                depth: 5.0,
+                origin: [1.0, 2.0, 3.0],
+                op: BoolOp::Difference,
+            }
+        );
+    }
+
+    #[test]
+    fn param_default_is_ignored_when_key_is_present() {
+        let parsed = ParamFixture::parse(&json!({
+            "depth": 42.0,
+            "origin": [9.0, 9.0, 9.0],
+            "op": "intersect"
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            ParamFixture {
+                depth: 42.0,
+                origin: [9.0, 9.0, 9.0],
+                op: BoolOp::Intersect,
+            }
+        );
+    }
+
+    #[test]
+    fn param_default_fields_still_validate_wrong_types() {
+        // Explicit wrong type must still error — the default only
+        // kicks in for missing / null slots.
+        let err = ParamFixture::parse(&json!({ "depth": "nope" })).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter {
+                feature: "param_fixture",
+                name: "depth",
+                ..
+            } => {}
+            other => panic!("expected InvalidParameter on `depth`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn param_default_null_slot_falls_back_to_default() {
+        // `null` must behave the same as a missing key.
+        let parsed = ParamFixture::parse(&json!({ "depth": null })).unwrap();
+        assert_eq!(parsed.depth, 5.0);
+    }
+
+    #[test]
+    fn param_boolop_accepts_all_three_operator_strings() {
+        for (input, expected) in [
+            ("union", BoolOp::Union),
+            ("difference", BoolOp::Difference),
+            ("intersect", BoolOp::Intersect),
+        ] {
+            let def = json!({ "op": input });
+            let parsed = ParamFixture::parse(&def).unwrap();
+            assert_eq!(parsed.op, expected);
+        }
+    }
+
+    #[test]
+    fn param_boolop_rejects_unknown_operator() {
+        let def = json!({ "op": "totally_bogus" });
+        let err = ParamFixture::parse(&def).unwrap_err();
+        match err {
+            FeatureError::InvalidOp {
+                feature: "param_fixture",
+                value,
+            } => assert_eq!(value, "totally_bogus"),
+            other => panic!("expected InvalidOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn box_def_schema_matches_the_k1_parameter_surface() {
+        // Regression: the derive-generated schema for the box
+        // primitive should match the K4.5.2 hand-rolled surface
+        // exactly — four params, half_extents required, the
+        // other three optional via defaults.
+        let schema = BoxDef::schema_json();
+        assert_eq!(schema["type"], json!("box"));
+        let params = schema["params"].as_array().unwrap();
+        assert_eq!(params.len(), 4);
+
+        assert_eq!(params[0]["key"], json!("half_extents"));
+        assert_eq!(params[0]["required"], json!(true));
+
+        assert_eq!(params[1]["key"], json!("center"));
+        assert_eq!(params[1]["required"], json!(false));
+
+        assert_eq!(params[2]["key"], json!("translate"));
+        assert_eq!(params[2]["required"], json!(false));
+
+        assert_eq!(params[3]["key"], json!("op"));
+        assert_eq!(params[3]["name"], json!("Op"));
+        assert_eq!(params[3]["required"], json!(false));
     }
 
     #[test]

@@ -32,41 +32,45 @@
 //!   fielddraft_kernel::features::FeatureError>` — validates the
 //!   definition JSON and extracts typed field values.
 //!
-//! ## Minimal scope for this slice
+//! ## Supported scope (K4.5.4a)
 //!
-//! K4.5 step 3 sets the proc-macro infrastructure down and proves
-//! the schema-plus-parse pipeline on a handful of primitive field
-//! types. Later steps will grow the derive:
-//!
-//! * **Supported field types:** `f32`, `[f32; 3]`, `bool`, `String`.
-//!   `Length` / `Angle` / `Query` / `Option<T>` come later — they
-//!   need runtime types in the kernel that don't exist yet.
-//! * **Attributes:** only the struct-level `#[feature(type = "…")]`
-//!   is honoured. The field-level `#[param(name, bounds, default,
-//!   visible_when, filter, ui_hint)]` attribute from §4.6 is not
-//!   recognised yet — every field is implicitly required, its
-//!   display name defaults to its Rust identifier and its key in
-//!   the definition JSON is the snake_case Rust name.
-//! * **No `impl FeatureKind`.** The derive generates schema /
-//!   parse helpers only. Callers still write `FeatureKind` by
-//!   hand, just shorter — the hand-written `execute` function
-//!   starts with `let def = MyDef::parse(def)?;` instead of
-//!   reaching into the JSON directly.
-//!
-//! The minimum is enough to unblock K4.5 steps 4+ without dragging
-//! the full Onshape-style schema language into this slice.
+//! * **Field types:** `f32`, `[f32; 3]`, `bool`, `String`, and
+//!   `BoolOp` (the protocol boolean-op enum, parsed from
+//!   `"union"`/`"difference"`/`"intersect"`). `Length` / `Angle` /
+//!   `Query` / `Option<T>` come in later steps when the kernel
+//!   grows the corresponding runtime types.
+//! * **Struct-level attribute:** `#[schema(type = "…")]` sets the
+//!   type name that goes into the registry and the on-wire JSON.
+//! * **Field-level `#[param(...)]` attribute:**
+//!   * `name = "Pretty Name"` overrides the display name (default
+//!     is the prettified Rust identifier, `half_extents` →
+//!     `Half extents`).
+//!   * `default = <expr>` makes the field optional and uses the
+//!     Rust expression as the fallback when the definition JSON
+//!     is missing the key or sends `null`. The expression is
+//!     quoted verbatim, so anything that's a valid Rust rvalue
+//!     works: `0.0`, `[0.0, 0.0, 0.0]`, `BoolOp::Union`, etc.
+//!   The `bounds` / `visible_when` / `filter` / `ui_hint` keys
+//!   from the §4.6 vocabulary are not honoured yet.
+//! * **No `impl FeatureKind`.** The derive only emits schema /
+//!   parse helpers. Callers still write `FeatureKind` by hand,
+//!   just shorter — the execute body opens with
+//!   `let def = MyDef::parse(def)?;` instead of reaching into
+//!   the JSON directly.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{quote, ToTokens};
 use syn::{
     parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, ExprLit,
-    Fields, Lit, Meta, MetaNameValue, Type, TypeArray, TypePath,
+    Fields, Lit, Type, TypeArray, TypePath,
 };
 
 /// Derive macro for `FeatureSchema`. See the crate docs for the
-/// full input-shape and output contract.
-#[proc_macro_derive(FeatureSchema, attributes(schema))]
+/// full input-shape and output contract. Honours `#[schema(type =
+/// "…")]` at the struct level and `#[param(name = "…", default =
+/// <expr>)]` on individual fields.
+#[proc_macro_derive(FeatureSchema, attributes(schema, param))]
 pub fn derive_feature_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand(&input) {
@@ -174,21 +178,23 @@ fn parse_schema_attr(input: &DeriveInput) -> syn::Result<String> {
 
 // ─── parameter metadata ─────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq)]
 enum ParamType {
     F32,
     Vec3,
     Bool,
     String,
+    BoolOp,
 }
 
 impl ParamType {
-    fn json_type_name(&self) -> &'static str {
+    fn json_type_name(self) -> &'static str {
         match self {
             ParamType::F32 => "f32",
             ParamType::Vec3 => "vec3",
             ParamType::Bool => "bool",
             ParamType::String => "string",
+            ParamType::BoolOp => "bool_op",
         }
     }
 }
@@ -198,6 +204,11 @@ struct ParamInfo {
     key: String,
     display_name: String,
     ty: ParamType,
+    /// `Some` if the field has a `#[param(default = <expr>)]`
+    /// attribute. The field becomes optional in the JSON wire
+    /// format, and the generated parse code uses the expression
+    /// as the fallback when the key is missing or `null`.
+    default: Option<Expr>,
 }
 
 impl ParamInfo {
@@ -207,13 +218,39 @@ impl ParamInfo {
             .clone()
             .ok_or_else(|| syn::Error::new(field.span(), "unnamed field"))?;
         let key = ident.to_string();
-        let display_name = prettify_identifier(&key);
+        let mut display_name = prettify_identifier(&key);
+        let mut default: Option<Expr> = None;
+
+        for attr in &field.attrs {
+            if !attr.path().is_ident("param") {
+                continue;
+            }
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("name") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    display_name = lit.value();
+                    Ok(())
+                } else if meta.path.is_ident("default") {
+                    let value = meta.value()?;
+                    let expr: Expr = value.parse()?;
+                    default = Some(expr);
+                    Ok(())
+                } else {
+                    Err(meta.error(
+                        "unknown #[param(...)] key (supported: name, default)",
+                    ))
+                }
+            })?;
+        }
+
         let ty = ParamType::from_type(&field.ty)?;
         Ok(ParamInfo {
             ident,
             key,
             display_name,
             ty,
+            default,
         })
     }
 
@@ -221,120 +258,156 @@ impl ParamInfo {
         let key = &self.key;
         let name = &self.display_name;
         let type_name = self.ty.json_type_name();
+        let required = self.default.is_none();
         quote! {
             ::serde_json::json!({
                 "key": #key,
                 "name": #name,
                 "type": #type_name,
-                "required": true,
+                "required": #required,
             })
         }
     }
 
-    /// Emit a `let <ident> = ...?;` binding that pulls the
-    /// parameter out of the definition JSON and validates its
-    /// type. The generated code borrows names from the kernel
-    /// crate's `crate::features::FeatureError` so the derive can
-    /// stay type-agnostic here.
+    /// Emit a `let <ident>: <T> = <expr>;` binding that pulls the
+    /// parameter out of the definition JSON. When the field has a
+    /// `default`, the binding falls back to the Rust expression
+    /// on missing / `null`; otherwise missing is a
+    /// `MissingParameter` error.
     fn emit_parse_binding(&self) -> TokenStream2 {
         let ident = &self.ident;
         let key = &self.key;
-        let feature_literal = quote! { Self::TYPE_NAME };
-        match self.ty {
-            ParamType::F32 => quote! {
-                let #ident: f32 = {
+        let rust_ty = self.ty.emit_rust_type();
+        let slot_parser = self.ty.emit_slot_parser(key);
+
+        match &self.default {
+            None => quote! {
+                let #ident: #rust_ty = {
                     let slot = def.get(#key).ok_or(
                         crate::features::FeatureError::MissingParameter {
-                            feature: #feature_literal,
+                            feature: Self::TYPE_NAME,
                             name: #key,
                         },
                     )?;
-                    slot.as_f64().map(|v| v as f32).ok_or_else(|| {
-                        crate::features::FeatureError::InvalidParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                            message: "expected a number".to_string(),
-                        }
-                    })?
+                    #slot_parser
                 };
             },
-            ParamType::Vec3 => quote! {
-                let #ident: [f32; 3] = {
-                    let slot = def.get(#key).ok_or(
-                        crate::features::FeatureError::MissingParameter {
-                            feature: #feature_literal,
+            Some(default_expr) => quote! {
+                let #ident: #rust_ty = match def.get(#key) {
+                    ::core::option::Option::None
+                    | ::core::option::Option::Some(::serde_json::Value::Null) => {
+                        #default_expr
+                    }
+                    ::core::option::Option::Some(slot) => { #slot_parser }
+                };
+            },
+        }
+    }
+}
+
+impl ParamType {
+    /// Rust type token that the generated `let` binding uses.
+    fn emit_rust_type(self) -> TokenStream2 {
+        match self {
+            ParamType::F32 => quote! { f32 },
+            ParamType::Vec3 => quote! { [f32; 3] },
+            ParamType::Bool => quote! { bool },
+            ParamType::String => quote! { ::std::string::String },
+            ParamType::BoolOp => quote! { ::fielddraft_protocol::BoolOp },
+        }
+    }
+
+    /// Parse a `&serde_json::Value` named `slot` into the Rust
+    /// value of this type. The emitted expression evaluates to
+    /// the typed value (via `?` on error).
+    fn emit_slot_parser(self, key: &str) -> TokenStream2 {
+        match self {
+            ParamType::F32 => quote! {
+                slot.as_f64().map(|v| v as f32).ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: "expected a number".to_string(),
+                    }
+                })?
+            },
+            ParamType::Vec3 => quote! {{
+                let arr = slot.as_array().ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: "expected a 3-element array".to_string(),
+                    }
+                })?;
+                if arr.len() != 3 {
+                    return ::core::result::Result::Err(
+                        crate::features::FeatureError::InvalidParameter {
+                            feature: Self::TYPE_NAME,
                             name: #key,
+                            message: ::std::format!(
+                                "expected 3 elements, got {}",
+                                arr.len()
+                            ),
+                        },
+                    );
+                }
+                let mut out = [0.0_f32; 3];
+                for (i, item) in arr.iter().enumerate() {
+                    out[i] = item.as_f64().map(|v| v as f32).ok_or_else(
+                        || crate::features::FeatureError::InvalidParameter {
+                            feature: Self::TYPE_NAME,
+                            name: #key,
+                            message: ::std::format!(
+                                "element {} is not a number",
+                                i
+                            ),
                         },
                     )?;
-                    let arr = slot.as_array().ok_or_else(|| {
-                        crate::features::FeatureError::InvalidParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                            message: "expected a 3-element array".to_string(),
-                        }
-                    })?;
-                    if arr.len() != 3 {
+                }
+                out
+            }},
+            ParamType::Bool => quote! {
+                slot.as_bool().ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: "expected a boolean".to_string(),
+                    }
+                })?
+            },
+            ParamType::String => quote! {
+                slot.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: "expected a string".to_string(),
+                    }
+                })?
+            },
+            ParamType::BoolOp => quote! {{
+                let s = slot.as_str().ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message:
+                            "expected \"union\", \"difference\", or \"intersect\""
+                                .to_string(),
+                    }
+                })?;
+                match s {
+                    "union" => ::fielddraft_protocol::BoolOp::Union,
+                    "difference" => ::fielddraft_protocol::BoolOp::Difference,
+                    "intersect" => ::fielddraft_protocol::BoolOp::Intersect,
+                    other => {
                         return ::core::result::Result::Err(
-                            crate::features::FeatureError::InvalidParameter {
-                                feature: #feature_literal,
-                                name: #key,
-                                message: ::std::format!(
-                                    "expected 3 elements, got {}",
-                                    arr.len()
-                                ),
+                            crate::features::FeatureError::InvalidOp {
+                                feature: Self::TYPE_NAME,
+                                value: other.to_string(),
                             },
                         );
                     }
-                    let mut out = [0.0_f32; 3];
-                    for (i, item) in arr.iter().enumerate() {
-                        out[i] = item.as_f64().map(|v| v as f32).ok_or_else(
-                            || crate::features::FeatureError::InvalidParameter {
-                                feature: #feature_literal,
-                                name: #key,
-                                message: ::std::format!(
-                                    "element {} is not a number",
-                                    i
-                                ),
-                            },
-                        )?;
-                    }
-                    out
-                };
-            },
-            ParamType::Bool => quote! {
-                let #ident: bool = {
-                    let slot = def.get(#key).ok_or(
-                        crate::features::FeatureError::MissingParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                        },
-                    )?;
-                    slot.as_bool().ok_or_else(|| {
-                        crate::features::FeatureError::InvalidParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                            message: "expected a boolean".to_string(),
-                        }
-                    })?
-                };
-            },
-            ParamType::String => quote! {
-                let #ident: ::std::string::String = {
-                    let slot = def.get(#key).ok_or(
-                        crate::features::FeatureError::MissingParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                        },
-                    )?;
-                    slot.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                        crate::features::FeatureError::InvalidParameter {
-                            feature: #feature_literal,
-                            name: #key,
-                            message: "expected a string".to_string(),
-                        }
-                    })?
-                };
-            },
+                }
+            }},
         }
     }
 }
@@ -347,6 +420,13 @@ impl ParamType {
                     "f32" => return Ok(ParamType::F32),
                     "bool" => return Ok(ParamType::Bool),
                     "String" => return Ok(ParamType::String),
+                    // `BoolOp` is matched by trailing identifier so
+                    // the field type can be written as `BoolOp` (with
+                    // a `use` in scope) or
+                    // `fielddraft_protocol::BoolOp` (fully
+                    // qualified). Both resolve through the final
+                    // segment.
+                    "BoolOp" => return Ok(ParamType::BoolOp),
                     _ => {}
                 }
             }
@@ -375,7 +455,7 @@ impl ParamType {
             ty.span(),
             format!(
                 "FeatureSchema does not yet support field type `{}`. \
-                 Supported: f32, [f32; 3], bool, String.",
+                 Supported: f32, [f32; 3], bool, String, BoolOp.",
                 ty.to_token_stream()
             ),
         ))
@@ -406,15 +486,3 @@ fn prettify_identifier(snake: &str) -> String {
     out
 }
 
-// The `quote_spanned` / `MetaNameValue` / `Meta` imports are
-// placeholders for the attribute features that K4.5 step 4+ will
-// add (defaults, bounds, visible_when). Keep the imports to
-// document the planned API without tripping the unused-import lint.
-#[allow(dead_code)]
-fn _reserved_for_future_param_attribute(
-    _m: Option<MetaNameValue>,
-    _meta: Option<Meta>,
-    _span: Option<TokenStream2>,
-) {
-    let _ = quote_spanned! { proc_macro2::Span::call_site() => };
-}
