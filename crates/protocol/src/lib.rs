@@ -336,6 +336,55 @@ pub struct Feature {
     pub transform: Transform,
 }
 
+/// One entry in the K4.5 Feature-as-Function feature tree.
+///
+/// The canonical §4.6 JSON wire format for every mutation a user
+/// makes to a document: a `{ type, id, params }` triple where the
+/// type name picks a [`FeatureKind`] (in the kernel registry) and
+/// the `params` blob carries the user's typed parameter values as
+/// raw JSON until a `FeatureSchema` derive validates them.
+///
+/// K4.5.4b moved this struct from `kernel::features` to the
+/// protocol crate so it can eventually live inside [`Document`]
+/// as the authoritative serialisation form (K4.5.4c+). The kernel
+/// re-exports `FeatureCall` from `crate::features::FeatureCall`
+/// so existing imports keep working — the move is purely
+/// structural, no behaviour changed in this slice.
+///
+/// [`FeatureKind`]: ../fielddraft_kernel/features/trait.FeatureKind.html
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureCall {
+    /// Registry key for the feature type. `#[serde(rename = "type")]`
+    /// emits the §4.6 canonical field name on the wire.
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Stable id of this call within the feature tree. Step 1
+    /// (K4.5.1) introduced the hierarchical [`FeatureId`] that
+    /// sub-operations inside a feature body can extend with
+    /// child names.
+    pub id: FeatureId,
+    /// Typed parameter values. Held as raw `serde_json::Value` so
+    /// the wire shape is schema-less until the feature's
+    /// `FeatureKind::execute` parses it.
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+impl FeatureCall {
+    /// Build a feature call from its three canonical fields.
+    pub fn new(
+        type_name: impl Into<String>,
+        id: FeatureId,
+        params: serde_json::Value,
+    ) -> Self {
+        Self {
+            type_name: type_name.into(),
+            id,
+            params,
+        }
+    }
+}
+
 /// Project document root.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -490,6 +539,73 @@ mod tests {
         assert_eq!(json, "\"3.op\"");
         let parsed: FeatureId = serde_json::from_str("\"3.op\"").unwrap();
         assert_eq!(parsed, id);
+    }
+
+    // ─── FeatureCall (K4.5.4b) ──────────────────────────────────
+
+    #[test]
+    fn feature_call_builds_from_fields() {
+        let call = FeatureCall::new(
+            "box",
+            FeatureId::from_u32(7),
+            serde_json::json!({ "half_extents": [1.0, 2.0, 3.0] }),
+        );
+        assert_eq!(call.type_name, "box");
+        assert_eq!(call.id, FeatureId::from_u32(7));
+        assert_eq!(
+            call.params,
+            serde_json::json!({ "half_extents": [1.0, 2.0, 3.0] })
+        );
+    }
+
+    #[test]
+    fn feature_call_serde_shape_uses_type_field_not_type_name() {
+        // §4.6 canonical wire shape: `{ "type": "...", "id": ...,
+        // "params": {...} }`. The Rust field is called `type_name`
+        // because `type` is a reserved keyword; the
+        // `#[serde(rename)]` glue emits `type` on the wire.
+        let call = FeatureCall::new(
+            "sphere",
+            FeatureId::from_u32(3),
+            serde_json::json!({ "radius": 5.0 }),
+        );
+        let wire = serde_json::to_value(&call).unwrap();
+        assert_eq!(wire.get("type"), Some(&serde_json::json!("sphere")));
+        assert!(wire.get("type_name").is_none());
+        assert_eq!(wire.get("id"), Some(&serde_json::json!(3)));
+        assert_eq!(
+            wire.get("params"),
+            Some(&serde_json::json!({ "radius": 5.0 }))
+        );
+    }
+
+    #[test]
+    fn feature_call_round_trips_through_json() {
+        let call = FeatureCall::new(
+            "cylinder",
+            FeatureId::from_u32(1).child("cap"),
+            serde_json::json!({
+                "radius": 4.0,
+                "half_height": 10.0,
+                "op": "difference"
+            }),
+        );
+        let wire = serde_json::to_string(&call).unwrap();
+        let parsed: FeatureCall = serde_json::from_str(&wire).unwrap();
+        assert_eq!(parsed, call);
+    }
+
+    #[test]
+    fn feature_call_params_default_to_null_when_missing() {
+        // `#[serde(default)]` lets a call without a params field
+        // still deserialise — handy for the K4.5 step-5 JS shell
+        // that sometimes emits parameter-less calls during drag
+        // previews.
+        let wire = r#"{"type":"box","id":2}"#;
+        let parsed: FeatureCall = serde_json::from_str(wire).unwrap();
+        assert_eq!(parsed.type_name, "box");
+        assert_eq!(parsed.id, FeatureId::from_u32(2));
+        assert_eq!(parsed.params, serde_json::Value::Null);
     }
 
     #[test]

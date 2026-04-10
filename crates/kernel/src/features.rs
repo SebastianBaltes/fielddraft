@@ -39,7 +39,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use fielddraft_protocol::{
@@ -53,6 +52,15 @@ use fielddraft_protocol::{
 /// at the struct level and auto-detects field types, every field
 /// is implicitly required.
 pub use fielddraft_features_macros::FeatureSchema;
+
+/// Re-export of the canonical on-disk feature-call shape. K4.5.4b
+/// promoted `FeatureCall` from a kernel-internal helper to a
+/// first-class wire type inside [`fielddraft_protocol`] so the
+/// Document can eventually store `Vec<FeatureCall>` as its
+/// authoritative serialisation form (K4.5.4c+). Existing
+/// `crate::features::FeatureCall` imports keep working through
+/// this re-export — the move is purely structural.
+pub use fielddraft_protocol::FeatureCall;
 
 /// Errors that can happen while looking up a feature in the registry
 /// or while a feature's `execute` validates its parameter JSON.
@@ -152,38 +160,6 @@ pub trait FeatureKind: Send + Sync {
         id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError>;
-}
-
-/// One entry in a serialisable feature tree. The canonical on-disk
-/// form of the K4.5 Feature-as-Function model: every mutation a user
-/// made in the tree is one of these, ordered top-to-bottom.
-///
-/// For K4.5 step 2 the `params` blob is a raw `serde_json::Value`;
-/// step 3's derive-macro will give each feature a strongly-typed
-/// Rust struct and emit a JSON Schema alongside it, but the runtime
-/// format stays JSON so the JavaScript side of the dual API shell
-/// (step 6) can consume it with zero glue code.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FeatureCall {
-    #[serde(rename = "type")]
-    pub type_name: String,
-    pub id: FeatureId,
-    #[serde(default)]
-    pub params: Value,
-}
-
-impl FeatureCall {
-    pub fn new(
-        type_name: impl Into<String>,
-        id: FeatureId,
-        params: Value,
-    ) -> Self {
-        Self {
-            type_name: type_name.into(),
-            id,
-            params,
-        }
-    }
 }
 
 /// Central registry of [`FeatureKind`] impls, keyed by type name.
