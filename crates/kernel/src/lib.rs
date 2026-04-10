@@ -13,6 +13,7 @@ pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod features;
+pub mod queries;
 pub mod raycast;
 pub mod sketch2d;
 
