@@ -89,12 +89,20 @@ test.describe("Sketch editor smoke", () => {
     //    surface any WebGPU draw-time crashes.
     await page.waitForTimeout(500);
 
-    // 6. Finish the sketch — the panel goes away, the regular
-    //    toolbar comes back, the overlay canvas unmounts.
+    // 6. Finish the sketch — K6b.3a commits the session as a
+    //    real `sketch` FeatureCall on the kernel, so the
+    //    outliner grows a new row with `data-feature-op="union"`
+    //    and the feature-count badge goes from 0 to 1. The
+    //    overlay canvas unmounts, the regular toolbar comes
+    //    back.
     await page.getByTestId("sketch-finish").click();
     await expect(page.getByTestId("sketch-session-panel")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("add-box")).toBeVisible();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    // The new row's kind glyph is the sketch pencil.
+    const sketchRow = page.locator(".fd-outliner .row").first();
+    await expect(sketchRow).toContainText("Sketch");
 
     // 7. No blocking console errors, no uncaught page errors.
     //    This is the guard that would have caught the

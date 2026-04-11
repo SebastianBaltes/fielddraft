@@ -93,7 +93,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
             className="tool is-primary"
             title="Finish sketch"
             data-testid="sketch-finish"
-            onClick={() => store.exitSketch()}
+            onClick={() => store.commitSketch()}
           >
             ✓ Finish
           </button>

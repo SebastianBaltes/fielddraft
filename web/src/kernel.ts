@@ -62,12 +62,17 @@ export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
 export type BoolOpName = "union" | "difference" | "intersect";
 export type PrimitiveKindName = "box" | "sphere" | "cylinder";
+/** K6b.3a: the kernel's `listFeatures` can now return entries
+ *  whose kind is a non-primitive feature type like "sketch" or
+ *  "extrude". The outliner handles them generically by keying
+ *  glyphs / labels off the string. */
+export type FeatureKindName = PrimitiveKindName | "sketch" | "extrude" | "unknown";
 
 export interface FeatureSummary {
   id: number;
   name: string;
   op: BoolOpName;
-  kind: PrimitiveKindName;
+  kind: FeatureKindName;
   translate: [number, number, number];
   scale: number;
 }
@@ -347,6 +352,44 @@ export class Kernel {
    */
   schemaForSketchToolType(typeName: string): unknown {
     return JSON.parse(this.inner.schemaForSketchToolType(typeName));
+  }
+
+  /**
+   * K6b.3a: commit a sketch from the UI session as a `sketch`
+   * FeatureCall on the kernel's canonical wire list. `subCalls`
+   * is a JSON-ready array of the sketch-tool FeatureCalls the
+   * session accumulated; it's stringified here so the
+   * wasm-bindgen surface can stay `String`-in, `u32`-out.
+   * Returns the new feature id.
+   */
+  addSketch(
+    planeQuery: string,
+    subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  ): number {
+    // The kernel side expects FeatureCall JSON objects with
+    // `type`, `id`, `params`. We don't have sketch-tool-level
+    // ids yet — K6b.3a allocates synthetic strings so the
+    // protocol's `FeatureId::FromStr` accepts them. These are
+    // purely internal to the sketch sub-spine and don't collide
+    // with the top-level document id space.
+    const prepared = subCalls.map((c, i) => ({
+      type: c.type,
+      id: String(i + 1),
+      params: c.params,
+    }));
+    return this.inner.addSketch(planeQuery, JSON.stringify(prepared));
+  }
+
+  /** K6b.3a: read back a sketch's sub-spine by feature id. */
+  getSketchSubCalls(
+    id: number,
+  ): Array<{ type: string; id: string; params: Record<string, unknown> }> {
+    const json = this.inner.getSketchSubCalls(id);
+    return JSON.parse(json) as Array<{
+      type: string;
+      id: string;
+      params: Record<string, unknown>;
+    }>;
   }
 
   // ── mutations ───────────────────────────────────────────────────────

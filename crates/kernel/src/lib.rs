@@ -507,6 +507,50 @@ impl Kernel {
         }
     }
 
+    /// K6b.3a: for a primitive-backed call the spine primitive is
+    /// authoritative, but future non-primitive spine-backed
+    /// features (like extrude, which currently lowers to a
+    /// `Primitive::Box` placeholder) want the original call type
+    /// to leak through to the UI. Prefer the call's `type_name`
+    /// for anything that isn't a plain primitive kind.
+    fn kind_label_for_call(
+        type_name: &str,
+        prim: &Primitive,
+    ) -> &'static str {
+        match type_name {
+            "box" | "sphere" | "cylinder" => Self::kind_label(prim),
+            "extrude" => "extrude",
+            _ => Self::static_kind_name(type_name),
+        }
+    }
+
+    /// K6b.3a: normalise a feature-call type name for kinds that
+    /// don't have a primitive-spine representation at all.
+    fn static_kind_name(type_name: &str) -> &'static str {
+        match type_name {
+            "sketch" => "sketch",
+            "box" => "box",
+            "sphere" => "sphere",
+            "cylinder" => "cylinder",
+            "extrude" => "extrude",
+            _ => "unknown",
+        }
+    }
+
+    /// K6b.3a: synthesise a display name for a feature call that
+    /// doesn't match a spine entry. `"Sketch 3"` for a sketch
+    /// call with id 3, etc. Primitive calls never land here
+    /// because they always have a spine entry.
+    fn synth_name_for_call(
+        call: &fielddraft_protocol::FeatureCall,
+    ) -> String {
+        let label = match call.type_name.as_str() {
+            "sketch" => "Sketch",
+            other => other,
+        };
+        format!("{label} {}", call.id)
+    }
+
     fn parse_op(tag: u32) -> Result<BoolOp, JsError> {
         match tag {
             BoolOp::TAG_UNION => Ok(BoolOp::Union),
@@ -695,22 +739,132 @@ impl Kernel {
     }
 
     /// Return a JSON array of feature summaries (id, name, op, kind).
+    ///
+    /// K6b.3a: the list walks `feature_calls` — the K4.5 canonical
+    /// wire form — instead of the spine directly. For primitive
+    /// calls the summary is pulled from the matching spine entry
+    /// (translate, scale, op are authoritative there). For
+    /// non-spine calls like `sketch` the summary is synthesised
+    /// from the call itself with neutral transform defaults, so
+    /// the outliner sees a stable row per sketch even though
+    /// sketches never push onto the spine.
     #[wasm_bindgen(js_name = listFeatures)]
     pub fn list_features(&self) -> Result<String, JsError> {
-        let summaries: Vec<FeatureSummary> = self
-            .document
-            .features
-            .iter()
-            .map(|f| FeatureSummary {
-                id: f.id.clone(),
-                name: f.name.clone(),
-                op: Self::op_label(f.op),
-                kind: Self::kind_label(&f.primitive),
-                translate: f.transform.translate,
-                scale: f.transform.scale,
-            })
-            .collect();
+        let mut summaries: Vec<FeatureSummary> = Vec::with_capacity(
+            self.document.feature_calls.len(),
+        );
+        for call in &self.document.feature_calls {
+            if let Some(spine) = self
+                .document
+                .features
+                .iter()
+                .find(|f| f.id == call.id)
+            {
+                summaries.push(FeatureSummary {
+                    id: spine.id.clone(),
+                    name: spine.name.clone(),
+                    op: Self::op_label(spine.op),
+                    kind: Self::kind_label_for_call(&call.type_name, &spine.primitive),
+                    translate: spine.transform.translate,
+                    scale: spine.transform.scale,
+                });
+            } else {
+                summaries.push(FeatureSummary {
+                    id: call.id.clone(),
+                    name: Self::synth_name_for_call(call),
+                    op: "union",
+                    kind: Self::static_kind_name(&call.type_name),
+                    translate: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                });
+            }
+        }
         serde_json::to_string(&summaries).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// K6b.3a: commit a sketch from the UI's sub-spine draft. The
+    /// caller hands in a plane query string plus a JSON array of
+    /// `FeatureCall`s (the sketch-tool calls accumulated by
+    /// `SketchSession.subCalls` in the TS store). The kernel
+    /// pushes a `sketch`-type `FeatureCall` onto `feature_calls`,
+    /// regenerates the document so the `sketch` feature's
+    /// `execute` runs and stashes the solved `SketchState` in
+    /// `Context::sketches`, and returns the allocated feature id.
+    ///
+    /// Regeneration uses the same `bootstrap_features_from_calls`
+    /// path the load-from-JSON hook uses: clear `features`, walk
+    /// `feature_calls`, let each registered `FeatureKind::execute`
+    /// rebuild the spine as it goes. Primitive entries land in
+    /// `features`, the new `sketch` entry contributes to the
+    /// context-side `sketches` map. After the walk succeeds,
+    /// `rebuild_packed` resyncs everything and the mesher sees
+    /// the same spine it would have seen if the sketch had been
+    /// there all along.
+    #[wasm_bindgen(js_name = addSketch)]
+    pub fn add_sketch(
+        &mut self,
+        plane_query: &str,
+        sub_calls_json: &str,
+    ) -> Result<u32, JsError> {
+        let sub_calls: Vec<fielddraft_protocol::FeatureCall> =
+            serde_json::from_str(sub_calls_json).map_err(|e| {
+                JsError::new(&format!("invalid sub_calls JSON: {e}"))
+            })?;
+
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+
+        let params = serde_json::json!({
+            "plane": plane_query,
+            "sub_calls": sub_calls,
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "sketch",
+            id.clone(),
+            params,
+        );
+        self.document.feature_calls.push(call);
+
+        // Walk every feature call (primitives + the new sketch)
+        // through the registry so the spine and context are
+        // consistent. On failure we undo via the snapshot.
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            // Undo: pop the feature id counter and the sketch call
+            // we just pushed, then restore from the snapshot.
+            self.undo();
+            return Err(JsError::new(&format!(
+                "sketch regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K6b.3a: fetch the sub-spine sub_calls for a sketch by
+    /// feature id, so the UI can reload an existing sketch when
+    /// the user re-enters it. Returns the JSON array string of
+    /// `FeatureCall`s or an error if the id doesn't point at a
+    /// sketch.
+    #[wasm_bindgen(js_name = getSketchSubCalls)]
+    pub fn get_sketch_sub_calls(&self, id: u32) -> Result<String, JsError> {
+        let target = FeatureId::from_u32(id);
+        let call = self
+            .document
+            .feature_calls
+            .iter()
+            .find(|c| c.id == target && c.type_name == "sketch")
+            .ok_or_else(|| {
+                JsError::new(&format!("feature {id} is not a sketch"))
+            })?;
+        let sub = call
+            .params
+            .get("sub_calls")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+        serde_json::to_string(&sub).map_err(|e| JsError::new(&e.to_string()))
     }
 
     // ── mutations ─────────────────────────────────────────────────────
@@ -1496,6 +1650,119 @@ mod tests {
     }
 
     // ─── kernel mutations + undo/redo ────────────────────────────────
+
+    // ─── K6b.3a: sketch commit path ─────────────────────────────────
+
+    #[test]
+    fn add_sketch_appends_a_sketch_feature_call_and_preserves_primitives() {
+        let mut k = Kernel::new();
+        // Start with a box so we can confirm the primitive survives
+        // the sketch add + regeneration round trip.
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+
+        let sub_calls = r#"[
+            {
+                "type": "sketch_line",
+                "id": "100",
+                "params": { "start": [0.0, 0.0], "end": [20.0, 0.0] }
+            }
+        ]"#;
+        let sketch_id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", sub_calls)
+            .unwrap();
+        assert_ne!(sketch_id, box_id);
+
+        // feature_calls: [box, sketch] — sketch is appended after
+        // the primitive survivors.
+        assert_eq!(k.document.feature_calls.len(), 2);
+        assert_eq!(k.document.feature_calls[0].type_name, "box");
+        assert_eq!(k.document.feature_calls[1].type_name, "sketch");
+
+        // The primitive spine still has the box.
+        assert_eq!(k.document.features.len(), 1);
+        assert_eq!(k.document.features[0].id.as_u32_if_flat(), Some(box_id));
+
+        // listFeatures reports both rows with the right kinds.
+        let list_json = k.list_features().unwrap();
+        let list: serde_json::Value = serde_json::from_str(&list_json).unwrap();
+        let arr = list.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["kind"], serde_json::json!("box"));
+        assert_eq!(arr[1]["kind"], serde_json::json!("sketch"));
+        assert_eq!(arr[1]["name"], serde_json::json!(format!("Sketch {sketch_id}")));
+    }
+
+    #[test]
+    fn add_sketch_survives_subsequent_primitive_mutations() {
+        // K6b.3a regression guard: adding a sketch and then
+        // adding a box must leave both entries in the feature
+        // calls list. The old sync_feature_calls wipe-and-rebuild
+        // would have dropped the sketch.
+        let mut k = Kernel::new();
+        let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", "[]").unwrap();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                5.0,
+                5.0,
+                5.0,
+            )
+            .unwrap();
+        assert_ne!(sketch_id, box_id);
+        assert_eq!(k.document.feature_calls.len(), 2);
+        assert!(k
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.type_name == "sketch"));
+        assert!(k
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.type_name == "box"));
+    }
+
+    #[test]
+    fn get_sketch_sub_calls_returns_the_committed_sub_spine() {
+        let mut k = Kernel::new();
+        let sub_calls = r#"[
+            { "type": "sketch_point", "id": "100", "params": { "at": [1.0, 2.0] } },
+            { "type": "sketch_point", "id": "101", "params": { "at": [3.0, 4.0] } }
+        ]"#;
+        let id = k
+            .add_sketch("qCreatedBy(origin_plane_xy)", sub_calls)
+            .unwrap();
+        let back = k.get_sketch_sub_calls(id).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&back).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], serde_json::json!("sketch_point"));
+        assert_eq!(arr[1]["type"], serde_json::json!("sketch_point"));
+    }
+
+    // Error-path tests for `add_sketch` and `get_sketch_sub_calls`
+    // would construct a `JsError`, which panics in non-wasm test
+    // runs because `wasm-bindgen` imports aren't available — the
+    // existing kernel error paths (`parse_op`, malformed JSON in
+    // `load_json`, …) rely on wasm-pack test coverage for the same
+    // reason. Happy-path correctness here is covered above.
+
+    // ─── primitive mutations + undo/redo ─────────────────────────────
 
     #[test]
     fn add_primitive_appends_and_returns_new_id() {

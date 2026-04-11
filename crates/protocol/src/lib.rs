@@ -660,17 +660,40 @@ impl Document {
     /// Rebuild [`Document::feature_calls`] from the current
     /// [`Document::features`] list via
     /// [`FeatureCall::from_spine_feature`]. Called by the kernel's
-    /// `rebuild_packed` after every mutation, so the two
-    /// representations never drift. `O(features)` per call — each
-    /// feature walked once, small JSON blob allocated for its
-    /// params.
+    /// `rebuild_packed` after every mutation.
+    ///
+    /// K6b.3a: the sync now preserves `feature_calls` entries whose
+    /// `type_name` is **not** one of the primitive/spine-backed
+    /// kinds (`box`, `sphere`, `cylinder`, `extrude`). Those
+    /// survive the wipe-and-rebuild and keep their position after
+    /// the regenerated spine entries. This is the extension point
+    /// that lets sketches live in `feature_calls` without ever
+    /// being pushed to the in-memory `features` spine — a sketch
+    /// has no `SpineFeature` shape (no primitive, no transform)
+    /// and lives purely as a wire-form call whose `execute`
+    /// populates `Context::sketches` at regeneration time.
     pub fn sync_feature_calls(&mut self) {
-        self.feature_calls = self
+        let surviving: Vec<FeatureCall> = self
+            .feature_calls
+            .drain(..)
+            .filter(|c| !is_spine_type(&c.type_name))
+            .collect();
+        let mut next: Vec<FeatureCall> = self
             .features
             .iter()
             .map(FeatureCall::from_spine_feature)
             .collect();
+        next.extend(surviving);
+        self.feature_calls = next;
     }
+}
+
+/// Feature type names whose `FeatureCall` entries mirror a real
+/// [`Feature`] on the document spine. Used by
+/// [`Document::sync_feature_calls`] to decide which entries to
+/// rebuild from `features` vs. which ones to preserve verbatim.
+fn is_spine_type(type_name: &str) -> bool {
+    matches!(type_name, "box" | "sphere" | "cylinder" | "extrude")
 }
 
 #[cfg(test)]
@@ -725,6 +748,43 @@ mod tests {
         assert_eq!(doc.feature_calls[0].id, id1);
         assert_eq!(doc.feature_calls[1].type_name, "sphere");
         assert_eq!(doc.feature_calls[1].id, id2);
+    }
+
+    #[test]
+    fn sync_feature_calls_preserves_non_spine_entries() {
+        // K6b.3a: a `sketch` FeatureCall lives in `feature_calls`
+        // without a matching `features` spine entry. After a
+        // sync it must still be there, positioned after the
+        // rebuilt primitive entries.
+        let mut doc = Document::default();
+        let id_box = doc.allocate_id();
+        let id_sketch = doc.allocate_id();
+        doc.features.push(Feature {
+            id: id_box.clone(),
+            name: "Base".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+            transform: Transform::IDENTITY,
+        });
+        doc.feature_calls.push(FeatureCall::new(
+            "sketch",
+            id_sketch.clone(),
+            serde_json::json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [],
+            }),
+        ));
+
+        doc.sync_feature_calls();
+
+        assert_eq!(doc.feature_calls.len(), 2);
+        assert_eq!(doc.feature_calls[0].type_name, "box");
+        assert_eq!(doc.feature_calls[0].id, id_box);
+        assert_eq!(doc.feature_calls[1].type_name, "sketch");
+        assert_eq!(doc.feature_calls[1].id, id_sketch);
     }
 
     #[test]

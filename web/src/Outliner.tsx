@@ -30,6 +30,8 @@ const KIND_GLYPH: Record<string, string> = {
   box: "▣",
   sphere: "●",
   cylinder: "⬢",
+  sketch: "✎",
+  extrude: "↥",
 };
 
 function nameToTag(op: BoolOpName): BoolOpTagValue {

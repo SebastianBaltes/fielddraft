@@ -557,6 +557,43 @@ export class KernelStore {
   applySketchToolDraft(): void {
     this.updateSketch(reduceApply(this.state.sketchSession));
   }
+
+  /**
+   * K6b.3a: commit the current sketch session to the kernel as
+   * a real `sketch` FeatureCall. Called from the "Finish"
+   * button. Pushes the session's accumulated sub_calls through
+   * `kernel.addSketch`, lets the kernel regenerate, then exits
+   * sketch mode. If the session has no sub_calls yet, or no
+   * plane is set, the session is simply dropped — same as a
+   * cancel.
+   */
+  commitSketch(): number | null {
+    const session = this.state.sketchSession;
+    if (!session.active || session.planeQuery === null) {
+      this.exitSketch();
+      return null;
+    }
+    if (session.subCalls.length === 0) {
+      this.exitSketch();
+      return null;
+    }
+    let id: number | null = null;
+    try {
+      id = this.kernel.addSketch(
+        session.planeQuery,
+        session.subCalls.map((c) => ({ type: c.type, params: c.params })),
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addSketch failed", err);
+      return null;
+    }
+    // Commit goes through the standard store `commit` path so
+    // features, selection, meshes and autosave all refresh.
+    this.updateSketch(reduceExit(this.state.sketchSession));
+    this.commit(id !== null ? new Set([id]) : undefined, id);
+    return id;
+  }
 }
 
 let singleton: KernelStore | null = null;
