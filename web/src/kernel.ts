@@ -66,7 +66,16 @@ export type PrimitiveKindName = "box" | "sphere" | "cylinder";
  *  whose kind is a non-primitive feature type like "sketch" or
  *  "extrude". The outliner handles them generically by keying
  *  glyphs / labels off the string. */
-export type FeatureKindName = PrimitiveKindName | "sketch" | "extrude" | "unknown";
+export type FeatureKindName =
+  | PrimitiveKindName
+  | "sketch"
+  | "extrude"
+  | "revolve"
+  | "hole"
+  | "linear_pattern"
+  | "circular_pattern"
+  | "mirror"
+  | "unknown";
 
 export interface FeatureSummary {
   id: number;
@@ -473,6 +482,18 @@ export class Kernel {
     pz: number,
   ): number {
     return this.inner.addMirror(sourceId, nx, ny, nz, px, py, pz);
+  }
+
+  /** K8.9: append a hole feature — a parametric cylinder
+   *  subtract with `Length`-typed diameter and depth. */
+  addHole(
+    diameterMm: number,
+    depthMm: number,
+    tx = 0,
+    ty = 0,
+    tz = 0,
+  ): number {
+    return this.inner.addHole(diameterMm, depthMm, tx, ty, tz);
   }
 
   /** K8.4: append a revolve feature that consumes the sketch

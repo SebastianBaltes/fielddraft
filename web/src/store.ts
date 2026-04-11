@@ -356,6 +356,32 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
+  /** K8.9: append a hole feature at the next per-add stagger
+   *  position. Defaults to a 6 mm through-hole 40 mm deep. */
+  addHole(diameterMm = 6, depthMm = 40): number {
+    const offset: [number, number, number] = [
+      this.state.features.length * 80,
+      0,
+      0,
+    ];
+    let id: number;
+    try {
+      id = this.kernel.addHole(
+        diameterMm,
+        depthMm,
+        offset[0],
+        offset[1],
+        offset[2],
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addHole failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   addPrimitive(kind: PrimitiveKindName, op: BoolOpTagValue = this.state.nextOp): number {
     // Default sizes are tuned to be clearly readable inside the
     // ~600 mm build volume, and the per-add stagger pulls each new

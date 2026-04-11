@@ -176,6 +176,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Add Hole (Ø6 × 40 mm, subtract)"
+          data-testid="add-hole"
+          onClick={() => store.addHole()}
+        >
+          ⊖ Hole
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Sketch (lock XY origin plane)"
           data-testid="enter-sketch"
           onClick={handleSketchEnter}

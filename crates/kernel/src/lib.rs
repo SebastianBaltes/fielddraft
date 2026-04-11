@@ -599,6 +599,10 @@ impl Kernel {
         match type_name {
             "box" | "sphere" | "cylinder" => Self::kind_label(prim),
             "extrude" => "extrude",
+            // K8.9: hole lowers to Primitive::Cylinder but must
+            // keep its own outliner label so the row renders
+            // "Hole" glyphs/colours instead of the cylinder one.
+            "hole" => "hole",
             _ => Self::static_kind_name(type_name),
         }
     }
@@ -613,6 +617,7 @@ impl Kernel {
             "cylinder" => "cylinder",
             "extrude" => "extrude",
             "revolve" => "revolve",
+            "hole" => "hole",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -639,6 +644,7 @@ impl Kernel {
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
             "revolve" => "Revolve",
+            "hole" => "Hole",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -866,12 +872,39 @@ impl Kernel {
                     suppressed: call.suppressed,
                 });
             } else {
+                // K8.9: hole pushes its spine entry under a
+                // hierarchical child id (`<hole>/0`), so the
+                // lookup above misses it. Surface the op that
+                // matches the kind's known hard-coded semantics
+                // here instead of defaulting to "union".
+                let op = match call.type_name.as_str() {
+                    "hole" => "difference",
+                    _ => "union",
+                };
+                // Try to pull the world-space translate from
+                // the call's params so the outliner's ghost
+                // meta badge shows the hole's real position.
+                let translate = call
+                    .params
+                    .get("translate")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        if arr.len() != 3 {
+                            return None;
+                        }
+                        let mut out = [0.0_f32; 3];
+                        for (i, item) in arr.iter().enumerate() {
+                            out[i] = item.as_f64()? as f32;
+                        }
+                        Some(out)
+                    })
+                    .unwrap_or([0.0, 0.0, 0.0]);
                 summaries.push(FeatureSummary {
                     id: call.id.clone(),
                     name: Self::synth_name_for_call(call),
-                    op: "union",
+                    op,
                     kind: Self::static_kind_name(&call.type_name),
-                    translate: [0.0, 0.0, 0.0],
+                    translate,
                     scale: 1.0,
                     suppressed: call.suppressed,
                 });
@@ -1112,6 +1145,40 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "revolve regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K8.9: append a `hole` feature call. Thin convenience
+    /// wrapper that serialises the typed diameter/depth/translate
+    /// into a FeatureCall and bootstraps. Returns the new id.
+    #[wasm_bindgen(js_name = addHole)]
+    pub fn add_hole(
+        &mut self,
+        diameter_mm: f32,
+        depth_mm: f32,
+        tx: f32,
+        ty: f32,
+        tz: f32,
+    ) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "diameter": { "value": diameter_mm, "unit": "mm" },
+            "depth": { "value": depth_mm, "unit": "mm" },
+            "translate": [tx, ty, tz],
+        });
+        let call = fielddraft_protocol::FeatureCall::new("hole", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "hole regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();

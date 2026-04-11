@@ -820,6 +820,63 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.9: hole carves a cylinder out of a box and exports", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.getByTestId("add-box").click();
+    await page.getByTestId("add-hole").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    // The hole row advertises its kind as `hole`, is op=difference,
+    // and carries diameter/depth in its wire-form params.
+    await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
+      "data-feature-kind",
+      "hole",
+    );
+    await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
+      "data-feature-op",
+      "difference",
+    );
+
+    const params = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      return kernel ? kernel.getFeatureCallParams(2) : null;
+    });
+    expect(params).not.toBeNull();
+    const diameter = (params as { diameter?: { value?: number } }).diameter;
+    const depth = (params as { depth?: { value?: number } }).depth;
+    expect(diameter?.value).toBeCloseTo(6, 5);
+    expect(depth?.value).toBeCloseTo(40, 5);
+
+    // Export STL — box minus hole produces a valid mesh.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    expect(stat.size).toBeGreaterThan(500);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

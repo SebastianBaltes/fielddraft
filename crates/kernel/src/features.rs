@@ -212,6 +212,7 @@ impl FeatureRegistry {
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(RevolveFeature));
+        r.register(Box::new(HoleFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
@@ -452,6 +453,88 @@ impl FeatureKind for CylinderPrimitive {
                 center: d.center,
                 radius: d.radius,
                 half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+        });
+        Ok(())
+    }
+}
+
+// ─── K8.9: Hole ──────────────────────────────────────────────────
+//
+// HoleFeature is a parametric subtract-cylinder. It carries the
+// same geometry as a `cylinder` call with op=difference, but the
+// dialog-facing schema uses `Length`-typed `diameter` and `depth`
+// fields (Onshape parity) so users don't have to mentally halve
+// the diameter into a radius or double the depth into a
+// half-height. The execute path lowers to Primitive::Cylinder
+// with half_extent math done at the model-unit boundary, which
+// keeps the mesher and BVH completely ignorant of the dedicated
+// Hole kind.
+//
+// The `op` field is intentionally absent: a hole that adds
+// material isn't a hole. If the user wants to turn it into a
+// union or intersect they can delete it and add a regular
+// cylinder feature instead.
+
+/// `hole` — parametric cylinder subtract with diameter + depth.
+#[derive(FeatureSchema)]
+#[schema(type = "hole")]
+pub struct HoleDef {
+    /// Diameter at the mouth of the hole.
+    pub diameter: ::fielddraft_protocol::Length,
+    /// Total depth along the local Y axis.
+    pub depth: ::fielddraft_protocol::Length,
+    /// World-space position of the hole's centre.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+}
+
+pub struct HoleFeature;
+
+impl FeatureKind for HoleFeature {
+    fn type_name(&self) -> &'static str {
+        HoleDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        HoleDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = HoleDef::parse(def)?;
+        let diameter_mm = d.diameter.to_mm();
+        let depth_mm = d.depth.to_mm();
+        positive_f32(diameter_mm, HoleDef::TYPE_NAME, "diameter")?;
+        positive_f32(depth_mm, HoleDef::TYPE_NAME, "depth")?;
+
+        let name = optional_display_name(def, || format!("Hole {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        // Spine entry uses a hierarchical child id (`<hole>/0`)
+        // so `Document::sync_feature_calls` drops it on the
+        // next sync — the authoritative wire form is the
+        // original `hole` FeatureCall, and we don't want a
+        // stray `cylinder` FeatureCall to be synthesised from
+        // the derived primitive. Same pattern the K8.0 pattern
+        // features use for their spine clones.
+        ctx.document.features.push(SpineFeature {
+            id: id.child("0"),
+            name,
+            op: BoolOp::Difference,
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: diameter_mm / 2.0,
+                half_height: depth_mm / 2.0,
             },
             transform: Transform {
                 translate: d.translate,
@@ -1214,13 +1297,14 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K8.4 grows the built-in set to include revolve.
-        assert_eq!(registry.len(), 9);
+        // K8.9 grows the built-in set to include hole.
+        assert_eq!(registry.len(), 10);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
         assert!(registry.get("revolve").is_some());
+        assert!(registry.get("hole").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
@@ -1265,6 +1349,7 @@ mod tests {
                 "circular_pattern",
                 "cylinder",
                 "extrude",
+                "hole",
                 "linear_pattern",
                 "mirror",
                 "revolve",
@@ -2692,6 +2777,73 @@ mod tests {
             FeatureError::InvalidParameter {
                 feature: "circular_pattern",
                 name: "axis",
+                ..
+            }
+        ));
+    }
+
+    // ─── K8.9: hole ───────────────────────────────────────────
+
+    #[test]
+    fn hole_lowers_to_difference_cylinder_with_diameter_halved() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let call = FeatureCall::new(
+            "hole",
+            id(1),
+            json!({
+                "diameter": { "value": 6.0, "unit": "mm" },
+                "depth": { "value": 40.0, "unit": "mm" },
+                "translate": [10.0, 0.0, 0.0],
+            }),
+        );
+        registry.regenerate(&mut ctx, &[call]).unwrap();
+        assert_eq!(doc.features.len(), 1);
+        let f = &doc.features[0];
+        // Spine entry uses the hierarchical child id `1/0` so
+        // sync_feature_calls skips it.
+        assert_eq!(f.id, id(1).child("0"));
+        assert!(f.id.parent().is_some());
+        assert_eq!(f.op, BoolOp::Difference);
+        assert_eq!(f.transform.translate, [10.0, 0.0, 0.0]);
+        match &f.primitive {
+            Primitive::Cylinder {
+                center,
+                radius,
+                half_height,
+            } => {
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                assert!((*radius - 3.0).abs() < 1e-5);
+                assert!((*half_height - 20.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Cylinder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hole_rejects_non_positive_diameter() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "hole",
+                    id(1),
+                    json!({
+                        "diameter": { "value": 0.0, "unit": "mm" },
+                        "depth": { "value": 10.0, "unit": "mm" },
+                    }),
+                )],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            FeatureError::InvalidParameter {
+                feature: "hole",
+                name: "diameter",
                 ..
             }
         ));
