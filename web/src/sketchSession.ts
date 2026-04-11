@@ -162,6 +162,65 @@ export function buildDraftSketchState(
           end: endId,
         });
       }
+    } else if (call.type === "sketch_rectangle") {
+      // Mirror the kernel `SketchRectangleTool` allocation
+      // order: bl, br, tr, tl, bottom, right, top, left,
+      // horizontal × 2, vertical × 2. Any drift between the
+      // two sides shifts entity ids and silently corrupts
+      // later constraint references.
+      const a = call.params.corner_a;
+      const b = call.params.corner_b;
+      if (
+        Array.isArray(a) &&
+        a.length === 2 &&
+        Array.isArray(b) &&
+        b.length === 2
+      ) {
+        const ax = Number(a[0]);
+        const ay = Number(a[1]);
+        const bx = Number(b[0]);
+        const by = Number(b[1]);
+        const minX = Math.min(ax, bx);
+        const minY = Math.min(ay, by);
+        const maxX = Math.max(ax, bx);
+        const maxY = Math.max(ay, by);
+        const blId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: blId, at: { x: minX, y: minY } });
+        const brId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: brId, at: { x: maxX, y: minY } });
+        const trId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: trId, at: { x: maxX, y: maxY } });
+        const tlId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: tlId, at: { x: minX, y: maxY } });
+        const bottomId = state.next_entity_id++;
+        state.entities.push({ kind: "line", id: bottomId, start: blId, end: brId });
+        const rightId = state.next_entity_id++;
+        state.entities.push({ kind: "line", id: rightId, start: brId, end: trId });
+        const topId = state.next_entity_id++;
+        state.entities.push({ kind: "line", id: topId, start: trId, end: tlId });
+        const leftId = state.next_entity_id++;
+        state.entities.push({ kind: "line", id: leftId, start: tlId, end: blId });
+        state.constraints.push({
+          kind: "horizontal",
+          id: state.next_constraint_id++,
+          line: bottomId,
+        });
+        state.constraints.push({
+          kind: "horizontal",
+          id: state.next_constraint_id++,
+          line: topId,
+        });
+        state.constraints.push({
+          kind: "vertical",
+          id: state.next_constraint_id++,
+          line: rightId,
+        });
+        state.constraints.push({
+          kind: "vertical",
+          id: state.next_constraint_id++,
+          line: leftId,
+        });
+      }
     } else if (call.type === "sketch_constraint_horizontal") {
       const line = Number(call.params.line);
       if (Number.isFinite(line)) {

@@ -78,6 +78,11 @@ type DragState =
        *  the snap was a coincident-to-point hit. Used by the
        *  commit path to emit a matching coincident constraint. */
       startAnchorId: number | null;
+    }
+  | {
+      kind: "rectangle";
+      start: [number, number];
+      current: [number, number];
     };
 
 /**
@@ -310,6 +315,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         startAnchorId: snap.coincidentTargetId,
       };
       lastCamVersionRef.current = -1;
+      return;
+    }
+    if (session.selectedTool === "sketch_rectangle") {
+      dragRef.current = {
+        kind: "rectangle",
+        start: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
     }
   };
 
@@ -326,6 +341,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
+    } else if (dragRef.current.kind === "rectangle") {
+      // Rectangles don't run inference at the drag endpoint —
+      // the H/V constraints are implicit in the tool itself, so
+      // an orientation snap would be redundant. Shift still
+      // suppresses; hover snap is also disabled while dragging.
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+      snapRef.current = {
+        snapped: [u, v],
+        candidate: null,
+        anchor: null,
+        coincidentTargetId: null,
+      };
     } else {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
@@ -347,7 +374,62 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
   };
 
+  const scheduleSolverReplay = () => {
+    if (!store) return;
+    void (async () => {
+      const before = store.getState().sketchSession;
+      if (!before.active) return;
+      const snapshot = before.subCalls;
+      try {
+        const state = buildDraftSketchState(snapshot);
+        const result = await solveSketch(state);
+        const rebuilt = rebuildSubCallsFromSolved(snapshot, result.state);
+        const after = store.getState().sketchSession;
+        if (!after.active || after.subCalls !== snapshot) return;
+        store.replaceSketchSubCalls(rebuilt);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("fielddraft: solveSketch failed", err);
+      }
+    })();
+  };
+
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragRef.current.kind === "rectangle") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { start, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const [cx, cy] = current;
+      // Reject near-zero-area rectangles.
+      const dx = cx - start[0];
+      const dy = cy - start[1];
+      if (dx * dx + dy * dy < 1e-4) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readSketchCamera(),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_rectangle",
+          params: {
+            corner_a: [start[0], start[1]] as [number, number],
+            corner_b: [cx, cy] as [number, number],
+          },
+        },
+      ]);
+      scheduleSolverReplay();
+      return;
+    }
     if (dragRef.current.kind !== "line") return;
     (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
     const cam = readSketchCamera();
@@ -436,30 +518,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
 
     store.pushSketchSubCalls(newCalls);
-
-    // Fire-and-forget commit-time solver pass. Solves the full
-    // session state, reads back the solved coordinates and
-    // writes them back into the sub_calls so every subsequent
-    // render (and the eventual Finish commit into the kernel)
-    // sees the solved shape. If the user added more sub_calls
-    // or exited sketch mode before the solver resolves, the
-    // stale result is dropped.
-    void (async () => {
-      const before = store.getState().sketchSession;
-      if (!before.active) return;
-      const snapshot = before.subCalls;
-      try {
-        const state = buildDraftSketchState(snapshot);
-        const result = await solveSketch(state);
-        const rebuilt = rebuildSubCallsFromSolved(snapshot, result.state);
-        const after = store.getState().sketchSession;
-        if (!after.active || after.subCalls !== snapshot) return;
-        store.replaceSketchSubCalls(rebuilt);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("fielddraft: solveSketch failed", err);
-      }
-    })();
+    scheduleSolverReplay();
   };
 
   const onPointerCancel = () => {
@@ -545,6 +604,20 @@ function rebuildSubCallsFromSolved(
         params: { ...call.params, start, end },
       };
     }
+    if (call.type === "sketch_rectangle") {
+      // Match the bl/br/tr/tl allocation order — corner_a maps
+      // to bl, corner_b maps to tr.
+      const bl = pointAt(nextId++);
+      nextId += 1; // br
+      const tr = pointAt(nextId++);
+      nextId += 1; // tl
+      nextId += 4; // bottom, right, top, left
+      if (!bl || !tr) return call;
+      return {
+        ...call,
+        params: { ...call.params, corner_a: bl, corner_b: tr },
+      };
+    }
     // Constraint calls don't allocate entities; leave them
     // verbatim.
     return call;
@@ -597,6 +670,10 @@ function drawOverlay(
     } else if (call.type === "sketch_point") {
       const at = toXy(call.params.at);
       if (at) drawPoint(ctx, at, cam, COLOR_COMMITTED);
+    } else if (call.type === "sketch_rectangle") {
+      const a = toXy(call.params.corner_a);
+      const b = toXy(call.params.corner_b);
+      if (a && b) drawRectangle(ctx, a, b, cam, COLOR_COMMITTED);
     }
   }
 
@@ -606,6 +683,10 @@ function drawOverlay(
     drawPoint(ctx, start, cam, COLOR_PREVIEW);
     drawPoint(ctx, current, cam, COLOR_PREVIEW);
     drawDistanceLabel(ctx, start, current, cam);
+  } else if (drag.kind === "rectangle") {
+    const { start, current } = drag;
+    drawRectangle(ctx, start, current, cam, COLOR_PREVIEW);
+    drawSizeLabel(ctx, start, current, cam);
   } else if (hover) {
     // Hover preview outside of a drag — shows where a click
     // would land, which is crucial to see the snap magnetism
@@ -674,6 +755,63 @@ function drawLine(
   ctx.moveTo(ax, ay);
   ctx.lineTo(bx, by);
   ctx.stroke();
+  ctx.restore();
+}
+
+function drawRectangle(
+  ctx: CanvasRenderingContext2D,
+  a: [number, number],
+  b: [number, number],
+  cam: Readonly<SketchCameraState>,
+  color: string,
+): void {
+  const minX = Math.min(a[0], b[0]);
+  const maxX = Math.max(a[0], b[0]);
+  const minY = Math.min(a[1], b[1]);
+  const maxY = Math.max(a[1], b[1]);
+  const bl: [number, number] = [minX, minY];
+  const br: [number, number] = [maxX, minY];
+  const tr: [number, number] = [maxX, maxY];
+  const tl: [number, number] = [minX, maxY];
+  drawLine(ctx, bl, br, cam, color, STROKE_PX);
+  drawLine(ctx, br, tr, cam, color, STROKE_PX);
+  drawLine(ctx, tr, tl, cam, color, STROKE_PX);
+  drawLine(ctx, tl, bl, cam, color, STROKE_PX);
+  drawPoint(ctx, bl, cam, color);
+  drawPoint(ctx, br, cam, color);
+  drawPoint(ctx, tr, cam, color);
+  drawPoint(ctx, tl, cam, color);
+}
+
+function drawSizeLabel(
+  ctx: CanvasRenderingContext2D,
+  a: [number, number],
+  b: [number, number],
+  cam: Readonly<SketchCameraState>,
+): void {
+  const w = Math.abs(b[0] - a[0]);
+  const h = Math.abs(b[1] - a[1]);
+  if (w < 1e-4 && h < 1e-4) return;
+  const centre: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const [px, py] = sketchToScreen(centre[0], centre[1], cam);
+  const text = `${w.toFixed(2)} × ${h.toFixed(2)} mm`;
+  ctx.save();
+  ctx.font = LABEL_FONT;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const metrics = ctx.measureText(text);
+  const textW = metrics.width;
+  const textH = 16;
+  const boxX = px - textW / 2 - LABEL_PADDING;
+  const boxY = py - textH / 2 - LABEL_PADDING / 2;
+  ctx.fillStyle = LABEL_BG;
+  ctx.strokeStyle = COLOR_COMMITTED;
+  ctx.lineWidth = 1;
+  roundRect(ctx, boxX, boxY, textW + LABEL_PADDING * 2, textH + LABEL_PADDING, 4);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = LABEL_FG;
+  ctx.fillText(text, px, py);
   ctx.restore();
 }
 

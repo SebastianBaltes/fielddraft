@@ -107,12 +107,13 @@ impl SketchToolRegistry {
         }
     }
 
-    /// Empty registry pre-populated with the K6b.1 + K6b.3d
-    /// built-in sketch tools.
+    /// Empty registry pre-populated with every built-in sketch
+    /// tool.
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
         r.register(Box::new(SketchPointTool));
         r.register(Box::new(SketchLineTool));
+        r.register(Box::new(SketchRectangleTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
@@ -219,6 +220,81 @@ impl SketchToolKind for SketchLineTool {
         let start = state.add_point(Point2::new(d.start[0] as f64, d.start[1] as f64));
         let end = state.add_point(Point2::new(d.end[0] as f64, d.end[1] as f64));
         state.add_line(start, end);
+        Ok(())
+    }
+}
+
+// ─── K6b.3e: rectangle ──────────────────────────────────────────
+//
+// `sketch_rectangle` is the first *composite* sketch tool: a
+// single sub-spine call that materialises into four points,
+// four lines and four H/V constraints in one apply pass. The
+// UI sees one entry in the sub-spine list and one preview on
+// the 2D canvas, but the underlying `SketchState` is wired up
+// the same way Onshape's corner-rectangle landing is — four
+// horizontal/vertical-constrained edges the solver can keep
+// axis-aligned through downstream edits.
+//
+// The allocation order below is load-bearing: `buildDraftSketchState`
+// on the TS side replicates it byte-for-byte so predicted entity
+// ids match the kernel's. Do not reorder the `add_point` /
+// `add_line` / `add_constraint` calls without updating the TS
+// mirror.
+
+/// `sketch_rectangle` — axis-aligned rectangle defined by two
+/// diagonal corners. Internally lowers to four corner points,
+/// four edge lines and four H/V constraints.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_rectangle")]
+pub struct SketchRectangleDef {
+    pub corner_a: [f32; 2],
+    pub corner_b: [f32; 2],
+}
+
+pub struct SketchRectangleTool;
+
+impl SketchToolKind for SketchRectangleTool {
+    fn type_name(&self) -> &'static str {
+        SketchRectangleDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchRectangleDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchRectangleDef::parse(def)?;
+        let ax = d.corner_a[0] as f64;
+        let ay = d.corner_a[1] as f64;
+        let bx = d.corner_b[0] as f64;
+        let by = d.corner_b[1] as f64;
+        // Corners in a fixed allocation order: bl, br, tr, tl.
+        // The TS mirror predicts entity ids from this ordering,
+        // so changing it is a cross-crate break.
+        let min_x = ax.min(bx);
+        let min_y = ay.min(by);
+        let max_x = ax.max(bx);
+        let max_y = ay.max(by);
+        let bl = state.add_point(Point2::new(min_x, min_y));
+        let br = state.add_point(Point2::new(max_x, min_y));
+        let tr = state.add_point(Point2::new(max_x, max_y));
+        let tl = state.add_point(Point2::new(min_x, max_y));
+        // Edges, same order: bottom, right, top, left.
+        let bottom = state.add_line(bl, br);
+        let right = state.add_line(br, tr);
+        let top = state.add_line(tr, tl);
+        let left = state.add_line(tl, bl);
+        // Horizontal first (bottom, top), then vertical (right,
+        // left) — the TS constraint-id mirror uses this order.
+        state.add_constraint(|id| Constraint::Horizontal { id, line: bottom });
+        state.add_constraint(|id| Constraint::Horizontal { id, line: top });
+        state.add_constraint(|id| Constraint::Vertical { id, line: right });
+        state.add_constraint(|id| Constraint::Vertical { id, line: left });
         Ok(())
     }
 }
@@ -629,7 +705,7 @@ mod tests {
 
     #[test]
     fn sketch_registry_type_names_lists_all_builtins() {
-        // K6b.3d grows the built-in set with three constraint tools.
+        // K6b.3e adds sketch_rectangle to the built-in set.
         let tools = SketchToolRegistry::with_builtins();
         let mut names = tools.type_names();
         names.sort();
@@ -641,8 +717,76 @@ mod tests {
                 "sketch_constraint_vertical".to_string(),
                 "sketch_line".to_string(),
                 "sketch_point".to_string(),
+                "sketch_rectangle".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn sketch_rectangle_tool_emits_four_points_four_lines_and_four_constraints() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_rectangle",
+            id(1),
+            json!({ "corner_a": [0.0, 0.0], "corner_b": [20.0, 10.0] }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let point_count = state
+            .entities
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Point { .. }))
+            .count();
+        let line_count = state
+            .entities
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Line { .. }))
+            .count();
+        assert_eq!(point_count, 4);
+        assert_eq!(line_count, 4);
+        assert_eq!(state.constraints.len(), 4);
+        let h = state
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, Constraint::Horizontal { .. }))
+            .count();
+        let v = state
+            .constraints
+            .iter()
+            .filter(|c| matches!(c, Constraint::Vertical { .. }))
+            .count();
+        assert_eq!(h, 2);
+        assert_eq!(v, 2);
+    }
+
+    #[test]
+    fn sketch_rectangle_normalises_diagonal_corners() {
+        // Drag from top-right to bottom-left should still produce
+        // a rectangle whose bl corner is at (min_x, min_y).
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        tools
+            .apply_all(
+                &mut state,
+                std::slice::from_ref(&FeatureCall::new(
+                    "sketch_rectangle",
+                    id(1),
+                    json!({ "corner_a": [20.0, 10.0], "corner_b": [0.0, 0.0] }),
+                )),
+            )
+            .unwrap();
+        // First allocated entity is bl, which must be at (0, 0).
+        let bl = state
+            .entities
+            .iter()
+            .find(|e| matches!(e, fielddraft_solver::Entity::Point { id: fielddraft_solver::EntityId(1), .. }))
+            .unwrap();
+        if let fielddraft_solver::Entity::Point { at, .. } = bl {
+            assert!((at.x - 0.0).abs() < 1e-9);
+            assert!((at.y - 0.0).abs() < 1e-9);
+        } else {
+            panic!("expected point entity");
+        }
     }
 
     #[test]

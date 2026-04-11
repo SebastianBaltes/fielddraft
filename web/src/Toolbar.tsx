@@ -23,10 +23,10 @@ const DEFAULT_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
   sketch_point: { label: "Point", glyph: "•" },
   sketch_line: { label: "Line", glyph: "╱" },
+  sketch_rectangle: { label: "Rectangle", glyph: "▭" },
 };
 
 const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [
-  { type: "sketch_rectangle", label: "Rectangle", glyph: "▭" },
   { type: "sketch_circle", label: "Circle", glyph: "○" },
   { type: "sketch_arc", label: "Arc", glyph: "◠" },
   { type: "sketch_trim", label: "Trim", glyph: "✂" },

@@ -378,6 +378,89 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("rectangle tool drags a rectangle and solves every side axis-aligned", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+
+    // Drag a rectangle across the canvas. The rectangle tool's
+    // internal H/V constraints are independent of the cursor
+    // direction, so even a diagonal drag should land as an
+    // axis-aligned rectangle after the commit-time solver runs.
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const startX = cx - 120;
+    const startY = cy - 60;
+    const endX = cx + 100;
+    const endY = cy + 80;
+
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy, { steps: 5 });
+    await page.mouse.move(endX, endY, { steps: 10 });
+    await page.mouse.up();
+
+    // One sub-spine entry: the rectangle call. All four
+    // constraints are internal to the tool, not separate rows.
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(1);
+
+    await page.waitForTimeout(800);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!.length).toBe(1);
+    const rect = committed![0] as {
+      type: string;
+      params: { corner_a: [number, number]; corner_b: [number, number] };
+    };
+    expect(rect.type).toBe("sketch_rectangle");
+    // After solving, bl = (min_x, min_y) and tr = (max_x, max_y)
+    // — the rectangle's extents are non-degenerate and the
+    // corners are ordered so the width and height are positive.
+    const [ax, ay] = rect.params.corner_a;
+    const [bx, by] = rect.params.corner_b;
+    expect(bx - ax).toBeGreaterThan(0);
+    expect(by - ay).toBeGreaterThan(0);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];
