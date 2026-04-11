@@ -12,6 +12,7 @@ pub mod body;
 pub mod bvh;
 pub mod csg;
 pub mod dc;
+pub mod expr;
 pub mod features;
 pub mod queries;
 pub mod export;
@@ -1454,13 +1455,14 @@ impl Kernel {
         Ok(new_flat)
     }
 
-    /// K8.10: upsert a document-level variable. Used by the
-    /// outliner's Variables panel. Snapshots so undo/redo
-    /// walks variable edits the same way it walks feature
-    /// edits. No regen needed — the K8.10 slice only ships
-    /// the table, the K8.11 formula engine will hook regen
-    /// onto variable changes once Length fields can reference
-    /// them.
+    /// K8.10: upsert a document-level variable. Snapshots so
+    /// undo/redo walks variable edits the same way it walks
+    /// feature edits.
+    ///
+    /// K8.11: after the write, re-bootstraps from calls so
+    /// every formula that references the variable picks up
+    /// the new value on the next mesh pass. Pre-K8.11 this
+    /// was a pure state edit with no geometry side effect.
     #[wasm_bindgen(js_name = setVariable)]
     pub fn set_variable(&mut self, name: &str, value: f32) -> Result<(), JsError> {
         let trimmed = name.trim();
@@ -1476,12 +1478,23 @@ impl Kernel {
         self.document
             .variables
             .insert(trimmed.to_string(), value);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "variable set failed to regenerate: {err}"
+            )));
+        }
+        self.rebuild_packed();
         Ok(())
     }
 
     /// K8.10: remove a document-level variable. No-op if the
     /// name isn't in the table; returns `true` when it actually
     /// removed something.
+    ///
+    /// K8.11: re-bootstraps after the remove so any formula
+    /// that referenced the departing variable surfaces as a
+    /// regen error (which rolls the remove back).
     #[wasm_bindgen(js_name = removeVariable)]
     pub fn remove_variable(&mut self, name: &str) -> bool {
         if !self.document.variables.contains_key(name) {
@@ -1489,6 +1502,14 @@ impl Kernel {
         }
         self.snapshot();
         self.document.variables.remove(name);
+        if self.bootstrap_features_from_calls().is_err() {
+            // A downstream formula broke — roll the remove
+            // back. The caller gets `false` and the document
+            // stays consistent.
+            self.undo();
+            return false;
+        }
+        self.rebuild_packed();
         true
     }
 

@@ -269,6 +269,12 @@ impl FeatureRegistry {
         ctx: &mut Context<'_>,
         calls: &[FeatureCall],
     ) -> Result<(), FeatureError> {
+        // K8.11: snapshot the variables table once per
+        // regenerate — execute paths don't mutate it, and
+        // cloning here means the param resolver can borrow
+        // without tangling with the `ctx.document` mutable
+        // borrow.
+        let variables = ctx.document.variables.clone();
         for call in calls {
             // K8.7: suppressed calls drop out of the tree —
             // their `execute` never runs, so no spine/body
@@ -280,7 +286,19 @@ impl FeatureRegistry {
                 .features
                 .get(&call.type_name)
                 .ok_or_else(|| FeatureError::UnknownFeatureType(call.type_name.clone()))?;
-            feature.execute(ctx, &call.id, &call.params)?;
+            // K8.11: resolve any formula-valued params (e.g.
+            // `{value: "=width/2", unit: "mm"}`) against the
+            // document variables before handing them off to
+            // `execute`. Features see plain numeric values and
+            // don't need to know the formula engine exists.
+            let mut resolved = call.params.clone();
+            crate::expr::resolve_params_with_variables(&mut resolved, &variables)
+                .map_err(|e| FeatureError::InvalidParameter {
+                    feature: "<formula>",
+                    name: "params",
+                    message: e.to_string(),
+                })?;
+            feature.execute(ctx, &call.id, &resolved)?;
         }
         Ok(())
     }
@@ -2780,6 +2798,60 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ─── K8.11: formula engine ────────────────────────────────
+
+    #[test]
+    fn regenerate_resolves_length_formulas_against_variables() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        doc.variables.insert("width".to_string(), 50.0);
+        let mut ctx = Context::new(&mut doc);
+        let call = FeatureCall::new(
+            "hole",
+            id(1),
+            json!({
+                // Diameter references a variable via the
+                // K8.11 sigil; depth stays a plain literal.
+                "diameter": { "value": "=width / 5", "unit": "mm" },
+                "depth": { "value": 40.0, "unit": "mm" },
+                "translate": [0.0, 0.0, 0.0],
+            }),
+        );
+        registry.regenerate(&mut ctx, &[call]).unwrap();
+        assert_eq!(doc.features.len(), 1);
+        let f = &doc.features[0];
+        match &f.primitive {
+            Primitive::Cylinder { radius, .. } => {
+                // width(50) / 5 / 2 (hole → radius) = 5
+                assert!((*radius - 5.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Cylinder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regenerate_surfaces_unknown_variable_errors() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let call = FeatureCall::new(
+            "hole",
+            id(1),
+            json!({
+                "diameter": { "value": "=never_defined", "unit": "mm" },
+                "depth": { "value": 40.0, "unit": "mm" },
+            }),
+        );
+        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        match err {
+            FeatureError::InvalidParameter { feature, message, .. } => {
+                assert_eq!(feature, "<formula>");
+                assert!(message.contains("never_defined"));
+            }
+            other => panic!("expected InvalidParameter, got {other:?}"),
+        }
     }
 
     // ─── K8.9: hole ───────────────────────────────────────────

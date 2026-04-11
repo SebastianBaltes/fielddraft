@@ -944,6 +944,103 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.11: Length formulas resolve against variables during regen", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Seed a variable, build a box + hole so the CSG tree
+    // has something to carve out of.
+    await page.getByTestId("variable-new-name").fill("width");
+    await page.getByTestId("variable-new-value").fill("100");
+    await page.getByTestId("variable-add").click();
+    await page.getByTestId("add-box").click();
+    await page.getByTestId("add-hole").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    // Patch the hole's diameter to `=width / 5` via the kernel
+    // directly — the K8.12 slice will wire this through the
+    // LengthInput widget, but the K8.11 resolver is already
+    // live. Hole is feature id 2 because the box is 1.
+    await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            replaceFeatureCallParams: (
+              id: number,
+              params: Record<string, unknown>,
+            ) => void;
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) throw new Error("__fdKernel not exposed");
+      const current = kernel.getFeatureCallParams(2);
+      // Park the hole at the origin so it's guaranteed to
+      // overlap the box, and give it a large fixed depth so
+      // the diameter is the only variable-driven dimension.
+      kernel.replaceFeatureCallParams(2, {
+        ...current,
+        diameter: { value: "=width / 5", unit: "mm" },
+        depth: { value: 200, unit: "mm" },
+        translate: [0, 0, 0],
+      });
+    });
+    await page.waitForTimeout(200);
+
+    // The wire form keeps the formula string verbatim — the
+    // resolver only substitutes at regen time, not on the
+    // canonical document.
+    const stored = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      return kernel ? kernel.getFeatureCallParams(2) : null;
+    });
+    const diameter = (stored as { diameter?: { value?: unknown } }).diameter;
+    expect(diameter?.value).toBe("=width / 5");
+
+    // Editing the variable re-regenerates via store.commit().
+    // The hole follows: width=100 → Ø20 carved from a 100 mm
+    // box. Bump to 500 → hole overflows the box entirely and
+    // the carved STL output *shrinks* (there's less material
+    // left). Either direction proves the formula got
+    // re-resolved.
+    const exportStlSize = async () => {
+      const [download] = await Promise.all([
+        page.waitForEvent("download"),
+        page.getByTestId("export-stl").click(),
+      ]);
+      const p = await download.path();
+      const fs = await import("node:fs/promises");
+      return (await fs.stat(p!)).size;
+    };
+    const smallHole = await exportStlSize();
+    expect(smallHole).toBeGreaterThan(500);
+
+    await page.getByTestId("variable-value-width").fill("500");
+    await page.getByTestId("variable-value-width").press("Enter");
+    await page.waitForTimeout(200);
+    const bigHole = await exportStlSize();
+    // The STL must change — direction depends on how DC
+    // tessellates the intersection, but "the resolver is
+    // live" == "output differs".
+    expect(bigHole).not.toBe(smallHole);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
