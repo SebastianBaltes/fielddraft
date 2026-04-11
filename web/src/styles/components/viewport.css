@@ -24,6 +24,22 @@
     text-align: center;
   }
 
+  & > .fd-sketch-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    /* Passthrough by default: OrbitControls on the R3F Canvas
+     * below owns pointer events until a sketch tool is picked. */
+    pointer-events: none;
+    touch-action: none;
+
+    &.is-tool-active {
+      pointer-events: auto;
+      cursor: crosshair;
+    }
+  }
+
   & > .pick-hud {
     position: absolute;
     top: var(--space-3);

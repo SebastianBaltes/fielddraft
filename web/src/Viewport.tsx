@@ -27,12 +27,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
 import type { PickResult } from "./kernel";
+import { SketchCanvas2d } from "./SketchCanvas2d";
+import { publishSketchCamera } from "./sketchCameraBridge";
 
 /** World-space size of the build-volume reference grid (mm). Matches
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
@@ -66,11 +68,30 @@ interface BodyEntry {
  */
 function KernelMesh() {
   const { state } = useKernelStore();
+  const sketchActive = state?.sketchSession.active ?? false;
 
   // Single material shared by every body mesh. Cheap — Three.js
   // re-binds the shader once and the bodies differ only in their
   // vertex attributes.
   const material = useMemo(() => createKernelMeshMaterial(), []);
+
+  // K6b.3 opening: ghost the existing 3D bodies while a sketch
+  // session is active. Onshape-style: the body geometry stays
+  // visible as a faded reference so the user can place sketch
+  // points against existing features, but it never competes with
+  // the 2D sketch overlay for attention.
+  useEffect(() => {
+    const anyMat = material as unknown as {
+      transparent: boolean;
+      opacity: number;
+      depthWrite: boolean;
+      needsUpdate?: boolean;
+    };
+    anyMat.transparent = sketchActive;
+    anyMat.opacity = sketchActive ? 0.35 : 1;
+    anyMat.depthWrite = !sketchActive;
+    anyMat.needsUpdate = true;
+  }, [material, sketchActive]);
 
   // Ref-based map so we can mutate inside `useFrame` without
   // triggering a React re-render on every poll. React re-renders
@@ -277,8 +298,7 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
-      <SketchDrawingPlane />
-      <SketchOverlay />
+      <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
       {/* Build-volume floor reference. */}
@@ -287,180 +307,38 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   );
 }
 
-/** Y lift for the sketch overlay so it sits just above the grid
- *  helper without z-fighting. */
-const SKETCH_PLANE_Y = 0.5;
-
-/** Map a world-space hit on the XZ ground plane to 2D sketch
- *  coordinates. Mirrors the `(x, y) → (x, SKETCH_PLANE_Y, y)`
- *  lift applied by `SketchOverlay`. */
-function worldHitToSketchXy(hit: THREE.Vector3): [number, number] {
-  return [hit.x, hit.z];
-}
-
 /**
- * K6b.2 follow-up: visual preview of the active sketch session's
- * applied sub-spine. Each `sketch_point` becomes a dot on the
- * sketch plane, each `sketch_line` becomes a fat line segment
- * (drei `Line` with `LineMaterial`, so the stroke is actually
- * visible — vanilla `lineBasicMaterial.linewidth` is capped at
- * 1 px in every real browser). Hidden entirely when the session
- * is inactive.
+ * R3F component that lives inside the Canvas and republishes the
+ * active orthographic camera's state to the module-level
+ * `sketchCameraBridge` every frame. The 2D sketch canvas
+ * overlay (a sibling DOM node of the `<Canvas>`) reads from the
+ * bridge in its own RAF loop, so pan/zoom on the OrbitControls
+ * stays perfectly in sync with the 2D geometry without any React
+ * prop churn.
+ *
+ * When the sketch session is not active we still publish, but
+ * the overlay never mounts, so the cost is a few numeric copies
+ * per frame.
  */
-function SketchOverlay() {
-  const { state } = useKernelStore();
-  const session = state?.sketchSession;
-
-  if (!session?.active) return null;
-
-  const points: Array<{ key: number; pos: [number, number, number] }> = [];
-  const lines: Array<{
-    key: number;
-    a: [number, number, number];
-    b: [number, number, number];
-  }> = [];
-
-  session.subCalls.forEach((call, i) => {
-    if (call.type === "sketch_point") {
-      const at = call.params.at as unknown;
-      if (Array.isArray(at) && at.length === 2) {
-        points.push({
-          key: i,
-          pos: [Number(at[0]), SKETCH_PLANE_Y, Number(at[1])],
-        });
-      }
-    } else if (call.type === "sketch_line") {
-      const start = call.params.start as unknown;
-      const end = call.params.end as unknown;
-      if (
-        Array.isArray(start) &&
-        start.length === 2 &&
-        Array.isArray(end) &&
-        end.length === 2
-      ) {
-        lines.push({
-          key: i,
-          a: [Number(start[0]), SKETCH_PLANE_Y, Number(start[1])],
-          b: [Number(end[0]), SKETCH_PLANE_Y, Number(end[1])],
-        });
-      }
-    }
+function CameraBridgePublisher() {
+  const { camera, size, gl } = useThree();
+  useFrame(() => {
+    const cam = camera as THREE.OrthographicCamera;
+    // K6b.3 opening: plane is world XZ, so sketch coords map to
+    // world (X, Z). Camera pan translates `position.x` and
+    // `position.z` — those are our sketch-plane centre.
+    const centerU = cam.position?.x ?? 0;
+    const centerV = cam.position?.z ?? 0;
+    publishSketchCamera({
+      width: size.width,
+      height: size.height,
+      zoom: (cam.zoom ?? 1) as number,
+      centerU,
+      centerV,
+      devicePixelRatio: (gl as unknown as { getPixelRatio?: () => number }).getPixelRatio?.() ?? window.devicePixelRatio ?? 1,
+    });
   });
-
-  return (
-    <group>
-      {points.map(({ key, pos }) => (
-        <mesh key={`p-${key}`} position={pos}>
-          <sphereGeometry args={[1.2, 12, 12]} />
-          <meshBasicMaterial
-            color="#2563eb"
-            depthTest={false}
-            depthWrite={false}
-          />
-        </mesh>
-      ))}
-      {lines.map(({ key, a, b }) => (
-        <SketchLineBox key={`l-${key}`} a={a} b={b} />
-      ))}
-    </group>
-  );
-}
-
-/**
- * Line segment rendered as a stretched thin box. Avoids
- * drei / three-stdlib `LineMaterial`, which isn't compatible
- * with the WebGPURenderer's NodeMaterial pipeline in this
- * project. The box-proxy approach works with any renderer and
- * gives a visible stroke at small sketch scales where the
- * WebGL/WebGPU 1-pixel line cap would otherwise hide the line.
- */
-function SketchLineBox({
-  a,
-  b,
-}: {
-  a: [number, number, number];
-  b: [number, number, number];
-}) {
-  const { position, quaternion, length } = useMemo(() => {
-    const start = new THREE.Vector3(...a);
-    const end = new THREE.Vector3(...b);
-    const mid = start.clone().add(end).multiplyScalar(0.5);
-    const dir = end.clone().sub(start);
-    const len = dir.length();
-    const q = new THREE.Quaternion();
-    if (len > 1e-6) {
-      // The box geometry's default long axis is Y; rotate (0,1,0)
-      // onto the line direction so the stretch matches.
-      q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-    }
-    return { position: mid, quaternion: q, length: len };
-  }, [a, b]);
-
-  if (length <= 0) return null;
-  return (
-    <mesh position={position} quaternion={quaternion}>
-      <boxGeometry args={[0.8, length, 0.8]} />
-      <meshBasicMaterial
-        color="#2563eb"
-        depthTest={false}
-        depthWrite={false}
-      />
-    </mesh>
-  );
-}
-
-/**
- * K6b.2 follow-up: invisible click target on the ground plane that
- * intercepts pointer events while a sketch tool is active. Click
- * once on the plane to place a point or start a line; click again
- * to finish the line. Orbit-drag is preserved because R3F only
- * fires `onClick` after a non-dragging pointer-up, so orbit
- * controls still own the drag path.
- */
-function SketchDrawingPlane() {
-  const { store, state } = useKernelStore();
-  const session = state?.sketchSession;
-  const [pendingStart, setPendingStart] = useState<
-    [number, number] | null
-  >(null);
-
-  // Reset the line-start buffer whenever the user switches tools or
-  // exits the session — otherwise a half-drawn line from a previous
-  // tool would carry over.
-  useEffect(() => {
-    setPendingStart(null);
-  }, [session?.selectedTool, session?.active]);
-
-  if (!store || !session?.active || !session.selectedTool) return null;
-
-  const handleClick = (e: ThreeEvent<MouseEvent>) => {
-    e.stopPropagation();
-    const at = worldHitToSketchXy(e.point);
-    if (session.selectedTool === "sketch_point") {
-      store.setSketchToolDraft({ at });
-      store.applySketchToolDraft();
-    } else if (session.selectedTool === "sketch_line") {
-      if (!pendingStart) {
-        setPendingStart(at);
-      } else {
-        store.setSketchToolDraft({ start: pendingStart, end: at });
-        store.applySketchToolDraft();
-        setPendingStart(null);
-      }
-    }
-  };
-
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} onClick={handleClick}>
-      <planeGeometry args={[BUILD_VOLUME_SIZE, BUILD_VOLUME_SIZE]} />
-      <meshBasicMaterial
-        color="#ffffff"
-        transparent
-        opacity={0}
-        depthWrite={false}
-      />
-    </mesh>
-  );
+  return null;
 }
 
 /**
@@ -551,6 +429,7 @@ export function Viewport() {
     );
   }
 
+  const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [ndc, setNdc] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
@@ -601,6 +480,9 @@ export function Viewport() {
           <CameraRig />
         </Canvas>
       </CanvasErrorBoundary>
+      {state?.sketchSession.active ? (
+        <SketchCanvas2d store={store} session={state.sketchSession} />
+      ) : null}
       <PickHud result={pickResult} />
     </div>
   );

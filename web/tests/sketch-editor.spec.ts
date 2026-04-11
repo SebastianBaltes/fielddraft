@@ -58,11 +58,13 @@ test.describe("Sketch editor smoke", () => {
     await expect(page.getByTestId("fielddraft-canvas")).toBeVisible();
     await page.waitForTimeout(600);
 
-    // 1. Enter sketch mode.
+    // 1. Enter sketch mode. The 2D sketch overlay canvas must
+    //    appear immediately as a sibling of the WebGPU canvas.
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-mode-indicator")).toBeVisible();
     await expect(page.getByTestId("sketch-session-panel")).toBeVisible();
     await expect(page.getByTestId("sketch-session-empty")).toBeVisible();
+    await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
 
     // 2. Pick the line tool. The outliner should now show the
     //    generic FeatureDialog for sketch_line with Start / End
@@ -88,9 +90,10 @@ test.describe("Sketch editor smoke", () => {
     await page.waitForTimeout(500);
 
     // 6. Finish the sketch — the panel goes away, the regular
-    //    toolbar comes back.
+    //    toolbar comes back, the overlay canvas unmounts.
     await page.getByTestId("sketch-finish").click();
     await expect(page.getByTestId("sketch-session-panel")).toHaveCount(0);
+    await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("add-box")).toBeVisible();
 
     // 7. No blocking console errors, no uncaught page errors.
@@ -107,7 +110,7 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("enter sketch mode, draw a line by clicking on the canvas", async ({ page }) => {
+  test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];
     page.on("console", (msg) => {
@@ -123,22 +126,28 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_line").click();
 
-    // Two clicks on the canvas at different pixel positions.
-    // Canvas-relative coordinates: the SketchDrawingPlane catches
-    // the clicks through R3F's raycaster. We don't assert the
-    // resulting world-space coordinates — that's covered by the
-    // dialog-path test above — only that two clicks produce a
-    // completed line in the sub-spine without any render errors.
-    const canvas = page.getByTestId("fielddraft-canvas");
-    const box = await canvas.boundingBox();
+    // Drag on the 2D overlay canvas. pointerdown → move → up
+    // drives the new drag-to-draw path in SketchCanvas2d. We
+    // don't assert resolved sketch-space coordinates because
+    // those depend on the ortho camera zoom — we only care
+    // that (a) one sub-spine entry is produced, (b) nothing
+    // crashes.
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
     expect(box).not.toBeNull();
     if (!box) return;
-    const cx = box.x + box.width / 2;
-    const cy = box.y + box.height / 2;
+    const startX = box.x + box.width / 2 - 80;
+    const startY = box.y + box.height / 2 - 40;
+    const endX = box.x + box.width / 2 + 80;
+    const endY = box.y + box.height / 2 + 40;
 
-    await page.mouse.click(cx - 80, cy - 40);
-    await page.waitForTimeout(100);
-    await page.mouse.click(cx + 80, cy + 40);
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    // A couple of intermediate moves exercise the live-preview
+    // path in SketchCanvas2d's RAF loop.
+    await page.mouse.move(startX + 20, startY + 10, { steps: 5 });
+    await page.mouse.move(endX, endY, { steps: 10 });
+    await page.mouse.up();
 
     const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
     await expect(subSpineRows).toHaveCount(1);
