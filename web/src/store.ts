@@ -114,6 +114,8 @@ export interface StoreState {
     normals: Float32Array;
     indices: Uint32Array;
   } | null;
+  /** K9.1: overall scene extents in mm, refreshed on commit. */
+  sceneSize: [number, number, number];
 }
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
@@ -157,6 +159,7 @@ export class KernelStore {
       sketchSession: INACTIVE_SKETCH_SESSION,
       variables: kernel.listVariables(),
       referenceMesh: null,
+      sceneSize: [0, 0, 0],
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -220,6 +223,7 @@ export class KernelStore {
       sketchSession: this.state.sketchSession,
       variables: this.kernel.listVariables(),
       referenceMesh: this.state.referenceMesh,
+      sceneSize: this.kernel.sceneAabb().size as [number, number, number],
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {

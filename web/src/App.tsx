@@ -67,9 +67,16 @@ export function App() {
           {error ? (
             <span className="error">kernel error: {error.message}</span>
           ) : state ? (
-            <span data-testid="feature-count">
-              {state.features.length} feature{state.features.length === 1 ? "" : "s"}
-            </span>
+            <>
+              <span data-testid="feature-count">
+                {state.features.length} feature{state.features.length === 1 ? "" : "s"}
+              </span>
+              {state.sceneSize[0] > 0 || state.sceneSize[1] > 0 || state.sceneSize[2] > 0 ? (
+                <span className="scene-size" data-testid="scene-size">
+                  {state.sceneSize[0].toFixed(1)} × {state.sceneSize[1].toFixed(1)} × {state.sceneSize[2].toFixed(1)} mm
+                </span>
+              ) : null}
+            </>
           ) : (
             <span>loading…</span>
           )}

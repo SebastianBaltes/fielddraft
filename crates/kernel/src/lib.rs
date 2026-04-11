@@ -1516,6 +1516,22 @@ impl Kernel {
     /// K8.10: list every document-level variable as a JSON
     /// array of `{name, value}` pairs, sorted by name (the
     /// BTreeMap ordering).
+    /// K9.1: return the overall scene AABB as a JSON object
+    /// `{min: [x,y,z], max: [x,y,z], size: [w,h,d]}` in mm.
+    /// Empty scenes return all-zero extents.
+    #[wasm_bindgen(js_name = sceneAabb)]
+    pub fn scene_aabb(&self) -> Result<String, JsError> {
+        let tree = csg::CsgNode::from_features(&self.document.features);
+        let bb = tree.aabb();
+        let size = bb.size();
+        let result = serde_json::json!({
+            "min": bb.min,
+            "max": bb.max,
+            "size": size,
+        });
+        serde_json::to_string(&result).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     #[wasm_bindgen(js_name = listVariables)]
     pub fn list_variables(&self) -> Result<String, JsError> {
         #[derive(serde::Serialize)]

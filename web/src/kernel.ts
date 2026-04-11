@@ -617,6 +617,15 @@ export class Kernel {
     return this.inner.setFeatureOp(id, op);
   }
 
+  /** K9.1: overall scene AABB in mm. */
+  sceneAabb(): { min: number[]; max: number[]; size: number[] } {
+    return JSON.parse(this.inner.sceneAabb()) as {
+      min: number[];
+      max: number[];
+      size: number[];
+    };
+  }
+
   /** K8.7: toggle the suppressed flag of a feature call. */
   setFeatureSuppressed(id: number, suppressed: boolean): void {
     this.inner.setFeatureSuppressed(id, suppressed);
