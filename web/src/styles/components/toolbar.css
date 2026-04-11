@@ -76,4 +76,36 @@
       color: var(--color-text-on-accent);
     }
   }
+
+  /* K6b.2: sketch-mode alternate layout. */
+  &.is-sketch-mode {
+    background: var(--color-bg-hover);
+    border-bottom-color: var(--color-accent);
+  }
+
+  & .tool.is-primary {
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    border-color: var(--color-accent);
+
+    &:hover:not(:disabled) {
+      background: var(--color-accent);
+      filter: brightness(1.05);
+    }
+  }
+
+  & .tool.is-active {
+    background: var(--color-accent);
+    color: var(--color-text-on-accent);
+    border-color: var(--color-accent);
+  }
+
+  & .sketch-tool-row {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  & .tool.is-stub {
+    opacity: 0.55;
+  }
 }

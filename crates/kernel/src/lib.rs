@@ -664,6 +664,36 @@ impl Kernel {
         serde_json::to_string(&value).map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// K6b.2: list every sketch-tool type name the kernel knows
+    /// about. Sketch tools live in a separate
+    /// [`sketch_features::SketchToolRegistry`] that the UI's
+    /// sketch-mode toolbar queries to decide which tool buttons
+    /// to render. JSON array of strings, sorted alphabetically
+    /// for deterministic rendering.
+    #[wasm_bindgen(js_name = listSketchToolTypes)]
+    pub fn list_sketch_tool_types(&self) -> Result<String, JsError> {
+        let tools = sketch_features::SketchToolRegistry::with_builtins();
+        let mut names = tools.type_names();
+        names.sort();
+        serde_json::to_string(&names).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// K6b.2: look up the FeatureSchema-generated JSON schema for
+    /// a sketch tool. Same contract as [`schema_for_type`] but
+    /// routes through the sketch-tool registry so the disjoint
+    /// namespaces stay disjoint.
+    #[wasm_bindgen(js_name = schemaForSketchToolType)]
+    pub fn schema_for_sketch_tool_type(
+        &self,
+        type_name: &str,
+    ) -> Result<String, JsError> {
+        let tools = sketch_features::SketchToolRegistry::with_builtins();
+        let value = tools
+            .schema_for(type_name)
+            .ok_or_else(|| JsError::new(&format!("unknown sketch tool `{type_name}`")))?;
+        serde_json::to_string(&value).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Return a JSON array of feature summaries (id, name, op, kind).
     #[wasm_bindgen(js_name = listFeatures)]
     pub fn list_features(&self) -> Result<String, JsError> {

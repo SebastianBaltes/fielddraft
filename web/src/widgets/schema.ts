@@ -79,6 +79,7 @@ export interface RawFeatureSchema {
 /** Discriminated widget kind the FeatureDialog dispatches on. */
 export type WidgetKind =
   | "number"
+  | "vec2"
   | "vec3"
   | "bool"
   | "string"
@@ -321,6 +322,8 @@ export function widgetKindFor(
   switch (rawType) {
     case "f32":
       return "number";
+    case "vec2":
+      return "vec2";
     case "vec3":
       return "vec3";
     case "bool":
@@ -373,6 +376,8 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
   switch (p.widget) {
     case "number":
       return 0;
+    case "vec2":
+      return [0, 0];
     case "vec3":
       return [0, 0, 0];
     case "bool":
@@ -475,6 +480,16 @@ export function validateParamValue(
       return typeof value === "number" && Number.isFinite(value)
         ? null
         : `${param.label} must be a finite number`;
+    case "vec2":
+      if (!Array.isArray(value) || value.length !== 2) {
+        return `${param.label} must be a 2-element array`;
+      }
+      for (const v of value) {
+        if (typeof v !== "number" || !Number.isFinite(v)) {
+          return `${param.label} must contain two finite numbers`;
+        }
+      }
+      return null;
     case "vec3":
       if (!Array.isArray(value) || value.length !== 3) {
         return `${param.label} must be a 3-element array`;

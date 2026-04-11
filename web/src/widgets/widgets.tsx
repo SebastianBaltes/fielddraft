@@ -101,6 +101,46 @@ export function NumberWidget({
   );
 }
 
+// ─── vec2 ───────────────────────────────────────────────────────
+
+export function Vec2Widget({
+  label,
+  value,
+  onChange,
+  error,
+  required,
+}: WidgetProps<[number, number]>) {
+  const id = useId();
+  const updateIndex = (index: 0 | 1, next: number) => {
+    const copy: [number, number] = [value[0], value[1]];
+    copy[index] = next;
+    onChange(copy);
+  };
+  return (
+    <Field label={label} htmlFor={`${id}-x`} error={error} required={required}>
+      <div className="vec3-row">
+        {(["x", "y"] as const).map((axis, i) => (
+          <input
+            key={axis}
+            id={`${id}-${axis}`}
+            className="input"
+            type="number"
+            inputMode="decimal"
+            aria-label={`${label} ${axis}`}
+            value={Number.isFinite(value[i]) ? value[i] : 0}
+            onChange={(e) => {
+              const n = Number(e.currentTarget.value);
+              if (Number.isFinite(n)) {
+                updateIndex(i as 0 | 1, n);
+              }
+            }}
+          />
+        ))}
+      </div>
+    </Field>
+  );
+}
+
 // ─── vec3 ───────────────────────────────────────────────────────
 
 export function Vec3Widget({

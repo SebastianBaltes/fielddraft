@@ -24,6 +24,14 @@ import type {
   MesherBodyPayload,
   MesherRebuildRequest,
 } from "./mesher.worker";
+import {
+  INACTIVE_SKETCH_SESSION as _INACTIVE,
+  applySketchToolDraft as reduceApply,
+  enterSketchSession as reduceEnter,
+  exitSketchSession as reduceExit,
+  selectSketchTool as reduceSelect,
+  setSketchToolDraft as reduceSetDraft,
+} from "./sketchSession";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -33,6 +41,42 @@ import type {
  * kernel's own `body*View` accessors.
  */
 export type MeshedBody = MesherBodyPayload;
+
+/**
+ * K6b.2: ephemeral per-sketch-session state. A sketch session is the
+ * period between the user clicking the "Sketch" toolbar button (and
+ * locking a plane) and clicking Finish/Cancel. While the session is
+ * active the UI switches into sketch mode: the top toolbar shows
+ * Finish/Cancel + a sketch-tool row instead of primitive-add buttons,
+ * the outliner shows the active sketch tool's FeatureDialog, and the
+ * viewport frames the locked plane.
+ *
+ * K6b.2 stores the session's draft geometry as a local `sub_calls`
+ * buffer — nothing is committed to the kernel yet. Finish in K6b.2
+ * simply drops the draft and exits sketch mode; K6b.3 will wire the
+ * commit path that assembles a `sketch` FeatureCall from the draft
+ * and regenerates the document.
+ */
+export interface SketchSessionState {
+  /** True while the user is inside sketch mode. */
+  active: boolean;
+  /** The query string locking the sketch plane. K6b.2 uses a
+   *  placeholder; K6b.3 will populate it from a face-click pick. */
+  planeQuery: string | null;
+  /** Currently selected sketch-tool type name, or `null` when the
+   *  user has entered sketch mode but not yet picked a tool. */
+  selectedTool: string | null;
+  /** Controlled-input working copy for the selected tool's
+   *  FeatureDialog. Resets when the tool changes. */
+  toolDraft: Record<string, unknown>;
+  /** Committed sub-spine calls for this session. K6b.2 appends to
+   *  this in-memory on Apply and drops it on Cancel/Finish; K6b.3
+   *  will flush it through the kernel. */
+  subCalls: ReadonlyArray<{
+    type: string;
+    params: Record<string, unknown>;
+  }>;
+}
 
 export interface StoreState {
   features: FeatureSummary[];
@@ -50,7 +94,11 @@ export interface StoreState {
    *  the viewport — even though the contents only care about the
    *  delta per body id. */
   meshedBodies: readonly MeshedBody[];
+  /** K6b.2: active sketch session, or inactive-default. */
+  sketchSession: SketchSessionState;
 }
+
+const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
 export class KernelStore {
   readonly kernel: Kernel;
@@ -88,6 +136,7 @@ export class KernelStore {
       canRedo: kernel.canRedo(),
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
+      sketchSession: INACTIVE_SKETCH_SESSION,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -148,6 +197,7 @@ export class KernelStore {
       canRedo: this.kernel.canRedo(),
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
+      sketchSession: this.state.sketchSession,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -442,6 +492,70 @@ export class KernelStore {
     this.syncActiveBody();
     this.refreshMeshCache();
     for (const listener of this.listeners) listener();
+  }
+
+  // ── K6b.2: sketch session ────────────────────────────────────────
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * Enter sketch mode against a given plane query. K6b.2 accepts
+   * a plane query as a plain string (placeholder until K6b.3
+   * wires the face-pick path); calling this while a session is
+   * already active is a no-op so the viewport can't stack
+   * sessions on top of each other.
+   */
+  private updateSketch(
+    next: SketchSessionState,
+  ): void {
+    if (next === this.state.sketchSession) return;
+    this.state = { ...this.state, sketchSession: next };
+    this.notify();
+  }
+
+  enterSketch(planeQuery: string): void {
+    this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
+  }
+
+  /**
+   * Exit sketch mode, discarding the draft. K6b.2 does not yet
+   * persist sub_calls back into the kernel — that's the commit
+   * path K6b.3 will implement. Both Finish and Cancel route
+   * here for now.
+   */
+  exitSketch(): void {
+    this.updateSketch(reduceExit(this.state.sketchSession));
+  }
+
+  /**
+   * Select a sketch tool by type name. Passing `null` clears
+   * the tool selection. Delegates shape changes to the pure
+   * reducer in `sketchSession.ts`.
+   */
+  selectSketchTool(
+    typeName: string | null,
+    initialDraft: Record<string, unknown> = {},
+  ): void {
+    this.updateSketch(
+      reduceSelect(this.state.sketchSession, typeName, initialDraft),
+    );
+  }
+
+  /** Update the active sketch tool's FeatureDialog working copy. */
+  setSketchToolDraft(draft: Record<string, unknown>): void {
+    this.updateSketch(reduceSetDraft(this.state.sketchSession, draft));
+  }
+
+  /**
+   * K6b.2: append the current tool draft to the session's
+   * in-memory sub_calls buffer. No kernel interaction — K6b.3
+   * replaces this with a regeneration path that rebuilds the
+   * full `sketch` FeatureCall after every apply.
+   */
+  applySketchToolDraft(): void {
+    this.updateSketch(reduceApply(this.state.sketchSession));
   }
 }
 

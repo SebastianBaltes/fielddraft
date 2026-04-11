@@ -52,6 +52,7 @@ import {
   SliderWidget,
   StringWidget,
   UnknownWidget,
+  Vec2Widget,
   Vec3Widget,
   type AngleValue,
   type LengthValue,
@@ -235,6 +236,16 @@ function WidgetFor({
         <NumberWidget
           label={param.label}
           value={value as number}
+          required={param.required}
+          error={error}
+          onChange={emit}
+        />
+      );
+    case "vec2":
+      return (
+        <Vec2Widget
+          label={param.label}
+          value={value as [number, number]}
           required={param.required}
           error={error}
           onChange={emit}

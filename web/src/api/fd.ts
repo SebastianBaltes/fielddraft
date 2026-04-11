@@ -41,6 +41,12 @@ export interface FdApi {
   schemaForType(type: string): FeatureSchema;
   /** Current feature-spine summaries for the outliner. */
   listFeatures(): FeatureSummary[];
+  /** K6b.2: every sketch-tool type the kernel knows. Sketch
+   *  tools live in a separate registry from top-level features. */
+  listSketchToolTypes(): string[];
+  /** K6b.2: parsed schema for a single sketch tool. Throws if
+   *  the name isn't a registered sketch tool. */
+  schemaForSketchToolType(type: string): FeatureSchema;
 }
 
 export function createFdApi(kernel: Kernel): FdApi {
@@ -53,6 +59,12 @@ export function createFdApi(kernel: Kernel): FdApi {
     },
     listFeatures() {
       return kernel.listFeatures();
+    },
+    listSketchToolTypes() {
+      return kernel.listSketchToolTypes();
+    },
+    schemaForSketchToolType(type) {
+      return parseFeatureSchema(kernel.schemaForSketchToolType(type));
     },
   };
 }

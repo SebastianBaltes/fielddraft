@@ -329,6 +329,26 @@ export class Kernel {
     return JSON.parse(this.inner.schemaForType(typeName));
   }
 
+  /**
+   * K6b.2: list every sketch-tool type name the kernel knows.
+   * Sketch tools live in a registry disjoint from the top-level
+   * feature registry; K6b.1 ships two built-ins (`sketch_point`,
+   * `sketch_line`), K6b.3+ grows the set. Sorted alphabetically.
+   */
+  listSketchToolTypes(): string[] {
+    return JSON.parse(this.inner.listSketchToolTypes()) as string[];
+  }
+
+  /**
+   * K6b.2: load the schema for a single sketch tool. Same JSON
+   * shape as [`schemaForType`] so the generic FeatureDialog can
+   * render it without knowing whether it's a top-level feature
+   * or a sketch-local tool.
+   */
+  schemaForSketchToolType(typeName: string): unknown {
+    return JSON.parse(this.inner.schemaForSketchToolType(typeName));
+  }
+
   // ── mutations ───────────────────────────────────────────────────────
 
   addBox(

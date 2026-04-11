@@ -23,6 +23,26 @@ function fakeKernel(): Kernel {
       ],
     },
   };
+  const stubSketchSchemas: Record<string, unknown> = {
+    sketch_point: {
+      type: "sketch_point",
+      params: [
+        {
+          key: "at",
+          name: "At",
+          type: "vec2",
+          required: true,
+        },
+      ],
+    },
+    sketch_line: {
+      type: "sketch_line",
+      params: [
+        { key: "start", name: "Start", type: "vec2", required: true },
+        { key: "end", name: "End", type: "vec2", required: true },
+      ],
+    },
+  };
   const features: FeatureSummary[] = [
     {
       id: 1,
@@ -41,6 +61,12 @@ function fakeKernel(): Kernel {
       return s;
     },
     listFeatures: () => features,
+    listSketchToolTypes: () => ["sketch_line", "sketch_point"],
+    schemaForSketchToolType: (name: string) => {
+      const s = stubSketchSchemas[name];
+      if (!s) throw new Error(`unknown sketch tool: ${name}`);
+      return s;
+    },
   } as unknown as Kernel;
 }
 
@@ -75,5 +101,26 @@ describe("createFdApi", () => {
     expect(features).toHaveLength(1);
     expect(features[0].name).toBe("Box 1");
     expect(features[0].kind).toBe("box");
+  });
+
+  it("listSketchToolTypes passes through the kernel result", () => {
+    const api = createFdApi(fakeKernel());
+    expect(api.listSketchToolTypes()).toEqual(["sketch_line", "sketch_point"]);
+  });
+
+  it("schemaForSketchToolType parses a sketch-tool schema with a vec2 widget", () => {
+    const api = createFdApi(fakeKernel());
+    const schema = api.schemaForSketchToolType("sketch_point");
+    expect(schema.type).toBe("sketch_point");
+    expect(schema.params).toHaveLength(1);
+    expect(schema.params[0].widget).toBe("vec2");
+    expect(schema.params[0].key).toBe("at");
+  });
+
+  it("schemaForSketchToolType propagates kernel errors for unknown sketch tools", () => {
+    const api = createFdApi(fakeKernel());
+    expect(() => api.schemaForSketchToolType("sketch_torus")).toThrow(
+      /unknown sketch tool/,
+    );
   });
 });

@@ -175,6 +175,7 @@ describe("parseFeatureSchema", () => {
 describe("widgetKindFor", () => {
   it("maps every known kernel hint to a widget kind", () => {
     expect(widgetKindFor("f32")).toBe("number");
+    expect(widgetKindFor("vec2")).toBe("vec2");
     expect(widgetKindFor("vec3")).toBe("vec3");
     expect(widgetKindFor("bool")).toBe("bool");
     expect(widgetKindFor("string")).toBe("string");
@@ -248,6 +249,9 @@ describe("defaultForParam", () => {
   });
   it("returns a zero vec3 for vec3 widgets", () => {
     expect(defaultForParam(p({ widget: "vec3" }))).toEqual([0, 0, 0]);
+  });
+  it("returns a zero vec2 for vec2 widgets", () => {
+    expect(defaultForParam(p({ widget: "vec2" }))).toEqual([0, 0]);
   });
   it("returns 10mm for length widgets", () => {
     expect(defaultForParam(p({ widget: "length" }))).toEqual({
@@ -394,6 +398,16 @@ describe("validateParamValue", () => {
     expect(validateParamValue(paramOf("number"), Number.NaN)).not.toBeNull();
     expect(validateParamValue(paramOf("number"), Number.POSITIVE_INFINITY)).not.toBeNull();
     expect(validateParamValue(paramOf("number"), "5")).not.toBeNull();
+  });
+
+  it("accepts 2-element number arrays for vec2", () => {
+    expect(validateParamValue(paramOf("vec2"), [1, 2])).toBeNull();
+  });
+
+  it("rejects wrong-length or non-number vec2 values", () => {
+    expect(validateParamValue(paramOf("vec2"), [1])).not.toBeNull();
+    expect(validateParamValue(paramOf("vec2"), [1, "2"])).not.toBeNull();
+    expect(validateParamValue(paramOf("vec2"), "not an array")).not.toBeNull();
   });
 
   it("accepts 3-element number arrays for vec3", () => {

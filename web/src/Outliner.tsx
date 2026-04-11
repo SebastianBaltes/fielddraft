@@ -4,7 +4,7 @@
  * a flat spine for M2.
  */
 
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
@@ -132,9 +132,86 @@ export function Outliner({ store, state }: OutlinerProps) {
     store.removeFeature(id);
   };
 
+  // K6b.2: when a sketch session is active, the outliner leads with a
+  // sketch-session panel (tool FeatureDialog + sub-spine list) so the
+  // user never loses the feature list but sees the sketch workspace
+  // prominently on top. Schema fetching for the selected sketch tool
+  // happens through the same fd facade as top-level features.
+  const sketchSession = state.sketchSession;
+  const [sketchToolSchema, setSketchToolSchema] =
+    useState<FeatureSchema | null>(null);
+  useEffect(() => {
+    const tool = sketchSession.selectedTool;
+    if (!tool) {
+      setSketchToolSchema(null);
+      return;
+    }
+    try {
+      setSketchToolSchema(fd.schemaForSketchToolType(tool));
+    } catch {
+      setSketchToolSchema(null);
+    }
+  }, [fd, sketchSession.selectedTool]);
+
   return (
     <aside className="fd-outliner" data-testid="fielddraft-outliner">
-      {selectedSchema ? (
+      {sketchSession.active ? (
+        <section
+          className="sketch-session"
+          data-testid="sketch-session-panel"
+        >
+          <div className="header">
+            <span>Sketch</span>
+            <span
+              className="plane-query"
+              data-testid="sketch-session-plane"
+            >
+              {sketchSession.planeQuery ?? "—"}
+            </span>
+          </div>
+          {sketchSession.selectedTool && sketchToolSchema ? (
+            <>
+              <FeatureDialog
+                schema={sketchToolSchema}
+                definition={sketchSession.toolDraft}
+                onChange={(next) => store.setSketchToolDraft(next)}
+              />
+              <div className="actions">
+                <button
+                  type="button"
+                  className="apply"
+                  data-testid="sketch-tool-apply"
+                  onClick={() => store.applySketchToolDraft()}
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  className="clear"
+                  data-testid="sketch-tool-clear"
+                  onClick={() => store.selectSketchTool(null)}
+                >
+                  Clear
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="empty" data-testid="sketch-session-empty">
+              Pick a sketch tool in the toolbar.
+            </div>
+          )}
+          {sketchSession.subCalls.length > 0 ? (
+            <ul className="sub-spine" data-testid="sketch-sub-spine">
+              {sketchSession.subCalls.map((call, i) => (
+                <li key={i} className="row">
+                  <span className="kind">{call.type}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
+      {!sketchSession.active && selectedSchema ? (
         <FeatureDialog
           schema={selectedSchema}
           definition={dialogDraft}
