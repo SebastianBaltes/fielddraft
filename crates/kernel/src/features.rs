@@ -501,14 +501,33 @@ impl FeatureKind for CylinderPrimitive {
 //   "new" case (create a separate body) needs body-id
 //   plumbing that's not yet wired through the registry path.
 
-/// `extrude` — K4.5.8 Rust-native reference feature.
+/// `extrude` — Rust-native feature that consumes a sketch
+/// profile and lowers it to a 3D body.
+///
+/// K7.1 turns the `profiles` query into a real resolution
+/// path: the executor parses the query, finds the referenced
+/// sketch in [`Context::sketches`], synthesises a
+/// [`crate::sketch2d::Sketch2d`] via
+/// `build_sketch2d_from_sub_calls` and reads the profile
+/// extents from the resulting AABB. The `profile_half_x` /
+/// `profile_half_y` fields become optional fallbacks for
+/// tests and for documents that point at a sketch the kernel
+/// can't resolve yet.
+///
+/// Known shape-fidelity limitation: the current spine pipeline
+/// has no `Primitive::Extrude` variant, so the lowering still
+/// produces a `Primitive::Box` whose half-extents match the
+/// sketch's bounding rectangle. A rectangle sketch is
+/// pixel-perfect; a circle becomes its bounding box. Fixing
+/// that is a later K7 slice which adds the Primitive variant
+/// and teaches the mesher/BVH about it.
 #[derive(FeatureSchema)]
 #[schema(type = "extrude")]
 pub struct ExtrudeDef {
-    /// Sketch profile this extrude consumes. Evaluated lazily
-    /// against the current document so upstream edits don't
-    /// break downstream extrudes. K4.5.8 parses and stores the
-    /// query but doesn't resolve it — see the module docstring.
+    /// Sketch profile this extrude consumes. Evaluated against
+    /// [`Context::sketches`] at regeneration time. Only
+    /// `qCreatedBy(sketch_id)` is honoured today; other query
+    /// variants fall through to the fallback extents.
     pub profiles: ::fielddraft_protocol::Query,
 
     /// Extrude depth along the local Z axis. Any supported
@@ -516,14 +535,15 @@ pub struct ExtrudeDef {
     /// via [`Length::to_mm`] before lowering to a box.
     pub depth: ::fielddraft_protocol::Length,
 
-    /// Half-width of the rectangular profile placeholder in
-    /// millimetres. Will be derived from the resolved sketch
-    /// once [`profiles`] actually routes through the sketch
-    /// feature graph.
+    /// Fallback half-width for tests and for extrudes that
+    /// don't yet point at a resolvable sketch. Ignored when
+    /// the query successfully resolves to a non-empty sketch.
+    #[param(default = 0.0)]
     pub profile_half_x: f32,
 
-    /// Half-height of the rectangular profile placeholder in
-    /// millimetres. Same story as [`profile_half_x`].
+    /// Fallback half-height — same story as
+    /// [`profile_half_x`].
+    #[param(default = 0.0)]
     pub profile_half_y: f32,
 
     /// Boolean op used to fold the extruded body into the
@@ -533,9 +553,10 @@ pub struct ExtrudeDef {
     #[param(default = ::fielddraft_protocol::BoolOp::Union)]
     pub operation: BoolOp,
 
-    /// Origin of the extruded box in world space. Z is the
-    /// extrude plane; the resulting box spans
-    /// `[z - depth_mm/2, z + depth_mm/2]`.
+    /// Override for the extruded box origin in world space.
+    /// When the sketch resolves, the X/Y components default to
+    /// the sketch AABB centre; `center[2]` always supplies the
+    /// extrude plane Z coordinate.
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
 }
@@ -558,8 +579,6 @@ impl FeatureKind for ExtrudeFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = ExtrudeDef::parse(def)?;
-        positive_f32(d.profile_half_x, ExtrudeDef::TYPE_NAME, "profile_half_x")?;
-        positive_f32(d.profile_half_y, ExtrudeDef::TYPE_NAME, "profile_half_y")?;
 
         // Length → mm at the model-unit boundary. The kernel's
         // native distance scale is millimetres, so every feature
@@ -574,6 +593,52 @@ impl FeatureKind for ExtrudeFeature {
             });
         }
 
+        // K7.1: resolve the `profiles` query against the
+        // context's sketch table. The first cut only honours
+        // `qCreatedBy(sketch_id)`; any other variant falls
+        // through to the hand-coded fallback extents so that
+        // existing K4.5.8 tests keep working.
+        let mut profile_extents: Option<([f32; 2], [f32; 2])> = None;
+        if let Ok(expr) = crate::queries::parse_query(d.profiles.as_str()) {
+            if let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr {
+                if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
+                    let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
+                        &sketch_data.sub_calls,
+                    );
+                    let aabb = sketch2d.aabb();
+                    if !aabb.is_empty() {
+                        let size = aabb.size();
+                        let half = [0.5 * size[0], 0.5 * size[1]];
+                        let center_xy = [
+                            0.5 * (aabb.min[0] + aabb.max[0]),
+                            0.5 * (aabb.min[1] + aabb.max[1]),
+                        ];
+                        profile_extents = Some((center_xy, half));
+                    }
+                }
+            }
+        }
+
+        // Fall back to the legacy half-extent parameters when
+        // the query can't be resolved. This keeps the K4.5.8
+        // test surface untouched and documents still load.
+        let (center_xy, half_xy) = match profile_extents {
+            Some(p) => p,
+            None => {
+                positive_f32(
+                    d.profile_half_x,
+                    ExtrudeDef::TYPE_NAME,
+                    "profile_half_x",
+                )?;
+                positive_f32(
+                    d.profile_half_y,
+                    ExtrudeDef::TYPE_NAME,
+                    "profile_half_y",
+                )?;
+                ([d.center[0], d.center[1]], [d.profile_half_x, d.profile_half_y])
+            }
+        };
+
         let name = optional_display_name(def, || format!("Extrude {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
@@ -583,8 +648,8 @@ impl FeatureKind for ExtrudeFeature {
             name,
             op: d.operation,
             primitive: Primitive::Box {
-                center: d.center,
-                half_extents: [d.profile_half_x, d.profile_half_y, depth_mm / 2.0],
+                center: [center_xy[0], center_xy[1], d.center[2]],
+                half_extents: [half_xy[0], half_xy[1], depth_mm / 2.0],
             },
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
@@ -1805,6 +1870,207 @@ mod tests {
             feature
                 .execute(&mut ctx, &id(1), &extrude_def(q, 10.0, 1.0, 1.0))
                 .unwrap_or_else(|e| panic!("query `{q}` failed: {e}"));
+        }
+    }
+
+    // ─── K7.1: extrude consumes real sketches ─────────────────
+
+    #[test]
+    fn extrude_derives_profile_extents_from_a_resolved_rectangle_sketch() {
+        // Build a sketch with a 20x10 rectangle centred at
+        // (5, 3), commit it via the registry so the context
+        // sketches map gets populated, then run an extrude
+        // that references it. The extrude's half-extents must
+        // come from the sketch's AABB, not from the
+        // `profile_half_x/y` fallback.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let extrude_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_rectangle",
+                        "id": "r1",
+                        "params": {
+                            "corner_a": [-5.0, -2.0],
+                            "corner_b": [15.0, 8.0],
+                        }
+                    }
+                ]
+            }),
+        );
+        let extrude_call = FeatureCall::new(
+            "extrude",
+            extrude_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+                "depth": { "value": 12.0, "unit": "mm" },
+                // Explicit bogus fallbacks: the resolver should
+                // override these with AABB-derived values.
+                "profile_half_x": 999.0,
+                "profile_half_y": 999.0,
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, extrude_call])
+            .unwrap();
+
+        let extrude_feature = doc
+            .features
+            .iter()
+            .find(|f| f.id == extrude_id)
+            .expect("extrude spine entry");
+        match &extrude_feature.primitive {
+            Primitive::Box { center, half_extents } => {
+                // Rectangle AABB: min=(-5,-2), max=(15,8).
+                // Half-extents = (10, 5). Centre XY = (5, 3).
+                assert!((half_extents[0] - 10.0).abs() < 1e-5);
+                assert!((half_extents[1] - 5.0).abs() < 1e-5);
+                assert!((half_extents[2] - 6.0).abs() < 1e-5);
+                assert!((center[0] - 5.0).abs() < 1e-5);
+                assert!((center[1] - 3.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_derives_profile_extents_from_a_resolved_circle_sketch() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let extrude_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_circle",
+                        "id": "c1",
+                        "params": { "center": [2.0, 4.0], "radius": 7.0 }
+                    }
+                ]
+            }),
+        );
+        let extrude_call = FeatureCall::new(
+            "extrude",
+            extrude_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+                "depth": { "value": 10.0, "unit": "mm" },
+                "profile_half_x": 999.0,
+                "profile_half_y": 999.0,
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, extrude_call])
+            .unwrap();
+
+        let extrude_feature = doc
+            .features
+            .iter()
+            .find(|f| f.id == extrude_id)
+            .expect("extrude spine entry");
+        match &extrude_feature.primitive {
+            Primitive::Box { center, half_extents } => {
+                // Circle AABB: half_extents = radius on both axes.
+                assert!((half_extents[0] - 7.0).abs() < 1e-5);
+                assert!((half_extents[1] - 7.0).abs() < 1e-5);
+                assert!((center[0] - 2.0).abs() < 1e-5);
+                assert!((center[1] - 4.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_falls_back_to_profile_half_extents_when_sketch_is_missing() {
+        // Query that doesn't point at any context sketch — the
+        // executor must fall through to the hand-written
+        // fallback extents so the K4.5.8 test surface stays
+        // intact.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        ExtrudeFeature
+            .execute(
+                &mut ctx,
+                &id(1),
+                &extrude_def("qCreatedBy(sketch_999)", 10.0, 3.0, 4.0),
+            )
+            .unwrap();
+        let f = &doc.features[0];
+        if let Primitive::Box { half_extents, .. } = &f.primitive {
+            assert_eq!(*half_extents, [3.0, 4.0, 5.0]);
+        } else {
+            panic!("expected Primitive::Box");
+        }
+    }
+
+    #[test]
+    fn extrude_falls_back_when_sketch_has_no_region_primitives() {
+        // Sketch with only a line — build_sketch2d_from_sub_calls
+        // returns Sketch2d::Empty, and the resolver falls through.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let extrude_id = id(2);
+
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "sketch",
+                        sketch_id.clone(),
+                        json!({
+                            "plane": "qCreatedBy(origin_plane_xy)",
+                            "sub_calls": [
+                                {
+                                    "type": "sketch_line",
+                                    "id": "l1",
+                                    "params": {
+                                        "start": [0.0, 0.0],
+                                        "end": [10.0, 0.0],
+                                    }
+                                }
+                            ]
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "extrude",
+                        extrude_id.clone(),
+                        json!({
+                            "profiles": format!("qCreatedBy({sketch_id})"),
+                            "depth": { "value": 8.0, "unit": "mm" },
+                            "profile_half_x": 2.5,
+                            "profile_half_y": 2.5,
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        let extrude_feature = doc
+            .features
+            .iter()
+            .find(|f| f.id == extrude_id)
+            .expect("extrude spine entry");
+        if let Primitive::Box { half_extents, .. } = &extrude_feature.primitive {
+            assert!((half_extents[0] - 2.5).abs() < 1e-5);
+            assert!((half_extents[1] - 2.5).abs() < 1e-5);
+        } else {
+            panic!("expected Primitive::Box");
         }
     }
 }
