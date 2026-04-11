@@ -217,6 +217,11 @@ test.describe("FieldDraft smoke", () => {
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(button).toBeEnabled();
 
+    // The mesher runs on a worker so the kernel's own body
+    // cache stays empty until the exporter forces a sync
+    // rebuild (which `exportStlBinary` does internally, see
+    // K7.2 kernel side). No client-side wait needed.
+
     // Kick off the download and wait for Playwright to notice
     // the file save event.
     const [download] = await Promise.all([
