@@ -62,6 +62,20 @@ pub enum BoundedCsg {
         right: Box<BoundedCsg>,
         aabb: Aabb,
     },
+    /// K10.0: smooth-min union with blend radius.
+    SmoothUnion {
+        left: Box<BoundedCsg>,
+        right: Box<BoundedCsg>,
+        radius: f32,
+        aabb: Aabb,
+    },
+    /// K10.0: smooth-max difference with blend radius.
+    SmoothDifference {
+        left: Box<BoundedCsg>,
+        right: Box<BoundedCsg>,
+        radius: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -101,6 +115,8 @@ impl BoundedCsg {
             | BoundedCsg::Union { aabb, .. }
             | BoundedCsg::Difference { aabb, .. }
             | BoundedCsg::Intersection { aabb, .. }
+            | BoundedCsg::SmoothUnion { aabb, .. }
+            | BoundedCsg::SmoothDifference { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
@@ -162,12 +178,37 @@ impl BoundedCsg {
                 }
             }
             BoundedCsg::Intersection { left, right, .. } => {
-                // Intersection = `max(left, right)`. The AABB of the
-                // right only gives us a *lower* bound on its SDF
-                // (`d_right ≥ dist_right`), not an upper bound, so
-                // we can't safely prune either side — both matter.
-                // Kept naive for K3; K10 may revisit.
                 left.sdf(p, mode).max(right.sdf(p, mode))
+            }
+            // K10.0: smooth variants. No AABB pruning in the
+            // blend zone — both children must be evaluated to
+            // feed smin_poly. The prune heuristic from Union
+            // is only valid for the hard-min case.
+            BoundedCsg::SmoothUnion {
+                left,
+                right,
+                radius,
+                ..
+            } => {
+                let da = left.sdf(p, mode);
+                let db = right.sdf(p, mode);
+                match mode {
+                    EvalMode::Visual => crate::csg::smin_poly(da, db, *radius),
+                    EvalMode::Logical => da.min(db),
+                }
+            }
+            BoundedCsg::SmoothDifference {
+                left,
+                right,
+                radius,
+                ..
+            } => {
+                let da = left.sdf(p, mode);
+                let db = right.sdf(p, mode);
+                match mode {
+                    EvalMode::Visual => -crate::csg::smin_poly(-da, db, *radius),
+                    EvalMode::Logical => da.max(-db),
+                }
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -231,6 +272,42 @@ impl BoundedCsg {
                 let (da, ca) = left.evaluate(p, eps, mode);
                 let (db, cb) = right.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
+            }
+            BoundedCsg::SmoothUnion {
+                left,
+                right,
+                radius,
+                ..
+            } => {
+                let (da, ca) = left.evaluate(p, eps, mode);
+                let (db, cb) = right.evaluate(p, eps, mode);
+                match mode {
+                    EvalMode::Visual => {
+                        let d = crate::csg::smin_poly(da, db, *radius);
+                        let mut c = ca;
+                        c.extend(cb);
+                        (d, c)
+                    }
+                    EvalMode::Logical => combine_min(da, ca, db, cb, eps),
+                }
+            }
+            BoundedCsg::SmoothDifference {
+                left,
+                right,
+                radius,
+                ..
+            } => {
+                let (da, ca) = left.evaluate(p, eps, mode);
+                let (db, cb) = right.evaluate(p, eps, mode);
+                match mode {
+                    EvalMode::Visual => {
+                        let d = -crate::csg::smin_poly(-da, db, *radius);
+                        let mut c = ca;
+                        c.extend(cb);
+                        (d, c)
+                    }
+                    EvalMode::Logical => combine_max(da, ca, -db, cb, eps),
+                }
             }
             BoundedCsg::Extrude {
                 id,
@@ -312,6 +389,28 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             BoundedCsg::Intersection {
                 left: Box::new(left),
                 right: Box::new(right),
+                aabb,
+            }
+        }
+        CsgNode::SmoothUnion(a, b, r) => {
+            let left = build(a, carry);
+            let right = build(b, carry);
+            let aabb = Aabb::union(left.aabb(), right.aabb());
+            BoundedCsg::SmoothUnion {
+                left: Box::new(left),
+                right: Box::new(right),
+                radius: *r,
+                aabb,
+            }
+        }
+        CsgNode::SmoothDifference(a, b, r) => {
+            let left = build(a, carry);
+            let right = build(b, carry);
+            let aabb = left.aabb();
+            BoundedCsg::SmoothDifference {
+                left: Box::new(left),
+                right: Box::new(right),
+                radius: *r,
                 aabb,
             }
         }

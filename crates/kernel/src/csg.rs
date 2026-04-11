@@ -373,6 +373,20 @@ pub enum CsgNode {
     Union(Box<CsgNode>, Box<CsgNode>),
     Difference(Box<CsgNode>, Box<CsgNode>),
     Intersection(Box<CsgNode>, Box<CsgNode>),
+    /// K10.0: smooth-min union with a blend radius. Inside the
+    /// blend zone (where both children's distances are within `r`
+    /// of the surface) the operator produces a fillet of radius
+    /// `r` via the IQ `smin` polynomial:
+    ///   h = max(r - |da - db|, 0) / r
+    ///   d = min(da, db) - h³ · r / 6
+    /// Outside the blend zone it degenerates to the hard `min`
+    /// (== `Union`), so existing geometry is pixel-identical
+    /// beyond the fillet.
+    SmoothUnion(Box<CsgNode>, Box<CsgNode>, f32),
+    /// K10.0: smooth-max difference with the same blend radius
+    /// semantics. The fillet rounds concave edges where material
+    /// is subtracted.
+    SmoothDifference(Box<CsgNode>, Box<CsgNode>, f32),
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -506,6 +520,22 @@ impl CsgNode {
             CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
             CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
             CsgNode::Intersection(a, b) => a.sdf(p, mode).max(b.sdf(p, mode)),
+            CsgNode::SmoothUnion(a, b, r) => {
+                let da = a.sdf(p, mode);
+                let db = b.sdf(p, mode);
+                match mode {
+                    EvalMode::Visual => smin_poly(da, db, *r),
+                    EvalMode::Logical => da.min(db),
+                }
+            }
+            CsgNode::SmoothDifference(a, b, r) => {
+                let da = a.sdf(p, mode);
+                let db = b.sdf(p, mode);
+                match mode {
+                    EvalMode::Visual => -smin_poly(-da, db, *r),
+                    EvalMode::Logical => da.max(-db),
+                }
+            }
             CsgNode::Extrude {
                 sketch,
                 half_height,
@@ -572,6 +602,32 @@ impl CsgNode {
                 let (db, cb) = b.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
             }
+            CsgNode::SmoothUnion(a, b, r) => {
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
+                match mode {
+                    EvalMode::Visual => {
+                        let d = smin_poly(da, db, *r);
+                        let mut c = ca;
+                        c.extend(cb);
+                        (d, c)
+                    }
+                    EvalMode::Logical => combine_min(da, ca, db, cb, eps),
+                }
+            }
+            CsgNode::SmoothDifference(a, b, r) => {
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
+                match mode {
+                    EvalMode::Visual => {
+                        let d = -smin_poly(-da, db, *r);
+                        let mut c = ca;
+                        c.extend(cb);
+                        (d, c)
+                    }
+                    EvalMode::Logical => combine_max(da, ca, -db, cb, eps),
+                }
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -593,10 +649,14 @@ impl CsgNode {
             CsgNode::Empty => Aabb::EMPTY,
             CsgNode::Leaf { primitive, .. } => Aabb::of_primitive(primitive),
             CsgNode::Transform(t, inner) => inner.aabb().transformed(t),
-            CsgNode::Union(a, b) => Aabb::union(a.aabb(), b.aabb()),
+            CsgNode::Union(a, b) | CsgNode::SmoothUnion(a, b, _) => {
+                Aabb::union(a.aabb(), b.aabb())
+            }
             // Difference can only shrink the left operand — left AABB
-            // is always a conservative bound.
-            CsgNode::Difference(a, _) => a.aabb(),
+            // is always a conservative bound. The smooth variant may
+            // bulge outward by up to `r` in the blend zone, but the
+            // AABB of the union-of-children is always a superset.
+            CsgNode::Difference(a, _) | CsgNode::SmoothDifference(a, _, _) => a.aabb(),
             // Intersection is a subset of either child; keep the left
             // so the bound stays well-defined even when the right child
             // is empty or unbounded.
@@ -648,6 +708,22 @@ pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
     let outside = (d2.max(0.0).powi(2) + wz.max(0.0).powi(2)).sqrt();
     let inside = d2.max(wz).min(0.0);
     outside + inside
+}
+
+/// K10.0: polynomial smooth minimum (IQ's cubic variant).
+/// `r` is the blend radius. When the two input distances are
+/// far apart (|da - db| >= r) the result degenerates to
+/// `min(da, db)`. In the blend zone the result is strictly
+/// less than both inputs, producing a fillet of approximate
+/// radius `r`.
+///
+/// Reference: <https://iquilezles.org/articles/smin/>
+pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
+    if r <= 0.0 {
+        return da.min(db);
+    }
+    let h = (r - (da - db).abs()).max(0.0) / r;
+    da.min(db) - h * h * h * r / 6.0
 }
 
 /// Boolean-min fold with contributor propagation: within `eps` the
@@ -1144,5 +1220,82 @@ mod tests {
         let bb = CsgNode::from_features(&features).aabb();
         assert_eq!(bb.min, [-10.0, -10.0, -10.0]);
         assert_eq!(bb.max, [10.0, 10.0, 10.0]);
+    }
+
+    // ─── K10.0: smooth blend ─────────────────────────────────
+
+    #[test]
+    fn smin_poly_degenerates_to_hard_min_outside_blend_zone() {
+        assert_eq!(super::smin_poly(10.0, -5.0, 2.0), -5.0);
+        assert_eq!(super::smin_poly(-5.0, 10.0, 2.0), -5.0);
+    }
+
+    #[test]
+    fn smin_poly_is_strictly_less_than_hard_min_in_blend_zone() {
+        let da = 1.0;
+        let db = 1.0;
+        let r = 4.0;
+        let smooth = super::smin_poly(da, db, r);
+        let hard = da.min(db);
+        assert!(smooth < hard, "smooth {smooth} not < hard {hard}");
+    }
+
+    #[test]
+    fn smooth_union_rounds_a_box_sphere_junction() {
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+        };
+        let b = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: [10.0, 0.0, 0.0],
+                radius: 8.0,
+            },
+        };
+        let hard = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
+        let smooth = CsgNode::SmoothUnion(Box::new(a), Box::new(b), 4.0);
+
+        // At the junction seam the smooth blend pulls the
+        // distance further negative than the hard union.
+        let p = [10.0, 8.0, 0.0];
+        let d_hard = hard.sdf(p, EvalMode::Visual);
+        let d_smooth = smooth.sdf(p, EvalMode::Visual);
+        assert!(d_smooth < d_hard, "smooth {d_smooth} not < hard {d_hard}");
+    }
+
+    #[test]
+    fn smooth_blend_logical_mode_degrades_to_hard_ops() {
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere {
+                center: [0.0; 3],
+                radius: 5.0,
+            },
+        };
+        let b = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: [4.0, 0.0, 0.0],
+                radius: 5.0,
+            },
+        };
+        let hard_u = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
+        let smooth_u = CsgNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), 3.0);
+        let hard_d = CsgNode::Difference(Box::new(a.clone()), Box::new(b.clone()));
+        let smooth_d = CsgNode::SmoothDifference(Box::new(a), Box::new(b), 3.0);
+
+        let p = [2.0, 3.0, 0.0];
+        assert_eq!(
+            hard_u.sdf(p, EvalMode::Logical),
+            smooth_u.sdf(p, EvalMode::Logical),
+        );
+        assert_eq!(
+            hard_d.sdf(p, EvalMode::Logical),
+            smooth_d.sdf(p, EvalMode::Logical),
+        );
     }
 }
