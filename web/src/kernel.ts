@@ -392,6 +392,25 @@ export class Kernel {
     }>;
   }
 
+  /**
+   * K6b.3b: replace an existing sketch's plane and sub_calls in
+   * place, keeping the feature id stable. Used by the edit
+   * reentry path — Finish on a re-opened sketch lands here
+   * instead of `addSketch` so the outliner row doesn't move.
+   */
+  replaceSketch(
+    id: number,
+    planeQuery: string,
+    subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  ): void {
+    const prepared = subCalls.map((c, i) => ({
+      type: c.type,
+      id: String(i + 1),
+      params: c.params,
+    }));
+    this.inner.replaceSketch(id, planeQuery, JSON.stringify(prepared));
+  }
+
   // ── mutations ───────────────────────────────────────────────────────
 
   addBox(

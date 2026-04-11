@@ -213,6 +213,82 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("double-click a sketch row to re-open it and append another line", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    // Create the first sketch with one line.
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await page.getByLabel("Start x").fill("10");
+    await page.getByLabel("Start y").fill("10");
+    await page.getByLabel("End x").fill("40");
+    await page.getByLabel("End y").fill("10");
+    await page.getByTestId("sketch-tool-apply").click();
+    await page.getByTestId("sketch-finish").click();
+
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    const row = page.locator('.fd-outliner .row[data-feature-kind="sketch"]');
+    await expect(row).toHaveCount(1);
+
+    // K6b.3b: double-click reopens the committed sketch. The
+    // sub-spine panel must already show the previously applied
+    // line and the overlay canvas comes back up.
+    await row.dblclick();
+    await expect(page.getByTestId("sketch-session-panel")).toBeVisible();
+    await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
+    const initialRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(initialRows).toHaveCount(1);
+
+    // Append a second line.
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await page.getByLabel("Start x").fill("10");
+    await page.getByLabel("Start y").fill("20");
+    await page.getByLabel("End x").fill("40");
+    await page.getByLabel("End y").fill("20");
+    await page.getByTestId("sketch-tool-apply").click();
+    await expect(initialRows).toHaveCount(2);
+
+    await page.getByTestId("sketch-finish").click();
+
+    // Feature count unchanged — replaceSketch kept the id stable.
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!).toHaveLength(2);
+    expect(committed![0].type).toBe("sketch_line");
+    expect(committed![1].type).toBe("sketch_line");
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];

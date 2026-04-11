@@ -90,7 +90,11 @@ function resolveSnap(
   cursor: [number, number],
   session: SketchSessionState,
   dragStart: [number, number] | null,
+  suppress = false,
 ): SnapResolution {
+  if (suppress) {
+    return { snapped: cursor, candidate: null, anchor: null };
+  }
   const state: SketchState = buildDraftSketchState(
     session.subCalls,
     dragStart ?? undefined,
@@ -243,7 +247,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
     // click (no prior move events).
-    const snap = resolveSnap([u, v], session, null);
+    const snap = resolveSnap([u, v], session, null, e.shiftKey);
     snapRef.current = snap;
     const [su, sv] = snap.snapped;
     if (session.selectedTool === "sketch_point") {
@@ -266,14 +270,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const cam = readSketchCamera();
     const [u, v] = screenToSketchFromEvent(e, cam);
     if (dragRef.current.kind === "line") {
-      const snap = resolveSnap([u, v], session, dragRef.current.start);
+      const snap = resolveSnap(
+        [u, v],
+        session,
+        dragRef.current.start,
+        e.shiftKey,
+      );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
     } else {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
       // land on.
-      const snap = resolveSnap([u, v], session, null);
+      const snap = resolveSnap([u, v], session, null, e.shiftKey);
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
@@ -295,7 +304,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
     const cam = readSketchCamera();
     const [u, v] = screenToSketchFromEvent(e, cam);
-    const snap = resolveSnap([u, v], session, dragRef.current.start);
+    const snap = resolveSnap(
+      [u, v],
+      session,
+      dragRef.current.start,
+      e.shiftKey,
+    );
     snapRef.current = snap;
     const { start } = dragRef.current;
     dragRef.current = { kind: "idle" };

@@ -843,6 +843,54 @@ impl Kernel {
         Ok(flat)
     }
 
+    /// K6b.3b: replace an existing sketch's plane and sub-spine
+    /// in place, keeping its feature id stable. Used by the UI
+    /// when the user re-enters a committed sketch to edit it —
+    /// Finish should not create a new outliner row, it should
+    /// update the existing one. Fails fast if the target id
+    /// doesn't point at a sketch.
+    #[wasm_bindgen(js_name = replaceSketch)]
+    pub fn replace_sketch(
+        &mut self,
+        id: u32,
+        plane_query: &str,
+        sub_calls_json: &str,
+    ) -> Result<(), JsError> {
+        let target = FeatureId::from_u32(id);
+        let sub_calls: Vec<fielddraft_protocol::FeatureCall> =
+            serde_json::from_str(sub_calls_json).map_err(|e| {
+                JsError::new(&format!("invalid sub_calls JSON: {e}"))
+            })?;
+        // Locate the sketch call.
+        let idx = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == target && c.type_name == "sketch")
+            .ok_or_else(|| {
+                JsError::new(&format!("feature {id} is not a sketch"))
+            })?;
+
+        self.snapshot();
+        let params = serde_json::json!({
+            "plane": plane_query,
+            "sub_calls": sub_calls,
+        });
+        self.document.feature_calls[idx] = fielddraft_protocol::FeatureCall::new(
+            "sketch",
+            target,
+            params,
+        );
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "sketch regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(())
+    }
+
     /// K6b.3a: fetch the sub-spine sub_calls for a sketch by
     /// feature id, so the UI can reload an existing sketch when
     /// the user re-enters it. Returns the JSON array string of
@@ -1753,6 +1801,75 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["type"], serde_json::json!("sketch_point"));
         assert_eq!(arr[1]["type"], serde_json::json!("sketch_point"));
+    }
+
+    #[test]
+    fn replace_sketch_updates_in_place_and_keeps_feature_id_stable() {
+        let mut k = Kernel::new();
+        let id = k.add_sketch("qCreatedBy(origin_plane_xy)", "[]").unwrap();
+        assert_eq!(k.document.feature_calls.len(), 1);
+
+        let new_calls = r#"[
+            {
+                "type": "sketch_point",
+                "id": "100",
+                "params": { "at": [5.0, 5.0] }
+            }
+        ]"#;
+        k.replace_sketch(id, "qCreatedBy(origin_plane_xy)", new_calls)
+            .unwrap();
+
+        // Still one call, still the same id.
+        assert_eq!(k.document.feature_calls.len(), 1);
+        let call = &k.document.feature_calls[0];
+        assert_eq!(call.type_name, "sketch");
+        assert_eq!(call.id.as_u32_if_flat(), Some(id));
+        // And the sub-spine has the new point in it.
+        let sub = call.params.get("sub_calls").unwrap().as_array().unwrap();
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub[0]["type"], serde_json::json!("sketch_point"));
+    }
+
+    #[test]
+    fn replace_sketch_preserves_surrounding_primitive_calls() {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", "[]").unwrap();
+        assert_eq!(k.document.feature_calls.len(), 2);
+
+        k.replace_sketch(
+            sketch_id,
+            "qCreatedBy(origin_plane_xy)",
+            r#"[{ "type": "sketch_point", "id": "100", "params": { "at": [1.0, 2.0] } }]"#,
+        )
+        .unwrap();
+
+        // Still two calls, both ids intact.
+        assert_eq!(k.document.feature_calls.len(), 2);
+        assert!(k
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.type_name == "box"));
+        assert!(k
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.type_name == "sketch"));
+        // And the primitive spine still has the original box.
+        assert_eq!(k.document.features.len(), 1);
+        assert_eq!(k.document.features[0].id.as_u32_if_flat(), Some(box_id));
     }
 
     // Error-path tests for `add_sketch` and `get_sketch_sub_calls`

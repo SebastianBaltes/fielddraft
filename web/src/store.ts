@@ -76,6 +76,11 @@ export interface SketchSessionState {
     type: string;
     params: Record<string, unknown>;
   }>;
+  /** K6b.3b: feature id of the sketch being edited, or `null`
+   *  when the session is a fresh draft. When set, Finish goes
+   *  through `replaceSketch` instead of `addSketch` so the
+   *  outliner row keeps its id. */
+  editingFeatureId: number | null;
 }
 
 export interface StoreState {
@@ -520,6 +525,37 @@ export class KernelStore {
   }
 
   /**
+   * K6b.3b: reopen a previously committed sketch for editing.
+   * Pulls the sketch's sub_calls back out of the kernel and
+   * seeds the session with them, remembering the feature id
+   * so Finish takes the `replaceSketch` path instead of
+   * creating a new outliner row.
+   */
+  editSketch(featureId: number): void {
+    if (this.state.sketchSession.active) return;
+    let subCalls: SketchSessionState["subCalls"] = [];
+    try {
+      const raw = this.kernel.getSketchSubCalls(featureId);
+      subCalls = raw.map((c) => ({ type: c.type, params: c.params }));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("fielddraft: editSketch() failed to load sub-calls", err);
+      return;
+    }
+    // K6b.3b uses the same placeholder plane query that
+    // `enterSketch` seeds new sessions with, because the real
+    // plane lives inside the committed FeatureCall params and
+    // we don't round-trip it yet — K6b.3 follow-up adds the
+    // face-lock resolution path.
+    this.updateSketch(
+      reduceEnter(this.state.sketchSession, "qCreatedBy(origin_plane_xy)", {
+        initialSubCalls: subCalls,
+        editingFeatureId: featureId,
+      }),
+    );
+  }
+
+  /**
    * Exit sketch mode, discarding the draft. K6b.2 does not yet
    * persist sub_calls back into the kernel — that's the commit
    * path K6b.3 will implement. Both Finish and Cancel route
@@ -573,6 +609,29 @@ export class KernelStore {
       this.exitSketch();
       return null;
     }
+    // Edit reentry path: if a sketch feature id is attached to
+    // the session we always replace in place — even when the
+    // sub-spine is empty — so the user can intentionally clear
+    // the sketch by opening it and hitting Finish with no
+    // further edits.
+    if (session.editingFeatureId !== null) {
+      try {
+        this.kernel.replaceSketch(
+          session.editingFeatureId,
+          session.planeQuery,
+          session.subCalls.map((c) => ({ type: c.type, params: c.params })),
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("fielddraft: replaceSketch failed", err);
+        return null;
+      }
+      const editedId = session.editingFeatureId;
+      this.updateSketch(reduceExit(this.state.sketchSession));
+      this.commit(new Set([editedId]), editedId);
+      return editedId;
+    }
+    // Fresh sketch draft: drop on cancel / finish-with-empty.
     if (session.subCalls.length === 0) {
       this.exitSketch();
       return null;

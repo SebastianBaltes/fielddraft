@@ -124,6 +124,16 @@ export function Outliner({ store, state }: OutlinerProps) {
     }
   };
 
+  /** K6b.3b: double-click on a sketch row reopens it for editing.
+   *  Onshape convention — single-click selects, double-click
+   *  enters the feature's own edit mode. Primitive rows do
+   *  nothing on double-click for now. */
+  const handleRowDoubleClick = (feature: FeatureSummary) => {
+    if (feature.kind === "sketch") {
+      store.editSketch(feature.id);
+    }
+  };
+
   const handleOpClick = (e: MouseEvent, feature: FeatureSummary) => {
     e.stopPropagation();
     store.setFeatureOp(feature.id, nextOp(feature.op));
@@ -235,7 +245,9 @@ export function Outliner({ store, state }: OutlinerProps) {
                 data-testid={`feature-row-${feature.id}`}
                 data-feature-id={feature.id}
                 data-feature-op={tagOp}
+                data-feature-kind={feature.kind}
                 onClick={(e) => handleRowClick(e, feature.id)}
+                onDoubleClick={() => handleRowDoubleClick(feature)}
               >
                 <button
                   type="button"

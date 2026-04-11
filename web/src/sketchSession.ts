@@ -21,7 +21,17 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   selectedTool: null,
   toolDraft: {},
   subCalls: [],
+  editingFeatureId: null,
 };
+
+/** Options for the `enterSketchSession` reducer. K6b.3b adds the
+ *  edit-reentry path which preloads the session with an
+ *  existing sketch's committed sub_calls and remembers the
+ *  feature id so Finish can replace it in place. */
+export interface EnterSketchOpts {
+  initialSubCalls?: SketchSessionState["subCalls"];
+  editingFeatureId?: number | null;
+}
 
 /** Enter a new sketch session. If a session is already active
  *  the previous state is returned unchanged — sessions don't
@@ -29,6 +39,7 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
 export function enterSketchSession(
   state: SketchSessionState,
   planeQuery: string,
+  opts: EnterSketchOpts = {},
 ): SketchSessionState {
   if (state.active) return state;
   return {
@@ -36,7 +47,8 @@ export function enterSketchSession(
     planeQuery,
     selectedTool: null,
     toolDraft: {},
-    subCalls: [],
+    subCalls: opts.initialSubCalls ?? [],
+    editingFeatureId: opts.editingFeatureId ?? null,
   };
 }
 
