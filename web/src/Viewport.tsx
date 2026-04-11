@@ -27,8 +27,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
@@ -277,6 +277,7 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
+      <SketchDrawingPlane />
       <SketchOverlay />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
@@ -286,83 +287,142 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   );
 }
 
+/** Y lift for the sketch overlay so it sits just above the grid
+ *  helper without z-fighting. */
+const SKETCH_PLANE_Y = 0.5;
+
+/** Map a world-space hit on the XZ ground plane to 2D sketch
+ *  coordinates. Mirrors the `(x, y) → (x, SKETCH_PLANE_Y, y)`
+ *  lift applied by `SketchOverlay`. */
+function worldHitToSketchXy(hit: THREE.Vector3): [number, number] {
+  return [hit.x, hit.z];
+}
+
 /**
  * K6b.2 follow-up: visual preview of the active sketch session's
  * applied sub-spine. Each `sketch_point` becomes a dot on the
- * sketch plane, each `sketch_line` becomes a line segment. Until
- * the K6b.3 face-lock UX lands we hardcode the plane mapping to
- * the world ground plane (`sketch (x, y) → world (x, 0.1, y)`,
- * with a small Y lift to avoid z-fighting against the grid).
- * Hidden entirely when the session is inactive.
+ * sketch plane, each `sketch_line` becomes a fat line segment
+ * (drei `Line` with `LineMaterial`, so the stroke is actually
+ * visible — vanilla `lineBasicMaterial.linewidth` is capped at
+ * 1 px in every real browser). Hidden entirely when the session
+ * is inactive.
  */
 function SketchOverlay() {
   const { state } = useKernelStore();
   const session = state?.sketchSession;
 
-  const { points, lineSegments } = useMemo(() => {
-    const pts: number[] = [];
-    const segs: number[] = [];
-    if (session?.active) {
-      for (const call of session.subCalls) {
-        if (call.type === "sketch_point") {
-          const at = call.params.at as unknown;
-          if (Array.isArray(at) && at.length === 2) {
-            pts.push(Number(at[0]), 0.1, Number(at[1]));
-          }
-        } else if (call.type === "sketch_line") {
-          const start = call.params.start as unknown;
-          const end = call.params.end as unknown;
-          if (
-            Array.isArray(start) &&
-            start.length === 2 &&
-            Array.isArray(end) &&
-            end.length === 2
-          ) {
-            segs.push(
-              Number(start[0]),
-              0.1,
-              Number(start[1]),
-              Number(end[0]),
-              0.1,
-              Number(end[1]),
-            );
-          }
-        }
+  if (!session?.active) return null;
+
+  const points: Array<{ key: number; pos: [number, number, number] }> = [];
+  const lines: Array<{
+    key: number;
+    a: [number, number, number];
+    b: [number, number, number];
+  }> = [];
+
+  session.subCalls.forEach((call, i) => {
+    if (call.type === "sketch_point") {
+      const at = call.params.at as unknown;
+      if (Array.isArray(at) && at.length === 2) {
+        points.push({
+          key: i,
+          pos: [Number(at[0]), SKETCH_PLANE_Y, Number(at[1])],
+        });
+      }
+    } else if (call.type === "sketch_line") {
+      const start = call.params.start as unknown;
+      const end = call.params.end as unknown;
+      if (
+        Array.isArray(start) &&
+        start.length === 2 &&
+        Array.isArray(end) &&
+        end.length === 2
+      ) {
+        lines.push({
+          key: i,
+          a: [Number(start[0]), SKETCH_PLANE_Y, Number(start[1])],
+          b: [Number(end[0]), SKETCH_PLANE_Y, Number(end[1])],
+        });
       }
     }
-    return {
-      points: new Float32Array(pts),
-      lineSegments: new Float32Array(segs),
-    };
-  }, [session]);
-
-  if (!session?.active) return null;
+  });
 
   return (
     <group>
-      {points.length > 0 ? (
-        <points>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[points, 3]}
-            />
-          </bufferGeometry>
-          <pointsMaterial color="#2563eb" size={8} sizeAttenuation={false} />
-        </points>
-      ) : null}
-      {lineSegments.length > 0 ? (
-        <lineSegments>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[lineSegments, 3]}
-            />
-          </bufferGeometry>
-          <lineBasicMaterial color="#2563eb" />
-        </lineSegments>
-      ) : null}
+      {points.map(({ key, pos }) => (
+        <mesh key={`p-${key}`} position={pos}>
+          <sphereGeometry args={[1.2, 12, 12]} />
+          <meshBasicMaterial
+            color="#2563eb"
+            depthTest={false}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+      {lines.map(({ key, a, b }) => (
+        <Line
+          key={`l-${key}`}
+          points={[a, b]}
+          color="#2563eb"
+          lineWidth={3}
+          depthTest={false}
+        />
+      ))}
     </group>
+  );
+}
+
+/**
+ * K6b.2 follow-up: invisible click target on the ground plane that
+ * intercepts pointer events while a sketch tool is active. Click
+ * once on the plane to place a point or start a line; click again
+ * to finish the line. Orbit-drag is preserved because R3F only
+ * fires `onClick` after a non-dragging pointer-up, so orbit
+ * controls still own the drag path.
+ */
+function SketchDrawingPlane() {
+  const { store, state } = useKernelStore();
+  const session = state?.sketchSession;
+  const [pendingStart, setPendingStart] = useState<
+    [number, number] | null
+  >(null);
+
+  // Reset the line-start buffer whenever the user switches tools or
+  // exits the session — otherwise a half-drawn line from a previous
+  // tool would carry over.
+  useEffect(() => {
+    setPendingStart(null);
+  }, [session?.selectedTool, session?.active]);
+
+  if (!store || !session?.active || !session.selectedTool) return null;
+
+  const handleClick = (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    const at = worldHitToSketchXy(e.point);
+    if (session.selectedTool === "sketch_point") {
+      store.setSketchToolDraft({ at });
+      store.applySketchToolDraft();
+    } else if (session.selectedTool === "sketch_line") {
+      if (!pendingStart) {
+        setPendingStart(at);
+      } else {
+        store.setSketchToolDraft({ start: pendingStart, end: at });
+        store.applySketchToolDraft();
+        setPendingStart(null);
+      }
+    }
+  };
+
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} onClick={handleClick}>
+      <planeGeometry args={[BUILD_VOLUME_SIZE, BUILD_VOLUME_SIZE]} />
+      <meshBasicMaterial
+        color="#ffffff"
+        transparent
+        opacity={0}
+        depthWrite={false}
+      />
+    </mesh>
   );
 }
 
