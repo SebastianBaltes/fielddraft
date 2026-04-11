@@ -622,6 +622,15 @@ impl Kernel {
     fn synth_name_for_call(
         call: &fielddraft_protocol::FeatureCall,
     ) -> String {
+        // K8.5: honour a user-set `name` in the call's params
+        // so rename through `replaceFeatureCallParams` sticks
+        // for feature types that don't have a spine-level
+        // `SpineFeature.name` (sketches, patterns).
+        if let Some(name) = call.params.get("name").and_then(|v| v.as_str()) {
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
             "revolve" => "Revolve",

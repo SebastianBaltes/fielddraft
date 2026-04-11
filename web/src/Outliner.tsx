@@ -4,7 +4,13 @@
  * a flat spine for M2.
  */
 
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
@@ -148,14 +154,55 @@ export function Outliner({ store, state }: OutlinerProps) {
     }
   };
 
+  // K8.5: inline rename state. Holds the id of the row
+  // currently in rename mode plus the working-copy string.
+  // Null means no row is being renamed.
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>("");
+
+  const beginRename = (feature: FeatureSummary) => {
+    setRenamingId(feature.id);
+    setRenameDraft(feature.name);
+  };
+
+  const commitRename = () => {
+    if (renamingId === null) return;
+    const next = renameDraft.trim();
+    if (next.length > 0) {
+      store.renameFeature(renamingId, next);
+    }
+    setRenamingId(null);
+    setRenameDraft("");
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameDraft("");
+  };
+
+  const handleRenameKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelRename();
+    }
+    // Swallow so global shortcuts (Delete, Ctrl-Z, …) don't
+    // fire while typing.
+    e.stopPropagation();
+  };
+
   /** K6b.3b: double-click on a sketch row reopens it for editing.
    *  Onshape convention — single-click selects, double-click
-   *  enters the feature's own edit mode. Primitive rows do
-   *  nothing on double-click for now. */
+   *  enters the feature's own edit mode. K8.5 reuses double-click
+   *  on every non-sketch row for inline rename. */
   const handleRowDoubleClick = (feature: FeatureSummary) => {
     if (feature.kind === "sketch") {
       store.editSketch(feature.id);
+      return;
     }
+    beginRename(feature);
   };
 
   const handleOpClick = (e: MouseEvent, feature: FeatureSummary) => {
@@ -293,7 +340,20 @@ export function Outliner({ store, state }: OutlinerProps) {
                 <span className="kind">
                   {KIND_GLYPH[feature.kind] ?? "?"}
                 </span>
-                <span className="feature-name">{feature.name}</span>
+                {renamingId === feature.id ? (
+                  <input
+                    className="feature-name-input"
+                    data-testid={`feature-rename-${feature.id}`}
+                    value={renameDraft}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameDraft(e.currentTarget.value)}
+                    onKeyDown={handleRenameKey}
+                    onBlur={commitRename}
+                  />
+                ) : (
+                  <span className="feature-name">{feature.name}</span>
+                )}
                 {(feature.translate[0] !== 0 ||
                   feature.translate[1] !== 0 ||
                   feature.translate[2] !== 0 ||

@@ -666,6 +666,25 @@ export class KernelStore {
     return this.kernel.getFeatureCallParams(id);
   }
 
+  /** K8.5: rename a feature by patching the `name` key in its
+   *  wire-form params and commiting. Works for every feature
+   *  kind — primitives and Extrude/Revolve honour `"name"` via
+   *  `optional_display_name`, patterns and sketches pick it up
+   *  via `synth_name_for_call`'s params short-circuit. Returns
+   *  `true` on success, `false` if the kernel rejected the
+   *  update. */
+  renameFeature(id: number, newName: string): boolean {
+    let current: Record<string, unknown>;
+    try {
+      current = this.kernel.getFeatureCallParams(id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: getFeatureCallParams failed", err);
+      return false;
+    }
+    return this.updateFeatureParams(id, { ...current, name: newName });
+  }
+
   /** Replace a feature's wire-form params and commit. Used
    *  by the Outliner FeatureDialog's onChange to round-trip
    *  edits back into the kernel. */

@@ -584,6 +584,61 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.5: double-click a feature row to rename it inline", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.getByTestId("add-box").click();
+    const row = page.getByTestId("feature-row-1");
+    await expect(row.locator(".feature-name")).toHaveText(/^Box/);
+
+    // Double-click enters rename mode — the row swaps its
+    // label out for an <input> autofocused on the current
+    // name.
+    await row.dblclick();
+    const input = page.getByTestId("feature-rename-1");
+    await expect(input).toBeFocused();
+    await input.fill("Main body");
+    await input.press("Enter");
+
+    // Label reverts to a span with the new text, and the
+    // kernel's wire-form params carry the custom name.
+    await expect(row.locator(".feature-name")).toHaveText("Main body");
+    const params = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      return kernel ? kernel.getFeatureCallParams(1) : null;
+    });
+    expect((params as { name?: string }).name).toBe("Main body");
+
+    // Pattern features (no SpineFeature.name) pick the rename
+    // up via the synth_name_for_call params short-circuit.
+    await page.getByTestId("linear-pattern-latest").click();
+    const patternRow = page.getByTestId("feature-row-2");
+    await patternRow.dblclick();
+    const patternInput = page.getByTestId("feature-rename-2");
+    await patternInput.fill("Row of bodies");
+    await patternInput.press("Enter");
+    await expect(patternRow.locator(".feature-name")).toHaveText(
+      "Row of bodies",
+    );
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
