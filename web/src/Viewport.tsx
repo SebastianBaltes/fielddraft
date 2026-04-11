@@ -277,11 +277,92 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
+      <SketchOverlay />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
       {/* Build-volume floor reference. */}
       <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
     </>
+  );
+}
+
+/**
+ * K6b.2 follow-up: visual preview of the active sketch session's
+ * applied sub-spine. Each `sketch_point` becomes a dot on the
+ * sketch plane, each `sketch_line` becomes a line segment. Until
+ * the K6b.3 face-lock UX lands we hardcode the plane mapping to
+ * the world ground plane (`sketch (x, y) → world (x, 0.1, y)`,
+ * with a small Y lift to avoid z-fighting against the grid).
+ * Hidden entirely when the session is inactive.
+ */
+function SketchOverlay() {
+  const { state } = useKernelStore();
+  const session = state?.sketchSession;
+
+  const { points, lineSegments } = useMemo(() => {
+    const pts: number[] = [];
+    const segs: number[] = [];
+    if (session?.active) {
+      for (const call of session.subCalls) {
+        if (call.type === "sketch_point") {
+          const at = call.params.at as unknown;
+          if (Array.isArray(at) && at.length === 2) {
+            pts.push(Number(at[0]), 0.1, Number(at[1]));
+          }
+        } else if (call.type === "sketch_line") {
+          const start = call.params.start as unknown;
+          const end = call.params.end as unknown;
+          if (
+            Array.isArray(start) &&
+            start.length === 2 &&
+            Array.isArray(end) &&
+            end.length === 2
+          ) {
+            segs.push(
+              Number(start[0]),
+              0.1,
+              Number(start[1]),
+              Number(end[0]),
+              0.1,
+              Number(end[1]),
+            );
+          }
+        }
+      }
+    }
+    return {
+      points: new Float32Array(pts),
+      lineSegments: new Float32Array(segs),
+    };
+  }, [session]);
+
+  if (!session?.active) return null;
+
+  return (
+    <group>
+      {points.length > 0 ? (
+        <points>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[points, 3]}
+            />
+          </bufferGeometry>
+          <pointsMaterial color="#2563eb" size={8} sizeAttenuation={false} />
+        </points>
+      ) : null}
+      {lineSegments.length > 0 ? (
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[lineSegments, 3]}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color="#2563eb" />
+        </lineSegments>
+      ) : null}
+    </group>
   );
 }
 
