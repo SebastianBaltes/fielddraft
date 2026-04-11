@@ -368,6 +368,7 @@ mod tests {
             features,
             feature_calls: Vec::new(),
             next_feature_id: max + 1,
+            variables: std::collections::BTreeMap::new(),
         }
     }
 

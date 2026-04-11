@@ -23,6 +23,57 @@
     font-style: italic;
   }
 
+  & .variables-panel {
+    border-bottom: 1px solid var(--color-divider);
+
+    & .variable-name {
+      flex: 1;
+      font-family: var(--font-mono, monospace);
+      font-size: var(--fs-base);
+    }
+
+    & .variable-value,
+    & .variable-name-input,
+    & .variable-value-input {
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface);
+      color: var(--color-text);
+      font-size: var(--fs-base);
+      min-width: 0;
+    }
+
+    & .variable-value {
+      width: 6rem;
+    }
+
+    & .variables-add {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-4);
+
+      & .variable-name-input {
+        flex: 1;
+      }
+
+      & .variable-value-input {
+        width: 5rem;
+      }
+
+      & .apply {
+        background: var(--color-accent);
+        color: var(--color-text-on-accent, white);
+        border: none;
+        border-radius: var(--radius-sm);
+        padding: var(--space-1) var(--space-3);
+        font-size: var(--fs-base);
+        cursor: pointer;
+      }
+    }
+  }
+
   & .list {
     list-style: none;
     margin: 0;

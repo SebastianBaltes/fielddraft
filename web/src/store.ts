@@ -102,6 +102,10 @@ export interface StoreState {
   meshedBodies: readonly MeshedBody[];
   /** K6b.2: active sketch session, or inactive-default. */
   sketchSession: SketchSessionState;
+  /** K8.10: document-level scalar variables, sorted by name
+   *  (the kernel's BTreeMap ordering). K8.11 will teach
+   *  Length fields to reference these by name. */
+  variables: readonly { name: string; value: number }[];
 }
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
@@ -143,6 +147,7 @@ export class KernelStore {
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
       sketchSession: INACTIVE_SKETCH_SESSION,
+      variables: kernel.listVariables(),
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -204,6 +209,7 @@ export class KernelStore {
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
       sketchSession: this.state.sketchSession,
+      variables: this.kernel.listVariables(),
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -354,6 +360,30 @@ export class KernelStore {
     if (this.state.nextOp === op) return;
     this.state = { ...this.state, nextOp: op };
     for (const listener of this.listeners) listener();
+  }
+
+  // ── K8.10: document-level variables ──────────────────────────
+
+  /** K8.10: upsert a variable and commit. Returns `true` on
+   *  success, `false` when the kernel rejected the call
+   *  (empty name, NaN, Infinity). */
+  setVariable(name: string, value: number): boolean {
+    try {
+      this.kernel.setVariable(name, value);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: setVariable failed", err);
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
+  /** K8.10: remove a variable and commit. */
+  removeVariable(name: string): boolean {
+    if (!this.kernel.removeVariable(name)) return false;
+    this.commit();
+    return true;
   }
 
   /** K8.9: append a hole feature at the next per-add stagger

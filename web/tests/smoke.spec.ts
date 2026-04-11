@@ -877,6 +877,73 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.10: variables panel adds, edits, deletes, and persists", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await expect(page.getByTestId("variables-empty")).toBeVisible();
+
+    // Add two variables.
+    await page.getByTestId("variable-new-name").fill("width");
+    await page.getByTestId("variable-new-value").fill("50");
+    await page.getByTestId("variable-add").click();
+
+    await page.getByTestId("variable-new-name").fill("depth");
+    await page.getByTestId("variable-new-value").fill("30");
+    await page.getByTestId("variable-new-value").press("Enter");
+
+    // BTreeMap ordering: `depth` before `width`.
+    await expect(page.getByTestId("variable-row-depth")).toBeVisible();
+    await expect(page.getByTestId("variable-row-width")).toBeVisible();
+
+    const kernelVars = async () =>
+      page.evaluate(() => {
+        const kernel = (
+          window as unknown as {
+            __fdKernel?: {
+              listVariables: () => { name: string; value: number }[];
+            };
+          }
+        ).__fdKernel;
+        return kernel ? kernel.listVariables() : null;
+      });
+    expect(await kernelVars()).toEqual([
+      { name: "depth", value: 30 },
+      { name: "width", value: 50 },
+    ]);
+
+    // Edit width → 75 via the inline input.
+    const widthInput = page.getByTestId("variable-value-width");
+    await widthInput.fill("75");
+    await widthInput.press("Enter");
+    expect(await kernelVars()).toEqual([
+      { name: "depth", value: 30 },
+      { name: "width", value: 75 },
+    ]);
+
+    // Delete depth.
+    await page.getByTestId("variable-delete-depth").click();
+    expect(await kernelVars()).toEqual([{ name: "width", value: 75 }]);
+
+    // Autosave debounce + reload — the remaining variable
+    // round-trips through localStorage serde.
+    await page.waitForTimeout(800);
+    await page.reload();
+    await page.waitForTimeout(600);
+    expect(await kernelVars()).toEqual([{ name: "width", value: 75 }]);
+    await expect(page.getByTestId("variable-row-width")).toBeVisible();
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

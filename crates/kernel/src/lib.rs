@@ -1454,6 +1454,63 @@ impl Kernel {
         Ok(new_flat)
     }
 
+    /// K8.10: upsert a document-level variable. Used by the
+    /// outliner's Variables panel. Snapshots so undo/redo
+    /// walks variable edits the same way it walks feature
+    /// edits. No regen needed — the K8.10 slice only ships
+    /// the table, the K8.11 formula engine will hook regen
+    /// onto variable changes once Length fields can reference
+    /// them.
+    #[wasm_bindgen(js_name = setVariable)]
+    pub fn set_variable(&mut self, name: &str, value: f32) -> Result<(), JsError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(JsError::new("variable name must not be empty"));
+        }
+        if !value.is_finite() {
+            return Err(JsError::new(&format!(
+                "variable `{trimmed}` must be a finite number"
+            )));
+        }
+        self.snapshot();
+        self.document
+            .variables
+            .insert(trimmed.to_string(), value);
+        Ok(())
+    }
+
+    /// K8.10: remove a document-level variable. No-op if the
+    /// name isn't in the table; returns `true` when it actually
+    /// removed something.
+    #[wasm_bindgen(js_name = removeVariable)]
+    pub fn remove_variable(&mut self, name: &str) -> bool {
+        if !self.document.variables.contains_key(name) {
+            return false;
+        }
+        self.snapshot();
+        self.document.variables.remove(name);
+        true
+    }
+
+    /// K8.10: list every document-level variable as a JSON
+    /// array of `{name, value}` pairs, sorted by name (the
+    /// BTreeMap ordering).
+    #[wasm_bindgen(js_name = listVariables)]
+    pub fn list_variables(&self) -> Result<String, JsError> {
+        #[derive(serde::Serialize)]
+        struct Entry<'a> {
+            name: &'a str,
+            value: f32,
+        }
+        let out: Vec<Entry> = self
+            .document
+            .variables
+            .iter()
+            .map(|(name, value)| Entry { name, value: *value })
+            .collect();
+        serde_json::to_string(&out).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// K8.7: toggle a feature call's suppressed flag and
     /// regenerate. A suppressed call is skipped by the
     /// registry's regen loop, so its geometry drops out of the
@@ -2368,6 +2425,47 @@ mod tests {
     // ─── kernel mutations + undo/redo ────────────────────────────────
 
     // ─── K6b.3a: sketch commit path ─────────────────────────────────
+
+    #[test]
+    // ─── K8.10: variables ─────────────────────────────────────
+
+    #[test]
+    fn set_list_remove_variable_roundtrips_through_btreemap() {
+        let mut k = Kernel::new();
+        assert_eq!(k.list_variables().unwrap(), "[]");
+
+        k.set_variable("width", 50.0).unwrap();
+        k.set_variable("depth", 30.0).unwrap();
+        // Inserted in reverse alphabetical order, but the
+        // BTreeMap normalises to name-sorted on listing.
+        let json = k.list_variables().unwrap();
+        assert!(json.contains("\"name\":\"depth\""));
+        assert!(json.contains("\"name\":\"width\""));
+        let depth_idx = json.find("depth").unwrap();
+        let width_idx = json.find("width").unwrap();
+        assert!(depth_idx < width_idx);
+
+        assert!(k.remove_variable("depth"));
+        assert!(!k.remove_variable("depth"));
+        let json = k.list_variables().unwrap();
+        assert!(!json.contains("depth"));
+        assert!(json.contains("width"));
+    }
+
+    // Error-path tests for set_variable are wasm-only —
+    // JsError::new panics when built as a native binary, so
+    // the empty-name / NaN / Infinity checks are covered by
+    // the Playwright smoketest instead.
+
+    #[test]
+    fn set_variable_trims_whitespace_and_undo_rolls_back() {
+        let mut k = Kernel::new();
+        k.set_variable("  width  ", 42.0).unwrap();
+        assert_eq!(k.document.variables.get("width"), Some(&42.0));
+        // Undo removes the variable entirely.
+        assert!(k.undo());
+        assert!(k.document.variables.is_empty());
+    }
 
     #[test]
     fn add_sketch_appends_a_sketch_feature_call_and_preserves_primitives() {

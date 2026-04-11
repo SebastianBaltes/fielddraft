@@ -712,6 +712,16 @@ pub struct Document {
     /// only issues flat-numeric ids. A future K4.5 slice will
     /// grow a proper hierarchical allocator on top.
     pub next_feature_id: u32,
+    /// K8.10: document-level scalar variables. Keyed by
+    /// user-chosen name, value in the model unit
+    /// (millimetres for lengths, dimensionless otherwise).
+    /// The K8.11 formula engine will teach Length fields to
+    /// reference these by name; this first slice is just the
+    /// persisted table. BTreeMap so the wire form is
+    /// deterministically ordered across saves — snapshots
+    /// diff cleanly.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub variables: std::collections::BTreeMap<String, f32>,
 }
 
 impl Default for Document {
@@ -724,6 +734,7 @@ impl Default for Document {
             features: Vec::new(),
             feature_calls: Vec::new(),
             next_feature_id: 1,
+            variables: std::collections::BTreeMap::new(),
         }
     }
 }

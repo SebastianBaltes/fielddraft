@@ -165,6 +165,29 @@ export function Outliner({ store, state }: OutlinerProps) {
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
 
+  // K8.10: working copies for the Variables panel's "add new"
+  // row. Blank name + blank value until the user types.
+  const [newVarName, setNewVarName] = useState<string>("");
+  const [newVarValue, setNewVarValue] = useState<string>("");
+
+  const handleAddVariable = () => {
+    const trimmed = newVarName.trim();
+    if (trimmed.length === 0) return;
+    const value = Number(newVarValue);
+    if (!Number.isFinite(value)) return;
+    if (store.setVariable(trimmed, value)) {
+      setNewVarName("");
+      setNewVarValue("");
+    }
+  };
+
+  const handleVariableValueChange = (name: string, text: string) => {
+    const value = Number(text);
+    if (Number.isFinite(value)) {
+      store.setVariable(name, value);
+    }
+  };
+
   const beginRename = (feature: FeatureSummary) => {
     setRenamingId(feature.id);
     setRenameDraft(feature.name);
@@ -306,6 +329,100 @@ export function Outliner({ store, state }: OutlinerProps) {
               ))}
             </ul>
           ) : null}
+        </section>
+      ) : null}
+      {!sketchSession.active ? (
+        <section
+          className="variables-panel"
+          data-testid="variables-panel"
+        >
+          <div className="header">Variables</div>
+          {state.variables.length === 0 ? (
+            <div
+              className="empty"
+              data-testid="variables-empty"
+            >
+              No variables.
+            </div>
+          ) : (
+            <ul className="list">
+              {state.variables.map((v) => (
+                <li
+                  key={v.name}
+                  className="row"
+                  data-testid={`variable-row-${v.name}`}
+                >
+                  <span className="variable-name">{v.name}</span>
+                  <input
+                    className="variable-value"
+                    type="number"
+                    inputMode="decimal"
+                    aria-label={`Value of ${v.name}`}
+                    data-testid={`variable-value-${v.name}`}
+                    defaultValue={v.value}
+                    onBlur={(e) =>
+                      handleVariableValueChange(v.name, e.currentTarget.value)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="row-delete"
+                    title="Remove variable"
+                    data-testid={`variable-delete-${v.name}`}
+                    onClick={() => store.removeVariable(v.name)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="variables-add">
+            <input
+              className="variable-name-input"
+              placeholder="name"
+              aria-label="New variable name"
+              data-testid="variable-new-name"
+              value={newVarName}
+              onChange={(e) => setNewVarName(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddVariable();
+                }
+              }}
+            />
+            <input
+              className="variable-value-input"
+              type="number"
+              inputMode="decimal"
+              placeholder="value"
+              aria-label="New variable value"
+              data-testid="variable-new-value"
+              value={newVarValue}
+              onChange={(e) => setNewVarValue(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddVariable();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="apply"
+              data-testid="variable-add"
+              onClick={handleAddVariable}
+            >
+              +
+            </button>
+          </div>
         </section>
       ) : null}
       {!sketchSession.active && selectedSchema ? (

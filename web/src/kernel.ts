@@ -622,6 +622,26 @@ export class Kernel {
     this.inner.setFeatureSuppressed(id, suppressed);
   }
 
+  /** K8.10: upsert a document-level variable. */
+  setVariable(name: string, value: number): void {
+    this.inner.setVariable(name, value);
+  }
+
+  /** K8.10: remove a variable. Returns true when something
+   *  was actually removed. */
+  removeVariable(name: string): boolean {
+    return this.inner.removeVariable(name);
+  }
+
+  /** K8.10: list every variable as `{name, value}` entries,
+   *  sorted by name. */
+  listVariables(): { name: string; value: number }[] {
+    return JSON.parse(this.inner.listVariables()) as {
+      name: string;
+      value: number;
+    }[];
+  }
+
   /** K8.8: duplicate a feature call with a +20mm X nudge on
    *  its translate, and return the new feature id. */
   duplicateFeature(id: number): number {
