@@ -191,6 +191,7 @@ fn parse_schema_attr(input: &DeriveInput) -> syn::Result<String> {
 #[derive(Clone)]
 enum ParamType {
     F32,
+    Vec2,
     Vec3,
     Bool,
     String,
@@ -215,6 +216,7 @@ impl ParamType {
     fn json_type_name(&self) -> &'static str {
         match self {
             ParamType::F32 => "f32",
+            ParamType::Vec2 => "vec2",
             ParamType::Vec3 => "vec3",
             ParamType::Bool => "bool",
             ParamType::String => "string",
@@ -409,6 +411,7 @@ impl ParamType {
     fn emit_rust_type(&self) -> TokenStream2 {
         match self {
             ParamType::F32 => quote! { f32 },
+            ParamType::Vec2 => quote! { [f32; 2] },
             ParamType::Vec3 => quote! { [f32; 3] },
             ParamType::Bool => quote! { bool },
             ParamType::String => quote! { ::std::string::String },
@@ -434,6 +437,41 @@ impl ParamType {
                     }
                 })?
             },
+            ParamType::Vec2 => quote! {{
+                let arr = slot.as_array().ok_or_else(|| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: "expected a 2-element array".to_string(),
+                    }
+                })?;
+                if arr.len() != 2 {
+                    return ::core::result::Result::Err(
+                        crate::features::FeatureError::InvalidParameter {
+                            feature: Self::TYPE_NAME,
+                            name: #key,
+                            message: ::std::format!(
+                                "expected 2 elements, got {}",
+                                arr.len()
+                            ),
+                        },
+                    );
+                }
+                let mut out = [0.0_f32; 2];
+                for (i, item) in arr.iter().enumerate() {
+                    out[i] = item.as_f64().map(|v| v as f32).ok_or_else(
+                        || crate::features::FeatureError::InvalidParameter {
+                            feature: Self::TYPE_NAME,
+                            name: #key,
+                            message: ::std::format!(
+                                "element {} is not a number",
+                                i
+                            ),
+                        },
+                    )?;
+                }
+                out
+            }},
             ParamType::Vec3 => quote! {{
                 let arr = slot.as_array().ok_or_else(|| {
                     crate::features::FeatureError::InvalidParameter {
@@ -608,22 +646,30 @@ impl ParamType {
             return Ok(ParamType::Generic(Box::new(ty.clone())));
         }
         if let Type::Array(TypeArray { elem, len, .. }) = ty {
-            // We only recognise `[f32; 3]` for now.
+            // Recognise `[f32; 2]` (sketch-plane coordinates) and
+            // `[f32; 3]` (world-space vectors). Other array shapes
+            // fall through to the error below.
             if let Type::Path(TypePath { qself: None, path }) = &**elem {
                 let is_f32 = path
                     .segments
                     .last()
                     .map(|s| s.ident == "f32")
                     .unwrap_or(false);
-                let len_is_three = matches!(
-                    len,
-                    Expr::Lit(ExprLit {
-                        lit: Lit::Int(lit),
-                        ..
-                    }) if lit.base10_digits() == "3"
-                );
-                if is_f32 && len_is_three {
-                    return Ok(ParamType::Vec3);
+                let int_len = if let Expr::Lit(ExprLit {
+                    lit: Lit::Int(lit),
+                    ..
+                }) = len
+                {
+                    Some(lit.base10_digits())
+                } else {
+                    None
+                };
+                if is_f32 {
+                    match int_len {
+                        Some("2") => return Ok(ParamType::Vec2),
+                        Some("3") => return Ok(ParamType::Vec3),
+                        _ => {}
+                    }
                 }
             }
         }

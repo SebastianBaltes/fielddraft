@@ -125,11 +125,22 @@ impl std::error::Error for FeatureError {}
 /// execution.
 pub struct Context<'a> {
     pub document: &'a mut Document,
+    /// K6b.1: solved sketch state per sketch feature id. The
+    /// `sketch` FeatureKind walks its declarative sub-spine of
+    /// sketch-tool calls, builds a [`SketchState`] and stashes
+    /// it here so downstream features (extrude, revolve) can
+    /// look up the resolved 2D geometry by feature id. The map
+    /// is regeneration-local — every `regenerate` pass starts
+    /// from a fresh `Context` and re-solves every sketch.
+    pub sketches: HashMap<FeatureId, ::fielddraft_solver::SketchState>,
 }
 
 impl<'a> Context<'a> {
     pub fn new(document: &'a mut Document) -> Self {
-        Self { document }
+        Self {
+            document,
+            sketches: HashMap::new(),
+        }
     }
 }
 
@@ -200,6 +211,7 @@ impl FeatureRegistry {
         r.register(Box::new(SpherePrimitive));
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
+        r.register(Box::new(crate::sketch_features::SketchFeature::new()));
         r
     }
 
@@ -672,12 +684,14 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 4);
+        // K6b.1 adds `sketch` as the fifth built-in alongside the
+        // four K1/K4.5.8 primitives.
+        assert_eq!(registry.len(), 5);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
-        // K4.5.8 lands ExtrudeDef as the fourth built-in.
         assert!(registry.get("extrude").is_some());
+        assert!(registry.get("sketch").is_some());
         assert!(registry.get("torus").is_none());
     }
 
@@ -711,7 +725,10 @@ mod tests {
         let registry = FeatureRegistry::with_builtins();
         let mut names = registry.type_names();
         names.sort();
-        assert_eq!(names, vec!["box", "cylinder", "extrude", "sphere"]);
+        assert_eq!(
+            names,
+            vec!["box", "cylinder", "extrude", "sketch", "sphere"]
+        );
     }
 
     #[test]

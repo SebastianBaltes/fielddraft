@@ -16,6 +16,7 @@ pub mod features;
 pub mod queries;
 pub mod raycast;
 pub mod sketch2d;
+pub mod sketch_features;
 
 use body::{build_bounded_for_body, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
