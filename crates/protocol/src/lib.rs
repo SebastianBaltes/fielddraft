@@ -528,6 +528,14 @@ pub struct FeatureCall {
     /// `FeatureKind::execute` parses it.
     #[serde(default)]
     pub params: serde_json::Value,
+    /// K8.7: per-call suppression flag. When `true`, the
+    /// regeneration loop skips this call — its geometry drops
+    /// out of the CSG tree but the call itself stays in the
+    /// document so the user can unsuppress it later. Skipped
+    /// from serialization when `false` so existing fixtures
+    /// and round-trip tests see a byte-identical wire form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppressed: bool,
 }
 
 impl FeatureCall {
@@ -541,6 +549,7 @@ impl FeatureCall {
             type_name: type_name.into(),
             id,
             params,
+            suppressed: false,
         }
     }
 
@@ -646,6 +655,7 @@ impl FeatureCall {
             type_name: type_name.to_string(),
             id: f.id.clone(),
             params,
+            suppressed: false,
         }
     }
 }
@@ -745,10 +755,15 @@ impl Document {
     /// and lives purely as a wire-form call whose `execute`
     /// populates `Context::sketches` at regeneration time.
     pub fn sync_feature_calls(&mut self) {
+        // K8.7: suppressed calls never run through `execute`, so
+        // they have no SpineFeature mirror to rebuild from. Keep
+        // them verbatim regardless of type — without this gate a
+        // suppressed box would vanish from the wire form on the
+        // very next sync.
         let surviving: Vec<FeatureCall> = self
             .feature_calls
             .drain(..)
-            .filter(|c| !is_spine_type(&c.type_name))
+            .filter(|c| !is_spine_type(&c.type_name) || c.suppressed)
             .collect();
         let mut next: Vec<FeatureCall> = self
             .features

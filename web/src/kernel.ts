@@ -75,6 +75,12 @@ export interface FeatureSummary {
   kind: FeatureKindName;
   translate: [number, number, number];
   scale: number;
+  /** K8.7: mirrors the kernel's `FeatureCall.suppressed`
+   *  flag. Undefined in JSON when false — upstream
+   *  `listFeatures` omits the field via a
+   *  `skip_serializing_if` guard, so the TS layer has to
+   *  treat the absence as `false`. */
+  suppressed?: boolean;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;
@@ -588,6 +594,11 @@ export class Kernel {
 
   setFeatureOp(id: number, op: BoolOpTagValue): boolean {
     return this.inner.setFeatureOp(id, op);
+  }
+
+  /** K8.7: toggle the suppressed flag of a feature call. */
+  setFeatureSuppressed(id: number, suppressed: boolean): void {
+    this.inner.setFeatureSuppressed(id, suppressed);
   }
 
   reorderFeature(id: number, targetIndex: number): boolean {

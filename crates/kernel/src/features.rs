@@ -269,6 +269,12 @@ impl FeatureRegistry {
         calls: &[FeatureCall],
     ) -> Result<(), FeatureError> {
         for call in calls {
+            // K8.7: suppressed calls drop out of the tree —
+            // their `execute` never runs, so no spine/body
+            // contribution and no sketch/cache side effects.
+            if call.suppressed {
+                continue;
+            }
             let feature = self
                 .features
                 .get(&call.type_name)
@@ -2689,6 +2695,32 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ─── K8.7: suppress ───────────────────────────────────────
+
+    #[test]
+    fn suppressed_feature_call_is_skipped_by_regenerate() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let mut box_call = FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+        );
+        let sphere_call = FeatureCall::new(
+            "sphere",
+            id(2),
+            json!({ "radius": 2.0, "op": "union" }),
+        );
+        box_call.suppressed = true;
+        registry
+            .regenerate(&mut ctx, &[box_call, sphere_call])
+            .unwrap();
+        // Only the sphere made it onto the spine.
+        assert_eq!(doc.features.len(), 1);
+        assert_eq!(doc.features[0].id, id(2));
     }
 
     // ─── K8.2: mirror ─────────────────────────────────────────

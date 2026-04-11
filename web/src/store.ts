@@ -666,6 +666,24 @@ export class KernelStore {
     return this.kernel.getFeatureCallParams(id);
   }
 
+  /** K8.7: flip a feature's suppressed flag. Returns `true` on
+   *  success, `false` when the toggle rolls back (e.g. an
+   *  upstream dependency broke and regeneration failed). */
+  toggleFeatureSuppressed(id: number): boolean {
+    const current = this.state.features.find((f) => f.id === id);
+    if (!current) return false;
+    const next = !current.suppressed;
+    try {
+      this.kernel.setFeatureSuppressed(id, next);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: setFeatureSuppressed failed", err);
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
   /** K8.6: move a feature one slot up in the outliner. No-op
    *  when the feature is already at the top or doesn't exist.
    *  Returns `true` on success. Reorder is a kernel mutation,

@@ -345,6 +345,11 @@ struct FeatureSummary {
     kind: &'static str,
     translate: [f32; 3],
     scale: f32,
+    /// K8.7: mirrors `FeatureCall.suppressed`. The outliner
+    /// reads this to render the eye-icon affordance and to
+    /// grey out the row when the feature is skipped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    suppressed: bool,
 }
 
 /// Owned by the JS side. Holds the canonical document, the packed
@@ -858,6 +863,7 @@ impl Kernel {
                     kind: Self::kind_label_for_call(&call.type_name, &spine.primitive),
                     translate: spine.transform.translate,
                     scale: spine.transform.scale,
+                    suppressed: call.suppressed,
                 });
             } else {
                 summaries.push(FeatureSummary {
@@ -867,6 +873,7 @@ impl Kernel {
                     kind: Self::static_kind_name(&call.type_name),
                     translate: [0.0, 0.0, 0.0],
                     scale: 1.0,
+                    suppressed: call.suppressed,
                 });
             }
         }
@@ -1303,16 +1310,59 @@ impl Kernel {
             .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
 
         self.snapshot();
-        let type_name = self.document.feature_calls[idx].type_name.clone();
-        self.document.feature_calls[idx] = fielddraft_protocol::FeatureCall::new(
+        // K8.7: preserve the call's suppressed flag across a
+        // params replace — otherwise toggling suppression off by
+        // renaming or editing any other field would resurrect it.
+        let old = &self.document.feature_calls[idx];
+        let type_name = old.type_name.clone();
+        let suppressed = old.suppressed;
+        self.document.feature_calls[idx] = fielddraft_protocol::FeatureCall {
             type_name,
-            target,
-            new_params,
-        );
+            id: target,
+            params: new_params,
+            suppressed,
+        };
         if let Err(err) = self.bootstrap_features_from_calls() {
             self.undo();
             return Err(JsError::new(&format!(
                 "feature regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(())
+    }
+
+    /// K8.7: toggle a feature call's suppressed flag and
+    /// regenerate. A suppressed call is skipped by the
+    /// registry's regen loop, so its geometry drops out of the
+    /// CSG tree, but the call stays on `feature_calls` so the
+    /// user can unsuppress it later. Fails if the id doesn't
+    /// match any call or if regeneration errors out (e.g.
+    /// unsuppressing a call whose upstream dependency is now
+    /// broken).
+    #[wasm_bindgen(js_name = setFeatureSuppressed)]
+    pub fn set_feature_suppressed(
+        &mut self,
+        id: u32,
+        suppressed: bool,
+    ) -> Result<(), JsError> {
+        let target = FeatureId::from_u32(id);
+        let idx = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == target)
+            .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
+        if self.document.feature_calls[idx].suppressed == suppressed {
+            return Ok(());
+        }
+
+        self.snapshot();
+        self.document.feature_calls[idx].suppressed = suppressed;
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "suppress toggle failed: {err}"
             )));
         }
         self.rebuild_packed();

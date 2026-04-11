@@ -321,11 +321,18 @@ export function Outliner({ store, state }: OutlinerProps) {
             return (
               <li
                 key={feature.id}
-                className={"row" + (selected ? " is-selected" : "")}
+                className={
+                  "row" +
+                  (selected ? " is-selected" : "") +
+                  (feature.suppressed ? " is-suppressed" : "")
+                }
                 data-testid={`feature-row-${feature.id}`}
                 data-feature-id={feature.id}
                 data-feature-op={tagOp}
                 data-feature-kind={feature.kind}
+                data-feature-suppressed={
+                  feature.suppressed ? "true" : "false"
+                }
                 onClick={(e) => handleRowClick(e, feature.id)}
                 onDoubleClick={() => handleRowDoubleClick(feature)}
               >
@@ -367,6 +374,18 @@ export function Outliner({ store, state }: OutlinerProps) {
                     {feature.translate[2].toFixed(0)}]
                   </span>
                 )}
+                <button
+                  type="button"
+                  className="row-suppress"
+                  title={feature.suppressed ? "Unsuppress" : "Suppress"}
+                  data-testid={`feature-suppress-${feature.id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    store.toggleFeatureSuppressed(feature.id);
+                  }}
+                >
+                  {feature.suppressed ? "◎" : "◉"}
+                </button>
                 <button
                   type="button"
                   className="row-reorder"
