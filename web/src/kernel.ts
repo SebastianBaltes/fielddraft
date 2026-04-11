@@ -392,6 +392,19 @@ export class Kernel {
     }>;
   }
 
+  /** K7.2: serialise the current scene as ASCII STL. */
+  exportStlAscii(): string {
+    return this.inner.exportStlAscii();
+  }
+
+  /** K7.2: serialise the current scene as binary STL.
+   *  Returns a `Uint8Array` owned by the main thread (the
+   *  wasm-bindgen bridge copies the bytes out of the linear
+   *  memory before returning). */
+  exportStlBinary(): Uint8Array {
+    return this.inner.exportStlBinary();
+  }
+
   /**
    * K6b.3b: replace an existing sketch's plane and sub_calls in
    * place, keeping the feature id stable. Used by the edit

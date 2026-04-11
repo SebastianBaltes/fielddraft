@@ -659,6 +659,51 @@ export class KernelStore {
    * plane is set, the session is simply dropped — same as a
    * cancel.
    */
+  // ── K7.2.1: STL export ────────────────────────────────────────
+
+  /** Serialise the current scene as ASCII STL. Mostly useful
+   *  for debug / diffing — the Download button uses the binary
+   *  path below. */
+  exportStlAscii(): string {
+    return this.kernel.exportStlAscii();
+  }
+
+  /** Serialise the current scene as binary STL bytes. */
+  exportStlBinary(): Uint8Array {
+    return this.kernel.exportStlBinary();
+  }
+
+  /** Fire a browser download of the current scene as a binary
+   *  STL file. No-op outside the browser (the store is also
+   *  used in Vitest where `document`/`URL` may not exist). */
+  downloadStl(filename = "fielddraft.stl"): void {
+    if (
+      typeof window === "undefined" ||
+      typeof document === "undefined" ||
+      typeof URL === "undefined" ||
+      typeof URL.createObjectURL !== "function"
+    ) {
+      return;
+    }
+    const bytes = this.kernel.exportStlBinary();
+    // Copy the view into a dedicated backing buffer so the
+    // Blob constructor sees a plain ArrayBuffer — passing a
+    // Uint8Array that aliases wasm memory can hand the Blob
+    // a buffer that gets invalidated by a subsequent kernel
+    // mutation.
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    const blob = new Blob([copy], { type: "model/stl" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   commitSketch(): number | null {
     const session = this.state.sketchSession;
     if (!session.active || session.planeQuery === null) {

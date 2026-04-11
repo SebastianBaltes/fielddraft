@@ -204,6 +204,37 @@ test.describe("FieldDraft smoke", () => {
     ).toBeGreaterThan(0);
   });
 
+  test("K7.2.1: Export STL button downloads a non-empty binary file", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Export button is disabled on the empty document.
+    const button = page.getByTestId("export-stl");
+    await expect(button).toBeDisabled();
+
+    // Add a box so the exporter has one body to serialise.
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(button).toBeEnabled();
+
+    // Kick off the download and wait for Playwright to notice
+    // the file save event.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      button.click(),
+    ]);
+    expect(download.suggestedFilename()).toBe("fielddraft.stl");
+
+    // Peek the file size via Playwright's download path helper —
+    // any non-trivial mesh produces at least a few hundred bytes
+    // (80-byte header + 4-byte count + 50 bytes per triangle).
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    expect(stat.size).toBeGreaterThan(100);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

@@ -231,6 +231,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ⟳ Redo
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Export as binary STL"
+          data-testid="export-stl"
+          disabled={state.features.length === 0}
+          onClick={() => store.downloadStl()}
+        >
+          ⇩ STL
+        </button>
       </div>
     </div>
   );
