@@ -114,6 +114,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchPointTool));
         r.register(Box::new(SketchLineTool));
         r.register(Box::new(SketchRectangleTool));
+        r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
@@ -295,6 +296,49 @@ impl SketchToolKind for SketchRectangleTool {
         state.add_constraint(|id| Constraint::Horizontal { id, line: top });
         state.add_constraint(|id| Constraint::Vertical { id, line: right });
         state.add_constraint(|id| Constraint::Vertical { id, line: left });
+        Ok(())
+    }
+}
+
+// ─── K6b.3f: circle ─────────────────────────────────────────────
+//
+// Simpler than rectangle: one center point + one circle entity,
+// no internal constraints (Onshape circles land "free" by
+// default and the user adds radius / coincident / tangent
+// constraints later if they want them). The allocation order
+// is two entities total — the center point first, then the
+// circle — so the TS mirror only needs to bump next_entity_id
+// by two.
+
+/// `sketch_circle` — centre + radius. Internally lowers to a
+/// point + a circle entity referencing that point.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_circle")]
+pub struct SketchCircleDef {
+    pub center: [f32; 2],
+    pub radius: f32,
+}
+
+pub struct SketchCircleTool;
+
+impl SketchToolKind for SketchCircleTool {
+    fn type_name(&self) -> &'static str {
+        SketchCircleDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchCircleDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchCircleDef::parse(def)?;
+        let center = state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        state.add_circle(center, d.radius.max(0.0) as f64);
         Ok(())
     }
 }
@@ -705,13 +749,14 @@ mod tests {
 
     #[test]
     fn sketch_registry_type_names_lists_all_builtins() {
-        // K6b.3e adds sketch_rectangle to the built-in set.
+        // K6b.3f adds sketch_circle to the built-in set.
         let tools = SketchToolRegistry::with_builtins();
         let mut names = tools.type_names();
         names.sort();
         assert_eq!(
             names,
             vec![
+                "sketch_circle".to_string(),
                 "sketch_constraint_coincident".to_string(),
                 "sketch_constraint_horizontal".to_string(),
                 "sketch_constraint_vertical".to_string(),
@@ -720,6 +765,42 @@ mod tests {
                 "sketch_rectangle".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn sketch_circle_tool_emits_a_center_point_and_a_circle() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_circle",
+            id(1),
+            json!({ "center": [5.0, -2.0], "radius": 7.5 }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let point_count = state
+            .entities
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Point { .. }))
+            .count();
+        let circle_count = state
+            .entities
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Circle { .. }))
+            .count();
+        assert_eq!(point_count, 1);
+        assert_eq!(circle_count, 1);
+        assert!(state.constraints.is_empty());
+        // Circle radius is preserved.
+        let circle = state
+            .entities
+            .iter()
+            .find(|e| matches!(e, fielddraft_solver::Entity::Circle { .. }))
+            .unwrap();
+        if let fielddraft_solver::Entity::Circle { radius, .. } = circle {
+            assert!((radius - 7.5).abs() < 1e-9);
+        } else {
+            panic!("expected circle entity");
+        }
     }
 
     #[test]

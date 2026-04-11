@@ -461,6 +461,82 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("circle tool drags a circle and persists its centre + radius", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_circle").click();
+
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    // Centre the drag at ~(80, 80) sketch mm and pull a ~50 mm
+    // radius. At zoom 1.2 that's 60 screen pixels.
+    const centerSx = cx + 96;
+    const centerSy = cy + 96;
+    const rimSx = centerSx + 60;
+    const rimSy = centerSy;
+
+    await page.mouse.move(centerSx, centerSy);
+    await page.mouse.down();
+    await page.mouse.move(centerSx + 20, centerSy + 10, { steps: 5 });
+    await page.mouse.move(rimSx, rimSy, { steps: 10 });
+    await page.mouse.up();
+
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(1);
+
+    await page.waitForTimeout(700);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!.length).toBe(1);
+    const circle = committed![0] as {
+      type: string;
+      params: { center: [number, number]; radius: number };
+    };
+    expect(circle.type).toBe("sketch_circle");
+    expect(circle.params.radius).toBeGreaterThan(10);
+    // Centre's x should be to the right of the canvas origin
+    // (positive in sketch coords).
+    expect(circle.params.center[0]).toBeGreaterThan(0);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];

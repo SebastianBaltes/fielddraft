@@ -83,6 +83,11 @@ type DragState =
       kind: "rectangle";
       start: [number, number];
       current: [number, number];
+    }
+  | {
+      kind: "circle";
+      center: [number, number];
+      current: [number, number];
     };
 
 /**
@@ -326,6 +331,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_circle") {
+      dragRef.current = {
+        kind: "circle",
+        center: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -346,6 +360,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // the H/V constraints are implicit in the tool itself, so
       // an orientation snap would be redundant. Shift still
       // suppresses; hover snap is also disabled while dragging.
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+      snapRef.current = {
+        snapped: [u, v],
+        candidate: null,
+        anchor: null,
+        coincidentTargetId: null,
+      };
+    } else if (dragRef.current.kind === "circle") {
+      // Rubber-band the radius from the fixed centre to the
+      // current cursor position. No inference — the K6b.3f
+      // scope lands circles as free entities without automatic
+      // constraints.
       dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
         snapped: [u, v],
@@ -395,6 +421,40 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragRef.current.kind === "circle") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { center, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const dx = current[0] - center[0];
+      const dy = current[1] - center[1];
+      const radius = Math.hypot(dx, dy);
+      if (radius < 1e-2) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readSketchCamera(),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_circle",
+          params: {
+            center: [center[0], center[1]] as [number, number],
+            radius,
+          },
+        },
+      ]);
+      scheduleSolverReplay();
+      return;
+    }
     if (dragRef.current.kind === "rectangle") {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
       const { start, current } = dragRef.current;
@@ -604,6 +664,20 @@ function rebuildSubCallsFromSolved(
         params: { ...call.params, start, end },
       };
     }
+    if (call.type === "sketch_circle") {
+      const center = pointAt(nextId++);
+      const circleId = nextId++;
+      if (!center) return call;
+      const circle = solved.entities.find((e) => e.id === circleId);
+      const radius =
+        circle && circle.kind === "circle"
+          ? circle.radius
+          : Number(call.params.radius);
+      return {
+        ...call,
+        params: { ...call.params, center, radius },
+      };
+    }
     if (call.type === "sketch_rectangle") {
       // Match the bl/br/tr/tl allocation order — corner_a maps
       // to bl, corner_b maps to tr.
@@ -674,6 +748,13 @@ function drawOverlay(
       const a = toXy(call.params.corner_a);
       const b = toXy(call.params.corner_b);
       if (a && b) drawRectangle(ctx, a, b, cam, COLOR_COMMITTED);
+    } else if (call.type === "sketch_circle") {
+      const center = toXy(call.params.center);
+      const radius = Number(call.params.radius);
+      if (center && Number.isFinite(radius) && radius > 0) {
+        drawCircle(ctx, center, radius, cam, COLOR_COMMITTED);
+        drawPoint(ctx, center, cam, COLOR_COMMITTED);
+      }
     }
   }
 
@@ -687,6 +768,14 @@ function drawOverlay(
     const { start, current } = drag;
     drawRectangle(ctx, start, current, cam, COLOR_PREVIEW);
     drawSizeLabel(ctx, start, current, cam);
+  } else if (drag.kind === "circle") {
+    const { center, current } = drag;
+    const dx = current[0] - center[0];
+    const dy = current[1] - center[1];
+    const radius = Math.hypot(dx, dy);
+    drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
+    drawPoint(ctx, center, cam, COLOR_PREVIEW);
+    drawRadiusLabel(ctx, center, radius, cam);
   } else if (hover) {
     // Hover preview outside of a drag — shows where a click
     // would land, which is crucial to see the snap magnetism
@@ -755,6 +844,63 @@ function drawLine(
   ctx.moveTo(ax, ay);
   ctx.lineTo(bx, by);
   ctx.stroke();
+  ctx.restore();
+}
+
+function drawCircle(
+  ctx: CanvasRenderingContext2D,
+  center: [number, number],
+  radiusMm: number,
+  cam: Readonly<SketchCameraState>,
+  color: string,
+): void {
+  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
+  const radiusPx = radiusMm * cam.zoom;
+  if (radiusPx < 0.5) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = STROKE_PX;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawRadiusLabel(
+  ctx: CanvasRenderingContext2D,
+  center: [number, number],
+  radiusMm: number,
+  cam: Readonly<SketchCameraState>,
+): void {
+  if (radiusMm < 1e-4) return;
+  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
+  // Anchor the label slightly above-right of the centre so it
+  // doesn't clash with the centre-point indicator.
+  const anchorX = cx + LABEL_OFFSET_PX / 2;
+  const anchorY = cy - LABEL_OFFSET_PX / 2;
+  const text = `R ${radiusMm.toFixed(2)} mm`;
+  ctx.save();
+  ctx.font = LABEL_FONT;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const metrics = ctx.measureText(text);
+  const textW = metrics.width;
+  const textH = 16;
+  ctx.fillStyle = LABEL_BG;
+  ctx.strokeStyle = COLOR_COMMITTED;
+  ctx.lineWidth = 1;
+  roundRect(
+    ctx,
+    anchorX - textW / 2 - LABEL_PADDING,
+    anchorY - textH / 2 - LABEL_PADDING / 2,
+    textW + LABEL_PADDING * 2,
+    textH + LABEL_PADDING,
+    4,
+  );
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = LABEL_FG;
+  ctx.fillText(text, anchorX, anchorY);
   ctx.restore();
 }
 

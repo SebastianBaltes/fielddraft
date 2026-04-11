@@ -162,6 +162,27 @@ export function buildDraftSketchState(
           end: endId,
         });
       }
+    } else if (call.type === "sketch_circle") {
+      const center = call.params.center;
+      const radius = Number(call.params.radius);
+      if (
+        Array.isArray(center) &&
+        center.length === 2 &&
+        Number.isFinite(radius)
+      ) {
+        const centerId = state.next_entity_id++;
+        state.entities.push({
+          kind: "point",
+          id: centerId,
+          at: { x: Number(center[0]), y: Number(center[1]) },
+        });
+        state.entities.push({
+          kind: "circle",
+          id: state.next_entity_id++,
+          center: centerId,
+          radius,
+        });
+      }
     } else if (call.type === "sketch_rectangle") {
       // Mirror the kernel `SketchRectangleTool` allocation
       // order: bl, br, tr, tl, bottom, right, top, left,
