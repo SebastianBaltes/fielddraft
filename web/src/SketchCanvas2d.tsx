@@ -31,11 +31,13 @@ import {
 import {
   buildDraftSketchState,
   DRAFT_DRAG_START_ID,
+  predictNextLineIds,
 } from "./sketchSession";
 import {
   inferCandidates,
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
+import { solveSketch } from "./solver/planegcs";
 import type { SketchState } from "./solver/types";
 
 interface Props {
@@ -68,7 +70,15 @@ const SNAP_RING_PX = 8;
 
 type DragState =
   | { kind: "idle" }
-  | { kind: "line"; start: [number, number]; current: [number, number] };
+  | {
+      kind: "line";
+      start: [number, number];
+      current: [number, number];
+      /** Entity id the start snapped to at pointerdown time, if
+       *  the snap was a coincident-to-point hit. Used by the
+       *  commit path to emit a matching coincident constraint. */
+      startAnchorId: number | null;
+    };
 
 /**
  * Inference result for the current cursor: the raw cursor
@@ -84,6 +94,12 @@ interface SnapResolution {
    *  snap target itself; for horizontal / vertical / parallel
    *  hints it's the snapped cursor. `null` skips the ring. */
   anchor: [number, number] | null;
+  /** Real entity id the cursor snapped to, for coincident
+   *  snaps. Used by the commit path to emit a matching
+   *  constraint referencing the kernel-side entity. `null`
+   *  when the snap is orientation-only (horizontal/vertical/
+   *  parallel) or when there is no snap at all. */
+  coincidentTargetId: number | null;
 }
 
 function resolveSnap(
@@ -93,7 +109,12 @@ function resolveSnap(
   suppress = false,
 ): SnapResolution {
   if (suppress) {
-    return { snapped: cursor, candidate: null, anchor: null };
+    return {
+      snapped: cursor,
+      candidate: null,
+      anchor: null,
+      coincidentTargetId: null,
+    };
   }
   const state: SketchState = buildDraftSketchState(
     session.subCalls,
@@ -106,7 +127,12 @@ function resolveSnap(
     snapDistanceMm: SNAP_RADIUS_MM,
   });
   if (cands.length === 0) {
-    return { snapped: cursor, candidate: null, anchor: null };
+    return {
+      snapped: cursor,
+      candidate: null,
+      anchor: null,
+      coincidentTargetId: null,
+    };
   }
   const top = cands[0];
   const c = top.constraint;
@@ -114,31 +140,41 @@ function resolveSnap(
   // point's coordinates.
   if (c.kind === "coincident") {
     const target = state.entities.find((e) => e.id === c.b);
-    if (target) {
-      if (target.kind === "point") {
-        return {
-          snapped: [target.at.x, target.at.y],
-          candidate: top,
-          anchor: [target.at.x, target.at.y],
-        };
-      }
-      if (target.kind === "origin") {
-        return {
-          snapped: [0, 0],
-          candidate: top,
-          anchor: [0, 0],
-        };
-      }
+    if (target && target.kind === "point") {
+      return {
+        snapped: [target.at.x, target.at.y],
+        candidate: top,
+        anchor: [target.at.x, target.at.y],
+        coincidentTargetId: target.id,
+      };
+    }
+    if (target && target.kind === "origin") {
+      return {
+        snapped: [0, 0],
+        candidate: top,
+        anchor: [0, 0],
+        coincidentTargetId: target.id,
+      };
     }
   }
   // Horizontal/vertical: lock one axis to the drag-start axis.
   if (c.kind === "horizontal" && dragStart) {
     const snapped: [number, number] = [cursor[0], dragStart[1]];
-    return { snapped, candidate: top, anchor: snapped };
+    return {
+      snapped,
+      candidate: top,
+      anchor: snapped,
+      coincidentTargetId: null,
+    };
   }
   if (c.kind === "vertical" && dragStart) {
     const snapped: [number, number] = [dragStart[0], cursor[1]];
-    return { snapped, candidate: top, anchor: snapped };
+    return {
+      snapped,
+      candidate: top,
+      anchor: snapped,
+      coincidentTargetId: null,
+    };
   }
   // Parallel to an existing line: project the cursor onto the
   // parallel ray through the drag start.
@@ -167,12 +203,22 @@ function resolveSnap(
             dragStart[0] + ux * t,
             dragStart[1] + uy * t,
           ];
-          return { snapped, candidate: top, anchor: snapped };
+          return {
+            snapped,
+            candidate: top,
+            anchor: snapped,
+            coincidentTargetId: null,
+          };
         }
       }
     }
   }
-  return { snapped: cursor, candidate: null, anchor: null };
+  return {
+    snapped: cursor,
+    candidate: null,
+    anchor: null,
+    coincidentTargetId: null,
+  };
 }
 
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
@@ -183,6 +229,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     snapped: [0, 0],
     candidate: null,
     anchor: null,
+    coincidentTargetId: null,
   });
   const rafRef = useRef<number | null>(null);
   const lastCamVersionRef = useRef<number>(-1);
@@ -260,6 +307,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         kind: "line",
         start: [su, sv],
         current: [su, sv],
+        startAnchorId: snap.coincidentTargetId,
       };
       lastCamVersionRef.current = -1;
     }
@@ -311,7 +359,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       e.shiftKey,
     );
     snapRef.current = snap;
-    const { start } = dragRef.current;
+    const { start, startAnchorId } = dragRef.current;
     dragRef.current = { kind: "idle" };
     const [su, sv] = snap.snapped;
     // Reject zero-length lines — a click without drag on an
@@ -333,22 +381,107 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       }
       return;
     }
-    if (store) {
-      store.setSketchToolDraft({ start, end: [su, sv] });
-      store.applySketchToolDraft();
+    if (!store) return;
+
+    // K6b.3d: emit the sketch_line call plus any constraint
+    // calls that materialise from the snap candidate at the
+    // END of the drag (horizontal / vertical / endpoint) and
+    // from the anchor match at the START of the drag (another
+    // endpoint coincident hit). Entity ids are predicted by
+    // replicating the kernel's allocation order so the
+    // constraint calls reference the correct line/point.
+    const predictedIds = predictNextLineIds(session.subCalls);
+    const lineCall = {
+      type: "sketch_line",
+      params: {
+        start: [start[0], start[1]] as [number, number],
+        end: [su, sv] as [number, number],
+      },
+    };
+    const newCalls: Array<{ type: string; params: Record<string, unknown> }> =
+      [lineCall];
+
+    // Start coincident: the line's start snapped to a pre-
+    // existing entity at pointerdown. Emit a coincident
+    // constraint referencing that entity's id.
+    if (startAnchorId !== null) {
+      newCalls.push({
+        type: "sketch_constraint_coincident",
+        params: { a: predictedIds.start, b: startAnchorId },
+      });
     }
+
+    // End snap: can be horizontal / vertical / coincident.
+    if (snap.candidate) {
+      const c = snap.candidate.constraint;
+      if (c.kind === "horizontal") {
+        newCalls.push({
+          type: "sketch_constraint_horizontal",
+          params: { line: predictedIds.line },
+        });
+      } else if (c.kind === "vertical") {
+        newCalls.push({
+          type: "sketch_constraint_vertical",
+          params: { line: predictedIds.line },
+        });
+      } else if (
+        c.kind === "coincident" &&
+        snap.coincidentTargetId !== null
+      ) {
+        newCalls.push({
+          type: "sketch_constraint_coincident",
+          params: { a: predictedIds.end, b: snap.coincidentTargetId },
+        });
+      }
+    }
+
+    store.pushSketchSubCalls(newCalls);
+
+    // Fire-and-forget commit-time solver pass. Solves the full
+    // session state, reads back the solved coordinates and
+    // writes them back into the sub_calls so every subsequent
+    // render (and the eventual Finish commit into the kernel)
+    // sees the solved shape. If the user added more sub_calls
+    // or exited sketch mode before the solver resolves, the
+    // stale result is dropped.
+    void (async () => {
+      const before = store.getState().sketchSession;
+      if (!before.active) return;
+      const snapshot = before.subCalls;
+      try {
+        const state = buildDraftSketchState(snapshot);
+        const result = await solveSketch(state);
+        const rebuilt = rebuildSubCallsFromSolved(snapshot, result.state);
+        const after = store.getState().sketchSession;
+        if (!after.active || after.subCalls !== snapshot) return;
+        store.replaceSketchSubCalls(rebuilt);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("fielddraft: solveSketch failed", err);
+      }
+    })();
   };
 
   const onPointerCancel = () => {
     dragRef.current = { kind: "idle" };
     hoverRef.current = null;
-    snapRef.current = { snapped: [0, 0], candidate: null, anchor: null };
+    snapRef.current = {
+      snapped: [0, 0],
+      candidate: null,
+      anchor: null,
+      coincidentTargetId: null,
+    };
     lastCamVersionRef.current = -1;
   };
 
   const onPointerLeave = () => {
     hoverRef.current = null;
-    snapRef.current = { snapped: [0, 0], candidate: null, anchor: null };
+    snapRef.current = {
+      snapped: [0, 0],
+      candidate: null,
+      anchor: null,
+      coincidentTargetId: null,
+    };
     lastCamVersionRef.current = -1;
   };
 
@@ -368,6 +501,54 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       onContextMenu={(e) => e.preventDefault()}
     />
   );
+}
+
+// ─── K6b.3d: commit-time solver result apply ────────────────────
+
+type SubCall = SketchSessionState["subCalls"][number];
+
+/**
+ * Walk a sub_calls list alongside a solved `SketchState` and
+ * return a new sub_calls list where every `sketch_point` and
+ * `sketch_line` carries the solved coordinates. The mapping
+ * replicates the kernel's deterministic entity allocation
+ * order: entity id 0 is the origin, then ids 1+ are allocated
+ * one per `add_point` / `add_line` call in sub_calls order.
+ * Constraint calls are left untouched — their entity-id
+ * references don't change under a pure coordinate solve.
+ */
+function rebuildSubCallsFromSolved(
+  original: ReadonlyArray<SubCall>,
+  solved: SketchState,
+): SubCall[] {
+  const pointAt = (id: number): [number, number] | null => {
+    const e = solved.entities.find((x) => x.id === id);
+    if (!e) return null;
+    if (e.kind === "point") return [e.at.x, e.at.y];
+    if (e.kind === "origin") return [0, 0];
+    return null;
+  };
+  let nextId = 1; // origin is at id 0
+  return original.map((call): SubCall => {
+    if (call.type === "sketch_point") {
+      const at = pointAt(nextId++);
+      if (!at) return call;
+      return { ...call, params: { ...call.params, at } };
+    }
+    if (call.type === "sketch_line") {
+      const start = pointAt(nextId++);
+      const end = pointAt(nextId++);
+      nextId += 1; // line entity itself
+      if (!start || !end) return call;
+      return {
+        ...call,
+        params: { ...call.params, start, end },
+      };
+    }
+    // Constraint calls don't allocate entities; leave them
+    // verbatim.
+    return call;
+  });
 }
 
 // ─── drawing ────────────────────────────────────────────────────

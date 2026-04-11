@@ -54,7 +54,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use fielddraft_protocol::{FeatureCall, FeatureId, Query};
-use fielddraft_solver::{Point2, SketchState};
+use fielddraft_solver::{Constraint, ConstraintId, EntityId, Point2, SketchState};
 
 use crate::features::{Context, FeatureError, FeatureKind, FeatureSchema};
 
@@ -107,12 +107,15 @@ impl SketchToolRegistry {
         }
     }
 
-    /// Empty registry pre-populated with the K6b.1 built-in
-    /// sketch tools: `sketch_point` and `sketch_line`.
+    /// Empty registry pre-populated with the K6b.1 + K6b.3d
+    /// built-in sketch tools.
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
         r.register(Box::new(SketchPointTool));
         r.register(Box::new(SketchLineTool));
+        r.register(Box::new(SketchHorizontalConstraintTool));
+        r.register(Box::new(SketchVerticalConstraintTool));
+        r.register(Box::new(SketchCoincidentConstraintTool));
         r
     }
 
@@ -216,6 +219,125 @@ impl SketchToolKind for SketchLineTool {
         let start = state.add_point(Point2::new(d.start[0] as f64, d.start[1] as f64));
         let end = state.add_point(Point2::new(d.end[0] as f64, d.end[1] as f64));
         state.add_line(start, end);
+        Ok(())
+    }
+}
+
+// ─── K6b.3d: constraint tools ───────────────────────────────────
+//
+// K6b.3d teaches the sketch sub-spine to carry constraint calls
+// alongside the geometric ones. Each constraint tool references
+// sketch-local entity ids via raw `u32` params — the UI predicts
+// those ids by replicating the kernel's entity allocation order
+// in `buildDraftSketchState`, so the committed calls target the
+// same entities the kernel will create at regeneration time.
+//
+// The constraints land in `SketchState::constraints`. Actual
+// solving happens in JavaScript via the K5a `solveSketch`
+// wrapper — the kernel just persists the constraint network so
+// it survives save / load / edit cycles.
+
+/// `sketch_constraint_horizontal` — locks a line to the
+/// sketch-plane X axis.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_horizontal")]
+pub struct SketchHorizontalConstraintDef {
+    pub line: u32,
+}
+
+pub struct SketchHorizontalConstraintTool;
+
+impl SketchToolKind for SketchHorizontalConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchHorizontalConstraintDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchHorizontalConstraintDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchHorizontalConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Horizontal {
+            id: cid,
+            line: EntityId(d.line),
+        });
+        Ok(())
+    }
+}
+
+/// `sketch_constraint_vertical` — locks a line to the sketch-plane
+/// Y axis.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_vertical")]
+pub struct SketchVerticalConstraintDef {
+    pub line: u32,
+}
+
+pub struct SketchVerticalConstraintTool;
+
+impl SketchToolKind for SketchVerticalConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchVerticalConstraintDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchVerticalConstraintDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchVerticalConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Vertical {
+            id: cid,
+            line: EntityId(d.line),
+        });
+        Ok(())
+    }
+}
+
+/// `sketch_constraint_coincident` — forces two sketch points to
+/// coincide. Used by the K6b.3c endpoint snap when the user
+/// starts a new line on top of an existing point.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_coincident")]
+pub struct SketchCoincidentConstraintDef {
+    pub a: u32,
+    pub b: u32,
+}
+
+pub struct SketchCoincidentConstraintTool;
+
+impl SketchToolKind for SketchCoincidentConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchCoincidentConstraintDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchCoincidentConstraintDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchCoincidentConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Coincident {
+            id: cid,
+            a: EntityId(d.a),
+            b: EntityId(d.b),
+        });
         Ok(())
     }
 }
@@ -506,11 +628,87 @@ mod tests {
     }
 
     #[test]
-    fn sketch_registry_type_names_lists_both_builtins() {
+    fn sketch_registry_type_names_lists_all_builtins() {
+        // K6b.3d grows the built-in set with three constraint tools.
         let tools = SketchToolRegistry::with_builtins();
         let mut names = tools.type_names();
         names.sort();
-        assert_eq!(names, vec!["sketch_line".to_string(), "sketch_point".to_string()]);
+        assert_eq!(
+            names,
+            vec![
+                "sketch_constraint_coincident".to_string(),
+                "sketch_constraint_horizontal".to_string(),
+                "sketch_constraint_vertical".to_string(),
+                "sketch_line".to_string(),
+                "sketch_point".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sketch_horizontal_constraint_tool_pushes_a_horizontal_constraint() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        // Seed a line so we have an entity id to reference.
+        let line_call = FeatureCall::new(
+            "sketch_line",
+            id(1),
+            json!({ "start": [0.0, 0.0], "end": [10.0, 0.5] }),
+        );
+        let cstr_call = FeatureCall::new(
+            "sketch_constraint_horizontal",
+            id(2),
+            // start-point=1, end-point=2, line=3 under with_origin().
+            json!({ "line": 3 }),
+        );
+        tools
+            .apply_all(&mut state, &[line_call, cstr_call])
+            .unwrap();
+        assert_eq!(state.constraints.len(), 1);
+        assert!(matches!(
+            state.constraints[0],
+            Constraint::Horizontal { line: EntityId(3), .. }
+        ));
+    }
+
+    #[test]
+    fn sketch_vertical_and_coincident_constraint_tools_wire_through() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        // Two free points so the coincident constraint has refs.
+        tools
+            .apply_all(
+                &mut state,
+                &[
+                    FeatureCall::new("sketch_point", id(1), json!({ "at": [5.0, 5.0] })),
+                    FeatureCall::new("sketch_point", id(2), json!({ "at": [5.0, 6.0] })),
+                    FeatureCall::new(
+                        "sketch_constraint_coincident",
+                        id(3),
+                        json!({ "a": 1, "b": 2 }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_line",
+                        id(4),
+                        json!({ "start": [0.0, 0.0], "end": [0.5, 10.0] }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_constraint_vertical",
+                        id(5),
+                        json!({ "line": 5 }),
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(state.constraints.len(), 2);
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Coincident { a: EntityId(1), b: EntityId(2), .. }
+        )));
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Vertical { line: EntityId(5), .. }
+        )));
     }
 
     #[test]

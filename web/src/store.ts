@@ -595,6 +595,48 @@ export class KernelStore {
   }
 
   /**
+   * K6b.3d: append multiple sub-spine calls atomically. Used by
+   * the 2D canvas commit path when a line drag needs to land
+   * both the `sketch_line` call and a constraint call in a
+   * single step so the session snapshot is always consistent.
+   */
+  pushSketchSubCalls(
+    calls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  ): void {
+    if (!this.state.sketchSession.active) return;
+    if (calls.length === 0) return;
+    this.state = {
+      ...this.state,
+      sketchSession: {
+        ...this.state.sketchSession,
+        subCalls: [...this.state.sketchSession.subCalls, ...calls],
+      },
+    };
+    this.notify();
+  }
+
+  /**
+   * K6b.3d: wholesale replace the session's sub-spine. After a
+   * commit-time solver pass rewrites the coordinates of every
+   * call, the canvas overlay calls this to swap the old
+   * sub_calls for the solved ones without going through a
+   * delta diff.
+   */
+  replaceSketchSubCalls(
+    calls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  ): void {
+    if (!this.state.sketchSession.active) return;
+    this.state = {
+      ...this.state,
+      sketchSession: {
+        ...this.state.sketchSession,
+        subCalls: [...calls],
+      },
+    };
+    this.notify();
+  }
+
+  /**
    * K6b.3a: commit the current sketch session to the kernel as
    * a real `sketch` FeatureCall. Called from the "Finish"
    * button. Pushes the session's accumulated sub_calls through

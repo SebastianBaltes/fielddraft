@@ -160,15 +160,15 @@ test.describe("Sketch editor smoke", () => {
     await page.mouse.move(endX, endY, { steps: 10 });
     await page.mouse.up();
 
-    // One committed sub-spine entry.
+    // K6b.3d: a start-snap to origin now commits both the
+    // `sketch_line` call and a `sketch_constraint_coincident`
+    // referencing the origin entity.
     const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
-    await expect(subSpineRows).toHaveCount(1);
+    await expect(subSpineRows).toHaveCount(2);
 
-    // Finish and verify the committed sketch: the sub-spine
-    // entry's start must be (0, 0), proof that the snap took
-    // effect. We peek the kernel state through the outliner
-    // name ("Sketch 1") plus a round trip through the store
-    // to read the committed sub_calls.
+    // Let the commit-time solver land before reading back.
+    await page.waitForTimeout(700);
+
     await page.getByTestId("sketch-finish").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
@@ -192,7 +192,7 @@ test.describe("Sketch editor smoke", () => {
     });
 
     expect(committed).not.toBeNull();
-    expect(committed!.length).toBe(1);
+    expect(committed!.length).toBe(2);
     const lineCall = committed![0] as {
       type: string;
       params: { start: [number, number]; end: [number, number] };
@@ -201,6 +201,9 @@ test.describe("Sketch editor smoke", () => {
     const [sx, sy] = lineCall.params.start;
     expect(sx).toBeCloseTo(0, 5);
     expect(sy).toBeCloseTo(0, 5);
+    // Second entry must be the coincident-to-origin constraint.
+    const cstrCall = committed![1] as { type: string };
+    expect(cstrCall.type).toBe("sketch_constraint_coincident");
 
     const blocking = consoleErrors.filter(isBlockingConsoleMessage);
     expect(
@@ -282,6 +285,92 @@ test.describe("Sketch editor smoke", () => {
     expect(committed!).toHaveLength(2);
     expect(committed![0].type).toBe("sketch_line");
     expect(committed![1].type).toBe("sketch_line");
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("near-horizontal drag persists a horizontal constraint and solves the line flat", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_line").click();
+
+    // Drag a near-horizontal line (small vertical wobble) from
+    // off-centre to off-centre so neither endpoint lands inside
+    // the origin snap radius. The horizontal inference should
+    // still fire because the vertical deviation is below the
+    // 10 mm snap threshold, and the commit-time solver should
+    // then flatten the line to end.y == start.y.
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const startX = cx - 120;
+    const startY = cy + 120;
+    const endX = cx + 120;
+    const endY = cy + 120 - 3;
+
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move((startX + endX) / 2, (startY + endY) / 2, { steps: 5 });
+    await page.mouse.move(endX, endY, { steps: 10 });
+    await page.mouse.up();
+
+    // The sub-spine grows by two entries: the line and the
+    // horizontal constraint.
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(2);
+
+    // Give the async solver time to land its result.
+    await page.waitForTimeout(800);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!.length).toBe(2);
+    const line = committed![0] as {
+      type: string;
+      params: { start: [number, number]; end: [number, number] };
+    };
+    const constraint = committed![1] as {
+      type: string;
+      params: { line: number };
+    };
+    expect(line.type).toBe("sketch_line");
+    expect(constraint.type).toBe("sketch_constraint_horizontal");
+    // The solver must have flattened the line.
+    expect(line.params.end[1]).toBeCloseTo(line.params.start[1], 5);
 
     expect(
       pageErrors.map((e) => e.message),

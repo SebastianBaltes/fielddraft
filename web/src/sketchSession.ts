@@ -162,6 +162,35 @@ export function buildDraftSketchState(
           end: endId,
         });
       }
+    } else if (call.type === "sketch_constraint_horizontal") {
+      const line = Number(call.params.line);
+      if (Number.isFinite(line)) {
+        state.constraints.push({
+          kind: "horizontal",
+          id: state.next_constraint_id++,
+          line,
+        });
+      }
+    } else if (call.type === "sketch_constraint_vertical") {
+      const line = Number(call.params.line);
+      if (Number.isFinite(line)) {
+        state.constraints.push({
+          kind: "vertical",
+          id: state.next_constraint_id++,
+          line,
+        });
+      }
+    } else if (call.type === "sketch_constraint_coincident") {
+      const a = Number(call.params.a);
+      const b = Number(call.params.b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "coincident",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
     }
   }
   if (drawingLineFrom) {
@@ -172,4 +201,25 @@ export function buildDraftSketchState(
     });
   }
   return state;
+}
+
+/**
+ * K6b.3d helper: predict the next sketch_line entity IDs the
+ * kernel will allocate when the given sub_calls are applied.
+ * Used by the UI commit path to emit constraint calls that
+ * reference the line we're about to push.
+ *
+ * Returns the IDs a fresh `sketch_line` call *would* occupy at
+ * the current end of the sub-spine. The caller is responsible
+ * for actually appending the line + any constraints that
+ * reference these IDs in the same commit.
+ */
+export function predictNextLineIds(
+  subCalls: SketchSessionState["subCalls"],
+): { start: number; end: number; line: number } {
+  const state = buildDraftSketchState(subCalls);
+  const startId = state.next_entity_id;
+  const endId = startId + 1;
+  const lineId = endId + 1;
+  return { start: startId, end: endId, line: lineId };
 }
