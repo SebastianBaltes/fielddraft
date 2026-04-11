@@ -28,7 +28,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { Line, OrbitControls } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
@@ -360,15 +360,52 @@ function SketchOverlay() {
         </mesh>
       ))}
       {lines.map(({ key, a, b }) => (
-        <Line
-          key={`l-${key}`}
-          points={[a, b]}
-          color="#2563eb"
-          lineWidth={3}
-          depthTest={false}
-        />
+        <SketchLineBox key={`l-${key}`} a={a} b={b} />
       ))}
     </group>
+  );
+}
+
+/**
+ * Line segment rendered as a stretched thin box. Avoids
+ * drei / three-stdlib `LineMaterial`, which isn't compatible
+ * with the WebGPURenderer's NodeMaterial pipeline in this
+ * project. The box-proxy approach works with any renderer and
+ * gives a visible stroke at small sketch scales where the
+ * WebGL/WebGPU 1-pixel line cap would otherwise hide the line.
+ */
+function SketchLineBox({
+  a,
+  b,
+}: {
+  a: [number, number, number];
+  b: [number, number, number];
+}) {
+  const { position, quaternion, length } = useMemo(() => {
+    const start = new THREE.Vector3(...a);
+    const end = new THREE.Vector3(...b);
+    const mid = start.clone().add(end).multiplyScalar(0.5);
+    const dir = end.clone().sub(start);
+    const len = dir.length();
+    const q = new THREE.Quaternion();
+    if (len > 1e-6) {
+      // The box geometry's default long axis is Y; rotate (0,1,0)
+      // onto the line direction so the stretch matches.
+      q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    }
+    return { position: mid, quaternion: q, length: len };
+  }, [a, b]);
+
+  if (length <= 0) return null;
+  return (
+    <mesh position={position} quaternion={quaternion}>
+      <boxGeometry args={[0.8, length, 0.8]} />
+      <meshBasicMaterial
+        color="#2563eb"
+        depthTest={false}
+        depthWrite={false}
+      />
+    </mesh>
   );
 }
 
