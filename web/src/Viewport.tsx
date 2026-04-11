@@ -35,6 +35,7 @@ import { createKernelMeshMaterial } from "./meshMaterial";
 import type { PickResult } from "./kernel";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
+import { consumeViewCommand, VIEW_PRESETS } from "./viewCommands";
 
 /** World-space size of the build-volume reference grid (mm). Matches
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
@@ -356,6 +357,25 @@ function CameraBridgePublisher() {
  * which matches Onshape's sketch-mode expectation that you can't
  * tumble the camera while a sketch is active.
  */
+function ViewCommandConsumer() {
+  const { camera, controls } = useThree();
+  useFrame(() => {
+    const cmd = consumeViewCommand();
+    if (!cmd) return;
+    const preset = VIEW_PRESETS[cmd];
+    camera.position.set(...preset.position);
+    camera.up.set(...preset.up);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    const orbit = controls as { target?: THREE.Vector3; update?: () => void } | null;
+    if (orbit?.target) {
+      orbit.target.set(0, 0, 0);
+      orbit.update?.();
+    }
+  });
+  return null;
+}
+
 function CameraRig() {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
@@ -478,6 +498,7 @@ export function Viewport() {
         >
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
           <CameraRig />
+          <ViewCommandConsumer />
         </Canvas>
       </CanvasErrorBoundary>
       {state?.sketchSession.active ? (

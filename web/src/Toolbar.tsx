@@ -10,6 +10,7 @@ import { BoolOpTag, type BoolOpTagValue } from "./kernel";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
+import { requestView } from "./viewCommands";
 
 /** K6b.2 placeholder: the face-lock UX comes in K6b.3. Until then,
  *  the Sketch button anchors every new session on the XY origin
@@ -303,6 +304,46 @@ export function Toolbar({ store, state }: ToolbarProps) {
           onClick={() => store.downloadStl()}
         >
           ⇩ STL
+        </button>
+      </div>
+
+      <div className="group">
+        <span className="label">View:</span>
+        <button
+          type="button"
+          className="tool"
+          title="Front view"
+          data-testid="view-front"
+          onClick={() => requestView("front")}
+        >
+          ◱ Front
+        </button>
+        <button
+          type="button"
+          className="tool"
+          title="Top view"
+          data-testid="view-top"
+          onClick={() => requestView("top")}
+        >
+          ◳ Top
+        </button>
+        <button
+          type="button"
+          className="tool"
+          title="Right view"
+          data-testid="view-right"
+          onClick={() => requestView("right")}
+        >
+          ◲ Right
+        </button>
+        <button
+          type="button"
+          className="tool"
+          title="Isometric view"
+          data-testid="view-iso"
+          onClick={() => requestView("iso")}
+        >
+          ◰ Iso
         </button>
       </div>
     </div>
