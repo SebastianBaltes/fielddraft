@@ -24,7 +24,11 @@ dev: build-wasm
 build: build-wasm
     cd web && npm run build
 
-# Run all local tests: Rust unit tests, Vitest, Playwright smoke.
+# Run the fast local test suite: Rust unit tests + Vitest.
+# Playwright smoke tests are intentionally *not* included here —
+# they launch a headed Chromium with real WebGPU and are meant to
+# run on demand (`just test-e2e`) at integration points, not on
+# every feature change.
 test: test-rust test-web
 
 test-rust:
@@ -33,7 +37,11 @@ test-rust:
 test-web: build-wasm
     cd web && npm run test
 
-# E2E (Playwright) — requires `just install-e2e` once.
+# E2E (Playwright, headed Chromium + real WebGPU). Catches
+# integration-level regressions that Vitest can't — material /
+# pipeline incompatibilities, drawIndexed crashes, pointer-event
+# routing through the canvas, etc. Requires `just install-e2e`
+# once to fetch the Chromium binary.
 test-e2e: build-wasm
     cd web && npm run e2e
 
