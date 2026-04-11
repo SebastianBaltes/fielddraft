@@ -130,11 +130,10 @@ export function Outliner({ store, state }: OutlinerProps) {
   const handleDialogChange = (next: Record<string, unknown>) => {
     setDialogDraft(next);
     if (!selectedFeature) return;
-    // K7.5 intentionally commits only when the kernel accepts
-    // the change. Non-primitive features (sketch, extrude)
-    // skip the direct edit path — sketches are edited via
-    // their own reentry session, extrudes don't currently
-    // expose a per-call edit UX.
+    // Sketches have their own reentry session, so the generic
+    // edit path is skipped for them. Every other feature kind
+    // (primitives, extrude, linear/circular/mirror patterns)
+    // round-trips through replaceFeatureCallParams.
     if (selectedFeature.kind === "sketch") return;
     store.updateFeatureParams(selectedFeature.id, next);
   };

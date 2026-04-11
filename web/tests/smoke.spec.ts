@@ -455,6 +455,51 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.3: editing a linear pattern's count in the dialog round-trips to the kernel", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.getByTestId("add-box").click();
+    await page.getByTestId("linear-pattern-latest").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    // Select the pattern row so its FeatureDialog mounts.
+    await page.getByTestId("feature-row-2").click();
+
+    // The derive prettifies `count` to `Count`; the generic
+    // FeatureDialog renders a Field with a required asterisk
+    // (`Count *`). `getByLabel` matches substrings, which is
+    // what we want here.
+    const countInput = page.getByLabel(/^Count/);
+    await expect(countInput).toBeVisible();
+    await countInput.fill("5");
+    await page.waitForTimeout(100);
+
+    const after = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.getFeatureCallParams(2);
+    });
+    expect(after).not.toBeNull();
+    expect((after as { count?: number }).count).toBe(5);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

@@ -700,10 +700,14 @@ pub struct LinearPatternDef {
     /// normalised — the executor divides by its length at
     /// apply time.
     pub direction: [f32; 3],
-    /// Total number of instances *including* the source.
+    /// Total number of instances *including* the source. Stored
+    /// as an `f32` (not `u32`) so the generic FeatureDialog's
+    /// number widget can edit it — the derive maps plain integer
+    /// types to the `generic → unknown` widget and they'd never
+    /// render. `execute` rounds to the nearest positive integer.
     /// `count = 1` is a no-op, `count = 5` means the pattern
     /// adds four offset copies.
-    pub count: u32,
+    pub count: f32,
     /// Distance between consecutive instances in millimetres.
     pub spacing: ::fielddraft_protocol::Length,
 }
@@ -726,7 +730,8 @@ impl FeatureKind for LinearPatternFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = LinearPatternDef::parse(def)?;
-        if d.count < 2 {
+        let count = d.count.round().max(0.0) as u32;
+        if count < 2 {
             // A one-instance pattern is a no-op. Don't error —
             // this is a useful parameter-sweep resting point.
             return Ok(());
@@ -773,7 +778,7 @@ impl FeatureKind for LinearPatternFeature {
         // Clones carry hierarchical child ids under the
         // pattern — `sync_feature_calls` drops those via its
         // parent filter so the wire form stays authoritative.
-        for i in 1..d.count {
+        for i in 1..count {
             let i_f = i as f32;
             let offset = [
                 unit[0] * spacing_mm * i_f,
@@ -828,8 +833,11 @@ pub struct CircularPatternDef {
     /// Pivot point the axis passes through.
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
-    /// Total number of instances including the source.
-    pub count: u32,
+    /// Total number of instances including the source. `f32`
+    /// for dialog-widget compatibility — `execute` rounds to
+    /// the nearest positive integer. See [`LinearPatternDef::count`]
+    /// for the full rationale.
+    pub count: f32,
     /// Total sweep in degrees. Defaults to a full 360° when
     /// omitted from the call.
     #[param(default = 360.0)]
@@ -854,7 +862,8 @@ impl FeatureKind for CircularPatternFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = CircularPatternDef::parse(def)?;
-        if d.count < 2 {
+        let count = d.count.round().max(0.0) as u32;
+        if count < 2 {
             return Ok(());
         }
         // Normalise the axis.
@@ -885,9 +894,9 @@ impl FeatureKind for CircularPatternFeature {
 
         // Per-instance angle step.
         let step_rad =
-            (d.angle_deg / d.count as f32) * std::f32::consts::PI / 180.0;
+            (d.angle_deg / count as f32) * std::f32::consts::PI / 180.0;
 
-        for i in 1..d.count {
+        for i in 1..count {
             let theta = step_rad * i as f32;
             let half = theta * 0.5;
             let s = half.sin();

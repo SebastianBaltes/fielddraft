@@ -1044,7 +1044,7 @@ impl Kernel {
         let params = serde_json::json!({
             "source": source_id,
             "direction": [dx, dy, dz],
-            "count": count,
+            "count": count as f32,
             "spacing": { "value": spacing_mm, "unit": "mm" },
         });
         let call = fielddraft_protocol::FeatureCall::new(
@@ -1096,7 +1096,7 @@ impl Kernel {
             "source": source_id,
             "axis": [axis_x, axis_y, axis_z],
             "center": [center_x, center_y, center_z],
-            "count": count,
+            "count": count as f32,
             "angle_deg": angle_deg,
         });
         let call = fielddraft_protocol::FeatureCall::new(
