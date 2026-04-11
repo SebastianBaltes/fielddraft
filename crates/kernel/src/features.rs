@@ -213,6 +213,7 @@ impl FeatureRegistry {
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
+        r.register(Box::new(MirrorFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
         r
     }
@@ -918,6 +919,102 @@ impl FeatureKind for CircularPatternFeature {
     }
 }
 
+// ─── K8.2: Mirror ────────────────────────────────────────────────
+//
+// Completes the K8 Pattern block with the degenerate case: a
+// single clone produced by reflecting the source feature's
+// translate through a plane defined by a point and a normal.
+// The rotation is kept verbatim — reflecting a rotation would
+// flip chirality, which is a separate feature request (and
+// would need a sign flip on one sketch axis to actually matter
+// at the geometry level). For K8.2 the aim is "this body appears
+// on the other side of the plane"; chiral-aware mirroring comes
+// later with body-level symmetry.
+
+/// `mirror` — reflect a source feature's translate through a
+/// plane.
+#[derive(FeatureSchema)]
+#[schema(type = "mirror")]
+pub struct MirrorDef {
+    pub source: u32,
+    /// Plane normal in local frame. The executor normalises it;
+    /// a zero vector errors out.
+    pub plane_normal: [f32; 3],
+    /// A point the plane passes through. Defaults to the origin
+    /// so the default is "mirror through the YZ / XZ / XY plane"
+    /// depending on the normal axis picked by the caller.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub plane_point: [f32; 3],
+}
+
+pub struct MirrorFeature;
+
+impl FeatureKind for MirrorFeature {
+    fn type_name(&self) -> &'static str {
+        MirrorDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        MirrorDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = MirrorDef::parse(def)?;
+
+        let nx = d.plane_normal[0];
+        let ny = d.plane_normal[1];
+        let nz = d.plane_normal[2];
+        let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+        if nlen < 1e-6 {
+            return Err(FeatureError::InvalidParameter {
+                feature: MirrorDef::TYPE_NAME,
+                name: "plane_normal",
+                message: "must be a non-zero vector".to_string(),
+            });
+        }
+        let n = [nx / nlen, ny / nlen, nz / nlen];
+
+        let source_fid = FeatureId::from_u32(d.source);
+        let source_feature = ctx
+            .document
+            .features
+            .iter()
+            .find(|f| f.id == source_fid)
+            .ok_or(FeatureError::MissingParameter {
+                feature: MirrorDef::TYPE_NAME,
+                name: "source",
+            })?
+            .clone();
+
+        // Reflect p through the plane: p' = p - 2 * ((p - p0) · n) * n
+        let p = source_feature.transform.translate;
+        let rel = [
+            p[0] - d.plane_point[0],
+            p[1] - d.plane_point[1],
+            p[2] - d.plane_point[2],
+        ];
+        let dot = rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2];
+        let reflected = [
+            p[0] - 2.0 * dot * n[0],
+            p[1] - 2.0 * dot * n[1],
+            p[2] - 2.0 * dot * n[2],
+        ];
+
+        let mut clone = source_feature.clone();
+        clone.id = id.child("1");
+        clone.name = format!("{} mirror", source_feature.name);
+        clone.transform.translate = reflected;
+        ctx.document.features.push(clone);
+
+        Ok(())
+    }
+}
+
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
 /// Extract an optional `"name"` string parameter from the
@@ -1006,8 +1103,8 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K8.1 grows the built-in set to include circular_pattern.
-        assert_eq!(registry.len(), 7);
+        // K8.2 grows the built-in set to include mirror.
+        assert_eq!(registry.len(), 8);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1015,6 +1112,7 @@ mod tests {
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
+        assert!(registry.get("mirror").is_some());
         assert!(registry.get("torus").is_none());
     }
 
@@ -1056,6 +1154,7 @@ mod tests {
                 "cylinder",
                 "extrude",
                 "linear_pattern",
+                "mirror",
                 "sketch",
                 "sphere"
             ]
@@ -2480,6 +2579,149 @@ mod tests {
             FeatureError::InvalidParameter {
                 feature: "circular_pattern",
                 name: "axis",
+                ..
+            }
+        ));
+    }
+
+    // ─── K8.2: mirror ─────────────────────────────────────────
+
+    #[test]
+    fn mirror_reflects_translate_through_yz_plane() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "translate": [10.0, 5.0, -3.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "mirror",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "plane_normal": [1.0, 0.0, 0.0]
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        // Source + one mirrored clone.
+        assert_eq!(doc.features.len(), 2);
+        assert_eq!(doc.features[0].transform.translate, [10.0, 5.0, -3.0]);
+        assert_eq!(doc.features[1].transform.translate, [-10.0, 5.0, -3.0]);
+    }
+
+    #[test]
+    fn mirror_respects_non_origin_plane_point() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "translate": [20.0, 0.0, 0.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "mirror",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "plane_normal": [1.0, 0.0, 0.0],
+                            "plane_point": [5.0, 0.0, 0.0]
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        // Reflected through x=5: 20 → -10.
+        let t = doc.features[1].transform.translate;
+        assert!((t[0] - (-10.0)).abs() < 1e-5);
+        assert!(t[1].abs() < 1e-5);
+        assert!(t[2].abs() < 1e-5);
+    }
+
+    #[test]
+    fn mirror_normalises_the_plane_normal() {
+        // A non-unit normal must not scale the reflection.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "translate": [7.0, 0.0, 0.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "mirror",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "plane_normal": [9.0, 0.0, 0.0]
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        let t = doc.features[1].transform.translate;
+        assert!((t[0] - (-7.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mirror_errors_on_zero_normal() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+                    ),
+                    FeatureCall::new(
+                        "mirror",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "plane_normal": [0.0, 0.0, 0.0]
+                        }),
+                    ),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            FeatureError::InvalidParameter {
+                feature: "mirror",
+                name: "plane_normal",
                 ..
             }
         ));

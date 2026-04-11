@@ -405,6 +405,56 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.2: mirror replicates the latest feature through the YZ plane", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    const mirrorBtn = page.getByTestId("mirror-latest");
+    await expect(mirrorBtn).toBeDisabled();
+
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(mirrorBtn).toBeEnabled();
+    await mirrorBtn.click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    const shape = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.listFeatures();
+    });
+    expect(shape).not.toBeNull();
+    expect(shape!.some((f) => f.kind === "mirror")).toBe(true);
+
+    // Export STL — source + one mirrored clone is strictly
+    // larger than the single-box case.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    expect(stat.size).toBeGreaterThan(500);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

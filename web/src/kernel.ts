@@ -454,6 +454,21 @@ export class Kernel {
     );
   }
 
+  /** K8.2: append a mirror feature that reflects `sourceId`
+   *  through a plane defined by normal `(nx, ny, nz)` and a
+   *  point `(px, py, pz)`. Returns the new mirror feature id. */
+  addMirror(
+    sourceId: number,
+    nx: number,
+    ny: number,
+    nz: number,
+    px: number,
+    py: number,
+    pz: number,
+  ): number {
+    return this.inner.addMirror(sourceId, nx, ny, nz, px, py, pz);
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

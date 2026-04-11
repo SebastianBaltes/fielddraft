@@ -734,6 +734,25 @@ export class KernelStore {
     return id;
   }
 
+  /** K8.2: mirror the most recent spine feature through the
+   *  world YZ plane (normal `+X`, point at origin). MVP — a
+   *  future slice pops a dialog so the user can pick the
+   *  mirror plane. */
+  addMirrorOfLatest(): number | null {
+    if (this.state.features.length === 0) return null;
+    const source = this.state.features[this.state.features.length - 1];
+    let id: number;
+    try {
+      id = this.kernel.addMirror(source.id, 1, 0, 0, 0, 0, 0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addMirror failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume. */

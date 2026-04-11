@@ -580,6 +580,7 @@ impl Kernel {
             "extrude" => "extrude",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
+            "mirror" => "mirror",
             _ => "unknown",
         }
     }
@@ -595,6 +596,7 @@ impl Kernel {
             "sketch" => "Sketch",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
+            "mirror" => "Mirror",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -1107,6 +1109,53 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "circular pattern regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K8.2: append a `mirror` feature call that reflects the
+    /// source feature through a plane defined by a point and a
+    /// normal. Returns the new mirror feature id.
+    #[wasm_bindgen(js_name = addMirror)]
+    pub fn add_mirror(
+        &mut self,
+        source_id: u32,
+        normal_x: f32,
+        normal_y: f32,
+        normal_z: f32,
+        point_x: f32,
+        point_y: f32,
+        point_z: f32,
+    ) -> Result<u32, JsError> {
+        let source_fid = FeatureId::from_u32(source_id);
+        if !self.document.features.iter().any(|f| f.id == source_fid) {
+            return Err(JsError::new(&format!(
+                "source feature {source_id} not found on the spine"
+            )));
+        }
+
+        self.snapshot();
+        let mirror_id = self.document.allocate_id();
+        let flat = mirror_id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "source": source_id,
+            "plane_normal": [normal_x, normal_y, normal_z],
+            "plane_point": [point_x, point_y, point_z],
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "mirror",
+            mirror_id,
+            params,
+        );
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "mirror regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();

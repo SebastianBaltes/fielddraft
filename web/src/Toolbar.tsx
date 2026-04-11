@@ -214,6 +214,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ↻ Circ
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Mirror the latest feature through the world YZ plane"
+          data-testid="mirror-latest"
+          disabled={state.features.length === 0}
+          onClick={() => store.addMirrorOfLatest()}
+        >
+          ◫ Mirror
+        </button>
       </div>
 
       <div className="group">
