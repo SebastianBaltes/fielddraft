@@ -118,6 +118,101 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("line drag snaps its start to the sketch origin", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: Error[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    // Enter sketch mode. The origin lives at (0, 0) in sketch
+    // space and is drawn right in the centre of the overlay at
+    // the default ortho zoom. We start the drag within the
+    // 10 mm snap radius of that point so the K5b inference
+    // engine should pull the line's start exactly onto (0, 0)
+    // regardless of cursor jitter.
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_line").click();
+
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    // Canvas centre maps to sketch (0, 0) under the K6b.2 ortho
+    // camera setup (position [0, 500, 0], centre-lock on
+    // origin). A few px offset exercises the snap; at zoom 1.2
+    // one screen pixel equals ~0.83 mm, so 6 px ≈ 5 mm, well
+    // inside the 10 mm snap radius.
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const endX = cx + 120;
+    const endY = cy - 60;
+
+    await page.mouse.move(cx + 4, cy + 4);
+    await page.mouse.down();
+    await page.mouse.move(cx + 4, cy + 4, { steps: 2 });
+    await page.mouse.move(endX, endY, { steps: 10 });
+    await page.mouse.up();
+
+    // One committed sub-spine entry.
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(1);
+
+    // Finish and verify the committed sketch: the sub-spine
+    // entry's start must be (0, 0), proof that the snap took
+    // effect. We peek the kernel state through the outliner
+    // name ("Sketch 1") plus a round trip through the store
+    // to read the committed sub_calls.
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!.length).toBe(1);
+    const lineCall = committed![0] as {
+      type: string;
+      params: { start: [number, number]; end: [number, number] };
+    };
+    expect(lineCall.type).toBe("sketch_line");
+    const [sx, sy] = lineCall.params.start;
+    expect(sx).toBeCloseTo(0, 5);
+    expect(sy).toBeCloseTo(0, 5);
+
+    const blocking = consoleErrors.filter(isBlockingConsoleMessage);
+    expect(
+      blocking,
+      `unexpected console errors:\n${blocking.join("\n")}`,
+    ).toEqual([]);
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];

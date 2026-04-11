@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DRAFT_DRAG_START_ID,
   INACTIVE_SKETCH_SESSION,
   applySketchToolDraft,
+  buildDraftSketchState,
   enterSketchSession,
   exitSketchSession,
   selectSketchTool,
@@ -116,6 +118,34 @@ describe("sketchSession reducers", () => {
     const session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
     const same = applySketchToolDraft(session);
     expect(same).toBe(session);
+  });
+
+  it("buildDraftSketchState emits an origin + one point per sketch_point call", () => {
+    const state = buildDraftSketchState([
+      { type: "sketch_point", params: { at: [3, 4] } },
+      { type: "sketch_point", params: { at: [-1, 7] } },
+    ]);
+    // origin + two points
+    expect(state.entities).toHaveLength(3);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(2);
+  });
+
+  it("buildDraftSketchState emits two endpoints + a line per sketch_line call", () => {
+    const state = buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    ]);
+    // origin + two endpoint points + one line entity
+    expect(state.entities).toHaveLength(4);
+    const lines = state.entities.filter((e) => e.kind === "line");
+    expect(lines).toHaveLength(1);
+  });
+
+  it("buildDraftSketchState injects the drag-start synthetic point when requested", () => {
+    const state = buildDraftSketchState([], [5, 6]);
+    const drag = state.entities.find((e) => e.id === DRAFT_DRAG_START_ID);
+    expect(drag).toBeDefined();
+    expect(drag && drag.kind === "point" && drag.at).toEqual({ x: 5, y: 6 });
   });
 
   it("exitSketchSession discards any accumulated sub-spine draft", () => {

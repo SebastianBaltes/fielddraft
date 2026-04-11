@@ -28,6 +28,15 @@ import {
   sketchToScreen,
   type SketchCameraState,
 } from "./sketchCameraBridge";
+import {
+  buildDraftSketchState,
+  DRAFT_DRAG_START_ID,
+} from "./sketchSession";
+import {
+  inferCandidates,
+  type InferenceCandidate,
+} from "./solver/inferenceEngine";
+import type { SketchState } from "./solver/types";
 
 interface Props {
   store: KernelStore | null;
@@ -40,6 +49,7 @@ const STROKE_PX = 1.5;
 const POINT_PX = 3;
 const COLOR_COMMITTED = "#2563eb";
 const COLOR_PREVIEW = "#93c5fd";
+const COLOR_SNAP = "#f59e0b";
 const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
 const LABEL_BG = "rgba(246, 246, 244, 0.92)";
 const LABEL_FG = "#1e3a8a";
@@ -47,14 +57,129 @@ const LABEL_PADDING = 6;
 /** Label offset in CSS pixels, along the line's left-normal
  *  (≈ 2 rem given the default 16 px root font size). */
 const LABEL_OFFSET_PX = 32;
+/** Snap radius in sketch-plane millimetres. Generous enough to
+ *  catch ordinary cursor jitter but tight enough that the user
+ *  can still place free points near a committed entity without
+ *  unwanted magnetism. Can be tuned later. */
+const SNAP_RADIUS_MM = 10;
+/** Snap indicator radius in CSS pixels, drawn as an open ring
+ *  around the snap anchor. */
+const SNAP_RING_PX = 8;
 
 type DragState =
   | { kind: "idle" }
   | { kind: "line"; start: [number, number]; current: [number, number] };
 
+/**
+ * Inference result for the current cursor: the raw cursor
+ * position, the snapped cursor position (possibly equal), and
+ * the inference candidate that drove the snap, if any. Feeds
+ * both the preview drawing and the `onPointerUp` commit path.
+ */
+interface SnapResolution {
+  snapped: [number, number];
+  candidate: InferenceCandidate | null;
+  /** Anchor in sketch coordinates where the snap indicator
+   *  should be drawn. For endpoint / origin snaps this is the
+   *  snap target itself; for horizontal / vertical / parallel
+   *  hints it's the snapped cursor. `null` skips the ring. */
+  anchor: [number, number] | null;
+}
+
+function resolveSnap(
+  cursor: [number, number],
+  session: SketchSessionState,
+  dragStart: [number, number] | null,
+): SnapResolution {
+  const state: SketchState = buildDraftSketchState(
+    session.subCalls,
+    dragStart ?? undefined,
+  );
+  const cands = inferCandidates({
+    state,
+    cursor: { x: cursor[0], y: cursor[1] },
+    drawingLineFrom: dragStart ? DRAFT_DRAG_START_ID : undefined,
+    snapDistanceMm: SNAP_RADIUS_MM,
+  });
+  if (cands.length === 0) {
+    return { snapped: cursor, candidate: null, anchor: null };
+  }
+  const top = cands[0];
+  const c = top.constraint;
+  // Endpoint / origin snap: pull the cursor onto the target
+  // point's coordinates.
+  if (c.kind === "coincident") {
+    const target = state.entities.find((e) => e.id === c.b);
+    if (target) {
+      if (target.kind === "point") {
+        return {
+          snapped: [target.at.x, target.at.y],
+          candidate: top,
+          anchor: [target.at.x, target.at.y],
+        };
+      }
+      if (target.kind === "origin") {
+        return {
+          snapped: [0, 0],
+          candidate: top,
+          anchor: [0, 0],
+        };
+      }
+    }
+  }
+  // Horizontal/vertical: lock one axis to the drag-start axis.
+  if (c.kind === "horizontal" && dragStart) {
+    const snapped: [number, number] = [cursor[0], dragStart[1]];
+    return { snapped, candidate: top, anchor: snapped };
+  }
+  if (c.kind === "vertical" && dragStart) {
+    const snapped: [number, number] = [dragStart[0], cursor[1]];
+    return { snapped, candidate: top, anchor: snapped };
+  }
+  // Parallel to an existing line: project the cursor onto the
+  // parallel ray through the drag start.
+  if (c.kind === "parallel" && dragStart) {
+    const other = state.entities.find((e) => e.id === c.b);
+    if (other && other.kind === "line") {
+      const os = state.entities.find((e) => e.id === other.start);
+      const oe = state.entities.find((e) => e.id === other.end);
+      if (
+        os &&
+        oe &&
+        os.kind === "point" &&
+        oe.kind === "point"
+      ) {
+        const dx = oe.at.x - os.at.x;
+        const dy = oe.at.y - os.at.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 1e-6) {
+          const ux = dx / len;
+          const uy = dy / len;
+          // Project (cursor - start) onto the unit direction.
+          const cdx = cursor[0] - dragStart[0];
+          const cdy = cursor[1] - dragStart[1];
+          const t = cdx * ux + cdy * uy;
+          const snapped: [number, number] = [
+            dragStart[0] + ux * t,
+            dragStart[1] + uy * t,
+          ];
+          return { snapped, candidate: top, anchor: snapped };
+        }
+      }
+    }
+  }
+  return { snapped: cursor, candidate: null, anchor: null };
+}
+
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
+  const hoverRef = useRef<[number, number] | null>(null);
+  const snapRef = useRef<SnapResolution>({
+    snapped: [0, 0],
+    candidate: null,
+    anchor: null,
+  });
   const rafRef = useRef<number | null>(null);
   const lastCamVersionRef = useRef<number>(-1);
   const lastSessionRef = useRef<SketchSessionState | null>(null);
@@ -87,7 +212,14 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         ) {
           lastCamVersionRef.current = cam.version;
           lastSessionRef.current = session;
-          drawOverlay(canvas, session, cam, dragRef.current);
+          drawOverlay(
+            canvas,
+            session,
+            cam,
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+          );
         }
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -108,27 +240,54 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readSketchCamera();
     const [u, v] = screenToSketchFromEvent(e, cam);
+    // Resolve snap at pointerdown so the placed point/line-start
+    // respects endpoint / origin magnetism even on a dead-stop
+    // click (no prior move events).
+    const snap = resolveSnap([u, v], session, null);
+    snapRef.current = snap;
+    const [su, sv] = snap.snapped;
     if (session.selectedTool === "sketch_point") {
-      store.setSketchToolDraft({ at: [u, v] });
+      store.setSketchToolDraft({ at: [su, sv] });
       store.applySketchToolDraft();
       return;
     }
     if (session.selectedTool === "sketch_line") {
-      dragRef.current = { kind: "line", start: [u, v], current: [u, v] };
-      // Force redraw so the preview appears at zero length.
+      dragRef.current = {
+        kind: "line",
+        start: [su, sv],
+        current: [su, sv],
+      };
       lastCamVersionRef.current = -1;
     }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (dragRef.current.kind !== "line") return;
+    if (!session.active || !session.selectedTool) return;
     const cam = readSketchCamera();
     const [u, v] = screenToSketchFromEvent(e, cam);
-    dragRef.current = { ...dragRef.current, current: [u, v] };
-    // Redraw every move — the drag path is hot, but the overlay
-    // canvas is cheap.
+    if (dragRef.current.kind === "line") {
+      const snap = resolveSnap([u, v], session, dragRef.current.start);
+      snapRef.current = snap;
+      dragRef.current = { ...dragRef.current, current: snap.snapped };
+    } else {
+      // Hover path: show a preview point with snap magnetism so
+      // the user sees the same feedback a click-to-place would
+      // land on.
+      const snap = resolveSnap([u, v], session, null);
+      snapRef.current = snap;
+      hoverRef.current = snap.snapped;
+    }
     const canvas = canvasRef.current;
-    if (canvas) drawOverlay(canvas, session, cam, dragRef.current);
+    if (canvas) {
+      drawOverlay(
+        canvas,
+        session,
+        cam,
+        dragRef.current,
+        hoverRef.current,
+        snapRef.current,
+      );
+    }
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -136,26 +295,46 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
     const cam = readSketchCamera();
     const [u, v] = screenToSketchFromEvent(e, cam);
+    const snap = resolveSnap([u, v], session, dragRef.current.start);
+    snapRef.current = snap;
     const { start } = dragRef.current;
     dragRef.current = { kind: "idle" };
+    const [su, sv] = snap.snapped;
     // Reject zero-length lines — a click without drag on an
     // already-placed point would otherwise land as a degenerate
     // line.
-    const dx = u - start[0];
-    const dy = v - start[1];
+    const dx = su - start[0];
+    const dy = sv - start[1];
     if (dx * dx + dy * dy < 1e-6) {
       const canvas = canvasRef.current;
-      if (canvas) drawOverlay(canvas, session, cam, dragRef.current);
+      if (canvas) {
+        drawOverlay(
+          canvas,
+          session,
+          cam,
+          dragRef.current,
+          hoverRef.current,
+          snapRef.current,
+        );
+      }
       return;
     }
     if (store) {
-      store.setSketchToolDraft({ start, end: [u, v] });
+      store.setSketchToolDraft({ start, end: [su, sv] });
       store.applySketchToolDraft();
     }
   };
 
   const onPointerCancel = () => {
     dragRef.current = { kind: "idle" };
+    hoverRef.current = null;
+    snapRef.current = { snapped: [0, 0], candidate: null, anchor: null };
+    lastCamVersionRef.current = -1;
+  };
+
+  const onPointerLeave = () => {
+    hoverRef.current = null;
+    snapRef.current = { snapped: [0, 0], candidate: null, anchor: null };
     lastCamVersionRef.current = -1;
   };
 
@@ -171,6 +350,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onPointerLeave={onPointerLeave}
       onContextMenu={(e) => e.preventDefault()}
     />
   );
@@ -194,6 +374,8 @@ function drawOverlay(
   session: SketchSessionState,
   cam: Readonly<SketchCameraState>,
   drag: DragState,
+  hover: [number, number] | null,
+  snap: SnapResolution,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -229,7 +411,54 @@ function drawOverlay(
     drawPoint(ctx, start, cam, COLOR_PREVIEW);
     drawPoint(ctx, current, cam, COLOR_PREVIEW);
     drawDistanceLabel(ctx, start, current, cam);
+  } else if (hover) {
+    // Hover preview outside of a drag — shows where a click
+    // would land, which is crucial to see the snap magnetism
+    // before committing.
+    drawPoint(ctx, hover, cam, COLOR_PREVIEW);
   }
+
+  // Snap indicator is drawn last so it sits on top of the
+  // preview geometry. The anchor is `null` when no snap
+  // candidate was selected.
+  if (snap.anchor && snap.candidate) {
+    drawSnapIndicator(ctx, snap.anchor, snap.candidate.label, cam);
+  }
+}
+
+function drawSnapIndicator(
+  ctx: CanvasRenderingContext2D,
+  anchor: [number, number],
+  label: string,
+  cam: Readonly<SketchCameraState>,
+): void {
+  const [px, py] = sketchToScreen(anchor[0], anchor[1], cam);
+  ctx.save();
+  ctx.strokeStyle = COLOR_SNAP;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(px, py, SNAP_RING_PX, 0, Math.PI * 2);
+  ctx.stroke();
+  // Label — small pill just above and right of the anchor.
+  ctx.font = LABEL_FONT;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  const textX = px + SNAP_RING_PX + 6;
+  const textY = py - SNAP_RING_PX - 6;
+  const metrics = ctx.measureText(label);
+  const boxX = textX - 4;
+  const boxY = textY - 10;
+  const boxW = metrics.width + 8;
+  const boxH = 20;
+  ctx.fillStyle = LABEL_BG;
+  ctx.strokeStyle = COLOR_SNAP;
+  ctx.lineWidth = 1;
+  roundRect(ctx, boxX, boxY, boxW, boxH, 4);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = COLOR_SNAP;
+  ctx.fillText(label, textX, textY);
+  ctx.restore();
 }
 
 function drawLine(

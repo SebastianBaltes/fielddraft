@@ -620,6 +620,25 @@ export async function getStore(): Promise<KernelStore> {
 
     if (typeof window !== "undefined") {
       window.addEventListener("beforeunload", () => autosave.flush());
+      // Dev-mode test hook: expose the kernel + store handles on
+      // window so Playwright specs can peek non-UI state (current
+      // sub-spine, diagnostics, raw feature calls) without
+      // plumbing a wire API. Kept dev-only to avoid shipping a
+      // public API surface we'd have to support in production.
+      if (import.meta.env.DEV) {
+        (
+          window as unknown as {
+            __fdKernel?: Kernel;
+            __fdStore?: KernelStore;
+          }
+        ).__fdKernel = kernel;
+        (
+          window as unknown as {
+            __fdKernel?: Kernel;
+            __fdStore?: KernelStore;
+          }
+        ).__fdStore = store;
+      }
     }
 
     singleton = store;
