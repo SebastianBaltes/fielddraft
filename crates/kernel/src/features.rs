@@ -132,7 +132,7 @@ pub struct Context<'a> {
     /// look up the resolved 2D geometry by feature id. The map
     /// is regeneration-local — every `regenerate` pass starts
     /// from a fresh `Context` and re-solves every sketch.
-    pub sketches: HashMap<FeatureId, ::fielddraft_solver::SketchState>,
+    pub sketches: HashMap<FeatureId, crate::sketch_features::SketchData>,
 }
 
 impl<'a> Context<'a> {

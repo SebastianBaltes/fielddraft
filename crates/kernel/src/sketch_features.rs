@@ -57,6 +57,21 @@ use fielddraft_protocol::{FeatureCall, FeatureId, Query};
 use fielddraft_solver::{Constraint, ConstraintId, EntityId, Point2, SketchState};
 
 use crate::features::{Context, FeatureError, FeatureKind, FeatureSchema};
+use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+
+// ─── K7.0: Context-side sketch handle ───────────────────────────
+
+/// Bundle of everything a downstream feature (extrude, revolve,
+/// etc.) needs about a resolved sketch: the solver state the
+/// kernel walked during regeneration, plus the original sub-spine
+/// calls so profile extractors can tell a `sketch_rectangle`
+/// call apart from four free `sketch_line` segments. Stored in
+/// [`Context::sketches`] keyed by the sketch feature's id.
+#[derive(Debug, Clone)]
+pub struct SketchData {
+    pub state: SketchState,
+    pub sub_calls: Vec<FeatureCall>,
+}
 
 // ─── sketch-tool layer ──────────────────────────────────────────
 
@@ -586,9 +601,88 @@ impl FeatureKind for SketchFeature {
         let _plane = parsed.plane; // K6b.2 will resolve this
         let mut state = SketchState::with_origin();
         self.tools.apply_all(&mut state, &parsed.sub_calls)?;
-        ctx.sketches.insert(id.clone(), state);
+        ctx.sketches.insert(
+            id.clone(),
+            SketchData {
+                state,
+                sub_calls: parsed.sub_calls,
+            },
+        );
         Ok(())
     }
+}
+
+// ─── K7.0: Sketch2d synthesis ───────────────────────────────────
+//
+// The regen pipeline stashes a [`SketchData`] per sketch feature
+// in [`Context::sketches`]. For downstream features (extrude,
+// revolve, ...) to consume a sketch as a 2D profile, we need a
+// translation from the committed sub-spine into a [`Sketch2d`]
+// tree the existing CSG pipeline can lower to a 3D volume.
+//
+// First cut only handles the *composite* geometric tools that
+// carry "this is a closed region" intent: `sketch_rectangle` and
+// `sketch_circle`. Free `sketch_point` and `sketch_line` calls
+// are ignored — they don't implicitly form a region without an
+// inference pass that clusters connected segments into closed
+// loops, and that's K7.1 work. Multiple region primitives from
+// one sketch are unioned together so a sketch with several
+// overlapping shapes lowers to one filled area.
+
+/// Walk a sketch's committed sub_calls and assemble a
+/// [`Sketch2d`] tree of every closed-region primitive they
+/// contain. Returns [`Sketch2d::Empty`] when the sub-spine has
+/// no region-forming entries — downstream features should treat
+/// that as "no profile available" and fail fast.
+pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
+    let mut acc: Option<Sketch2d> = None;
+    for call in sub_calls {
+        let prim = match call.type_name.as_str() {
+            "sketch_rectangle" => {
+                let d = match SketchRectangleDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let (min_x, max_x) = sort_pair(d.corner_a[0], d.corner_b[0]);
+                let (min_y, max_y) = sort_pair(d.corner_a[1], d.corner_b[1]);
+                let half_x = 0.5 * (max_x - min_x);
+                let half_y = 0.5 * (max_y - min_y);
+                if half_x <= 0.0 || half_y <= 0.0 {
+                    continue;
+                }
+                let center = [0.5 * (min_x + max_x), 0.5 * (min_y + max_y)];
+                Some(Sketch2dPrimitive::Rectangle {
+                    center,
+                    half_extents: [half_x, half_y],
+                })
+            }
+            "sketch_circle" => {
+                let d = match SketchCircleDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if d.radius <= 0.0 {
+                    continue;
+                }
+                Some(Sketch2dPrimitive::Circle {
+                    center: d.center,
+                    radius: d.radius,
+                })
+            }
+            _ => None,
+        };
+        let Some(prim) = prim else { continue };
+        let node = Sketch2d::Prim(prim);
+        acc = Some(match acc {
+            None => node,
+            Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
+        });
+    }
+    acc.unwrap_or(Sketch2d::Empty)
+}
+
+fn sort_pair(a: f32, b: f32) -> (f32, f32) {
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 // ─── tests ──────────────────────────────────────────────────────
@@ -672,12 +766,15 @@ mod tests {
         let mut ctx = Context::new(&mut doc);
         registry.regenerate(&mut ctx, std::slice::from_ref(&call)).unwrap();
 
-        let state = ctx
+        let data = ctx
             .sketches
             .get(&sketch_id)
             .expect("sketch should be stashed under its feature id");
         // origin (1) + sketch_point (1) + sketch_line's two points + line (3)
-        assert_eq!(state.entities.len(), 5);
+        assert_eq!(data.state.entities.len(), 5);
+        // Sub-spine snapshot preserved for downstream profile
+        // extractors (K7.0).
+        assert_eq!(data.sub_calls.len(), 2);
     }
 
     #[test]
@@ -934,6 +1031,151 @@ mod tests {
             c,
             Constraint::Vertical { line: EntityId(5), .. }
         )));
+    }
+
+    // ─── K7.0: Sketch2d synthesis ──────────────────────────────
+
+    #[test]
+    fn build_sketch2d_returns_empty_for_a_blank_sketch() {
+        let sketch = build_sketch2d_from_sub_calls(&[]);
+        assert!(matches!(sketch, Sketch2d::Empty));
+    }
+
+    #[test]
+    fn build_sketch2d_emits_a_rectangle_primitive() {
+        let calls = vec![FeatureCall::new(
+            "sketch_rectangle",
+            id(1),
+            json!({ "corner_a": [0.0, 0.0], "corner_b": [20.0, 10.0] }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        if let Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center,
+            half_extents,
+        }) = sketch
+        {
+            assert!((center[0] - 10.0).abs() < 1e-6);
+            assert!((center[1] - 5.0).abs() < 1e-6);
+            assert!((half_extents[0] - 10.0).abs() < 1e-6);
+            assert!((half_extents[1] - 5.0).abs() < 1e-6);
+        } else {
+            panic!("expected Sketch2d::Prim::Rectangle");
+        }
+    }
+
+    #[test]
+    fn build_sketch2d_normalises_diagonal_rectangles() {
+        // Dragged from top-right to bottom-left: corner_a is the
+        // top-right, corner_b the bottom-left. The synthesis must
+        // still emit a positively-oriented rectangle.
+        let calls = vec![FeatureCall::new(
+            "sketch_rectangle",
+            id(1),
+            json!({ "corner_a": [20.0, 10.0], "corner_b": [-5.0, -5.0] }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        if let Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            half_extents,
+            ..
+        }) = sketch
+        {
+            assert!(half_extents[0] > 0.0);
+            assert!(half_extents[1] > 0.0);
+        } else {
+            panic!("expected rectangle primitive");
+        }
+    }
+
+    #[test]
+    fn build_sketch2d_emits_a_circle_primitive() {
+        let calls = vec![FeatureCall::new(
+            "sketch_circle",
+            id(1),
+            json!({ "center": [3.0, -4.0], "radius": 7.0 }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        if let Sketch2d::Prim(Sketch2dPrimitive::Circle { center, radius }) =
+            sketch
+        {
+            assert!((center[0] - 3.0).abs() < 1e-6);
+            assert!((center[1] + 4.0).abs() < 1e-6);
+            assert!((radius - 7.0).abs() < 1e-6);
+        } else {
+            panic!("expected circle primitive");
+        }
+    }
+
+    #[test]
+    fn build_sketch2d_unions_multiple_region_primitives() {
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_circle",
+                id(2),
+                json!({ "center": [20.0, 0.0], "radius": 5.0 }),
+            ),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Union(_, _) = &sketch else {
+            panic!("expected Union of two primitives, got {:?}", sketch);
+        };
+        // Spot-check: origin lives inside the rectangle, `(20, 0)`
+        // is the centre of the circle. Both should be strictly
+        // inside the combined region (negative SDF).
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0);
+        assert!(sketch.sdf([20.0, 0.0]) < 0.0);
+        // A point far from both is outside.
+        assert!(sketch.sdf([100.0, 100.0]) > 0.0);
+    }
+
+    #[test]
+    fn build_sketch2d_ignores_lines_points_and_constraints() {
+        // None of these calls form a closed region on their own,
+        // so the K7.0 synthesis drops them. A sketch made only
+        // of loose lines yields an empty Sketch2d.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_line",
+                id(1),
+                json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
+            ),
+            FeatureCall::new("sketch_point", id(2), json!({ "at": [5.0, 5.0] })),
+            FeatureCall::new(
+                "sketch_constraint_horizontal",
+                id(3),
+                json!({ "line": 3 }),
+            ),
+        ];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+    }
+
+    #[test]
+    fn build_sketch2d_skips_degenerate_primitives() {
+        // Zero-area rectangle and zero-radius circle don't
+        // contribute to the output.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [3.0, 3.0], "corner_b": [3.0, 3.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_circle",
+                id(2),
+                json!({ "center": [0.0, 0.0], "radius": 0.0 }),
+            ),
+        ];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
     }
 
     #[test]
