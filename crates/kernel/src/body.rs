@@ -285,6 +285,15 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             half_depth_z.to_bits().hash(hasher);
             hash_sketch2d(sketch, hasher);
         }
+        // K8.4: same reasoning as Extrude — any profile edit
+        // must bump the body-cache hash so the remesh fires.
+        Primitive::Revolve { sketch, center } => {
+            4u8.hash(hasher);
+            for v in center {
+                v.to_bits().hash(hasher);
+            }
+            hash_sketch2d(sketch, hasher);
+        }
     }
 }
 

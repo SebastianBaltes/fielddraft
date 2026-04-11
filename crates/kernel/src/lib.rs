@@ -207,6 +207,17 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let inside = d_xy.max(d_z).min(0.0);
             outside + inside
         }
+        // K8.4: 2D sketch revolved around the local Y axis.
+        // Map (x, y, z) to (r, y) where r = √((x - cx)² + (z - cz)²),
+        // then evaluate the 2D sketch SDF. Mirrors
+        // `CsgNode::Revolve::sdf` so the non-CSG-tree path
+        // (picking fallback) returns a sensible distance.
+        Primitive::Revolve { sketch, center } => {
+            let dx = p[0] - center[0];
+            let dz = p[2] - center[2];
+            let r = (dx * dx + dz * dz).sqrt();
+            sketch.sdf([r, p[1] - center[1]])
+        }
     }
 }
 
@@ -283,6 +294,23 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[4] = half_x;
             out[5] = half_y;
             out[6] = *half_depth_z;
+        }
+        // K8.4: same story as Extrude — the retired TSL
+        // raymarcher has no concept of revolves. Pack a proxy
+        // cylinder with the sketch's radial and vertical extents.
+        Primitive::Revolve { sketch, center } => {
+            let bb2 = sketch.aabb();
+            let (r_max, half_y) = if bb2.is_empty() {
+                (0.0, 0.0)
+            } else {
+                (
+                    bb2.max[0].abs().max(bb2.min[0].abs()),
+                    0.5 * (bb2.max[1] - bb2.min[1]),
+                )
+            };
+            out[1..4].copy_from_slice(center);
+            out[4] = r_max;
+            out[5] = half_y;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -549,6 +577,7 @@ impl Kernel {
             Primitive::Sphere { .. } => "sphere",
             Primitive::Cylinder { .. } => "cylinder",
             Primitive::Extrude { .. } => "extrude",
+            Primitive::Revolve { .. } => "revolve",
         }
     }
 
@@ -578,6 +607,7 @@ impl Kernel {
             "sphere" => "sphere",
             "cylinder" => "cylinder",
             "extrude" => "extrude",
+            "revolve" => "revolve",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -594,6 +624,7 @@ impl Kernel {
     ) -> String {
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
+            "revolve" => "Revolve",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -1005,6 +1036,66 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "extrude regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K8.4: append a `revolve` feature call that consumes the
+    /// sketch with id `sketch_id` and sweeps its profile around
+    /// the local Y axis through `(cx, cy, cz)`. `op` uses the
+    /// same `BoolOp::TAG_*` tags as `add_primitive`. Returns
+    /// the new feature id.
+    #[wasm_bindgen(js_name = addRevolve)]
+    pub fn add_revolve(
+        &mut self,
+        sketch_id: u32,
+        op: u32,
+        cx: f32,
+        cy: f32,
+        cz: f32,
+    ) -> Result<u32, JsError> {
+        let sketch_feature_id = FeatureId::from_u32(sketch_id);
+        let exists = self
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.id == sketch_feature_id && c.type_name == "sketch");
+        if !exists {
+            return Err(JsError::new(&format!(
+                "feature {sketch_id} is not a sketch"
+            )));
+        }
+        let bool_op = Self::parse_op(op)?;
+        let op_wire = match bool_op {
+            BoolOp::Union => "union",
+            BoolOp::Difference => "difference",
+            BoolOp::Intersect => "intersect",
+        };
+
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+
+        let params = serde_json::json!({
+            "profiles": format!("qCreatedBy({sketch_feature_id})"),
+            "operation": op_wire,
+            "center": [cx, cy, cz],
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "revolve",
+            id.clone(),
+            params,
+        );
+        self.document.feature_calls.push(call);
+
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "revolve regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();

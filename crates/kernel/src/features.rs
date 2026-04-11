@@ -211,6 +211,7 @@ impl FeatureRegistry {
         r.register(Box::new(SpherePrimitive));
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
+        r.register(Box::new(RevolveFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
@@ -650,6 +651,101 @@ impl FeatureKind for ExtrudeFeature {
             name,
             op: d.operation,
             primitive,
+            transform: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale,
+            },
+        });
+        Ok(())
+    }
+}
+
+// ─── K8.4: Revolve ───────────────────────────────────────────────
+//
+// Twin of ExtrudeFeature — consumes a sketch profile, but sweeps
+// it around the local Y axis instead of translating it along Z.
+// Lowers to Primitive::Revolve, which csg.rs::from_features
+// wraps in a CsgNode::Revolve. The sketch is interpreted in
+// (r, y) coordinates: `x` becomes the radial distance from
+// the Y axis. Authoring convention is `x ≥ 0`; a sketch that
+// straddles the axis produces a valid but geometrically silly
+// body (the centreline sweeps through itself).
+
+/// `revolve` — Rust-native feature that sweeps a sketch profile
+/// around the local Y axis.
+#[derive(FeatureSchema)]
+#[schema(type = "revolve")]
+pub struct RevolveDef {
+    /// Sketch profile this revolve consumes. `qCreatedBy(sketch_id)`
+    /// is the only query variant honoured today.
+    pub profiles: ::fielddraft_protocol::Query,
+
+    /// Boolean op used to fold the revolved body into the running
+    /// feature spine. Defaults to [`BoolOp::Union`].
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub operation: BoolOp,
+
+    /// Override for the revolve centre in world space.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+}
+
+pub struct RevolveFeature;
+
+impl FeatureKind for RevolveFeature {
+    fn type_name(&self) -> &'static str {
+        RevolveDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        RevolveDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = RevolveDef::parse(def)?;
+
+        // Resolve the `profiles` query against the sketch table.
+        // Unlike ExtrudeFeature, we don't fall back to a legacy
+        // half-extent stand-in: Revolve needs a real sketch to
+        // produce any geometry at all.
+        let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
+            let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
+            let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
+                return None;
+            };
+            let sketch_data = ctx.sketches.get(&sketch_id)?;
+            let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
+                &sketch_data.sub_calls,
+            );
+            if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
+                None
+            } else {
+                Some(sketch2d)
+            }
+        })()
+        .ok_or(FeatureError::MissingParameter {
+            feature: RevolveDef::TYPE_NAME,
+            name: "profiles",
+        })?;
+
+        let name = optional_display_name(def, || format!("Revolve {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.operation,
+            primitive: Primitive::Revolve {
+                sketch,
+                center: d.center,
+            },
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
@@ -1112,12 +1208,13 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K8.2 grows the built-in set to include mirror.
-        assert_eq!(registry.len(), 8);
+        // K8.4 grows the built-in set to include revolve.
+        assert_eq!(registry.len(), 9);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
+        assert!(registry.get("revolve").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
@@ -1164,6 +1261,7 @@ mod tests {
                 "extrude",
                 "linear_pattern",
                 "mirror",
+                "revolve",
                 "sketch",
                 "sphere"
             ]
@@ -2870,6 +2968,90 @@ mod tests {
             }
             other => panic!("expected Primitive::Extrude, got {other:?}"),
         }
+    }
+
+    // ─── K8.4: revolve ────────────────────────────────────────
+
+    #[test]
+    fn revolve_lowers_rectangle_sketch_into_primitive_revolve() {
+        // Profile: a 4 × 20 mm rectangle at r=5, so revolving
+        // it around the Y axis gives a tube.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let revolve_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_rectangle",
+                        "id": "r1",
+                        "params": {
+                            "corner_a": [5.0, -10.0],
+                            "corner_b": [9.0, 10.0],
+                        }
+                    }
+                ]
+            }),
+        );
+        let revolve_call = FeatureCall::new(
+            "revolve",
+            revolve_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call])
+            .unwrap();
+
+        let revolve_feature = doc
+            .features
+            .iter()
+            .find(|f| f.id == revolve_id)
+            .expect("revolve spine entry");
+        match &revolve_feature.primitive {
+            Primitive::Revolve { sketch, center } => {
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                let aabb = sketch.aabb();
+                assert!((aabb.min[0] - 5.0).abs() < 1e-5);
+                assert!((aabb.max[0] - 9.0).abs() < 1e-5);
+                assert!((aabb.min[1] - (-10.0)).abs() < 1e-5);
+                assert!((aabb.max[1] - 10.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn revolve_errors_when_sketch_cannot_be_resolved() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "revolve",
+                    id(1),
+                    json!({
+                        "profiles": "qCreatedBy(sketch_999)",
+                    }),
+                )],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            FeatureError::MissingParameter {
+                feature: "revolve",
+                name: "profiles",
+            }
+        ));
     }
 
     #[test]

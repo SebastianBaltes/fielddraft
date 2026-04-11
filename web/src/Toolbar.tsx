@@ -197,6 +197,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Revolve the most recent sketch around the world Y axis"
+          data-testid="revolve-latest-sketch"
+          disabled={
+            !state.features.some((f) => f.kind === "sketch")
+          }
+          onClick={() => store.addRevolveFromLatestSketch()}
+        >
+          ↻ Revolve
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Linear pattern the latest feature (+X, 3×, 60 mm)"
           data-testid="linear-pattern-latest"
           disabled={state.features.length === 0}

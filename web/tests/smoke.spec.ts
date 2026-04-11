@@ -500,6 +500,90 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.4: revolve sweeps a sketch rectangle into a tube", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    const revolveBtn = page.getByTestId("revolve-latest-sketch");
+    await expect(revolveBtn).toBeDisabled();
+
+    // Drop in a sketch with a rectangle profile at r ∈ [5, 9],
+    // y ∈ [−10, 10]. Revolving it around Y produces a 4 mm-thick
+    // tube. Going through __fdStore.enterSketch + addSketchSubCall
+    // avoids the flaky click-drag-in-viewport route while still
+    // flowing through the store's commit path so React state
+    // updates.
+    const sketchId = await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __fdStore?: {
+            enterSketch: (plane: string) => void;
+            pushSketchSubCalls: (
+              calls: { type: string; params: Record<string, unknown> }[],
+            ) => void;
+            commitSketch: () => number | null;
+          };
+        }
+      ).__fdStore;
+      if (!store) throw new Error("__fdStore not exposed");
+      store.enterSketch("qCreatedBy(origin_plane_xy)");
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_rectangle",
+          params: {
+            corner_a: [5, -10],
+            corner_b: [9, 10],
+          },
+        },
+      ]);
+      return store.commitSketch();
+    });
+    expect(sketchId).toBeGreaterThan(0);
+
+    // Re-render tick so the store picks the new sketch up.
+    await page.waitForTimeout(100);
+    await expect(revolveBtn).toBeEnabled();
+    await revolveBtn.click();
+    await page.waitForTimeout(200);
+
+    const after = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.listFeatures();
+    });
+    expect(after).not.toBeNull();
+    expect(after!.some((f) => f.kind === "revolve")).toBe(true);
+
+    // Export STL — a revolved 4 mm tube with 20 mm height
+    // produces well over 1 KB of triangles at the default DC
+    // resolution.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    expect(stat.size).toBeGreaterThan(1000);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

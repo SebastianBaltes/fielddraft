@@ -293,6 +293,29 @@ impl Aabb {
                     ],
                 }
             }
+            // K8.4: revolve sweeps the 2D sketch around the
+            // local Y axis. Radial extent is the max |x| the
+            // sketch reaches; Y range comes straight from the
+            // sketch's Y extent.
+            Primitive::Revolve { sketch, center } => {
+                let bb2 = sketch.aabb();
+                if bb2.is_empty() {
+                    return Self::EMPTY;
+                }
+                let r_max = bb2.max[0].abs().max(bb2.min[0].abs());
+                Self {
+                    min: [
+                        center[0] - r_max,
+                        center[1] + bb2.min[1],
+                        center[2] - r_max,
+                    ],
+                    max: [
+                        center[0] + r_max,
+                        center[1] + bb2.max[1],
+                        center[2] + r_max,
+                    ],
+                }
+            }
         }
     }
 
@@ -416,6 +439,27 @@ impl CsgNode {
                     // Shift by `center` via an inner
                     // Transform so the extrude SDF sees local
                     // coordinates centred on its own origin.
+                    if *center == [0.0, 0.0, 0.0] {
+                        centered
+                    } else {
+                        Self::Transform(
+                            Transform {
+                                translate: *center,
+                                rotation: [0.0, 0.0, 0.0, 1.0],
+                                scale: 1.0,
+                            },
+                            Box::new(centered),
+                        )
+                    }
+                }
+                // K8.4: same lowering dance as Extrude, but the
+                // payload is CsgNode::Revolve and the sketch is
+                // interpreted in (r, y) rather than (x, y).
+                Primitive::Revolve { sketch, center } => {
+                    let centered = Self::Revolve {
+                        id: f.id.clone(),
+                        sketch: Box::new(sketch.clone()),
+                    };
                     if *center == [0.0, 0.0, 0.0] {
                         centered
                     } else {

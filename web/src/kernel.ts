@@ -469,6 +469,19 @@ export class Kernel {
     return this.inner.addMirror(sourceId, nx, ny, nz, px, py, pz);
   }
 
+  /** K8.4: append a revolve feature that consumes the sketch
+   *  with id `sketchId` and sweeps its profile around the local
+   *  Y axis through `(cx, cy, cz)`. Returns the new feature id. */
+  addRevolve(
+    sketchId: number,
+    op: BoolOpTagValue,
+    cx = 0,
+    cy = 0,
+    cz = 0,
+  ): number {
+    return this.inner.addRevolve(sketchId, op, cx, cy, cz);
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

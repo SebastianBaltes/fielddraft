@@ -252,6 +252,17 @@ pub enum Primitive {
         half_depth_z: f32,
         center: [f32; 3],
     },
+    /// K8.4: sketch-profile revolution around the local Y axis.
+    /// The sketch `x` coordinate maps to the radial distance
+    /// `√(x² + z²)` in 3D, its `y` stays vertical. Authoring
+    /// convention: sketch primitives should live at `x ≥ 0`;
+    /// primitives that cross the axis produce valid but
+    /// geometrically silly results. `center` positions the axis
+    /// of revolution in world space.
+    Revolve {
+        sketch: Sketch2d,
+        center: [f32; 3],
+    },
 }
 
 impl Primitive {
@@ -260,6 +271,7 @@ impl Primitive {
     pub const KIND_SPHERE: u32 = 1;
     pub const KIND_CYLINDER: u32 = 2;
     pub const KIND_EXTRUDE: u32 = 3;
+    pub const KIND_REVOLVE: u32 = 4;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -267,6 +279,7 @@ impl Primitive {
             Primitive::Sphere { .. } => Self::KIND_SPHERE,
             Primitive::Cylinder { .. } => Self::KIND_CYLINDER,
             Primitive::Extrude { .. } => Self::KIND_EXTRUDE,
+            Primitive::Revolve { .. } => Self::KIND_REVOLVE,
         }
     }
 
@@ -277,6 +290,7 @@ impl Primitive {
             Primitive::Sphere { .. } => "Sphere",
             Primitive::Cylinder { .. } => "Cylinder",
             Primitive::Extrude { .. } => "Extrude",
+            Primitive::Revolve { .. } => "Revolve",
         }
     }
 }
@@ -556,6 +570,10 @@ impl FeatureCall {
             // below. Emit a placeholder type_name here so the
             // sync can skip re-adding it.
             Primitive::Extrude { .. } => "__derived_extrude_skip__",
+            // K8.4: same derivation rule as Extrude — the
+            // authoritative wire form is the original "revolve"
+            // FeatureCall with its sketch query.
+            Primitive::Revolve { .. } => "__derived_revolve_skip__",
         };
         let op = bool_op_wire_name(f.op);
         let translate = f.transform.translate;
@@ -606,6 +624,15 @@ impl FeatureCall {
             } => serde_json::json!({
                 "sketch": sketch,
                 "half_depth_z": half_depth_z,
+                "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Revolve { sketch, center } => serde_json::json!({
+                "sketch": sketch,
                 "center": center,
                 "translate": translate,
                 "rotation": rotation,
@@ -739,7 +766,10 @@ impl Document {
             // `surviving` already preserves the authoritative
             // entry because the is_spine_type filter above
             // doesn't treat them as spine-derived.
-            .filter(|call| call.type_name != "__derived_extrude_skip__")
+            .filter(|call| {
+                call.type_name != "__derived_extrude_skip__"
+                    && call.type_name != "__derived_revolve_skip__"
+            })
             .collect();
         next.extend(surviving);
         self.feature_calls = next;

@@ -753,6 +753,25 @@ export class KernelStore {
     return id;
   }
 
+  /** K8.4: revolve the latest committed sketch around the world
+   *  Y axis at the origin, using the store's current `nextOp`.
+   *  Returns the new feature id, or `null` when there's no
+   *  sketch to consume. */
+  addRevolveFromLatestSketch(): number | null {
+    const sketchId = this.latestSketchId();
+    if (sketchId === null) return null;
+    let id: number;
+    try {
+      id = this.kernel.addRevolve(sketchId, this.state.nextOp, 0, 0, 0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addRevolve failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume. */
