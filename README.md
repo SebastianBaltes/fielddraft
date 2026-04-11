@@ -311,37 +311,44 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 
 ### 6.1 Part‑Editor (3D)
 
-| Funktion | MVP | Later |
+Die Tier‑Spalte ordnet jedes Feature einem Release‑Tier aus §10.0 zu — **T1** ist der Shippable‑Alpha‑Cut, **T2** ist der SDF‑USP („Reason to Exist"), **T3** ist die Feature‑Complete‑Vision. Die Tier‑Grenzen sind bewusst; wer die Tabelle von oben nach unten liest, sieht, wie FieldDraft vom brauchbaren Maker‑CAD zum differenzierten Produkt wird.
+
+| Funktion | Tier | Slice |
 |---|---|---|
-| Feature‑Tree | ✅ | |
-| Part‑List / Outliner | ✅ | |
-| Multiselect | ✅ | |
-| Maßband / Measure | ✅ | |
-| Kamera‑ und Render‑Optionen | ✅ | |
-| Ansichts‑Würfel | ✅ | |
-| Undo / Redo (über Feature‑Tree) | ✅ | |
-| Sketch (Einstieg in 2D) | ✅ | |
-| Extrude (Add, Subtract, Intersect, New) | ✅ | |
-| Revolve | ✅ | |
-| Boolean (Union, Difference, Intersect) | ✅ | |
-| Linear Pattern | ✅ | |
-| Circular Pattern | ✅ | |
-| Mirror | ✅ | |
-| Transform (Move/Rotate/Scale) | ✅ | |
-| Delete | ✅ | |
-| Plane (Referenzebenen) | ✅ | |
-| Variable / Expressions | ✅ | |
-| Mate Connector (als Ankerpunkt, nicht Kinematik) | ✅ | |
-| Fillet (via Spatial Mask + Ghost Topology) | ✅ | |
-| Chamfer (via Spatial Mask + Ghost Topology) | ✅ | |
-| Thread (analytisches Gewinde‑Primitiv) | ✅ | |
-| Gyroid / TPMS‑Infill | ✅ | |
-| Procedural Noise / Displacement (Terminal Feature) | ✅ | |
-| Domain Deformation (Bend / Twist, Lipschitz‑korrigiert) | ✅ | |
-| Morph (Lerp zwischen SDFs) | ✅ | |
-| Sweep (via Mesh‑to‑SDF, gemeinsamer Pfad mit Mesh‑Import) | ✅ | |
-| Loft | ❌ | M14+ |
-| Curved Pattern | ❌ | M14+ |
+| Feature‑Tree | T1 | K7 |
+| Part‑List / Outliner | T1 | K7 |
+| Multiselect | T1 | K7 |
+| Kamera‑ und Render‑Optionen | T1 | K7 |
+| Ansichts‑Würfel | T1 | K7 |
+| Undo / Redo (über Feature‑Tree) | T1 | K7 |
+| Sketch (Einstieg in 2D) | T1 | K6b |
+| Extrude (Add, Subtract, Intersect, New) | T1 | K6b/K7 |
+| Revolve | T1 | K6b/K7 |
+| Boolean (Union, Difference, Intersect — nur hart, kein `smin`) | T1 | K7 |
+| Linear Pattern | T1 | K8 |
+| Circular Pattern | T1 | K8 |
+| Mirror | T1 | K8 |
+| Transform (Move/Rotate/Scale) | T1 | K7 |
+| Delete | T1 | K7 |
+| Plane (Referenzebenen) | T1 | K6b |
+| Variable / Expressions (Formel‑Engine) | T1 | K8 |
+| STL‑Export (ASCII / Binary) | T1 | K7 |
+| Maßband / Measure | T1 | K9 |
+| Mate Connector (als Ankerpunkt, nicht Kinematik) | T1 | K9 |
+| Fillet (via Spatial Mask + Ghost Topology) | T1 | K10 |
+| Chamfer (via Spatial Mask + Ghost Topology) | T1 | K10 |
+| Gyroid / TPMS‑Infill | **T2** | K11 |
+| Procedural Noise / Displacement (Terminal Feature) | **T2** | K11 |
+| Domain Deformation (Bend / Twist, Lipschitz‑korrigiert) | **T2** | K11 |
+| Morph (Lerp zwischen SDFs) | **T2** | K11 |
+| `smin`‑Blends (weiche Booleans) | **T2** | K11 |
+| Thread (analytisches Gewinde‑Primitiv) | T3 | K12 |
+| Sweep (via Mesh‑to‑SDF, gemeinsamer Pfad mit Mesh‑Import) | T3 | K13 |
+| STL/OBJ‑Import als Referenzgeometrie | T3 | K9/K13 |
+| Loft | T3+ | (nicht in K1–K13) |
+| Curved Pattern | T3+ | (nicht in K1–K13) |
+
+**Cut‑Linie T1 → T2.** T1 endet bei K10 (Fillets). Alles darunter in der Tabelle — Gyroid, Displacement, Domain Deformation, Morph, `smin`‑Blends — ist explizit *nicht* Teil der ersten shippable Version. Das ist eine bewusste Entscheidung, keine Vertagung aus Zeitgründen: T1 liefert ein **brauchbares** CAD, T2 liefert ein **differenziertes** CAD, und die Reihenfolge ist nicht tauschbar, weil die Spatial‑Mask‑Infrastruktur aus K10 von K11's `smin`‑Blends wiederverwendet wird.
 
 ### 6.2 Sketch‑Editor (2D)
 
@@ -375,8 +382,45 @@ Die UI‑Referenz orientiert sich eng an den Onshape‑Screenshots (`assets/onsh
 
 ### 6.3 UX‑Vereinfachungen gegenüber Onshape
 
-- **Strikt parametrischer Workflow.** Änderungen laufen **ausschließlich** über Skizzen, Bemaßungen und Variablen — bewusst kein Direct‑Manipulation‑Modus im MVP. Der B‑Rep‑Proxy aus §4.1 liefert zwar Faces, Edges und Vertices als selektierbare Objekte, aber ein Push/Pull‑Gizmo auf einer Face bräuchte einen konsistenten Rückweg von der gezogenen Distanz in das richtige numerische Feld eines Upstream‑Sketch‑ oder Extrude‑Knotens. Diese Abbildung ist im allgemeinen Fall mehrdeutig (welcher Parameter soll wachsen?) und in Multi‑Body‑Szenen instabil. Das Onshape‑Modell ist sauberer: Skizze → Extrusion → Maß ändern → Baum rechnet neu. Ein Direct‑Mode kann später nachgeliefert werden (M14+), sobald ein robustes Heuristik‑Modell für die Push/Pull‑zu‑Parameter‑Auflösung existiert.
+- **Strikt parametrischer Workflow als kanonischer Pfad.** Die Ground Truth jeder Änderung ist der Feature‑Tree plus die §6.4 beschriebenen generischen Dialoge: Klick auf Tool → Dialog/Tool‑Panel öffnet sich → Eingabemodus → Bestätigen, Baum rechnet neu. Das ist der *immer verfügbare* Pfad für jedes Feature — auch dann, wenn der User parallel eine implizite Geste benutzt. Ein naives Push/Pull‑Gizmo, das einen Upstream‑Sketch‑ oder Extrude‑Parameter rückwärts auflöst, bleibt bewusst draußen: die Abbildung „gezogene Distanz → welches numerische Feld wächst?" ist im allgemeinen Fall mehrdeutig und in Multi‑Body‑Szenen instabil. Der Weg zu Direct‑Manipulation‑artigen Interaktionen läuft in FieldDraft stattdessen über §6.4 (Zweigleisige Bedienung) und über das *Erzeugen neuer Features* statt das Rückwärts‑Lösen bestehender — etwa Face‑Push/Pull als neues `FaceOffset`‑Feature im Tree statt als Parameter‑Edit eines Upstream‑Extrudes.
 - **Onshape‑Parität beim Sketchen.** Die Sketch‑UX orientiert sich explizit an Onshape, nicht an FreeCAD oder SolveSpace. Vier Verhaltensweisen bilden den Kern (technische Umsetzung in §4.4, Adapter‑Schicht): (a) **Auto‑Inferencing** — beim Zeichnen schlägt die InferenceEngine passende Constraints proaktiv vor (Coincident, Horizontal/Vertical, Parallel, Tangent, …) und fügt sie beim Klick automatisch ein; Shift unterdrückt den Vorschlag. (b) **Driving vs. Driven Dimensions** — eine Dimension, die den Sketch über‑constrainen würde, wird automatisch als Driven (grau, Nur‑Anzeige) eingefügt statt einen Fehler zu werfen; ein Klick schaltet sie auf Driving. (c) **Drag‑Stabilität ohne Topologie‑Kippen** — beim Ziehen eines Punkts bleibt der Sketch in derselben topologischen Konfiguration, ein Rechteck invertiert sich nicht, ein Dreieck klappt nicht um. (d) **Drei‑Farben‑Status** — Entities und Constraints sind blau (unter‑constrained), schwarz (voll constrained) oder rot (im Konflikt); das Constraint‑Manager‑Panel listet alle Constraints, filtert nach Status und highlightet beim Hover die betroffenen Entities im Viewport. Diese vier zusammen sind der Unterschied zwischen „FreeCAD‑Feeling" und „Onshape‑Feeling" — und sie sind explizit als MVP‑Anforderung formuliert, nicht als Nice‑to‑Have.
+
+### 6.4 Zweigleisige Bedienung — Dialoge und Gesten
+
+FieldDraft fährt die Bedienung bewusst **zweigleisig**: Der Feature‑Tree plus die generischen Dialoge (K6a/K6a.1) sind die **kanonische, immer verfügbare Bedienoberfläche** für jedes Feature — Tool klicken, Dialog/Tool‑Panel erscheint, User füllt Parameter aus, bestätigt, Tree wächst. Das ist der Pfad, auf dem *jedes* Feature sicher, vollständig und reproduzierbar bedient werden kann, inklusive der mächtigen Randoptionen, die sich nicht gestisch abbilden lassen (End‑Condition‑Variationen, Second‑End‑Position, Draft‑Winkel, Merge‑Scope, …). Die vollständige Onshape‑Paritäts‑Analyse dazu steht in `onshape-ux.md`.
+
+Über dieser kanonischen Schicht liegt ein **experimenteller, impliziter Bedienpfad**, der ausgewählte Basis‑Features über Gesten direkt im Viewport erreichbar macht — ohne den Dialog je zu ersetzen. Die Absicht ist, den Onshape‑typischen „mehrere Klicks, um einen Sketch anzufangen"‑Schmerz abzubauen: Doppelklick auf eine Face startet den Sketch auf dieser Face implizit, Klicken in den leeren Raum beginnt direkt ein parametrisches Primitiv, Ziehen eines Gizmos auf einer Boolean‑Komponente manipuliert den Transform des Sub‑Körpers live. Die konkrete Liste gestengetriebener Features und ihr Verhalten sind explizit **Forschungs‑Territorium** — sie werden iterativ eingeführt und feingetunt, nicht im ersten Meilenstein komplett spezifiziert.
+
+Zwei Regeln halten die beiden Gleise konfliktfrei:
+
+1. **Gesten erzeugen oder manipulieren exakt dieselben `FeatureCall`‑Einträge wie Dialoge.** Es gibt keinen parallelen Datenpfad — jede Geste serialisiert letztlich einen Dialog‑Edit, nur eben ohne modalen Dialog. Ein gestengetriebenes Feature ist im Tree nachher von einem dialog‑getriebenen Feature nicht unterscheidbar.
+2. **Der Dialog bleibt als Tool‑Panel auch während gestischer Bedienung sichtbar, kontext‑aware.** Wer per Geste einen Extrude angestoßen hat, sieht daneben weiterhin das vollständige Extrude‑Tool‑Panel mit allen Parametern und kann dort die Optionen feinjustieren, die die Geste nicht abdeckt (NAIO‑Modus, Draft, Second‑End‑Position, …). Das Tool‑Panel ist also nicht nur Backup für Feinjustage, sondern **permanente Ground Truth für den State**, den die Geste manipuliert.
+
+Daraus folgt eine klare Entwurfsentscheidung für die Widget‑Infrastruktur: Die generischen Dialog‑Komponenten aus K6a/K6a.1 sind *so* gebaut, dass sie **auch kontext‑eingebettet neben dem Viewport** funktionieren, nicht nur als modales Pop‑up. Genau deshalb hat der FeatureDialog in K6a.1 einen optionalen `footer`‑Slot, optionale `onCommit`/`onCancel`‑Callbacks und einen reinen Data‑in/Data‑out‑Kontrakt — er lässt sich als Tool‑Panel im Outliner montieren, ohne etwas an der inneren Dispatch‑Logik zu ändern.
+
+Die Gesten‑UX wird **mitgedacht, aber nicht im ersten Meilenstein erzwungen**. Sie erscheint in der Roadmap als eigener experimenteller Track (siehe §10, K‑Exp1), nicht als Blocker für K6b oder K7. Der kanonische Pfad muss lauffähig sein, bevor wir Gesten ernsthaft drauf schichten.
+
+### 6.5 Sketch‑Sub‑Feature‑Tree
+
+Jeder Sketch hat in FieldDraft einen **eigenen, vollständigen Feature‑Tree im Hintergrund** — keine Blackbox, sondern ein zweiter `Vec<FeatureCall>`‑Spine pro Sketch. Jedes Sketch‑Werkzeug (Line, Rectangle, Circle, Arc, Point, Dimension, Trim, Mirror, Offset, …) ist ein eigener Feature‑Typ mit Schema (K6b), jeder Klick während des Zeichnens wird als `FeatureCall` in diesen Sub‑Spine geschrieben. Der Sub‑Tree wird im Outliner **optional aufklappbar** unter dem Sketch‑Knoten des Part‑Studio‑Spines dargestellt — kollabiert ist der Sketch im UI eine einzelne Zeile wie in Onshape, aufgeklappt sieht man die komplette Zeichen‑Historie.
+
+Das hat drei konkrete Konsequenzen:
+
+1. **Undo/Redo pro Sketch‑Schritt.** Statt „alles oder nichts" wie in Onshape (wo man beim Zurückspringen entweder den gesamten Sketch verwirft oder gar nichts) kann der User gezielt einzelne Zeichen‑Operationen rückgängig machen, ohne die restlichen Schritte zu verlieren. Das deckt den von Onshape‑Usern oft vermissten „Sketch‑Step‑Undo" ab.
+2. **Re‑play und Inspektion.** Der Sub‑Tree ist git‑diffbar wie der Haupt‑Tree, reproduzierbar, und erlaubt in Zukunft Features wie „Sketch‑Timeline‑Scrubbing" (spiele den Sketch Schritt für Schritt ab) oder „Sketch‑Fehler‑Lokalisierung" (welcher Schritt hat den Constraint‑Conflict ausgelöst?) — ohne zusätzliche Datenstruktur.
+3. **Einheitliche Infrastruktur.** Sketch‑Werkzeuge laufen durch denselben `FeatureRegistry`, dieselbe Schema‑Validation, denselben generischen Dialog‑Generator wie Part‑Studio‑Features. Kein Sonderweg für Sketch‑Tools, kein hand‑geschriebener Sketch‑Tool‑Dialog — exakt die Zielsetzung von K6b („jedes Werkzeug ist ein Feature mit Schema"), aber konsequent als *separater* Spine ausgeprägt, nicht als Einträge im Haupt‑Tree.
+
+Der Sketch‑Sub‑Tree ist als Design‑Entscheidung **gesetzt**, nicht mehr offen. K6b implementiert ihn; das Outliner‑Panel aus K7 bekommt eine Aufklapp‑Affordance auf Sketch‑Knoten.
+
+**Vorab‑Klarstellung zum Solver‑Paradigma** (weil die Frage erfahrungsgemäß kommt): Der Sketch‑Sub‑Feature‑Tree **ändert nichts an PlaneGCS**. Der Solver bleibt **deklarativ und simultan** — er bekommt weiterhin die vollständige Entity‑ und Constraint‑„Suppe" und löst sie global in einem Rutsch (DogLeg/SQP wie bisher, siehe §4.4). Der Sub‑Tree ist **keine prozedurale Solver‑Semantik**, sondern ein reiner **Aufzeichnungs‑ und Wiedergabe‑Mechanismus** über einem unveränderten deklarativen Solver. Konkret: „Regeneration" des Sketch‑Sub‑Trees heißt, die `FeatureCall`‑Liste in Reihenfolge abzuspielen und dabei über die Adapter‑Schicht aus K5b inkrementell Entities und Constraints in den PlaneGCS‑State einzufügen; erst am Ende läuft einmal `solve()`. Das ist exakt das, was auch passiert, wenn der User in Onshape Schritt für Schritt in einen Sketch zeichnet — der Solver sieht nach jedem Schritt den vollen State und löst ihn neu. Der einzige Unterschied ist, dass FieldDraft diese Schritte **persistiert**, Onshape nicht.
+
+Daraus folgen die §6.5‑Vorteile direkt und ohne Solver‑Änderung:
+
+- **Per‑Step‑Undo/Redo:** letzten `FeatureCall` aus dem Sub‑Spine entfernen, Solver‑State neu aufbauen (oder aus einem Checkpoint fortsetzen), `solve()`. Der Solver merkt nichts davon.
+- **Fehler‑Lokalisierung:** Sub‑Tree schrittweise abspielen und nach jedem Schritt `getConflicting()`/`getRedundant()` abfragen — „welcher Schritt hat den Sketch rot gemacht?" ist eine binäre Suche über die Call‑Liste.
+- **Nachträgliches Edit eines früheren Schritts** (z. B. Radius eines Kreises aus Schritt 3 ändern, während Schritt 5 darauf ein Tangent‑Constraint gelegt hat): der Sub‑Tree wird komplett mit dem geänderten Parameter neu abgespielt. Weil der Solver deklarativ ist, ist die Reihenfolge der Entity‑Einfügung für das Ergebnis irrelevant — es entsteht dasselbe Gleichungssystem, nur mit einem anderen Zahlenwert an einer Stelle. Die Historie ist rein für den User, nicht für die Mathematik.
+
+Der Sub‑Tree ist damit **vollständig machbar** über die Adapter‑Schicht aus K5b ohne jede Änderung an PlaneGCS selbst — es wird nur ein `SketchContext` gebraucht, der beim Abspielen der Calls die PlaneGCS‑Primitiv‑API bedient und am Ende `solve()` triggert.
 
 ## 7. Daten und Dateiformate
 
@@ -443,7 +487,23 @@ Tests werden **von Anfang an** mitentwickelt, nicht nachgezogen. Die Pyramide si
 
 Die Roadmap ist darauf ausgelegt, dass ich als Pair‑Programming‑Agent die Umsetzung in kleinen, testbaren Vertical Slices vorantreiben kann. Jeder Meilenstein endet mit grünen Tests, einem lauffähigen Artefakt und einem nachvollziehbaren Commit‑Verlauf. Keine „Big Bang”‑Phasen.
 
-**Erledigt vor Architektur‑Wechsel (M0–M2) sowie K1, K2, K3 (Teile 1–5), K4, K4.5.1, K4.5.2, K4.5.3, K4.5.4a, K4.5.4b, K4.5.4c, K4.5.4d, K4.5.4e, K4.5.4f, K4.5.5, K4.5.6, K4.5.7, K4.5.8 (K4.5 abgeschlossen), K5a, K5b, K6a:**
+### 10.0 Release‑Tiers
+
+Dieses Dokument beschreibt die FieldDraft‑**Vision**, nicht die erste shippable Version. Damit die Trennung zwischen „was zuerst rausgeht" und „was FieldDraft am Ende ausmacht" nicht in der Slice‑Liste untergeht, ordnet jeder K‑Slice genau einem von fünf **Release‑Tiers** zu. Die Tier‑Grenzen sind die harten Shipping‑Linien; innerhalb eines Tiers dürfen Slices umgeordnet werden, über Tier‑Grenzen hinweg nicht.
+
+- **T0 — Demonstrator / Architektur‑Validierung.** K1–K4.5, K5a, K5b, K6a, K6a.1. „Läuft", aber nicht user‑facing. Ziel: die SDF‑Architektur und die Feature‑as‑Function‑Pipeline end‑to‑end zum Laufen bringen, inklusive Solver‑Integration und generischem Dialog‑Generator. **Status: abgeschlossen.** Ein externer User kann das Tool an dieser Stelle nicht sinnvoll bedienen — es fehlen die Zeichen‑Werkzeuge und das Tree‑UI.
+- **T1 — Shippable Alpha („Usable CAD").** K6b, K7, K8, K9, K10. **Cut‑Linie: der User kann einen Prototypen‑Gehäuse‑Entwurf mit verrundeten Kanten, Bohrungen, Patterns und Variablen aufbauen und als druckbares STL exportieren.** Ohne Fillets (K10) ist das Ergebnis für den Maker‑Einsatz nicht nutzbar — ein Gehäuse mit scharfen Kanten ist kein Gehäuse. Deshalb endet T1 explizit erst bei K10, nicht bei K9. Alles, was den SDF‑Hauptakku lädt (K11) oder Spezial‑Features sind (K12/K13), bleibt bewusst draußen. T1 ist der Punkt, an dem FieldDraft *ein* CAD ist — nicht *das* CAD.
+- **T2 — Differentiated v1 („Reason to Exist").** K11. Hier lädt FieldDraft seinen Hauptakku auf: Gyroid/TPMS‑Infill, Procedural Noise/Displacement, Domain Deformation, Morph. Das sind die Features, die Onshape, Fusion, SolidWorks nicht haben, weil ihre B‑Rep‑Kernel sie nicht tragen — und der einzige Grund, FieldDraft über etablierte Tools zu wählen. Vor T2 ist FieldDraft technisch interessant, aber nicht differenziert. T2 ist die erste Version, die eine eigenständige Positionierung rechtfertigt.
+- **T3 — Feature‑Complete Vision.** K12 (Analytisches Gewinde), K13 (Mesh‑to‑SDF für Sweep und Import), dann Phase 2 (Backend, Accounts, Assemblies) und Phase 3 (Kinematik, Physik, Code‑First‑Export). Mehrjahresperspektive.
+- **T∞ — Forschung / experimentell.** K‑Exp1 (Skelett‑First‑Renderpfad) und weitere Parallel‑Slices aus dem §10‑Backlog. Kein Liefer‑Tier, sondern ein Ort, an dem Ideen reifen dürfen, ohne die Hauptlinie zu blockieren.
+
+**Realitätsbezogener Zeithorizont.** Bei einem Entwickler plus Pair‑Programming‑Agent ist T1 als *mehrmonatige* Arbeit realistisch, T2 als *weitere mehrmonatige* Iteration, T3 in der Größenordnung von **1–2 Jahren**. Das Dokument ist damit keine „Road to MVP in N Wochen"‑Roadmap, sondern die Gesamtvision eines Produkts, das über mehrere Shipping‑Linien hinweg wächst. Wer an der Anzahl der K‑Slices in T3 zweifelt, hat recht — aber die Slices in T3 sind absichtlich nicht *Voraussetzung* für T1 oder T2. Jede Tier‑Grenze ist ein potenzielles Stop‑Signal, kein Pflicht‑Pass zur nächsten.
+
+**Was nicht im Tier‑Modell verschoben werden darf.** K10 (Fillets) bleibt in T1 — ohne Fillets kein usable CAD. K11 (SDF‑Superkräfte) bleibt in T2 und wird *nicht* nach T3 verschoben, um T1 schneller zu erreichen — ohne K11 gibt es keinen Grund für FieldDraft, existiert zu haben. Diese zwei Entscheidungen sind explizit getroffen und nicht mehr offen.
+
+### 10.1 Erledigt (T0)
+
+**Erledigt vor Architektur‑Wechsel (M0–M2) sowie K1, K2, K3 (Teile 1–5), K4, K4.5.1, K4.5.2, K4.5.3, K4.5.4a, K4.5.4b, K4.5.4c, K4.5.4d, K4.5.4e, K4.5.4f, K4.5.5, K4.5.6, K4.5.7, K4.5.8 (K4.5 abgeschlossen), K5a, K5b, K6a, K6a.1:**
 
 - **M0:** Repo‑Scaffold, Build‑Tooling (`just`, `wasm-pack`, `npm`), Test‑Harnesses (`cargo test`, Vitest, Playwright), CI‑freier lokaler Workflow, `crates/kernel`, `crates/protocol`, `web/`.
 - **M1:** Erste WebGPU‑Viewport‑Iteration mit TSL‑Raymarcher und festen Primitiven, Zero‑Copy‑Memory‑Brücke, debounced Auto‑Save in `localStorage`.
@@ -557,7 +617,7 @@ Dieser Slice ist ein **Strukturumbau ohne Verhaltens‑Break**: Das bisherige K1
 - **Tests:** (a) K1/K2/K4‑Goldfiles laufen unverändert grün (Regression‑Gate). (b) Round‑Trip‑Serialisierung des Feature‑Trees als JSON (`parse → regenerate → hash` ist deterministisch). (c) Hierarchische Provenance: Klick auf eine Spatial‑Mask‑Edge einer (simulierten) Multi‑Mask‑Struktur liefert die korrekte `fillet_7.mask_0`‑Sub‑ID. (d) JS‑Feature‑Body‑Execution: ein `test_extrude_chain(count=5)` läuft durch und erzeugt fünf Extrude‑Features mit korrekten Child‑IDs. (e) Determinismus‑Property‑Test: zufällig generierte Feature‑Tree‑Sequenzen liefern bei doppelter Regeneration bit‑identische Mesh‑Hashes. (f) Global‑Freeze‑Regression: ein JS‑Feature, das `Date.now()` ruft, bekommt deterministisch `0` zurück; `Math.random()` liefert für denselben Dokument‑Hash dieselbe Sequenz.
 - **Explizit nicht enthalten:** FeatureDialog‑UI (kommt in K6a), volle Query‑Sprache mit Set‑Operationen (inkrementell später), Editing‑Logic‑Callbacks und Manipulators (optional, wenn Zeit bleibt — sonst ebenfalls K6a/K7), User‑sichtbares Feature‑Editor‑UI (Phase 2+, nicht MVP).
 
-**K5a — PlaneGCS‑Integration und Basis‑Constraints (Solver‑Kern, headless)**
+**T0 · K5a — PlaneGCS‑Integration und Basis‑Constraints (Solver‑Kern, headless)**
 - Integration des PlaneGCS‑Solvers in den Kernel‑Workspace als eigenes Crate `crates/solver` (§4.4). Die Entscheidung zwischen separatem WASM‑Build (`@salusoft89/planegcs`, ca. 881 kB) und statischem `cc`‑Crate‑Link fällt in diesem Slice, basierend auf einer Messung der Solve‑Aufruf‑Frequenz im DC‑Rebuild‑Zyklus und dem Lizenzpfad aus §8 (LGPL‑2.1‑Randbedingung).
 - FFI‑Layer zwischen Rust‑Adapter und PlaneGCS: schmaler `extern "C"`‑Satz für `add_point`, `add_line`, `add_circle`, `add_arc`, `add_constraint`, `solve`, `get_dof`, `get_conflicting`, `get_redundant`, `get_partially_redundant`, `get_malformed`.
 - Pflicht‑Constraints mappen auf PlaneGCS‑Primitives: Coincident, Parallel, Horizontal/Vertical, Perpendicular, Dimension (Länge, Winkel), Tangent, Concentric, Equal, Midpoint, Symmetric.
@@ -565,14 +625,14 @@ Dieser Slice ist ein **Strukturumbau ohne Verhaltens‑Break**: Das bisherige K1
 - `proptest`‑Suite für invariante Eigenschaften (nach Setzen eines Parallel‑Constraints liegen die Steigungen identisch innerhalb ε, nach einem Dimension‑Wechsel konvergiert der Solver auf denselben Gleichgewichtszustand). Goldfiles laufen gegen PlaneGCS‑Referenz‑Lösungen, nicht mehr gegen SolveSpace.
 - Das MIT‑Kursmaterial „CAD in 1 Hour" (im `planegcs`‑Repo verlinkt) dient als zusätzliche Referenz für Solver‑Architektur und Test‑Szenarien.
 
-**K5b — Sketch‑Adapter‑Schicht (UX‑Hebel)**
+**T0 · K5b — Sketch‑Adapter‑Schicht (UX‑Hebel)**
 - **InferenceEngine** (§4.4): Proximity‑basierte Auto‑Constraint‑Vorschläge beim Zeichnen, nach Priorität sortiert, mit Shift‑Unterdrückung. API liefert pro Mausmove eine Kandidatenliste an die UI‑Schicht — noch ohne eigene UI in diesem Slice, Tests laufen headless gegen synthetische Mausmove‑Sequenzen.
 - **DragController** (§4.4): Verwaltet temporäre Point‑on‑Point‑Constraints mit PlaneGCS' `temporary`‑Flag, schaltet den Solver implizit auf SQP für Drag‑Stabilität, entfernt den Constraint beim Loslassen. Tests prüfen, dass beim Dragging eines Rechteck‑Eckpunkts die topologische Konfiguration (vier rechte Winkel, alle Kanten parallel) erhalten bleibt und nicht ins Invertierte kippt.
 - **DoF‑Preflight**: Vor jedem Dimension‑Einfüge‑Versuch DoF‑Check über die Jacobi‑Matrix; Auto‑Konversion zu Driven bei drohendem Über‑Constraint. Test: ein voll constrainter Sketch bekommt eine weitere Dimension — muss als Driven landen, nicht als Fehler.
 - **Diagnostics‑Pipeline**: Rohdaten aus `getConflicting`/`getRedundant`/`getPartiallyRedundant` werden zu Entity‑ und Constraint‑Zuständen für das Drei‑Farben‑UI‑Modell (blau/schwarz/rot) aggregiert. Rohdaten‑API für das Constraint‑Manager‑Panel.
 - Integrations‑Tests: Headless‑Szenarien aus dem Onshape‑User‑Guide (Rechteck‑zentrieren + Parallel‑Inferencing, Dragging ohne Topologie‑Kippen, Über‑Constraint‑automatisch‑Driven). Die Adapter‑Schicht hat eine eigene Test‑Suite unabhängig von UI — der Unterschied zwischen „FreeCAD‑Feeling" und „Onshape‑Feeling" wird hier festgeschrieben und durch Tests gegen Regression geschützt.
 
-**K6a — Generischer FeatureDialog, Outer JS‑API, Widget‑Kit**
+**T0 · K6a — Generischer FeatureDialog, Outer JS‑API, Widget‑Kit**
 
 Dieser Slice ist die Frontend‑Seite der Feature‑as‑Function‑Architektur aus K4.5. Er liefert die Infrastruktur, auf der K6b (Sketch‑Tools) und K7 (Feature‑Tree‑UI) aufsetzen — noch ohne konkrete Sketch‑ oder Feature‑Tree‑Tools, aber mit dem generischen Dialog‑Generator und der vollständigen Outer‑API.
 
@@ -583,7 +643,17 @@ Dieser Slice ist die Frontend‑Seite der Feature‑as‑Function‑Architektur 
 - **Das Feature‑Tree‑Panel‑Grundgerüst (noch ohne Features außer K1‑Primitives).** Outliner‑Anbindung an den Feature‑Tree aus K4.5, Klick auf einen Feature‑Knoten öffnet den generischen Dialog mit dem zugehörigen Schema.
 - **Tests:** (a) Widget‑Tests mit `@react-three/test-renderer` und Vitest: jedes Widget rendert korrekt aus einem Minimal‑Schema. (b) FeatureDialog‑Integrationstest: ein vollständiges ExtrudeDef‑Schema erzeugt den erwarteten Dialog‑Tree. (c) Outer‑API‑Round‑Trip: `await fd.extrude(...)` landet im Worker, mutiert den Kernel‑State, liefert die neue `FeatureId` zurück. (d) Query‑Picker‑E2E: Klick im Viewport erzeugt einen Query‑Eintrag im Parameter‑Feld, Regeneration nutzt ihn korrekt.
 
-**K6b — Sketch‑Editor‑UI auf der neuen Infrastruktur**
+**T0 · K6a.1 — Onshape‑Paritäts‑Widgets im generischen FeatureDialog**
+
+Nachzüglerslice zu K6a, gezogen nach dem UX‑Abgleich gegen `assets/onshape/3d-extrude.png`. Der K6a‑Widget‑Kit konnte nur flache, unbedingte Parameter rendern — zu wenig für den Extrude‑Dialog (NAIO‑Tabs, End‑Condition‑Select mit hierarchisch abhängigen Feldern, Flip‑Button neben Depth, drei einklappbare Gruppen für Direction / Starting offset / Second end position, Transparenz‑Slider im Footer). K6a.1 zieht die Schema‑Grammatik und den Widget‑Kit auf das Niveau von Onshapes FeatureScript‑Dialog‑Annotationen hoch.
+
+- **Schema‑Vokabular erweitert.** Der `FeatureSchema`‑Derive in `crates/features-macros` emittiert jetzt `type: "enum"` mit Variant‑Liste (statt des K6a‑Sondertyps `"bool_op"`), trägt ein optionales `ui_hint`‑Feld durch und kennt das neue `#[param(ui_hint = "…")]`‑Attribut. `BoolOp` ist der erste Nutzer: Variants `union`/`difference`/`intersect`, Default‑Hint `horizontal_enum`. Die TS‑Seite (`web/src/widgets/schema.ts`) wurde komplett überarbeitet — Gruppen‑Knoten (`type: "group"` mit `children` + `driving_param`), `visible_when: { param, equals }`‑Ausdrücke, Query‑Picker‑Metadaten (`entity_filter`, `max_picks`), Slider‑Bounds (`min`/`max`/`step`). Gruppen und `visible_when` werden im ersten Schritt handgeschrieben in Fixture‑Schemata authorisiert; der Derive lernt sie, sobald ein Built‑in sie braucht.
+- **Widget‑Kit auf Onshape‑Parität.** Neu in `web/src/widgets/widgets.tsx`: `EnumWidget` (dispatched zwischen Segmented‑Tab‑Row bei `ui_hint: "horizontal_enum"` und `<select>` sonst, ersetzt `BoolOpWidget`), `FlipButton` (Bool mit `ui_hint: "opposite_direction"` wird zum inline ±‑Toggle, Onshape‑Reverse‑Direction‑Pattern), `SliderWidget` (Number mit `ui_hint: "slider"` + `min`/`max`/`step`), `GroupHeader` (Chevron + Checkbox + Label für kollabierbare Gruppen). Widget‑Dispatch entscheidet sich in `widgetKindFor(rawType, uiHint)` — der Hint kann einen Base‑Type zu einem reicheren Widget upgraden, ohne dass das Kernel‑Schema von React weiß.
+- **FeatureDialog mit Chrome + Rekursion + Sichtbarkeit.** `web/src/widgets/FeatureDialog.tsx` hat jetzt einen Header mit optionalen `onCommit`/`onCancel`‑Callbacks (✓/✗‑Buttons, Onshape‑Layout), einen optionalen `footer`‑Slot für View‑State‑Controls wie den Transparenz‑Slider, eine rekursive `ParamList`, die in Gruppen absteigt, und wertet `isVisible(param, definition)` vor jedem Kind‑Widget aus. Groups reagieren auf ihren `drivingParam` über `isGroupExpanded`. Der Dialog bleibt zustandslos — pure Funktion von `(schema, definition, onChange)`.
+- **CSS‑Tokens + neue Komponentenstyles.** `web/src/styles/components/feature-dialog.css` wurde um Tokens‑basierte Styles für `.tab-row`/`.tab`, `.flip-button`, `.slider-row`/`.slider-value`, `.group`/`.group-header`/`.group-body`, `.header-actions` (`commit`/`cancel`) und `.footer` erweitert. Alles unter dem einen Top‑Level‑Selektor `.fd-feature-dialog` per Native‑CSS‑Nesting — CLAUDE.md‑konform.
+- **Tests.** (a) `schema.test.ts` komplett auf das neue Vokabular umgeschrieben (39 Tests): Enum‑Variants, Ui‑Hint‑Upgrades, Group‑Parsing, `isVisible`/`isGroupExpanded`, Slider‑Bounds, Query‑Metadaten, Defaults inkl. Enum‑First‑Variant. (b) Neuer Integrationstest `FeatureDialog.test.tsx` (8 Tests) mit einem handgeschriebenen Onshape‑Extrude‑Fixture, das alle neuen Mechanismen gleichzeitig benutzt (NAIO‑Tabs, End‑Condition‑Enum mit conditional Depth/Flip/Up‑to‑Face‑Target, drei kollabierbare Gruppen, Header‑Confirm/Cancel, Footer‑Slot). Assertiert strukturell, dass der DOM‑Tree dem `3d-extrude.png`‑Screenshot entspricht. (c) Rust‑Test `extrude_def_schema_has_every_runtime_type` prüft jetzt die neue Enum‑Emission statt des alten `bool_op`‑Hints. Gesamtstand: `cargo test` 177/177, `vitest` 151/151, `tsc -b` clean.
+
+**T1 · K6b — Sketch‑Editor‑UI auf der neuen Infrastruktur**
 
 - lies zum Beginn dieses Meilensteins onshape-ux.md
 - Sketch‑Ebene via Klick auf Face: Picking‑Pfad aus K2 + Auto‑Lock an das Face des B‑Rep‑Proxys (siehe §6.3). Der Auto‑Lock wird als Query ausgedrückt, nicht als direkte Koordinate.
@@ -593,55 +663,85 @@ Dieser Slice ist die Frontend‑Seite der Feature‑as‑Function‑Architektur 
 - Drei‑Farben‑Status (blau/schwarz/rot), Constraint‑Manager‑Panel, Driving/Driven‑Auto‑Konversion — alles aus der Adapter‑Schicht, visualisiert in der UX‑Schicht.
 - Playwright‑Tests für Zeichenwerkzeuge (Canvas‑Koordinaten‑Assertions) und für die Onshape‑Paritäts‑Szenarien aus §6.3 (Rechteck zentrieren + Parallel‑Inferencing, Dragging ohne Topologie‑Kippen, Über‑Constraint‑automatisch‑Driven).
 
-**K7 — Feature‑Tree‑UI, Booleans, Export**
+**T1 · K7 — Feature‑Tree‑UI, Booleans, Export**
 - Outliner und Feature‑Tree‑Panel im Frontend (baut auf der M2‑Implementierung auf).
 - Boolean‑Knoten (Union/Difference/Intersection — **nur hart**, kein `smin`), Transform‑Knoten, Pattern‑Stub.
 - Undo/Redo über Tree‑Navigation, integriert mit dem inkrementellen BVH‑Update aus K3.
 - Vollständiger E2E‑Workflow: Sketch → Extrude → Boolean → Export.
 - STL‑Ascii‑/Binary‑Export und GLB‑Export direkt aus den Body‑Mesh‑Caches (kein separater Export‑Mesher); Goldfile‑Tests gegen kanonische Bauteile.
 
-**K8 — Patterns, Mirror, Variablen, Formel‑Engine**
+**T1 · K8 — Patterns, Mirror, Variablen, Formel‑Engine**
 - Linear/Circular Pattern, Mirror als Feature‑Tree‑Knoten — Patterns werden als wiederholte CSG‑Sub‑Bäume mit Transform‑Wrappern realisiert (keine Modulo‑Tricks im SDF, siehe §4.1).
 - Vollwertige Formel‑Engine im Kernel (siehe §4.5): Expression‑Parser mit AST, Einheiten‑System (`mm`, `deg`, …), Funktionsbibliothek (`sin`, `sqrt`, `min`, …), Referenzen auf andere Variablen, Zyklen‑Erkennung, strukturierte Fehler‑Diagnostics. Maßfelder im Sketch‑Editor akzeptieren Formeln direkt (`=width/2 + 5 mm`).
 - `proptest`‑Suite für Parser‑Roundtrip, Einheiten‑Arithmetik und Zyklen; Goldfiles für kanonische Onshape‑ähnliche Ausdrücke.
 - Abhängigkeitsgraph‑basierte Re‑Evaluation des Baumes bei Variablen‑Änderung (nur betroffene Downstream‑Knoten).
 - E2E‑Test: parametrisches Schrankelement aus den Assets.
 
-**K9 — Referenz‑Import, Measure, Mate Connector**
+**T1 · K9 — Referenz‑Import, Measure, Mate Connector**
 - **STL/OBJ‑Import als visuelle Referenzgeometrie** (keine SDF‑Konvertierung, keine Booleans gegen das Referenzmesh).
 - GLB‑Import für Demo‑ und Galerie‑Zwecke.
 - Maßband‑Tool über den B‑Rep‑Proxy.
 - Mate‑Connector als anheftbares lokales Koordinatensystem an Faces/Edges/Vertices des Proxys.
 - Visual‑Regression‑Suite für den gesamten Part‑Editor.
 
-**K10 — Fillets, Chamfers, Spatial Masks, Ghost Topology**
+**T1 · K10 — Fillets, Chamfers, Spatial Masks, Ghost Topology**
 - Spatial‑Mask‑Operator im CSG‑AST: Zylinder‑/Kapsel‑SDF entlang einer selektierten Proxy‑Edge, weicher Auslauf an den Kapsel‑Enden. Innerhalb der Maske ersetzt der Operator das harte `min`/`max` durch die Fillet‑Formel (Quadrat‑Summe) oder die Chamfer‑Formel (lineare Mittelung); außerhalb fällt er transparent auf den harten Unteroperator zurück.
 - **Hierarchische Sub‑IDs für Masken (aus K4.5).** Jedes Fillet/Chamfer‑Feature ist ein Parent im Feature‑Tree; die Spatial Masks, die es intern erzeugt, werden als Kind‑IDs unter dem Parent angelegt (z. B. `fillet_7.mask_0`, `fillet_7.mask_1`, `fillet_7.mask_2`). Damit bleibt jede einzelne Maske im Provenance‑System eindeutig adressierbar, gleichzeitig ist der Zusammenhang mit dem Parent‑Feature klar. Bei einem Klick auf eine Ghost‑Edge (siehe §4.1) liefert der B‑Rep‑Proxy die Parent‑ID und den Masken‑Sub‑Pfad zurück; der History‑Rollback nutzt den ältesten matchenden Parent, um den Einfüge‑Zeitpunkt zu bestimmen.
 - Masken‑AABB wird als eigener Knoten im 3D‑BVH registriert, damit die Punkt‑Auswertung außerhalb der Masken‑Hülle den Mix‑Operator komplett überspringt und die Rechenlast logarithmisch mit der Masken‑Dichte skaliert (siehe §11 Risiko 9).
 - Ghost Topology: Dual‑Path‑Flag am CSG‑Walker. Der *visual path* wertet `smin` und alle Spatial Masks voll aus und erzeugt die weichen Übergänge für Mesher und Render‑Buffer. Der *logical path* degradiert `smin → min` und überspringt alle Masken — Picking, Snapping und B‑Rep‑Proxy‑Konstruktion laufen ausschließlich auf diesem Pfad und sehen harte Original‑Kanten (siehe §4.1, §4.2).
 - History‑Rollback beim Klick auf Ghost‑Edges: Der Feature‑Tree fügt neue Features automatisch **vor** den ältesten Fillet/Chamfer‑Knoten ein, dessen Maske die Contributor‑IDs der geklickten Edge berührt, und rechnet die Historie neu. Eine Bohrung auf einer verrundeten Kante wird damit vom nachgelagerten Fillet mit‑verrundet, ohne dass der User den Zeitstempel manuell verschieben muss.
 - UI: Fillet‑ und Chamfer‑Tool in der Part‑Editor‑Toolbar, Einzelsegment‑Selektion auf dem Proxy, Radius‑/Distanz‑Eingabe mit Live‑Preview. Edge‑Chaining entlang tangentialer Nachbarn bleibt zunächst manuell über Mehrfach‑Selektion (siehe §11 Risiko 11).
-- Tests: Goldfiles für Einzelkanten‑Fillets auf Würfel und Zylinder, Zimmerecken‑Regression als Baseline für den weichen Auslauf, Overlap‑Detection zwischen benachbarten Masken (Warnung bei Interferenz, siehe §11 Risiko 10), Ghost‑Topology‑Picking auf einem zweifach verrundeten Bauteil (Klick muss die scharfe Original‑Edge treffen, nicht die verrundete Oberfläche), History‑Rollback‑Test (Bohrung auf Ghost‑Edge wird vom Fillet automatisch mit‑verrundet).
+- **Stress‑Test‑Anker „Fillet‑all‑edges".** In der Praxis ist jedes zweite Bauteil der Stresstest für das Masken‑System: ein Gehäuse mit 20+ Kanten, auf das der User „Fillet All Edges" anwendet, ist kein Edge‑Case, sondern Alltag. Dieser Fall ist expliziter Test‑Anker in K10 — nicht nur als Korrektheits‑Goldfile („das Mesh ist wasserdicht und topologisch richtig"), sondern auch als **Performance‑ und Masken‑Interferenz‑Regression**: (a) die Maskendichte skaliert linear mit der Anzahl der Edges, während die Punkt‑Auswertung dank BVH‑Pruning logarithmisch bleiben muss, (b) benachbarte Masken auf sich schneidenden Edges dürfen sich nicht destruktiv überlagern (Convex‑Corner‑Fall), (c) die Overlap‑Detection aus §11 Risiko 10 muss im Convex‑Corner‑Fall aktiv *nicht* warnen, weil die Überlappung dort gewollt und kontrolliert ist. Wenn dieser Test ein halbes Jahr nach dem Slice wegbricht, ist das Signal zum Refactor der Masken‑Logik sauber.
+- **Ausstieg, falls Spatial Masks an der Praxis zerbrechen.** Sollte sich zeigen, dass das Maskensystem im „Fillet‑all‑edges"‑Stresstest nicht robust wird (zu viele Fehlerfälle in der Masken‑Interferenz, akzeptable Performance nicht erreichbar), ist der Rückzugsplan ein **Post‑Process auf dem DC‑Mesh**: Edge‑Smoothing pro geschlossenem Loop nach dem Meshing, verdrahtet mit dem B‑Rep‑Proxy. Das verliert die Ghost‑Topology‑Eigenschaft (Picking trifft dann die gerundete statt der scharfen Kante) und ist architektonisch teurer. Der Fallback wird **nicht** präventiv gebaut — er steht hier, damit bei einem Scheitern klar ist, dass T1 nicht aus dem Tier fliegt, sondern eine andere Implementierung bekommt.
+- Tests: Goldfiles für Einzelkanten‑Fillets auf Würfel und Zylinder, Zimmerecken‑Regression als Baseline für den weichen Auslauf, Overlap‑Detection zwischen benachbarten Masken (Warnung bei Interferenz, siehe §11 Risiko 10), Ghost‑Topology‑Picking auf einem zweifach verrundeten Bauteil (Klick muss die scharfe Original‑Edge treffen, nicht die verrundete Oberfläche), History‑Rollback‑Test (Bohrung auf Ghost‑Edge wird vom Fillet automatisch mit‑verrundet), **„Fillet‑all‑edges"‑Gehäuse‑Regression mit Performance‑Budget** (Re‑Meshing‑Zeit < N ms auf einem Referenz‑Bauteil mit definierter Edge‑Anzahl).
 
-**K11 — Native SDF‑Superkräfte**
+**T2 · K11 — Native SDF‑Superkräfte**
 - Gyroid / TPMS‑Infill als Leaf‑Knoten mit der Standardgleichung `sin(p.x)·cos(p.y) + sin(p.y)·cos(p.z) + sin(p.z)·cos(p.x)`, per Boolean mit dem Host‑Körper verschnitten. Parameter: Zellengröße, Wandstärke, optionale Clipping‑Domain. Kosten im Speicher: null Bytes — die gesamte Gitterstruktur lebt ausschließlich als Formel.
 - Procedural Noise / Displacement als Terminal‑Operator: `f_result(p) = f_body(p) − noise(uv(p)) · tiefe`, mit Triplanar‑Projektion als UV‑loses Default‑Mapping und zylindrischer Projektion als Option für Handgriffe und Knöpfe. Der Operator ist im *logical path* als Terminal markiert und wird übersprungen — der B‑Rep‑Proxy sieht weiterhin die glatte Grundform, und das Snapping fängt auf der Ur‑Oberfläche.
 - Domain Deformation (Bend, Twist) als Transform‑Knoten mit Lipschitz‑Korrektur: Der Raum wird vor der Auswertung verbogen, der zurückgegebene Distanzwert um den Verzerrungsfaktor skaliert, damit Raymarcher und Mesher nicht an falschen Metriken hängen bleiben.
 - Morph (Lerp zwischen zwei SDFs): `f_morph = (1−t)·f_A + t·f_B` mit animierbarem `t`. Für `t ∈ {0, 1}` greift Ghost Topology ungebrochen; für Zwischenwerte ist der Knoten Terminal, weil beide Contributor‑Mengen in der Übergangszone verschmelzen.
 - Tests: Gyroid‑Wasserdichtigkeit nach Dual Contouring, Displacement‑Terminal‑Verhalten (Snapping liefert glatte Ur‑Fläche auf gerändeltem Knopf), Twist‑Zahnrad‑Goldfile gegen Referenz, Morph‑Animation über 10 Zwischenschritte.
 
-**K12 — Analytisches Gewinde‑Tool**
+**T3 · K12 — Analytisches Gewinde‑Tool**
 - Thread‑Primitiv als Leaf‑Knoten mit direkter mathematischer Gewinde‑Formel (metrisch M3–M64, Trapez, Zoll). Kosten: O(1) pro Sample‑Punkt. Kein Sweep entlang einer Helix‑Kurve — dieser Weg scheitert im SDF an der Metrik‑Verzerrung der Raum‑Rotation.
 - Der B‑Rep‑Proxy behandelt das Thread‑Feature im *logical path* als glatten Referenzzylinder mit Kerndurchmesser. Snapping fängt auf Mittelachse, Stirnfläche und Steigungs‑Parameter, nicht auf den spiraligen Gewindeflanken des *visual path*.
 - UI: Thread‑Tool auf Zylinder‑Face angewandt, Gewinde‑Dropdown (M3, M4, …), Richtung (innen/außen), Länge. Schraube und Mutter teilen sich dieselbe Formel mit umgekehrtem Vorzeichen.
 - Tests: Wasserdichtigkeits‑Check, Schraube‑in‑Mutter‑Goldfile mit definierter Spielpassung, Stirnflächen‑Snap‑Test, Thread‑Boolean‑Kombination mit gefastem Zylinder.
 
-**K13 — Mesh‑to‑SDF: Convert‑to‑Solid und Sweep**
+**T3 · K13 — Mesh‑to‑SDF: Convert‑to‑Solid und Sweep**
 - Mesh‑to‑SDF‑Knoten: BVH gegen Dreiecke, kürzeste Distanz plus Winding‑Number oder Pseudo‑Normal‑Check für Innen/Außen. Ein einziger Knotentyp, der sowohl den Import‑Convert‑to‑Solid‑Pfad aus §7 als auch das neue Sweep‑Feature trägt.
 - Wasserdichtigkeits‑Check und optionaler Manifold‑Repair‑Pass vor der SDF‑Konvertierung; UI‑Warnung bei kaputten COTS‑Meshes.
 - Sweep‑Feature: Der Kernel erzeugt unsichtbar im Hintergrund ein geschlossenes Dreiecks‑Mesh des Sweeps (Profil entlang Pfad, inklusive Twist) mit klassischen Polygon‑Algorithmen und hängt das Resultat als Mesh‑to‑SDF‑Knoten in den Baum. Pfad und Profil behalten ihre IDs im Feature‑Tree und bleiben nach‑bearbeitbar — der Sweep wird bei Änderung neu gebacken.
 - Ghost Topology für Mesh‑to‑SDF‑Knoten: Da der Knoten keine „harte Alternative" hat, liefert der *logical path* für Picking die Dreiecke des zugrundeliegenden Input‑Meshes selbst zurück (sie sind mathematisch exakt zum Profil und Pfad verankert, im Gegensatz zum Dual‑Contouring‑Output der SDF‑Konvertierung).
-- Tests: STL‑Import‑Rundlauf (Import → Boolean → Export, Goldfile), Sweep‑Goldfile entlang Kreisbogen und 3D‑Spline mit Twist, Performance‑Test gegen 100k‑Dreieck‑Input‑Mesh, Manifold‑Repair auf kaputtem COTS‑Download als Regressions‑Fixture.
+- **Qualitäts‑Bottleneck bei Sweeps mit Twist — und Fallback.** Der „ein Knotentyp für Import und Sweep"‑Ansatz ist architektonisch elegant, aber die Sweep‑Qualität hängt vollständig am Zwischen‑Mesh, das der Kernel aus Profil + Pfad + Twist generiert. Für **Import‑COTS‑Teile** ist Mesh‑to‑SDF pragmatisch (das Mesh existiert bereits, seine Qualität ist nicht unser Problem). Für **Sweeps mit Twist entlang beliebiger 3D‑Pfade** ist die klassische Polygon‑Lofting‑Algorithmik der Flaschenhals: enge Kurvenradien im Pfad, starke Twist‑Raten und nicht‑konvexe Profile können das Zwischen‑Mesh selbst‑überschneiden oder unterabgetastet produzieren — und dann ist die nachgeschaltete SDF‑Konvertierung bereits ein „Garbage in, Garbage out"‑Pfad. **Fallback‑Plan**: falls die Mesh‑Qualität des Twist‑Pfads in der Praxis nicht reicht, wird der Sweep‑Pfad *separat* implementiert — ein dedizierter analytischer Sweep‑Operator für die **einfachen Fälle** (gerader Pfad, Kreisbogen, ebene Spline ohne Twist) mit direkter SDF‑Formel und strenger Lipschitz‑Garantie, und Mesh‑to‑SDF nur noch für Import. Das verliert die Single‑Path‑Eleganz, aber rettet die Sweep‑Qualität im 80%‑Fall. Das ist *bewusst kein* Default, sondern ein Notausgang, der hier dokumentiert ist, damit die Entscheidung sauber nachvollziehbar getroffen werden kann.
+- Tests: STL‑Import‑Rundlauf (Import → Boolean → Export, Goldfile), Sweep‑Goldfile entlang Kreisbogen und 3D‑Spline mit Twist, Performance‑Test gegen 100k‑Dreieck‑Input‑Mesh, Manifold‑Repair auf kaputtem COTS‑Download als Regressions‑Fixture, **Sweep‑Twist‑Qualitäts‑Test**: enge Kurvenradien + nicht‑konvexes Profil + starke Twist‑Rate, mit definiertem Akzeptanzkriterium für Self‑Intersection und Hausdorff‑Abstand zum analytischen Referenz‑Sweep (falls der Test scheitert, löst er den Fallback aus).
+
+---
+
+*Die folgenden Einträge sind **experimentelle Parallel‑Slices**. Sie laufen nicht in der K1–K13‑Hauptlinie, blockieren keinen Meilenstein und werden aufgegriffen, wenn der kanonische Pfad aus den K‑Slices lauffähig ist und/oder wenn Forschungsfragen aus der UX‑Arbeit sie notwendig machen. Sie sind hier festgehalten, damit die Ideen nicht in Konversationen verloren gehen.*
+
+**T∞ · K‑Exp1 — Skelett‑First‑Renderpfad (`AnalyticalPreview`, experimentell, parallel)**
+
+Hypothese: Der SDF‑Render‑Pfad (Dual Contouring im Worker, Regeneration pro Mutation) ist für Ausgabe‑Qualität optimal, aber für Live‑Drag‑Feedback nicht ideal — zwischen Parameter‑Edit und Viewport‑Update steht immer ein Meshing‑Pass. Ein paralleler, leichtgewichtiger **analytischer Preview‑Pfad** soll die Lücke schließen, ohne den bestehenden DC‑Pfad zu ersetzen. Drei Render‑Stufen statt zwei:
+
+- **Stufe 0 — Analytisches Skelett (Ziel: <1 ms pro Frame).** Kein DC‑Pass. Direkt aus den Feature‑Parametern berechnet: für Extrude eine Polyline‑Kontur + Deck‑ und Bodenfläche als Quads; für Revolve ein parametrischer Zylindermantel; für Primitive die sechs Quads/Kreise/… der analytischen Form. Edges aus dem B‑Rep‑Proxy (K2) als `LineSegments`. Visuell ein Wireframe + flat‑shaded Hauptflächen, ähnlich dem Sketch‑Modus — aber in 3D, live bei jedem Parameter‑Edit. Für Features *vor* dem ersten Boolean ist diese Beschreibung exakt; *ab* dem ersten Boolean wird sie zur Ghost‑Topology (harte Schnittkanten statt Fillet‑Blends, aus dem logical path des Dual‑Path‑Evaluators).
+- **Stufe 1 — Grobes DC‑Mesh (10–50 ms).** Worker rechnet mit Resolution 16–24. Körpervolumen, Schatten, Silhouette werden sichtbar; Fillets/Blends grob.
+- **Stufe 2 — Feines DC‑Mesh (100–500 ms).** Volle Resolution, scharfe Kanten via QEF, druckfertige Qualität. Das ist der heutige Mesh‑Pfad aus K3.
+
+**Geplante Komponenten:**
+- **Kernel‑API:** eine zweite Projektion des CSG‑Graphen neben `meshPositionsPtr(...)` — eine `analyticalBodyDescription(body)`, die pro Body eine Liste typisierter Flächen (Ebene mit Normale + Kontur, Zylindermantel mit Achse + Radius + Höhe, Kegelstumpf, …) und eine Liste von Edge‑Polylines zurückgibt. Das ist kein zweites Mesh, sondern eine andere Sicht auf denselben Graphen, teilweise bereits aus dem Provenance‑B‑Rep‑Proxy ableitbar.
+- **Frontend‑Renderer:** ein `AnalyticalPreview`‑Component, das die analytische Beschreibung als Three.js‑Geometrie rendert (Plane‑Faces als Quads, Zylinder als parametrische Meshes, Edges als `LineSegments`) und als Wireframe‑Overlay über dem DC‑Mesh liegen bleibt, bis die feine Stufe nachzieht.
+- **Stufen‑Orchestrierung:** ein kleiner Scheduler, der bei jeder Mutation Stufe 0 sofort aktualisiert, Stufe 1 debounced an den Worker schickt, und Stufe 2 nur dann anstößt, wenn die Mutation länger als ~200 ms still steht.
+- **Direct‑Manipulation‑Hebel (Folge‑Nutzen):** Weil jede analytische Stufe‑0‑Fläche direkt an *ein* Feature gebunden ist, verschwindet das Rückauflösungs‑Problem aus §6.3 für die analytische Schicht. Ein Face‑Push/Pull‑Gizmo kann als **neues** `FaceOffset`‑Feature im Tree landen (SDF‑seitig eine Konstante auf einer Spatial Mask), ohne einen Upstream‑Parameter zu raten. Das ist die Brücke zwischen §6.4 (Zweigleisige Bedienung) und diesem Slice.
+
+**Offene Forschungsfragen, bewusst nicht vorab entschieden:**
+- Wie teuer ist die analytische Beschreibung ab dem ersten Boolean wirklich? Schnittlinien aus dem B‑Rep‑Proxy sind berechenbar, aber nicht „kostenlos" — ab welcher Boolean‑Komplexität fällt man auf Stufe 1 zurück?
+- Fillet‑Radius‑Drag im Skelett ist praktisch unmöglich (Spatial Masks leben im Visual Path). Akzeptieren wir, dass Fillet‑Dimensions erst mit Stufe 1 sichtbar werden, oder bauen wir ein approximatives Blend‑Rendering (ein paar Kreisbögen entlang der Edge)?
+- Der Gizmo‑Drag auf einer Boolean‑Sub‑Komponente (Translation eines subtrahierten Körpers) ist reizvoll, aber erzeugt pro Frame einen neuen Boolean‑State. Reicht Stufe 0 für die reaktive Darstellung, oder brauchen wir eine noch billigere Vor‑Stufe („Proxy‑AABB‑Drag")?
+
+**Nicht‑Ziele:** Dieser Slice ersetzt **nicht** K3 (DC‑Mesher bleibt). Er ersetzt **nicht** K6a/K6a.1 (generische Dialoge bleiben die kanonische Eingabeform, siehe §6.4). Er ersetzt **nicht** K6b (Sketch‑Editor läuft auch ohne analytische 3D‑Vorschau). Er ist eine **zusätzliche Schicht**, die bei Erfolg die Plasticity‑artige Reaktivität liefert, ohne den SDF‑Kern anzutasten.
+
+**Abbruch‑Kriterium:** Wenn sich nach einem Prototyp herausstellt, dass Stufe 0 für Booleans zu aufwändig wird oder dass die Stufen‑Übergänge visuell nicht sauber zu machen sind, wird der Slice eingefroren und die Reaktivität stattdessen über progressives Refinement **innerhalb** von Stufe 1 gelöst (adaptive DC‑Resolution, region‑of‑interest‑Meshing).
 
 ---
 

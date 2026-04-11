@@ -1,88 +1,129 @@
 /**
- * Feature-schema handling for the K6a widget kit.
+ * Feature-schema handling for the FeatureDialog (K6a + K6a.1).
  *
- * The Rust-side `FeatureSchema` derive (K4.5.3 + K4.5.4a +
- * K4.5.4f) emits a JSON shape per feature definition struct:
+ * The Rust-side `FeatureSchema` derive emits a JSON shape per
+ * feature definition struct. K6a.1 widened that shape to cover
+ * the Onshape-style extrude dialog: typed enums with variant
+ * lists, rendering hints, collapsible groups, conditional
+ * visibility, and query-picker metadata.
  *
  * ```json
  * {
  *   "type": "extrude",
  *   "params": [
- *     { "key": "profiles",      "name": "Profiles",       "type": "query",    "required": true  },
- *     { "key": "depth",         "name": "Depth",          "type": "length",   "required": true  },
- *     { "key": "profile_half_x","name": "Profile half x", "type": "f32",      "required": true  },
- *     { "key": "profile_half_y","name": "Profile half y", "type": "f32",      "required": true  },
- *     { "key": "operation",     "name": "Op",             "type": "bool_op",  "required": false },
- *     { "key": "center",        "name": "Center",         "type": "vec3",     "required": false }
+ *     {
+ *       "key": "operation",
+ *       "name": "Op",
+ *       "type": "enum",
+ *       "variants": [
+ *         { "key": "union",      "label": "Union" },
+ *         { "key": "difference", "label": "Difference" },
+ *         { "key": "intersect",  "label": "Intersect" }
+ *       ],
+ *       "ui_hint": "horizontal_enum",
+ *       "required": false
+ *     },
+ *     { "key": "depth", "name": "Depth", "type": "length", "required": true },
+ *     { "key": "flip_depth", "name": "Flip depth", "type": "bool",
+ *       "ui_hint": "opposite_direction", "required": false },
+ *     {
+ *       "type": "group",
+ *       "key": "direction_group",
+ *       "name": "Direction",
+ *       "driving_param": "use_direction",
+ *       "children": [ ... ]
+ *     }
  *   ]
  * }
  * ```
  *
- * This module parses that shape into a typed `FeatureSchema`,
- * maps the string type hints to widget kinds the React tree can
- * dispatch on, and builds initial definition-value blobs that a
- * freshly-instantiated FeatureDialog can mount on. Everything
- * here is pure TypeScript — no React, no kernel calls — so the
- * logic tests under `schema.test.ts` run as fast plain vitest
- * cases.
+ * Groups and conditional visibility are authored by hand in
+ * fixture schemas for now; the derive learns to emit them as
+ * soon as a built-in feature needs them.
  */
 
 // ─── JSON shape (wire form from the Rust derive) ────────────────
 
-/**
- * Raw schema shape as the kernel's `schemaForType` accessor
- * hands it back. Narrower than `unknown` but still close to the
- * JSON because the Rust side controls the exact string constants
- * in `type` and field names.
- */
+/** Raw enum-variant entry as it appears in the schema JSON. */
+export interface RawEnumVariant {
+  key: string;
+  label: string;
+}
+
+/** Raw param entry. Groups carry `type: "group"` and a `children`
+ *  array; regular params carry a widget-type hint. */
+export interface RawFeatureParam {
+  key: string;
+  name: string;
+  type: string;
+  required?: boolean;
+  ui_hint?: string;
+  variants?: RawEnumVariant[];
+  visible_when?: { param: string; equals: unknown };
+  min?: number;
+  max?: number;
+  step?: number;
+  entity_filter?: string;
+  max_picks?: number;
+  children?: RawFeatureParam[];
+  driving_param?: string;
+}
+
 export interface RawFeatureSchema {
   type: string;
   params: RawFeatureParam[];
 }
 
-export interface RawFeatureParam {
-  key: string;
-  name: string;
-  /**
-   * Widget hint emitted by the Rust derive. Known values:
-   * `f32`, `vec3`, `bool`, `string`, `bool_op`, `length`,
-   * `angle`, `query`, `generic`.
-   */
-  type: string;
-  required: boolean;
-}
-
 // ─── parsed + widget-aware schema ───────────────────────────────
 
-/**
- * Discriminated widget kind the FeatureDialog dispatches on.
- * `Unknown` is the escape hatch for schemas the K6a kit doesn't
- * yet render natively — the dialog falls back to a JSON text
- * editor for that field so authoring stays unblocked.
- */
+/** Discriminated widget kind the FeatureDialog dispatches on. */
 export type WidgetKind =
   | "number"
   | "vec3"
   | "bool"
   | "string"
-  | "bool_op"
+  | "enum"
   | "length"
   | "angle"
   | "query"
+  | "slider"
+  | "flip"
+  | "group"
   | "unknown";
+
+export type UiHint = "horizontal_enum" | "opposite_direction" | "slider";
+
+export interface EnumVariant {
+  key: string;
+  label: string;
+}
+
+export interface VisibleWhen {
+  param: string;
+  equals: string | number | boolean;
+}
 
 export interface FeatureParamDescriptor {
   key: string;
   label: string;
   widget: WidgetKind;
   required: boolean;
-  /**
-   * The raw kernel-side type hint that produced this widget
-   * kind. Useful for diagnostics and for the "unknown" fallback,
-   * which shows the original string so the user knows what the
-   * derive is asking for.
-   */
   rawType: string;
+  uiHint?: UiHint;
+  variants?: EnumVariant[];
+  visibleWhen?: VisibleWhen;
+  /** Slider bounds — only set when `widget === "slider"`. */
+  min?: number;
+  max?: number;
+  step?: number;
+  /** K6b query picker metadata. Populated when `widget === "query"`. */
+  entityFilter?: string;
+  maxPicks?: number;
+  /** Group children — only set when `widget === "group"`. */
+  children?: FeatureParamDescriptor[];
+  /** Name of a sibling bool param that drives this group's
+   *  aufklappen/zuklappen state. */
+  drivingParam?: string;
 }
 
 export interface FeatureSchema {
@@ -108,24 +149,103 @@ export function parseFeatureSchema(value: unknown): FeatureSchema {
   if (!Array.isArray(rawParams)) {
     throw new Error("parseFeatureSchema: missing `params` array");
   }
-  const params: FeatureParamDescriptor[] = rawParams.map((raw, index) => {
-    if (!raw || typeof raw !== "object") {
-      throw new Error(`parseFeatureSchema: params[${index}] is not an object`);
-    }
-    const p = raw as Record<string, unknown>;
-    const key = asString(p.key, `params[${index}].key`);
-    const label = asString(p.name, `params[${index}].name`);
-    const rawType = asString(p.type, `params[${index}].type`);
-    const required = asBool(p.required, `params[${index}].required`);
-    return {
-      key,
-      label,
-      widget: widgetKindFromRawType(rawType),
-      required,
-      rawType,
-    };
-  });
+  const params = rawParams.map((raw, i) => parseParam(raw, `params[${i}]`));
   return { type: typeField, params };
+}
+
+function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`parseFeatureSchema: ${where} is not an object`);
+  }
+  const p = raw as Record<string, unknown>;
+  const key = asString(p.key, `${where}.key`);
+  const label = asString(p.name, `${where}.name`);
+  const rawType = asString(p.type, `${where}.type`);
+  // `required` is optional for group entries — they have no
+  // inherent required-ness. For leaf params the derive always
+  // emits it, but hand-authored fixtures may omit it.
+  const required =
+    typeof p.required === "boolean" ? p.required : rawType !== "group";
+
+  const uiHint = parseUiHint(p.ui_hint, `${where}.ui_hint`);
+  const widget = widgetKindFor(rawType, uiHint);
+
+  const descriptor: FeatureParamDescriptor = {
+    key,
+    label,
+    widget,
+    required,
+    rawType,
+    uiHint,
+  };
+
+  if (widget === "group") {
+    const rawChildren = p.children;
+    if (!Array.isArray(rawChildren)) {
+      throw new Error(`parseFeatureSchema: ${where}.children must be an array`);
+    }
+    descriptor.children = rawChildren.map((c, i) =>
+      parseParam(c, `${where}.children[${i}]`),
+    );
+    if (p.driving_param !== undefined) {
+      descriptor.drivingParam = asString(
+        p.driving_param,
+        `${where}.driving_param`,
+      );
+    }
+  }
+
+  if (widget === "enum") {
+    const rawVariants = p.variants;
+    if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
+      throw new Error(
+        `parseFeatureSchema: ${where}.variants must be a non-empty array`,
+      );
+    }
+    descriptor.variants = rawVariants.map((v, i) => {
+      if (!v || typeof v !== "object") {
+        throw new Error(
+          `parseFeatureSchema: ${where}.variants[${i}] is not an object`,
+        );
+      }
+      const vr = v as Record<string, unknown>;
+      return {
+        key: asString(vr.key, `${where}.variants[${i}].key`),
+        label: asString(vr.label, `${where}.variants[${i}].label`),
+      };
+    });
+  }
+
+  if (widget === "slider") {
+    descriptor.min = asFiniteNumber(p.min, `${where}.min`, 0);
+    descriptor.max = asFiniteNumber(p.max, `${where}.max`, 1);
+    descriptor.step = asFiniteNumber(p.step, `${where}.step`, 0.01);
+  }
+
+  if (widget === "query") {
+    if (p.entity_filter !== undefined) {
+      descriptor.entityFilter = asString(
+        p.entity_filter,
+        `${where}.entity_filter`,
+      );
+    }
+    if (p.max_picks !== undefined) {
+      descriptor.maxPicks = asFiniteNumber(
+        p.max_picks,
+        `${where}.max_picks`,
+        1,
+      );
+    }
+  }
+
+  if (p.visible_when !== undefined) {
+    descriptor.visibleWhen = parseVisibleWhen(
+      p.visible_when,
+      `${where}.visible_when`,
+    );
+  }
+
+  return descriptor;
 }
 
 function asString(value: unknown, where: string): string {
@@ -135,19 +255,69 @@ function asString(value: unknown, where: string): string {
   return value;
 }
 
-function asBool(value: unknown, where: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Error(`parseFeatureSchema: ${where} must be a boolean`);
+function asFiniteNumber(
+  value: unknown,
+  where: string,
+  fallback: number,
+): number {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`parseFeatureSchema: ${where} must be a finite number`);
   }
   return value;
 }
 
+function parseUiHint(value: unknown, where: string): UiHint | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`parseFeatureSchema: ${where} must be a string`);
+  }
+  if (
+    value === "horizontal_enum" ||
+    value === "opposite_direction" ||
+    value === "slider"
+  ) {
+    return value;
+  }
+  // Unknown hints are forwarded as `undefined` so the default
+  // widget still renders — same escape-hatch philosophy as the
+  // `unknown` widget kind.
+  return undefined;
+}
+
+function parseVisibleWhen(value: unknown, where: string): VisibleWhen {
+  if (!value || typeof value !== "object") {
+    throw new Error(`parseFeatureSchema: ${where} must be an object`);
+  }
+  const obj = value as Record<string, unknown>;
+  const param = asString(obj.param, `${where}.param`);
+  const equals = obj.equals;
+  if (
+    typeof equals !== "string" &&
+    typeof equals !== "number" &&
+    typeof equals !== "boolean"
+  ) {
+    throw new Error(
+      `parseFeatureSchema: ${where}.equals must be a string, number, or boolean`,
+    );
+  }
+  return { param, equals };
+}
+
 /**
- * Map a kernel-side type hint to the FeatureDialog's widget
- * kind. Unknown hints land on `"unknown"` so the dialog can
- * still render them with a generic JSON editor.
+ * Map a kernel-side type hint (plus an optional ui_hint) to the
+ * FeatureDialog's widget kind. The ui_hint can upgrade a base
+ * type to a richer widget — `bool + opposite_direction` becomes
+ * a `flip` button, `f32 + slider` becomes a range slider.
  */
-export function widgetKindFromRawType(rawType: string): WidgetKind {
+export function widgetKindFor(
+  rawType: string,
+  uiHint?: UiHint,
+): WidgetKind {
+  if (rawType === "group") return "group";
+  if (rawType === "enum") return "enum";
+  if (rawType === "bool" && uiHint === "opposite_direction") return "flip";
+  if (rawType === "f32" && uiHint === "slider") return "slider";
   switch (rawType) {
     case "f32":
       return "number";
@@ -157,8 +327,6 @@ export function widgetKindFromRawType(rawType: string): WidgetKind {
       return "bool";
     case "string":
       return "string";
-    case "bool_op":
-      return "bool_op";
     case "length":
       return "length";
     case "angle":
@@ -174,45 +342,56 @@ export function widgetKindFromRawType(rawType: string): WidgetKind {
 
 /**
  * Build a JSON object with sensible initial values for every
- * parameter in `schema`. The FeatureDialog uses this as the
- * starting point when the user creates a fresh feature; editing
- * logic then overlays user-supplied values on top.
- *
- * The defaults are intentionally neutral — a length of `10 mm`,
- * an angle of `0 deg`, a number of `0`, a bool of `false`, an
- * empty string, `BoolOp::Union`, a zeroed vec3, etc. They're
- * not meant to compile into a working feature — that's the
- * user's job — just to give the widgets something typed to
- * render at mount time without null-check churn.
+ * parameter in `schema`, recursing into groups. The FeatureDialog
+ * uses this as the starting point when the user creates a fresh
+ * feature.
  */
 export function buildDefaultDefinition(
   schema: FeatureSchema,
 ): Record<string, unknown> {
   const def: Record<string, unknown> = {};
-  for (const p of schema.params) {
-    def[p.key] = defaultForWidget(p.widget);
-  }
+  applyDefaults(schema.params, def);
   return def;
 }
 
-export function defaultForWidget(widget: WidgetKind): unknown {
-  switch (widget) {
+function applyDefaults(
+  params: FeatureParamDescriptor[],
+  def: Record<string, unknown>,
+): void {
+  for (const p of params) {
+    if (p.widget === "group") {
+      if (p.children) applyDefaults(p.children, def);
+      continue;
+    }
+    def[p.key] = defaultForParam(p);
+  }
+}
+
+/** Default value for a single parameter, taking variants and
+ *  slider bounds into account. */
+export function defaultForParam(p: FeatureParamDescriptor): unknown {
+  switch (p.widget) {
     case "number":
       return 0;
     case "vec3":
       return [0, 0, 0];
     case "bool":
+    case "flip":
       return false;
     case "string":
       return "";
-    case "bool_op":
-      return "union";
+    case "enum":
+      return p.variants && p.variants.length > 0 ? p.variants[0].key : "";
     case "length":
       return { value: 10, unit: "mm" };
     case "angle":
       return { value: 0, unit: "deg" };
     case "query":
       return "";
+    case "slider":
+      return p.min ?? 0;
+    case "group":
+      return undefined;
     case "unknown":
       return null;
   }
@@ -222,9 +401,7 @@ export function defaultForWidget(widget: WidgetKind): unknown {
 
 /**
  * Immutable updater — returns a new definition object with the
- * single key `paramKey` replaced. Used by FeatureDialog's
- * onChange handlers so each widget triggers exactly one React
- * state update per edit.
+ * single key `paramKey` replaced.
  */
 export function updateParam(
   def: Record<string, unknown>,
@@ -234,33 +411,59 @@ export function updateParam(
   return { ...def, [paramKey]: next };
 }
 
-/**
- * Read the current value for a parameter out of a definition
- * blob, falling back to the widget's default if the key is
- * missing. The FeatureDialog uses this when it mounts on a
- * definition that was produced before the current schema
- * version — older definitions simply get the new defaults for
- * the fields they don't carry yet.
- */
+/** Read the current value for a parameter, falling back to the
+ *  default when the key is missing or explicit null. */
 export function readParam(
   def: Record<string, unknown>,
   param: FeatureParamDescriptor,
 ): unknown {
   const value = def[param.key];
   if (value === undefined || value === null) {
-    return defaultForWidget(param.widget);
+    return defaultForParam(param);
   }
   return value;
+}
+
+// ─── visibility evaluation ──────────────────────────────────────
+
+/**
+ * Evaluate a param's `visible_when` expression against the
+ * current definition. Params without `visible_when` are always
+ * visible. Groups are additionally hidden when their
+ * `drivingParam` is `false` — that's the Onshape "Direction
+ * checkbox collapses the group" pattern.
+ */
+export function isVisible(
+  param: FeatureParamDescriptor,
+  def: Record<string, unknown>,
+): boolean {
+  if (param.visibleWhen) {
+    const actual = def[param.visibleWhen.param];
+    if (actual !== param.visibleWhen.equals) return false;
+  }
+  return true;
+}
+
+/**
+ * Is a group currently expanded? Only meaningful for
+ * `widget === "group"` nodes. A group without a `drivingParam`
+ * is always open; otherwise the driving bool's value wins.
+ */
+export function isGroupExpanded(
+  group: FeatureParamDescriptor,
+  def: Record<string, unknown>,
+): boolean {
+  if (!group.drivingParam) return true;
+  const value = def[group.drivingParam];
+  return value === true;
 }
 
 // ─── value validation ───────────────────────────────────────────
 
 /**
- * Shape validator for a single parameter value. Returns an
- * error string if the value doesn't match the widget kind, or
- * `null` if it's well-formed. Used by the FeatureDialog's
- * per-field error display and by the commit path that pushes
- * the definition back to the kernel.
+ * Shape validator for a single parameter value. Returns an error
+ * string if the value doesn't match the widget kind, or `null`
+ * if it's well-formed.
  */
 export function validateParamValue(
   param: FeatureParamDescriptor,
@@ -268,6 +471,7 @@ export function validateParamValue(
 ): string | null {
   switch (param.widget) {
     case "number":
+    case "slider":
       return typeof value === "number" && Number.isFinite(value)
         ? null
         : `${param.label} must be a finite number`;
@@ -282,17 +486,24 @@ export function validateParamValue(
       }
       return null;
     case "bool":
+    case "flip":
       return typeof value === "boolean" ? null : `${param.label} must be a boolean`;
     case "string":
     case "query":
       return typeof value === "string" ? null : `${param.label} must be a string`;
-    case "bool_op":
-      return value === "union" || value === "difference" || value === "intersect"
+    case "enum": {
+      if (typeof value !== "string") {
+        return `${param.label} must be a string variant key`;
+      }
+      const variants = param.variants ?? [];
+      return variants.some((v) => v.key === value)
         ? null
-        : `${param.label} must be one of union / difference / intersect`;
+        : `${param.label} must be one of ${variants.map((v) => v.key).join(", ")}`;
+    }
     case "length":
     case "angle":
       return validateValueUnit(value, param.label, param.widget);
+    case "group":
     case "unknown":
       return null;
   }
@@ -315,9 +526,6 @@ function validateValueUnit(
   if (typeof unit !== "string") {
     return `${label}: unit must be a string`;
   }
-  // Cast widens the two readonly tuple types to a plain
-  // `readonly string[]` so the membership check type-checks
-  // across both branches.
   const allowed: readonly string[] =
     widget === "length" ? LENGTH_UNITS : ANGLE_UNITS;
   if (!allowed.includes(unit)) {
@@ -335,8 +543,3 @@ export type LengthUnit = (typeof LENGTH_UNITS)[number];
  *  in `crates/protocol/src/lib.rs`. */
 export const ANGLE_UNITS = ["deg", "rad"] as const;
 export type AngleUnit = (typeof ANGLE_UNITS)[number];
-
-/** Supported BoolOp wire strings — must stay in sync with
- *  `BoolOp` in `crates/protocol/src/lib.rs`. */
-export const BOOL_OPS = ["union", "difference", "intersect"] as const;
-export type BoolOpWire = (typeof BOOL_OPS)[number];

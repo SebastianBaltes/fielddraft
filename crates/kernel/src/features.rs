@@ -1556,8 +1556,19 @@ mod tests {
         assert_eq!(map["depth"]["required"], json!(true));
         assert_eq!(map["profile_half_x"]["type"], json!("f32"));
         assert_eq!(map["profile_half_y"]["type"], json!("f32"));
-        assert_eq!(map["operation"]["type"], json!("bool_op"));
+        // K6a.1: BoolOp flows through the generic `enum` slot and
+        // carries its variant list + a `horizontal_enum` UI hint.
+        assert_eq!(map["operation"]["type"], json!("enum"));
         assert_eq!(map["operation"]["required"], json!(false));
+        assert_eq!(map["operation"]["ui_hint"], json!("horizontal_enum"));
+        let variants = map["operation"]["variants"]
+            .as_array()
+            .expect("operation variants");
+        let variant_keys: Vec<&str> = variants
+            .iter()
+            .map(|v| v["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(variant_keys, vec!["union", "difference", "intersect"]);
         assert_eq!(map["center"]["type"], json!("vec3"));
         assert_eq!(map["center"]["required"], json!(false));
     }

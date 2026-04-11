@@ -53,8 +53,15 @@
 //!     is missing the key or sends `null`. The expression is
 //!     quoted verbatim, so anything that's a valid Rust rvalue
 //!     works: `0.0`, `[0.0, 0.0, 0.0]`, `BoolOp::Union`, etc.
-//!   The `bounds` / `visible_when` / `filter` / `ui_hint` keys
-//!   from the §4.6 vocabulary are not honoured yet.
+//!   * `ui_hint = "horizontal_enum" | "opposite_direction" |
+//!     "slider"` — rendering hint forwarded verbatim into the
+//!     schema JSON. The TS FeatureDialog (K6a.1) dispatches
+//!     widgets on it: `horizontal_enum` selects a segmented-tab
+//!     enum, `opposite_direction` turns a boolean into an inline
+//!     ±-flip button, `slider` turns an `f32` into a range slider.
+//!   The `bounds` / `visible_when` / `filter` keys from the §4.6
+//!   vocabulary are still emitted on the schema side but come
+//!   from hand-written fixtures rather than the derive for now.
 //! * **No `impl FeatureKind`.** The derive only emits schema /
 //!   parse helpers. Callers still write `FeatureKind` by hand,
 //!   just shorter — the execute body opens with
@@ -211,11 +218,44 @@ impl ParamType {
             ParamType::Vec3 => "vec3",
             ParamType::Bool => "bool",
             ParamType::String => "string",
-            ParamType::BoolOp => "bool_op",
+            // K6a.1: `BoolOp` is the first kernel-side typed enum
+            // that flows through the generic `"enum"` vocabulary
+            // slot — the schema payload carries the variant list
+            // so the TS dialog can render tabs or a dropdown
+            // without knowing about Rust types.
+            ParamType::BoolOp => "enum",
             ParamType::Length => "length",
             ParamType::Angle => "angle",
             ParamType::Query => "query",
             ParamType::Generic(_) => "generic",
+        }
+    }
+
+    /// Rendering hint that the derive emits by default for this
+    /// type. Overridden by an explicit `#[param(ui_hint = "…")]`
+    /// attribute. Today only `BoolOp` opts in (so NAIO still
+    /// renders as tabs out of the box); `None` means "leave the
+    /// key off the schema entirely".
+    fn default_ui_hint(&self) -> Option<&'static str> {
+        match self {
+            ParamType::BoolOp => Some("horizontal_enum"),
+            _ => None,
+        }
+    }
+
+    /// Variant list for typed enums. Emitted into the schema
+    /// entry next to `type: "enum"` so the TS dialog can build
+    /// the widget without a separate catalogue call.
+    fn variants_json(&self) -> Option<TokenStream2> {
+        match self {
+            ParamType::BoolOp => Some(quote! {
+                ::serde_json::json!([
+                    { "key": "union",      "label": "Union" },
+                    { "key": "difference", "label": "Difference" },
+                    { "key": "intersect",  "label": "Intersect" },
+                ])
+            }),
+            _ => None,
         }
     }
 }
@@ -230,6 +270,11 @@ struct ParamInfo {
     /// format, and the generated parse code uses the expression
     /// as the fallback when the key is missing or `null`.
     default: Option<Expr>,
+    /// Optional `#[param(ui_hint = "…")]` rendering hint,
+    /// forwarded verbatim into the schema JSON so the K6a.1
+    /// FeatureDialog can dispatch the right widget without the
+    /// Rust side knowing about React.
+    ui_hint: Option<String>,
 }
 
 impl ParamInfo {
@@ -241,6 +286,7 @@ impl ParamInfo {
         let key = ident.to_string();
         let mut display_name = prettify_identifier(&key);
         let mut default: Option<Expr> = None;
+        let mut ui_hint: Option<String> = None;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("param") {
@@ -257,9 +303,15 @@ impl ParamInfo {
                     let expr: Expr = value.parse()?;
                     default = Some(expr);
                     Ok(())
+                } else if meta.path.is_ident("ui_hint") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    ui_hint = Some(lit.value());
+                    Ok(())
                 } else {
                     Err(meta.error(
-                        "unknown #[param(...)] key (supported: name, default)",
+                        "unknown #[param(...)] key \
+                         (supported: name, default, ui_hint)",
                     ))
                 }
             })?;
@@ -272,6 +324,7 @@ impl ParamInfo {
             display_name,
             ty,
             default,
+            ui_hint,
         })
     }
 
@@ -280,12 +333,37 @@ impl ParamInfo {
         let name = &self.display_name;
         let type_name = self.ty.json_type_name();
         let required = self.default.is_none();
+
+        // Default ui_hint. BoolOp (and any future enum that the
+        // derive hardcodes) gets `"horizontal_enum"` so the TS
+        // dialog renders it as NAIO-style tabs by default. The
+        // `#[param(ui_hint = "…")]` attribute overrides that.
+        let effective_hint: Option<String> = match &self.ui_hint {
+            Some(h) => Some(h.clone()),
+            None => self.ty.default_ui_hint().map(|s| s.to_string()),
+        };
+        let hint_entry = match effective_hint {
+            Some(h) => quote! { "ui_hint": #h, },
+            None => quote! {},
+        };
+
+        // Typed enums emit their variants alongside `type: "enum"`.
+        // Right now only `BoolOp` lands here; once the K6a.1
+        // vocabulary grows more kernel-side enums, each gets its
+        // own arm in `ParamType::variants_json`.
+        let variants_entry = match self.ty.variants_json() {
+            Some(tokens) => quote! { "variants": #tokens, },
+            None => quote! {},
+        };
+
         quote! {
             ::serde_json::json!({
                 "key": #key,
                 "name": #name,
                 "type": #type_name,
                 "required": #required,
+                #hint_entry
+                #variants_entry
             })
         }
     }

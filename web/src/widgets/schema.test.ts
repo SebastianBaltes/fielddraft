@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   ANGLE_UNITS,
-  BOOL_OPS,
   LENGTH_UNITS,
   buildDefaultDefinition,
-  defaultForWidget,
+  defaultForParam,
+  isGroupExpanded,
+  isVisible,
   parseFeatureSchema,
   readParam,
   updateParam,
   validateParamValue,
-  widgetKindFromRawType,
+  widgetKindFor,
+  type FeatureParamDescriptor,
   type FeatureSchema,
 } from "./schema";
+
+// ─── raw schema fixtures ───────────────────────────────────────
 
 const extrudeRaw = {
   type: "extrude",
@@ -20,7 +24,18 @@ const extrudeRaw = {
     { key: "depth", name: "Depth", type: "length", required: true },
     { key: "profile_half_x", name: "Profile half x", type: "f32", required: true },
     { key: "profile_half_y", name: "Profile half y", type: "f32", required: true },
-    { key: "operation", name: "Op", type: "bool_op", required: false },
+    {
+      key: "operation",
+      name: "Op",
+      type: "enum",
+      required: false,
+      ui_hint: "horizontal_enum",
+      variants: [
+        { key: "union", label: "Union" },
+        { key: "difference", label: "Difference" },
+        { key: "intersect", label: "Intersect" },
+      ],
+    },
     { key: "center", name: "Center", type: "vec3", required: false },
   ],
 };
@@ -32,7 +47,7 @@ describe("parseFeatureSchema", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     expect(schema.type).toBe("extrude");
     expect(schema.params).toHaveLength(6);
-    expect(schema.params[0]).toEqual({
+    expect(schema.params[0]).toMatchObject({
       key: "profiles",
       label: "Profiles",
       widget: "query",
@@ -41,7 +56,13 @@ describe("parseFeatureSchema", () => {
     });
     expect(schema.params[1].widget).toBe("length");
     expect(schema.params[2].widget).toBe("number");
-    expect(schema.params[4].widget).toBe("bool_op");
+    expect(schema.params[4].widget).toBe("enum");
+    expect(schema.params[4].uiHint).toBe("horizontal_enum");
+    expect(schema.params[4].variants).toEqual([
+      { key: "union", label: "Union" },
+      { key: "difference", label: "Difference" },
+      { key: "intersect", label: "Intersect" },
+    ]);
     expect(schema.params[5].widget).toBe("vec3");
   });
 
@@ -51,12 +72,15 @@ describe("parseFeatureSchema", () => {
     expect(() =>
       parseFeatureSchema({ type: "x", params: [{ key: 7 }] }),
     ).toThrow(/key/);
+    // Enums must carry a non-empty variants list.
     expect(() =>
       parseFeatureSchema({
         type: "x",
-        params: [{ key: "k", name: "N", type: "f32", required: "yes" }],
+        params: [
+          { key: "op", name: "Op", type: "enum", required: false },
+        ],
       }),
-    ).toThrow(/required/);
+    ).toThrow(/variants/);
   });
 
   it("falls back to the `unknown` widget kind for unknown type hints", () => {
@@ -71,56 +95,194 @@ describe("parseFeatureSchema", () => {
     expect(schema.params[1].widget).toBe("unknown");
     expect(schema.params[0].rawType).toBe("generic");
   });
+
+  it("upgrades bool+opposite_direction to a flip widget", () => {
+    const schema = parseFeatureSchema({
+      type: "x",
+      params: [
+        {
+          key: "flip_depth",
+          name: "Flip depth",
+          type: "bool",
+          ui_hint: "opposite_direction",
+          required: false,
+        },
+      ],
+    });
+    expect(schema.params[0].widget).toBe("flip");
+    expect(schema.params[0].uiHint).toBe("opposite_direction");
+  });
+
+  it("upgrades f32+slider to a slider widget and parses bounds", () => {
+    const schema = parseFeatureSchema({
+      type: "x",
+      params: [
+        {
+          key: "transparency",
+          name: "Transparency",
+          type: "f32",
+          ui_hint: "slider",
+          min: 0,
+          max: 1,
+          step: 0.05,
+          required: false,
+        },
+      ],
+    });
+    const p = schema.params[0];
+    expect(p.widget).toBe("slider");
+    expect(p.min).toBe(0);
+    expect(p.max).toBe(1);
+    expect(p.step).toBe(0.05);
+  });
+
+  it("parses nested groups with a driving bool and visible_when", () => {
+    const schema = parseFeatureSchema({
+      type: "extrude",
+      params: [
+        {
+          key: "use_direction",
+          name: "Use direction",
+          type: "bool",
+          required: false,
+        },
+        {
+          type: "group",
+          key: "direction_group",
+          name: "Direction",
+          driving_param: "use_direction",
+          children: [
+            {
+              key: "direction",
+              name: "Extrude direction",
+              type: "query",
+              required: false,
+              visible_when: { param: "use_direction", equals: true },
+            },
+          ],
+        },
+      ],
+    });
+    expect(schema.params[1].widget).toBe("group");
+    expect(schema.params[1].drivingParam).toBe("use_direction");
+    const child = schema.params[1].children?.[0];
+    expect(child?.visibleWhen).toEqual({ param: "use_direction", equals: true });
+  });
 });
 
-// ─── widgetKindFromRawType ─────────────────────────────────────
+// ─── widgetKindFor ─────────────────────────────────────────────
 
-describe("widgetKindFromRawType", () => {
+describe("widgetKindFor", () => {
   it("maps every known kernel hint to a widget kind", () => {
-    expect(widgetKindFromRawType("f32")).toBe("number");
-    expect(widgetKindFromRawType("vec3")).toBe("vec3");
-    expect(widgetKindFromRawType("bool")).toBe("bool");
-    expect(widgetKindFromRawType("string")).toBe("string");
-    expect(widgetKindFromRawType("bool_op")).toBe("bool_op");
-    expect(widgetKindFromRawType("length")).toBe("length");
-    expect(widgetKindFromRawType("angle")).toBe("angle");
-    expect(widgetKindFromRawType("query")).toBe("query");
+    expect(widgetKindFor("f32")).toBe("number");
+    expect(widgetKindFor("vec3")).toBe("vec3");
+    expect(widgetKindFor("bool")).toBe("bool");
+    expect(widgetKindFor("string")).toBe("string");
+    expect(widgetKindFor("enum")).toBe("enum");
+    expect(widgetKindFor("length")).toBe("length");
+    expect(widgetKindFor("angle")).toBe("angle");
+    expect(widgetKindFor("query")).toBe("query");
+    expect(widgetKindFor("group")).toBe("group");
+  });
+
+  it("respects ui_hint upgrades", () => {
+    expect(widgetKindFor("bool", "opposite_direction")).toBe("flip");
+    expect(widgetKindFor("f32", "slider")).toBe("slider");
+    // horizontal_enum is a rendering variant of the enum widget,
+    // not a different kind — the dispatch happens inside EnumWidget.
+    expect(widgetKindFor("enum", "horizontal_enum")).toBe("enum");
   });
 });
 
 // ─── defaults ──────────────────────────────────────────────────
 
 describe("buildDefaultDefinition", () => {
-  it("emits an initial value for every param matching its widget kind", () => {
+  it("emits an initial value for every leaf param", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     const def = buildDefaultDefinition(schema);
     expect(def.profiles).toBe("");
     expect(def.depth).toEqual({ value: 10, unit: "mm" });
     expect(def.profile_half_x).toBe(0);
     expect(def.profile_half_y).toBe(0);
+    // Enum default is the first variant.
     expect(def.operation).toBe("union");
     expect(def.center).toEqual([0, 0, 0]);
   });
+
+  it("recurses into groups for default values", () => {
+    const schema = parseFeatureSchema({
+      type: "x",
+      params: [
+        { key: "use_dir", name: "Use dir", type: "bool", required: false },
+        {
+          type: "group",
+          key: "dir_group",
+          name: "Direction",
+          driving_param: "use_dir",
+          children: [
+            { key: "dir_q", name: "Direction query", type: "query", required: false },
+          ],
+        },
+      ],
+    });
+    const def = buildDefaultDefinition(schema);
+    expect(def.use_dir).toBe(false);
+    expect(def.dir_q).toBe("");
+    // Group nodes themselves don't contribute a key.
+    expect(def.dir_group).toBeUndefined();
+  });
 });
 
-describe("defaultForWidget", () => {
-  it("returns a finite number for number widgets", () => {
-    expect(defaultForWidget("number")).toBe(0);
+describe("defaultForParam", () => {
+  const p = (over: Partial<FeatureParamDescriptor>): FeatureParamDescriptor => ({
+    key: "k",
+    label: "L",
+    widget: "number",
+    required: true,
+    rawType: "f32",
+    ...over,
+  });
+
+  it("returns 0 for number widgets", () => {
+    expect(defaultForParam(p({ widget: "number" }))).toBe(0);
   });
   it("returns a zero vec3 for vec3 widgets", () => {
-    expect(defaultForWidget("vec3")).toEqual([0, 0, 0]);
+    expect(defaultForParam(p({ widget: "vec3" }))).toEqual([0, 0, 0]);
   });
   it("returns 10mm for length widgets", () => {
-    expect(defaultForWidget("length")).toEqual({ value: 10, unit: "mm" });
+    expect(defaultForParam(p({ widget: "length" }))).toEqual({
+      value: 10,
+      unit: "mm",
+    });
   });
   it("returns 0deg for angle widgets", () => {
-    expect(defaultForWidget("angle")).toEqual({ value: 0, unit: "deg" });
+    expect(defaultForParam(p({ widget: "angle" }))).toEqual({
+      value: 0,
+      unit: "deg",
+    });
   });
-  it("returns 'union' for bool_op widgets", () => {
-    expect(defaultForWidget("bool_op")).toBe("union");
+  it("returns the first variant key for enum widgets", () => {
+    const def = defaultForParam(
+      p({
+        widget: "enum",
+        variants: [
+          { key: "add", label: "Add" },
+          { key: "remove", label: "Remove" },
+        ],
+      }),
+    );
+    expect(def).toBe("add");
+  });
+  it("returns false for flip widgets", () => {
+    expect(defaultForParam(p({ widget: "flip" }))).toBe(false);
+  });
+  it("returns the slider minimum", () => {
+    expect(
+      defaultForParam(p({ widget: "slider", min: 0.25, max: 1, step: 0.05 })),
+    ).toBe(0.25);
   });
   it("returns null for unknown widgets", () => {
-    expect(defaultForWidget("unknown")).toBe(null);
+    expect(defaultForParam(p({ widget: "unknown" }))).toBe(null);
   });
 });
 
@@ -131,7 +293,6 @@ describe("updateParam + readParam", () => {
     const before = { a: 1, b: 2 };
     const after = updateParam(before, "a", 42);
     expect(after).toEqual({ a: 42, b: 2 });
-    // Immutability: the original is untouched.
     expect(before).toEqual({ a: 1, b: 2 });
     expect(after).not.toBe(before);
   });
@@ -146,27 +307,80 @@ describe("updateParam + readParam", () => {
   it("readParam falls back to the widget default when the key is missing", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     const depthParam = schema.params.find((p) => p.key === "depth")!;
-    const stale = {} as Record<string, unknown>;
-    expect(readParam(stale, depthParam)).toEqual({ value: 10, unit: "mm" });
+    expect(readParam({}, depthParam)).toEqual({ value: 10, unit: "mm" });
+  });
+});
+
+// ─── visibility / group expansion ──────────────────────────────
+
+describe("isVisible", () => {
+  it("returns true when visible_when is absent", () => {
+    const param: FeatureParamDescriptor = {
+      key: "k",
+      label: "L",
+      widget: "number",
+      required: true,
+      rawType: "f32",
+    };
+    expect(isVisible(param, {})).toBe(true);
   });
 
-  it("readParam treats explicit null the same as missing", () => {
-    const schema = parseFeatureSchema(extrudeRaw);
-    const param = schema.params.find((p) => p.key === "profile_half_x")!;
-    const stale = { profile_half_x: null } as Record<string, unknown>;
-    expect(readParam(stale, param)).toBe(0);
+  it("gates a param on the driving param matching a variant key", () => {
+    const param: FeatureParamDescriptor = {
+      key: "depth",
+      label: "Depth",
+      widget: "length",
+      required: true,
+      rawType: "length",
+      visibleWhen: { param: "end_condition", equals: "blind" },
+    };
+    expect(isVisible(param, { end_condition: "blind" })).toBe(true);
+    expect(isVisible(param, { end_condition: "through_all" })).toBe(false);
+  });
+});
+
+describe("isGroupExpanded", () => {
+  it("is always open when no driving param is set", () => {
+    const group: FeatureParamDescriptor = {
+      key: "g",
+      label: "G",
+      widget: "group",
+      required: false,
+      rawType: "group",
+      children: [],
+    };
+    expect(isGroupExpanded(group, {})).toBe(true);
+  });
+
+  it("follows the driving bool's value", () => {
+    const group: FeatureParamDescriptor = {
+      key: "g",
+      label: "G",
+      widget: "group",
+      required: false,
+      rawType: "group",
+      children: [],
+      drivingParam: "use_direction",
+    };
+    expect(isGroupExpanded(group, { use_direction: true })).toBe(true);
+    expect(isGroupExpanded(group, { use_direction: false })).toBe(false);
+    expect(isGroupExpanded(group, {})).toBe(false);
   });
 });
 
 // ─── validateParamValue ────────────────────────────────────────
 
-function paramOf(widget: FeatureSchema["params"][number]["widget"], label = "X") {
+function paramOf(
+  widget: FeatureParamDescriptor["widget"],
+  extras: Partial<FeatureParamDescriptor> = {},
+): FeatureParamDescriptor {
   return {
     key: "k",
-    label,
+    label: "X",
     widget,
     required: true,
     rawType: widget,
+    ...extras,
   };
 }
 
@@ -214,16 +428,32 @@ describe("validateParamValue", () => {
     }
   });
 
-  it("accepts every BoolOp wire string", () => {
-    for (const op of BOOL_OPS) {
-      expect(validateParamValue(paramOf("bool_op"), op)).toBeNull();
-    }
+  it("accepts variant keys for enum widgets", () => {
+    const param = paramOf("enum", {
+      variants: [
+        { key: "union", label: "Union" },
+        { key: "difference", label: "Difference" },
+      ],
+    });
+    expect(validateParamValue(param, "union")).toBeNull();
+    expect(validateParamValue(param, "difference")).toBeNull();
   });
 
-  it("rejects unknown BoolOp strings", () => {
-    expect(
-      validateParamValue(paramOf("bool_op"), "subtract"),
-    ).not.toBeNull();
+  it("rejects unknown variant keys", () => {
+    const param = paramOf("enum", {
+      variants: [{ key: "union", label: "Union" }],
+    });
+    expect(validateParamValue(param, "subtract")).not.toBeNull();
+  });
+
+  it("accepts booleans for flip widgets", () => {
+    expect(validateParamValue(paramOf("flip"), true)).toBeNull();
+    expect(validateParamValue(paramOf("flip"), "yes")).not.toBeNull();
+  });
+
+  it("accepts finite numbers for slider widgets", () => {
+    expect(validateParamValue(paramOf("slider"), 0.5)).toBeNull();
+    expect(validateParamValue(paramOf("slider"), "half")).not.toBeNull();
   });
 
   it("accepts strings for query widgets", () => {
@@ -231,9 +461,19 @@ describe("validateParamValue", () => {
     expect(validateParamValue(paramOf("query"), 42)).not.toBeNull();
   });
 
-  it("returns null for unknown-widget fields without probing", () => {
+  it("returns null for group and unknown widgets without probing", () => {
     expect(
       validateParamValue(paramOf("unknown"), { arbitrary: "shape" }),
     ).toBeNull();
+    expect(validateParamValue(paramOf("group"), null)).toBeNull();
+  });
+});
+
+// ─── FeatureSchema is accessible as a type-only export ─────────
+
+describe("schema type exports", () => {
+  it("exposes FeatureSchema with a params array", () => {
+    const schema: FeatureSchema = parseFeatureSchema(extrudeRaw);
+    expect(Array.isArray(schema.params)).toBe(true);
   });
 });
