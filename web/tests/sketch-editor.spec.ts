@@ -608,6 +608,71 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("K7.4: rectangle → finish → extrude → STL download end-to-end", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    // Extrude button starts disabled — no sketch to consume.
+    const extrudeBtn = page.getByTestId("extrude-latest-sketch");
+    await expect(extrudeBtn).toBeDisabled();
+
+    // Draw a rectangle via the dialog path (precise coords).
+    await page.getByTestId("enter-sketch").click();
+    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await page.getByLabel("Corner a x").fill("-20");
+    await page.getByLabel("Corner a y").fill("-10");
+    await page.getByLabel("Corner b x").fill("20");
+    await page.getByLabel("Corner b y").fill("10");
+    await page.getByTestId("sketch-tool-apply").click();
+    await page.waitForTimeout(400);
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    // Extrude button enabled after the sketch commits.
+    await expect(extrudeBtn).toBeEnabled();
+    await extrudeBtn.click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    // Verify the new feature is an extrude via the dev kernel hook.
+    const shape = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string; name: string }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.listFeatures();
+    });
+    expect(shape).not.toBeNull();
+    expect(shape!.some((f) => f.kind === "sketch")).toBe(true);
+    expect(shape!.some((f) => f.kind === "extrude")).toBe(true);
+
+    // Download the STL and check it contains real triangles.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    // Header (80) + count (4) + several hundred triangles at 50
+    // bytes each — much larger than the 84-byte empty stub.
+    expect(stat.size).toBeGreaterThan(1000);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];

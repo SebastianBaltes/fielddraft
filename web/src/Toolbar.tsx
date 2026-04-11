@@ -182,6 +182,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ✎ Sketch
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Extrude the most recent sketch (20 mm depth)"
+          data-testid="extrude-latest-sketch"
+          disabled={
+            !state.features.some((f) => f.kind === "sketch")
+          }
+          onClick={() => store.addExtrudeFromLatestSketch(20)}
+        >
+          ↥ Extrude
+        </button>
       </div>
 
       <div className="group">

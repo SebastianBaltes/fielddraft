@@ -936,6 +936,75 @@ impl Kernel {
         Ok(())
     }
 
+    /// K7.4: append an `extrude` feature call that lowers the
+    /// referenced sketch into a 3D body via the K7.3
+    /// `Primitive::Extrude` pipeline. Convenience wrapper over
+    /// the full FeatureCall shape so the UI doesn't have to
+    /// hand-assemble the params JSON.
+    ///
+    /// `sketch_id` must point at an existing `sketch`
+    /// FeatureCall. `depth_mm` is the total slab depth (the
+    /// `Primitive::Extrude` half_depth_z becomes `depth_mm /
+    /// 2`). `op` uses the same `BoolOp::TAG_*` tags as
+    /// `add_primitive`. `tz` positions the extrude plane along
+    /// the world Z axis.
+    #[wasm_bindgen(js_name = addExtrude)]
+    pub fn add_extrude(
+        &mut self,
+        sketch_id: u32,
+        depth_mm: f32,
+        op: u32,
+        tz: f32,
+    ) -> Result<u32, JsError> {
+        let sketch_feature_id = FeatureId::from_u32(sketch_id);
+        let exists = self
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.id == sketch_feature_id && c.type_name == "sketch");
+        if !exists {
+            return Err(JsError::new(&format!(
+                "feature {sketch_id} is not a sketch"
+            )));
+        }
+        let bool_op = Self::parse_op(op)?;
+        let op_wire = match bool_op {
+            BoolOp::Union => "union",
+            BoolOp::Difference => "difference",
+            BoolOp::Intersect => "intersect",
+        };
+
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+
+        let params = serde_json::json!({
+            "profiles": format!("qCreatedBy({sketch_feature_id})"),
+            "depth": { "value": depth_mm, "unit": "mm" },
+            "profile_half_x": 0.0,
+            "profile_half_y": 0.0,
+            "operation": op_wire,
+            "center": [0.0, 0.0, tz],
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "extrude",
+            id.clone(),
+            params,
+        );
+        self.document.feature_calls.push(call);
+
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "extrude regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// K6b.3a: fetch the sub-spine sub_calls for a sketch by
     /// feature id, so the UI can reload an existing sketch when
     /// the user re-enters it. Returns the JSON array string of
@@ -1991,6 +2060,98 @@ mod tests {
     // existing kernel error paths (`parse_op`, malformed JSON in
     // `load_json`, …) rely on wasm-pack test coverage for the same
     // reason. Happy-path correctness here is covered above.
+
+    // ─── K7.4: add_extrude ───────────────────────────────────────
+
+    #[test]
+    fn add_extrude_lowers_the_referenced_sketch_into_primitive_extrude() {
+        // Commit a rectangle sketch, then ask add_extrude to
+        // lift it into a 3D slab. The resulting spine feature
+        // must be a `Primitive::Extrude` whose `sketch` aabb
+        // matches the rectangle.
+        let mut k = Kernel::new();
+        let sketch_id = k
+            .add_sketch(
+                "qCreatedBy(origin_plane_xy)",
+                r#"[
+                    {
+                        "type": "sketch_rectangle",
+                        "id": "r1",
+                        "params": {
+                            "corner_a": [-10.0, -5.0],
+                            "corner_b": [10.0, 5.0]
+                        }
+                    }
+                ]"#,
+            )
+            .unwrap();
+
+        let extrude_id = k
+            .add_extrude(sketch_id, 16.0, BoolOp::TAG_UNION, 0.0)
+            .unwrap();
+        assert_ne!(extrude_id, sketch_id);
+
+        // One primitive on the spine — the extrude.
+        // (Sketches don't push onto `features`.)
+        assert_eq!(k.document.features.len(), 1);
+        let extrude_spine = k
+            .document
+            .features
+            .iter()
+            .find(|f| f.id.as_u32_if_flat() == Some(extrude_id))
+            .expect("extrude spine entry");
+        match &extrude_spine.primitive {
+            Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center: _,
+            } => {
+                assert!((half_depth_z - 8.0).abs() < 1e-5);
+                let aabb = sketch.aabb();
+                assert!((aabb.min[0] - (-10.0)).abs() < 1e-5);
+                assert!((aabb.max[1] - 5.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Extrude, got {other:?}"),
+        }
+
+        // feature_calls still has both: the sketch call and
+        // the new extrude call with its qCreatedBy query.
+        assert_eq!(k.document.feature_calls.len(), 2);
+        let extrude_call = k
+            .document
+            .feature_calls
+            .iter()
+            .find(|c| c.type_name == "extrude")
+            .expect("extrude feature call");
+        let profiles = extrude_call.params.get("profiles").unwrap();
+        assert_eq!(
+            profiles.as_str().unwrap(),
+            format!("qCreatedBy({sketch_id})")
+        );
+    }
+
+    #[test]
+    fn add_extrude_respects_the_bool_op_argument() {
+        let mut k = Kernel::new();
+        let sketch_id = k
+            .add_sketch(
+                "qCreatedBy(origin_plane_xy)",
+                r#"[{
+                    "type": "sketch_rectangle",
+                    "id": "r1",
+                    "params": { "corner_a": [-1.0, -1.0], "corner_b": [1.0, 1.0] }
+                }]"#,
+            )
+            .unwrap();
+        k.add_extrude(sketch_id, 4.0, BoolOp::TAG_DIFFERENCE, 0.0).unwrap();
+        let extrude_spine = k
+            .document
+            .features
+            .iter()
+            .find(|f| matches!(f.primitive, Primitive::Extrude { .. }))
+            .expect("extrude spine entry");
+        assert_eq!(extrude_spine.op, BoolOp::Difference);
+    }
 
     // ─── primitive mutations + undo/redo ─────────────────────────────
 

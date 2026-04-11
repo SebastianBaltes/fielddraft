@@ -659,6 +659,37 @@ export class KernelStore {
    * plane is set, the session is simply dropped — same as a
    * cancel.
    */
+  // ── K7.4: extrude convenience ─────────────────────────────────
+
+  /** Find the most recently committed sketch feature (by id)
+   *  or `null` if there isn't one. Used by the toolbar Extrude
+   *  button to pick a default profile. */
+  latestSketchId(): number | null {
+    const sketches = this.state.features.filter((f) => f.kind === "sketch");
+    if (sketches.length === 0) return null;
+    // Ids are monotonic within a document — the highest id is
+    // the most recently added.
+    return sketches.reduce((acc, f) => (f.id > acc ? f.id : acc), sketches[0].id);
+  }
+
+  /** Extrude the latest committed sketch with the given depth
+   *  and the store's current `nextOp`. Returns the new feature
+   *  id, or `null` when there's no sketch to consume. */
+  addExtrudeFromLatestSketch(depthMm: number): number | null {
+    const sketchId = this.latestSketchId();
+    if (sketchId === null) return null;
+    let id: number;
+    try {
+      id = this.kernel.addExtrude(sketchId, depthMm, this.state.nextOp, 0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addExtrude failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   // ── K7.2.1: STL export ────────────────────────────────────────
 
   /** Serialise the current scene as ASCII STL. Mostly useful

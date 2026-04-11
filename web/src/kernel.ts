@@ -392,6 +392,20 @@ export class Kernel {
     }>;
   }
 
+  /** K7.4: append an extrude feature that consumes the
+   *  sketch with id `sketchId`. `depthMm` is the total slab
+   *  depth, `op` is a BoolOpTag and `tz` positions the
+   *  extrude plane on the world Z axis. Returns the new
+   *  feature id. */
+  addExtrude(
+    sketchId: number,
+    depthMm: number,
+    op: BoolOpTagValue,
+    tz = 0,
+  ): number {
+    return this.inner.addExtrude(sketchId, depthMm, op, tz);
+  }
+
   /** K7.2: serialise the current scene as ASCII STL. */
   exportStlAscii(): string {
     return this.inner.exportStlAscii();
