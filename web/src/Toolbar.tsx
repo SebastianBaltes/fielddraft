@@ -5,7 +5,7 @@
  * active.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BoolOpTag, type BoolOpTagValue } from "./kernel";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
@@ -304,6 +304,38 @@ export function Toolbar({ store, state }: ToolbarProps) {
           onClick={() => store.downloadStl()}
         >
           ⇩ STL
+        </button>
+      </div>
+
+      <div className="group">
+        <input
+          ref={useRef<HTMLInputElement>(null)}
+          type="file"
+          accept=".stl"
+          className="hidden-file-input"
+          data-testid="import-stl-input"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            if (!file) return;
+            file.arrayBuffer().then((buf) => {
+              store.loadReferenceMesh(buf);
+            });
+            e.currentTarget.value = "";
+          }}
+        />
+        <button
+          type="button"
+          className="tool"
+          title="Import STL as visual reference"
+          data-testid="import-stl"
+          onClick={() => {
+            const input = document.querySelector<HTMLInputElement>(
+              '[data-testid="import-stl-input"]',
+            );
+            input?.click();
+          }}
+        >
+          📁 Import
         </button>
       </div>
 

@@ -106,6 +106,14 @@ export interface StoreState {
    *  (the kernel's BTreeMap ordering). K8.11 will teach
    *  Length fields to reference these by name. */
   variables: readonly { name: string; value: number }[];
+  /** K9.0: imported STL reference mesh. Ephemeral — not
+   *  persisted to the document. `null` when no import is
+   *  loaded. */
+  referenceMesh: {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+  } | null;
 }
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
@@ -148,6 +156,7 @@ export class KernelStore {
       meshedBodies: [],
       sketchSession: INACTIVE_SKETCH_SESSION,
       variables: kernel.listVariables(),
+      referenceMesh: null,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -210,6 +219,7 @@ export class KernelStore {
       meshedBodies: this.state.meshedBodies,
       sketchSession: this.state.sketchSession,
       variables: this.kernel.listVariables(),
+      referenceMesh: this.state.referenceMesh,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -360,6 +370,55 @@ export class KernelStore {
     if (this.state.nextOp === op) return;
     this.state = { ...this.state, nextOp: op };
     for (const listener of this.listeners) listener();
+  }
+
+  // ── K9.0: STL reference import ──────────────────────────────
+
+  /** K9.0: load a binary STL file as a visual reference mesh.
+   *  The mesh is ephemeral — it lives in React state only and
+   *  is lost on page reload. No SDF conversion, no Booleans. */
+  loadReferenceMesh(buffer: ArrayBuffer): boolean {
+    const view = new DataView(buffer);
+    if (buffer.byteLength < 84) return false;
+    const triCount = view.getUint32(80, true);
+    const expected = 84 + triCount * 50;
+    if (buffer.byteLength < expected) return false;
+
+    const positions = new Float32Array(triCount * 9);
+    const normals = new Float32Array(triCount * 9);
+    const indices = new Uint32Array(triCount * 3);
+
+    let offset = 84;
+    for (let t = 0; t < triCount; t++) {
+      const nx = view.getFloat32(offset, true);
+      const ny = view.getFloat32(offset + 4, true);
+      const nz = view.getFloat32(offset + 8, true);
+      offset += 12;
+      for (let v = 0; v < 3; v++) {
+        const base = t * 9 + v * 3;
+        positions[base] = view.getFloat32(offset, true);
+        positions[base + 1] = view.getFloat32(offset + 4, true);
+        positions[base + 2] = view.getFloat32(offset + 8, true);
+        normals[base] = nx;
+        normals[base + 1] = ny;
+        normals[base + 2] = nz;
+        indices[t * 3 + v] = t * 3 + v;
+        offset += 12;
+      }
+      offset += 2;
+    }
+
+    this.state = {
+      ...this.state,
+      referenceMesh: { positions, normals, indices },
+    };
+    this.notify();
+    return true;
+  }
+
+  clearReferenceMesh(): void {
+    this.state = { ...this.state, referenceMesh: null };
+    this.notify();
   }
 
   // ── K8.10: document-level variables ──────────────────────────

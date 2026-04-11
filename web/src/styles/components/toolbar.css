@@ -8,6 +8,10 @@
   height: var(--toolbar-height);
   flex: 0 0 var(--toolbar-height);
 
+  & .hidden-file-input {
+    display: none;
+  }
+
   & .group {
     display: flex;
     align-items: center;
