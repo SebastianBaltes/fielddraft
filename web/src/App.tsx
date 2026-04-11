@@ -3,6 +3,7 @@ import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
+import { requestView } from "./viewCommands";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -53,6 +54,61 @@ export function App() {
       }
       if (dx !== 0 || dy !== 0 || dz !== 0) {
         if (store.nudgeSelected(dx, dy, dz)) e.preventDefault();
+        return;
+      }
+
+      // Single-key shortcuts (no modifier). Skipped when
+      // focus is in an input (guard at the top of onKey).
+      if (!ctrl && !e.shiftKey && !e.altKey) {
+        switch (e.key) {
+          case "Escape":
+            store.clearSelection();
+            e.preventDefault();
+            return;
+          case "b":
+            store.addPrimitive("box");
+            e.preventDefault();
+            return;
+          case "s":
+            store.addPrimitive("sphere");
+            e.preventDefault();
+            return;
+          case "c":
+            store.addPrimitive("cylinder");
+            e.preventDefault();
+            return;
+          case "h":
+            store.addHole();
+            e.preventDefault();
+            return;
+          case "1":
+            requestView("front");
+            e.preventDefault();
+            return;
+          case "2":
+            requestView("top");
+            e.preventDefault();
+            return;
+          case "3":
+            requestView("right");
+            e.preventDefault();
+            return;
+          case "0":
+            requestView("iso");
+            e.preventDefault();
+            return;
+        }
+      }
+
+      // Ctrl+D = duplicate selected feature.
+      if (ctrl && (e.key === "d" || e.key === "D")) {
+        const sel = store.getState().selection;
+        if (sel.size === 1) {
+          const id = sel.values().next().value;
+          if (id !== undefined) store.duplicateFeature(id);
+          e.preventDefault();
+        }
+        return;
       }
     };
     window.addEventListener("keydown", onKey);
