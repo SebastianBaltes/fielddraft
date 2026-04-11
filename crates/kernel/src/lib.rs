@@ -14,6 +14,7 @@ pub mod csg;
 pub mod dc;
 pub mod features;
 pub mod queries;
+pub mod export;
 pub mod raycast;
 pub mod sketch2d;
 pub mod sketch_features;
@@ -1173,6 +1174,27 @@ impl Kernel {
     #[wasm_bindgen(js_name = meshTriangleCount)]
     pub fn mesh_triangle_count(&self) -> usize {
         self.bodies.iter().map(|b| b.mesh.triangle_count()).sum()
+    }
+
+    // ── K7.2: STL export ─────────────────────────────────────────
+
+    /// Export the current scene as an ASCII STL string.
+    /// Iterates every body's DC mesh in the order `bodies`
+    /// holds them; downstream slicers treat the whole blob as
+    /// one `solid`.
+    #[wasm_bindgen(js_name = exportStlAscii)]
+    pub fn export_stl_ascii(&self) -> String {
+        let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
+        export::export_ascii(&meshes)
+    }
+
+    /// Export the current scene as binary STL. Returns a
+    /// JavaScript `Uint8Array` by virtue of wasm-bindgen's
+    /// auto-conversion for `Vec<u8>`.
+    #[wasm_bindgen(js_name = exportStlBinary)]
+    pub fn export_stl_binary(&self) -> Vec<u8> {
+        let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
+        export::export_binary(&meshes)
     }
 
     #[wasm_bindgen(js_name = bodyCount)]
