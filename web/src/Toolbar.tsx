@@ -194,6 +194,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ↥ Extrude
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Linear pattern the latest feature (+X, 3×, 60 mm)"
+          data-testid="linear-pattern-latest"
+          disabled={state.features.length === 0}
+          onClick={() => store.addLinearPatternOfLatest()}
+        >
+          ⎡⎡⎡ Pattern
+        </button>
       </div>
 
       <div className="group">

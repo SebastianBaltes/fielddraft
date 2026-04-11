@@ -220,9 +220,19 @@ pub fn dual_contour(node: &BoundedCsg, resolution: u32) -> Mesh {
                 let slice = cs.as_slice();
                 for slot in 0..MAX_CONTRIBUTORS {
                     if slot < slice.len() {
+                        // K8.0: linear_pattern clones carry
+                        // hierarchical child ids that the K4.5.1
+                        // flat-numeric packing can't represent.
+                        // Fall through to the sentinel so the
+                        // mesher builds cleanly — picking on a
+                        // clone face currently resolves to
+                        // "unknown contributor", which the UI
+                        // falls back on (K9 refactor will add a
+                        // compound-id side table for full
+                        // provenance).
                         let compact = slice[slot]
                             .as_u32_if_flat()
-                            .expect("K4.5.1 mesh contributors are flat-numeric");
+                            .unwrap_or(CONTRIBUTOR_SENTINEL);
                         contributors.push(compact);
                     } else {
                         contributors.push(CONTRIBUTOR_SENTINEL);

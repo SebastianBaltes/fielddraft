@@ -726,6 +726,12 @@ impl Document {
         let mut next: Vec<FeatureCall> = self
             .features
             .iter()
+            // K8.0: spine entries with a hierarchical parent
+            // id (e.g. `linear_pattern_3/1`) are clones that
+            // were produced by their parent feature's execute
+            // path. Don't re-emit them as independent wire
+            // entries — the parent call is authoritative.
+            .filter(|f| f.id.parent().is_none())
             .map(FeatureCall::from_spine_feature)
             // K7.3: Primitive::Extrude spine entries are
             // derived from the original "extrude" FeatureCall

@@ -316,15 +316,18 @@ test.describe("Sketch editor smoke", () => {
     if (!box) return;
     const cx = box.x + box.width / 2;
     const cy = box.y + box.height / 2;
+    // Zero-wobble horizontal drag — the mouse lands on pixel
+    // boundaries so the inferred vertical delta is reliably
+    // below the 10 mm snap radius no matter what device
+    // pixel ratio the test host uses.
     const startX = cx - 120;
-    const startY = cy + 120;
     const endX = cx + 120;
-    const endY = cy + 120 - 3;
+    const y = cy + 120;
 
-    await page.mouse.move(startX, startY);
+    await page.mouse.move(startX, y);
     await page.mouse.down();
-    await page.mouse.move((startX + endX) / 2, (startY + endY) / 2, { steps: 5 });
-    await page.mouse.move(endX, endY, { steps: 10 });
+    await page.mouse.move((startX + endX) / 2, y, { steps: 5 });
+    await page.mouse.move(endX, y, { steps: 10 });
     await page.mouse.up();
 
     // The sub-spine grows by two entries: the line and the

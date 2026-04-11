@@ -694,6 +694,28 @@ export class KernelStore {
     return sketches.reduce((acc, f) => (f.id > acc ? f.id : acc), sketches[0].id);
   }
 
+  /** K8.0: pattern the most recent spine feature along +X
+   *  with default count 3 and spacing 60 mm. MVP — a future
+   *  slice grows a pattern-parameter dialog so the user can
+   *  pick direction / count / spacing per call. */
+  addLinearPatternOfLatest(): number | null {
+    if (this.state.features.length === 0) return null;
+    // Pick the *last* spine entry as source. Same heuristic
+    // as addExtrudeFromLatestSketch but doesn't filter by
+    // kind — box/sphere/cylinder/extrude all pattern.
+    const source = this.state.features[this.state.features.length - 1];
+    let id: number;
+    try {
+      id = this.kernel.addLinearPattern(source.id, 1, 0, 0, 3, 60);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addLinearPattern failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume. */

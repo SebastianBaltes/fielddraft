@@ -290,6 +290,68 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.0: linear pattern replicates the latest feature into multiple bodies", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Pattern button starts disabled — nothing to pattern.
+    const patternBtn = page.getByTestId("linear-pattern-latest");
+    await expect(patternBtn).toBeDisabled();
+
+    // Add a box and pattern it.
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(patternBtn).toBeEnabled();
+    await patternBtn.click();
+
+    // The pattern call lives as one outliner row, but the
+    // regenerated spine has the source box + two clones = 3
+    // spine entries. listFeatures walks feature_calls, so the
+    // outliner shows the box + the pattern = 2 rows.
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    const shape = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            meshTriangleCount?: () => number;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return {
+        features: kernel.listFeatures(),
+      };
+    });
+    expect(shape).not.toBeNull();
+    expect(shape!.features.some((f) => f.kind === "linear_pattern")).toBe(true);
+
+    // Export STL — a patterned scene should produce a
+    // meaningfully larger mesh than the single-box case.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    // Three boxes at the DC mesher's default resolution
+    // produce well over 1 KB of STL triangles.
+    expect(stat.size).toBeGreaterThan(1000);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

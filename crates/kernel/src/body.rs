@@ -76,18 +76,17 @@ impl BodyPartition {
     /// keep the body's BufferGeometry around even after unrelated
     /// mutations reorder the body list.
     ///
-    /// K4.5.1 still issues only flat-numeric [`FeatureId`]s, so
-    /// "lowest" means the smallest `u32`. A later slice that
-    /// introduces hierarchical ids will have to replace this with
-    /// a richer ordering scheme.
+    /// K8.0 accommodates hierarchical ids (linear_pattern
+    /// clones): flat-numeric ids sort first by their u32
+    /// value, hierarchical ids (clones) fall back to
+    /// `u32::MAX` so a body that contains both a
+    /// pre-existing primitive and some pattern clones still
+    /// picks the primitive as its stable id.
     pub fn seed_id(&self, features: &[Feature]) -> FeatureId {
         self.feature_indices
             .iter()
             .map(|&i| features[i].id.clone())
-            .min_by_key(|id| {
-                id.as_u32_if_flat()
-                    .expect("K4.5.1 only issues flat-numeric feature ids")
-            })
+            .min_by_key(|id| id.as_u32_if_flat().unwrap_or(u32::MAX))
             .expect("BodyPartition is always non-empty")
     }
 }

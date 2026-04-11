@@ -211,6 +211,7 @@ impl FeatureRegistry {
         r.register(Box::new(SpherePrimitive));
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
+        r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
         r
     }
@@ -657,6 +658,141 @@ impl FeatureKind for ExtrudeFeature {
     }
 }
 
+// ─── K8.0: Linear pattern ────────────────────────────────────────
+//
+// The first bona-fide parametric pattern feature. Given a
+// source feature id, a direction vector, a count and a spacing
+// distance, [`LinearPatternFeature`] emits `count - 1` extra
+// copies of the source spine entry at offsets
+// `i * spacing * unit_dir` for `i = 1..count`. The originals
+// stay in place — Onshape semantics.
+//
+// Copies inherit the source's BoolOp, primitive payload and
+// transform verbatim, with the offset added to
+// `transform.translate`. Their feature ids are hierarchical
+// children of the pattern feature (`pattern_id/1`,
+// `pattern_id/2`, …) so provenance still resolves to "this
+// clone came from the pattern".
+//
+// Known limits for this first cut:
+//
+// * Source must already be on the spine when the pattern
+//   runs, i.e. the source call must appear *before* the
+//   pattern call in `feature_calls`. Not enforced — a
+//   missing source just errors out with `MissingParameter`.
+// * Pattern-of-pattern isn't supported: the source lookup
+//   walks `document.features` by id, and pattern children
+//   are siblings of the pattern feature itself, not under it.
+
+/// `linear_pattern` — replicate a source feature along a
+/// direction vector.
+#[derive(FeatureSchema)]
+#[schema(type = "linear_pattern")]
+pub struct LinearPatternDef {
+    /// Flat-numeric id of the feature to replicate. Any other
+    /// id shape currently errors out via the `Generic`
+    /// fallback — the K4.5.1 flat-id scheme is still the
+    /// only in-flight numbering.
+    pub source: u32,
+    /// Direction vector in local frame. Doesn't have to be
+    /// normalised — the executor divides by its length at
+    /// apply time.
+    pub direction: [f32; 3],
+    /// Total number of instances *including* the source.
+    /// `count = 1` is a no-op, `count = 5` means the pattern
+    /// adds four offset copies.
+    pub count: u32,
+    /// Distance between consecutive instances in millimetres.
+    pub spacing: ::fielddraft_protocol::Length,
+}
+
+pub struct LinearPatternFeature;
+
+impl FeatureKind for LinearPatternFeature {
+    fn type_name(&self) -> &'static str {
+        LinearPatternDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        LinearPatternDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = LinearPatternDef::parse(def)?;
+        if d.count < 2 {
+            // A one-instance pattern is a no-op. Don't error —
+            // this is a useful parameter-sweep resting point.
+            return Ok(());
+        }
+        let spacing_mm = d.spacing.to_mm();
+        if spacing_mm <= 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: LinearPatternDef::TYPE_NAME,
+                name: "spacing",
+                message: format!("must be > 0 mm, got {spacing_mm}"),
+            });
+        }
+
+        // Normalise the direction. A zero-length vector is
+        // invalid — there's no axis to replicate along.
+        let dx = d.direction[0];
+        let dy = d.direction[1];
+        let dz = d.direction[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len < 1e-6 {
+            return Err(FeatureError::InvalidParameter {
+                feature: LinearPatternDef::TYPE_NAME,
+                name: "direction",
+                message: "must be a non-zero vector".to_string(),
+            });
+        }
+        let unit = [dx / len, dy / len, dz / len];
+
+        // Look up the source spine feature by its flat id.
+        let source_fid = FeatureId::from_u32(d.source);
+        let source_feature = ctx
+            .document
+            .features
+            .iter()
+            .find(|f| f.id == source_fid)
+            .ok_or(FeatureError::MissingParameter {
+                feature: LinearPatternDef::TYPE_NAME,
+                name: "source",
+            })?
+            .clone();
+
+        // Emit `count - 1` offset copies. `i = 0` would be the
+        // source itself, which is already on the spine.
+        // Clones carry hierarchical child ids under the
+        // pattern — `sync_feature_calls` drops those via its
+        // parent filter so the wire form stays authoritative.
+        for i in 1..d.count {
+            let i_f = i as f32;
+            let offset = [
+                unit[0] * spacing_mm * i_f,
+                unit[1] * spacing_mm * i_f,
+                unit[2] * spacing_mm * i_f,
+            ];
+            let mut clone = source_feature.clone();
+            clone.id = id.child(i.to_string());
+            clone.name = format!("{} {}", source_feature.name, i);
+            clone.transform.translate = [
+                source_feature.transform.translate[0] + offset[0],
+                source_feature.transform.translate[1] + offset[1],
+                source_feature.transform.translate[2] + offset[2],
+            ];
+            ctx.document.features.push(clone);
+        }
+
+        Ok(())
+    }
+}
+
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
 /// Extract an optional `"name"` string parameter from the
@@ -745,14 +881,14 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K6b.1 adds `sketch` as the fifth built-in alongside the
-        // four K1/K4.5.8 primitives.
-        assert_eq!(registry.len(), 5);
+        // K8.0 grows the built-in set to include linear_pattern.
+        assert_eq!(registry.len(), 6);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
         assert!(registry.get("sketch").is_some());
+        assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("torus").is_none());
     }
 
@@ -788,7 +924,14 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["box", "cylinder", "extrude", "sketch", "sphere"]
+            vec![
+                "box",
+                "cylinder",
+                "extrude",
+                "linear_pattern",
+                "sketch",
+                "sphere"
+            ]
         );
     }
 
@@ -1867,6 +2010,175 @@ mod tests {
                 .execute(&mut ctx, &id(1), &extrude_def(q, 10.0, 1.0, 1.0))
                 .unwrap_or_else(|e| panic!("query `{q}` failed: {e}"));
         }
+    }
+
+    // ─── K8.0: linear pattern ─────────────────────────────────
+
+    #[test]
+    fn linear_pattern_emits_count_minus_one_offset_clones() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let box_id = id(1);
+        let pattern_id = id(2);
+
+        let box_call = FeatureCall::new(
+            "box",
+            box_id.clone(),
+            json!({
+                "half_extents": [5.0, 5.0, 5.0],
+                "center": [0.0, 0.0, 0.0],
+                "translate": [0.0, 0.0, 0.0],
+                "op": "union"
+            }),
+        );
+        let pattern_call = FeatureCall::new(
+            "linear_pattern",
+            pattern_id.clone(),
+            json!({
+                "source": 1,
+                "direction": [1.0, 0.0, 0.0],
+                "count": 4,
+                "spacing": { "value": 20.0, "unit": "mm" }
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[box_call, pattern_call])
+            .unwrap();
+
+        // Source (1) + three clones = four spine entries.
+        assert_eq!(doc.features.len(), 4);
+        let source = doc
+            .features
+            .iter()
+            .find(|f| f.id == box_id)
+            .expect("source box");
+        assert_eq!(source.transform.translate, [0.0, 0.0, 0.0]);
+
+        // Clones live at pattern_id/1, /2, /3 with 20 mm
+        // increments along +X.
+        for i in 1..4_u32 {
+            let clone_id = pattern_id.child(i.to_string());
+            let clone = doc
+                .features
+                .iter()
+                .find(|f| f.id == clone_id)
+                .expect("clone spine entry");
+            let expected_x = 20.0_f32 * i as f32;
+            assert!((clone.transform.translate[0] - expected_x).abs() < 1e-5);
+            // Primitive payload is cloned verbatim.
+            if let (Primitive::Box { half_extents, .. }, Primitive::Box { half_extents: src_he, .. }) =
+                (&clone.primitive, &source.primitive)
+            {
+                assert_eq!(half_extents, src_he);
+            } else {
+                panic!("expected box primitives");
+            }
+        }
+    }
+
+    #[test]
+    fn linear_pattern_count_1_is_a_noop() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "linear_pattern",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "direction": [1.0, 0.0, 0.0],
+                            "count": 1,
+                            "spacing": { "value": 20.0, "unit": "mm" }
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        // Just the source box — no clones added.
+        assert_eq!(doc.features.len(), 1);
+    }
+
+    #[test]
+    fn linear_pattern_normalises_the_direction_vector() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "linear_pattern",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            // Non-unit vector — the executor
+                            // must normalise so spacing still
+                            // lands at 10 mm, not 10 × √3 mm.
+                            "direction": [3.0, 4.0, 0.0],
+                            "count": 2,
+                            "spacing": { "value": 10.0, "unit": "mm" }
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        let clone = &doc.features[1];
+        // Unit (3,4,0) = (0.6, 0.8, 0). Offset at i=1 is 10 mm
+        // along that direction → (6, 8, 0).
+        assert!((clone.transform.translate[0] - 6.0).abs() < 1e-4);
+        assert!((clone.transform.translate[1] - 8.0).abs() < 1e-4);
+        assert!((clone.transform.translate[2] - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn linear_pattern_errors_on_missing_source() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "linear_pattern",
+                    id(1),
+                    json!({
+                        "source": 999,
+                        "direction": [1.0, 0.0, 0.0],
+                        "count": 3,
+                        "spacing": { "value": 20.0, "unit": "mm" }
+                    }),
+                )],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            FeatureError::MissingParameter {
+                feature: "linear_pattern",
+                ..
+            }
+        ));
     }
 
     // ─── K7.1: extrude consumes real sketches ─────────────────

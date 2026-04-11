@@ -578,6 +578,7 @@ impl Kernel {
             "sphere" => "sphere",
             "cylinder" => "cylinder",
             "extrude" => "extrude",
+            "linear_pattern" => "linear_pattern",
             _ => "unknown",
         }
     }
@@ -591,6 +592,7 @@ impl Kernel {
     ) -> String {
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
+            "linear_pattern" => "Pattern",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -999,6 +1001,58 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "extrude regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K8.0: append a `linear_pattern` feature call that
+    /// replicates the source feature along a direction
+    /// vector. `source_id` must point at an existing spine
+    /// feature; `count` is total instances including the
+    /// source. Returns the allocated pattern feature id.
+    #[wasm_bindgen(js_name = addLinearPattern)]
+    pub fn add_linear_pattern(
+        &mut self,
+        source_id: u32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        count: u32,
+        spacing_mm: f32,
+    ) -> Result<u32, JsError> {
+        // Sanity-check the source exists on the spine now,
+        // rather than at regen time — lets the UI surface a
+        // clean error before any snapshot.
+        let source_fid = FeatureId::from_u32(source_id);
+        if !self.document.features.iter().any(|f| f.id == source_fid) {
+            return Err(JsError::new(&format!(
+                "source feature {source_id} not found on the spine"
+            )));
+        }
+
+        self.snapshot();
+        let pattern_id = self.document.allocate_id();
+        let flat = pattern_id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "source": source_id,
+            "direction": [dx, dy, dz],
+            "count": count,
+            "spacing": { "value": spacing_mm, "unit": "mm" },
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "linear_pattern",
+            pattern_id,
+            params,
+        );
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "linear pattern regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();
@@ -2208,6 +2262,41 @@ mod tests {
             .find(|f| matches!(f.primitive, Primitive::Extrude { .. }))
             .expect("extrude spine entry");
         assert_eq!(extrude_spine.op, BoolOp::Difference);
+    }
+
+    // ─── K8.0: add_linear_pattern + list_features round trip ──
+
+    #[test]
+    fn add_linear_pattern_populates_list_features_with_source_and_pattern() {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let pattern_id = k.add_linear_pattern(box_id, 1.0, 0.0, 0.0, 3, 40.0).unwrap();
+        assert_ne!(box_id, pattern_id);
+
+        // listFeatures walks feature_calls; only top-level
+        // entries show up, not the hierarchical clone spine
+        // entries pattern execute pushes.
+        let list_json = k.list_features().unwrap();
+        let list: serde_json::Value = serde_json::from_str(&list_json).unwrap();
+        let arr = list.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let kinds: Vec<&str> = arr.iter().map(|f| f["kind"].as_str().unwrap()).collect();
+        assert!(kinds.contains(&"box"));
+        assert!(kinds.contains(&"linear_pattern"));
+
+        // The spine has 3 entries: the box + two clones.
+        assert_eq!(k.document.features.len(), 3);
     }
 
     // ─── K7.5: editable feature params ──────────────────────────

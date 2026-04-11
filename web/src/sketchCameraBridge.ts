@@ -66,13 +66,31 @@ export function readSketchCamera(): Readonly<SketchCameraState> {
   return bridge;
 }
 
+// Dev-mode window hook so Playwright tests can peek the
+// current camera state without having to set up a
+// side-channel export.
+if (typeof window !== "undefined" && import.meta.env?.DEV) {
+  (
+    window as unknown as { __fdSketchCamera?: () => Readonly<SketchCameraState> }
+  ).__fdSketchCamera = () => bridge;
+}
+
 /**
  * Project a 2D sketch-plane coordinate to CSS-pixel coordinates
- * of the overlay canvas. For K6b.3 opening: assumes the sketch
- * plane is the world XZ plane (top-down orthographic view), so
- * sketch-U maps to world-X and sketch-V maps to world-Z. The
- * camera's up vector is `(0, 0, -1)`, so screen-up corresponds
- * to `-V` in sketch space, hence the V-flip below.
+ * of the overlay canvas. Assumes the sketch plane is the world
+ * XZ plane (top-down orthographic view), so sketch-U maps to
+ * world-X and sketch-V maps to world-Z. The camera's up vector
+ * is `(0, 0, -1)`, so screen-up corresponds to `-V` in sketch
+ * space, hence the V-flip below.
+ *
+ * K8.0 reliability note: `cam.width / cam.height` here are
+ * authoritative — callers that know their own container
+ * dimensions (the 2D overlay measures its own
+ * `getBoundingClientRect()` via `ResizeObserver`) should
+ * override the bridge's values with a shallow-spread cam
+ * object before calling. The R3F camera bridge sometimes
+ * publishes stale dimensions while the WebGL canvas is still
+ * resizing to its container.
  *
  * Returns `[px, py]` with origin at the top-left of the overlay
  * canvas (CSS pixels).

@@ -410,6 +410,21 @@ export class Kernel {
     this.inner.replaceFeatureCallParams(id, JSON.stringify(params));
   }
 
+  /** K8.0: append a linear_pattern feature that replicates
+   *  `sourceId` along `(dx, dy, dz)` with `count` total
+   *  instances at `spacingMm` spacing. Returns the new
+   *  pattern feature id. */
+  addLinearPattern(
+    sourceId: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    count: number,
+    spacingMm: number,
+  ): number {
+    return this.inner.addLinearPattern(sourceId, dx, dy, dz, count, spacingMm);
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

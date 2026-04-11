@@ -231,6 +231,24 @@ function resolveSnap(
   };
 }
 
+/**
+ * K8.0 reliability fix: read the camera bridge state but
+ * override `width/height` with the canvas element's real
+ * `getBoundingClientRect()` dimensions. The R3F publisher
+ * sometimes publishes stale dimensions while the WebGL canvas
+ * is still resizing to its container, which mis-maps pointer
+ * coordinates and drawing positions. The overlay owns its own
+ * DOM node and knows its size reliably via ResizeObserver.
+ */
+function readCamForCanvas(
+  canvas: HTMLCanvasElement,
+): Readonly<SketchCameraState> {
+  const cam = readSketchCamera();
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return cam;
+  return { ...cam, width: rect.width, height: rect.height };
+}
+
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
@@ -266,17 +284,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const tick = () => {
       const canvas = canvasRef.current;
       if (canvas) {
-        const cam = readSketchCamera();
+        const bridge = readSketchCamera();
         if (
-          cam.version !== lastCamVersionRef.current ||
+          bridge.version !== lastCamVersionRef.current ||
           lastSessionRef.current !== session
         ) {
-          lastCamVersionRef.current = cam.version;
+          lastCamVersionRef.current = bridge.version;
           lastSessionRef.current = session;
           drawOverlay(
             canvas,
             session,
-            cam,
+            readCamForCanvas(canvas),
             dragRef.current,
             hoverRef.current,
             snapRef.current,
@@ -299,7 +317,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (e.button !== 0) return; // left button only
     e.preventDefault();
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
-    const cam = readSketchCamera();
+    const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     const [u, v] = screenToSketchFromEvent(e, cam);
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
@@ -344,7 +362,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!session.active || !session.selectedTool) return;
-    const cam = readSketchCamera();
+    const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     const [u, v] = screenToSketchFromEvent(e, cam);
     if (dragRef.current.kind === "line") {
       const snap = resolveSnap(
@@ -434,7 +452,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           drawOverlay(
             canvas,
             session,
-            readSketchCamera(),
+            readCamForCanvas(canvas),
             dragRef.current,
             hoverRef.current,
             snapRef.current,
@@ -469,7 +487,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           drawOverlay(
             canvas,
             session,
-            readSketchCamera(),
+            readCamForCanvas(canvas),
             dragRef.current,
             hoverRef.current,
             snapRef.current,
@@ -492,7 +510,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     if (dragRef.current.kind !== "line") return;
     (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
-    const cam = readSketchCamera();
+    const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     const [u, v] = screenToSketchFromEvent(e, cam);
     const snap = resolveSnap(
       [u, v],
