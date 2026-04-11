@@ -132,8 +132,37 @@
 
   & .unit-row {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr auto auto;
     gap: var(--space-2);
+  }
+
+  & .formula-toggle {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-subtle);
+    font-size: var(--fs-base);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+    font-style: italic;
+    line-height: 1;
+    transition: color var(--motion-fast), background var(--motion-fast);
+
+    &:hover {
+      color: var(--color-text);
+      background: var(--color-surface-strong);
+    }
+
+    &.is-active {
+      background: var(--color-accent);
+      color: var(--color-text-on-accent, white);
+      border-color: var(--color-accent);
+    }
+  }
+
+  & .input.is-formula {
+    font-family: var(--font-family-mono);
+    color: var(--color-accent);
   }
 
   & .query-input {

@@ -535,8 +535,11 @@ function validateValueUnit(
   const obj = value as Record<string, unknown>;
   const v = obj.value;
   const unit = obj.unit;
-  if (typeof v !== "number" || !Number.isFinite(v)) {
-    return `${label}: value must be a finite number`;
+  // K8.12: accept formula strings (`"=width / 2"`) alongside
+  // plain numbers — the kernel resolves them at regen time.
+  const isFormula = typeof v === "string" && (v as string).startsWith("=");
+  if (!isFormula && (typeof v !== "number" || !Number.isFinite(v))) {
+    return `${label}: value must be a finite number or a formula (=…)`;
   }
   if (typeof unit !== "string") {
     return `${label}: unit must be a string`;

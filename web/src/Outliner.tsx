@@ -146,6 +146,19 @@ export function Outliner({ store, state }: OutlinerProps) {
     // (primitives, extrude, linear/circular/mirror patterns)
     // round-trips through replaceFeatureCallParams.
     if (selectedFeature.kind === "sketch") return;
+    // K8.12: skip the kernel round-trip while a formula field
+    // is still being typed (just the `=` sigil with no body).
+    // The dialog keeps the draft locally; commit fires on the
+    // next onChange once the formula is non-empty.
+    const hasIncompleteFormula = Object.values(next).some(
+      (v) =>
+        v != null &&
+        typeof v === "object" &&
+        "value" in (v as Record<string, unknown>) &&
+        typeof (v as Record<string, unknown>).value === "string" &&
+        ((v as Record<string, unknown>).value as string).trim() === "=",
+    );
+    if (hasIncompleteFormula) return;
     store.updateFeatureParams(selectedFeature.id, next);
   };
 

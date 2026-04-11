@@ -229,8 +229,12 @@ export function StringWidget({
 // ─── length ─────────────────────────────────────────────────────
 
 export interface LengthValue {
-  value: number;
+  value: number | string;
   unit: LengthUnit;
+}
+
+function isFormula(v: number | string): v is string {
+  return typeof v === "string" && v.startsWith("=");
 }
 
 export function LengthWidget({
@@ -241,22 +245,50 @@ export function LengthWidget({
   required,
 }: WidgetProps<LengthValue>) {
   const id = useId();
+  const formula = isFormula(value.value);
   return (
     <Field label={label} htmlFor={`${id}-value`} error={error} required={required}>
       <div className="unit-row">
-        <input
-          id={`${id}-value`}
-          className="input"
-          type="number"
-          inputMode="decimal"
-          value={Number.isFinite(value.value) ? value.value : 0}
-          onChange={(e) => {
-            const n = Number(e.currentTarget.value);
-            if (Number.isFinite(n)) {
-              onChange({ value: n, unit: value.unit });
+        {formula ? (
+          <input
+            id={`${id}-value`}
+            className="input is-formula"
+            type="text"
+            value={value.value as string}
+            aria-label={`${label} formula`}
+            onChange={(e) =>
+              onChange({ value: e.currentTarget.value, unit: value.unit })
+            }
+          />
+        ) : (
+          <input
+            id={`${id}-value`}
+            className="input"
+            type="number"
+            inputMode="decimal"
+            value={Number.isFinite(value.value as number) ? (value.value as number) : 0}
+            onChange={(e) => {
+              const n = Number(e.currentTarget.value);
+              if (Number.isFinite(n)) {
+                onChange({ value: n, unit: value.unit });
+              }
+            }}
+          />
+        )}
+        <button
+          type="button"
+          className={"formula-toggle" + (formula ? " is-active" : "")}
+          title={formula ? "Switch to numeric" : "Switch to formula"}
+          onClick={() => {
+            if (formula) {
+              onChange({ value: 0, unit: value.unit });
+            } else {
+              onChange({ value: "=", unit: value.unit });
             }
           }}
-        />
+        >
+          ƒx
+        </button>
         <select
           id={`${id}-unit`}
           className="select"

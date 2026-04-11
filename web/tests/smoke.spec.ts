@@ -1041,6 +1041,60 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.12: LengthInput formula toggle stores =formula in wire params", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Seed a variable and add a hole.
+    await page.getByTestId("variable-new-name").fill("d");
+    await page.getByTestId("variable-new-value").fill("8");
+    await page.getByTestId("variable-add").click();
+    await page.getByTestId("add-hole").click();
+
+    // Select the hole row so the FeatureDialog mounts.
+    await page.evaluate(() => {
+      (window as unknown as { __fdStore?: { selectOnly: (id: number) => void } })
+        .__fdStore?.selectOnly(1);
+    });
+    await page.waitForTimeout(100);
+
+    // Find the Diameter field's "ƒx" toggle and click it —
+    // switches from number to formula text input.
+    const fxButtons = page.locator(".fd-feature-dialog .formula-toggle");
+    await fxButtons.first().click();
+    await page.waitForTimeout(50);
+
+    // The formula input should now be visible; type a formula.
+    const formulaInput = page.locator(".fd-feature-dialog .input.is-formula").first();
+    await expect(formulaInput).toBeVisible();
+    await formulaInput.fill("=d * 2");
+    await page.waitForTimeout(200);
+
+    // The wire-form params should carry the formula string.
+    const params = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      return kernel ? kernel.getFeatureCallParams(1) : null;
+    });
+    const diameter = (params as { diameter?: { value?: unknown } }).diameter;
+    expect(diameter?.value).toBe("=d * 2");
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
