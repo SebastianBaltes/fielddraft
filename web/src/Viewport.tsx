@@ -28,7 +28,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
@@ -463,6 +463,61 @@ function SketchDrawingPlane() {
   );
 }
 
+/**
+ * Camera rig that swaps between the perspective orbit view (normal
+ * document editing) and a top-down orthographic camera (sketch
+ * mode). Only one `<OrbitControls>` is mounted at a time, so drei
+ * never has to reconcile two "default" controls against each
+ * other. When the sketch session exits, the perspective camera
+ * comes back with its own orbit controls and the user picks up
+ * where they left off.
+ *
+ * Orthographic mode: camera sits straight above the origin looking
+ * down the -Y axis, so the world XZ plane maps 1:1 to the screen.
+ * Orbit rotation is disabled — only pan and zoom are allowed —
+ * which matches Onshape's sketch-mode expectation that you can't
+ * tumble the camera while a sketch is active.
+ */
+function CameraRig() {
+  const { state } = useKernelStore();
+  const sketchActive = state?.sketchSession.active ?? false;
+
+  if (sketchActive) {
+    return (
+      <>
+        <OrthographicCamera
+          makeDefault
+          position={[0, 500, 0]}
+          up={[0, 0, -1]}
+          near={1}
+          far={4000}
+          zoom={1.2}
+        />
+        <OrbitControls
+          makeDefault
+          enableDamping={false}
+          enableRotate={false}
+          enablePan
+          enableZoom
+          panSpeed={1.2}
+          zoomSpeed={1.6}
+          target={[0, 0, 0]}
+        />
+      </>
+    );
+  }
+
+  return (
+    <OrbitControls
+      makeDefault
+      enableDamping={false}
+      rotateSpeed={1.4}
+      zoomSpeed={1.6}
+      panSpeed={1.2}
+    />
+  );
+}
+
 interface CanvasBoundaryProps {
   children: ReactNode;
 }
@@ -543,13 +598,7 @@ export function Viewport() {
           }}
         >
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
-          <OrbitControls
-            makeDefault
-            enableDamping={false}
-            rotateSpeed={1.4}
-            zoomSpeed={1.6}
-            panSpeed={1.2}
-          />
+          <CameraRig />
         </Canvas>
       </CanvasErrorBoundary>
       <PickHud result={pickResult} />
