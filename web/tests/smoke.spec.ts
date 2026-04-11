@@ -352,6 +352,59 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.1: circular pattern replicates the latest feature around the Y axis", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    const circularBtn = page.getByTestId("circular-pattern-latest");
+    await expect(circularBtn).toBeDisabled();
+
+    // Add a box (the default add-box stagger offsets it
+    // along +X) and circular-pattern it around Y.
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(circularBtn).toBeEnabled();
+    await circularBtn.click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    const shape = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.listFeatures();
+    });
+    expect(shape).not.toBeNull();
+    expect(shape!.some((f) => f.kind === "circular_pattern")).toBe(true);
+
+    // Export STL — six boxes distributed around a ring
+    // produce a mesh strictly larger than a single box at
+    // the default DC resolution.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path);
+    expect(stat.size).toBeGreaterThan(2000);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

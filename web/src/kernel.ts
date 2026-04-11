@@ -425,6 +425,35 @@ export class Kernel {
     return this.inner.addLinearPattern(sourceId, dx, dy, dz, count, spacingMm);
   }
 
+  /** K8.1: append a circular_pattern feature that rotates
+   *  `sourceId` around the axis `(ax, ay, az)` through the
+   *  pivot `(cx, cy, cz)` with `count` total instances over
+   *  `angleDeg` total sweep (360 = full ring). Returns the
+   *  new pattern feature id. */
+  addCircularPattern(
+    sourceId: number,
+    ax: number,
+    ay: number,
+    az: number,
+    cx: number,
+    cy: number,
+    cz: number,
+    count: number,
+    angleDeg: number,
+  ): number {
+    return this.inner.addCircularPattern(
+      sourceId,
+      ax,
+      ay,
+      az,
+      cx,
+      cy,
+      cz,
+      count,
+      angleDeg,
+    );
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

@@ -694,6 +694,24 @@ export class KernelStore {
     return sketches.reduce((acc, f) => (f.id > acc ? f.id : acc), sketches[0].id);
   }
 
+  /** K8.1: circular-pattern the most recent spine feature
+   *  around the world Y axis at (0, 0, 0) with 6 instances
+   *  over a full 360° sweep. */
+  addCircularPatternOfLatest(): number | null {
+    if (this.state.features.length === 0) return null;
+    const source = this.state.features[this.state.features.length - 1];
+    let id: number;
+    try {
+      id = this.kernel.addCircularPattern(source.id, 0, 1, 0, 0, 0, 0, 6, 360);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addCircularPattern failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** K8.0: pattern the most recent spine feature along +X
    *  with default count 3 and spacing 60 mm. MVP — a future
    *  slice grows a pattern-parameter dialog so the user can

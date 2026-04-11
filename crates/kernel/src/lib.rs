@@ -579,6 +579,7 @@ impl Kernel {
             "cylinder" => "cylinder",
             "extrude" => "extrude",
             "linear_pattern" => "linear_pattern",
+            "circular_pattern" => "circular_pattern",
             _ => "unknown",
         }
     }
@@ -592,7 +593,8 @@ impl Kernel {
     ) -> String {
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
-            "linear_pattern" => "Pattern",
+            "linear_pattern" => "Linear pattern",
+            "circular_pattern" => "Circular pattern",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -1053,6 +1055,58 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "linear pattern regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K8.1: append a `circular_pattern` feature call that
+    /// replicates the source around an axis-through-center
+    /// pivot. `angle_deg` is the full sweep (360° for a
+    /// closed ring). Returns the new pattern feature id.
+    #[wasm_bindgen(js_name = addCircularPattern)]
+    pub fn add_circular_pattern(
+        &mut self,
+        source_id: u32,
+        axis_x: f32,
+        axis_y: f32,
+        axis_z: f32,
+        center_x: f32,
+        center_y: f32,
+        center_z: f32,
+        count: u32,
+        angle_deg: f32,
+    ) -> Result<u32, JsError> {
+        let source_fid = FeatureId::from_u32(source_id);
+        if !self.document.features.iter().any(|f| f.id == source_fid) {
+            return Err(JsError::new(&format!(
+                "source feature {source_id} not found on the spine"
+            )));
+        }
+
+        self.snapshot();
+        let pattern_id = self.document.allocate_id();
+        let flat = pattern_id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "source": source_id,
+            "axis": [axis_x, axis_y, axis_z],
+            "center": [center_x, center_y, center_z],
+            "count": count,
+            "angle_deg": angle_deg,
+        });
+        let call = fielddraft_protocol::FeatureCall::new(
+            "circular_pattern",
+            pattern_id,
+            params,
+        );
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "circular pattern regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();

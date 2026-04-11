@@ -212,6 +212,7 @@ impl FeatureRegistry {
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(LinearPatternFeature));
+        r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
         r
     }
@@ -793,6 +794,130 @@ impl FeatureKind for LinearPatternFeature {
     }
 }
 
+// ─── K8.1: Circular pattern ──────────────────────────────────────
+//
+// Twin of the linear pattern: instead of offsetting clones by
+// a constant translation along a direction vector, each clone is
+// rotated around an `axis` through a `center` pivot by an
+// angle that scales with its index. Default sweep is a full
+// 360° divided evenly over `count` instances; arcs come in by
+// overriding `angle_deg`.
+//
+// The math per clone at index `i ∈ 1..count`:
+//   θ        = (i / count) · angle_deg · π / 180
+//   q_delta  = axis_angle_to_quat(unit_axis, θ)
+//   offset   = source.translate − center
+//   clone.translate = q_delta · offset + center
+//   clone.rotation  = q_delta · source.rotation
+//
+// This composes the pattern's rotation on top of whatever
+// transform the source feature already carries, so you can
+// chain circular-pattern a rotated box and every clone stays
+// rotated relative to its own local axis.
+
+/// `circular_pattern` — replicate a source feature around an
+/// axis through a pivot point.
+#[derive(FeatureSchema)]
+#[schema(type = "circular_pattern")]
+pub struct CircularPatternDef {
+    pub source: u32,
+    /// Rotation axis in local frame. The executor normalises
+    /// it; a zero vector errors out.
+    pub axis: [f32; 3],
+    /// Pivot point the axis passes through.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+    /// Total number of instances including the source.
+    pub count: u32,
+    /// Total sweep in degrees. Defaults to a full 360° when
+    /// omitted from the call.
+    #[param(default = 360.0)]
+    pub angle_deg: f32,
+}
+
+pub struct CircularPatternFeature;
+
+impl FeatureKind for CircularPatternFeature {
+    fn type_name(&self) -> &'static str {
+        CircularPatternDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        CircularPatternDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = CircularPatternDef::parse(def)?;
+        if d.count < 2 {
+            return Ok(());
+        }
+        // Normalise the axis.
+        let ax = d.axis[0];
+        let ay = d.axis[1];
+        let az = d.axis[2];
+        let axis_len = (ax * ax + ay * ay + az * az).sqrt();
+        if axis_len < 1e-6 {
+            return Err(FeatureError::InvalidParameter {
+                feature: CircularPatternDef::TYPE_NAME,
+                name: "axis",
+                message: "must be a non-zero vector".to_string(),
+            });
+        }
+        let unit = [ax / axis_len, ay / axis_len, az / axis_len];
+
+        let source_fid = FeatureId::from_u32(d.source);
+        let source_feature = ctx
+            .document
+            .features
+            .iter()
+            .find(|f| f.id == source_fid)
+            .ok_or(FeatureError::MissingParameter {
+                feature: CircularPatternDef::TYPE_NAME,
+                name: "source",
+            })?
+            .clone();
+
+        // Per-instance angle step.
+        let step_rad =
+            (d.angle_deg / d.count as f32) * std::f32::consts::PI / 180.0;
+
+        for i in 1..d.count {
+            let theta = step_rad * i as f32;
+            let half = theta * 0.5;
+            let s = half.sin();
+            let q_delta = [unit[0] * s, unit[1] * s, unit[2] * s, half.cos()];
+
+            // Rotate the source translate around the pivot.
+            let offset = [
+                source_feature.transform.translate[0] - d.center[0],
+                source_feature.transform.translate[1] - d.center[1],
+                source_feature.transform.translate[2] - d.center[2],
+            ];
+            let rotated = crate::quat_rotate(q_delta, offset);
+            let new_translate = [
+                rotated[0] + d.center[0],
+                rotated[1] + d.center[1],
+                rotated[2] + d.center[2],
+            ];
+
+            let mut clone = source_feature.clone();
+            clone.id = id.child(i.to_string());
+            clone.name = format!("{} {}", source_feature.name, i);
+            clone.transform.translate = new_translate;
+            clone.transform.rotation =
+                crate::quat_multiply(q_delta, source_feature.transform.rotation);
+            ctx.document.features.push(clone);
+        }
+
+        Ok(())
+    }
+}
+
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
 /// Extract an optional `"name"` string parameter from the
@@ -881,14 +1006,15 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K8.0 grows the built-in set to include linear_pattern.
-        assert_eq!(registry.len(), 6);
+        // K8.1 grows the built-in set to include circular_pattern.
+        assert_eq!(registry.len(), 7);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
+        assert!(registry.get("circular_pattern").is_some());
         assert!(registry.get("torus").is_none());
     }
 
@@ -926,6 +1052,7 @@ mod tests {
             names,
             vec![
                 "box",
+                "circular_pattern",
                 "cylinder",
                 "extrude",
                 "linear_pattern",
@@ -2176,6 +2303,183 @@ mod tests {
             err,
             FeatureError::MissingParameter {
                 feature: "linear_pattern",
+                ..
+            }
+        ));
+    }
+
+    // ─── K8.1: circular pattern ───────────────────────────────
+
+    #[test]
+    fn circular_pattern_places_clones_around_y_axis_at_even_angles() {
+        // A unit box at (10, 0, 0) circular-patterned around
+        // the Y axis 4 times should land clones at (0, 0, -10),
+        // (-10, 0, 0), (0, 0, 10) — ±1e-4 since the rotation
+        // math goes through f32 trig.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+
+        let box_call = FeatureCall::new(
+            "box",
+            id(1),
+            json!({
+                "half_extents": [1.0, 1.0, 1.0],
+                "translate": [10.0, 0.0, 0.0],
+                "op": "union"
+            }),
+        );
+        let pattern_call = FeatureCall::new(
+            "circular_pattern",
+            id(2),
+            json!({
+                "source": 1,
+                "axis": [0.0, 1.0, 0.0],
+                "center": [0.0, 0.0, 0.0],
+                "count": 4,
+                "angle_deg": 360.0
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[box_call, pattern_call])
+            .unwrap();
+
+        // 1 source + 3 clones.
+        assert_eq!(doc.features.len(), 4);
+        let expectations = [
+            (1_u32, [0.0, 0.0, -10.0]),
+            (2_u32, [-10.0, 0.0, 0.0]),
+            (3_u32, [0.0, 0.0, 10.0]),
+        ];
+        for (i, expected) in expectations {
+            let clone_id = id(2).child(i.to_string());
+            let clone = doc
+                .features
+                .iter()
+                .find(|f| f.id == clone_id)
+                .unwrap_or_else(|| panic!("missing clone {i}"));
+            for k in 0..3 {
+                assert!(
+                    (clone.transform.translate[k] - expected[k]).abs() < 1e-4,
+                    "clone {i} axis {k}: expected {} got {}",
+                    expected[k],
+                    clone.transform.translate[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn circular_pattern_count_1_is_a_noop() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({
+                            "half_extents": [1.0, 1.0, 1.0],
+                            "translate": [5.0, 0.0, 0.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "circular_pattern",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "axis": [0.0, 1.0, 0.0],
+                            "count": 1,
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        // No clones — just the source.
+        assert_eq!(doc.features.len(), 1);
+    }
+
+    #[test]
+    fn circular_pattern_respects_the_center_pivot_for_non_origin_rotations() {
+        // Source at (10, 0, 2), pivot at (5, 0, 0), axis +Y,
+        // 2 instances at 180° sweep: the one clone sits at the
+        // opposite side of the pivot from the source.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "sphere",
+                        id(1),
+                        json!({
+                            "radius": 1.0,
+                            "translate": [10.0, 0.0, 2.0],
+                            "op": "union"
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "circular_pattern",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "axis": [0.0, 1.0, 0.0],
+                            "center": [5.0, 0.0, 0.0],
+                            "count": 2,
+                            "angle_deg": 180.0
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        // 180° step = 90° per instance. At i=1 the clone sits
+        // 90° around the Y axis from the source, relative to
+        // the pivot. Offset (10-5, 0, 2-0) = (5, 0, 2). 90°
+        // CCW around +Y maps (x, y, z) → (z, y, -x) = (2, 0, -5).
+        // Plus pivot: (7, 0, -5).
+        let clone = &doc.features[1];
+        assert!((clone.transform.translate[0] - 7.0).abs() < 1e-4);
+        assert!((clone.transform.translate[1] - 0.0).abs() < 1e-4);
+        assert!((clone.transform.translate[2] + 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn circular_pattern_errors_on_zero_axis() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    FeatureCall::new(
+                        "box",
+                        id(1),
+                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+                    ),
+                    FeatureCall::new(
+                        "circular_pattern",
+                        id(2),
+                        json!({
+                            "source": 1,
+                            "axis": [0.0, 0.0, 0.0],
+                            "count": 4
+                        }),
+                    ),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            FeatureError::InvalidParameter {
+                feature: "circular_pattern",
+                name: "axis",
                 ..
             }
         ));

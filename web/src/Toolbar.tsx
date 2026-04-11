@@ -204,6 +204,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ⎡⎡⎡ Pattern
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Circular pattern the latest feature around Y axis (6×, 360°)"
+          data-testid="circular-pattern-latest"
+          disabled={state.features.length === 0}
+          onClick={() => store.addCircularPatternOfLatest()}
+        >
+          ↻ Circ
+        </button>
       </div>
 
       <div className="group">
