@@ -593,38 +593,38 @@ impl FeatureKind for ExtrudeFeature {
             });
         }
 
-        // K7.1: resolve the `profiles` query against the
-        // context's sketch table. The first cut only honours
-        // `qCreatedBy(sketch_id)`; any other variant falls
-        // through to the hand-coded fallback extents so that
-        // existing K4.5.8 tests keep working.
-        let mut profile_extents: Option<([f32; 2], [f32; 2])> = None;
+        // K7.3: resolve the `profiles` query against the
+        // context's sketch table and lower to a real
+        // `Primitive::Extrude` carrying the full Sketch2d
+        // profile. The K4.5.8 fallback (Box stand-in) stays
+        // for documents that don't yet point at a resolvable
+        // sketch, so existing tests keep running unchanged.
+        let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
         if let Ok(expr) = crate::queries::parse_query(d.profiles.as_str()) {
             if let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr {
                 if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
                     let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
                         &sketch_data.sub_calls,
                     );
-                    let aabb = sketch2d.aabb();
-                    if !aabb.is_empty() {
-                        let size = aabb.size();
-                        let half = [0.5 * size[0], 0.5 * size[1]];
-                        let center_xy = [
-                            0.5 * (aabb.min[0] + aabb.max[0]),
-                            0.5 * (aabb.min[1] + aabb.max[1]),
-                        ];
-                        profile_extents = Some((center_xy, half));
+                    if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
+                        resolved_sketch = Some(sketch2d);
                     }
                 }
             }
         }
 
-        // Fall back to the legacy half-extent parameters when
-        // the query can't be resolved. This keeps the K4.5.8
-        // test surface untouched and documents still load.
-        let (center_xy, half_xy) = match profile_extents {
-            Some(p) => p,
+        let name = optional_display_name(def, || format!("Extrude {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+
+        let primitive = match resolved_sketch {
+            Some(sketch) => Primitive::Extrude {
+                sketch,
+                half_depth_z: depth_mm / 2.0,
+                center: d.center,
+            },
             None => {
+                // Fallback: legacy hand-written half-extents.
                 positive_f32(
                     d.profile_half_x,
                     ExtrudeDef::TYPE_NAME,
@@ -635,22 +635,18 @@ impl FeatureKind for ExtrudeFeature {
                     ExtrudeDef::TYPE_NAME,
                     "profile_half_y",
                 )?;
-                ([d.center[0], d.center[1]], [d.profile_half_x, d.profile_half_y])
+                Primitive::Box {
+                    center: d.center,
+                    half_extents: [d.profile_half_x, d.profile_half_y, depth_mm / 2.0],
+                }
             }
         };
-
-        let name = optional_display_name(def, || format!("Extrude {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
 
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
             name,
             op: d.operation,
-            primitive: Primitive::Box {
-                center: [center_xy[0], center_xy[1], d.center[2]],
-                half_extents: [half_xy[0], half_xy[1], depth_mm / 2.0],
-            },
+            primitive,
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
@@ -1927,17 +1923,23 @@ mod tests {
             .iter()
             .find(|f| f.id == extrude_id)
             .expect("extrude spine entry");
+        // K7.3: the extrude now lowers to a real
+        // Primitive::Extrude carrying the Sketch2d profile
+        // rather than a rectangular Box stand-in.
         match &extrude_feature.primitive {
-            Primitive::Box { center, half_extents } => {
-                // Rectangle AABB: min=(-5,-2), max=(15,8).
-                // Half-extents = (10, 5). Centre XY = (5, 3).
-                assert!((half_extents[0] - 10.0).abs() < 1e-5);
-                assert!((half_extents[1] - 5.0).abs() < 1e-5);
-                assert!((half_extents[2] - 6.0).abs() < 1e-5);
-                assert!((center[0] - 5.0).abs() < 1e-5);
-                assert!((center[1] - 3.0).abs() < 1e-5);
+            Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center: _,
+            } => {
+                assert!((half_depth_z - 6.0).abs() < 1e-5);
+                let aabb = sketch.aabb();
+                assert!((aabb.min[0] - (-5.0)).abs() < 1e-5);
+                assert!((aabb.max[0] - 15.0).abs() < 1e-5);
+                assert!((aabb.min[1] - (-2.0)).abs() < 1e-5);
+                assert!((aabb.max[1] - 8.0).abs() < 1e-5);
             }
-            other => panic!("expected Primitive::Box, got {other:?}"),
+            other => panic!("expected Primitive::Extrude, got {other:?}"),
         }
     }
 
@@ -1982,15 +1984,24 @@ mod tests {
             .iter()
             .find(|f| f.id == extrude_id)
             .expect("extrude spine entry");
+        // K7.3: circle sketch no longer lowers to its bounding
+        // box — Primitive::Extrude carries the full Sketch2d,
+        // so the downstream mesher gets a real cylinder.
         match &extrude_feature.primitive {
-            Primitive::Box { center, half_extents } => {
-                // Circle AABB: half_extents = radius on both axes.
-                assert!((half_extents[0] - 7.0).abs() < 1e-5);
-                assert!((half_extents[1] - 7.0).abs() < 1e-5);
-                assert!((center[0] - 2.0).abs() < 1e-5);
-                assert!((center[1] - 4.0).abs() < 1e-5);
+            Primitive::Extrude { sketch, .. } => {
+                assert!(matches!(
+                    sketch,
+                    ::fielddraft_protocol::Sketch2d::Prim(
+                        ::fielddraft_protocol::Sketch2dPrimitive::Circle { .. },
+                    )
+                ));
+                let aabb = sketch.aabb();
+                // Circle centre (2, 4) radius 7 → aabb extents ±7
+                // around the centre.
+                assert!((aabb.min[0] - (-5.0)).abs() < 1e-5);
+                assert!((aabb.max[0] - 9.0).abs() < 1e-5);
             }
-            other => panic!("expected Primitive::Box, got {other:?}"),
+            other => panic!("expected Primitive::Extrude, got {other:?}"),
         }
     }
 

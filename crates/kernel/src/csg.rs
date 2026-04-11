@@ -267,6 +267,32 @@ impl Aabb {
                     center[2] + radius,
                 ],
             },
+            // K7.3: the extrude primitive sweeps its 2D sketch
+            // along the local Z axis, so the 3D AABB is the
+            // 2D sketch AABB on the XY axes plus ±half_depth_z
+            // on Z, translated to `center`.
+            Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center,
+            } => {
+                let bb2 = sketch.aabb();
+                if bb2.is_empty() {
+                    return Self::EMPTY;
+                }
+                Self {
+                    min: [
+                        center[0] + bb2.min[0],
+                        center[1] + bb2.min[1],
+                        center[2] - *half_depth_z,
+                    ],
+                    max: [
+                        center[0] + bb2.max[0],
+                        center[1] + bb2.max[1],
+                        center[2] + *half_depth_z,
+                    ],
+                }
+            }
         }
     }
 
@@ -365,13 +391,50 @@ impl CsgNode {
     pub fn from_features(features: &[Feature]) -> Self {
         let mut acc = Self::Empty;
         for f in features {
-            let leaf = Self::Transform(
-                f.transform,
-                Box::new(Self::Leaf {
+            // K7.3: Primitive::Extrude lowers directly to a
+            // CsgNode::Extrude that the K4 mesher knows how
+            // to walk. Every other primitive stays in the
+            // CsgNode::Leaf wrapper path so the existing
+            // BoundedCsg builder keeps working unchanged.
+            let node = match &f.primitive {
+                Primitive::Extrude {
+                    sketch,
+                    half_depth_z,
+                    center,
+                } => {
+                    // Fold the extrude's own `center` into a
+                    // pre-rotation translation so the
+                    // canonical `CsgNode::Extrude` slab sits
+                    // at the origin of the local frame. The
+                    // outer `CsgNode::Transform` then applies
+                    // the feature's own transform on top.
+                    let centered = Self::Extrude {
+                        id: f.id.clone(),
+                        sketch: Box::new(sketch.clone()),
+                        half_height: *half_depth_z,
+                    };
+                    // Shift by `center` via an inner
+                    // Transform so the extrude SDF sees local
+                    // coordinates centred on its own origin.
+                    if *center == [0.0, 0.0, 0.0] {
+                        centered
+                    } else {
+                        Self::Transform(
+                            Transform {
+                                translate: *center,
+                                rotation: [0.0, 0.0, 0.0, 1.0],
+                                scale: 1.0,
+                            },
+                            Box::new(centered),
+                        )
+                    }
+                }
+                _ => Self::Leaf {
                     id: f.id.clone(),
                     primitive: f.primitive.clone(),
-                }),
-            );
+                },
+            };
+            let leaf = Self::Transform(f.transform, Box::new(node));
             acc = match (acc, f.op) {
                 (Self::Empty, _) => leaf,
                 (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
@@ -587,7 +650,50 @@ fn combine_max(
 mod tests {
     use super::*;
     use crate::sdf_features;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use fielddraft_protocol::{
+        BoolOp, Feature, FeatureId, Primitive, Sketch2d as ProtoSketch2d,
+        Sketch2dPrimitive as ProtoSketch2dPrimitive, Transform,
+    };
+
+    // ─── K7.3: from_features → CsgNode::Extrude ────────────────
+
+    #[test]
+    fn from_features_lowers_primitive_extrude_to_csgnode_extrude() {
+        // A radius-5 circle sketch extruded ±3 mm along Z
+        // should produce a cylindrical SDF: a point at the
+        // centre of the slab is inside, a point on the
+        // circular boundary sits on the surface (SDF ≈ 0),
+        // and a point far from the slab is outside.
+        let circle_sketch = ProtoSketch2d::Prim(ProtoSketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 5.0,
+        });
+        let features = vec![Feature {
+            id: FeatureId::from_u32(1),
+            name: "extrude".to_string(),
+            op: BoolOp::Union,
+            primitive: Primitive::Extrude {
+                sketch: circle_sketch,
+                half_depth_z: 3.0,
+                center: [0.0, 0.0, 0.0],
+            },
+            transform: Transform::IDENTITY,
+        }];
+        let csg = CsgNode::from_features(&features);
+        // Inside at the origin.
+        assert!(csg.sdf([0.0, 0.0, 0.0], EvalMode::Logical) < 0.0);
+        // On the cylindrical surface at (5, 0, 0).
+        let on_surface = csg.sdf([5.0, 0.0, 0.0], EvalMode::Logical).abs();
+        assert!(on_surface < 0.01, "expected ~0, got {on_surface}");
+        // Outside above the slab.
+        assert!(csg.sdf([0.0, 0.0, 10.0], EvalMode::Logical) > 0.0);
+        // The bounding AABB matches the cylinder extents.
+        let aabb = csg.aabb();
+        assert!((aabb.min[0] - (-5.0)).abs() < 1e-5);
+        assert!((aabb.max[0] - 5.0).abs() < 1e-5);
+        assert!((aabb.min[2] - (-3.0)).abs() < 1e-5);
+        assert!((aabb.max[2] - 3.0).abs() < 1e-5);
+    }
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {

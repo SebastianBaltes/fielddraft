@@ -272,6 +272,86 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             radius.to_bits().hash(hasher);
             half_height.to_bits().hash(hasher);
         }
+        // K7.3: hash the full sketch payload so a profile
+        // edit bumps the body cache and triggers a remesh.
+        Primitive::Extrude {
+            sketch,
+            half_depth_z,
+            center,
+        } => {
+            3u8.hash(hasher);
+            for v in center {
+                v.to_bits().hash(hasher);
+            }
+            half_depth_z.to_bits().hash(hasher);
+            hash_sketch2d(sketch, hasher);
+        }
+    }
+}
+
+/// K7.3: walk a [`Sketch2d`] tree and push every leaf's
+/// coordinates into the hasher. Used by [`hash_primitive`] so
+/// the body-cache reuse check notices profile edits.
+fn hash_sketch2d(
+    sketch: &fielddraft_protocol::Sketch2d,
+    hasher: &mut DefaultHasher,
+) {
+    use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+    match sketch {
+        Sketch2d::Empty => 0u8.hash(hasher),
+        Sketch2d::Prim(prim) => {
+            1u8.hash(hasher);
+            match prim {
+                Sketch2dPrimitive::Circle { center, radius } => {
+                    0u8.hash(hasher);
+                    for v in center {
+                        v.to_bits().hash(hasher);
+                    }
+                    radius.to_bits().hash(hasher);
+                }
+                Sketch2dPrimitive::Rectangle {
+                    center,
+                    half_extents,
+                } => {
+                    1u8.hash(hasher);
+                    for v in center {
+                        v.to_bits().hash(hasher);
+                    }
+                    for v in half_extents {
+                        v.to_bits().hash(hasher);
+                    }
+                }
+                Sketch2dPrimitive::Polygon { vertices } => {
+                    2u8.hash(hasher);
+                    vertices.len().hash(hasher);
+                    for vert in vertices {
+                        for v in vert {
+                            v.to_bits().hash(hasher);
+                        }
+                    }
+                }
+            }
+        }
+        Sketch2d::Union(a, b) => {
+            2u8.hash(hasher);
+            hash_sketch2d(a, hasher);
+            hash_sketch2d(b, hasher);
+        }
+        Sketch2d::Difference(a, b) => {
+            3u8.hash(hasher);
+            hash_sketch2d(a, hasher);
+            hash_sketch2d(b, hasher);
+        }
+        Sketch2d::Intersection(a, b) => {
+            4u8.hash(hasher);
+            hash_sketch2d(a, hasher);
+            hash_sketch2d(b, hasher);
+        }
+        Sketch2d::Offset { inner, distance } => {
+            5u8.hash(hasher);
+            hash_sketch2d(inner, hasher);
+            distance.to_bits().hash(hasher);
+        }
     }
 }
 

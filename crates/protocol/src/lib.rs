@@ -13,6 +13,9 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+pub mod sketch2d;
+pub use sketch2d::{Aabb2, Sketch2d, Sketch2dPrimitive};
+
 /// Current on-disk / on-wire schema version for the project document.
 pub const SCHEMA_VERSION: u32 = 2;
 
@@ -226,12 +229,29 @@ impl<'de> Deserialize<'de> for FeatureId {
 
 /// A single SDF primitive shape. The primitive itself carries no
 /// boolean operation — that lives on its enclosing `Feature`.
+///
+/// K7.3 adds the `Extrude` variant so the extrude feature can
+/// lower into a real sketch-profile volume rather than a
+/// rectangular Box stand-in. The sketch payload is a full
+/// [`Sketch2d`] tree (including unions / differences), and
+/// `half_depth_z` plus `center` define the world-space slab
+/// the profile sweeps along the local Z axis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Primitive {
     Box { center: [f32; 3], half_extents: [f32; 3] },
     Sphere { center: [f32; 3], radius: f32 },
     Cylinder { center: [f32; 3], radius: f32, half_height: f32 },
+    /// K7.3: sketch-profile extrusion. The `sketch` field carries
+    /// the 2D region that gets swept; `half_depth_z` is half the
+    /// total extrude height along the local Z axis; `center`
+    /// positions the resulting slab in world space (the extrude
+    /// plane is at `center[2]`).
+    Extrude {
+        sketch: Sketch2d,
+        half_depth_z: f32,
+        center: [f32; 3],
+    },
 }
 
 impl Primitive {
@@ -239,12 +259,14 @@ impl Primitive {
     pub const KIND_BOX: u32 = 0;
     pub const KIND_SPHERE: u32 = 1;
     pub const KIND_CYLINDER: u32 = 2;
+    pub const KIND_EXTRUDE: u32 = 3;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
             Primitive::Box { .. } => Self::KIND_BOX,
             Primitive::Sphere { .. } => Self::KIND_SPHERE,
             Primitive::Cylinder { .. } => Self::KIND_CYLINDER,
+            Primitive::Extrude { .. } => Self::KIND_EXTRUDE,
         }
     }
 
@@ -254,6 +276,7 @@ impl Primitive {
             Primitive::Box { .. } => "Box",
             Primitive::Sphere { .. } => "Sphere",
             Primitive::Cylinder { .. } => "Cylinder",
+            Primitive::Extrude { .. } => "Extrude",
         }
     }
 }
@@ -525,6 +548,14 @@ impl FeatureCall {
             Primitive::Box { .. } => "box",
             Primitive::Sphere { .. } => "sphere",
             Primitive::Cylinder { .. } => "cylinder",
+            // K7.3: Primitive::Extrude on the spine is a
+            // *derived* artefact — the authoritative wire form
+            // is the original "extrude" FeatureCall with its
+            // sketch query, preserved verbatim by
+            // `sync_feature_calls` via the is_spine_type filter
+            // below. Emit a placeholder type_name here so the
+            // sync can skip re-adding it.
+            Primitive::Extrude { .. } => "__derived_extrude_skip__",
         };
         let op = bool_op_wire_name(f.op);
         let translate = f.transform.translate;
@@ -561,6 +592,20 @@ impl FeatureCall {
             } => serde_json::json!({
                 "radius": radius,
                 "half_height": half_height,
+                "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center,
+            } => serde_json::json!({
+                "sketch": sketch,
+                "half_depth_z": half_depth_z,
                 "center": center,
                 "translate": translate,
                 "rotation": rotation,
@@ -682,6 +727,13 @@ impl Document {
             .features
             .iter()
             .map(FeatureCall::from_spine_feature)
+            // K7.3: Primitive::Extrude spine entries are
+            // derived from the original "extrude" FeatureCall
+            // at regen time. Don't re-emit them here —
+            // `surviving` already preserves the authoritative
+            // entry because the is_spine_type filter above
+            // doesn't treat them as spine-derived.
+            .filter(|call| call.type_name != "__derived_extrude_skip__")
             .collect();
         next.extend(surviving);
         self.feature_calls = next;
@@ -692,8 +744,14 @@ impl Document {
 /// [`Feature`] on the document spine. Used by
 /// [`Document::sync_feature_calls`] to decide which entries to
 /// rebuild from `features` vs. which ones to preserve verbatim.
+///
+/// K7.3 removes `"extrude"` from this set: extrude calls now
+/// survive the sync verbatim (same rule as `"sketch"`) because
+/// `Primitive::Extrude` on the spine is a derived artefact —
+/// the canonical wire form is the original extrude
+/// `FeatureCall` with its sketch query.
 fn is_spine_type(type_name: &str) -> bool {
-    matches!(type_name, "box" | "sphere" | "cylinder" | "extrude")
+    matches!(type_name, "box" | "sphere" | "cylinder")
 }
 
 #[cfg(test)]

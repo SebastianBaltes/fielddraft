@@ -189,6 +189,24 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let inside = radial.max(axial).min(0.0);
             outside + inside
         }
+        // K7.3: lift the 2D sketch SDF into 3D via IQ's extrude
+        // composition — `(d_2d, |z| - half_depth_z)` treated as
+        // a 2D box SDF. Matches what `CsgNode::Extrude` does at
+        // the mesher level; duplicated here so the
+        // non-CSG-tree `sdf_primitive` path (picking fallback)
+        // still returns a sensible distance.
+        Primitive::Extrude {
+            sketch,
+            half_depth_z,
+            center,
+        } => {
+            let local_xy = [p[0] - center[0], p[1] - center[1]];
+            let d_xy = sketch.sdf(local_xy);
+            let d_z = (p[2] - center[2]).abs() - *half_depth_z;
+            let outside = d_xy.max(0.0).hypot(d_z.max(0.0));
+            let inside = d_xy.max(d_z).min(0.0);
+            outside + inside
+        }
     }
 }
 
@@ -240,6 +258,31 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[1..4].copy_from_slice(center);
             out[4] = *radius;
             out[5] = *half_height;
+        }
+        // K7.3: the old TSL raymarcher has no concept of
+        // sketch extrusions. Pack the AABB extents as a proxy
+        // box so the retired renderer at least draws something
+        // at the right place if it ever gets reactivated.
+        Primitive::Extrude {
+            sketch,
+            half_depth_z,
+            center,
+        } => {
+            let bb2 = sketch.aabb();
+            let half_x = if bb2.is_empty() {
+                0.0
+            } else {
+                0.5 * (bb2.max[0] - bb2.min[0])
+            };
+            let half_y = if bb2.is_empty() {
+                0.0
+            } else {
+                0.5 * (bb2.max[1] - bb2.min[1])
+            };
+            out[1..4].copy_from_slice(center);
+            out[4] = half_x;
+            out[5] = half_y;
+            out[6] = *half_depth_z;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -505,6 +548,7 @@ impl Kernel {
             Primitive::Box { .. } => "box",
             Primitive::Sphere { .. } => "sphere",
             Primitive::Cylinder { .. } => "cylinder",
+            Primitive::Extrude { .. } => "extrude",
         }
     }
 
