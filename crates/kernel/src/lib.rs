@@ -1332,6 +1332,61 @@ impl Kernel {
         Ok(())
     }
 
+    /// K8.8: duplicate a feature call. Allocates a fresh id,
+    /// clones the call's wire-form params, nudges any
+    /// `translate` vector by `(+20, 0, 0)` so the clone doesn't
+    /// sit exactly on top of the source, and pushes the new
+    /// call to `feature_calls`. Returns the new id. Features
+    /// without a translate field (patterns, mirror, sketch)
+    /// are cloned verbatim — their geometry is derived from a
+    /// referenced source, so the visual offset happens on the
+    /// source side instead.
+    #[wasm_bindgen(js_name = duplicateFeature)]
+    pub fn duplicate_feature(&mut self, id: u32) -> Result<u32, JsError> {
+        let target = FeatureId::from_u32(id);
+        let idx = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == target)
+            .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
+
+        self.snapshot();
+        let source = self.document.feature_calls[idx].clone();
+        let new_id = self.document.allocate_id();
+        let new_flat = new_id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+
+        // Nudge translate along +X so the clone is visible.
+        let mut new_params = source.params.clone();
+        if let Some(obj) = new_params.as_object_mut() {
+            if let Some(t) = obj.get_mut("translate").and_then(|v| v.as_array_mut()) {
+                if t.len() == 3 {
+                    if let Some(x) = t[0].as_f64() {
+                        t[0] = serde_json::json!(x + 20.0);
+                    }
+                }
+            }
+        }
+
+        let new_call = fielddraft_protocol::FeatureCall {
+            type_name: source.type_name.clone(),
+            id: new_id,
+            params: new_params,
+            suppressed: source.suppressed,
+        };
+        self.document.feature_calls.push(new_call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "duplicate regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(new_flat)
+    }
+
     /// K8.7: toggle a feature call's suppressed flag and
     /// regenerate. A suppressed call is skipped by the
     /// registry's regen loop, so its geometry drops out of the

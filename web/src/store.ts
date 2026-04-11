@@ -666,6 +666,21 @@ export class KernelStore {
     return this.kernel.getFeatureCallParams(id);
   }
 
+  /** K8.8: duplicate a feature call. Returns the new feature
+   *  id, or `null` when the kernel rejected the call. */
+  duplicateFeature(id: number): number | null {
+    let newId: number;
+    try {
+      newId = this.kernel.duplicateFeature(id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: duplicateFeature failed", err);
+      return null;
+    }
+    this.commit(new Set([newId]), newId);
+    return newId;
+  }
+
   /** K8.7: flip a feature's suppressed flag. Returns `true` on
    *  success, `false` when the toggle rolls back (e.g. an
    *  upstream dependency broke and regeneration failed). */

@@ -601,6 +601,12 @@ export class Kernel {
     this.inner.setFeatureSuppressed(id, suppressed);
   }
 
+  /** K8.8: duplicate a feature call with a +20mm X nudge on
+   *  its translate, and return the new feature id. */
+  duplicateFeature(id: number): number {
+    return this.inner.duplicateFeature(id);
+  }
+
   reorderFeature(id: number, targetIndex: number): boolean {
     return this.inner.reorderFeature(id, targetIndex);
   }

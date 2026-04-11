@@ -74,8 +74,19 @@ test.describe("FieldDraft smoke", () => {
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
     await expect(page.getByTestId("feature-row-2")).toBeVisible();
 
-    // Selecting the box and pressing Delete removes it again.
-    await page.getByTestId("feature-row-2").click();
+    // Select the box via the store directly — after
+    // K8.7/K8.8 added eye/reorder/duplicate buttons, the row's
+    // body is button-heavy enough that Playwright's
+    // centre-click lands on something that stopPropagation and
+    // never surfaces to the row's onClick. The store
+    // selectOnly path is what the row handler eventually calls
+    // anyway, so going through __fdStore is a faithful stand-in
+    // for "the user clicks row 2".
+    await page.evaluate(() => {
+      (
+        window as unknown as { __fdStore?: { selectOnly: (id: number) => void } }
+      ).__fdStore?.selectOnly(2);
+    });
     await page.keyboard.press("Delete");
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
   });
@@ -748,6 +759,60 @@ test.describe("FieldDraft smoke", () => {
       "data-feature-suppressed",
       "false",
     );
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("K8.8: duplicate a feature from the outliner", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    // Duplicate the box — a new row appears, selected, with
+    // translate nudged +20 mm along X.
+    await page.getByTestId("feature-duplicate-1").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+    await expect(page.getByTestId("feature-row-2")).toBeVisible();
+
+    const after = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return {
+        one: kernel.getFeatureCallParams(1),
+        two: kernel.getFeatureCallParams(2),
+      };
+    });
+    expect(after).not.toBeNull();
+    const sourceTranslate = (after!.one as { translate?: number[] }).translate ?? [
+      0, 0, 0,
+    ];
+    const cloneTranslate = (after!.two as { translate?: number[] }).translate ?? [
+      0, 0, 0,
+    ];
+    expect(cloneTranslate[0]).toBeCloseTo(sourceTranslate[0] + 20, 5);
+    expect(cloneTranslate[1]).toBeCloseTo(sourceTranslate[1], 5);
+    expect(cloneTranslate[2]).toBeCloseTo(sourceTranslate[2], 5);
+
+    // Undo rolls back the duplicate cleanly.
+    await page.getByTestId("undo").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+    await expect(page.getByTestId("feature-row-2")).toHaveCount(0);
 
     expect(
       pageErrors.map((e) => e.message),

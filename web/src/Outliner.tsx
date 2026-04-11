@@ -412,6 +412,18 @@ export function Outliner({ store, state }: OutlinerProps) {
                 </button>
                 <button
                   type="button"
+                  className="row-reorder"
+                  title="Duplicate"
+                  data-testid={`feature-duplicate-${feature.id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    store.duplicateFeature(feature.id);
+                  }}
+                >
+                  ⧉
+                </button>
+                <button
+                  type="button"
                   className="row-delete"
                   title="Delete"
                   onClick={(e) => handleDelete(e, feature.id)}
