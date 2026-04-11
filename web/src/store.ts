@@ -659,6 +659,28 @@ export class KernelStore {
    * plane is set, the session is simply dropped — same as a
    * cancel.
    */
+  // ── K7.5: editable feature params ─────────────────────────────
+
+  /** Read the current wire-form params for a feature. */
+  getFeatureParams(id: number): Record<string, unknown> {
+    return this.kernel.getFeatureCallParams(id);
+  }
+
+  /** Replace a feature's wire-form params and commit. Used
+   *  by the Outliner FeatureDialog's onChange to round-trip
+   *  edits back into the kernel. */
+  updateFeatureParams(id: number, params: Record<string, unknown>): boolean {
+    try {
+      this.kernel.replaceFeatureCallParams(id, params);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: replaceFeatureCallParams failed", err);
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
   // ── K7.4: extrude convenience ─────────────────────────────────
 
   /** Find the most recently committed sketch feature (by id)

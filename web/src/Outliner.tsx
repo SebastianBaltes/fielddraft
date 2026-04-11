@@ -69,14 +69,13 @@ export function Outliner({ store, state }: OutlinerProps) {
   // React's reference identity stable for downstream hooks.
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
 
-  // K6a: the generic FeatureDialog's working copy. Keyed on the
-  // currently-selected feature's kind so switching between two
-  // features of the same kind reuses the edit buffer, while
-  // switching to a different kind reinitialises it from the
-  // schema defaults. Full "commit edits back to the kernel"
-  // plumbing is K6b territory — the dialog in this slice
-  // renders the schema and lets the user type into it, but
-  // doesn't yet round-trip values into the feature spine.
+  // K7.5: the FeatureDialog's working copy mirrors the
+  // currently-selected feature's real params. Whenever the
+  // selection changes we reload the draft from the kernel,
+  // and every dialog onChange commits the new blob back via
+  // store.updateFeatureParams. Keyed on the feature id so
+  // switching between two features of the same kind picks up
+  // each one's own values, not a shared default.
   const [dialogDraft, setDialogDraft] = useState<
     Record<string, unknown>
   >({});
@@ -100,19 +99,45 @@ export function Outliner({ store, state }: OutlinerProps) {
     }
   }, [fd, selectedFeature]);
 
-  // Reset the dialog draft whenever the selection changes to a
-  // feature of a different kind. Keying by kind rather than id
-  // means navigating through a row of identical primitives
-  // reuses the in-progress edits without the React reconciler
-  // thrashing.
-  const draftKey = selectedSchema?.type ?? null;
+  // Reload the draft from the kernel whenever the selected
+  // feature id changes. The `draftKey` is the feature id plus
+  // the schema type so a delete+re-add of the same id still
+  // reinitialises cleanly.
+  const draftKey =
+    selectedFeature && selectedSchema
+      ? `${selectedFeature.id}:${selectedSchema.type}`
+      : null;
   const [lastDraftKey, setLastDraftKey] = useState<string | null>(null);
   if (draftKey !== lastDraftKey) {
     setLastDraftKey(draftKey);
-    setDialogDraft(
-      selectedSchema ? buildDefaultDefinition(selectedSchema) : {},
-    );
+    if (selectedFeature && selectedSchema) {
+      try {
+        setDialogDraft(store.getFeatureParams(selectedFeature.id));
+      } catch {
+        setDialogDraft(buildDefaultDefinition(selectedSchema));
+      }
+    } else {
+      setDialogDraft({});
+    }
   }
+
+  // K7.5: committing a dialog change writes back through the
+  // store, which re-runs regeneration. The commit bumps the
+  // store version, which forces a re-render and a new
+  // `selectedFeature` reference. The `draftKey` equality
+  // guard above prevents the reload from clobbering an
+  // in-progress edit because the feature id hasn't changed.
+  const handleDialogChange = (next: Record<string, unknown>) => {
+    setDialogDraft(next);
+    if (!selectedFeature) return;
+    // K7.5 intentionally commits only when the kernel accepts
+    // the change. Non-primitive features (sketch, extrude)
+    // skip the direct edit path — sketches are edited via
+    // their own reentry session, extrudes don't currently
+    // expose a per-call edit UX.
+    if (selectedFeature.kind === "sketch") return;
+    store.updateFeatureParams(selectedFeature.id, next);
+  };
 
   const handleRowClick = (e: MouseEvent, id: number) => {
     if (e.shiftKey) {
@@ -236,7 +261,7 @@ export function Outliner({ store, state }: OutlinerProps) {
         <FeatureDialog
           schema={selectedSchema}
           definition={dialogDraft}
-          onChange={setDialogDraft}
+          onChange={handleDialogChange}
         />
       ) : null}
       <div className="header">Features</div>

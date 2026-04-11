@@ -1005,6 +1005,63 @@ impl Kernel {
         Ok(flat)
     }
 
+    /// K7.5: return the current `params` JSON string for a
+    /// feature call by id. Used by the Outliner's
+    /// FeatureDialog to initialise its edit buffer with the
+    /// feature's real values rather than a schema-default
+    /// blob.
+    #[wasm_bindgen(js_name = getFeatureCallParams)]
+    pub fn get_feature_call_params(&self, id: u32) -> Result<String, JsError> {
+        let target = FeatureId::from_u32(id);
+        let call = self
+            .document
+            .feature_calls
+            .iter()
+            .find(|c| c.id == target)
+            .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
+        serde_json::to_string(&call.params).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// K7.5: replace the `params` JSON of a feature call in
+    /// place and regenerate the spine. Keeps the feature id
+    /// stable so the outliner row doesn't jump, and re-runs
+    /// the registry so downstream cached state (body meshes,
+    /// packed buffer) reflects the new values.
+    #[wasm_bindgen(js_name = replaceFeatureCallParams)]
+    pub fn replace_feature_call_params(
+        &mut self,
+        id: u32,
+        params_json: &str,
+    ) -> Result<(), JsError> {
+        let target = FeatureId::from_u32(id);
+        let new_params: serde_json::Value =
+            serde_json::from_str(params_json).map_err(|e| {
+                JsError::new(&format!("invalid params JSON: {e}"))
+            })?;
+        let idx = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == target)
+            .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
+
+        self.snapshot();
+        let type_name = self.document.feature_calls[idx].type_name.clone();
+        self.document.feature_calls[idx] = fielddraft_protocol::FeatureCall::new(
+            type_name,
+            target,
+            new_params,
+        );
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "feature regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(())
+    }
+
     /// K6b.3a: fetch the sub-spine sub_calls for a sketch by
     /// feature id, so the UI can reload an existing sketch when
     /// the user re-enters it. Returns the JSON array string of
@@ -2151,6 +2208,62 @@ mod tests {
             .find(|f| matches!(f.primitive, Primitive::Extrude { .. }))
             .expect("extrude spine entry");
         assert_eq!(extrude_spine.op, BoolOp::Difference);
+    }
+
+    // ─── K7.5: editable feature params ──────────────────────────
+
+    #[test]
+    fn replace_feature_call_params_updates_box_half_extents_in_place() {
+        let mut k = Kernel::new();
+        let id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        // Sanity: the current params reflect half_extents=[10,10,10].
+        let before = k.get_feature_call_params(id).unwrap();
+        let before_val: serde_json::Value = serde_json::from_str(&before).unwrap();
+        let arr = before_val["half_extents"].as_array().unwrap();
+        assert!((arr[0].as_f64().unwrap() - 10.0).abs() < 1e-5);
+
+        // Replace with a wider box.
+        let new_params = serde_json::json!({
+            "half_extents": [25.0, 15.0, 5.0],
+            "center": [0.0, 0.0, 0.0],
+            "translate": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": 1.0,
+            "op": "union",
+        });
+        k.replace_feature_call_params(id, &new_params.to_string())
+            .unwrap();
+
+        // The spine feature must carry the new extents, and the
+        // feature id stays stable.
+        assert_eq!(k.document.features.len(), 1);
+        let feat = &k.document.features[0];
+        assert_eq!(feat.id.as_u32_if_flat(), Some(id));
+        match &feat.primitive {
+            Primitive::Box { half_extents, .. } => {
+                assert!((half_extents[0] - 25.0).abs() < 1e-5);
+                assert!((half_extents[1] - 15.0).abs() < 1e-5);
+                assert!((half_extents[2] - 5.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+
+        // And the wire form round-trips the new values.
+        let after = k.get_feature_call_params(id).unwrap();
+        let after_val: serde_json::Value = serde_json::from_str(&after).unwrap();
+        let after_arr = after_val["half_extents"].as_array().unwrap();
+        assert!((after_arr[0].as_f64().unwrap() - 25.0).abs() < 1e-5);
     }
 
     // ─── primitive mutations + undo/redo ─────────────────────────────

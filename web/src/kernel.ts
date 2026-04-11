@@ -392,6 +392,24 @@ export class Kernel {
     }>;
   }
 
+  /** K7.5: current wire-form `params` of a feature call by
+   *  id. The Outliner FeatureDialog seeds its edit buffer
+   *  from this, so changes carry through to the actual
+   *  feature rather than a schema-default stub. */
+  getFeatureCallParams(id: number): Record<string, unknown> {
+    const json = this.inner.getFeatureCallParams(id);
+    return JSON.parse(json) as Record<string, unknown>;
+  }
+
+  /** K7.5: replace the wire-form params of a feature call in
+   *  place and regenerate. Keeps the feature id stable. */
+  replaceFeatureCallParams(
+    id: number,
+    params: Record<string, unknown>,
+  ): void {
+    this.inner.replaceFeatureCallParams(id, JSON.stringify(params));
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

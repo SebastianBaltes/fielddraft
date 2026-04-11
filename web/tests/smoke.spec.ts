@@ -240,6 +240,56 @@ test.describe("FieldDraft smoke", () => {
     expect(stat.size).toBeGreaterThan(100);
   });
 
+  test("K7.5: editing a box's Half extents in the outliner dialog round-trips to the kernel", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.getByTestId("add-box").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    // Select the box row so the FeatureDialog mounts on top.
+    await page.getByTestId("feature-row-1").click();
+
+    // Drive the Vec3 Half extents widget via its per-axis
+    // aria-labels. The default add-box size is 50 × 50 × 50;
+    // we'll grow the X half-extent to 75.
+    const xInput = page.getByLabel("Half extents x");
+    await expect(xInput).toBeVisible();
+    await xInput.fill("75");
+    // The TS commit path runs synchronously off the onChange,
+    // but give React one tick to propagate before we peek the
+    // kernel.
+    await page.waitForTimeout(100);
+
+    const after = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      return kernel.getFeatureCallParams(1);
+    });
+    expect(after).not.toBeNull();
+    const halfExtents = (after as { half_extents?: number[] }).half_extents;
+    expect(halfExtents?.[0]).toBeCloseTo(75, 5);
+    // Y and Z stay at the add-box default.
+    expect(halfExtents?.[1]).toBeCloseTo(50, 5);
+    expect(halfExtents?.[2]).toBeCloseTo(50, 5);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
