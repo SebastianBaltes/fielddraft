@@ -666,6 +666,29 @@ export class KernelStore {
     return this.kernel.getFeatureCallParams(id);
   }
 
+  /** K8.6: move a feature one slot up in the outliner. No-op
+   *  when the feature is already at the top or doesn't exist.
+   *  Returns `true` on success. Reorder is a kernel mutation,
+   *  so it goes through snapshot/commit and participates in
+   *  undo/redo. */
+  moveFeatureUp(id: number): boolean {
+    const idx = this.state.features.findIndex((f) => f.id === id);
+    if (idx <= 0) return false;
+    if (!this.kernel.reorderFeature(id, idx - 1)) return false;
+    this.commit();
+    return true;
+  }
+
+  /** K8.6: twin of [`moveFeatureUp`] — move a feature one slot
+   *  down. No-op at the bottom. */
+  moveFeatureDown(id: number): boolean {
+    const idx = this.state.features.findIndex((f) => f.id === id);
+    if (idx < 0 || idx >= this.state.features.length - 1) return false;
+    if (!this.kernel.reorderFeature(id, idx + 1)) return false;
+    this.commit();
+    return true;
+  }
+
   /** K8.5: rename a feature by patching the `name` key in its
    *  wire-form params and commiting. Works for every feature
    *  kind — primitives and Extrude/Revolve honour `"name"` via

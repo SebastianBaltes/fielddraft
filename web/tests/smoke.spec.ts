@@ -639,6 +639,60 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("K8.6: up/down arrows reorder features in the outliner", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Three primitives so both buttons have somewhere to go.
+    await page.getByTestId("add-box").click();
+    await page.getByTestId("add-sphere").click();
+    await page.getByTestId("add-cylinder").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("3 features");
+
+    const kindsAt = async () =>
+      page.evaluate(() => {
+        const kernel = (
+          window as unknown as {
+            __fdKernel?: {
+              listFeatures: () => Array<{ id: number; kind: string }>;
+            };
+          }
+        ).__fdKernel;
+        return kernel ? kernel.listFeatures().map((f) => f.kind) : null;
+      });
+    expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
+
+    // Move the sphere (id 2) up — it becomes the new head.
+    await page.getByTestId("feature-move-up-2").click();
+    expect(await kindsAt()).toEqual(["sphere", "box", "cylinder"]);
+
+    // Move it back down — order restored.
+    await page.getByTestId("feature-move-down-2").click();
+    expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
+
+    // Up on the first row is a no-op, down on the last row is
+    // a no-op. Both must not crash or change state.
+    await page.getByTestId("feature-move-up-1").click();
+    await page.getByTestId("feature-move-down-3").click();
+    expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
+
+    // Reorder participates in undo: the two edge-case clicks
+    // above were no-ops, so one undo rewinds the sphere-down
+    // move that restored the original order.
+    await page.getByTestId("undo").click();
+    expect(await kindsAt()).toEqual(["sphere", "box", "cylinder"]);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

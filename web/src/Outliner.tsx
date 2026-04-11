@@ -369,6 +369,30 @@ export function Outliner({ store, state }: OutlinerProps) {
                 )}
                 <button
                   type="button"
+                  className="row-reorder"
+                  title="Move up"
+                  data-testid={`feature-move-up-${feature.id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    store.moveFeatureUp(feature.id);
+                  }}
+                >
+                  ▲
+                </button>
+                <button
+                  type="button"
+                  className="row-reorder"
+                  title="Move down"
+                  data-testid={`feature-move-down-${feature.id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    store.moveFeatureDown(feature.id);
+                  }}
+                >
+                  ▼
+                </button>
+                <button
+                  type="button"
                   className="row-delete"
                   title="Delete"
                   onClick={(e) => handleDelete(e, feature.id)}

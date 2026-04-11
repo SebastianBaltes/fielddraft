@@ -107,6 +107,23 @@
     margin-left: var(--space-2);
   }
 
+  & .row-reorder {
+    background: transparent;
+    border: none;
+    color: var(--color-text-subtle);
+    font-size: var(--fs-base);
+    cursor: pointer;
+    padding: 0 var(--space-1);
+    line-height: 1;
+    border-radius: var(--radius-sm);
+    transition: color var(--motion-fast), background var(--motion-fast);
+
+    &:hover {
+      color: var(--color-text);
+      background: var(--color-surface-strong);
+    }
+  }
+
   & .row-delete {
     background: transparent;
     border: none;
