@@ -389,6 +389,7 @@ mod tests {
                 half_extents: half,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -399,6 +400,7 @@ mod tests {
             op,
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 

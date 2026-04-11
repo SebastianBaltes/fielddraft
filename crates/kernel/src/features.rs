@@ -332,6 +332,8 @@ pub struct BoxDef {
     pub translate: [f32; 3],
     #[param(name = "Op", default = ::fielddraft_protocol::BoolOp::Union)]
     pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
 }
 
 pub struct BoxPrimitive;
@@ -368,6 +370,7 @@ impl FeatureKind for BoxPrimitive {
                 rotation,
                 scale,
             },
+            blend_radius: d.blend_radius,
         });
         Ok(())
     }
@@ -384,6 +387,8 @@ pub struct SphereDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::Union)]
     pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
 }
 
 pub struct SpherePrimitive;
@@ -421,6 +426,7 @@ impl FeatureKind for SpherePrimitive {
                 rotation,
                 scale,
             },
+            blend_radius: d.blend_radius,
         });
         Ok(())
     }
@@ -438,6 +444,8 @@ pub struct CylinderDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::Union)]
     pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
 }
 
 pub struct CylinderPrimitive;
@@ -477,6 +485,7 @@ impl FeatureKind for CylinderPrimitive {
                 rotation,
                 scale,
             },
+            blend_radius: d.blend_radius,
         });
         Ok(())
     }
@@ -559,6 +568,7 @@ impl FeatureKind for HoleFeature {
                 rotation,
                 scale,
             },
+            blend_radius: 0.0,
         });
         Ok(())
     }
@@ -763,6 +773,7 @@ impl FeatureKind for ExtrudeFeature {
                 rotation,
                 scale,
             },
+            blend_radius: 0.0,
         });
         Ok(())
     }
@@ -858,6 +869,7 @@ impl FeatureKind for RevolveFeature {
                 rotation,
                 scale,
             },
+            blend_radius: 0.0,
         });
         Ok(())
     }
@@ -1905,12 +1917,11 @@ mod tests {
     fn box_def_schema_matches_the_k1_parameter_surface() {
         // Regression: the derive-generated schema for the box
         // primitive should match the K4.5.2 hand-rolled surface
-        // exactly — four params, half_extents required, the
-        // other three optional via defaults.
+        // exactly — five params after K10.1 added blend_radius.
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 4);
+        assert_eq!(params.len(), 5);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -1977,6 +1988,7 @@ mod tests {
                     rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: 1.0,
                 },
+                blend_radius: 0.0,
             });
             let _ = kind;
         }

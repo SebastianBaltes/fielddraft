@@ -528,6 +528,7 @@ mod tests {
                 half_extents: half,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -545,6 +546,7 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 1.0,
             },
+            blend_radius: 0.0,
         }
     }
 
@@ -555,6 +557,7 @@ mod tests {
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 

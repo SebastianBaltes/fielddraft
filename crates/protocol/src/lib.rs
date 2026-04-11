@@ -494,6 +494,17 @@ pub struct Feature {
     /// predate transforms — they load with identity placement.
     #[serde(default)]
     pub transform: Transform,
+    /// K10.1: per-junction blend radius in mm. When > 0 the CSG
+    /// tree builder (`CsgNode::from_features`) uses
+    /// `SmoothUnion`/`SmoothDifference` instead of the hard
+    /// variants for this feature's Boolean junction. Zero (the
+    /// default) keeps the classic sharp edges.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blend_radius: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// One entry in the K4.5 Feature-as-Function feature tree.

@@ -1658,6 +1658,7 @@ impl Kernel {
             op: bool_op,
             primitive,
             transform,
+            blend_radius: 0.0,
         });
         self.rebuild_packed();
         Ok(flat_u32)
@@ -2210,6 +2211,7 @@ mod tests {
             op,
             primitive: Primitive::Box { center, half_extents: half },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -2220,6 +2222,7 @@ mod tests {
             op,
             primitive: Primitive::Sphere { center, radius: r },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -2234,6 +2237,7 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 1.0,
             },
+            blend_radius: 0.0,
         }
     }
 
@@ -2373,6 +2377,7 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 4.0,
             },
+            blend_radius: 0.0,
         };
         // On the (scaled) surface.
         assert!(sdf_feature(&scaled, [4.0, 0.0, 0.0]).abs() < 1e-5);
@@ -2403,6 +2408,7 @@ mod tests {
                 rotation: [0.0, 0.0, s, c],
                 scale: 1.0,
             },
+            blend_radius: 0.0,
         };
         // Surface in any axis direction.
         assert!((sdf_feature(&f, [1.0, 0.0, 0.0])).abs() < 1e-5);

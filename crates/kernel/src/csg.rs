@@ -493,9 +493,16 @@ impl CsgNode {
                 },
             };
             let leaf = Self::Transform(f.transform, Box::new(node));
+            let r = f.blend_radius;
             acc = match (acc, f.op) {
                 (Self::Empty, _) => leaf,
+                (a, BoolOp::Union) if r > 0.0 => {
+                    Self::SmoothUnion(Box::new(a), Box::new(leaf), r)
+                }
                 (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
+                (a, BoolOp::Difference) if r > 0.0 => {
+                    Self::SmoothDifference(Box::new(a), Box::new(leaf), r)
+                }
                 (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
                 (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
             };
@@ -798,6 +805,7 @@ mod tests {
                 center: [0.0, 0.0, 0.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -825,6 +833,7 @@ mod tests {
                 half_extents: half,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -864,6 +873,7 @@ mod tests {
                     radius: 3.0,
                 },
                 transform: Transform::IDENTITY,
+                blend_radius: 0.0,
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -921,6 +931,7 @@ mod tests {
                 half_height,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -931,6 +942,7 @@ mod tests {
             op: BoolOp::Union,
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -1215,6 +1227,7 @@ mod tests {
                     radius: 3.0,
                 },
                 transform: Transform::IDENTITY,
+                blend_radius: 0.0,
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

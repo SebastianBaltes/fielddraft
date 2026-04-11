@@ -134,6 +134,7 @@ mod tests {
                 half_extents: half,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
@@ -148,6 +149,7 @@ mod tests {
                 half_height,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 

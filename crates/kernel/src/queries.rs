@@ -355,6 +355,7 @@ mod tests {
                 half_extents: [1.0, 1.0, 1.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
         }
     }
 
