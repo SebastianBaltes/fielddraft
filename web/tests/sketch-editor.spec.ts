@@ -537,6 +537,77 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
+  test("per-sub-call delete removes one entry and leaves the rest intact", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => {
+      pageErrors.push(err);
+    });
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    // Draw a rectangle and a circle in the same session. The
+    // sub-spine panel ends up with two rows.
+    await page.getByTestId("enter-sketch").click();
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+
+    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await page.mouse.move(cx - 150, cy - 60);
+    await page.mouse.down();
+    await page.mouse.move(cx - 30, cy + 60, { steps: 10 });
+    await page.mouse.up();
+
+    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await page.mouse.move(cx + 80, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 140, cy, { steps: 10 });
+    await page.mouse.up();
+
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(2);
+    await page.waitForTimeout(700);
+
+    // K6b.3g: delete the circle (second row).
+    await page.getByTestId("sketch-sub-row-delete-1").click();
+    await expect(subSpineRows).toHaveCount(1);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const features = kernel.listFeatures();
+      const sketch = features.find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+
+    expect(committed).not.toBeNull();
+    expect(committed!.length).toBe(1);
+    expect(committed![0].type).toBe("sketch_rectangle");
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
   test("enter sketch mode, drag a line on the 2D overlay", async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];

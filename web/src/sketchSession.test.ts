@@ -6,6 +6,7 @@ import {
   buildDraftSketchState,
   enterSketchSession,
   exitSketchSession,
+  removeSketchSubCallAt,
   selectSketchTool,
   setSketchToolDraft,
 } from "./sketchSession";
@@ -146,6 +147,66 @@ describe("sketchSession reducers", () => {
     const drag = state.entities.find((e) => e.id === DRAFT_DRAG_START_ID);
     expect(drag).toBeDefined();
     expect(drag && drag.kind === "point" && drag.at).toEqual({ x: 5, y: 6 });
+  });
+
+  it("removeSketchSubCallAt drops a geometric call", () => {
+    let session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    session = selectSketchTool(session, "sketch_point", { at: [1, 1] });
+    session = applySketchToolDraft(session);
+    session = setSketchToolDraft(session, { at: [2, 2] });
+    session = applySketchToolDraft(session);
+    expect(session.subCalls).toHaveLength(2);
+    const after = removeSketchSubCallAt(session, 0);
+    expect(after.subCalls).toHaveLength(1);
+    expect((after.subCalls[0].params as { at: [number, number] }).at).toEqual([2, 2]);
+  });
+
+  it("removeSketchSubCallAt drops dangling constraint refs and shifts survivors", () => {
+    // Build a session that mimics a line-with-horizontal-constraint
+    // followed by a free sketch_point referenced by nothing.
+    const session: Parameters<typeof removeSketchSubCallAt>[0] = {
+      active: true,
+      planeQuery: "qA",
+      selectedTool: null,
+      toolDraft: {},
+      editingFeatureId: null,
+      subCalls: [
+        { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+        { type: "sketch_constraint_horizontal", params: { line: 3 } },
+        { type: "sketch_point", params: { at: [5, 5] } },
+      ],
+    };
+    const after = removeSketchSubCallAt(session, 0);
+    // The line call at index 0 allocated entities 1-3. The
+    // horizontal constraint referenced line=3 which is now
+    // invalid → drop. The trailing point had no refs → stays.
+    expect(after.subCalls).toHaveLength(1);
+    expect(after.subCalls[0].type).toBe("sketch_point");
+  });
+
+  it("removeSketchSubCallAt rewrites constraint refs above the removed range", () => {
+    const session: Parameters<typeof removeSketchSubCallAt>[0] = {
+      active: true,
+      planeQuery: "qA",
+      selectedTool: null,
+      toolDraft: {},
+      editingFeatureId: null,
+      subCalls: [
+        // Call 0: sketch_point — allocates entity 1.
+        { type: "sketch_point", params: { at: [0, 0] } },
+        // Call 1: sketch_line — allocates entities 2, 3, 4 (line=4).
+        { type: "sketch_line", params: { start: [1, 1], end: [9, 1] } },
+        // Call 2: horizontal constraint on line 4.
+        { type: "sketch_constraint_horizontal", params: { line: 4 } },
+      ],
+    };
+    // Remove the leading sketch_point — the line shifts down by
+    // one entity (2→1, 3→2, 4→3), so the constraint ref becomes 3.
+    const after = removeSketchSubCallAt(session, 0);
+    expect(after.subCalls).toHaveLength(2);
+    const cstr = after.subCalls[1];
+    expect(cstr.type).toBe("sketch_constraint_horizontal");
+    expect((cstr.params as { line: number }).line).toBe(3);
   });
 
   it("exitSketchSession discards any accumulated sub-spine draft", () => {

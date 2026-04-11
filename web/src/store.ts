@@ -31,6 +31,7 @@ import {
   exitSketchSession as reduceExit,
   selectSketchTool as reduceSelect,
   setSketchToolDraft as reduceSetDraft,
+  removeSketchSubCallAt as reduceRemoveAt,
 } from "./sketchSession";
 
 /**
@@ -634,6 +635,19 @@ export class KernelStore {
       },
     };
     this.notify();
+  }
+
+  /**
+   * K6b.3g: drop a single sub-spine entry by index. Downstream
+   * constraint calls whose references would dangle after the
+   * removal are rewritten by the
+   * [`removeSketchSubCallAt`](./sketchSession) reducer — ones
+   * with refs into the removed range are also dropped, ones
+   * above the range are shifted down by the range size so
+   * they still point at the same post-remove entity.
+   */
+  removeSketchSubCall(index: number): void {
+    this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
   }
 
   /**

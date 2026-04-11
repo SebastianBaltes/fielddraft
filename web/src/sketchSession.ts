@@ -284,6 +284,74 @@ export function buildDraftSketchState(
 }
 
 /**
+ * K6b.3g: remove one sub-call at `index` and rewrite downstream
+ * constraint calls so their entity-id references stay valid.
+ *
+ * Removing a geometric call (sketch_point, sketch_line,
+ * sketch_rectangle, sketch_circle) frees a range of entity ids
+ * that every subsequent sketch_tool would have been allocated.
+ * Any constraint call that references an id inside the removed
+ * range is dropped; any constraint call that references an id
+ * *above* the removed range has its reference shifted down by
+ * the range size so it still points at the same entity after
+ * re-allocation.
+ *
+ * This keeps the sub-spine internally consistent without
+ * forcing the user to manually clean up dangling constraints.
+ */
+export function removeSketchSubCallAt(
+  state: SketchSessionState,
+  index: number,
+): SketchSessionState {
+  if (!state.active) return state;
+  if (index < 0 || index >= state.subCalls.length) return state;
+  const before = state.subCalls.slice(0, index);
+  const removed = state.subCalls[index];
+  const tail = state.subCalls.slice(index + 1);
+
+  // Delta = entities allocated by the removed call.
+  const preState = buildDraftSketchState(before);
+  const preId = preState.next_entity_id;
+  const postState = buildDraftSketchState([...before, removed]);
+  const postId = postState.next_entity_id;
+  const rangeLo = preId;
+  const rangeHi = postId - 1;
+  const delta = postId - preId;
+
+  const shift = (n: number): number => (n > rangeHi ? n - delta : n);
+  const inRange = (n: number): boolean => n >= rangeLo && n <= rangeHi;
+
+  const rewritten: SketchSessionState["subCalls"][number][] = [];
+  for (const call of tail) {
+    if (
+      call.type === "sketch_constraint_horizontal" ||
+      call.type === "sketch_constraint_vertical"
+    ) {
+      const line = Number(call.params.line);
+      if (!Number.isFinite(line) || inRange(line)) continue;
+      rewritten.push({
+        ...call,
+        params: { ...call.params, line: shift(line) },
+      });
+    } else if (call.type === "sketch_constraint_coincident") {
+      const a = Number(call.params.a);
+      const b = Number(call.params.b);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+      if (inRange(a) || inRange(b)) continue;
+      rewritten.push({
+        ...call,
+        params: { ...call.params, a: shift(a), b: shift(b) },
+      });
+    } else {
+      // Geometric calls allocate fresh ids — no shift needed.
+      rewritten.push(call);
+    }
+  }
+
+  return { ...state, subCalls: [...before, ...rewritten] };
+}
+
+/**
  * K6b.3d helper: predict the next sketch_line entity IDs the
  * kernel will allocate when the given sub_calls are applied.
  * Used by the UI commit path to emit constraint calls that

@@ -217,6 +217,15 @@ export function Outliner({ store, state }: OutlinerProps) {
               {sketchSession.subCalls.map((call, i) => (
                 <li key={i} className="row">
                   <span className="kind">{call.type}</span>
+                  <button
+                    type="button"
+                    className="row-delete"
+                    title="Delete"
+                    data-testid={`sketch-sub-row-delete-${i}`}
+                    onClick={() => store.removeSketchSubCall(i)}
+                  >
+                    ×
+                  </button>
                 </li>
               ))}
             </ul>
