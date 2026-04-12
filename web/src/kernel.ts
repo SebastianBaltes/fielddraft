@@ -82,6 +82,10 @@ export type FeatureKindName =
   | "linear_pattern"
   | "circular_pattern"
   | "mirror"
+  | "mate_connector"
+  | "fillet_edge"
+  | "sweep"
+  | "imported_mesh"
   | "unknown";
 
 export interface FeatureSummary {

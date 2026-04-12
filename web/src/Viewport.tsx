@@ -429,6 +429,77 @@ function EdgeOverlay() {
   );
 }
 
+/** K9.6: render mate connectors as small axis triads. */
+function MateConnectorOverlay() {
+  const { store, state } = useKernelStore();
+  const groupRef = useRef<THREE.Group>(null);
+
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group || !state) return;
+    // Clear previous children.
+    while (group.children.length > 0) {
+      group.remove(group.children[0]);
+    }
+    // Find mate_connector features.
+    const connectors = state.features.filter(
+      (f) => f.kind === "mate_connector",
+    );
+    if (connectors.length === 0 || !store) return;
+    for (const c of connectors) {
+      try {
+        const params = store.kernel.getFeatureCallParams(c.id);
+        const origin = (params as { origin?: number[] }).origin ?? [0, 0, 0];
+        const normal = (params as { normal?: number[] }).normal ?? [0, 1, 0];
+        const size = 15;
+
+        // Z axis = normal (blue).
+        const nLen = Math.hypot(normal[0], normal[1], normal[2]) || 1;
+        const nz = [normal[0] / nLen, normal[1] / nLen, normal[2] / nLen];
+        // X axis = cross(up, nz) or fallback.
+        let up = [0, 1, 0];
+        if (Math.abs(nz[1]) > 0.99) up = [1, 0, 0];
+        const nx = [
+          up[1] * nz[2] - up[2] * nz[1],
+          up[2] * nz[0] - up[0] * nz[2],
+          up[0] * nz[1] - up[1] * nz[0],
+        ];
+        const nxLen = Math.hypot(nx[0], nx[1], nx[2]) || 1;
+        nx[0] /= nxLen; nx[1] /= nxLen; nx[2] /= nxLen;
+        // Y axis = cross(nz, nx).
+        const ny = [
+          nz[1] * nx[2] - nz[2] * nx[1],
+          nz[2] * nx[0] - nz[0] * nx[2],
+          nz[0] * nx[1] - nz[1] * nx[0],
+        ];
+
+        const axes: [number[], number][] = [
+          [nx, 0xe74c3c], // X = red
+          [ny, 0x2ecc71], // Y = green
+          [nz, 0x3498db], // Z = blue
+        ];
+        for (const [dir, color] of axes) {
+          const positions = new Float32Array([
+            origin[0], origin[1], origin[2],
+            origin[0] + dir[0] * size,
+            origin[1] + dir[1] * size,
+            origin[2] + dir[2] * size,
+          ]);
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+          const mat = new THREE.LineBasicMaterial({ color });
+          const line = new THREE.LineSegments(geo, mat);
+          group.add(line);
+        }
+      } catch {
+        // Skip if params can't be read.
+      }
+    }
+  }, [store, state?.features]);
+
+  return <group ref={groupRef} />;
+}
+
 function WorldGrid() {
   const grid = useMemo(() => {
     const g = new THREE.GridHelper(600, 60, 0x999999, 0xdddddd);
@@ -716,6 +787,7 @@ export function Viewport() {
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
           <ReferenceMesh />
           <EdgeOverlay />
+          <MateConnectorOverlay />
           <WorldGrid />
           <CameraRig />
           <ViewCommandConsumer />
