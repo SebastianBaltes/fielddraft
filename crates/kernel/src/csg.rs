@@ -459,6 +459,22 @@ pub enum CsgNode {
     /// `|sdf(p)| - thickness`. Turns a solid body into a
     /// thin-walled shell of uniform thickness.
     Shell(Box<CsgNode>, f32),
+    /// K10.3: spatially-masked blend. Evaluates `a` and `b` at
+    /// every point, then checks a capsule mask SDF (defined by
+    /// `mask_p0`, `mask_p1`, `mask_radius`). Inside the mask:
+    /// smooth blend with `blend_radius` and `blend_mode`.
+    /// Outside: hard `min` (union) or `max` (difference) based
+    /// on `is_difference`. Allows per-edge fillet selection.
+    MaskedBlend {
+        a: Box<CsgNode>,
+        b: Box<CsgNode>,
+        mask_p0: [f32; 3],
+        mask_p1: [f32; 3],
+        mask_radius: f32,
+        blend_radius: f32,
+        blend_mode: BlendMode,
+        is_difference: bool,
+    },
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -658,6 +674,36 @@ impl CsgNode {
             CsgNode::Shell(inner, thickness) => {
                 inner.sdf(p, mode).abs() - *thickness
             }
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_p0,
+                mask_p1,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+            } => {
+                let da = a.sdf(p, mode);
+                let db = if *is_difference { -b.sdf(p, mode) } else { b.sdf(p, mode) };
+                match mode {
+                    EvalMode::Logical => {
+                        if *is_difference { da.max(-db) } else { da.min(db) }
+                    }
+                    EvalMode::Visual => {
+                        let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        if mask_d < 0.0 {
+                            if *is_difference {
+                                -blend_min(-da, db, *blend_radius, *blend_mode)
+                            } else {
+                                blend_min(da, db, *blend_radius, *blend_mode)
+                            }
+                        } else {
+                            if *is_difference { da.max(-db) } else { da.min(db) }
+                        }
+                    }
+                }
+            }
             CsgNode::Extrude {
                 sketch,
                 half_height,
@@ -774,6 +820,48 @@ impl CsgNode {
                 let (d, c) = inner.evaluate(p, eps, mode);
                 (d.abs() - *thickness, c)
             }
+            CsgNode::MaskedBlend {
+                a,
+                b,
+                mask_p0,
+                mask_p1,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+            } => {
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db_raw, cb) = b.evaluate(p, eps, mode);
+                let db = if *is_difference { -db_raw } else { db_raw };
+                match mode {
+                    EvalMode::Logical => {
+                        if *is_difference {
+                            combine_max(da, ca, db, cb, eps)
+                        } else {
+                            combine_min(da, ca, db, cb, eps)
+                        }
+                    }
+                    EvalMode::Visual => {
+                        let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        if mask_d < 0.0 {
+                            let d = if *is_difference {
+                                -blend_min(-da, db, *blend_radius, *blend_mode)
+                            } else {
+                                blend_min(da, db, *blend_radius, *blend_mode)
+                            };
+                            let mut c = ca;
+                            c.extend(cb);
+                            (d, c)
+                        } else {
+                            if *is_difference {
+                                combine_max(da, ca, db, cb, eps)
+                            } else {
+                                combine_min(da, ca, db, cb, eps)
+                            }
+                        }
+                    }
+                }
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -851,6 +939,9 @@ impl CsgNode {
                     max: [bb.max[0] + t, bb.max[1] + t, bb.max[2] + t],
                 }
             }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                Aabb::union(a.aabb(), b.aabb())
+            }
             // Intersection is a subset of either child; keep the left
             // so the bound stays well-defined even when the right child
             // is empty or unbounded.
@@ -918,6 +1009,29 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     }
     let h = (r - (da - db).abs()).max(0.0) / r;
     da.min(db) - h * h * h * r / 6.0
+}
+
+/// K10.3: capsule SDF for spatial masks. The capsule is a
+/// line segment from `p0` to `p1` swept by `radius`.
+pub(crate) fn sdf_capsule_3d(
+    p: [f32; 3],
+    p0: [f32; 3],
+    p1: [f32; 3],
+    radius: f32,
+) -> f32 {
+    let pa = [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
+    let ba = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let dot_pa_ba = pa[0] * ba[0] + pa[1] * ba[1] + pa[2] * ba[2];
+    let dot_ba_ba = ba[0] * ba[0] + ba[1] * ba[1] + ba[2] * ba[2];
+    let h = if dot_ba_ba > 0.0 {
+        (dot_pa_ba / dot_ba_ba).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let dx = pa[0] - ba[0] * h;
+    let dy = pa[1] - ba[1] * h;
+    let dz = pa[2] - ba[2] * h;
+    (dx * dx + dy * dy + dz * dz).sqrt() - radius
 }
 
 /// K10.2: chamfer union — linear 45° cut instead of a rounded
@@ -1516,6 +1630,60 @@ mod tests {
         let d_hard = hard.sdf(p, EvalMode::Visual);
         let d_smooth = smooth.sdf(p, EvalMode::Visual);
         assert!(d_smooth < d_hard, "smooth {d_smooth} not < hard {d_hard}");
+    }
+
+    #[test]
+    fn masked_blend_fillets_only_inside_the_capsule() {
+        // Two boxes side by side: a at origin, b shifted +X.
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+        };
+        let b = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [10.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+        };
+        // Capsule mask along the Y axis at x=10 (the junction edge).
+        let masked = CsgNode::MaskedBlend {
+            a: Box::new(a.clone()),
+            b: Box::new(b.clone()),
+            mask_p0: [10.0, -15.0, 0.0],
+            mask_p1: [10.0, 15.0, 0.0],
+            mask_radius: 5.0,
+            blend_radius: 4.0,
+            blend_mode: super::BlendMode::Fillet,
+            is_difference: false,
+        };
+        let hard = CsgNode::Union(Box::new(a), Box::new(b));
+
+        // Near the junction edge inside the mask → smooth blend
+        // produces a different (more negative) distance than hard.
+        let p_inside_mask = [10.0, 0.0, 8.0];
+        let d_masked = masked.sdf(p_inside_mask, EvalMode::Visual);
+        let d_hard = hard.sdf(p_inside_mask, EvalMode::Visual);
+        assert!(
+            d_masked < d_hard || (d_masked - d_hard).abs() < 1e-5,
+            "masked {d_masked} should be <= hard {d_hard} inside the mask"
+        );
+
+        // Far from the mask → same as hard union.
+        let p_outside_mask = [0.0, 0.0, 0.0];
+        let d_masked_far = masked.sdf(p_outside_mask, EvalMode::Visual);
+        let d_hard_far = hard.sdf(p_outside_mask, EvalMode::Visual);
+        assert!(
+            (d_masked_far - d_hard_far).abs() < 1e-5,
+            "outside mask: masked {d_masked_far} != hard {d_hard_far}"
+        );
+
+        // Logical mode always uses hard ops.
+        let d_logical = masked.sdf(p_inside_mask, EvalMode::Logical);
+        assert_eq!(d_logical, d_hard);
     }
 
     #[test]

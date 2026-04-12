@@ -124,6 +124,20 @@ pub enum BoundedCsg {
         world_transform: Transform,
         aabb: Aabb,
     },
+    /// K10.3: spatially-masked blend. BVH mirror of
+    /// [`CsgNode::MaskedBlend`]. The AABB is the union of both
+    /// children (same conservative bound as SmoothUnion).
+    MaskedBlend {
+        left: Box<BoundedCsg>,
+        right: Box<BoundedCsg>,
+        mask_p0: [f32; 3],
+        mask_p1: [f32; 3],
+        mask_radius: f32,
+        blend_radius: f32,
+        blend_mode: BlendMode,
+        is_difference: bool,
+        aabb: Aabb,
+    },
 }
 
 impl BoundedCsg {
@@ -149,7 +163,8 @@ impl BoundedCsg {
             | BoundedCsg::Displace { aabb, .. }
             | BoundedCsg::Shell { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
-            | BoundedCsg::Revolve { aabb, .. } => *aabb,
+            | BoundedCsg::Revolve { aabb, .. }
+            | BoundedCsg::MaskedBlend { aabb, .. } => *aabb,
         }
     }
 
@@ -265,6 +280,37 @@ impl BoundedCsg {
             }
             BoundedCsg::Shell { inner, thickness, .. } => {
                 inner.sdf(p, mode).abs() - *thickness
+            }
+            BoundedCsg::MaskedBlend {
+                left,
+                right,
+                mask_p0,
+                mask_p1,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                ..
+            } => {
+                let da = left.sdf(p, mode);
+                let db = if *is_difference { -right.sdf(p, mode) } else { right.sdf(p, mode) };
+                match mode {
+                    EvalMode::Logical => {
+                        if *is_difference { da.max(-db) } else { da.min(db) }
+                    }
+                    EvalMode::Visual => {
+                        let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        if mask_d < 0.0 {
+                            if *is_difference {
+                                -crate::csg::blend_min(-da, db, *blend_radius, *blend_mode)
+                            } else {
+                                crate::csg::blend_min(da, db, *blend_radius, *blend_mode)
+                            }
+                        } else {
+                            if *is_difference { da.max(-db) } else { da.min(db) }
+                        }
+                    }
+                }
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -390,6 +436,49 @@ impl BoundedCsg {
             BoundedCsg::Shell { inner, thickness, .. } => {
                 let (d, c) = inner.evaluate(p, eps, mode);
                 (d.abs() - *thickness, c)
+            }
+            BoundedCsg::MaskedBlend {
+                left,
+                right,
+                mask_p0,
+                mask_p1,
+                mask_radius,
+                blend_radius,
+                blend_mode,
+                is_difference,
+                ..
+            } => {
+                let (da, ca) = left.evaluate(p, eps, mode);
+                let (db_raw, cb) = right.evaluate(p, eps, mode);
+                let db = if *is_difference { -db_raw } else { db_raw };
+                match mode {
+                    EvalMode::Logical => {
+                        if *is_difference {
+                            combine_max(da, ca, db, cb, eps)
+                        } else {
+                            combine_min(da, ca, db, cb, eps)
+                        }
+                    }
+                    EvalMode::Visual => {
+                        let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        if mask_d < 0.0 {
+                            let d = if *is_difference {
+                                -crate::csg::blend_min(-da, db, *blend_radius, *blend_mode)
+                            } else {
+                                crate::csg::blend_min(da, db, *blend_radius, *blend_mode)
+                            };
+                            let mut c = ca;
+                            c.extend(cb);
+                            (d, c)
+                        } else {
+                            if *is_difference {
+                                combine_max(da, ca, db, cb, eps)
+                            } else {
+                                combine_min(da, ca, db, cb, eps)
+                            }
+                        }
+                    }
+                }
             }
             BoundedCsg::Extrude {
                 id,
@@ -572,6 +661,31 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             BoundedCsg::Shell {
                 inner: Box::new(child),
                 thickness: *thickness,
+                aabb,
+            }
+        }
+        CsgNode::MaskedBlend {
+            a,
+            b,
+            mask_p0,
+            mask_p1,
+            mask_radius,
+            blend_radius,
+            blend_mode,
+            is_difference,
+        } => {
+            let left = build(a, carry);
+            let right = build(b, carry);
+            let aabb = Aabb::union(left.aabb(), right.aabb());
+            BoundedCsg::MaskedBlend {
+                left: Box::new(left),
+                right: Box::new(right),
+                mask_p0: *mask_p0,
+                mask_p1: *mask_p1,
+                mask_radius: *mask_radius,
+                blend_radius: *blend_radius,
+                blend_mode: *blend_mode,
+                is_difference: *is_difference,
                 aabb,
             }
         }
