@@ -549,6 +549,29 @@ export class KernelStore {
     return true;
   }
 
+  /** K13.1: convert the current reference mesh into a CSG solid
+   *  that participates in Booleans. The reference mesh is
+   *  consumed (cleared) and replaced by a feature. */
+  convertReferenceToSolid(): number | null {
+    const ref_ = this.state.referenceMesh;
+    if (!ref_ || ref_.positions.length === 0) return null;
+    let id: number;
+    try {
+      id = this.kernel.addImportedMesh(
+        ref_.positions,
+        ref_.indices,
+        BoolOpTag.Union,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: convertReferenceToSolid failed", err);
+      return null;
+    }
+    this.state = { ...this.state, referenceMesh: null };
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   clearReferenceMesh(): void {
     this.state = { ...this.state, referenceMesh: null };
     this.notify();

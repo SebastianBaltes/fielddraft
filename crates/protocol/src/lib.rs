@@ -13,7 +13,9 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+pub mod mesh_sdf;
 pub mod sketch2d;
+pub use mesh_sdf::MeshSdf;
 pub use sketch2d::{Aabb2, Sketch2d, Sketch2dPrimitive};
 
 /// Current on-disk / on-wire schema version for the project document.
@@ -292,6 +294,13 @@ pub enum Primitive {
         depth: f32,
         half_height: f32,
     },
+    /// K13.1: imported triangle mesh as a CSG-participating solid.
+    /// The `MeshSdf` carries the flat triangle buffer + per-tri
+    /// AABBs and provides an O(N) nearest-triangle + ray-parity
+    /// SDF. Serialised inline — no external file reference.
+    ImportedMesh {
+        mesh: Box<MeshSdf>,
+    },
     /// K11.0: Gyroid TPMS lattice. The raw implicit is
     /// `sin(x/s)cos(y/s) + sin(y/s)cos(z/s) + sin(z/s)cos(x/s)`,
     /// thickened into a solid shell via `|f| - thickness`.
@@ -327,6 +336,7 @@ impl Primitive {
     pub const KIND_CONE: u32 = 8;
     pub const KIND_CAPSULE: u32 = 9;
     pub const KIND_HEX_PRISM: u32 = 10;
+    pub const KIND_IMPORTED_MESH: u32 = 11;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -341,6 +351,7 @@ impl Primitive {
             Primitive::Thread { .. } => Self::KIND_THREAD,
             Primitive::Gyroid { .. } => Self::KIND_GYROID,
             Primitive::Revolve { .. } => Self::KIND_REVOLVE,
+            Primitive::ImportedMesh { .. } => Self::KIND_IMPORTED_MESH,
         }
     }
 
@@ -357,6 +368,7 @@ impl Primitive {
             Primitive::Thread { .. } => "Thread",
             Primitive::Gyroid { .. } => "Gyroid",
             Primitive::Revolve { .. } => "Revolve",
+            Primitive::ImportedMesh { .. } => "Imported mesh",
         }
     }
 }
@@ -695,6 +707,9 @@ impl FeatureCall {
             Primitive::Capsule { .. } => "capsule",
             Primitive::Cone { .. } => "cone",
             Primitive::Thread { .. } => "thread",
+            // ImportedMesh is a non-spine type (hierarchical child id),
+            // emit a skip marker so sync_feature_calls doesn't re-add it.
+            Primitive::ImportedMesh { .. } => "__derived_imported_mesh_skip__",
         };
         let op = bool_op_wire_name(f.op);
         let translate = f.transform.translate;
@@ -822,6 +837,14 @@ impl FeatureCall {
                 "pitch": pitch,
                 "depth": depth,
                 "half_height": half_height,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::ImportedMesh { mesh } => serde_json::json!({
+                "mesh": serde_json::to_value(&**mesh).unwrap_or_default(),
                 "translate": translate,
                 "rotation": rotation,
                 "scale": scale,
@@ -975,6 +998,7 @@ impl Document {
                 call.type_name != "__derived_extrude_skip__"
                     && call.type_name != "__derived_revolve_skip__"
                     && call.type_name != "__derived_gyroid_skip__"
+                    && call.type_name != "__derived_imported_mesh_skip__"
             })
             .collect();
         next.extend(surviving);
@@ -1030,6 +1054,13 @@ mod tests {
                 half_extents: [10.0, 10.0, 10.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         doc.features.push(Feature {
             id: id2.clone(),
@@ -1040,6 +1071,13 @@ mod tests {
                 radius: 3.0,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
 
         doc.sync_feature_calls();
@@ -1068,6 +1106,13 @@ mod tests {
                 half_extents: [10.0, 10.0, 10.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         doc.feature_calls.push(FeatureCall::new(
             "sketch",
@@ -1102,6 +1147,13 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: 2.0,
             },
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         };
         let call = FeatureCall::from_spine_feature(&feature);
         assert_eq!(call.type_name, "box");
@@ -1131,6 +1183,13 @@ mod tests {
                 radius: 4.0,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         };
         let call = FeatureCall::from_spine_feature(&sphere);
         assert_eq!(call.type_name, "sphere");
@@ -1147,6 +1206,13 @@ mod tests {
                 half_height: 10.0,
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         };
         let call = FeatureCall::from_spine_feature(&cylinder);
         assert_eq!(call.type_name, "cylinder");
@@ -1174,6 +1240,13 @@ mod tests {
                 half_extents: [10.0, 10.0, 10.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         doc.sync_feature_calls();
 
@@ -1204,6 +1277,13 @@ mod tests {
                 half_extents: [1.0, 1.0, 1.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         doc.sync_feature_calls();
 
@@ -1268,6 +1348,13 @@ mod tests {
                 half_extents: [10.0, 10.0, 10.0],
             },
             transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         doc.sync_feature_calls();
 

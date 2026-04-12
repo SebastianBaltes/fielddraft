@@ -218,6 +218,7 @@ impl FeatureRegistry {
         r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
+        r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
@@ -933,6 +934,89 @@ impl FeatureKind for HexPrismPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+        });
+        Ok(())
+    }
+}
+
+// ─── K13.1: Imported Mesh as CSG Solid ───────────────────────────
+//
+// Wraps a MeshSdf (triangle buffer + per-tri AABBs + ray-parity
+// sign test) as a full CSG leaf. The mesh data serialises inline
+// in the FeatureCall params so it survives save/load via
+// localStorage. Performance is O(N) per sample — acceptable for
+// imports up to ~50K triangles at DC default resolution.
+
+/// `imported_mesh` — an imported triangle mesh that
+/// participates in CSG Booleans.
+#[derive(FeatureSchema)]
+#[schema(type = "imported_mesh")]
+pub struct ImportedMeshDef {
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+}
+
+pub struct ImportedMeshFeature;
+
+impl FeatureKind for ImportedMeshFeature {
+    fn type_name(&self) -> &'static str {
+        ImportedMeshDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ImportedMeshDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ImportedMeshDef::parse(def)?;
+
+        // The mesh data lives in the params JSON under the
+        // key "__mesh". The wasm addImportedMesh method puts
+        // it there; the FeatureDialog doesn't see it because
+        // the derive doesn't emit it as a schema param.
+        let mesh_val = def.get("__mesh").ok_or(FeatureError::MissingParameter {
+            feature: ImportedMeshDef::TYPE_NAME,
+            name: "__mesh",
+        })?;
+        let mesh: fielddraft_protocol::MeshSdf =
+            serde_json::from_value(mesh_val.clone()).map_err(|e| {
+                FeatureError::InvalidParameter {
+                    feature: ImportedMeshDef::TYPE_NAME,
+                    name: "__mesh",
+                    message: e.to_string(),
+                }
+            })?;
+
+        let name = optional_display_name(def, || format!("Imported mesh {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+
+        ctx.document.features.push(SpineFeature {
+            id: id.child("0"),
+            name,
+            op: d.op,
+            primitive: Primitive::ImportedMesh {
+                mesh: Box::new(mesh),
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -1885,7 +1969,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 16);
+        assert_eq!(registry.len(), 17);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1944,6 +2028,7 @@ mod tests {
                 "gyroid",
                 "hex_prism",
                 "hole",
+                "imported_mesh",
                 "linear_pattern",
                 "mirror",
                 "revolve",

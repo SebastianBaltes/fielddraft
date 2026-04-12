@@ -14,7 +14,9 @@ pub mod csg;
 pub mod dc;
 pub mod expr;
 pub mod features;
-pub mod mesh_sdf;
+// K13: mesh_sdf moved to the protocol crate so
+// Primitive::ImportedMesh can carry it serialised.
+pub use fielddraft_protocol::mesh_sdf;
 pub mod queries;
 pub mod export;
 pub mod raycast;
@@ -285,6 +287,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
                 d_hex.max(d_axial)
             }
         }
+        Primitive::ImportedMesh { mesh } => mesh.sdf(p),
     }
 }
 
@@ -406,6 +409,11 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
         Primitive::HexPrism { apothem, half_height } => {
             out[4] = *apothem;
             out[5] = *half_height;
+        }
+        Primitive::ImportedMesh { mesh } => {
+            for i in 0..3 {
+                out[1 + i] = (mesh.aabb_min[i] + mesh.aabb_max[i]) * 0.5;
+            }
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -684,6 +692,7 @@ impl Kernel {
             Primitive::Cone { .. } => "cone",
             Primitive::Capsule { .. } => "capsule",
             Primitive::HexPrism { .. } => "hex_prism",
+            Primitive::ImportedMesh { .. } => "imported_mesh",
         }
     }
 
@@ -699,6 +708,7 @@ impl Kernel {
     ) -> &'static str {
         match type_name {
             "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" => Self::kind_label(prim),
+            "imported_mesh" => "imported_mesh",
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -719,6 +729,7 @@ impl Kernel {
             "revolve" => "revolve",
             "hole" => "hole",
             "gyroid" => "gyroid",
+            "imported_mesh" => "imported_mesh",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -747,6 +758,7 @@ impl Kernel {
             "revolve" => "Revolve",
             "hole" => "Hole",
             "gyroid" => "Gyroid",
+            "imported_mesh" => "Imported mesh",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -1329,6 +1341,44 @@ impl Kernel {
 
     /// K8.0: append a `linear_pattern` feature call that
     /// replicates the source feature along a direction
+    /// K13.1: import triangle data as a solid CSG leaf.
+    #[wasm_bindgen(js_name = addImportedMesh)]
+    pub fn add_imported_mesh(
+        &mut self,
+        positions: &[f32],
+        indices: &[u32],
+        op: u32,
+    ) -> Result<u32, JsError> {
+        let bool_op = Self::parse_op(op)?;
+        let op_wire = match bool_op {
+            BoolOp::Union => "union",
+            BoolOp::Difference => "difference",
+            BoolOp::Intersect => "intersect",
+        };
+        let mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
+        let mesh_json = serde_json::to_value(&mesh)
+            .map_err(|e| JsError::new(&format!("mesh serialisation failed: {e}")))?;
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "op": op_wire,
+            "__mesh": mesh_json,
+        });
+        let call = fielddraft_protocol::FeatureCall::new("imported_mesh", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "imported mesh regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// vector. `source_id` must point at an existing spine
     /// feature; `count` is total instances including the
     /// source. Returns the allocated pattern feature id.

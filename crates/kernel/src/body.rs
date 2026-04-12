@@ -330,6 +330,15 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             apothem.to_bits().hash(hasher);
             half_height.to_bits().hash(hasher);
         }
+        Primitive::ImportedMesh { mesh } => {
+            11u8.hash(hasher);
+            for v in &mesh.aabb_min {
+                v.to_bits().hash(hasher);
+            }
+            for v in &mesh.aabb_max {
+                v.to_bits().hash(hasher);
+            }
+        }
     }
 }
 

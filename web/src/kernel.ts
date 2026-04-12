@@ -719,6 +719,15 @@ export class Kernel {
     return this.inner.setFeatureOp(id, op);
   }
 
+  /** K13.1: import triangle mesh as a CSG-participating solid. */
+  addImportedMesh(
+    positions: Float32Array,
+    indices: Uint32Array,
+    op: BoolOpTagValue,
+  ): number {
+    return this.inner.addImportedMesh(positions, indices, op);
+  }
+
   /** K9.1: overall scene AABB in mm. */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {

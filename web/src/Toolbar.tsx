@@ -529,6 +529,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           📁 Import
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Convert reference mesh to a CSG solid"
+          data-testid="convert-to-solid"
+          disabled={!state.referenceMesh}
+          onClick={() => store.convertReferenceToSolid()}
+        >
+          ⊕ Solid
+        </button>
       </div>
 
       <div className="group">

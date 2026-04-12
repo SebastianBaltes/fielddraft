@@ -355,6 +355,10 @@ impl Aabb {
                     max: [r, *hh, r],
                 }
             }
+            Primitive::ImportedMesh { mesh } => Aabb {
+                min: mesh.aabb_min,
+                max: mesh.aabb_max,
+            },
         }
     }
 
