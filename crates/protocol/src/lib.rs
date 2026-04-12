@@ -533,6 +533,13 @@ pub struct Feature {
     /// the X axis. Same domain-warp approach as twist_rate.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub bend_rate: f32,
+    /// K11.3: displacement depth in mm. When > 0 the CSG builder
+    /// wraps the leaf in `CsgNode::Displace`. Zero = smooth surface.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub displace_depth: f32,
+    /// K11.3: displacement spatial frequency (cycles/mm).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub displace_freq: f32,
 }
 
 fn is_zero(v: &f32) -> bool {

@@ -413,6 +413,12 @@ pub enum CsgNode {
     /// an arc, a box into a curved bracket, etc. Same
     /// metric-distortion caveat as Twist.
     Bend(Box<CsgNode>, f32),
+    /// K11.3: displace the child's surface by a 3D sine-product
+    /// pattern: `child.sdf(p) - depth * sin(fx·x) * sin(fy·y) * sin(fz·z)`.
+    /// `depth` is the amplitude in mm, `freq` scales the spatial
+    /// frequency (cycles per mm). Produces an egg-crate-like bump
+    /// texture. The AABB expands by `depth` in every direction.
+    Displace(Box<CsgNode>, f32, f32),
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -525,6 +531,9 @@ impl CsgNode {
             if f.bend_rate != 0.0 {
                 leaf = Self::Bend(Box::new(leaf), f.bend_rate);
             }
+            if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
+                leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
+            }
             let r = f.blend_radius;
             acc = match (acc, f.op) {
                 (Self::Empty, _) => leaf,
@@ -586,6 +595,14 @@ impl CsgNode {
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
                 inner.sdf(bent, mode)
+            }
+            CsgNode::Displace(inner, depth, freq) => {
+                let d = inner.sdf(p, mode);
+                let disp = *depth
+                    * (p[0] * freq).sin()
+                    * (p[1] * freq * 1.3).sin()
+                    * (p[2] * freq * 0.7).sin();
+                d - disp
             }
             CsgNode::Extrude {
                 sketch,
@@ -691,6 +708,14 @@ impl CsgNode {
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
                 inner.evaluate(bent, eps, mode)
             }
+            CsgNode::Displace(inner, depth, freq) => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                let disp = *depth
+                    * (p[0] * freq).sin()
+                    * (p[1] * freq * 1.3).sin()
+                    * (p[2] * freq * 0.7).sin();
+                (d - disp, c)
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -738,14 +763,23 @@ impl CsgNode {
                 if bb.is_empty() {
                     return Aabb::EMPTY;
                 }
-                // Bend rotates XY around Z-implicit, so the XY
-                // footprint expands to its diagonal.
                 let rx = bb.max[0].abs().max(bb.min[0].abs());
                 let ry = bb.max[1].abs().max(bb.min[1].abs());
                 let r_max = (rx * rx + ry * ry).sqrt();
                 Aabb {
                     min: [-r_max, -r_max, bb.min[2]],
                     max: [r_max, r_max, bb.max[2]],
+                }
+            }
+            CsgNode::Displace(inner, depth, _) => {
+                let bb = inner.aabb();
+                if bb.is_empty() {
+                    return Aabb::EMPTY;
+                }
+                let d = depth.abs();
+                Aabb {
+                    min: [bb.min[0] - d, bb.min[1] - d, bb.min[2] - d],
+                    max: [bb.max[0] + d, bb.max[1] + d, bb.max[2] + d],
                 }
             }
             // Intersection is a subset of either child; keep the left
@@ -892,6 +926,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -922,6 +958,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
@@ -964,6 +1002,8 @@ mod tests {
                 blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -1024,6 +1064,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
@@ -1037,6 +1079,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
@@ -1324,6 +1368,8 @@ mod tests {
                 blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

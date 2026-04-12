@@ -358,6 +358,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 

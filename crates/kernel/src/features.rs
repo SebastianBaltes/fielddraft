@@ -340,6 +340,10 @@ pub struct BoxDef {
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 }
 
 pub struct BoxPrimitive;
@@ -379,6 +383,8 @@ impl FeatureKind for BoxPrimitive {
             blend_radius: d.blend_radius,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
         });
         Ok(())
     }
@@ -401,6 +407,10 @@ pub struct SphereDef {
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 }
 
 pub struct SpherePrimitive;
@@ -441,6 +451,8 @@ impl FeatureKind for SpherePrimitive {
             blend_radius: d.blend_radius,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
         });
         Ok(())
     }
@@ -464,6 +476,10 @@ pub struct CylinderDef {
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 }
 
 pub struct CylinderPrimitive;
@@ -506,6 +522,8 @@ impl FeatureKind for CylinderPrimitive {
             blend_radius: d.blend_radius,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
         });
         Ok(())
     }
@@ -533,6 +551,10 @@ pub struct TorusDef {
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 }
 
 pub struct TorusPrimitive;
@@ -575,6 +597,8 @@ impl FeatureKind for TorusPrimitive {
             blend_radius: d.blend_radius,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
         });
         Ok(())
     }
@@ -612,6 +636,10 @@ pub struct GyroidDef {
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 }
 
 pub struct GyroidFeature;
@@ -656,6 +684,8 @@ impl FeatureKind for GyroidFeature {
             blend_radius: d.blend_radius,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
         });
         Ok(())
     }
@@ -741,6 +771,8 @@ impl FeatureKind for HoleFeature {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         });
         Ok(())
     }
@@ -948,6 +980,8 @@ impl FeatureKind for ExtrudeFeature {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         });
         Ok(())
     }
@@ -1046,6 +1080,8 @@ impl FeatureKind for RevolveFeature {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         });
         Ok(())
     }
@@ -2093,11 +2129,11 @@ mod tests {
     fn box_def_schema_matches_the_k1_parameter_surface() {
         // Regression: the derive-generated schema for the box
         // primitive should match the K4.5.2 hand-rolled surface
-        // exactly — five params after K10.1 added blend_radius.
+        // exactly — nine params after K11.3 added displace_depth + displace_freq.
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 7);
+        assert_eq!(params.len(), 9);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -2167,6 +2203,8 @@ mod tests {
                 blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
             });
             let _ = kind;
         }

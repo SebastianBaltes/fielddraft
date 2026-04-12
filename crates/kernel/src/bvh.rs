@@ -88,6 +88,13 @@ pub enum BoundedCsg {
         rate: f32,
         aabb: Aabb,
     },
+    /// K11.3: displace the child's surface by a sine-product pattern.
+    Displace {
+        inner: Box<BoundedCsg>,
+        depth: f32,
+        freq: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -131,6 +138,7 @@ impl BoundedCsg {
             | BoundedCsg::SmoothDifference { aabb, .. }
             | BoundedCsg::Twist { aabb, .. }
             | BoundedCsg::Bend { aabb, .. }
+            | BoundedCsg::Displace { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
@@ -235,6 +243,14 @@ impl BoundedCsg {
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
                 inner.sdf(bent, mode)
+            }
+            BoundedCsg::Displace { inner, depth, freq, .. } => {
+                let d = inner.sdf(p, mode);
+                let disp = *depth
+                    * (p[0] * freq).sin()
+                    * (p[1] * freq * 1.3).sin()
+                    * (p[2] * freq * 0.7).sin();
+                d - disp
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -346,6 +362,14 @@ impl BoundedCsg {
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
                 inner.evaluate(bent, eps, mode)
+            }
+            BoundedCsg::Displace { inner, depth, freq, .. } => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                let disp = *depth
+                    * (p[0] * freq).sin()
+                    * (p[1] * freq * 1.3).sin()
+                    * (p[2] * freq * 0.7).sin();
+                (d - disp, c)
             }
             BoundedCsg::Extrude {
                 id,
@@ -492,6 +516,25 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Displace(inner, depth, freq) => {
+            let child = build(inner, carry);
+            let bb = child.aabb();
+            let aabb = if bb.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let d = depth.abs();
+                Aabb {
+                    min: [bb.min[0] - d, bb.min[1] - d, bb.min[2] - d],
+                    max: [bb.max[0] + d, bb.max[1] + d, bb.max[2] + d],
+                }
+            };
+            BoundedCsg::Displace {
+                inner: Box::new(child),
+                depth: *depth,
+                freq: *freq,
+                aabb,
+            }
+        }
         CsgNode::Extrude {
             id,
             sketch,
@@ -609,6 +652,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
@@ -629,6 +674,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
@@ -642,6 +689,8 @@ mod tests {
             blend_radius: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         }
     }
 
