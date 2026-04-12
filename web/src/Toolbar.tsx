@@ -407,6 +407,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
+          className={"tool" + (state.filletMode ? " is-active" : "")}
+          title="Click an edge to fillet it"
+          data-testid="fillet-toggle"
+          onClick={() => store.toggleFilletMode()}
+        >
+          ◠ Fillet
+        </button>
+        <button
+          type="button"
           className={"tool" + (state.measureMode ? " is-active" : "")}
           title="Measure distance (click two points)"
           data-testid="measure-toggle"

@@ -596,6 +596,27 @@ export function Viewport() {
   const handleClick = (): void => {
     if (!store) return;
 
+    // Fillet mode: click on a surface → find nearest edge →
+    // create fillet_edge feature.
+    if (state?.filletMode && pickResult?.hit && pickResult.contributors.length >= 2) {
+      const a = pickResult.contributors[0];
+      const b = pickResult.contributors[1];
+      if (a > 0 && b > 0) {
+        const pt = pickResult.point;
+        // Use the hit point as both capsule endpoints (point
+        // fillet). A smarter version would find the nearest
+        // edge segment and use its full extent.
+        store.addFilletAtEdge(
+          a,
+          b,
+          [pt[0] - 20, pt[1] - 20, pt[2] - 20],
+          [pt[0] + 20, pt[1] + 20, pt[2] + 20],
+          3,
+        );
+      }
+      return;
+    }
+
     // Measure mode: place points instead of selecting.
     if (state?.measureMode && pickResult?.hit) {
       const pt: [number, number, number] = [

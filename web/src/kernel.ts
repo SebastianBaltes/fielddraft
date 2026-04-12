@@ -748,6 +748,23 @@ export class Kernel {
     return this.inner.addImportedMesh(positions, indices, op);
   }
 
+  /** K10.6: add a fillet at a detected edge. */
+  addFilletEdge(
+    featureA: number,
+    featureB: number,
+    p0x: number, p0y: number, p0z: number,
+    p1x: number, p1y: number, p1z: number,
+    maskRadius: number,
+    blendRadius: number,
+  ): number {
+    return this.inner.addFilletEdge(
+      featureA, featureB,
+      p0x, p0y, p0z,
+      p1x, p1y, p1z,
+      maskRadius, blendRadius,
+    );
+  }
+
   /** K10.6: detect B-Rep edges from the current mesh. */
   detectEdges(): { p0: number[]; p1: number[]; contributor_a: string; contributor_b: string }[] {
     return JSON.parse(this.inner.detectEdges()) as {

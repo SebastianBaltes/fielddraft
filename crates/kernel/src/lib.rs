@@ -1366,6 +1366,41 @@ impl Kernel {
 
     /// K8.0: append a `linear_pattern` feature call that
     /// replicates the source feature along a direction
+    /// K10.6: add a fillet_edge feature from detected edge data.
+    #[wasm_bindgen(js_name = addFilletEdge)]
+    pub fn add_fillet_edge(
+        &mut self,
+        feature_a: u32,
+        feature_b: u32,
+        p0x: f32, p0y: f32, p0z: f32,
+        p1x: f32, p1y: f32, p1z: f32,
+        mask_radius: f32,
+        blend_radius: f32,
+    ) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id.as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "feature_a": feature_a as f32,
+            "feature_b": feature_b as f32,
+            "mask_p0": [p0x, p0y, p0z],
+            "mask_p1": [p1x, p1y, p1z],
+            "mask_radius": mask_radius,
+            "blend_radius": blend_radius,
+        });
+        let call = fielddraft_protocol::FeatureCall::new("fillet_edge", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "fillet edge failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// K10.6: detect B-Rep edges from the current mesh +
     /// contributor analysis. Returns a JSON array of edge
     /// segments with 3D coordinates + contributor IDs.

@@ -119,6 +119,8 @@ export interface StoreState {
   /** K9.4: measure mode active — clicks place measure points
    *  instead of selecting features. */
   measureMode: boolean;
+  /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
+  filletMode: boolean;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -171,6 +173,7 @@ export class KernelStore {
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
       measureMode: false,
+      filletMode: false,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -240,6 +243,7 @@ export class KernelStore {
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
       measureMode: this.state.measureMode,
+      filletMode: this.state.filletMode,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -905,8 +909,40 @@ export class KernelStore {
     this.autosave.flush();
   }
 
+  /** K10.6: add a fillet_edge feature at a detected edge. */
+  addFilletAtEdge(
+    featureA: number,
+    featureB: number,
+    p0: [number, number, number],
+    p1: [number, number, number],
+    radius = 5,
+  ): number | null {
+    let id: number;
+    try {
+      id = this.kernel.addFilletEdge(
+        featureA,
+        featureB,
+        p0[0], p0[1], p0[2],
+        p1[0], p1[1], p1[2],
+        radius * 2,
+        radius,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addFilletAtEdge failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   toggleMeasureMode(): void {
-    this.state = { ...this.state, measureMode: !this.state.measureMode };
+    this.state = { ...this.state, measureMode: !this.state.measureMode, filletMode: false };
+    for (const listener of this.listeners) listener();
+  }
+
+  toggleFilletMode(): void {
+    this.state = { ...this.state, filletMode: !this.state.filletMode, measureMode: false };
     for (const listener of this.listeners) listener();
   }
 
