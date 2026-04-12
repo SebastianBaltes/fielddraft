@@ -635,6 +635,19 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
+  /** Clear the document back to a fresh empty state. */
+  newProject(): void {
+    this.kernel.loadJson('{"schema_version":1,"name":"Untitled","feature_calls":[],"next_feature_id":1}');
+    this.commit(new Set(), null);
+    this.autosave.flush();
+  }
+
+  selectAll(): void {
+    const all = new Set(this.state.features.map((f) => f.id));
+    this.state = { ...this.state, selection: all, selectionAnchor: null };
+    for (const listener of this.listeners) listener();
+  }
+
   clearSelection(): void {
     if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
     this.state = { ...this.state, selection: new Set(), selectionAnchor: null };

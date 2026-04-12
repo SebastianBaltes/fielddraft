@@ -355,6 +355,22 @@ export function Toolbar({ store, state }: ToolbarProps) {
       </div>
 
       <div className="group">
+        <button
+          type="button"
+          className="tool"
+          title="New empty project"
+          data-testid="new-project"
+          onClick={() => {
+            if (
+              state.features.length === 0 ||
+              confirm("Discard current project?")
+            ) {
+              store.newProject();
+            }
+          }}
+        >
+          📄 New
+        </button>
         <input
           ref={useRef<HTMLInputElement>(null)}
           type="file"

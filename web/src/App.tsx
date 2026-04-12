@@ -104,6 +104,13 @@ export function App() {
         }
       }
 
+      // Ctrl+A = select all features.
+      if (ctrl && (e.key === "a" || e.key === "A")) {
+        store.selectAll();
+        e.preventDefault();
+        return;
+      }
+
       // Ctrl+D = duplicate selected feature.
       if (ctrl && (e.key === "d" || e.key === "D")) {
         const sel = store.getState().selection;
