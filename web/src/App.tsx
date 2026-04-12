@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
@@ -7,12 +7,19 @@ import { requestView } from "./viewCommands";
 
 export function App() {
   const { store, state, error } = useKernelStore();
+  const [showHelp, setShowHelp] = useState(false);
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
   useEffect(() => {
     if (!store) return;
     const onKey = (e: KeyboardEvent) => {
+      // F1 toggles help overlay — always, even in inputs.
+      if (e.key === "F1") {
+        setShowHelp((v) => !v);
+        e.preventDefault();
+        return;
+      }
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
@@ -161,6 +168,40 @@ export function App() {
         <Viewport />
         {store && state ? <Outliner store={store} state={state} /> : null}
       </main>
+      {showHelp ? (
+        <div
+          className="fd-help-overlay"
+          onClick={() => setShowHelp(false)}
+        >
+          <div
+            className="fd-help-panel"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2>Keyboard Shortcuts</h2>
+            <table>
+              <tbody>
+                <tr><td><kbd>B</kbd></td><td>Add Box</td></tr>
+                <tr><td><kbd>S</kbd></td><td>Add Sphere</td></tr>
+                <tr><td><kbd>C</kbd></td><td>Add Cylinder</td></tr>
+                <tr><td><kbd>T</kbd></td><td>Add Torus</td></tr>
+                <tr><td><kbd>H</kbd></td><td>Add Hole</td></tr>
+                <tr><td><kbd>Del</kbd></td><td>Delete selection</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Clear selection</td></tr>
+                <tr><td><kbd>Ctrl+Z</kbd></td><td>Undo</td></tr>
+                <tr><td><kbd>Ctrl+Shift+Z</kbd></td><td>Redo</td></tr>
+                <tr><td><kbd>Ctrl+A</kbd></td><td>Select all</td></tr>
+                <tr><td><kbd>Ctrl+D</kbd></td><td>Duplicate</td></tr>
+                <tr><td><kbd>Ctrl+S</kbd></td><td>Save project</td></tr>
+                <tr><td><kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd></td><td>Front / Top / Right view</td></tr>
+                <tr><td><kbd>0</kbd></td><td>Isometric view</td></tr>
+                <tr><td><kbd>Arrows</kbd></td><td>Nudge selection</td></tr>
+                <tr><td><kbd>F1</kbd></td><td>Toggle this help</td></tr>
+              </tbody>
+            </table>
+            <button type="button" onClick={() => setShowHelp(false)}>Close</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
