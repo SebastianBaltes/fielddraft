@@ -350,6 +350,8 @@ pub struct BoxDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct BoxPrimitive;
@@ -392,6 +394,7 @@ impl FeatureKind for BoxPrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -420,6 +423,8 @@ pub struct SphereDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct SpherePrimitive;
@@ -463,6 +468,7 @@ impl FeatureKind for SpherePrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -492,6 +498,8 @@ pub struct CylinderDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct CylinderPrimitive;
@@ -537,6 +545,7 @@ impl FeatureKind for CylinderPrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -567,6 +576,8 @@ pub struct ConeDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct ConePrimitive;
@@ -609,6 +620,7 @@ impl FeatureKind for ConePrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -684,6 +696,7 @@ impl FeatureKind for ThreadFeature {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -717,6 +730,8 @@ pub struct TorusDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct TorusPrimitive;
@@ -762,6 +777,7 @@ impl FeatureKind for TorusPrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -793,6 +809,8 @@ pub struct CapsuleDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct CapsulePrimitive;
@@ -837,6 +855,7 @@ impl FeatureKind for CapsulePrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -867,6 +886,8 @@ pub struct HexPrismDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct HexPrismPrimitive;
@@ -911,6 +932,7 @@ impl FeatureKind for HexPrismPrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -954,6 +976,8 @@ pub struct GyroidDef {
     pub displace_depth: f32,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
 }
 
 pub struct GyroidFeature;
@@ -1001,6 +1025,7 @@ impl FeatureKind for GyroidFeature {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
         });
         Ok(())
     }
@@ -1089,6 +1114,7 @@ impl FeatureKind for HoleFeature {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -1299,6 +1325,7 @@ impl FeatureKind for ExtrudeFeature {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -1400,6 +1427,7 @@ impl FeatureKind for RevolveFeature {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -2455,11 +2483,11 @@ mod tests {
     fn box_def_schema_matches_the_k1_parameter_surface() {
         // Regression: the derive-generated schema for the box
         // primitive should match the K4.5.2 hand-rolled surface
-        // exactly — nine params after K11.3 added displace_depth + displace_freq.
+        // exactly — eleven params after shell_thickness was added.
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 10);
+        assert_eq!(params.len(), 11);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -2532,6 +2560,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
             });
             let _ = kind;
         }

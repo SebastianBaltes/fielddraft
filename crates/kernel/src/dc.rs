@@ -414,6 +414,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -433,6 +434,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -459,6 +461,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 

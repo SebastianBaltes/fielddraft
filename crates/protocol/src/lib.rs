@@ -591,6 +591,11 @@ pub struct Feature {
     /// K11.3: displacement spatial frequency (cycles/mm).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub displace_freq: f32,
+    /// Shell thickness in mm. When > 0, from_features wraps the
+    /// leaf in CsgNode::Shell, turning the solid into a thin
+    /// wall of this thickness.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shell_thickness: f32,
 }
 
 fn is_zero(v: &f32) -> bool {

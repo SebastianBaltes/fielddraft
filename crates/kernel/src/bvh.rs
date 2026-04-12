@@ -97,6 +97,12 @@ pub enum BoundedCsg {
         freq: f32,
         aabb: Aabb,
     },
+    /// Shell: hollow out the child's solid to a surface of given thickness.
+    Shell {
+        inner: Box<BoundedCsg>,
+        thickness: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -141,6 +147,7 @@ impl BoundedCsg {
             | BoundedCsg::Twist { aabb, .. }
             | BoundedCsg::Bend { aabb, .. }
             | BoundedCsg::Displace { aabb, .. }
+            | BoundedCsg::Shell { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
@@ -255,6 +262,9 @@ impl BoundedCsg {
                     * (p[1] * freq * 1.3).sin()
                     * (p[2] * freq * 0.7).sin();
                 d - disp
+            }
+            BoundedCsg::Shell { inner, thickness, .. } => {
+                inner.sdf(p, mode).abs() - *thickness
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -376,6 +386,10 @@ impl BoundedCsg {
                     * (p[1] * freq * 1.3).sin()
                     * (p[2] * freq * 0.7).sin();
                 (d - disp, c)
+            }
+            BoundedCsg::Shell { inner, thickness, .. } => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                (d.abs() - *thickness, c)
             }
             BoundedCsg::Extrude {
                 id,
@@ -543,6 +557,24 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Shell(inner, thickness) => {
+            let child = build(inner, carry);
+            let bb = child.aabb();
+            let aabb = if bb.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let t = thickness.abs();
+                Aabb {
+                    min: [bb.min[0] - t, bb.min[1] - t, bb.min[2] - t],
+                    max: [bb.max[0] + t, bb.max[1] + t, bb.max[2] + t],
+                }
+            };
+            BoundedCsg::Shell {
+                inner: Box::new(child),
+                thickness: *thickness,
+                aabb,
+            }
+        }
         CsgNode::Extrude {
             id,
             sketch,
@@ -663,6 +695,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -686,6 +719,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -702,6 +736,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 

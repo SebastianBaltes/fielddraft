@@ -455,6 +455,10 @@ pub enum CsgNode {
     /// frequency (cycles per mm). Produces an egg-crate-like bump
     /// texture. The AABB expands by `depth` in every direction.
     Displace(Box<CsgNode>, f32, f32),
+    /// Shell: hollow the child by replacing its SDF with
+    /// `|sdf(p)| - thickness`. Turns a solid body into a
+    /// thin-walled shell of uniform thickness.
+    Shell(Box<CsgNode>, f32),
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -570,6 +574,9 @@ impl CsgNode {
             if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
                 leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
             }
+            if f.shell_thickness > 0.0 {
+                leaf = Self::Shell(Box::new(leaf), f.shell_thickness);
+            }
             // Blend selection: fillet (blend_radius) wins over
             // chamfer (chamfer_size) when both are set.
             let (blend_r, blend_mode) = if f.blend_radius > 0.0 {
@@ -647,6 +654,9 @@ impl CsgNode {
                     * (p[1] * freq * 1.3).sin()
                     * (p[2] * freq * 0.7).sin();
                 d - disp
+            }
+            CsgNode::Shell(inner, thickness) => {
+                inner.sdf(p, mode).abs() - *thickness
             }
             CsgNode::Extrude {
                 sketch,
@@ -760,6 +770,10 @@ impl CsgNode {
                     * (p[2] * freq * 0.7).sin();
                 (d - disp, c)
             }
+            CsgNode::Shell(inner, thickness) => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                (d.abs() - *thickness, c)
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -824,6 +838,17 @@ impl CsgNode {
                 Aabb {
                     min: [bb.min[0] - d, bb.min[1] - d, bb.min[2] - d],
                     max: [bb.max[0] + d, bb.max[1] + d, bb.max[2] + d],
+                }
+            }
+            CsgNode::Shell(inner, thickness) => {
+                let bb = inner.aabb();
+                if bb.is_empty() {
+                    return Aabb::EMPTY;
+                }
+                let t = *thickness;
+                Aabb {
+                    min: [bb.min[0] - t, bb.min[1] - t, bb.min[2] - t],
+                    max: [bb.max[0] + t, bb.max[1] + t, bb.max[2] + t],
                 }
             }
             // Intersection is a subset of either child; keep the left
@@ -988,6 +1013,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -1021,6 +1047,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -1066,6 +1093,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -1129,6 +1157,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -1145,6 +1174,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -1435,6 +1465,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

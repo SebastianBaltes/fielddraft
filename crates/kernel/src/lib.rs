@@ -1845,6 +1845,7 @@ impl Kernel {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         self.rebuild_packed();
         Ok(flat_u32)
@@ -2403,6 +2404,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -2419,6 +2421,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -2439,6 +2442,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         }
     }
 
@@ -2584,6 +2588,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         };
         // On the (scaled) surface.
         assert!(sdf_feature(&scaled, [4.0, 0.0, 0.0]).abs() < 1e-5);
@@ -2620,6 +2625,7 @@ mod tests {
             bend_rate: 0.0,
             displace_depth: 0.0,
             displace_freq: 0.0,
+            shell_thickness: 0.0,
         };
         // Surface in any axis direction.
         assert!((sdf_feature(&f, [1.0, 0.0, 0.0])).abs() < 1e-5);
