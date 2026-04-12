@@ -119,6 +119,13 @@ export interface StoreState {
   /** K9.4: measure mode active — clicks place measure points
    *  instead of selecting features. */
   measureMode: boolean;
+  /** M12: sync state machine for server-backed projects.
+   *  "clean" = in sync with server, "dirty" = local changes
+   *  pending, "syncing" = upload in flight, "error" = last
+   *  sync failed. */
+  syncState: "clean" | "dirty" | "syncing" | "error" | "offline";
+  /** M12: server-side project ID, null in guest/offline mode. */
+  projectId: string | null;
   /** K9.1: overall scene extents in mm, refreshed on commit. */
   sceneSize: [number, number, number];
 }
@@ -164,6 +171,8 @@ export class KernelStore {
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
       measureMode: false,
+      syncState: "offline",
+      projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
       variables: kernel.listVariables(),
       referenceMesh: null,
@@ -231,6 +240,8 @@ export class KernelStore {
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
       measureMode: this.state.measureMode,
+      syncState: this.state.projectId ? "dirty" : "offline",
+      projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
       variables: this.kernel.listVariables(),
       referenceMesh: this.state.referenceMesh,
@@ -839,6 +850,49 @@ export class KernelStore {
     this.commit(new Set(), null);
     this.autosave.flush();
     return true;
+  }
+
+  /** M12: set the server-side project ID (activates sync). */
+  setProjectId(id: string | null): void {
+    this.state = {
+      ...this.state,
+      projectId: id,
+      syncState: id ? "dirty" : "offline",
+    };
+    for (const listener of this.listeners) listener();
+  }
+
+  /** M12: sync the current document to the server. No-op in
+   *  offline mode. */
+  async syncToServer(): Promise<boolean> {
+    if (!this.state.projectId || this.state.syncState === "offline") {
+      return false;
+    }
+    this.state = { ...this.state, syncState: "syncing" };
+    for (const listener of this.listeners) listener();
+    try {
+      const res = await fetch(
+        `/api/projects/${this.state.projectId}`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            document: JSON.parse(this.kernel.toJson()),
+          }),
+        },
+      );
+      if (!res.ok) throw new Error(`sync failed: ${res.status}`);
+      this.state = { ...this.state, syncState: "clean" };
+      for (const listener of this.listeners) listener();
+      return true;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: sync failed", err);
+      this.state = { ...this.state, syncState: "error" };
+      for (const listener of this.listeners) listener();
+      return false;
+    }
   }
 
   /** Clear the document back to a fresh empty state. */
