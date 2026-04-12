@@ -35,6 +35,7 @@ export type ProxyElement = "face" | "edge" | "vertex";
 export interface PickHit {
   hit: true;
   point: [number, number, number];
+  normal: [number, number, number];
   t: number;
   element: ProxyElement;
   contributors: number[];

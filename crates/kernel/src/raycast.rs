@@ -19,6 +19,8 @@ use crate::csg::{Contributors, EvalMode, ProxyElement};
 #[derive(Debug, Clone, PartialEq)]
 pub struct RayHit {
     pub point: [f32; 3],
+    /// Surface normal at the hit point (SDF gradient, normalised).
+    pub normal: [f32; 3],
     /// Distance from the ray origin along the (normalised) direction.
     pub t: f32,
     pub contributors: Contributors,
@@ -94,8 +96,20 @@ pub fn raycast(
             if element == ProxyElement::None {
                 return None;
             }
+            // Surface normal via central-difference SDF gradient.
+            let eps = 0.01_f32;
+            let nx = node.sdf([p[0] + eps, p[1], p[2]], EvalMode::Logical)
+                - node.sdf([p[0] - eps, p[1], p[2]], EvalMode::Logical);
+            let ny = node.sdf([p[0], p[1] + eps, p[2]], EvalMode::Logical)
+                - node.sdf([p[0], p[1] - eps, p[2]], EvalMode::Logical);
+            let nz = node.sdf([p[0], p[1], p[2] + eps], EvalMode::Logical)
+                - node.sdf([p[0], p[1], p[2] - eps], EvalMode::Logical);
+            let nlen = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-8);
+            let normal = [nx / nlen, ny / nlen, nz / nlen];
+
             return Some(RayHit {
                 point: p,
+                normal,
                 t,
                 contributors,
                 element,

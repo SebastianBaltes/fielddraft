@@ -2539,10 +2539,13 @@ impl Kernel {
                 }
                 contributors.push(']');
                 format!(
-                    r#"{{"hit":true,"point":[{},{},{}],"t":{},"element":"{}","contributors":{}}}"#,
+                    r#"{{"hit":true,"point":[{},{},{}],"normal":[{},{},{}],"t":{},"element":"{}","contributors":{}}}"#,
                     hit.point[0],
                     hit.point[1],
                     hit.point[2],
+                    hit.normal[0],
+                    hit.normal[1],
+                    hit.normal[2],
                     hit.t,
                     hit.element.label(),
                     contributors,
