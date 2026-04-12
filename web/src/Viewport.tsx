@@ -655,15 +655,35 @@ export function Viewport() {
     e.preventDefault();
     if (!store) return;
     const kind = e.dataTransfer.getData("fielddraft/primitive");
-    if (!kind) return;
-    type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism";
-    const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism"];
-    if (valid.includes(kind as PrimName)) {
-      store.addPrimitive(kind as PrimName);
-    } else if (kind === "hole") {
-      store.addHole();
-    } else if (kind === "gyroid") {
-      store.addGyroid();
+    if (kind) {
+      type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
+      const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism", "ellipsoid"];
+      if (valid.includes(kind as PrimName)) {
+        store.addPrimitive(kind as PrimName);
+      } else if (kind === "hole") {
+        store.addHole();
+      } else if (kind === "gyroid") {
+        store.addGyroid();
+      }
+      return;
+    }
+    // K14: drag-sketch-on-face — when a sketch is dropped onto
+    // a surface, start a sketch with the plane aligned to the
+    // face normal at the last pick point.
+    const sketchDrop = e.dataTransfer.getData("fielddraft/sketch");
+    if (sketchDrop && pickResult?.hit) {
+      const n = pickResult.normal;
+      // Pick the closest standard plane based on the normal.
+      const ax = Math.abs(n[0]);
+      const ay = Math.abs(n[1]);
+      const az = Math.abs(n[2]);
+      let plane = "qCreatedBy(origin_plane_xy)";
+      if (ax > ay && ax > az) {
+        plane = "qCreatedBy(origin_plane_yz)";
+      } else if (az > ay) {
+        plane = "qCreatedBy(origin_plane_xz)";
+      }
+      store.enterSketch(plane);
     }
   };
 

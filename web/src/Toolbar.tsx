@@ -302,6 +302,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
           className="tool"
           title="Sketch (lock XY origin plane)"
           data-testid="enter-sketch"
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData("fielddraft/sketch", "true");
+            e.dataTransfer.effectAllowed = "copy";
+          }}
           onClick={() => setSketchPlaneOpen(!sketchPlaneOpen)}
         >
           ✎ Sketch ▾
