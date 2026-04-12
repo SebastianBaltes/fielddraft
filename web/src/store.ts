@@ -420,6 +420,53 @@ export class KernelStore {
     return true;
   }
 
+  /** K9.2: load a GLB/glTF file as a visual reference mesh.
+   *  Uses Three.js GLTFLoader to parse, extracts the first
+   *  geometry, and feeds it to the same referenceMesh state
+   *  as STL import. */
+  async loadReferenceGlb(buffer: ArrayBuffer): Promise<boolean> {
+    try {
+      const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+      const loader = new GLTFLoader();
+      const gltf = await new Promise<{ scene: { traverse: (cb: (child: unknown) => void) => void } }>(
+        (resolve, reject) => {
+          loader.parse(buffer, "", resolve as never, reject);
+        },
+      );
+
+      let found = false;
+      gltf.scene.traverse((child: unknown) => {
+        if (found) return;
+        const mesh = child as { isMesh?: boolean; geometry?: { getAttribute: (n: string) => { array: ArrayLike<number>; count: number } | null; getIndex: () => { array: ArrayLike<number> } | null } };
+        if (!mesh.isMesh || !mesh.geometry) return;
+        const posAttr = mesh.geometry.getAttribute("position");
+        if (!posAttr || posAttr.count === 0) return;
+
+        const positions = new Float32Array(posAttr.array as ArrayLike<number>);
+        const normalAttr = mesh.geometry.getAttribute("normal");
+        const normals = normalAttr
+          ? new Float32Array(normalAttr.array as ArrayLike<number>)
+          : new Float32Array(positions.length);
+        const indexAttr = mesh.geometry.getIndex();
+        const indices = indexAttr
+          ? new Uint32Array(indexAttr.array as ArrayLike<number>)
+          : new Uint32Array(Array.from({ length: posAttr.count }, (_, i) => i));
+
+        this.state = {
+          ...this.state,
+          referenceMesh: { positions, normals, indices },
+        };
+        this.notify();
+        found = true;
+      });
+      return found;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: loadReferenceGlb failed", err);
+      return false;
+    }
+  }
+
   clearReferenceMesh(): void {
     this.state = { ...this.state, referenceMesh: null };
     this.notify();

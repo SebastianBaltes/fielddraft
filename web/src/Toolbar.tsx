@@ -374,15 +374,22 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <input
           ref={useRef<HTMLInputElement>(null)}
           type="file"
-          accept=".stl"
+          accept=".stl,.glb,.gltf"
           className="hidden-file-input"
           data-testid="import-stl-input"
           onChange={(e) => {
             const file = e.currentTarget.files?.[0];
             if (!file) return;
-            file.arrayBuffer().then((buf) => {
-              store.loadReferenceMesh(buf);
-            });
+            const name = file.name.toLowerCase();
+            if (name.endsWith(".glb") || name.endsWith(".gltf")) {
+              file.arrayBuffer().then((buf) => {
+                store.loadReferenceGlb(buf);
+              });
+            } else {
+              file.arrayBuffer().then((buf) => {
+                store.loadReferenceMesh(buf);
+              });
+            }
             e.currentTarget.value = "";
           }}
         />
