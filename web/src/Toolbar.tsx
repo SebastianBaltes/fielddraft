@@ -430,7 +430,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <input
           ref={useRef<HTMLInputElement>(null)}
           type="file"
-          accept=".stl,.glb,.gltf"
+          accept=".stl,.glb,.gltf,.obj"
           className="hidden-file-input"
           data-testid="import-stl-input"
           onChange={(e) => {
@@ -440,6 +440,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
             if (name.endsWith(".glb") || name.endsWith(".gltf")) {
               file.arrayBuffer().then((buf) => {
                 store.loadReferenceGlb(buf);
+              });
+            } else if (name.endsWith(".obj")) {
+              file.text().then((text) => {
+                store.loadReferenceObj(text);
               });
             } else {
               file.arrayBuffer().then((buf) => {

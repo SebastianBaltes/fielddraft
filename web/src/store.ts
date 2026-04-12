@@ -473,6 +473,77 @@ export class KernelStore {
     }
   }
 
+  /** K9.3: load a Wavefront OBJ file as visual reference mesh.
+   *  Parses the text directly — no external loader needed. */
+  loadReferenceObj(text: string): boolean {
+    const verts: number[] = [];
+    const positions: number[] = [];
+    const normals: number[] = [];
+
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (line.startsWith("v ")) {
+        const parts = line.split(/\s+/);
+        verts.push(
+          parseFloat(parts[1]),
+          parseFloat(parts[2]),
+          parseFloat(parts[3]),
+        );
+      } else if (line.startsWith("f ")) {
+        const parts = line.split(/\s+/).slice(1);
+        // Triangulate fan-style for quads/n-gons.
+        const idxs = parts.map((p) => parseInt(p.split("/")[0], 10) - 1);
+        for (let i = 1; i < idxs.length - 1; i++) {
+          for (const idx of [idxs[0], idxs[i], idxs[i + 1]]) {
+            positions.push(
+              verts[idx * 3] ?? 0,
+              verts[idx * 3 + 1] ?? 0,
+              verts[idx * 3 + 2] ?? 0,
+            );
+            normals.push(0, 0, 0);
+          }
+        }
+      }
+    }
+
+    if (positions.length === 0) return false;
+
+    // Compute flat normals per triangle.
+    for (let i = 0; i < positions.length; i += 9) {
+      const ax = positions[i + 3] - positions[i];
+      const ay = positions[i + 4] - positions[i + 1];
+      const az = positions[i + 5] - positions[i + 2];
+      const bx = positions[i + 6] - positions[i];
+      const by = positions[i + 7] - positions[i + 1];
+      const bz = positions[i + 8] - positions[i + 2];
+      let nx = ay * bz - az * by;
+      let ny = az * bx - ax * bz;
+      let nz = ax * by - ay * bx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      for (let v = 0; v < 3; v++) {
+        normals[i + v * 3] = nx;
+        normals[i + v * 3 + 1] = ny;
+        normals[i + v * 3 + 2] = nz;
+      }
+    }
+
+    const posArr = new Float32Array(positions);
+    const normArr = new Float32Array(normals);
+    const idxArr = new Uint32Array(
+      Array.from({ length: positions.length / 3 }, (_, i) => i),
+    );
+
+    this.state = {
+      ...this.state,
+      referenceMesh: { positions: posArr, normals: normArr, indices: idxArr },
+    };
+    this.notify();
+    return true;
+  }
+
   clearReferenceMesh(): void {
     this.state = { ...this.state, referenceMesh: null };
     this.notify();
