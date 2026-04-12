@@ -17,6 +17,7 @@ pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
 // Primitive::ImportedMesh can carry it serialised.
 pub use fielddraft_protocol::mesh_sdf;
+pub mod sketch_regions;
 pub mod queries;
 pub mod export;
 pub mod raycast;
@@ -1352,6 +1353,34 @@ impl Kernel {
 
     /// K8.0: append a `linear_pattern` feature call that
     /// replicates the source feature along a direction
+    /// K8.13: list the connected inside-regions of a sketch.
+    /// Returns a JSON array of `{index, centroid, aabb, area}`
+    /// objects. The sketch is identified by its feature id.
+    #[wasm_bindgen(js_name = listSketchRegions)]
+    pub fn list_sketch_regions(
+        &self,
+        sketch_id: u32,
+        resolution: u32,
+    ) -> Result<String, JsError> {
+        let target = FeatureId::from_u32(sketch_id);
+        let call = self
+            .document
+            .feature_calls
+            .iter()
+            .find(|c| c.id == target && c.type_name == "sketch")
+            .ok_or_else(|| JsError::new(&format!("feature {sketch_id} is not a sketch")))?;
+
+        let sub_calls: Vec<serde_json::Value> = call
+            .params
+            .get("sub_calls")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls_raw(&sub_calls);
+        let regions = sketch_regions::find_regions(&sketch2d, resolution);
+        serde_json::to_string(&regions).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// K13.1: import triangle data as a solid CSG leaf.
     #[wasm_bindgen(js_name = addImportedMesh)]
     pub fn add_imported_mesh(

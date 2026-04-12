@@ -812,6 +812,25 @@ impl FeatureKind for SketchFeature {
 /// contain. Returns [`Sketch2d::Empty`] when the sub-spine has
 /// no region-forming entries — downstream features should treat
 /// that as "no profile available" and fail fast.
+/// K8.13: variant that takes raw JSON sub-call values
+/// (the format stored in FeatureCall params). Parses each
+/// into a FeatureCall and delegates.
+pub fn build_sketch2d_from_sub_calls_raw(
+    raw: &[serde_json::Value],
+) -> Sketch2d {
+    let calls: Vec<FeatureCall> = raw
+        .iter()
+        .filter_map(|v| {
+            let type_name = v.get("type")?.as_str()?.to_string();
+            let id_str = v.get("id")?.as_str().unwrap_or("0");
+            let id = FeatureId::from_u32(id_str.parse::<u32>().unwrap_or(0));
+            let params = v.get("params").cloned().unwrap_or(serde_json::json!({}));
+            Some(FeatureCall::new(type_name, id, params))
+        })
+        .collect();
+    build_sketch2d_from_sub_calls(&calls)
+}
+
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
     let mut acc: Option<Sketch2d> = None;
     for call in sub_calls {
