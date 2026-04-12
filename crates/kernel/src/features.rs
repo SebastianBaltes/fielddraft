@@ -336,6 +336,8 @@ pub struct BoxDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
@@ -381,6 +383,7 @@ impl FeatureKind for BoxPrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
@@ -403,6 +406,8 @@ pub struct SphereDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
@@ -449,6 +454,7 @@ impl FeatureKind for SpherePrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
@@ -472,6 +478,8 @@ pub struct CylinderDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
@@ -520,6 +528,7 @@ impl FeatureKind for CylinderPrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
@@ -547,6 +556,8 @@ pub struct TorusDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
@@ -595,6 +606,7 @@ impl FeatureKind for TorusPrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
@@ -632,6 +644,8 @@ pub struct GyroidDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
@@ -682,6 +696,7 @@ impl FeatureKind for GyroidFeature {
                 scale,
             },
             blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
@@ -769,6 +784,7 @@ impl FeatureKind for HoleFeature {
                 scale,
             },
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -978,6 +994,7 @@ impl FeatureKind for ExtrudeFeature {
                 scale,
             },
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1078,6 +1095,7 @@ impl FeatureKind for RevolveFeature {
                 scale,
             },
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -2133,7 +2151,7 @@ mod tests {
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 9);
+        assert_eq!(params.len(), 10);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -2201,6 +2219,7 @@ mod tests {
                     scale: 1.0,
                 },
                 blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,

@@ -535,6 +535,13 @@ pub struct Feature {
     pub bend_rate: f32,
     /// K11.3: displacement depth in mm. When > 0 the CSG builder
     /// wraps the leaf in `CsgNode::Displace`. Zero = smooth surface.
+    /// K10.2: chamfer size in mm. When > 0 and `blend_radius` is
+    /// 0, `from_features` uses the chamfer blend formula (flat
+    /// 45° cut) instead of the fillet. Mutually exclusive with
+    /// `blend_radius` at the UX level; if both are set the fillet
+    /// wins.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub chamfer_size: f32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub displace_depth: f32,
     /// K11.3: displacement spatial frequency (cycles/mm).

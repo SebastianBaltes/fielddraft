@@ -26,7 +26,7 @@
 
 use fielddraft_protocol::{Primitive, Transform};
 
-use crate::csg::{sdf_extrude, Aabb, Contributors, CsgNode, EvalMode, NodeId};
+use crate::csg::{sdf_extrude, Aabb, BlendMode, Contributors, CsgNode, EvalMode, NodeId};
 use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
 
@@ -67,6 +67,7 @@ pub enum BoundedCsg {
         left: Box<BoundedCsg>,
         right: Box<BoundedCsg>,
         radius: f32,
+        mode: BlendMode,
         aabb: Aabb,
     },
     /// K10.0: smooth-max difference with blend radius.
@@ -74,6 +75,7 @@ pub enum BoundedCsg {
         left: Box<BoundedCsg>,
         right: Box<BoundedCsg>,
         radius: f32,
+        mode: BlendMode,
         aabb: Aabb,
     },
     /// K11.1: twist around local Y axis with a radians/mm rate.
@@ -210,12 +212,13 @@ impl BoundedCsg {
                 left,
                 right,
                 radius,
+                mode: blend_mode,
                 ..
             } => {
                 let da = left.sdf(p, mode);
                 let db = right.sdf(p, mode);
                 match mode {
-                    EvalMode::Visual => crate::csg::smin_poly(da, db, *radius),
+                    EvalMode::Visual => crate::csg::blend_min(da, db, *radius, *blend_mode),
                     EvalMode::Logical => da.min(db),
                 }
             }
@@ -223,12 +226,13 @@ impl BoundedCsg {
                 left,
                 right,
                 radius,
+                mode: blend_mode,
                 ..
             } => {
                 let da = left.sdf(p, mode);
                 let db = right.sdf(p, mode);
                 match mode {
-                    EvalMode::Visual => -crate::csg::smin_poly(-da, db, *radius),
+                    EvalMode::Visual => -crate::csg::blend_min(-da, db, *radius, *blend_mode),
                     EvalMode::Logical => da.max(-db),
                 }
             }
@@ -319,13 +323,14 @@ impl BoundedCsg {
                 left,
                 right,
                 radius,
+                mode: blend_mode,
                 ..
             } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
                 let (db, cb) = right.evaluate(p, eps, mode);
                 match mode {
                     EvalMode::Visual => {
-                        let d = crate::csg::smin_poly(da, db, *radius);
+                        let d = crate::csg::blend_min(da, db, *radius, *blend_mode);
                         let mut c = ca;
                         c.extend(cb);
                         (d, c)
@@ -337,13 +342,14 @@ impl BoundedCsg {
                 left,
                 right,
                 radius,
+                mode: blend_mode,
                 ..
             } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
                 let (db, cb) = right.evaluate(p, eps, mode);
                 match mode {
                     EvalMode::Visual => {
-                        let d = -crate::csg::smin_poly(-da, db, *radius);
+                        let d = -crate::csg::blend_min(-da, db, *radius, *blend_mode);
                         let mut c = ca;
                         c.extend(cb);
                         (d, c)
@@ -454,7 +460,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
-        CsgNode::SmoothUnion(a, b, r) => {
+        CsgNode::SmoothUnion(a, b, r, blend_mode) => {
             let left = build(a, carry);
             let right = build(b, carry);
             let aabb = Aabb::union(left.aabb(), right.aabb());
@@ -462,10 +468,11 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 left: Box::new(left),
                 right: Box::new(right),
                 radius: *r,
+                mode: *blend_mode,
                 aabb,
             }
         }
-        CsgNode::SmoothDifference(a, b, r) => {
+        CsgNode::SmoothDifference(a, b, r, blend_mode) => {
             let left = build(a, carry);
             let right = build(b, carry);
             let aabb = left.aabb();
@@ -473,6 +480,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 left: Box::new(left),
                 right: Box::new(right),
                 radius: *r,
+                mode: *blend_mode,
                 aabb,
             }
         }
@@ -650,6 +658,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -672,6 +681,7 @@ mod tests {
                 scale: 1.0,
             },
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -687,6 +697,7 @@ mod tests {
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,

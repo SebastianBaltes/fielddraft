@@ -374,6 +374,15 @@ impl Aabb {
 /// `from_features`. Each `Leaf` carries a stable [`NodeId`] that
 /// propagates through the provenance-aware `evaluate` fold, so every
 /// surface hit can be traced back to the primitives that produced it.
+/// K10.2: how to blend the junction between two Boolean
+/// operands. Fillet uses the cubic smin polynomial (rounded
+/// edges); Chamfer uses a linear 45° cut.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlendMode {
+    Fillet,
+    Chamfer,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CsgNode {
     Empty,
@@ -394,11 +403,11 @@ pub enum CsgNode {
     /// Outside the blend zone it degenerates to the hard `min`
     /// (== `Union`), so existing geometry is pixel-identical
     /// beyond the fillet.
-    SmoothUnion(Box<CsgNode>, Box<CsgNode>, f32),
+    SmoothUnion(Box<CsgNode>, Box<CsgNode>, f32, BlendMode),
     /// K10.0: smooth-max difference with the same blend radius
     /// semantics. The fillet rounds concave edges where material
     /// is subtracted.
-    SmoothDifference(Box<CsgNode>, Box<CsgNode>, f32),
+    SmoothDifference(Box<CsgNode>, Box<CsgNode>, f32, BlendMode),
     /// K11.1: twist the child around the local Y axis. The twist
     /// rate is in radians per millimetre along Y — a rate of
     /// `π / 100` turns the body 180° over a 100 mm span. The
@@ -534,15 +543,23 @@ impl CsgNode {
             if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
                 leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
             }
-            let r = f.blend_radius;
+            // Blend selection: fillet (blend_radius) wins over
+            // chamfer (chamfer_size) when both are set.
+            let (blend_r, blend_mode) = if f.blend_radius > 0.0 {
+                (f.blend_radius, BlendMode::Fillet)
+            } else if f.chamfer_size > 0.0 {
+                (f.chamfer_size, BlendMode::Chamfer)
+            } else {
+                (0.0, BlendMode::Fillet)
+            };
             acc = match (acc, f.op) {
                 (Self::Empty, _) => leaf,
-                (a, BoolOp::Union) if r > 0.0 => {
-                    Self::SmoothUnion(Box::new(a), Box::new(leaf), r)
+                (a, BoolOp::Union) if blend_r > 0.0 => {
+                    Self::SmoothUnion(Box::new(a), Box::new(leaf), blend_r, blend_mode)
                 }
                 (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
-                (a, BoolOp::Difference) if r > 0.0 => {
-                    Self::SmoothDifference(Box::new(a), Box::new(leaf), r)
+                (a, BoolOp::Difference) if blend_r > 0.0 => {
+                    Self::SmoothDifference(Box::new(a), Box::new(leaf), blend_r, blend_mode)
                 }
                 (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
                 (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
@@ -568,19 +585,19 @@ impl CsgNode {
             CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
             CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
             CsgNode::Intersection(a, b) => a.sdf(p, mode).max(b.sdf(p, mode)),
-            CsgNode::SmoothUnion(a, b, r) => {
+            CsgNode::SmoothUnion(a, b, r, mode_blend) => {
                 let da = a.sdf(p, mode);
                 let db = b.sdf(p, mode);
                 match mode {
-                    EvalMode::Visual => smin_poly(da, db, *r),
+                    EvalMode::Visual => crate::csg::blend_min(da, db, *r, *mode_blend),
                     EvalMode::Logical => da.min(db),
                 }
             }
-            CsgNode::SmoothDifference(a, b, r) => {
+            CsgNode::SmoothDifference(a, b, r, mode_blend) => {
                 let da = a.sdf(p, mode);
                 let db = b.sdf(p, mode);
                 match mode {
-                    EvalMode::Visual => -smin_poly(-da, db, *r),
+                    EvalMode::Visual => -crate::csg::blend_min(-da, db, *r, *mode_blend),
                     EvalMode::Logical => da.max(-db),
                 }
             }
@@ -670,12 +687,12 @@ impl CsgNode {
                 let (db, cb) = b.evaluate(p, eps, mode);
                 combine_max(da, ca, db, cb, eps)
             }
-            CsgNode::SmoothUnion(a, b, r) => {
+            CsgNode::SmoothUnion(a, b, r, mode_blend) => {
                 let (da, ca) = a.evaluate(p, eps, mode);
                 let (db, cb) = b.evaluate(p, eps, mode);
                 match mode {
                     EvalMode::Visual => {
-                        let d = smin_poly(da, db, *r);
+                        let d = crate::csg::blend_min(da, db, *r, *mode_blend);
                         let mut c = ca;
                         c.extend(cb);
                         (d, c)
@@ -683,12 +700,12 @@ impl CsgNode {
                     EvalMode::Logical => combine_min(da, ca, db, cb, eps),
                 }
             }
-            CsgNode::SmoothDifference(a, b, r) => {
+            CsgNode::SmoothDifference(a, b, r, mode_blend) => {
                 let (da, ca) = a.evaluate(p, eps, mode);
                 let (db, cb) = b.evaluate(p, eps, mode);
                 match mode {
                     EvalMode::Visual => {
-                        let d = -smin_poly(-da, db, *r);
+                        let d = -crate::csg::blend_min(-da, db, *r, *mode_blend);
                         let mut c = ca;
                         c.extend(cb);
                         (d, c)
@@ -737,14 +754,14 @@ impl CsgNode {
             CsgNode::Empty => Aabb::EMPTY,
             CsgNode::Leaf { primitive, .. } => Aabb::of_primitive(primitive),
             CsgNode::Transform(t, inner) => inner.aabb().transformed(t),
-            CsgNode::Union(a, b) | CsgNode::SmoothUnion(a, b, _) => {
+            CsgNode::Union(a, b) | CsgNode::SmoothUnion(a, b, _, _) => {
                 Aabb::union(a.aabb(), b.aabb())
             }
             // Difference can only shrink the left operand — left AABB
             // is always a conservative bound. The smooth variant may
             // bulge outward by up to `r` in the blend zone, but the
             // AABB of the union-of-children is always a superset.
-            CsgNode::Difference(a, _) | CsgNode::SmoothDifference(a, _, _) => a.aabb(),
+            CsgNode::Difference(a, _) | CsgNode::SmoothDifference(a, _, _, _) => a.aabb(),
             CsgNode::Twist(inner, _) => {
                 let bb = inner.aabb();
                 if bb.is_empty() {
@@ -851,6 +868,21 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     da.min(db) - h * h * h * r / 6.0
 }
 
+/// K10.2: chamfer union — linear 45° cut instead of a rounded
+/// fillet. `min(min(a, b), (a + b - r) * SQRT_HALF)`.
+/// Dispatch smooth-min by blend mode.
+pub(crate) fn blend_min(da: f32, db: f32, r: f32, mode: BlendMode) -> f32 {
+    match mode {
+        BlendMode::Fillet => smin_poly(da, db, r),
+        BlendMode::Chamfer => chamfer_union(da, db, r),
+    }
+}
+
+pub(crate) fn chamfer_union(da: f32, db: f32, r: f32) -> f32 {
+    const SQRT_HALF: f32 = 0.707_106_8;
+    da.min(db).min((da + db - r) * SQRT_HALF)
+}
+
 /// Boolean-min fold with contributor propagation: within `eps` the
 /// two sides are considered tied and both contribute.
 fn combine_min(
@@ -924,6 +956,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -956,6 +989,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1000,6 +1034,7 @@ mod tests {
                 },
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1062,6 +1097,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1077,6 +1113,7 @@ mod tests {
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1366,6 +1403,7 @@ mod tests {
                 },
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
+            chamfer_size: 0.0,
             twist_rate: 0.0,
             bend_rate: 0.0,
             displace_depth: 0.0,
@@ -1412,7 +1450,7 @@ mod tests {
             },
         };
         let hard = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
-        let smooth = CsgNode::SmoothUnion(Box::new(a), Box::new(b), 4.0);
+        let smooth = CsgNode::SmoothUnion(Box::new(a), Box::new(b), 4.0, BlendMode::Fillet);
 
         // At the junction seam the smooth blend pulls the
         // distance further negative than the hard union.
@@ -1439,9 +1477,9 @@ mod tests {
             },
         };
         let hard_u = CsgNode::Union(Box::new(a.clone()), Box::new(b.clone()));
-        let smooth_u = CsgNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), 3.0);
+        let smooth_u = CsgNode::SmoothUnion(Box::new(a.clone()), Box::new(b.clone()), 3.0, BlendMode::Fillet);
         let hard_d = CsgNode::Difference(Box::new(a.clone()), Box::new(b.clone()));
-        let smooth_d = CsgNode::SmoothDifference(Box::new(a), Box::new(b), 3.0);
+        let smooth_d = CsgNode::SmoothDifference(Box::new(a), Box::new(b), 3.0, BlendMode::Fillet);
 
         let p = [2.0, 3.0, 0.0];
         assert_eq!(
