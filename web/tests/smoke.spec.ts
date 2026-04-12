@@ -24,7 +24,7 @@ test.describe("FieldDraft smoke", () => {
     });
 
     await page.goto("/");
-    await expect(page.getByText("FieldDraft", { exact: true })).toBeVisible();
+    await expect(page.getByText("FieldDraft")).toBeVisible();
     await expect(page.getByTestId("fielddraft-canvas")).toBeVisible();
     await expect(page.getByTestId("fielddraft-toolbar")).toBeVisible();
     await expect(page.getByTestId("fielddraft-outliner")).toBeVisible();

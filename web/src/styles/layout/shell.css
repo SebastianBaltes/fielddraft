@@ -26,6 +26,22 @@
       font-weight: var(--fw-semibold);
       letter-spacing: 0.01em;
       color: var(--color-text);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+
+      & .compact-toggle {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: var(--fs-base);
+        color: var(--color-text-muted);
+        padding: var(--space-1);
+
+        &:hover {
+          color: var(--color-text);
+        }
+      }
     }
 
     & .meta {

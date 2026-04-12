@@ -8,6 +8,23 @@ import { requestView } from "./viewCommands";
 export function App() {
   const { store, state, error } = useKernelStore();
   const [showHelp, setShowHelp] = useState(false);
+  const [compact, setCompact] = useState(() => {
+    try {
+      return localStorage.getItem("fielddraft.compact") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleCompact = () => {
+    const next = !compact;
+    setCompact(next);
+    try {
+      localStorage.setItem("fielddraft.compact", String(next));
+    } catch {
+      // ignore
+    }
+  };
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
@@ -141,9 +158,19 @@ export function App() {
   }, [store]);
 
   return (
-    <div className="fd-shell">
+    <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
       <header className="topbar">
-        <div className="title">FieldDraft</div>
+        <div className="title">
+          FieldDraft
+          <button
+            type="button"
+            className="compact-toggle"
+            title={compact ? "Expand toolbar" : "Compact toolbar"}
+            onClick={toggleCompact}
+          >
+            {compact ? "▸" : "◂"}
+          </button>
+        </div>
         <div className="meta">
           {error ? (
             <span className="error">kernel error: {error.message}</span>

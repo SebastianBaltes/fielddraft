@@ -12,6 +12,20 @@
     display: none;
   }
 
+  /* K7.17: Compact Mode — hide labels, shrink buttons. */
+  .fd-compact & .tool {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--fs-base);
+  }
+
+  .fd-compact & .tool-label {
+    display: none;
+  }
+
+  .fd-compact & .label {
+    display: none;
+  }
+
   & .sketch-plane-dropdown {
     display: flex;
     gap: var(--space-1);
