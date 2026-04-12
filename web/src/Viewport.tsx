@@ -526,6 +526,20 @@ export function Viewport() {
     setPickResult(null);
   };
 
+  const handleClick = (): void => {
+    if (!store || !pickResult || !pickResult.hit) {
+      // Clicked empty space — clear selection.
+      store?.clearSelection();
+      return;
+    }
+    // Select the first contributor feature. Contributors are
+    // flat-numeric feature ids from the CSG provenance pass.
+    const featureId = pickResult.contributors[0];
+    if (featureId !== undefined && featureId > 0) {
+      store.selectOnly(featureId);
+    }
+  };
+
   return (
     <div
       ref={hostRef}
@@ -533,6 +547,7 @@ export function Viewport() {
       data-testid="fielddraft-canvas"
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
+      onClick={handleClick}
     >
       <CanvasErrorBoundary>
         <Canvas
