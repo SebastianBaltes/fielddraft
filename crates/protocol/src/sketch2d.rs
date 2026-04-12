@@ -93,6 +93,15 @@ pub enum Sketch2dPrimitive {
     /// polygon must have at least three vertices; fewer yields
     /// `+∞` so it degenerates to an empty region gracefully.
     Polygon { vertices: Vec<[f32; 2]> },
+    /// Circular sector (pie wedge). `start_angle` and
+    /// `sweep_angle` are in radians. The sector fills from
+    /// `start_angle` over `sweep_angle` counter-clockwise.
+    Sector {
+        center: [f32; 2],
+        radius: f32,
+        start_angle: f32,
+        sweep_angle: f32,
+    },
 }
 
 impl Sketch2dPrimitive {
@@ -114,6 +123,12 @@ impl Sketch2dPrimitive {
                 outside + inside
             }
             Self::Polygon { vertices } => sdf_polygon(p, vertices),
+            Self::Sector {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => sdf_sector(p, *center, *radius, *start_angle, *sweep_angle),
         }
     }
 
@@ -143,11 +158,79 @@ impl Sketch2dPrimitive {
                 }
                 bb
             }
+            Self::Sector {
+                center, radius, ..
+            } => {
+                // Conservative: full circle AABB.
+                Aabb2 {
+                    min: [center[0] - radius, center[1] - radius],
+                    max: [center[0] + radius, center[1] + radius],
+                }
+            }
         }
     }
 }
 
 /// Signed distance to a simple polygon (Inigo Quilez, 2D
+/// Sector (pie wedge) SDF. The sector spans from `start` over
+/// `sweep` radians CCW. Inside the angular range the distance
+/// is `|p−c| − r`; outside the angular range it's the distance
+/// to the nearer radial edge.
+fn sdf_sector(
+    p: [f32; 2],
+    center: [f32; 2],
+    radius: f32,
+    start: f32,
+    sweep: f32,
+) -> f32 {
+    let dx = p[0] - center[0];
+    let dy = p[1] - center[1];
+    let dist = (dx * dx + dy * dy).sqrt();
+    let angle = dy.atan2(dx);
+
+    // Normalise angle relative to sector start.
+    let half = sweep * 0.5;
+    let mid = start + half;
+    let mut rel = angle - mid;
+    // Wrap to [-PI, PI].
+    while rel > std::f32::consts::PI {
+        rel -= std::f32::consts::TAU;
+    }
+    while rel < -std::f32::consts::PI {
+        rel += std::f32::consts::TAU;
+    }
+
+    let d_circle = dist - radius;
+
+    if rel.abs() <= half {
+        // Inside the angular range — pure radial distance.
+        d_circle
+    } else {
+        // Outside angular range — distance to the nearer
+        // radial edge (a line from center at start or end).
+        let edge_angle = if rel > 0.0 {
+            start + sweep
+        } else {
+            start
+        };
+        let ex = edge_angle.cos();
+        let ey = edge_angle.sin();
+        // Project (dx, dy) onto the edge direction.
+        let proj = dx * ex + dy * ey;
+        let proj_clamped = proj.clamp(0.0, radius);
+        let closest = [
+            center[0] + ex * proj_clamped,
+            center[1] + ey * proj_clamped,
+        ];
+        let ddx = p[0] - closest[0];
+        let ddy = p[1] - closest[1];
+        let d_edge = (ddx * ddx + ddy * ddy).sqrt();
+        // Outside the sector: positive. Max with the radial
+        // distance ensures the exterior is consistently > 0.
+        d_edge.max(d_circle.max(0.0))
+    }
+}
+
 /// distance functions). Walks every edge, tracks the minimum
 /// squared edge distance, and recovers the sign from an even-
 /// odd crossing count. Fewer than three vertices yields `+∞`.

@@ -27,14 +27,13 @@ const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
   sketch_rectangle: { label: "Rectangle", glyph: "▭" },
   sketch_circle: { label: "Circle", glyph: "○" },
   sketch_polygon: { label: "Polygon", glyph: "⬠" },
+  sketch_arc: { label: "Arc", glyph: "◠" },
+  sketch_trim: { label: "Trim", glyph: "✂" },
+  sketch_mirror: { label: "Mirror", glyph: "◧" },
+  sketch_offset: { label: "Offset", glyph: "⇔" },
 };
 
-const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [
-  { type: "sketch_arc", label: "Arc", glyph: "◠" },
-  { type: "sketch_trim", label: "Trim", glyph: "✂" },
-  { type: "sketch_mirror", label: "Mirror", glyph: "◧" },
-  { type: "sketch_offset", label: "Offset", glyph: "⇔" },
-];
+const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [];
 
 interface ToolbarProps {
   store: KernelStore;

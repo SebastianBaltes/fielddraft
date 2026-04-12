@@ -374,6 +374,20 @@ fn hash_sketch2d(
                         }
                     }
                 }
+                Sketch2dPrimitive::Sector {
+                    center,
+                    radius,
+                    start_angle,
+                    sweep_angle,
+                } => {
+                    3u8.hash(hasher);
+                    for v in center {
+                        v.to_bits().hash(hasher);
+                    }
+                    radius.to_bits().hash(hasher);
+                    start_angle.to_bits().hash(hasher);
+                    sweep_angle.to_bits().hash(hasher);
+                }
             }
         }
         Sketch2d::Union(a, b) => {

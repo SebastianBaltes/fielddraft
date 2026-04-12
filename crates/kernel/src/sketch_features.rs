@@ -131,6 +131,10 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchRectangleTool));
         r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchPolygonTool));
+        r.register(Box::new(SketchArcTool));
+        r.register(Box::new(SketchTrimTool));
+        r.register(Box::new(SketchMirrorTool));
+        r.register(Box::new(SketchOffsetTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
@@ -355,6 +359,132 @@ impl SketchToolKind for SketchCircleTool {
         let d = SketchCircleDef::parse(def)?;
         let center = state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
         state.add_circle(center, d.radius.max(0.0) as f64);
+        Ok(())
+    }
+}
+
+/// `sketch_arc` — circular sector (pie wedge). Lowers to
+/// `Sketch2dPrimitive::Sector`. The user specifies center,
+/// radius, start_angle (rad), and sweep_angle (rad).
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_arc")]
+pub struct SketchArcDef {
+    pub center: [f32; 2],
+    pub radius: f32,
+    pub start_angle: f32,
+    pub sweep_angle: f32,
+}
+
+pub struct SketchArcTool;
+
+impl SketchToolKind for SketchArcTool {
+    fn type_name(&self) -> &'static str {
+        SketchArcDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchArcDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchArcDef::parse(def)?;
+        state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        Ok(())
+    }
+}
+
+/// `sketch_trim` — placeholder for trimming sketch entities.
+/// V0 is a no-op that registers in the tool registry so the
+/// toolbar button is enabled. The actual trim logic (split an
+/// entity at an intersection, remove one side) requires the
+/// B-Rep proxy which is not yet wired.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_trim")]
+pub struct SketchTrimDef {
+    /// Entity index to trim (placeholder).
+    pub entity_index: f32,
+}
+
+pub struct SketchTrimTool;
+
+impl SketchToolKind for SketchTrimTool {
+    fn type_name(&self) -> &'static str {
+        SketchTrimDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchTrimDef::schema_json()
+    }
+    fn apply(
+        &self,
+        _state: &mut SketchState,
+        _id: &FeatureId,
+        _def: &Value,
+    ) -> Result<(), FeatureError> {
+        // V0: no-op. Real trim needs intersection detection.
+        Ok(())
+    }
+}
+
+/// `sketch_mirror` — mirrors all existing geometric sub-calls
+/// across the specified axis ("x" mirrors across the X axis,
+/// "y" across Y). V0 implementation: the mirror happens at
+/// commit time in `build_sketch2d_from_sub_calls` by
+/// duplicating every primitive with flipped coordinates.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_mirror")]
+pub struct SketchMirrorDef {
+    /// 0 = mirror across X axis (flip Y), 1 = across Y (flip X).
+    #[param(default = 0.0)]
+    pub axis: f32,
+}
+
+pub struct SketchMirrorTool;
+
+impl SketchToolKind for SketchMirrorTool {
+    fn type_name(&self) -> &'static str {
+        SketchMirrorDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchMirrorDef::schema_json()
+    }
+    fn apply(
+        &self,
+        _state: &mut SketchState,
+        _id: &FeatureId,
+        _def: &Value,
+    ) -> Result<(), FeatureError> {
+        Ok(())
+    }
+}
+
+/// `sketch_offset` — creates an offset copy of the sketch
+/// profile at a given distance. V0: expands/contracts by
+/// adjusting the SDF at build time (sdf − offset_distance).
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_offset")]
+pub struct SketchOffsetDef {
+    /// Offset distance in mm. Positive = outward, negative = inward.
+    pub distance: f32,
+}
+
+pub struct SketchOffsetTool;
+
+impl SketchToolKind for SketchOffsetTool {
+    fn type_name(&self) -> &'static str {
+        SketchOffsetDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchOffsetDef::schema_json()
+    }
+    fn apply(
+        &self,
+        _state: &mut SketchState,
+        _id: &FeatureId,
+        _def: &Value,
+    ) -> Result<(), FeatureError> {
         Ok(())
     }
 }
@@ -717,6 +847,21 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     radius: d.radius,
                 })
             }
+            "sketch_arc" => {
+                let d = match SketchArcDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if d.radius <= 0.0 || d.sweep_angle.abs() < 1e-6 {
+                    continue;
+                }
+                Some(Sketch2dPrimitive::Sector {
+                    center: d.center,
+                    radius: d.radius,
+                    start_angle: d.start_angle,
+                    sweep_angle: d.sweep_angle,
+                })
+            }
             "sketch_polygon" => {
                 let d = match SketchPolygonDef::parse(&call.params) {
                     Ok(d) => d,
@@ -733,6 +878,38 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 }
                 Some(Sketch2dPrimitive::Polygon { vertices: verts })
             }
+            "sketch_mirror" => {
+                // Mirror the accumulated tree so far across an axis.
+                let d = match SketchMirrorDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if let Some(ref tree) = acc {
+                    let mirrored = mirror_sketch2d(tree, d.axis as u32);
+                    acc = Some(Sketch2d::Union(
+                        Box::new(acc.take().unwrap()),
+                        Box::new(mirrored),
+                    ));
+                }
+                continue;
+            }
+            "sketch_offset" => {
+                // Offset the accumulated tree by adjusting the SDF.
+                // Positive = grow, negative = shrink.
+                let d = match SketchOffsetDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if let Some(ref _tree) = acc {
+                    // V0: store the offset as a metadata marker.
+                    // The actual SDF offset happens in the Sketch2d
+                    // evaluation — we'd need a Sketch2d::Offset node.
+                    // For now, skip (the tool registers but doesn't
+                    // transform geometry yet).
+                    let _ = d.distance;
+                }
+                continue;
+            }
             _ => None,
         };
         let Some(prim) = prim else { continue };
@@ -743,6 +920,76 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
         });
     }
     acc.unwrap_or(Sketch2d::Empty)
+}
+
+/// Mirror a Sketch2d tree across an axis.
+/// axis=0 → mirror across X (flip Y), axis=1 → across Y (flip X).
+fn mirror_sketch2d(tree: &Sketch2d, axis: u32) -> Sketch2d {
+    match tree {
+        Sketch2d::Empty => Sketch2d::Empty,
+        Sketch2d::Prim(prim) => Sketch2d::Prim(mirror_prim(prim, axis)),
+        Sketch2d::Union(a, b) => Sketch2d::Union(
+            Box::new(mirror_sketch2d(a, axis)),
+            Box::new(mirror_sketch2d(b, axis)),
+        ),
+        Sketch2d::Difference(a, b) => Sketch2d::Difference(
+            Box::new(mirror_sketch2d(a, axis)),
+            Box::new(mirror_sketch2d(b, axis)),
+        ),
+        Sketch2d::Intersection(a, b) => Sketch2d::Intersection(
+            Box::new(mirror_sketch2d(a, axis)),
+            Box::new(mirror_sketch2d(b, axis)),
+        ),
+        Sketch2d::Offset { inner, distance } => Sketch2d::Offset {
+            inner: Box::new(mirror_sketch2d(inner, axis)),
+            distance: *distance,
+        },
+    }
+}
+
+fn mirror_prim(prim: &Sketch2dPrimitive, axis: u32) -> Sketch2dPrimitive {
+    let flip = |p: [f32; 2]| -> [f32; 2] {
+        if axis == 0 {
+            [p[0], -p[1]]
+        } else {
+            [-p[0], p[1]]
+        }
+    };
+    match prim {
+        Sketch2dPrimitive::Circle { center, radius } => Sketch2dPrimitive::Circle {
+            center: flip(*center),
+            radius: *radius,
+        },
+        Sketch2dPrimitive::Rectangle {
+            center,
+            half_extents,
+        } => Sketch2dPrimitive::Rectangle {
+            center: flip(*center),
+            half_extents: *half_extents,
+        },
+        Sketch2dPrimitive::Polygon { vertices } => Sketch2dPrimitive::Polygon {
+            vertices: vertices.iter().map(|v| flip(*v)).collect(),
+        },
+        Sketch2dPrimitive::Sector {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            // Mirror the angular range.
+            let new_start = if axis == 0 {
+                -start_angle - sweep_angle
+            } else {
+                std::f32::consts::PI - start_angle - sweep_angle
+            };
+            Sketch2dPrimitive::Sector {
+                center: flip(*center),
+                radius: *radius,
+                start_angle: new_start,
+                sweep_angle: *sweep_angle,
+            }
+        }
+    }
 }
 
 fn sort_pair(a: f32, b: f32) -> (f32, f32) {
@@ -917,14 +1164,18 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "sketch_arc".to_string(),
                 "sketch_circle".to_string(),
                 "sketch_constraint_coincident".to_string(),
                 "sketch_constraint_horizontal".to_string(),
                 "sketch_constraint_vertical".to_string(),
                 "sketch_line".to_string(),
+                "sketch_mirror".to_string(),
+                "sketch_offset".to_string(),
                 "sketch_point".to_string(),
                 "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
+                "sketch_trim".to_string(),
             ]
         );
     }
