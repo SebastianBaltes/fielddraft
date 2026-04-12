@@ -688,6 +688,35 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
+  /** Save the current project as a downloadable .fdraft file. */
+  saveProjectToFile(filename = "project.fdraft"): void {
+    if (typeof document === "undefined") return;
+    const json = this.kernel.toJson();
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /** Load a project from a .fdraft JSON string. */
+  loadProjectFromJson(json: string): boolean {
+    try {
+      this.kernel.loadJson(json);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: loadProjectFromJson failed", err);
+      return false;
+    }
+    this.commit(new Set(), null);
+    this.autosave.flush();
+    return true;
+  }
+
   /** Clear the document back to a fresh empty state. */
   newProject(): void {
     this.kernel.loadJson('{"schema_version":1,"name":"Untitled","feature_calls":[],"next_feature_id":1}');

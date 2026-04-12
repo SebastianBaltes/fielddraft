@@ -104,6 +104,13 @@ export function App() {
         }
       }
 
+      // Ctrl+S = save project to file.
+      if (ctrl && (e.key === "s" || e.key === "S")) {
+        store.saveProjectToFile();
+        e.preventDefault();
+        return;
+      }
+
       // Ctrl+A = select all features.
       if (ctrl && (e.key === "a" || e.key === "A")) {
         store.selectAll();

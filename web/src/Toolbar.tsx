@@ -376,6 +376,43 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Save project as .fdraft file"
+          data-testid="save-project"
+          onClick={() => store.saveProjectToFile()}
+        >
+          💾 Save
+        </button>
+        <input
+          type="file"
+          accept=".fdraft,.json"
+          className="hidden-file-input"
+          data-testid="load-project-input"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            if (!file) return;
+            file.text().then((json) => {
+              store.loadProjectFromJson(json);
+            });
+            e.currentTarget.value = "";
+          }}
+        />
+        <button
+          type="button"
+          className="tool"
+          title="Open a .fdraft project file"
+          data-testid="load-project"
+          onClick={() => {
+            const input = document.querySelector<HTMLInputElement>(
+              '[data-testid="load-project-input"]',
+            );
+            input?.click();
+          }}
+        >
+          📂 Open
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="New empty project"
           data-testid="new-project"
           onClick={() => {
