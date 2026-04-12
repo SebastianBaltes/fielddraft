@@ -344,6 +344,10 @@ impl Aabb {
                     max: [r_max, hh, r_max],
                 }
             }
+            Primitive::Capsule { radius: r, half_height: hh } => Self {
+                min: [-r, -(hh + r), -r],
+                max: [*r, hh + r, *r],
+            },
         }
     }
 

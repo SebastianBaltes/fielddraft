@@ -260,6 +260,13 @@ pub enum Primitive {
         major_radius: f32,
         minor_radius: f32,
     },
+    /// Capsule (line-segment swept sphere) along the Y axis.
+    /// `half_height` is the half-length of the inner segment
+    /// (total height = 2 * half_height + 2 * radius).
+    Capsule {
+        radius: f32,
+        half_height: f32,
+    },
     /// Truncated cone (frustum) with bottom radius `r_bottom`,
     /// top radius `r_top`, and half-height along Y. When
     /// `r_top == 0` it's a perfect cone.
@@ -311,6 +318,7 @@ impl Primitive {
     pub const KIND_TORUS: u32 = 6;
     pub const KIND_THREAD: u32 = 7;
     pub const KIND_CONE: u32 = 8;
+    pub const KIND_CAPSULE: u32 = 9;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -318,6 +326,7 @@ impl Primitive {
             Primitive::Sphere { .. } => Self::KIND_SPHERE,
             Primitive::Cylinder { .. } => Self::KIND_CYLINDER,
             Primitive::Extrude { .. } => Self::KIND_EXTRUDE,
+            Primitive::Capsule { .. } => Self::KIND_CAPSULE,
             Primitive::Torus { .. } => Self::KIND_TORUS,
             Primitive::Cone { .. } => Self::KIND_CONE,
             Primitive::Thread { .. } => Self::KIND_THREAD,
@@ -332,6 +341,7 @@ impl Primitive {
             Primitive::Sphere { .. } => "Sphere",
             Primitive::Cylinder { .. } => "Cylinder",
             Primitive::Extrude { .. } => "Extrude",
+            Primitive::Capsule { .. } => "Capsule",
             Primitive::Torus { .. } => "Torus",
             Primitive::Cone { .. } => "Cone",
             Primitive::Thread { .. } => "Thread",
@@ -666,6 +676,7 @@ impl FeatureCall {
             // FeatureCall with its sketch query.
             Primitive::Revolve { .. } => "__derived_revolve_skip__",
             Primitive::Torus { .. } => "torus",
+            Primitive::Capsule { .. } => "capsule",
             Primitive::Cone { .. } => "cone",
             Primitive::Thread { .. } => "thread",
         };
@@ -747,6 +758,15 @@ impl FeatureCall {
                 "center": center,
                 "major_radius": major_radius,
                 "minor_radius": minor_radius,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Capsule { radius, half_height } => serde_json::json!({
+                "radius": radius,
+                "half_height": half_height,
                 "translate": translate,
                 "rotation": rotation,
                 "scale": scale,
@@ -948,7 +968,7 @@ impl Document {
 /// the canonical wire form is the original extrude
 /// `FeatureCall` with its sketch query.
 fn is_spine_type(type_name: &str) -> bool {
-    matches!(type_name, "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone")
+    matches!(type_name, "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule")
 }
 
 #[cfg(test)]

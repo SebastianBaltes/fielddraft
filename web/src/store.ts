@@ -567,6 +567,9 @@ export class KernelStore {
       case "cone":
         id = this.kernel.addCone(op, offset, 40, 10, 60);
         break;
+      case "capsule":
+        id = this.kernel.addCapsule(op, offset, 20, 40);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;

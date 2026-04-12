@@ -266,6 +266,12 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
                 d_radial.max(d_axial)
             }
         }
+        Primitive::Capsule { radius, half_height } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let y_clamped = p[1].clamp(-*half_height, *half_height);
+            let dy = p[1] - y_clamped;
+            (r * r + dy * dy).sqrt() - *radius
+        }
     }
 }
 
@@ -379,6 +385,10 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[4] = *r_bottom;
             out[5] = *r_top;
             out[6] = *half_height;
+        }
+        Primitive::Capsule { radius, half_height } => {
+            out[4] = *radius;
+            out[5] = *half_height;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -655,6 +665,7 @@ impl Kernel {
             Primitive::Torus { .. } => "torus",
             Primitive::Thread { .. } => "thread",
             Primitive::Cone { .. } => "cone",
+            Primitive::Capsule { .. } => "capsule",
         }
     }
 
@@ -669,7 +680,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" => Self::kind_label(prim),
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -1775,6 +1786,10 @@ impl Kernel {
                 r_bottom: p0,
                 r_top: p1,
                 half_height: p2,
+            },
+            Primitive::KIND_CAPSULE => Primitive::Capsule {
+                radius: p0,
+                half_height: p1,
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };

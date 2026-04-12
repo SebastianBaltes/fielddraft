@@ -320,6 +320,11 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             r_top.to_bits().hash(hasher);
             half_height.to_bits().hash(hasher);
         }
+        Primitive::Capsule { radius, half_height } => {
+            9u8.hash(hasher);
+            radius.to_bits().hash(hasher);
+            half_height.to_bits().hash(hasher);
+        }
     }
 }
 
