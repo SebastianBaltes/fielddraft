@@ -43,6 +43,7 @@ const BUILD_VOLUME_SIZE = 600;
 
 interface BodyEntry {
   geometry: THREE.BufferGeometry;
+  material: THREE.Material;
   /** Last `bodyVersion(i)` we uploaded to the GPU. Stays put when
    *  other bodies mutate around this one; bumps only when the
    *  kernel actually re-meshed this body. */
@@ -71,28 +72,22 @@ function KernelMesh() {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
 
-  // Single material shared by every body mesh. Cheap — Three.js
-  // re-binds the shader once and the bodies differ only in their
-  // vertex attributes.
-  const material = useMemo(() => createKernelMeshMaterial(), []);
-
-  // K6b.3 opening: ghost the existing 3D bodies while a sketch
-  // session is active. Onshape-style: the body geometry stays
-  // visible as a faded reference so the user can place sketch
-  // points against existing features, but it never competes with
-  // the 2D sketch overlay for attention.
+  // K6b.3 opening: ghost all body materials while a sketch
+  // session is active.
   useEffect(() => {
-    const anyMat = material as unknown as {
-      transparent: boolean;
-      opacity: number;
-      depthWrite: boolean;
-      needsUpdate?: boolean;
-    };
-    anyMat.transparent = sketchActive;
-    anyMat.opacity = sketchActive ? 0.35 : 1;
-    anyMat.depthWrite = !sketchActive;
-    anyMat.needsUpdate = true;
-  }, [material, sketchActive]);
+    for (const entry of bodyEntriesRef.current.values()) {
+      const anyMat = entry.material as unknown as {
+        transparent: boolean;
+        opacity: number;
+        depthWrite: boolean;
+        needsUpdate?: boolean;
+      };
+      anyMat.transparent = sketchActive;
+      anyMat.opacity = sketchActive ? 0.35 : 1;
+      anyMat.depthWrite = !sketchActive;
+      anyMat.needsUpdate = true;
+    }
+  }, [sketchActive]);
 
   // Ref-based map so we can mutate inside `useFrame` without
   // triggering a React re-render on every poll. React re-renders
@@ -136,13 +131,15 @@ function KernelMesh() {
     const seen = new Set<number>();
     let idSetChanged = false;
 
-    for (const body of bodies) {
+    for (let bi = 0; bi < bodies.length; bi++) {
+      const body = bodies[bi];
       seen.add(body.id);
       const existing = bodyEntriesRef.current.get(body.id);
       if (!existing) {
         const geometry = new THREE.BufferGeometry();
         uploadBody(body, geometry);
-        bodyEntriesRef.current.set(body.id, { geometry, version: body.version });
+        const mat = createKernelMeshMaterial(bi);
+        bodyEntriesRef.current.set(body.id, { geometry, material: mat, version: body.version });
         idSetChanged = true;
       } else if (existing.version !== body.version) {
         uploadBody(body, existing.geometry);
@@ -154,6 +151,7 @@ function KernelMesh() {
     for (const [id, entry] of bodyEntriesRef.current) {
       if (!seen.has(id)) {
         entry.geometry.dispose();
+        entry.material.dispose();
         bodyEntriesRef.current.delete(id);
         idSetChanged = true;
       }
@@ -169,11 +167,11 @@ function KernelMesh() {
     return () => {
       for (const entry of bodyEntriesRef.current.values()) {
         entry.geometry.dispose();
+        entry.material.dispose();
       }
       bodyEntriesRef.current.clear();
-      material.dispose();
     };
-  }, [material]);
+  }, []);
 
   // Render one `<mesh>` per body. Depending on `bodySetVersion`
   // forces React to re-read `bodyEntriesRef.current.keys()` whenever
@@ -191,7 +189,7 @@ function KernelMesh() {
           <mesh
             key={id}
             geometry={entry.geometry}
-            material={material}
+            material={entry.material}
             frustumCulled={false}
           />
         );
