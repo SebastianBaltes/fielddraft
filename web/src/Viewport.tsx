@@ -572,6 +572,28 @@ export function Viewport() {
     }
   };
 
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {
+    // Allow drop — the default is to disallow.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    if (!store) return;
+    const kind = e.dataTransfer.getData("fielddraft/primitive");
+    if (!kind) return;
+    type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism";
+    const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism"];
+    if (valid.includes(kind as PrimName)) {
+      store.addPrimitive(kind as PrimName);
+    } else if (kind === "hole") {
+      store.addHole();
+    } else if (kind === "gyroid") {
+      store.addGyroid();
+    }
+  };
+
   return (
     <div
       ref={hostRef}
@@ -580,6 +602,8 @@ export function Viewport() {
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
       onClick={handleClick}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
       <CanvasErrorBoundary>
         <Canvas

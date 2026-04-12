@@ -51,6 +51,17 @@ const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
 
 const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [];
 
+/** K14: makes a toolbar button draggable into the viewport. */
+function dragProps(kind: string) {
+  return {
+    draggable: true,
+    onDragStart: (e: React.DragEvent<HTMLButtonElement>) => {
+      e.dataTransfer.setData("fielddraft/primitive", kind);
+      e.dataTransfer.effectAllowed = "copy";
+    },
+  };
+}
+
 interface ToolbarProps {
   store: KernelStore;
   state: StoreState;
@@ -171,7 +182,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Box"
-          data-testid="add-box"
+          data-testid="add-box" {...dragProps("box")}
           onClick={() => store.addPrimitive("box")}
         >
           ▣ Box
@@ -180,7 +191,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Sphere"
-          data-testid="add-sphere"
+          data-testid="add-sphere" {...dragProps("sphere")}
           onClick={() => store.addPrimitive("sphere")}
         >
           ● Sphere
@@ -189,7 +200,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Cylinder"
-          data-testid="add-cylinder"
+          data-testid="add-cylinder" {...dragProps("cylinder")}
           onClick={() => store.addPrimitive("cylinder")}
         >
           ⬢ Cylinder
@@ -198,7 +209,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Hex Prism (apothem 25 mm)"
-          data-testid="add-hex-prism"
+          data-testid="add-hex-prism" {...dragProps("hex_prism")}
           onClick={() => store.addPrimitive("hex_prism")}
         >
           ⬡ Hex
@@ -207,7 +218,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Capsule (R20 × H80 mm)"
-          data-testid="add-capsule"
+          data-testid="add-capsule" {...dragProps("capsule")}
           onClick={() => store.addPrimitive("capsule")}
         >
           ⬭ Capsule
@@ -216,7 +227,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Cone (frustum R40/10 × H120 mm)"
-          data-testid="add-cone"
+          data-testid="add-cone" {...dragProps("cone")}
           onClick={() => store.addPrimitive("cone")}
         >
           △ Cone
@@ -225,7 +236,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Torus (R30 × r10 mm)"
-          data-testid="add-torus"
+          data-testid="add-torus" {...dragProps("torus")}
           onClick={() => store.addPrimitive("torus")}
         >
           ◎ Torus
@@ -261,7 +272,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Hole (Ø6 × 40 mm, subtract)"
-          data-testid="add-hole"
+          data-testid="add-hole" {...dragProps("hole")}
           onClick={() => store.addHole()}
         >
           ⊖ Hole
@@ -270,7 +281,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           type="button"
           className="tool"
           title="Add Gyroid infill (10 mm cells, 1 mm walls, intersect)"
-          data-testid="add-gyroid"
+          data-testid="add-gyroid" {...dragProps("gyroid")}
           disabled={state.features.length === 0}
           onClick={() => store.addGyroid()}
         >
