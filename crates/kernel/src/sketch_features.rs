@@ -130,6 +130,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchLineTool));
         r.register(Box::new(SketchRectangleTool));
         r.register(Box::new(SketchCircleTool));
+        r.register(Box::new(SketchPolygonTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
@@ -354,6 +355,53 @@ impl SketchToolKind for SketchCircleTool {
         let d = SketchCircleDef::parse(def)?;
         let center = state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
         state.add_circle(center, d.radius.max(0.0) as f64);
+        Ok(())
+    }
+}
+
+/// `sketch_polygon` — closed polygon from a vertex list.
+/// Lowers directly to a `Sketch2dPrimitive::Polygon` region
+/// that the extrude/revolve can consume. Requires at least
+/// 3 vertices.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_polygon")]
+pub struct SketchPolygonDef {
+    /// Flat array of 2D vertices: `[x0, y0, x1, y1, …]`.
+    /// Parsed into `Vec<[f32; 2]>` at apply time.
+    pub vertices: Vec<f32>,
+}
+
+pub struct SketchPolygonTool;
+
+impl SketchToolKind for SketchPolygonTool {
+    fn type_name(&self) -> &'static str {
+        SketchPolygonDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchPolygonDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchPolygonDef::parse(def)?;
+        if d.vertices.len() < 6 {
+            return Err(FeatureError::InvalidParameter {
+                feature: SketchPolygonDef::TYPE_NAME,
+                name: "vertices",
+                message: "need at least 3 vertices (6 floats)".to_string(),
+            });
+        }
+        // Add each vertex as a point entity.
+        for chunk in d.vertices.chunks(2) {
+            if chunk.len() == 2 {
+                state.add_point(Point2::new(chunk[0] as f64, chunk[1] as f64));
+            }
+        }
         Ok(())
     }
 }
@@ -669,6 +717,22 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     radius: d.radius,
                 })
             }
+            "sketch_polygon" => {
+                let d = match SketchPolygonDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let verts: Vec<[f32; 2]> = d
+                    .vertices
+                    .chunks(2)
+                    .filter(|c| c.len() == 2)
+                    .map(|c| [c[0], c[1]])
+                    .collect();
+                if verts.len() < 3 {
+                    continue;
+                }
+                Some(Sketch2dPrimitive::Polygon { vertices: verts })
+            }
             _ => None,
         };
         let Some(prim) = prim else { continue };
@@ -859,6 +923,7 @@ mod tests {
                 "sketch_constraint_vertical".to_string(),
                 "sketch_line".to_string(),
                 "sketch_point".to_string(),
+                "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
             ]
         );

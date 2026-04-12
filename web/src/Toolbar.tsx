@@ -26,6 +26,7 @@ const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
   sketch_line: { label: "Line", glyph: "╱" },
   sketch_rectangle: { label: "Rectangle", glyph: "▭" },
   sketch_circle: { label: "Circle", glyph: "○" },
+  sketch_polygon: { label: "Polygon", glyph: "⬠" },
 };
 
 const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [
