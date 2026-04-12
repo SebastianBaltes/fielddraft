@@ -376,6 +376,18 @@ function CameraBridgePublisher() {
  * which matches Onshape's sketch-mode expectation that you can't
  * tumble the camera while a sketch is active.
  */
+/** Simple XZ ground plane grid using THREE.GridHelper (WebGPU safe). */
+function WorldGrid() {
+  const grid = useMemo(() => {
+    const g = new THREE.GridHelper(600, 60, 0x999999, 0xdddddd);
+    g.position.y = -0.1;
+    (g.material as THREE.Material).transparent = true;
+    (g.material as THREE.Material).opacity = 0.5;
+    return g;
+  }, []);
+  return <primitive object={grid} />;
+}
+
 function ReferenceMesh() {
   const { state } = useKernelStore();
   const ref = useRef<THREE.Mesh>(null);
@@ -566,6 +578,7 @@ export function Viewport() {
         >
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
           <ReferenceMesh />
+          <WorldGrid />
           <CameraRig />
           <ViewCommandConsumer />
         </Canvas>
