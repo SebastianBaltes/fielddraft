@@ -17,6 +17,7 @@ pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
 // Primitive::ImportedMesh can carry it serialised.
 pub use fielddraft_protocol::mesh_sdf;
+pub mod edge_detect;
 pub mod sketch_regions;
 pub mod queries;
 pub mod export;
