@@ -217,6 +217,7 @@ impl FeatureRegistry {
         r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
+        r.register(Box::new(MateConnectorFeature));
         r.register(Box::new(SweepFeature));
         r.register(Box::new(FilletEdgeFeature));
         r.register(Box::new(ImportedMeshFeature));
@@ -1141,6 +1142,47 @@ impl FeatureKind for SweepFeature {
             displace_freq: 0.0,
             shell_thickness: 0.0,
         });
+        Ok(())
+    }
+}
+
+// ─── K9.6: Mate Connector ────────────────────────────────────────
+//
+// An attachable local coordinate system on the model surface.
+// Stores an origin point + a normal (Z-axis of the CSYS).
+// Doesn't produce geometry — it's a datum feature visible
+// in the viewport as a small axis triad. Used by assemblies
+// (P1) to define attachment points.
+
+/// `mate_connector` — local coordinate system on a surface.
+#[derive(FeatureSchema)]
+#[schema(type = "mate_connector")]
+pub struct MateConnectorDef {
+    /// Origin point in world space.
+    pub origin: [f32; 3],
+    /// Surface normal (Z-axis of the CSYS).
+    pub normal: [f32; 3],
+}
+
+pub struct MateConnectorFeature;
+
+impl FeatureKind for MateConnectorFeature {
+    fn type_name(&self) -> &'static str {
+        MateConnectorDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        MateConnectorDef::schema_json()
+    }
+    fn execute(
+        &self,
+        _ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        _def: &Value,
+    ) -> Result<(), FeatureError> {
+        // Mate connectors don't produce spine geometry.
+        // They're datum features that live purely in the
+        // feature_calls list for the outliner + viewport
+        // to read and render.
         Ok(())
     }
 }
@@ -2237,7 +2279,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 20);
+        assert_eq!(registry.len(), 21);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2301,6 +2343,7 @@ mod tests {
                 "hole",
                 "imported_mesh",
                 "linear_pattern",
+                "mate_connector",
                 "mirror",
                 "revolve",
                 "sketch",

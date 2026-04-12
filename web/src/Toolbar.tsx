@@ -412,6 +412,20 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
+          className="tool"
+          title="Place a mate connector on a surface"
+          data-testid="add-mate-connector"
+          disabled={state.features.length === 0}
+          onClick={() => {
+            // Use the last pick result to place the connector.
+            // If no pick is available, place at origin.
+            store.addMateConnectorAtPick([0, 0, 0], [0, 1, 0]);
+          }}
+        >
+          ⊕ Mate
+        </button>
+        <button
+          type="button"
           className={"tool" + (state.filletMode ? " is-active" : "")}
           title="Click an edge to fillet it"
           data-testid="fillet-toggle"

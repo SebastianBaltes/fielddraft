@@ -909,6 +909,26 @@ export class KernelStore {
     this.autosave.flush();
   }
 
+  /** K9.6: add a mate connector at the current pick point. */
+  addMateConnectorAtPick(
+    point: [number, number, number],
+    normal: [number, number, number],
+  ): number | null {
+    let id: number;
+    try {
+      id = this.kernel.addMateConnector(
+        point[0], point[1], point[2],
+        normal[0], normal[1], normal[2],
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addMateConnector failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** K10.6: add a fillet_edge feature at a detected edge. */
   addFilletAtEdge(
     featureA: number,

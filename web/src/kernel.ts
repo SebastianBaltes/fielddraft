@@ -749,6 +749,14 @@ export class Kernel {
     return this.inner.addImportedMesh(positions, indices, op);
   }
 
+  /** K9.6: add a mate connector at a surface point. */
+  addMateConnector(
+    ox: number, oy: number, oz: number,
+    nx: number, ny: number, nz: number,
+  ): number {
+    return this.inner.addMateConnector(ox, oy, oz, nx, ny, nz);
+  }
+
   /** K10.6: add a fillet at a detected edge. */
   addFilletEdge(
     featureA: number,

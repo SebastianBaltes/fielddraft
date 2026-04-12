@@ -45,6 +45,7 @@ const KIND_GLYPH: Record<string, string> = {
   cone: "△",
   torus: "◎",
   thread: "⏍",
+  mate_connector: "⊕",
   hole: "⊖",
   gyroid: "🕸",
   linear_pattern: "⎡",

@@ -749,6 +749,7 @@ impl Kernel {
             "imported_mesh" => "imported_mesh",
             "fillet_edge" => "fillet_edge",
             "sweep" => "sweep",
+            "mate_connector" => "mate_connector",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -780,6 +781,7 @@ impl Kernel {
             "imported_mesh" => "Imported mesh",
             "fillet_edge" => "Fillet edge",
             "sweep" => "Sweep",
+            "mate_connector" => "Mate connector",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -1366,6 +1368,33 @@ impl Kernel {
 
     /// K8.0: append a `linear_pattern` feature call that
     /// replicates the source feature along a direction
+    /// K9.6: add a mate connector at a surface point.
+    #[wasm_bindgen(js_name = addMateConnector)]
+    pub fn add_mate_connector(
+        &mut self,
+        ox: f32, oy: f32, oz: f32,
+        nx: f32, ny: f32, nz: f32,
+    ) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id.as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "origin": [ox, oy, oz],
+            "normal": [nx, ny, nz],
+        });
+        let call = fielddraft_protocol::FeatureCall::new("mate_connector", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "mate connector failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// K10.6: add a fillet_edge feature from detected edge data.
     #[wasm_bindgen(js_name = addFilletEdge)]
     pub fn add_fillet_edge(
