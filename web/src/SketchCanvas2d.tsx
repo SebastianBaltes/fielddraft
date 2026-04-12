@@ -338,7 +338,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     e.preventDefault();
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-    const [u, v] = screenToSketchFromEvent(e, cam);
+    let [u, v] = screenToSketchFromEvent(e, cam);
+    // K6b.8: Ctrl = snap to grid. Round to nearest grid step.
+    if (e.ctrlKey || e.metaKey) {
+      const minPxGap = 20;
+      let step = 1;
+      while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
+      u = Math.round(u / step) * step;
+      v = Math.round(v / step) * step;
+    }
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
     // click (no prior move events).
@@ -428,7 +436,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!session.active || !session.selectedTool) return;
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-    const [u, v] = screenToSketchFromEvent(e, cam);
+    let [u, v] = screenToSketchFromEvent(e, cam);
+    // K6b.8: Ctrl = snap to grid on move too.
+    if (e.ctrlKey || e.metaKey) {
+      const minPxGap = 20;
+      let step = 1;
+      while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
+      u = Math.round(u / step) * step;
+      v = Math.round(v / step) * step;
+    }
     if (dragRef.current.kind === "line") {
       const snap = resolveSnap(
         [u, v],
