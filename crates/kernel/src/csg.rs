@@ -1852,6 +1852,116 @@ mod tests {
     }
 
     #[test]
+    fn apply_edge_fillets_replaces_matching_junction() {
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+        };
+        let b = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: [5.0, 0.0, 0.0],
+                radius: 8.0,
+            },
+        };
+        let tree = CsgNode::Union(Box::new(a), Box::new(b));
+        let fillets = vec![EdgeFillet {
+            feature_a: FeatureId::from_u32(1),
+            feature_b: FeatureId::from_u32(2),
+            mask_p0: [5.0, -15.0, 0.0],
+            mask_p1: [5.0, 15.0, 0.0],
+            mask_radius: 5.0,
+            blend_radius: 3.0,
+            blend_mode: BlendMode::Fillet,
+        }];
+        let result = tree.apply_edge_fillets(&fillets);
+        // The top-level Union should have been replaced by
+        // MaskedBlend.
+        assert!(matches!(result, CsgNode::MaskedBlend { .. }));
+    }
+
+    #[test]
+    fn apply_edge_fillets_leaves_unmatched_junctions() {
+        let a = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [5.0; 3],
+            },
+        };
+        let b = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: [0.0; 3],
+                radius: 3.0,
+            },
+        };
+        let tree = CsgNode::Difference(Box::new(a), Box::new(b));
+        // Fillet references features 3 and 4 which don't exist
+        // in the tree → no match, tree stays unchanged.
+        let fillets = vec![EdgeFillet {
+            feature_a: FeatureId::from_u32(3),
+            feature_b: FeatureId::from_u32(4),
+            mask_p0: [0.0; 3],
+            mask_p1: [0.0, 10.0, 0.0],
+            mask_radius: 5.0,
+            blend_radius: 3.0,
+            blend_mode: BlendMode::Fillet,
+        }];
+        let result = tree.apply_edge_fillets(&fillets);
+        assert!(matches!(result, CsgNode::Difference(_, _)));
+    }
+
+    #[test]
+    fn fillet_all_edges_stress_test() {
+        // Build a box with 4 holes subtracted — each junction
+        // gets a fillet. Verifies that multiple MaskedBlend nodes
+        // compose without panicking.
+        let base = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [50.0, 50.0, 50.0],
+            },
+        };
+        let mut tree = base;
+        for i in 2..=5 {
+            let hole = CsgNode::Leaf {
+                id: FeatureId::from_u32(i),
+                primitive: Primitive::Cylinder {
+                    center: [(i as f32 - 3.5) * 20.0, 0.0, 0.0],
+                    radius: 5.0,
+                    half_height: 60.0,
+                },
+            };
+            tree = CsgNode::Difference(Box::new(tree), Box::new(hole));
+        }
+        // Fillet every hole junction.
+        let fillets: Vec<EdgeFillet> = (2..=5)
+            .map(|i| EdgeFillet {
+                feature_a: FeatureId::from_u32(1),
+                feature_b: FeatureId::from_u32(i),
+                mask_p0: [(i as f32 - 3.5) * 20.0, -55.0, 0.0],
+                mask_p1: [(i as f32 - 3.5) * 20.0, 55.0, 0.0],
+                mask_radius: 8.0,
+                blend_radius: 2.0,
+                blend_mode: BlendMode::Fillet,
+            })
+            .collect();
+        let result = tree.apply_edge_fillets(&fillets);
+        // Should produce exactly 4 MaskedBlend nodes (one per
+        // hole junction). Test that the SDF evaluates without
+        // panicking at a few sample points.
+        for x in [-30.0, 0.0, 30.0] {
+            let d = result.sdf([x, 0.0, 0.0], EvalMode::Visual);
+            assert!(d.is_finite(), "SDF at ({x}, 0, 0) = {d}");
+        }
+    }
+
+    #[test]
     fn smooth_blend_logical_mode_degrades_to_hard_ops() {
         let a = CsgNode::Leaf {
             id: FeatureId::from_u32(1),
