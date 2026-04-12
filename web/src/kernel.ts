@@ -496,6 +496,11 @@ export class Kernel {
     return this.inner.addHole(diameterMm, depthMm, tx, ty, tz);
   }
 
+  /** K11.0: append a gyroid TPMS infill feature. */
+  addGyroid(cellSizeMm: number, thicknessMm: number, op: BoolOpTagValue): number {
+    return this.inner.addGyroid(cellSizeMm, thicknessMm, op);
+  }
+
   /** K8.4: append a revolve feature that consumes the sketch
    *  with id `sketchId` and sweeps its profile around the local
    *  Y axis through `(cx, cy, cz)`. Returns the new feature id. */

@@ -316,6 +316,11 @@ impl Aabb {
                     ],
                 }
             }
+            // Gyroid repeats infinitely — return a large conservative AABB.
+            Primitive::Gyroid { .. } => Self {
+                min: [-1000.0; 3],
+                max: [1000.0; 3],
+            },
         }
     }
 

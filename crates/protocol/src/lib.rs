@@ -252,6 +252,15 @@ pub enum Primitive {
         half_depth_z: f32,
         center: [f32; 3],
     },
+    /// K11.0: Gyroid TPMS lattice. The raw implicit is
+    /// `sin(x/s)cos(y/s) + sin(y/s)cos(z/s) + sin(z/s)cos(x/s)`,
+    /// thickened into a solid shell via `|f| - thickness`.
+    /// The field repeats infinitely — intersect with a host body
+    /// to clip it to a finite region.
+    Gyroid {
+        cell_size: f32,
+        thickness: f32,
+    },
     /// K8.4: sketch-profile revolution around the local Y axis.
     /// The sketch `x` coordinate maps to the radial distance
     /// `√(x² + z²)` in 3D, its `y` stays vertical. Authoring
@@ -272,6 +281,7 @@ impl Primitive {
     pub const KIND_CYLINDER: u32 = 2;
     pub const KIND_EXTRUDE: u32 = 3;
     pub const KIND_REVOLVE: u32 = 4;
+    pub const KIND_GYROID: u32 = 5;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -279,17 +289,18 @@ impl Primitive {
             Primitive::Sphere { .. } => Self::KIND_SPHERE,
             Primitive::Cylinder { .. } => Self::KIND_CYLINDER,
             Primitive::Extrude { .. } => Self::KIND_EXTRUDE,
+            Primitive::Gyroid { .. } => Self::KIND_GYROID,
             Primitive::Revolve { .. } => Self::KIND_REVOLVE,
         }
     }
 
-    /// Human-friendly default name (used when adding a feature).
     pub fn default_name(&self) -> &'static str {
         match self {
             Primitive::Box { .. } => "Box",
             Primitive::Sphere { .. } => "Sphere",
             Primitive::Cylinder { .. } => "Cylinder",
             Primitive::Extrude { .. } => "Extrude",
+            Primitive::Gyroid { .. } => "Gyroid",
             Primitive::Revolve { .. } => "Revolve",
         }
     }
@@ -589,6 +600,7 @@ impl FeatureCall {
             // `sync_feature_calls` via the is_spine_type filter
             // below. Emit a placeholder type_name here so the
             // sync can skip re-adding it.
+            Primitive::Gyroid { .. } => "__derived_gyroid_skip__",
             Primitive::Extrude { .. } => "__derived_extrude_skip__",
             // K8.4: same derivation rule as Extrude — the
             // authoritative wire form is the original "revolve"
@@ -645,6 +657,15 @@ impl FeatureCall {
                 "sketch": sketch,
                 "half_depth_z": half_depth_z,
                 "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Gyroid { cell_size, thickness } => serde_json::json!({
+                "cell_size": cell_size,
+                "thickness": thickness,
                 "translate": translate,
                 "rotation": rotation,
                 "scale": scale,
@@ -806,6 +827,7 @@ impl Document {
             .filter(|call| {
                 call.type_name != "__derived_extrude_skip__"
                     && call.type_name != "__derived_revolve_skip__"
+                    && call.type_name != "__derived_gyroid_skip__"
             })
             .collect();
         next.extend(surviving);

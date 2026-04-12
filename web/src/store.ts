@@ -449,6 +449,21 @@ export class KernelStore {
     return true;
   }
 
+  /** K11.0: add a gyroid TPMS infill. Default: 10 mm cells,
+   *  1 mm wall thickness, op=Intersect. */
+  addGyroid(cellSizeMm = 10, thicknessMm = 1): number {
+    let id: number;
+    try {
+      id = this.kernel.addGyroid(cellSizeMm, thicknessMm, BoolOpTag.Intersect);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addGyroid failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** K8.9: append a hole feature at the next per-add stagger
    *  position. Defaults to a 6 mm through-hole 40 mm deep. */
   addHole(diameterMm = 6, depthMm = 40): number {

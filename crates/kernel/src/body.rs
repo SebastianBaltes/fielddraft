@@ -294,6 +294,11 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             }
             hash_sketch2d(sketch, hasher);
         }
+        Primitive::Gyroid { cell_size, thickness } => {
+            5u8.hash(hasher);
+            cell_size.to_bits().hash(hasher);
+            thickness.to_bits().hash(hasher);
+        }
     }
 }
 

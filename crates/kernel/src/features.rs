@@ -213,6 +213,7 @@ impl FeatureRegistry {
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(RevolveFeature));
         r.register(Box::new(HoleFeature));
+        r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
@@ -479,6 +480,81 @@ impl FeatureKind for CylinderPrimitive {
                 center: d.center,
                 radius: d.radius,
                 half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+        });
+        Ok(())
+    }
+}
+
+// ─── K11.0: Gyroid TPMS Infill ───────────────────────────────────
+//
+// The first T2 "SDF superpower". A gyroid is an infinite
+// triply-periodic minimal surface described purely by the
+// formula `sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)`.
+// Thickening via `|f| - thickness` produces a solid lattice.
+// Intersecting the lattice with a host body clips it to a
+// finite region — the standard workflow is "add box, add
+// gyroid with op=Intersect".
+//
+// The spine entry uses a hierarchical child id (same pattern
+// as HoleFeature) to avoid a stray duplicate call from
+// sync_feature_calls.
+
+/// `gyroid` — TPMS lattice infill.
+#[derive(FeatureSchema)]
+#[schema(type = "gyroid")]
+pub struct GyroidDef {
+    /// Distance between repeating cells in mm.
+    pub cell_size: ::fielddraft_protocol::Length,
+    /// Wall half-thickness in mm. Larger = thicker walls.
+    pub thickness: ::fielddraft_protocol::Length,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Intersect)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+}
+
+pub struct GyroidFeature;
+
+impl FeatureKind for GyroidFeature {
+    fn type_name(&self) -> &'static str {
+        GyroidDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        GyroidDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = GyroidDef::parse(def)?;
+        let cell_mm = d.cell_size.to_mm();
+        let thick_mm = d.thickness.to_mm();
+        positive_f32(cell_mm, GyroidDef::TYPE_NAME, "cell_size")?;
+        positive_f32(thick_mm, GyroidDef::TYPE_NAME, "thickness")?;
+
+        let name = optional_display_name(def, || format!("Gyroid {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.child("0"),
+            name,
+            op: d.op,
+            primitive: Primitive::Gyroid {
+                cell_size: cell_mm,
+                thickness: thick_mm,
             },
             transform: Transform {
                 translate: d.translate,
@@ -1327,8 +1403,8 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K8.9 grows the built-in set to include hole.
-        assert_eq!(registry.len(), 10);
+        // K11.0 grows the built-in set to include gyroid.
+        assert_eq!(registry.len(), 11);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1379,6 +1455,7 @@ mod tests {
                 "circular_pattern",
                 "cylinder",
                 "extrude",
+                "gyroid",
                 "hole",
                 "linear_pattern",
                 "mirror",

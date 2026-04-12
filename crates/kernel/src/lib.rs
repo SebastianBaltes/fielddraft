@@ -219,6 +219,14 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let r = (dx * dx + dz * dz).sqrt();
             sketch.sdf([r, p[1] - center[1]])
         }
+        Primitive::Gyroid { cell_size, thickness } => {
+            let s = *cell_size;
+            let x = p[0] / s;
+            let y = p[1] / s;
+            let z = p[2] / s;
+            let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
+            f.abs() - *thickness
+        }
     }
 }
 
@@ -312,6 +320,10 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[1..4].copy_from_slice(center);
             out[4] = r_max;
             out[5] = half_y;
+        }
+        Primitive::Gyroid { cell_size, thickness } => {
+            out[4] = *cell_size;
+            out[5] = *thickness;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -584,6 +596,7 @@ impl Kernel {
             Primitive::Cylinder { .. } => "cylinder",
             Primitive::Extrude { .. } => "extrude",
             Primitive::Revolve { .. } => "revolve",
+            Primitive::Gyroid { .. } => "gyroid",
         }
     }
 
@@ -604,12 +617,11 @@ impl Kernel {
             // keep its own outliner label so the row renders
             // "Hole" glyphs/colours instead of the cylinder one.
             "hole" => "hole",
+            "gyroid" => "gyroid",
             _ => Self::static_kind_name(type_name),
         }
     }
 
-    /// K6b.3a: normalise a feature-call type name for kinds that
-    /// don't have a primitive-spine representation at all.
     fn static_kind_name(type_name: &str) -> &'static str {
         match type_name {
             "sketch" => "sketch",
@@ -619,6 +631,7 @@ impl Kernel {
             "extrude" => "extrude",
             "revolve" => "revolve",
             "hole" => "hole",
+            "gyroid" => "gyroid",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -646,6 +659,7 @@ impl Kernel {
             "sketch" => "Sketch",
             "revolve" => "Revolve",
             "hole" => "Hole",
+            "gyroid" => "Gyroid",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -880,6 +894,7 @@ impl Kernel {
                 // here instead of defaulting to "union".
                 let op = match call.type_name.as_str() {
                     "hole" => "difference",
+                    "gyroid" => "intersect",
                     _ => "union",
                 };
                 // Try to pull the world-space translate from
@@ -1180,6 +1195,45 @@ impl Kernel {
             self.undo();
             return Err(JsError::new(&format!(
                 "hole regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
+    /// K11.0: append a `gyroid` feature call. `cell_size_mm` is
+    /// the cell period, `thickness_mm` the wall half-thickness.
+    /// Default op is Intersect so the gyroid clips to any
+    /// existing bodies. Returns the new id.
+    #[wasm_bindgen(js_name = addGyroid)]
+    pub fn add_gyroid(
+        &mut self,
+        cell_size_mm: f32,
+        thickness_mm: f32,
+        op: u32,
+    ) -> Result<u32, JsError> {
+        let bool_op = Self::parse_op(op)?;
+        let op_wire = match bool_op {
+            BoolOp::Union => "union",
+            BoolOp::Difference => "difference",
+            BoolOp::Intersect => "intersect",
+        };
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "cell_size": { "value": cell_size_mm, "unit": "mm" },
+            "thickness": { "value": thickness_mm, "unit": "mm" },
+            "op": op_wire,
+        });
+        let call = fielddraft_protocol::FeatureCall::new("gyroid", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "gyroid regeneration failed: {err}"
             )));
         }
         self.rebuild_packed();

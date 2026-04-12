@@ -186,6 +186,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Add Gyroid infill (10 mm cells, 1 mm walls, intersect)"
+          data-testid="add-gyroid"
+          disabled={state.features.length === 0}
+          onClick={() => store.addGyroid()}
+        >
+          🕸 Gyroid
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Sketch (lock XY origin plane)"
           data-testid="enter-sketch"
           onClick={handleSketchEnter}
