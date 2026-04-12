@@ -578,6 +578,25 @@ export class KernelStore {
     return true;
   }
 
+  /** K12: add a thread with specific metric preset params. */
+  addThreadPreset(radius: number, pitch: number, depth: number): number {
+    const offset: [number, number, number] = [
+      this.state.features.length * 80,
+      0,
+      0,
+    ];
+    let id: number;
+    try {
+      id = this.kernel.addThread(this.state.nextOp, offset, radius, pitch, depth);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addThreadPreset failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** K11.0: add a gyroid TPMS infill. Default: 10 mm cells,
    *  1 mm wall thickness, op=Intersect. */
   addGyroid(cellSizeMm = 10, thicknessMm = 1): number {

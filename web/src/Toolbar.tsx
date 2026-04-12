@@ -12,6 +12,18 @@ import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
 import { requestView } from "./viewCommands";
 
+/** ISO metric thread presets (external, bolt-side). Radius is
+ *  nominal/2, pitch and depth per ISO 261. */
+const METRIC_THREADS = [
+  { label: "M3",  radius: 1.5,  pitch: 0.5,  depth: 0.307 },
+  { label: "M4",  radius: 2.0,  pitch: 0.7,  depth: 0.429 },
+  { label: "M5",  radius: 2.5,  pitch: 0.8,  depth: 0.491 },
+  { label: "M6",  radius: 3.0,  pitch: 1.0,  depth: 0.613 },
+  { label: "M8",  radius: 4.0,  pitch: 1.25, depth: 0.767 },
+  { label: "M10", radius: 5.0,  pitch: 1.5,  depth: 0.920 },
+  { label: "M12", radius: 6.0,  pitch: 1.75, depth: 1.074 },
+];
+
 /** K6b.2 placeholder: the face-lock UX comes in K6b.3. Until then,
  *  the Sketch button anchors every new session on the XY origin
  *  plane so the mode transition is testable end-to-end. */
@@ -69,6 +81,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
   }, [fd]);
 
   const [sketchPlaneOpen, setSketchPlaneOpen] = useState(false);
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
 
   const handleSketchEnter = (planeQuery: string) => {
     store.enterSketch(planeQuery);
@@ -222,10 +235,28 @@ export function Toolbar({ store, state }: ToolbarProps) {
           className="tool"
           title="Add Thread (M6 metric bolt)"
           data-testid="add-thread"
-          onClick={() => store.addPrimitive("thread")}
+          onClick={() => setThreadMenuOpen(!threadMenuOpen)}
         >
-          ⏍ Thread
+          ⏍ Thread ▾
         </button>
+        {threadMenuOpen ? (
+          <div className="sketch-plane-dropdown">
+            {METRIC_THREADS.map((t) => (
+              <button
+                key={t.label}
+                type="button"
+                className="tool"
+                title={`${t.label}: Ø${t.radius * 2} pitch ${t.pitch}`}
+                onClick={() => {
+                  store.addThreadPreset(t.radius, t.pitch, t.depth);
+                  setThreadMenuOpen(false);
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <button
           type="button"
           className="tool"
