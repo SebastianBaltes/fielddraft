@@ -12,6 +12,15 @@
 
 use serde::{Deserialize, Serialize};
 
+/// K13.3: result of a manifold/watertightness check.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifoldReport {
+    pub triangle_count: u32,
+    pub open_edges: u32,
+    pub non_manifold_edges: u32,
+    pub is_watertight: bool,
+}
+
 /// A triangle mesh converted to a queryable signed distance
 /// field. Immutable after construction — parameter edits
 /// require rebuilding from the source triangles.
@@ -69,6 +78,79 @@ impl MeshSdf {
             bboxes,
             aabb_min,
             aabb_max,
+        }
+    }
+
+    /// K13.3: manifold check. Returns the number of open edges
+    /// (edges shared by only one triangle) and the number of
+    /// non-manifold edges (shared by 3+ triangles). A watertight
+    /// mesh has 0 open edges.
+    pub fn check_manifold(&self) -> ManifoldReport {
+        let tri_count = self.tris.len() / 9;
+        if tri_count == 0 {
+            return ManifoldReport {
+                triangle_count: 0,
+                open_edges: 0,
+                non_manifold_edges: 0,
+                is_watertight: true,
+            };
+        }
+
+        // Count how many triangles share each edge.
+        // Edge key: (min_vertex_index, max_vertex_index) by
+        // position quantisation (snap to 1e-4 mm grid to handle
+        // floating-point duplicates from STL imports).
+        use std::collections::HashMap;
+        let mut edge_counts: HashMap<(i64, i64, i64, i64, i64, i64), u32> = HashMap::new();
+
+        let quantize = |v: f32| -> i64 { (v * 10000.0).round() as i64 };
+
+        for t in 0..tri_count {
+            let base = t * 9;
+            let verts: [(i64, i64, i64); 3] = [
+                (
+                    quantize(self.tris[base]),
+                    quantize(self.tris[base + 1]),
+                    quantize(self.tris[base + 2]),
+                ),
+                (
+                    quantize(self.tris[base + 3]),
+                    quantize(self.tris[base + 4]),
+                    quantize(self.tris[base + 5]),
+                ),
+                (
+                    quantize(self.tris[base + 6]),
+                    quantize(self.tris[base + 7]),
+                    quantize(self.tris[base + 8]),
+                ),
+            ];
+            for &(a, b) in &[(0, 1), (1, 2), (2, 0)] {
+                let va = verts[a];
+                let vb = verts[b];
+                let key = if va < vb {
+                    (va.0, va.1, va.2, vb.0, vb.1, vb.2)
+                } else {
+                    (vb.0, vb.1, vb.2, va.0, va.1, va.2)
+                };
+                *edge_counts.entry(key).or_insert(0) += 1;
+            }
+        }
+
+        let mut open = 0u32;
+        let mut non_manifold = 0u32;
+        for &count in edge_counts.values() {
+            if count == 1 {
+                open += 1;
+            } else if count > 2 {
+                non_manifold += 1;
+            }
+        }
+
+        ManifoldReport {
+            triangle_count: tri_count as u32,
+            open_edges: open,
+            non_manifold_edges: non_manifold,
+            is_watertight: open == 0,
         }
     }
 
@@ -289,6 +371,16 @@ mod tests {
             1,2,6, 1,6,5, // +X (normal → +X)
         ];
         MeshSdf::from_buffers(&positions, &indices)
+    }
+
+    #[test]
+    fn cube_mesh_is_watertight() {
+        let m = unit_cube_mesh();
+        let report = m.check_manifold();
+        assert_eq!(report.triangle_count, 12);
+        assert_eq!(report.open_edges, 0);
+        assert_eq!(report.non_manifold_edges, 0);
+        assert!(report.is_watertight);
     }
 
     #[test]
