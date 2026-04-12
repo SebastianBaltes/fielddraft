@@ -287,8 +287,33 @@
         color: var(--color-text);
       }
 
-      /* Delete affordance shares the outer .row-delete visual
-         vocabulary — see the primitive list above. */
+      & .row.is-constraint .kind {
+        color: var(--color-accent);
+        font-style: italic;
+      }
+    }
+
+    & .constraint-summary {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-4);
+      font-size: var(--fs-base);
+      border-top: 1px solid var(--color-divider);
+      background: var(--color-surface-strong, #eee);
+
+      & .label {
+        color: var(--color-text-muted);
+        font-weight: var(--fw-semibold);
+      }
+
+      & .badge {
+        background: var(--color-accent);
+        color: var(--color-text-on-accent, white);
+        border-radius: var(--radius-sm);
+        padding: 1px var(--space-2);
+        font-size: var(--fs-base);
+      }
     }
   }
 }

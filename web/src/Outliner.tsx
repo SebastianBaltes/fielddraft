@@ -51,6 +51,36 @@ const KIND_GLYPH: Record<string, string> = {
   mirror: "◫",
 };
 
+const SKETCH_SUB_GLYPH: Record<string, string> = {
+  sketch_point: "•",
+  sketch_line: "╱",
+  sketch_rectangle: "▭",
+  sketch_circle: "○",
+  sketch_polygon: "⬠",
+  sketch_arc: "◠",
+  sketch_mirror: "◧",
+  sketch_trim: "✂",
+  sketch_offset: "⇔",
+  sketch_constraint_horizontal: "—",
+  sketch_constraint_vertical: "|",
+  sketch_constraint_coincident: "⊙",
+};
+
+const SKETCH_SUB_LABEL: Record<string, string> = {
+  sketch_point: "Point",
+  sketch_line: "Line",
+  sketch_rectangle: "Rect",
+  sketch_circle: "Circle",
+  sketch_polygon: "Polygon",
+  sketch_arc: "Arc",
+  sketch_mirror: "Mirror",
+  sketch_trim: "Trim",
+  sketch_offset: "Offset",
+  sketch_constraint_horizontal: "Horizontal",
+  sketch_constraint_vertical: "Vertical",
+  sketch_constraint_coincident: "Coincident",
+};
+
 function nameToTag(op: BoolOpName): BoolOpTagValue {
   switch (op) {
     case "union":
@@ -332,22 +362,49 @@ export function Outliner({ store, state }: OutlinerProps) {
           )}
           {sketchSession.subCalls.length > 0 ? (
             <ul className="sub-spine" data-testid="sketch-sub-spine">
-              {sketchSession.subCalls.map((call, i) => (
-                <li key={i} className="row">
-                  <span className="kind">{call.type}</span>
-                  <button
-                    type="button"
-                    className="row-delete"
-                    title="Delete"
-                    data-testid={`sketch-sub-row-delete-${i}`}
-                    onClick={() => store.removeSketchSubCall(i)}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
+              {sketchSession.subCalls.map((call, i) => {
+                const isConstraint = call.type.startsWith("sketch_constraint");
+                return (
+                  <li key={i} className={"row" + (isConstraint ? " is-constraint" : "")}>
+                    <span className="kind">
+                      {SKETCH_SUB_GLYPH[call.type] ?? "?"}{" "}
+                      {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
+                    </span>
+                    <button
+                      type="button"
+                      className="row-delete"
+                      title="Delete"
+                      data-testid={`sketch-sub-row-delete-${i}`}
+                      onClick={() => store.removeSketchSubCall(i)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
+          {(() => {
+            const constraints = sketchSession.subCalls.filter((c) =>
+              c.type.startsWith("sketch_constraint"),
+            );
+            if (constraints.length === 0) return null;
+            const counts: Record<string, number> = {};
+            for (const c of constraints) {
+              const label = c.type.replace("sketch_constraint_", "");
+              counts[label] = (counts[label] ?? 0) + 1;
+            }
+            return (
+              <div className="constraint-summary" data-testid="constraint-summary">
+                <span className="label">Constraints:</span>
+                {Object.entries(counts).map(([k, v]) => (
+                  <span key={k} className="badge">
+                    {k} ×{v}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
         </section>
       ) : null}
       {!sketchSession.active ? (
