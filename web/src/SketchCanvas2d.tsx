@@ -38,6 +38,7 @@ import {
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
 import { solveSketch } from "./solver/planegcs";
+import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import type { SketchState } from "./solver/types";
 
 interface Props {
@@ -49,8 +50,22 @@ interface Props {
  *  ever add sketch colours there. */
 const STROKE_PX = 1.5;
 const POINT_PX = 3;
-const COLOR_COMMITTED = "#2563eb";
+// K6b.6: 3-color DOF status.
+// Blue = underconstrained (default), Green = fully constrained,
+// Red = overconstrained.
+const COLOR_UNDER = "#2563eb";
+const COLOR_FULL = "#16a34a";
+const COLOR_OVER = "#dc2626";
 const COLOR_PREVIEW = "#93c5fd";
+
+function dofColor(dof: number): string {
+  if (dof > 0) return COLOR_UNDER;
+  if (dof === 0) return COLOR_FULL;
+  return COLOR_OVER;
+}
+
+// Legacy alias — default to underconstrained.
+const COLOR_COMMITTED = COLOR_UNDER;
 const COLOR_SNAP = "#f59e0b";
 const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
 const LABEL_BG = "rgba(246, 246, 244, 0.92)";
@@ -838,6 +853,16 @@ function drawOverlay(
     ctx.stroke();
   }
 
+  // K6b.6: compute DOF to pick the 3-color status.
+  let committedColor = COLOR_COMMITTED;
+  try {
+    const skState = buildDraftSketchState(session.subCalls);
+    const dof = countDegreesOfFreedom(skState);
+    committedColor = dofColor(dof);
+  } catch {
+    // Solver not available or sub-calls can't build a state.
+  }
+
   // Draw committed geometry first (darker), then the drag preview
   // on top (lighter) so the preview always reads as "unfinished".
   for (const call of session.subCalls) {
@@ -845,23 +870,23 @@ function drawOverlay(
       const start = toXy(call.params.start);
       const end = toXy(call.params.end);
       if (start && end) {
-        drawLine(ctx, start, end, cam, COLOR_COMMITTED, STROKE_PX);
-        drawPoint(ctx, start, cam, COLOR_COMMITTED);
-        drawPoint(ctx, end, cam, COLOR_COMMITTED);
+        drawLine(ctx, start, end, cam, committedColor, STROKE_PX);
+        drawPoint(ctx, start, cam, committedColor);
+        drawPoint(ctx, end, cam, committedColor);
       }
     } else if (call.type === "sketch_point") {
       const at = toXy(call.params.at);
-      if (at) drawPoint(ctx, at, cam, COLOR_COMMITTED);
+      if (at) drawPoint(ctx, at, cam, committedColor);
     } else if (call.type === "sketch_rectangle") {
       const a = toXy(call.params.corner_a);
       const b = toXy(call.params.corner_b);
-      if (a && b) drawRectangle(ctx, a, b, cam, COLOR_COMMITTED);
+      if (a && b) drawRectangle(ctx, a, b, cam, committedColor);
     } else if (call.type === "sketch_circle") {
       const center = toXy(call.params.center);
       const radius = Number(call.params.radius);
       if (center && Number.isFinite(radius) && radius > 0) {
-        drawCircle(ctx, center, radius, cam, COLOR_COMMITTED);
-        drawPoint(ctx, center, cam, COLOR_COMMITTED);
+        drawCircle(ctx, center, radius, cam, committedColor);
+        drawPoint(ctx, center, cam, committedColor);
       }
     }
   }
