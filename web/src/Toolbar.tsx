@@ -444,6 +444,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ⇩ GLB
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Export as Wavefront OBJ"
+          data-testid="export-obj"
+          disabled={state.features.length === 0}
+          onClick={() => store.downloadObj()}
+        >
+          ⇩ OBJ
+        </button>
       </div>
 
       <div className="group">

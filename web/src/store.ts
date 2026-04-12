@@ -1365,6 +1365,44 @@ export class KernelStore {
     URL.revokeObjectURL(url);
   }
 
+  /** Export the current scene as a Wavefront OBJ text file. */
+  downloadObj(filename = "fielddraft.obj"): void {
+    if (typeof document === "undefined") return;
+    const lines: string[] = ["# FieldDraft OBJ export"];
+    let vertexOffset = 0;
+    for (const body of this.state.meshedBodies) {
+      if (body.positions.length === 0) continue;
+      const vertCount = body.positions.length / 3;
+      for (let i = 0; i < body.positions.length; i += 3) {
+        lines.push(
+          `v ${body.positions[i].toFixed(6)} ${body.positions[i + 1].toFixed(6)} ${body.positions[i + 2].toFixed(6)}`,
+        );
+      }
+      for (let i = 0; i < body.normals.length; i += 3) {
+        lines.push(
+          `vn ${body.normals[i].toFixed(6)} ${body.normals[i + 1].toFixed(6)} ${body.normals[i + 2].toFixed(6)}`,
+        );
+      }
+      for (let i = 0; i < body.indices.length; i += 3) {
+        const a = body.indices[i] + 1 + vertexOffset;
+        const b = body.indices[i + 1] + 1 + vertexOffset;
+        const c = body.indices[i + 2] + 1 + vertexOffset;
+        lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+      }
+      vertexOffset += vertCount;
+    }
+    const text = lines.join("\n") + "\n";
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   commitSketch(): number | null {
     const session = this.state.sketchSession;
     if (!session.active || session.planeQuery === null) {
