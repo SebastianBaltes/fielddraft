@@ -272,6 +272,19 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let dy = p[1] - y_clamped;
             (r * r + dy * dy).sqrt() - *radius
         }
+        Primitive::HexPrism { apothem, half_height } => {
+            // 2D hex distance in XZ plane.
+            let qx = p[0].abs();
+            let qz = p[2].abs();
+            // Hex: max(qx * sqrt(3)/2 + qz * 0.5, qz) - apothem
+            let d_hex = (qx * 0.866_025_4 + qz * 0.5).max(qz) - *apothem;
+            let d_axial = p[1].abs() - *half_height;
+            if d_hex > 0.0 && d_axial > 0.0 {
+                (d_hex * d_hex + d_axial * d_axial).sqrt()
+            } else {
+                d_hex.max(d_axial)
+            }
+        }
     }
 }
 
@@ -388,6 +401,10 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
         }
         Primitive::Capsule { radius, half_height } => {
             out[4] = *radius;
+            out[5] = *half_height;
+        }
+        Primitive::HexPrism { apothem, half_height } => {
+            out[4] = *apothem;
             out[5] = *half_height;
         }
     }
@@ -666,6 +683,7 @@ impl Kernel {
             Primitive::Thread { .. } => "thread",
             Primitive::Cone { .. } => "cone",
             Primitive::Capsule { .. } => "capsule",
+            Primitive::HexPrism { .. } => "hex_prism",
         }
     }
 
@@ -680,7 +698,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" => Self::kind_label(prim),
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -1789,6 +1807,10 @@ impl Kernel {
             },
             Primitive::KIND_CAPSULE => Primitive::Capsule {
                 radius: p0,
+                half_height: p1,
+            },
+            Primitive::KIND_HEX_PRISM => Primitive::HexPrism {
+                apothem: p0,
                 half_height: p1,
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),

@@ -325,6 +325,11 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             radius.to_bits().hash(hasher);
             half_height.to_bits().hash(hasher);
         }
+        Primitive::HexPrism { apothem, half_height } => {
+            10u8.hash(hasher);
+            apothem.to_bits().hash(hasher);
+            half_height.to_bits().hash(hasher);
+        }
     }
 }
 

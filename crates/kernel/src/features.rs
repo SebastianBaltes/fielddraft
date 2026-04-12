@@ -215,6 +215,7 @@ impl FeatureRegistry {
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
         r.register(Box::new(CapsulePrimitive));
+        r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
         r.register(Box::new(GyroidFeature));
@@ -823,6 +824,80 @@ impl FeatureKind for CapsulePrimitive {
             op: d.op,
             primitive: Primitive::Capsule {
                 radius: d.radius,
+                half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
+            twist_rate: d.twist_rate,
+            bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
+        });
+        Ok(())
+    }
+}
+
+// ─── HexPrism ────────────────────────────────────────────────────
+
+/// `hex_prism` — Y-axis-aligned regular hexagonal prism.
+/// `apothem` is the inradius (centre to flat face); circumradius ≈ apothem / 0.866.
+#[derive(FeatureSchema)]
+#[schema(type = "hex_prism")]
+pub struct HexPrismDef {
+    pub apothem: f32,
+    pub half_height: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
+    #[param(name = "Bend rate", default = 0.0)]
+    pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
+}
+
+pub struct HexPrismPrimitive;
+
+impl FeatureKind for HexPrismPrimitive {
+    fn type_name(&self) -> &'static str {
+        HexPrismDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        HexPrismDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = HexPrismDef::parse(def)?;
+        positive_f32(d.apothem, HexPrismDef::TYPE_NAME, "apothem")?;
+        positive_f32(d.half_height, HexPrismDef::TYPE_NAME, "half_height")?;
+        let name = optional_display_name(def, || format!("HexPrism {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.op,
+            primitive: Primitive::HexPrism {
+                apothem: d.apothem,
                 half_height: d.half_height,
             },
             transform: Transform {
@@ -1782,7 +1857,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 15);
+        assert_eq!(registry.len(), 16);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1797,6 +1872,7 @@ mod tests {
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
         assert!(registry.get("mirror").is_some());
+        assert!(registry.get("hex_prism").is_some());
         assert!(registry.get("gyroid").is_some());
     }
 
@@ -1838,6 +1914,7 @@ mod tests {
                 "cylinder",
                 "extrude",
                 "gyroid",
+                "hex_prism",
                 "hole",
                 "linear_pattern",
                 "mirror",

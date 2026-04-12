@@ -348,6 +348,13 @@ impl Aabb {
                 min: [-r, -(hh + r), -r],
                 max: [*r, hh + r, *r],
             },
+            Primitive::HexPrism { apothem, half_height: hh } => {
+                let r = apothem / 0.866_025_4;
+                Self {
+                    min: [-r, -*hh, -r],
+                    max: [r, *hh, r],
+                }
+            }
         }
     }
 

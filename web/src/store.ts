@@ -570,6 +570,9 @@ export class KernelStore {
       case "capsule":
         id = this.kernel.addCapsule(op, offset, 20, 40);
         break;
+      case "hex_prism":
+        id = this.kernel.addHexPrism(op, offset, 25, 30);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;
