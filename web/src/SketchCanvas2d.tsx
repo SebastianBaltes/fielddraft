@@ -775,6 +775,48 @@ function drawOverlay(
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
 
+  // Grid: adaptive spacing that snaps to 1/2/5/10/… mm steps
+  // and stays visually stable across zoom levels.
+  {
+    const minPxGap = 20;
+    let step = 1;
+    while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
+
+    const left = cam.centerU - cam.width / (2 * cam.zoom);
+    const right = cam.centerU + cam.width / (2 * cam.zoom);
+    const top = cam.centerV + cam.height / (2 * cam.zoom);
+    const bottom = cam.centerV - cam.height / (2 * cam.zoom);
+
+    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const gridLeft = Math.floor(left / step) * step;
+    const gridBottom = Math.floor(bottom / step) * step;
+    for (let u = gridLeft; u <= right; u += step) {
+      const [px] = sketchToScreen(u, 0, cam);
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, cam.height);
+    }
+    for (let v = gridBottom; v <= top; v += step) {
+      const [, py] = sketchToScreen(0, v, cam);
+      ctx.moveTo(0, py);
+      ctx.lineTo(cam.width, py);
+    }
+    ctx.stroke();
+
+    // Origin axes (thicker, darker).
+    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const [ox] = sketchToScreen(0, 0, cam);
+    const [, oy] = sketchToScreen(0, 0, cam);
+    ctx.moveTo(ox, 0);
+    ctx.lineTo(ox, cam.height);
+    ctx.moveTo(0, oy);
+    ctx.lineTo(cam.width, oy);
+    ctx.stroke();
+  }
+
   // Draw committed geometry first (darker), then the drag preview
   // on top (lighter) so the preview always reads as "unfinished".
   for (const call of session.subCalls) {
