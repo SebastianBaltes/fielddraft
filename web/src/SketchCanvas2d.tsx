@@ -88,6 +88,11 @@ type DragState =
       kind: "circle";
       center: [number, number];
       current: [number, number];
+    }
+  | {
+      kind: "polygon";
+      vertices: [number, number][];
+      current: [number, number];
     };
 
 /**
@@ -358,6 +363,30 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_polygon") {
+      let verts: [number, number][];
+      // If the previous polygon was applied (draft cleared),
+      // start fresh rather than appending to the old one.
+      const draftVerts = session.toolDraft?.vertices;
+      const draftEmpty = !draftVerts || (Array.isArray(draftVerts) && draftVerts.length === 0);
+      if (dragRef.current.kind === "polygon" && !draftEmpty) {
+        verts = [...dragRef.current.vertices, [su, sv]];
+      } else {
+        verts = [[su, sv]];
+      }
+      dragRef.current = {
+        kind: "polygon",
+        vertices: verts,
+        current: [su, sv],
+      };
+      // Update the tool draft so the Outliner's Apply button
+      // commits the current vertex set.
+      store.setSketchToolDraft({
+        vertices: verts.flat(),
+      });
+      lastCamVersionRef.current = -1;
+      return;
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -386,10 +415,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         coincidentTargetId: null,
       };
     } else if (dragRef.current.kind === "circle") {
-      // Rubber-band the radius from the fixed centre to the
-      // current cursor position. No inference — the K6b.3f
-      // scope lands circles as free entities without automatic
-      // constraints.
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "polygon") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
         snapped: [u, v],
@@ -794,6 +821,31 @@ function drawOverlay(
     drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
     drawPoint(ctx, center, cam, COLOR_PREVIEW);
     drawRadiusLabel(ctx, center, radius, cam);
+  } else if (drag.kind === "polygon") {
+    const { vertices, current } = drag;
+    if (vertices.length > 0) {
+      ctx.strokeStyle = COLOR_PREVIEW;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const [px0, py0] = sketchToScreen(vertices[0][0], vertices[0][1], cam);
+      ctx.moveTo(px0, py0);
+      for (let i = 1; i < vertices.length; i++) {
+        const [px, py] = sketchToScreen(vertices[i][0], vertices[i][1], cam);
+        ctx.lineTo(px, py);
+      }
+      const [cx, cy] = sketchToScreen(current[0], current[1], cam);
+      ctx.lineTo(cx, cy);
+      // Close back to first vertex as a dashed ghost.
+      ctx.stroke();
+      ctx.setLineDash([4, 4]);
+      ctx.lineTo(px0, py0);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Draw vertex dots.
+      for (const v of vertices) {
+        drawPoint(ctx, v, cam, COLOR_PREVIEW);
+      }
+    }
   } else if (hover) {
     // Hover preview outside of a drag — shows where a click
     // would land, which is crucial to see the snap magnetism
