@@ -14,6 +14,7 @@ pub mod csg;
 pub mod dc;
 pub mod expr;
 pub mod features;
+pub mod mesh_sdf;
 pub mod queries;
 pub mod export;
 pub mod raycast;
