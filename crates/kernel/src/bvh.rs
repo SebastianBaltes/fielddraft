@@ -138,6 +138,14 @@ pub enum BoundedCsg {
         is_difference: bool,
         aabb: Aabb,
     },
+    /// K11.5: morph (linear interpolation) between two SDFs.
+    /// `d = (1 − t) · left.sdf(p) + t · right.sdf(p)` where `t ∈ [0, 1]`.
+    Morph {
+        left: Box<BoundedCsg>,
+        right: Box<BoundedCsg>,
+        t: f32,
+        aabb: Aabb,
+    },
 }
 
 impl BoundedCsg {
@@ -164,7 +172,8 @@ impl BoundedCsg {
             | BoundedCsg::Shell { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. }
-            | BoundedCsg::MaskedBlend { aabb, .. } => *aabb,
+            | BoundedCsg::MaskedBlend { aabb, .. }
+            | BoundedCsg::Morph { aabb, .. } => *aabb,
         }
     }
 
@@ -330,6 +339,11 @@ impl BoundedCsg {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
                 sketch.sdf([r, local[1]]) * world_transform.scale
+            }
+            BoundedCsg::Morph { left, right, t, .. } => {
+                let da = left.sdf(p, mode);
+                let db = right.sdf(p, mode);
+                (1.0 - t) * da + t * db
             }
         }
     }
@@ -502,6 +516,14 @@ impl BoundedCsg {
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
                 let d = sketch.sdf([r, local[1]]) * world_transform.scale;
                 (d, Contributors::single(id.clone()))
+            }
+            BoundedCsg::Morph { left, right, t, .. } => {
+                let (da, ca) = left.evaluate(p, eps, mode);
+                let (db, cb) = right.evaluate(p, eps, mode);
+                let d = (1.0 - t) * da + t * db;
+                let mut c = ca;
+                c.extend(cb);
+                (d, c)
             }
         }
     }
@@ -730,6 +752,17 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 id: id.clone(),
                 sketch: Box::new(bounded_sketch),
                 world_transform: *carry,
+                aabb,
+            }
+        }
+        CsgNode::Morph(a, b, t) => {
+            let left = build(a, carry);
+            let right = build(b, carry);
+            let aabb = Aabb::union(left.aabb(), right.aabb());
+            BoundedCsg::Morph {
+                left: Box::new(left),
+                right: Box::new(right),
+                t: *t,
                 aabb,
             }
         }

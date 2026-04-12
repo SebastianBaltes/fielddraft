@@ -465,6 +465,10 @@ pub enum CsgNode {
     /// smooth blend with `blend_radius` and `blend_mode`.
     /// Outside: hard `min` (union) or `max` (difference) based
     /// on `is_difference`. Allows per-edge fillet selection.
+    /// K11.5: morph (linear interpolation) between two SDFs.
+    /// `f = (1 − t) · a + t · b` where `t ∈ [0, 1]`.
+    /// For `t=0` returns a, for `t=1` returns b.
+    Morph(Box<CsgNode>, Box<CsgNode>, f32),
     MaskedBlend {
         a: Box<CsgNode>,
         b: Box<CsgNode>,
@@ -674,6 +678,11 @@ impl CsgNode {
             CsgNode::Shell(inner, thickness) => {
                 inner.sdf(p, mode).abs() - *thickness
             }
+            CsgNode::Morph(a, b, t) => {
+                let da = a.sdf(p, mode);
+                let db = b.sdf(p, mode);
+                (1.0 - t) * da + t * db
+            }
             CsgNode::MaskedBlend {
                 a,
                 b,
@@ -820,6 +829,14 @@ impl CsgNode {
                 let (d, c) = inner.evaluate(p, eps, mode);
                 (d.abs() - *thickness, c)
             }
+            CsgNode::Morph(a, b, t) => {
+                let (da, ca) = a.evaluate(p, eps, mode);
+                let (db, cb) = b.evaluate(p, eps, mode);
+                let d = (1.0 - t) * da + t * db;
+                let mut c = ca;
+                c.extend(cb);
+                (d, c)
+            }
             CsgNode::MaskedBlend {
                 a,
                 b,
@@ -939,6 +956,7 @@ impl CsgNode {
                     max: [bb.max[0] + t, bb.max[1] + t, bb.max[2] + t],
                 }
             }
+            CsgNode::Morph(a, b, _) => Aabb::union(a.aabb(), b.aabb()),
             CsgNode::MaskedBlend { a, b, .. } => {
                 Aabb::union(a.aabb(), b.aabb())
             }
