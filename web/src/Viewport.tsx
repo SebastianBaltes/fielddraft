@@ -377,6 +377,58 @@ function CameraBridgePublisher() {
  * tumble the camera while a sketch is active.
  */
 /** Simple XZ ground plane grid using THREE.GridHelper (WebGPU safe). */
+/** K10.6: render B-Rep edges as thin dark LineSegments.
+ *  Cached — only recomputes when the mesh version changes. */
+function EdgeOverlay() {
+  const { store, state } = useKernelStore();
+  const geometryRef = useRef(new THREE.BufferGeometry());
+  const materialRef = useRef(
+    new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 1 }),
+  );
+  const cachedVersionRef = useRef(-1);
+
+  useEffect(() => {
+    if (!store || !state || state.meshedBodies.length === 0) return;
+    // Only recompute when the mesh has actually changed.
+    const version = store.kernel.meshVersion();
+    if (version === cachedVersionRef.current) return;
+    cachedVersionRef.current = version;
+    try {
+      const edges = store.kernel.detectEdges();
+      if (edges.length === 0) {
+        geometryRef.current.setAttribute(
+          "position",
+          new THREE.BufferAttribute(new Float32Array(0), 3),
+        );
+        return;
+      }
+      const positions = new Float32Array(edges.length * 6);
+      for (let i = 0; i < edges.length; i++) {
+        positions[i * 6] = edges[i].p0[0];
+        positions[i * 6 + 1] = edges[i].p0[1];
+        positions[i * 6 + 2] = edges[i].p0[2];
+        positions[i * 6 + 3] = edges[i].p1[0];
+        positions[i * 6 + 4] = edges[i].p1[1];
+        positions[i * 6 + 5] = edges[i].p1[2];
+      }
+      geometryRef.current.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3),
+      );
+    } catch {
+      // Edge detection may fail on empty scenes.
+    }
+  }, [store, state?.meshedBodies]);
+
+  return (
+    <lineSegments
+      geometry={geometryRef.current}
+      material={materialRef.current}
+      frustumCulled={false}
+    />
+  );
+}
+
 function WorldGrid() {
   const grid = useMemo(() => {
     const g = new THREE.GridHelper(600, 60, 0x999999, 0xdddddd);
@@ -622,6 +674,7 @@ export function Viewport() {
         >
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
           <ReferenceMesh />
+          <EdgeOverlay />
           <WorldGrid />
           <CameraRig />
           <ViewCommandConsumer />

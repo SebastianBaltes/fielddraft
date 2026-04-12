@@ -728,6 +728,16 @@ export class Kernel {
     return this.inner.addImportedMesh(positions, indices, op);
   }
 
+  /** K10.6: detect B-Rep edges from the current mesh. */
+  detectEdges(): { p0: number[]; p1: number[]; contributor_a: string; contributor_b: string }[] {
+    return JSON.parse(this.inner.detectEdges()) as {
+      p0: number[];
+      p1: number[];
+      contributor_a: string;
+      contributor_b: string;
+    }[];
+  }
+
   /** K9.1: overall scene AABB in mm. */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {

@@ -1356,6 +1356,31 @@ impl Kernel {
 
     /// K8.0: append a `linear_pattern` feature call that
     /// replicates the source feature along a direction
+    /// K10.6: detect B-Rep edges from the current mesh +
+    /// contributor analysis. Returns a JSON array of edge
+    /// segments with 3D coordinates + contributor IDs.
+    #[wasm_bindgen(js_name = detectEdges)]
+    pub fn detect_edges_json(&self) -> Result<String, JsError> {
+        // Build the CSG tree with edge fillets applied.
+        let tree = csg::CsgNode::from_features(&self.document.features)
+            .apply_edge_fillets(&self.edge_fillets);
+        let bounded = bvh::BoundedCsg::from_csg(&tree);
+
+        // Collect edges from all bodies.
+        let mut all_edges = Vec::new();
+        for body in &self.bodies {
+            let edges = edge_detect::detect_edges(
+                &body.mesh.positions,
+                &body.mesh.indices,
+                &bounded,
+                0.5,
+            );
+            all_edges.extend(edges);
+        }
+        serde_json::to_string(&all_edges)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// K8.13: list the connected inside-regions of a sketch.
     /// Returns a JSON array of `{index, centroid, aabb, area}`
     /// objects. The sketch is identified by its feature id.
