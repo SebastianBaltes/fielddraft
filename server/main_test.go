@@ -130,6 +130,26 @@ func TestRegisterLoginProjectCRUD(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestRateLimiterRejects(t *testing.T) {
+	rl := NewRateLimiter(0, 3) // 0 refill, 3 burst
+	if !rl.Allow("1.2.3.4") {
+		t.Fatal("first should pass")
+	}
+	if !rl.Allow("1.2.3.4") {
+		t.Fatal("second should pass")
+	}
+	if !rl.Allow("1.2.3.4") {
+		t.Fatal("third should pass")
+	}
+	if rl.Allow("1.2.3.4") {
+		t.Fatal("fourth should be rejected (bucket empty)")
+	}
+	// Different IP should still pass.
+	if !rl.Allow("5.6.7.8") {
+		t.Fatal("different IP should pass")
+	}
+}
+
 func TestDuplicateEmailRejects(t *testing.T) {
 	store := NewStore()
 	srv := NewServer(store)

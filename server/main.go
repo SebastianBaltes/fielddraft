@@ -231,12 +231,17 @@ type httpError struct {
 func (e *httpError) Error() string { return e.Message }
 
 type Server struct {
-	store *Store
-	mux   *http.ServeMux
+	store       *Store
+	mux         *http.ServeMux
+	rateLimiter *RateLimiter
 }
 
 func NewServer(store *Store) *Server {
-	s := &Server{store: store, mux: http.NewServeMux()}
+	s := &Server{
+		store:       store,
+		mux:         http.NewServeMux(),
+		rateLimiter: NewRateLimiter(1.0, 60), // 60 burst, 1/sec refill
+	}
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	s.mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
@@ -250,6 +255,15 @@ func NewServer(store *Store) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// M13: per-IP rate limiting (token bucket, 60 req/min).
+	ip := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip = fwd
+	}
+	if !s.rateLimiter.Allow(ip) {
+		http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	s.mux.ServeHTTP(w, r)
 }
@@ -440,6 +454,55 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── helpers ────────────────────────────────────────────────────
+
+// ─── rate limiter ───────────────────────────────────────────────
+
+// RateLimiter is a simple per-IP token bucket. Each IP gets
+// `burst` tokens; one is consumed per request. Tokens refill
+// at `rate` per second. When the bucket is empty, Allow returns
+// false and the server responds 429.
+type RateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*bucket
+	rate    float64
+	burst   int
+}
+
+type bucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func NewRateLimiter(ratePerSec float64, burst int) *RateLimiter {
+	return &RateLimiter{
+		buckets: make(map[string]*bucket),
+		rate:    ratePerSec,
+		burst:   burst,
+	}
+}
+
+func (rl *RateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	b, ok := rl.buckets[ip]
+	if !ok {
+		b = &bucket{tokens: float64(rl.burst), last: now}
+		rl.buckets[ip] = b
+	}
+	elapsed := now.Sub(b.last).Seconds()
+	b.tokens += elapsed * rl.rate
+	if b.tokens > float64(rl.burst) {
+		b.tokens = float64(rl.burst)
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 func newID() string {
 	b := make([]byte, 16)
