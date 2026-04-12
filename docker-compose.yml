@@ -1,0 +1,38 @@
+# M11: dev stack — MariaDB + Go server + Vite frontend.
+# Usage: docker compose up (or `just dev` once the justfile is updated).
+
+services:
+  db:
+    image: mariadb:11
+    environment:
+      MYSQL_ROOT_PASSWORD: fielddraft
+      MYSQL_DATABASE: fielddraft
+      MYSQL_USER: fielddraft
+      MYSQL_PASSWORD: fielddraft
+    ports:
+      - "3306:3306"
+    volumes:
+      - db-data:/var/lib/mysql
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DB_DSN: "fielddraft:fielddraft@tcp(db:3306)/fielddraft?parseTime=true"
+    depends_on:
+      - db
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      - server
+
+volumes:
+  db-data:
