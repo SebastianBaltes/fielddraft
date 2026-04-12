@@ -364,23 +364,44 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       return;
     }
     if (session.selectedTool === "sketch_polygon") {
-      let verts: [number, number][];
       // If the previous polygon was applied (draft cleared),
       // start fresh rather than appending to the old one.
       const draftVerts = session.toolDraft?.vertices;
       const draftEmpty = !draftVerts || (Array.isArray(draftVerts) && draftVerts.length === 0);
-      if (dragRef.current.kind === "polygon" && !draftEmpty) {
-        verts = [...dragRef.current.vertices, [su, sv]];
-      } else {
-        verts = [[su, sv]];
+      const existing =
+        dragRef.current.kind === "polygon" && !draftEmpty
+          ? dragRef.current.vertices
+          : [];
+
+      // Close-on-first-vertex: if we have ≥ 3 vertices and
+      // the click is within 8 px of the first vertex, auto-
+      // close and commit instead of adding another vertex.
+      if (existing.length >= 3) {
+        const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+        const [fpx, fpy] = sketchToScreen(
+          existing[0][0],
+          existing[0][1],
+          cam,
+        );
+        const [cpx, cpy] = sketchToScreen(su, sv, cam);
+        const dist = Math.hypot(cpx - fpx, cpy - fpy);
+        if (dist < 8) {
+          // Commit the polygon as-is (without the closing
+          // duplicate vertex).
+          store.setSketchToolDraft({ vertices: existing.flat() });
+          store.applySketchToolDraft();
+          dragRef.current = { kind: "idle" };
+          lastCamVersionRef.current = -1;
+          return;
+        }
       }
+
+      const verts: [number, number][] = [...existing, [su, sv]];
       dragRef.current = {
         kind: "polygon",
         vertices: verts,
         current: [su, sv],
       };
-      // Update the tool draft so the Outliner's Apply button
-      // commits the current vertex set.
       store.setSketchToolDraft({
         vertices: verts.flat(),
       });
