@@ -214,6 +214,7 @@ impl FeatureRegistry {
         r.register(Box::new(RevolveFeature));
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
+        r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
@@ -521,6 +522,78 @@ impl FeatureKind for CylinderPrimitive {
             primitive: Primitive::Cylinder {
                 center: d.center,
                 radius: d.radius,
+                half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
+            twist_rate: d.twist_rate,
+            bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
+        });
+        Ok(())
+    }
+}
+
+// ─── Cone (truncated cone / frustum) ─────────────────────────────
+
+/// `cone` — truncated cone along the Y axis.
+#[derive(FeatureSchema)]
+#[schema(type = "cone")]
+pub struct ConeDef {
+    pub r_bottom: f32,
+    pub r_top: f32,
+    pub half_height: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
+    #[param(name = "Bend rate", default = 0.0)]
+    pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
+}
+
+pub struct ConePrimitive;
+
+impl FeatureKind for ConePrimitive {
+    fn type_name(&self) -> &'static str {
+        ConeDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        ConeDef::schema_json()
+    }
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ConeDef::parse(def)?;
+        positive_f32(d.half_height, ConeDef::TYPE_NAME, "half_height")?;
+        let name = optional_display_name(def, || format!("Cone {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.op,
+            primitive: Primitive::Cone {
+                r_bottom: d.r_bottom,
+                r_top: d.r_top,
                 half_height: d.half_height,
             },
             transform: Transform {
@@ -1633,7 +1706,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 13);
+        assert_eq!(registry.len(), 14);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1642,6 +1715,7 @@ mod tests {
         assert!(registry.get("hole").is_some());
         assert!(registry.get("torus").is_some());
         assert!(registry.get("thread").is_some());
+        assert!(registry.get("cone").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
@@ -1682,6 +1756,7 @@ mod tests {
             vec![
                 "box",
                 "circular_pattern",
+                "cone",
                 "cylinder",
                 "extrude",
                 "gyroid",

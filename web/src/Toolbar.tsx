@@ -177,6 +177,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Add Cone (frustum R40/10 × H120 mm)"
+          data-testid="add-cone"
+          onClick={() => store.addPrimitive("cone")}
+        >
+          △ Cone
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Add Torus (R30 × r10 mm)"
           data-testid="add-torus"
           onClick={() => store.addPrimitive("torus")}

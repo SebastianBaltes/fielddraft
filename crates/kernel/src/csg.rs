@@ -336,6 +336,14 @@ impl Aabb {
                     max: [r, hh, r],
                 }
             }
+            Primitive::Cone { r_bottom, r_top, half_height } => {
+                let r_max = r_bottom.max(*r_top);
+                let hh = *half_height;
+                Self {
+                    min: [-r_max, -hh, -r_max],
+                    max: [r_max, hh, r_max],
+                }
+            }
         }
     }
 

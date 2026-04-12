@@ -314,6 +314,12 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             depth.to_bits().hash(hasher);
             half_height.to_bits().hash(hasher);
         }
+        Primitive::Cone { r_bottom, r_top, half_height } => {
+            8u8.hash(hasher);
+            r_bottom.to_bits().hash(hasher);
+            r_top.to_bits().hash(hasher);
+            half_height.to_bits().hash(hasher);
+        }
     }
 }
 

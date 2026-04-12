@@ -517,6 +517,9 @@ export class KernelStore {
       case "thread":
         id = this.kernel.addThread(op, offset, 3, 0.5, 0.3);
         break;
+      case "cone":
+        id = this.kernel.addCone(op, offset, 40, 10, 60);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;

@@ -250,6 +250,21 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let d_thread = d_radial.max(-d_groove);
             d_thread.max(d_axial)
         }
+        Primitive::Cone { r_bottom, r_top, half_height } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let hh = *half_height;
+            // Interpolated radius at p.y
+            let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
+            let r_at_y = r_bottom * (1.0 - t) + r_top * t;
+            // 2D distance to the trapezoid cross-section in (r, y) space
+            let d_radial = r - r_at_y;
+            let d_axial = p[1].abs() - hh;
+            if d_radial > 0.0 && d_axial > 0.0 {
+                (d_radial * d_radial + d_axial * d_axial).sqrt()
+            } else {
+                d_radial.max(d_axial)
+            }
+        }
     }
 }
 
@@ -358,6 +373,11 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[5] = *pitch;
             out[6] = *depth;
             out[7] = *half_height;
+        }
+        Primitive::Cone { r_bottom, r_top, half_height } => {
+            out[4] = *r_bottom;
+            out[5] = *r_top;
+            out[6] = *half_height;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -633,6 +653,7 @@ impl Kernel {
             Primitive::Gyroid { .. } => "gyroid",
             Primitive::Torus { .. } => "torus",
             Primitive::Thread { .. } => "thread",
+            Primitive::Cone { .. } => "cone",
         }
     }
 
@@ -647,7 +668,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" | "torus" | "thread" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" => Self::kind_label(prim),
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -1748,6 +1769,11 @@ impl Kernel {
                 pitch: p1,
                 depth: p2,
                 half_height: 5.0,
+            },
+            Primitive::KIND_CONE => Primitive::Cone {
+                r_bottom: p0,
+                r_top: p1,
+                half_height: p2,
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };
