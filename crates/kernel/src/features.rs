@@ -216,6 +216,7 @@ impl FeatureRegistry {
         r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
+        r.register(Box::new(SweepFeature));
         r.register(Box::new(FilletEdgeFeature));
         r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));
@@ -933,6 +934,133 @@ impl FeatureKind for HexPrismPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+        });
+        Ok(())
+    }
+}
+
+// ─── K13.2: Sweep Feature (straight-line v0) ────────────────────
+//
+// V0 sweep: extrudes a sketch profile along an arbitrary 3D
+// direction vector. Internally lowers to Primitive::Extrude
+// with a rotation that aligns the local Z axis to the sweep
+// direction. Curved sweeps (arc/spline path) come in v1 via
+// mesh_sdf lofting.
+
+/// `sweep` — straight-line sweep along a direction vector.
+#[derive(FeatureSchema)]
+#[schema(type = "sweep")]
+pub struct SweepDef {
+    pub profiles: ::fielddraft_protocol::Query,
+    pub direction: [f32; 3],
+    pub length: ::fielddraft_protocol::Length,
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub operation: BoolOp,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+}
+
+pub struct SweepFeature;
+
+impl FeatureKind for SweepFeature {
+    fn type_name(&self) -> &'static str {
+        SweepDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SweepDef::schema_json()
+    }
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SweepDef::parse(def)?;
+        let length_mm = d.length.to_mm();
+        if length_mm <= 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: SweepDef::TYPE_NAME,
+                name: "length",
+                message: format!("must be > 0 mm, got {length_mm}"),
+            });
+        }
+
+        // Resolve the sketch profile.
+        let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
+            let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
+            let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
+                return None;
+            };
+            let sketch_data = ctx.sketches.get(&sketch_id)?;
+            let s = crate::sketch_features::build_sketch2d_from_sub_calls(
+                &sketch_data.sub_calls,
+            );
+            if matches!(s, ::fielddraft_protocol::Sketch2d::Empty) {
+                None
+            } else {
+                Some(s)
+            }
+        })()
+        .ok_or(FeatureError::MissingParameter {
+            feature: SweepDef::TYPE_NAME,
+            name: "profiles",
+        })?;
+
+        // Build rotation quaternion that maps Z → direction.
+        let dx = d.direction[0];
+        let dy = d.direction[1];
+        let dz = d.direction[2];
+        let dir_len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if dir_len < 1e-6 {
+            return Err(FeatureError::InvalidParameter {
+                feature: SweepDef::TYPE_NAME,
+                name: "direction",
+                message: "must be a non-zero vector".to_string(),
+            });
+        }
+        let dir = [dx / dir_len, dy / dir_len, dz / dir_len];
+
+        // Rotation from Z=(0,0,1) to dir via axis-angle.
+        let z = [0.0_f32, 0.0, 1.0];
+        let dot = z[2] * dir[2] + z[1] * dir[1] + z[0] * dir[0];
+        let rotation = if dot > 0.9999 {
+            [0.0, 0.0, 0.0, 1.0] // already aligned
+        } else if dot < -0.9999 {
+            [0.0, 1.0, 0.0, 0.0] // 180° around Y
+        } else {
+            // axis = cross(z, dir), angle = acos(dot)
+            let ax = z[1] * dir[2] - z[2] * dir[1];
+            let ay = z[2] * dir[0] - z[0] * dir[2];
+            let az = z[0] * dir[1] - z[1] * dir[0];
+            let axis_len = (ax * ax + ay * ay + az * az).sqrt();
+            let half = (dot.clamp(-1.0, 1.0)).acos() * 0.5;
+            let s = half.sin() / axis_len;
+            [ax * s, ay * s, az * s, half.cos()]
+        };
+
+        let name = optional_display_name(def, || format!("Sweep {id}"));
+
+        ctx.document.features.push(SpineFeature {
+            id: id.child("0"),
+            name,
+            op: d.operation,
+            primitive: Primitive::Extrude {
+                sketch,
+                half_depth_z: length_mm / 2.0,
+                center: d.center,
+            },
+            transform: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale: 1.0,
+            },
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
         });
         Ok(())
     }
@@ -2030,7 +2158,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 18);
+        assert_eq!(registry.len(), 19);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2096,6 +2224,7 @@ mod tests {
                 "revolve",
                 "sketch",
                 "sphere",
+                "sweep",
                 "thread",
                 "torus"
             ]
