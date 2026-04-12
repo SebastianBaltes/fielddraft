@@ -356,6 +356,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 

@@ -76,6 +76,12 @@ pub enum BoundedCsg {
         radius: f32,
         aabb: Aabb,
     },
+    /// K11.1: twist around local Y axis with a radians/mm rate.
+    Twist {
+        inner: Box<BoundedCsg>,
+        rate: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -117,6 +123,7 @@ impl BoundedCsg {
             | BoundedCsg::Intersection { aabb, .. }
             | BoundedCsg::SmoothUnion { aabb, .. }
             | BoundedCsg::SmoothDifference { aabb, .. }
+            | BoundedCsg::Twist { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
@@ -209,6 +216,12 @@ impl BoundedCsg {
                     EvalMode::Visual => -crate::csg::smin_poly(-da, db, *radius),
                     EvalMode::Logical => da.max(-db),
                 }
+            }
+            BoundedCsg::Twist { inner, rate, .. } => {
+                let angle = *rate * p[1];
+                let (s, c) = angle.sin_cos();
+                let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+                inner.sdf(twisted, mode)
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -308,6 +321,12 @@ impl BoundedCsg {
                     }
                     EvalMode::Logical => combine_max(da, ca, -db, cb, eps),
                 }
+            }
+            BoundedCsg::Twist { inner, rate, .. } => {
+                let angle = *rate * p[1];
+                let (s, c) = angle.sin_cos();
+                let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+                inner.evaluate(twisted, eps, mode)
             }
             BoundedCsg::Extrude {
                 id,
@@ -411,6 +430,26 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 left: Box::new(left),
                 right: Box::new(right),
                 radius: *r,
+                aabb,
+            }
+        }
+        CsgNode::Twist(inner, rate) => {
+            let child = build(inner, carry);
+            let bb = child.aabb();
+            let aabb = if bb.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let rx = bb.max[0].abs().max(bb.min[0].abs());
+                let rz = bb.max[2].abs().max(bb.min[2].abs());
+                let r_max = (rx * rx + rz * rz).sqrt();
+                Aabb {
+                    min: [-r_max, bb.min[1], -r_max],
+                    max: [r_max, bb.max[1], r_max],
+                }
+            };
+            BoundedCsg::Twist {
+                inner: Box::new(child),
+                rate: *rate,
                 aabb,
             }
         }
@@ -529,6 +568,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 
@@ -547,6 +587,7 @@ mod tests {
                 scale: 1.0,
             },
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 
@@ -558,6 +599,7 @@ mod tests {
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 

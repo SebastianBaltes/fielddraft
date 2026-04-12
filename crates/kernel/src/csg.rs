@@ -392,6 +392,14 @@ pub enum CsgNode {
     /// semantics. The fillet rounds concave edges where material
     /// is subtracted.
     SmoothDifference(Box<CsgNode>, Box<CsgNode>, f32),
+    /// K11.1: twist the child around the local Y axis. The twist
+    /// rate is in radians per millimetre along Y — a rate of
+    /// `π / 100` turns the body 180° over a 100 mm span. The
+    /// domain warp rotates XZ by `rate * p.y` before evaluating
+    /// the child. Not an exact SDF (the metric stretches with
+    /// radial distance), but the DC mesher tolerates the slight
+    /// under-estimation at practical twist rates.
+    Twist(Box<CsgNode>, f32),
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -497,7 +505,11 @@ impl CsgNode {
                     primitive: f.primitive.clone(),
                 },
             };
-            let leaf = Self::Transform(f.transform, Box::new(node));
+            let mut leaf: CsgNode = Self::Transform(f.transform, Box::new(node));
+            // K11.1: wrap in a Twist node when twist_rate is set.
+            if f.twist_rate != 0.0 {
+                leaf = Self::Twist(Box::new(leaf), f.twist_rate);
+            }
             let r = f.blend_radius;
             acc = match (acc, f.op) {
                 (Self::Empty, _) => leaf,
@@ -547,6 +559,12 @@ impl CsgNode {
                     EvalMode::Visual => -smin_poly(-da, db, *r),
                     EvalMode::Logical => da.max(-db),
                 }
+            }
+            CsgNode::Twist(inner, rate) => {
+                let angle = *rate * p[1];
+                let (s, c) = angle.sin_cos();
+                let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+                inner.sdf(twisted, mode)
             }
             CsgNode::Extrude {
                 sketch,
@@ -640,6 +658,12 @@ impl CsgNode {
                     EvalMode::Logical => combine_max(da, ca, -db, cb, eps),
                 }
             }
+            CsgNode::Twist(inner, rate) => {
+                let angle = *rate * p[1];
+                let (s, c) = angle.sin_cos();
+                let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+                inner.evaluate(twisted, eps, mode)
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -669,6 +693,21 @@ impl CsgNode {
             // bulge outward by up to `r` in the blend zone, but the
             // AABB of the union-of-children is always a superset.
             CsgNode::Difference(a, _) | CsgNode::SmoothDifference(a, _, _) => a.aabb(),
+            CsgNode::Twist(inner, _) => {
+                let bb = inner.aabb();
+                if bb.is_empty() {
+                    return Aabb::EMPTY;
+                }
+                // The twist rotates XZ around Y, so the maximum
+                // radial extent is the diagonal of the XZ footprint.
+                let rx = bb.max[0].abs().max(bb.min[0].abs());
+                let rz = bb.max[2].abs().max(bb.min[2].abs());
+                let r_max = (rx * rx + rz * rz).sqrt();
+                Aabb {
+                    min: [-r_max, bb.min[1], -r_max],
+                    max: [r_max, bb.max[1], r_max],
+                }
+            }
             // Intersection is a subset of either child; keep the left
             // so the bound stays well-defined even when the right child
             // is empty or unbounded.
@@ -811,6 +850,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -839,6 +879,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 
@@ -879,6 +920,7 @@ mod tests {
                 },
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
+            twist_rate: 0.0,
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -937,6 +979,7 @@ mod tests {
             },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 
@@ -948,6 +991,7 @@ mod tests {
             primitive: Primitive::Sphere { center, radius },
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
+            twist_rate: 0.0,
         }
     }
 
@@ -1233,6 +1277,7 @@ mod tests {
                 },
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
+            twist_rate: 0.0,
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

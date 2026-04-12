@@ -335,6 +335,8 @@ pub struct BoxDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
 }
 
 pub struct BoxPrimitive;
@@ -372,6 +374,7 @@ impl FeatureKind for BoxPrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            twist_rate: d.twist_rate,
         });
         Ok(())
     }
@@ -390,6 +393,8 @@ pub struct SphereDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
 }
 
 pub struct SpherePrimitive;
@@ -428,6 +433,7 @@ impl FeatureKind for SpherePrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            twist_rate: d.twist_rate,
         });
         Ok(())
     }
@@ -447,6 +453,8 @@ pub struct CylinderDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
 }
 
 pub struct CylinderPrimitive;
@@ -487,6 +495,7 @@ impl FeatureKind for CylinderPrimitive {
                 scale,
             },
             blend_radius: d.blend_radius,
+            twist_rate: d.twist_rate,
         });
         Ok(())
     }
@@ -520,6 +529,8 @@ pub struct GyroidDef {
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
 }
 
 pub struct GyroidFeature;
@@ -562,6 +573,7 @@ impl FeatureKind for GyroidFeature {
                 scale,
             },
             blend_radius: d.blend_radius,
+            twist_rate: d.twist_rate,
         });
         Ok(())
     }
@@ -645,6 +657,7 @@ impl FeatureKind for HoleFeature {
                 scale,
             },
             blend_radius: 0.0,
+            twist_rate: 0.0,
         });
         Ok(())
     }
@@ -850,6 +863,7 @@ impl FeatureKind for ExtrudeFeature {
                 scale,
             },
             blend_radius: 0.0,
+            twist_rate: 0.0,
         });
         Ok(())
     }
@@ -946,6 +960,7 @@ impl FeatureKind for RevolveFeature {
                 scale,
             },
             blend_radius: 0.0,
+            twist_rate: 0.0,
         });
         Ok(())
     }
@@ -1998,7 +2013,7 @@ mod tests {
         let schema = BoxDef::schema_json();
         assert_eq!(schema["type"], json!("box"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 5);
+        assert_eq!(params.len(), 6);
 
         assert_eq!(params[0]["key"], json!("half_extents"));
         assert_eq!(params[0]["required"], json!(true));
@@ -2066,6 +2081,7 @@ mod tests {
                     scale: 1.0,
                 },
                 blend_radius: 0.0,
+            twist_rate: 0.0,
             });
             let _ = kind;
         }

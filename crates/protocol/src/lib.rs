@@ -512,6 +512,12 @@ pub struct Feature {
     /// default) keeps the classic sharp edges.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blend_radius: f32,
+    /// K11.1: twist rate in radians per mm around the local Y
+    /// axis. When non-zero, `CsgNode::from_features` wraps
+    /// this feature's leaf in a `CsgNode::Twist` before folding
+    /// it into the accumulator. Zero = no twist.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub twist_rate: f32,
 }
 
 fn is_zero(v: &f32) -> bool {
