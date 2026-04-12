@@ -213,6 +213,7 @@ impl FeatureRegistry {
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
         r.register(Box::new(CapsulePrimitive));
+        r.register(Box::new(EllipsoidPrimitive));
         r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
@@ -844,6 +845,84 @@ impl FeatureKind for CapsulePrimitive {
             primitive: Primitive::Capsule {
                 radius: d.radius,
                 half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
+            twist_rate: d.twist_rate,
+            bend_rate: d.bend_rate,
+            displace_depth: d.displace_depth,
+            displace_freq: d.displace_freq,
+            shell_thickness: d.shell_thickness,
+        });
+        Ok(())
+    }
+}
+
+// ─── Ellipsoid ───────────────────────────────────────────────────
+
+/// `ellipsoid` — axis-aligned ellipsoid with independent X/Y/Z radii.
+/// SDF is approximate (coordinate scaling + sphere) but accurate enough
+/// for DC meshing.
+#[derive(FeatureSchema)]
+#[schema(type = "ellipsoid")]
+pub struct EllipsoidDef {
+    #[param(default = [1.0, 1.0, 1.0])]
+    pub radii: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
+    #[param(name = "Bend rate", default = 0.0)]
+    pub bend_rate: f32,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
+    #[param(name = "Shell thickness", default = 0.0)]
+    pub shell_thickness: f32,
+}
+
+pub struct EllipsoidPrimitive;
+
+impl FeatureKind for EllipsoidPrimitive {
+    fn type_name(&self) -> &'static str {
+        EllipsoidDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        EllipsoidDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = EllipsoidDef::parse(def)?;
+        positive_f32(d.radii[0], EllipsoidDef::TYPE_NAME, "radii[0]")?;
+        positive_f32(d.radii[1], EllipsoidDef::TYPE_NAME, "radii[1]")?;
+        positive_f32(d.radii[2], EllipsoidDef::TYPE_NAME, "radii[2]")?;
+        let name = optional_display_name(def, || format!("Ellipsoid {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.op,
+            primitive: Primitive::Ellipsoid {
+                radii: d.radii,
             },
             transform: Transform {
                 translate: d.translate,
@@ -2158,7 +2237,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 19);
+        assert_eq!(registry.len(), 20);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2175,6 +2254,7 @@ mod tests {
         assert!(registry.get("mirror").is_some());
         assert!(registry.get("hex_prism").is_some());
         assert!(registry.get("gyroid").is_some());
+        assert!(registry.get("ellipsoid").is_some());
     }
 
     // ─── K6a: schema lookup on the registry ───────────────────
@@ -2213,6 +2293,7 @@ mod tests {
                 "circular_pattern",
                 "cone",
                 "cylinder",
+                "ellipsoid",
                 "extrude",
                 "fillet_edge",
                 "gyroid",

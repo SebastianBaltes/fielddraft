@@ -361,6 +361,10 @@ impl Aabb {
                 min: mesh.aabb_min,
                 max: mesh.aabb_max,
             },
+            Primitive::Ellipsoid { radii } => Aabb {
+                min: [-radii[0], -radii[1], -radii[2]],
+                max: [radii[0], radii[1], radii[2]],
+            },
         }
     }
 

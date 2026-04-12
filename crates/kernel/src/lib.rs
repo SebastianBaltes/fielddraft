@@ -290,6 +290,12 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             }
         }
         Primitive::ImportedMesh { mesh } => mesh.sdf(p),
+        Primitive::Ellipsoid { radii } => {
+            let r_min = radii[0].min(radii[1]).min(radii[2]);
+            let q = [p[0] / radii[0], p[1] / radii[1], p[2] / radii[2]];
+            let len = (q[0]*q[0] + q[1]*q[1] + q[2]*q[2]).sqrt();
+            (len - 1.0) * r_min
+        }
     }
 }
 
@@ -416,6 +422,9 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             for i in 0..3 {
                 out[1 + i] = (mesh.aabb_min[i] + mesh.aabb_max[i]) * 0.5;
             }
+        }
+        Primitive::Ellipsoid { radii } => {
+            out[4..7].copy_from_slice(radii);
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -699,6 +708,7 @@ impl Kernel {
             Primitive::Capsule { .. } => "capsule",
             Primitive::HexPrism { .. } => "hex_prism",
             Primitive::ImportedMesh { .. } => "imported_mesh",
+            Primitive::Ellipsoid { .. } => "ellipsoid",
         }
     }
 
@@ -713,7 +723,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid" => Self::kind_label(prim),
             "imported_mesh" => "imported_mesh",
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
@@ -1931,6 +1941,9 @@ impl Kernel {
             Primitive::KIND_HEX_PRISM => Primitive::HexPrism {
                 apothem: p0,
                 half_height: p1,
+            },
+            Primitive::KIND_ELLIPSOID => Primitive::Ellipsoid {
+                radii: [p0, p1, p2],
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };

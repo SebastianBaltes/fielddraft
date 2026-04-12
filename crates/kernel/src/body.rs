@@ -339,6 +339,12 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
                 v.to_bits().hash(hasher);
             }
         }
+        Primitive::Ellipsoid { radii } => {
+            12u8.hash(hasher);
+            for v in radii {
+                v.to_bits().hash(hasher);
+            }
+        }
     }
 }
 

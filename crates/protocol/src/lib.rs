@@ -269,6 +269,12 @@ pub enum Primitive {
         apothem: f32,
         half_height: f32,
     },
+    /// Ellipsoid with independent radii along X, Y, Z axes.
+    /// SDF is approximate (coordinate scaling + sphere) but
+    /// accurate enough for DC meshing.
+    Ellipsoid {
+        radii: [f32; 3],
+    },
     /// Capsule (line-segment swept sphere) along the Y axis.
     /// `half_height` is the half-length of the inner segment
     /// (total height = 2 * half_height + 2 * radius).
@@ -337,6 +343,7 @@ impl Primitive {
     pub const KIND_CAPSULE: u32 = 9;
     pub const KIND_HEX_PRISM: u32 = 10;
     pub const KIND_IMPORTED_MESH: u32 = 11;
+    pub const KIND_ELLIPSOID: u32 = 12;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -352,6 +359,7 @@ impl Primitive {
             Primitive::Gyroid { .. } => Self::KIND_GYROID,
             Primitive::Revolve { .. } => Self::KIND_REVOLVE,
             Primitive::ImportedMesh { .. } => Self::KIND_IMPORTED_MESH,
+            Primitive::Ellipsoid { .. } => Self::KIND_ELLIPSOID,
         }
     }
 
@@ -369,6 +377,7 @@ impl Primitive {
             Primitive::Gyroid { .. } => "Gyroid",
             Primitive::Revolve { .. } => "Revolve",
             Primitive::ImportedMesh { .. } => "Imported mesh",
+            Primitive::Ellipsoid { .. } => "Ellipsoid",
         }
     }
 }
@@ -710,6 +719,7 @@ impl FeatureCall {
             // ImportedMesh is a non-spine type (hierarchical child id),
             // emit a skip marker so sync_feature_calls doesn't re-add it.
             Primitive::ImportedMesh { .. } => "__derived_imported_mesh_skip__",
+            Primitive::Ellipsoid { .. } => "ellipsoid",
         };
         let op = bool_op_wire_name(f.op);
         let translate = f.transform.translate;
@@ -845,6 +855,14 @@ impl FeatureCall {
             }),
             Primitive::ImportedMesh { mesh } => serde_json::json!({
                 "mesh": serde_json::to_value(&**mesh).unwrap_or_default(),
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Ellipsoid { radii } => serde_json::json!({
+                "radii": radii,
                 "translate": translate,
                 "rotation": rotation,
                 "scale": scale,
@@ -1017,7 +1035,7 @@ impl Document {
 /// the canonical wire form is the original extrude
 /// `FeatureCall` with its sketch query.
 fn is_spine_type(type_name: &str) -> bool {
-    matches!(type_name, "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism")
+    matches!(type_name, "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid")
 }
 
 #[cfg(test)]

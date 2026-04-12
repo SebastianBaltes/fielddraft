@@ -217,6 +217,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Add Ellipsoid (40×25×30 mm)"
+          data-testid="add-ellipsoid"
+          {...dragProps("ellipsoid")}
+          onClick={() => store.addPrimitive("ellipsoid")}
+        >
+          ⬬ Ellipsoid
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Add Capsule (R20 × H80 mm)"
           data-testid="add-capsule" {...dragProps("capsule")}
           onClick={() => store.addPrimitive("capsule")}

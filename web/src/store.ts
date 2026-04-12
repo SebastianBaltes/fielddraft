@@ -708,6 +708,9 @@ export class KernelStore {
       case "hex_prism":
         id = this.kernel.addHexPrism(op, offset, 25, 30);
         break;
+      case "ellipsoid":
+        id = this.kernel.addEllipsoid(op, offset, 40, 25, 30);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;

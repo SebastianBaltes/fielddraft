@@ -54,6 +54,7 @@ export const PrimitiveKind = {
   Cone: 8,
   Capsule: 9,
   HexPrism: 10,
+  Ellipsoid: 12,
 } as const;
 export type PrimitiveKindTag = (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
 
@@ -66,7 +67,7 @@ export const BoolOpTag = {
 export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
 export type BoolOpName = "union" | "difference" | "intersect";
-export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism";
+export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
 /** K6b.3a: the kernel's `listFeatures` can now return entries
  *  whose kind is a non-primitive feature type like "sketch" or
  *  "extrude". The outliner handles them generically by keying
@@ -690,6 +691,25 @@ export class Kernel {
       radius,
       halfHeight,
       0,
+    );
+  }
+
+  addEllipsoid(
+    op: BoolOpTagValue,
+    translate: [number, number, number],
+    rx: number,
+    ry: number,
+    rz: number,
+  ): number {
+    return this.inner.addPrimitive(
+      PrimitiveKind.Ellipsoid,
+      op,
+      translate[0],
+      translate[1],
+      translate[2],
+      rx,
+      ry,
+      rz,
     );
   }
 
