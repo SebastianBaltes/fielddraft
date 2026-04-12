@@ -339,7 +339,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           disabled={!state.canUndo}
           onClick={() => store.undo()}
         >
-          ⟲ Undo
+          ⟲ Undo{state.undoDepth > 0 ? ` (${state.undoDepth})` : ""}
         </button>
         <button
           type="button"
@@ -349,7 +349,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           disabled={!state.canRedo}
           onClick={() => store.redo()}
         >
-          ⟳ Redo
+          ⟳ Redo{state.redoDepth > 0 ? ` (${state.redoDepth})` : ""}
         </button>
         <button
           type="button"

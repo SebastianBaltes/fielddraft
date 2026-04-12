@@ -91,7 +91,9 @@ export interface StoreState {
    *  feature. `null` while nothing has been clicked yet. */
   selectionAnchor: number | null;
   canUndo: boolean;
+  undoDepth: number;
   canRedo: boolean;
+  redoDepth: number;
   /** Default op applied when adding the next primitive. */
   nextOp: BoolOpTagValue;
   /** Latest per-body mesh cache streamed in from the mesher worker.
@@ -153,7 +155,9 @@ export class KernelStore {
       selection: new Set(),
       selectionAnchor: null,
       canUndo: kernel.canUndo(),
+      undoDepth: kernel.undoDepth(),
       canRedo: kernel.canRedo(),
+      redoDepth: kernel.redoDepth(),
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -217,7 +221,9 @@ export class KernelStore {
       selection: nextSelection ?? this.state.selection,
       selectionAnchor: nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
       canUndo: this.kernel.canUndo(),
+      undoDepth: this.kernel.undoDepth(),
       canRedo: this.kernel.canRedo(),
+      redoDepth: this.kernel.redoDepth(),
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
       sketchSession: this.state.sketchSession,

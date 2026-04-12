@@ -1981,9 +1981,19 @@ impl Kernel {
         !self.undo.is_empty()
     }
 
+    #[wasm_bindgen(js_name = undoDepth)]
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+
     #[wasm_bindgen(js_name = canRedo)]
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    #[wasm_bindgen(js_name = redoDepth)]
+    pub fn redo_depth(&self) -> usize {
+        self.redo.len()
     }
 
     pub fn undo(&mut self) -> bool {

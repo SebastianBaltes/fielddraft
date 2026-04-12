@@ -788,6 +788,12 @@ export class Kernel {
   canRedo(): boolean {
     return this.inner.canRedo();
   }
+  undoDepth(): number {
+    return this.inner.undoDepth();
+  }
+  redoDepth(): number {
+    return this.inner.redoDepth();
+  }
 
   // ── document I/O ────────────────────────────────────────────────────
 
