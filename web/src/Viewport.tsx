@@ -522,6 +522,9 @@ export function Viewport() {
     active: false,
   });
   const [pickResult, setPickResult] = useState<PickResult | null>(null);
+  const [measurePoints, setMeasurePoints] = useState<
+    { a: [number, number, number]; b?: [number, number, number] } | null
+  >(null);
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const host = hostRef.current;
@@ -539,13 +542,30 @@ export function Viewport() {
   };
 
   const handleClick = (): void => {
-    if (!store || !pickResult || !pickResult.hit) {
-      // Clicked empty space — clear selection.
-      store?.clearSelection();
+    if (!store) return;
+
+    // Measure mode: place points instead of selecting.
+    if (state?.measureMode && pickResult?.hit) {
+      const pt: [number, number, number] = [
+        pickResult.point[0],
+        pickResult.point[1],
+        pickResult.point[2],
+      ];
+      if (!measurePoints || measurePoints.b) {
+        // Start new measurement.
+        setMeasurePoints({ a: pt });
+      } else {
+        // Complete the measurement.
+        setMeasurePoints({ ...measurePoints, b: pt });
+      }
       return;
     }
-    // Select the first contributor feature. Contributors are
-    // flat-numeric feature ids from the CSG provenance pass.
+
+    if (!pickResult || !pickResult.hit) {
+      store.clearSelection();
+      setMeasurePoints(null);
+      return;
+    }
     const featureId = pickResult.contributors[0];
     if (featureId !== undefined && featureId > 0) {
       store.selectOnly(featureId);
@@ -587,6 +607,22 @@ export function Viewport() {
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}
       <PickHud result={pickResult} />
+      {measurePoints ? (
+        <div className="measure-hud" data-testid="measure-hud">
+          {measurePoints.b ? (
+            <>
+              {Math.hypot(
+                measurePoints.b[0] - measurePoints.a[0],
+                measurePoints.b[1] - measurePoints.a[1],
+                measurePoints.b[2] - measurePoints.a[2],
+              ).toFixed(2)}{" "}
+              mm
+            </>
+          ) : (
+            "Click second point…"
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

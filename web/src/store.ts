@@ -116,6 +116,9 @@ export interface StoreState {
     normals: Float32Array;
     indices: Uint32Array;
   } | null;
+  /** K9.4: measure mode active — clicks place measure points
+   *  instead of selecting features. */
+  measureMode: boolean;
   /** K9.1: overall scene extents in mm, refreshed on commit. */
   sceneSize: [number, number, number];
 }
@@ -160,6 +163,7 @@ export class KernelStore {
       redoDepth: kernel.redoDepth(),
       nextOp: BoolOpTag.Union,
       meshedBodies: [],
+      measureMode: false,
       sketchSession: INACTIVE_SKETCH_SESSION,
       variables: kernel.listVariables(),
       referenceMesh: null,
@@ -226,6 +230,7 @@ export class KernelStore {
       redoDepth: this.kernel.redoDepth(),
       nextOp: this.state.nextOp,
       meshedBodies: this.state.meshedBodies,
+      measureMode: this.state.measureMode,
       sketchSession: this.state.sketchSession,
       variables: this.kernel.listVariables(),
       referenceMesh: this.state.referenceMesh,
@@ -799,6 +804,11 @@ export class KernelStore {
     this.kernel.loadJson('{"schema_version":1,"name":"Untitled","feature_calls":[],"next_feature_id":1}');
     this.commit(new Set(), null);
     this.autosave.flush();
+  }
+
+  toggleMeasureMode(): void {
+    this.state = { ...this.state, measureMode: !this.state.measureMode };
+    for (const listener of this.listeners) listener();
   }
 
   selectAll(): void {

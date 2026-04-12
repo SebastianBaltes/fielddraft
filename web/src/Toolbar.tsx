@@ -332,6 +332,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         <button
           type="button"
+          className={"tool" + (state.measureMode ? " is-active" : "")}
+          title="Measure distance (click two points)"
+          data-testid="measure-toggle"
+          onClick={() => store.toggleMeasureMode()}
+        >
+          📏 Measure
+        </button>
+        <button
+          type="button"
           className="tool"
           title="Undo (Ctrl+Z)"
           data-testid="undo"
