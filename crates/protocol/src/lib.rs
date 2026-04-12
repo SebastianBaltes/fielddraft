@@ -518,6 +518,10 @@ pub struct Feature {
     /// it into the accumulator. Zero = no twist.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub twist_rate: f32,
+    /// K11.2: bend rate in radians per mm in the XY plane along
+    /// the X axis. Same domain-warp approach as twist_rate.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bend_rate: f32,
 }
 
 fn is_zero(v: &f32) -> bool {

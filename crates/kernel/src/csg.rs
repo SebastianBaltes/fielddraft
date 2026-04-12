@@ -400,6 +400,12 @@ pub enum CsgNode {
     /// radial distance), but the DC mesher tolerates the slight
     /// under-estimation at practical twist rates.
     Twist(Box<CsgNode>, f32),
+    /// K11.2: bend the child in the XY plane along the X axis.
+    /// The rate is radians per mm — `rate * p.x` rotates XY
+    /// before evaluating the child. Turns a straight bar into
+    /// an arc, a box into a curved bracket, etc. Same
+    /// metric-distortion caveat as Twist.
+    Bend(Box<CsgNode>, f32),
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
     /// single [`NodeId`] to the provenance set — sub-primitives
@@ -506,9 +512,11 @@ impl CsgNode {
                 },
             };
             let mut leaf: CsgNode = Self::Transform(f.transform, Box::new(node));
-            // K11.1: wrap in a Twist node when twist_rate is set.
             if f.twist_rate != 0.0 {
                 leaf = Self::Twist(Box::new(leaf), f.twist_rate);
+            }
+            if f.bend_rate != 0.0 {
+                leaf = Self::Bend(Box::new(leaf), f.bend_rate);
             }
             let r = f.blend_radius;
             acc = match (acc, f.op) {
@@ -565,6 +573,12 @@ impl CsgNode {
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
                 inner.sdf(twisted, mode)
+            }
+            CsgNode::Bend(inner, rate) => {
+                let angle = *rate * p[0];
+                let (s, c) = angle.sin_cos();
+                let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+                inner.sdf(bent, mode)
             }
             CsgNode::Extrude {
                 sketch,
@@ -664,6 +678,12 @@ impl CsgNode {
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
                 inner.evaluate(twisted, eps, mode)
             }
+            CsgNode::Bend(inner, rate) => {
+                let angle = *rate * p[0];
+                let (s, c) = angle.sin_cos();
+                let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+                inner.evaluate(bent, eps, mode)
+            }
             CsgNode::Extrude {
                 id,
                 sketch,
@@ -698,14 +718,27 @@ impl CsgNode {
                 if bb.is_empty() {
                     return Aabb::EMPTY;
                 }
-                // The twist rotates XZ around Y, so the maximum
-                // radial extent is the diagonal of the XZ footprint.
                 let rx = bb.max[0].abs().max(bb.min[0].abs());
                 let rz = bb.max[2].abs().max(bb.min[2].abs());
                 let r_max = (rx * rx + rz * rz).sqrt();
                 Aabb {
                     min: [-r_max, bb.min[1], -r_max],
                     max: [r_max, bb.max[1], r_max],
+                }
+            }
+            CsgNode::Bend(inner, _) => {
+                let bb = inner.aabb();
+                if bb.is_empty() {
+                    return Aabb::EMPTY;
+                }
+                // Bend rotates XY around Z-implicit, so the XY
+                // footprint expands to its diagonal.
+                let rx = bb.max[0].abs().max(bb.min[0].abs());
+                let ry = bb.max[1].abs().max(bb.min[1].abs());
+                let r_max = (rx * rx + ry * ry).sqrt();
+                Aabb {
+                    min: [-r_max, -r_max, bb.min[2]],
+                    max: [r_max, r_max, bb.max[2]],
                 }
             }
             // Intersection is a subset of either child; keep the left
@@ -851,6 +884,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -880,6 +914,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
@@ -921,6 +956,7 @@ mod tests {
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -980,6 +1016,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
@@ -992,6 +1029,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
@@ -1278,6 +1316,7 @@ mod tests {
                 transform: Transform::IDENTITY,
                 blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

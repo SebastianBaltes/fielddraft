@@ -82,6 +82,12 @@ pub enum BoundedCsg {
         rate: f32,
         aabb: Aabb,
     },
+    /// K11.2: bend in the XY plane along X with a radians/mm rate.
+    Bend {
+        inner: Box<BoundedCsg>,
+        rate: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -124,6 +130,7 @@ impl BoundedCsg {
             | BoundedCsg::SmoothUnion { aabb, .. }
             | BoundedCsg::SmoothDifference { aabb, .. }
             | BoundedCsg::Twist { aabb, .. }
+            | BoundedCsg::Bend { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. } => *aabb,
         }
@@ -222,6 +229,12 @@ impl BoundedCsg {
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
                 inner.sdf(twisted, mode)
+            }
+            BoundedCsg::Bend { inner, rate, .. } => {
+                let angle = *rate * p[0];
+                let (s, c) = angle.sin_cos();
+                let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+                inner.sdf(bent, mode)
             }
             BoundedCsg::Extrude {
                 sketch,
@@ -327,6 +340,12 @@ impl BoundedCsg {
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
                 inner.evaluate(twisted, eps, mode)
+            }
+            BoundedCsg::Bend { inner, rate, .. } => {
+                let angle = *rate * p[0];
+                let (s, c) = angle.sin_cos();
+                let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+                inner.evaluate(bent, eps, mode)
             }
             BoundedCsg::Extrude {
                 id,
@@ -453,6 +472,26 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Bend(inner, rate) => {
+            let child = build(inner, carry);
+            let bb = child.aabb();
+            let aabb = if bb.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let rx = bb.max[0].abs().max(bb.min[0].abs());
+                let ry = bb.max[1].abs().max(bb.min[1].abs());
+                let r_max = (rx * rx + ry * ry).sqrt();
+                Aabb {
+                    min: [-r_max, -r_max, bb.min[2]],
+                    max: [r_max, r_max, bb.max[2]],
+                }
+            };
+            BoundedCsg::Bend {
+                inner: Box::new(child),
+                rate: *rate,
+                aabb,
+            }
+        }
         CsgNode::Extrude {
             id,
             sketch,
@@ -569,6 +608,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
@@ -588,6 +628,7 @@ mod tests {
             },
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
@@ -600,6 +641,7 @@ mod tests {
             transform: Transform::IDENTITY,
             blend_radius: 0.0,
             twist_rate: 0.0,
+            bend_rate: 0.0,
         }
     }
 
