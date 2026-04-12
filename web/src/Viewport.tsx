@@ -173,11 +173,23 @@ function KernelMesh() {
     };
   }, []);
 
-  // Render one `<mesh>` per body. Depending on `bodySetVersion`
-  // forces React to re-read `bodyEntriesRef.current.keys()` whenever
-  // the id set mutates; version-only bumps (same ids, different
-  // meshes) don't trigger a React render — the BufferGeometry
-  // mutation in `useFrame` is picked up by R3F on the next paint.
+  // Selection-highlight wireframe material (shared, lazy-init).
+  const wireMatRef = useRef<THREE.MeshBasicMaterial | null>(null);
+  if (!wireMatRef.current) {
+    wireMatRef.current = new THREE.MeshBasicMaterial({
+      wireframe: true,
+      color: 0x3388ff,
+      transparent: true,
+      opacity: 0.35,
+      depthTest: true,
+      depthWrite: false,
+    });
+  }
+
+  // Active body id for selection highlight.
+  const { store: kernelStore } = useKernelStore();
+  const activeBodyId = kernelStore?.kernel.activeBodyId() ?? 0;
+
   void bodySetVersion;
   const ids = Array.from(bodyEntriesRef.current.keys());
   return (
@@ -185,13 +197,22 @@ function KernelMesh() {
       {ids.map((id) => {
         const entry = bodyEntriesRef.current.get(id);
         if (!entry) return null;
+        const isActive = id === activeBodyId && activeBodyId !== 0;
         return (
-          <mesh
-            key={id}
-            geometry={entry.geometry}
-            material={entry.material}
-            frustumCulled={false}
-          />
+          <group key={id}>
+            <mesh
+              geometry={entry.geometry}
+              material={entry.material}
+              frustumCulled={false}
+            />
+            {isActive && wireMatRef.current ? (
+              <mesh
+                geometry={entry.geometry}
+                material={wireMatRef.current}
+                frustumCulled={false}
+              />
+            ) : null}
+          </group>
         );
       })}
     </>
