@@ -31,12 +31,13 @@ type User struct {
 }
 
 type Project struct {
-	ID        string          `json:"id"`
-	OwnerID   string          `json:"owner_id"`
-	Name      string          `json:"name"`
-	Document  json.RawMessage `json:"document"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID         string          `json:"id"`
+	OwnerID    string          `json:"owner_id"`
+	Name       string          `json:"name"`
+	Visibility string          `json:"visibility"` // "private" | "public"
+	Document   json.RawMessage `json:"document"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 type Session struct {
@@ -150,12 +151,13 @@ func (s *Store) CreateProject(ownerID, name string, doc json.RawMessage) *Projec
 	id := newID()
 	now := time.Now()
 	p := &Project{
-		ID:        id,
-		OwnerID:   ownerID,
-		Name:      name,
-		Document:  doc,
-		UpdatedAt: now,
-		CreatedAt: now,
+		ID:         id,
+		OwnerID:    ownerID,
+		Name:       name,
+		Visibility: "private",
+		Document:   doc,
+		UpdatedAt:  now,
+		CreatedAt:  now,
 	}
 	s.projects[id] = p
 	return p
@@ -185,7 +187,7 @@ func (s *Store) GetProject(id, ownerID string) *Project {
 	return p
 }
 
-func (s *Store) UpdateProject(id, ownerID string, name string, doc json.RawMessage) *Project {
+func (s *Store) UpdateProject(id, ownerID string, name string, doc json.RawMessage, visibility string) *Project {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -199,8 +201,24 @@ func (s *Store) UpdateProject(id, ownerID string, name string, doc json.RawMessa
 	if doc != nil {
 		p.Document = doc
 	}
+	if visibility == "public" || visibility == "private" {
+		p.Visibility = visibility
+	}
 	p.UpdatedAt = time.Now()
 	return p
+}
+
+func (s *Store) ListPublicProjects() []*Project {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []*Project
+	for _, p := range s.projects {
+		if p.Visibility == "public" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func (s *Store) DeleteProject(id, ownerID string) bool {
@@ -251,6 +269,7 @@ func NewServer(store *Store) *Server {
 	s.mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
+	s.mux.HandleFunc("GET /api/gallery", s.handleGallery)
 	return s
 }
 
@@ -424,14 +443,15 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var body struct {
-		Name     string          `json:"name"`
-		Document json.RawMessage `json:"document"`
+		Name       string          `json:"name"`
+		Document   json.RawMessage `json:"document"`
+		Visibility string          `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
-	p := s.store.UpdateProject(id, user.ID, body.Name, body.Document)
+	p := s.store.UpdateProject(id, user.ID, body.Name, body.Document, body.Visibility)
 	if p == nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
@@ -454,6 +474,15 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── helpers ────────────────────────────────────────────────────
+
+func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
+	// Public gallery — no auth required.
+	projects := s.store.ListPublicProjects()
+	if projects == nil {
+		projects = []*Project{}
+	}
+	json.NewEncoder(w).Encode(projects)
+}
 
 // ─── rate limiter ───────────────────────────────────────────────
 
