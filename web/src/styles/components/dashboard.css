@@ -1,0 +1,113 @@
+/* M12: Project dashboard. */
+
+.fd-dashboard,
+.fd-dashboard-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--color-bg);
+}
+
+.fd-dashboard-loading {
+  font-size: var(--fs-lg);
+  color: var(--color-text-muted);
+}
+
+.fd-dashboard-panel {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  width: 600px;
+  max-width: 95%;
+  max-height: 80vh;
+  overflow-y: auto;
+
+  & .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--color-divider);
+
+    & h2 {
+      margin: 0;
+      font-size: var(--fs-lg);
+    }
+
+    & .create {
+      background: var(--color-accent);
+      color: var(--color-text-on-accent, white);
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: var(--space-2) var(--space-4);
+      font-size: var(--fs-base);
+      cursor: pointer;
+    }
+  }
+
+  & .empty {
+    padding: var(--space-6);
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: var(--fs-base);
+  }
+
+  & .project-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  & .project-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-5);
+    border-bottom: 1px solid var(--color-divider);
+
+    &:hover {
+      background: var(--color-bg-hover, #f8f8f6);
+    }
+
+    & .name {
+      flex: 1;
+      cursor: pointer;
+      font-size: var(--fs-base);
+      font-weight: var(--fw-semibold);
+      color: var(--color-text);
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
+    & .rename-input {
+      flex: 1;
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border-strong);
+      border-radius: var(--radius-sm);
+      font-size: var(--fs-base);
+    }
+
+    & .date {
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+      white-space: nowrap;
+    }
+
+    & .delete {
+      background: none;
+      border: none;
+      color: var(--color-text-subtle);
+      font-size: var(--fs-lg);
+      cursor: pointer;
+      padding: 0 var(--space-1);
+
+      &:hover {
+        color: var(--color-error);
+      }
+    }
+  }
+}
