@@ -398,10 +398,19 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(projects)
 }
 
+// M13: per-user quota — max projects.
+const maxProjectsPerUser = 100
+
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		return
+	}
+	// M13: quota check.
+	existing := s.store.ListProjects(user.ID)
+	if len(existing) >= maxProjectsPerUser {
+		http.Error(w, `{"error":"project quota exceeded (max 100)"}`, http.StatusForbidden)
 		return
 	}
 	var body struct {
@@ -435,10 +444,18 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(p)
 }
 
+// M13: max document size per project (50 MB).
+const maxDocumentBytes = 50 * 1024 * 1024
+
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	_, user := s.requireAuth(r)
 	if user == nil {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
+		return
+	}
+	// M13: reject oversized payloads early.
+	if r.ContentLength > maxDocumentBytes {
+		http.Error(w, `{"error":"document too large (max 50 MB)"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 	id := r.PathValue("id")
