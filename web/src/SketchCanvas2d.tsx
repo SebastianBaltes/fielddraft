@@ -891,6 +891,44 @@ function drawOverlay(
     }
   }
 
+  // K6b.6: draw constraint glyphs at entity midpoints.
+  for (const call of session.subCalls) {
+    if (!call.type.startsWith("sketch_constraint")) continue;
+    // Find the constrained line's midpoint from its entity_a
+    // index. Walk earlier sub-calls to find the line with
+    // matching entity allocation order.
+    const entityA = Number(call.params.entity_a ?? call.params.line_a ?? -1);
+    if (entityA < 0) continue;
+    // Heuristic: find the line sub-call whose first endpoint
+    // entity index is near entityA (each line allocates 3 ids:
+    // start_point, end_point, line).
+    const lineCalls = session.subCalls.filter((c) => c.type === "sketch_line");
+    let lineIdx = Math.floor(entityA / 3) - 1; // rough mapping
+    if (lineIdx < 0) lineIdx = 0;
+    if (lineIdx >= lineCalls.length) continue;
+    const lc = lineCalls[lineIdx];
+    const start = toXy(lc?.params?.start);
+    const end = toXy(lc?.params?.end);
+    if (!start || !end) continue;
+    const mid: [number, number] = [
+      (start[0] + end[0]) / 2,
+      (start[1] + end[1]) / 2,
+    ];
+    const [px, py] = sketchToScreen(mid[0], mid[1], cam);
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const label = call.type.includes("horizontal")
+      ? "H"
+      : call.type.includes("vertical")
+        ? "V"
+        : call.type.includes("coincident")
+          ? "⊙"
+          : "C";
+    ctx.fillStyle = committedColor;
+    ctx.fillText(label, px, py - 10);
+  }
+
   if (drag.kind === "line") {
     const { start, current } = drag;
     drawLine(ctx, start, current, cam, COLOR_PREVIEW, STROKE_PX);
