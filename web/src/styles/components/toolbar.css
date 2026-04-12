@@ -12,6 +12,14 @@
     display: none;
   }
 
+  & .sketch-plane-dropdown {
+    display: flex;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    background: var(--color-surface-strong, #eee);
+    border-radius: var(--radius-sm);
+  }
+
   & .group {
     display: flex;
     align-items: center;

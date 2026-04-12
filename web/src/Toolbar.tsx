@@ -15,7 +15,11 @@ import { requestView } from "./viewCommands";
 /** K6b.2 placeholder: the face-lock UX comes in K6b.3. Until then,
  *  the Sketch button anchors every new session on the XY origin
  *  plane so the mode transition is testable end-to-end. */
-const DEFAULT_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
+const SKETCH_PLANES: { query: string; label: string; title: string }[] = [
+  { query: "qCreatedBy(origin_plane_xy)", label: "XY", title: "Sketch on XY plane" },
+  { query: "qCreatedBy(origin_plane_xz)", label: "XZ", title: "Sketch on XZ plane (top-down)" },
+  { query: "qCreatedBy(origin_plane_yz)", label: "YZ", title: "Sketch on YZ plane" },
+];
 
 /** Short human-readable labels for the sketch tools. K6b.1 ships
  *  `sketch_point` and `sketch_line`; the rest are listed as
@@ -64,8 +68,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   }, [fd]);
 
-  const handleSketchEnter = () => {
-    store.enterSketch(DEFAULT_PLANE_QUERY);
+  const [sketchPlaneOpen, setSketchPlaneOpen] = useState(false);
+
+  const handleSketchEnter = (planeQuery: string) => {
+    store.enterSketch(planeQuery);
+    setSketchPlaneOpen(false);
   };
 
   const handleSketchToolPick = (typeName: string) => {
@@ -243,10 +250,26 @@ export function Toolbar({ store, state }: ToolbarProps) {
           className="tool"
           title="Sketch (lock XY origin plane)"
           data-testid="enter-sketch"
-          onClick={handleSketchEnter}
+          onClick={() => setSketchPlaneOpen(!sketchPlaneOpen)}
         >
-          ✎ Sketch
+          ✎ Sketch ▾
         </button>
+        {sketchPlaneOpen ? (
+          <div className="sketch-plane-dropdown">
+            {SKETCH_PLANES.map((plane) => (
+              <button
+                key={plane.query}
+                type="button"
+                className="tool"
+                title={plane.title}
+                data-testid={`sketch-plane-${plane.label.toLowerCase()}`}
+                onClick={() => handleSketchEnter(plane.query)}
+              >
+                {plane.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <button
           type="button"
           className="tool"
