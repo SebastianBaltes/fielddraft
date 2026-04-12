@@ -333,6 +333,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
         >
           ⇩ STL
         </button>
+        <button
+          type="button"
+          className="tool"
+          title="Export as binary GLB (glTF 2.0)"
+          data-testid="export-glb"
+          disabled={state.features.length === 0}
+          onClick={() => store.downloadGlb()}
+        >
+          ⇩ GLB
+        </button>
       </div>
 
       <div className="group">

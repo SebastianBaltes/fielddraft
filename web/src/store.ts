@@ -1050,6 +1050,40 @@ export class KernelStore {
     URL.revokeObjectURL(url);
   }
 
+  /** K12.1: export the current scene as a binary GLB file
+   *  (glTF 2.0). Builds a temporary Three.js scene from the
+   *  body mesh cache and runs the GLTFExporter. */
+  async downloadGlb(filename = "fielddraft.glb"): Promise<void> {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+    const THREE = await import("three");
+    const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
+
+    const scene = new THREE.Scene();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x8ca6d9 });
+    for (const body of this.state.meshedBodies) {
+      if (body.positions.length === 0) continue;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+      geo.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
+      geo.setIndex(new THREE.BufferAttribute(body.indices, 1));
+      scene.add(new THREE.Mesh(geo, mat));
+    }
+
+    const exporter = new GLTFExporter();
+    const glb = await exporter.parseAsync(scene, { binary: true }) as ArrayBuffer;
+    const blob = new Blob([glb], { type: "model/gltf-binary" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   commitSketch(): number | null {
     const session = this.state.sketchSession;
     if (!session.active || session.planeQuery === null) {
