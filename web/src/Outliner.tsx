@@ -66,6 +66,9 @@ const SKETCH_SUB_GLYPH: Record<string, string> = {
   sketch_constraint_horizontal: "—",
   sketch_constraint_vertical: "|",
   sketch_constraint_coincident: "⊙",
+  sketch_constraint_distance: "↔",
+  sketch_constraint_angle: "∠",
+  sketch_constraint_equal: "=",
 };
 
 const SKETCH_SUB_LABEL: Record<string, string> = {
@@ -81,6 +84,9 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_horizontal: "Horizontal",
   sketch_constraint_vertical: "Vertical",
   sketch_constraint_coincident: "Coincident",
+  sketch_constraint_distance: "Distance",
+  sketch_constraint_angle: "Angle",
+  sketch_constraint_equal: "Equal",
 };
 
 function nameToTag(op: BoolOpName): BoolOpTagValue {

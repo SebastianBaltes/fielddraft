@@ -138,6 +138,9 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchHorizontalConstraintTool));
         r.register(Box::new(SketchVerticalConstraintTool));
         r.register(Box::new(SketchCoincidentConstraintTool));
+        r.register(Box::new(SketchDistanceConstraintTool));
+        r.register(Box::new(SketchAngleConstraintTool));
+        r.register(Box::new(SketchEqualConstraintTool));
         r
     }
 
@@ -650,6 +653,113 @@ impl SketchToolKind for SketchCoincidentConstraintTool {
             id: cid,
             a: EntityId(d.a),
             b: EntityId(d.b),
+        });
+        Ok(())
+    }
+}
+
+/// `sketch_constraint_distance` — fixes the distance between
+/// two entities (point-to-point or point-to-line).
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_distance")]
+pub struct SketchDistanceConstraintDef {
+    pub entity_a: u32,
+    pub entity_b: u32,
+    pub value_mm: f32,
+}
+
+pub struct SketchDistanceConstraintTool;
+
+impl SketchToolKind for SketchDistanceConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchDistanceConstraintDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchDistanceConstraintDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchDistanceConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Distance {
+            id: cid,
+            a: EntityId(d.entity_a),
+            b: EntityId(d.entity_b),
+            value_mm: d.value_mm as f64,
+            driven: false,
+        });
+        Ok(())
+    }
+}
+
+/// `sketch_constraint_angle` — fixes the angle between two lines.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_angle")]
+pub struct SketchAngleConstraintDef {
+    pub line_a: u32,
+    pub line_b: u32,
+    pub value_deg: f32,
+}
+
+pub struct SketchAngleConstraintTool;
+
+impl SketchToolKind for SketchAngleConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchAngleConstraintDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchAngleConstraintDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchAngleConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Angle {
+            id: cid,
+            a: EntityId(d.line_a),
+            b: EntityId(d.line_b),
+            value_deg: d.value_deg as f64,
+            driven: false,
+        });
+        Ok(())
+    }
+}
+
+/// `sketch_constraint_equal` — forces two entities to have
+/// equal length/radius.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_equal")]
+pub struct SketchEqualConstraintDef {
+    pub entity_a: u32,
+    pub entity_b: u32,
+}
+
+pub struct SketchEqualConstraintTool;
+
+impl SketchToolKind for SketchEqualConstraintTool {
+    fn type_name(&self) -> &'static str {
+        SketchEqualConstraintDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchEqualConstraintDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchEqualConstraintDef::parse(def)?;
+        state.add_constraint(|cid: ConstraintId| Constraint::Equal {
+            id: cid,
+            a: EntityId(d.entity_a),
+            b: EntityId(d.entity_b),
         });
         Ok(())
     }
@@ -1185,7 +1295,10 @@ mod tests {
             vec![
                 "sketch_arc".to_string(),
                 "sketch_circle".to_string(),
+                "sketch_constraint_angle".to_string(),
                 "sketch_constraint_coincident".to_string(),
+                "sketch_constraint_distance".to_string(),
+                "sketch_constraint_equal".to_string(),
                 "sketch_constraint_horizontal".to_string(),
                 "sketch_constraint_vertical".to_string(),
                 "sketch_line".to_string(),
