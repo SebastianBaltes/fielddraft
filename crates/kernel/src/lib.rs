@@ -219,6 +219,13 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let r = (dx * dx + dz * dz).sqrt();
             sketch.sdf([r, p[1] - center[1]])
         }
+        Primitive::Torus { center, major_radius, minor_radius } => {
+            let dx = p[0] - center[0];
+            let dy = p[1] - center[1];
+            let dz = p[2] - center[2];
+            let q = ((dx * dx + dz * dz).sqrt() - major_radius, dy);
+            (q.0 * q.0 + q.1 * q.1).sqrt() - minor_radius
+        }
         Primitive::Gyroid { cell_size, thickness } => {
             let s = *cell_size;
             let x = p[0] / s;
@@ -320,6 +327,11 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[1..4].copy_from_slice(center);
             out[4] = r_max;
             out[5] = half_y;
+        }
+        Primitive::Torus { center, major_radius, minor_radius } => {
+            out[1..4].copy_from_slice(center);
+            out[4] = *major_radius;
+            out[5] = *minor_radius;
         }
         Primitive::Gyroid { cell_size, thickness } => {
             out[4] = *cell_size;
@@ -597,6 +609,7 @@ impl Kernel {
             Primitive::Extrude { .. } => "extrude",
             Primitive::Revolve { .. } => "revolve",
             Primitive::Gyroid { .. } => "gyroid",
+            Primitive::Torus { .. } => "torus",
         }
     }
 
@@ -611,7 +624,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" => Self::kind_label(prim),
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -1701,6 +1714,11 @@ impl Kernel {
                 center: [0.0, 0.0, 0.0],
                 radius: p0,
                 half_height: p1,
+            },
+            Primitive::KIND_TORUS => Primitive::Torus {
+                center: [0.0, 0.0, 0.0],
+                major_radius: p0,
+                minor_radius: p1,
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };

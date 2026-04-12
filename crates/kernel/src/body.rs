@@ -294,6 +294,14 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             }
             hash_sketch2d(sketch, hasher);
         }
+        Primitive::Torus { center, major_radius, minor_radius } => {
+            6u8.hash(hasher);
+            for v in center {
+                v.to_bits().hash(hasher);
+            }
+            major_radius.to_bits().hash(hasher);
+            minor_radius.to_bits().hash(hasher);
+        }
         Primitive::Gyroid { cell_size, thickness } => {
             5u8.hash(hasher);
             cell_size.to_bits().hash(hasher);

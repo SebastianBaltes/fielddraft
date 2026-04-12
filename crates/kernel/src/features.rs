@@ -213,6 +213,7 @@ impl FeatureRegistry {
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(RevolveFeature));
         r.register(Box::new(HoleFeature));
+        r.register(Box::new(TorusPrimitive));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
@@ -496,6 +497,75 @@ impl FeatureKind for CylinderPrimitive {
                 center: d.center,
                 radius: d.radius,
                 half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+            twist_rate: d.twist_rate,
+            bend_rate: d.bend_rate,
+        });
+        Ok(())
+    }
+}
+
+// ─── Torus ───────────────────────────────────────────────────────
+
+/// `torus` — Y-axis-aligned torus (donut).
+#[derive(FeatureSchema)]
+#[schema(type = "torus")]
+pub struct TorusDef {
+    /// Distance from the axis to the centre of the tube.
+    pub major_radius: f32,
+    /// Radius of the tube cross-section.
+    pub minor_radius: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+    #[param(name = "Twist rate", default = 0.0)]
+    pub twist_rate: f32,
+    #[param(name = "Bend rate", default = 0.0)]
+    pub bend_rate: f32,
+}
+
+pub struct TorusPrimitive;
+
+impl FeatureKind for TorusPrimitive {
+    fn type_name(&self) -> &'static str {
+        TorusDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        TorusDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = TorusDef::parse(def)?;
+        positive_f32(d.major_radius, TorusDef::TYPE_NAME, "major_radius")?;
+        positive_f32(d.minor_radius, TorusDef::TYPE_NAME, "minor_radius")?;
+        let name = optional_display_name(def, || format!("Torus {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.op,
+            primitive: Primitive::Torus {
+                center: d.center,
+                major_radius: d.major_radius,
+                minor_radius: d.minor_radius,
             },
             transform: Transform {
                 translate: d.translate,
@@ -1433,19 +1503,19 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        // K11.0 grows the built-in set to include gyroid.
-        assert_eq!(registry.len(), 11);
+        assert_eq!(registry.len(), 12);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
         assert!(registry.get("revolve").is_some());
         assert!(registry.get("hole").is_some());
+        assert!(registry.get("torus").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
         assert!(registry.get("mirror").is_some());
-        assert!(registry.get("torus").is_none());
+        assert!(registry.get("gyroid").is_some());
     }
 
     // ─── K6a: schema lookup on the registry ───────────────────
@@ -1454,7 +1524,6 @@ mod tests {
     fn schema_for_returns_the_derive_generated_schema_per_type() {
         let registry = FeatureRegistry::with_builtins();
         let box_schema = registry.schema_for("box").expect("box schema");
-        // The derive emits `{"type": "...", "params": [...]}`.
         assert_eq!(box_schema["type"], json!("box"));
         assert!(box_schema["params"].is_array());
 
@@ -1462,7 +1531,6 @@ mod tests {
             .schema_for("extrude")
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
-        // Six params matching the K4.5.8 ExtrudeDef shape.
         let params = extrude_schema["params"].as_array().unwrap();
         assert_eq!(params.len(), 6);
     }
@@ -1470,7 +1538,7 @@ mod tests {
     #[test]
     fn schema_for_returns_none_for_unknown_types() {
         let registry = FeatureRegistry::with_builtins();
-        assert!(registry.schema_for("torus").is_none());
+        assert!(registry.schema_for("nonexistent_type").is_none());
     }
 
     #[test]
@@ -1491,7 +1559,8 @@ mod tests {
                 "mirror",
                 "revolve",
                 "sketch",
-                "sphere"
+                "sphere",
+                "torus"
             ]
         );
     }

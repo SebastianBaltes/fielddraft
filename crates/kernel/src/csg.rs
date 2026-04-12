@@ -316,6 +316,13 @@ impl Aabb {
                     ],
                 }
             }
+            Primitive::Torus { center: c, major_radius, minor_radius } => {
+                let r = *major_radius + minor_radius;
+                Self {
+                    min: [c[0] - r, c[1] - minor_radius, c[2] - r],
+                    max: [c[0] + r, c[1] + minor_radius, c[2] + r],
+                }
+            }
             // Gyroid repeats infinitely — return a large conservative AABB.
             Primitive::Gyroid { .. } => Self {
                 min: [-1000.0; 3],

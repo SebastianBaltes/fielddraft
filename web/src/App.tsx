@@ -77,6 +77,10 @@ export function App() {
             store.addPrimitive("cylinder");
             e.preventDefault();
             return;
+          case "t":
+            store.addPrimitive("torus");
+            e.preventDefault();
+            return;
           case "h":
             store.addHole();
             e.preventDefault();

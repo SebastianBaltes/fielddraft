@@ -511,6 +511,9 @@ export class KernelStore {
       case "cylinder":
         id = this.kernel.addCylinder(op, offset, 40, 60);
         break;
+      case "torus":
+        id = this.kernel.addTorus(op, offset, 30, 10);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;

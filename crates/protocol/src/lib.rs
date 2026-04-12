@@ -252,6 +252,14 @@ pub enum Primitive {
         half_depth_z: f32,
         center: [f32; 3],
     },
+    /// Torus centred at the origin, major radius R (centre of
+    /// tube to axis), minor radius r (tube cross-section).
+    /// SDF: `length(vec2(length(p.xz) - R, p.y)) - r`.
+    Torus {
+        center: [f32; 3],
+        major_radius: f32,
+        minor_radius: f32,
+    },
     /// K11.0: Gyroid TPMS lattice. The raw implicit is
     /// `sin(x/s)cos(y/s) + sin(y/s)cos(z/s) + sin(z/s)cos(x/s)`,
     /// thickened into a solid shell via `|f| - thickness`.
@@ -282,6 +290,7 @@ impl Primitive {
     pub const KIND_EXTRUDE: u32 = 3;
     pub const KIND_REVOLVE: u32 = 4;
     pub const KIND_GYROID: u32 = 5;
+    pub const KIND_TORUS: u32 = 6;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -289,6 +298,7 @@ impl Primitive {
             Primitive::Sphere { .. } => Self::KIND_SPHERE,
             Primitive::Cylinder { .. } => Self::KIND_CYLINDER,
             Primitive::Extrude { .. } => Self::KIND_EXTRUDE,
+            Primitive::Torus { .. } => Self::KIND_TORUS,
             Primitive::Gyroid { .. } => Self::KIND_GYROID,
             Primitive::Revolve { .. } => Self::KIND_REVOLVE,
         }
@@ -300,6 +310,7 @@ impl Primitive {
             Primitive::Sphere { .. } => "Sphere",
             Primitive::Cylinder { .. } => "Cylinder",
             Primitive::Extrude { .. } => "Extrude",
+            Primitive::Torus { .. } => "Torus",
             Primitive::Gyroid { .. } => "Gyroid",
             Primitive::Revolve { .. } => "Revolve",
         }
@@ -616,6 +627,7 @@ impl FeatureCall {
             // authoritative wire form is the original "revolve"
             // FeatureCall with its sketch query.
             Primitive::Revolve { .. } => "__derived_revolve_skip__",
+            Primitive::Torus { .. } => "torus",
         };
         let op = bool_op_wire_name(f.op);
         let translate = f.transform.translate;
@@ -685,6 +697,16 @@ impl FeatureCall {
             Primitive::Revolve { sketch, center } => serde_json::json!({
                 "sketch": sketch,
                 "center": center,
+                "translate": translate,
+                "rotation": rotation,
+                "scale": scale,
+                "op": op,
+                "name": name,
+            }),
+            Primitive::Torus { center, major_radius, minor_radius } => serde_json::json!({
+                "center": center,
+                "major_radius": major_radius,
+                "minor_radius": minor_radius,
                 "translate": translate,
                 "rotation": rotation,
                 "scale": scale,
@@ -856,7 +878,7 @@ impl Document {
 /// the canonical wire form is the original extrude
 /// `FeatureCall` with its sketch query.
 fn is_spine_type(type_name: &str) -> bool {
-    matches!(type_name, "box" | "sphere" | "cylinder")
+    matches!(type_name, "box" | "sphere" | "cylinder" | "torus")
 }
 
 #[cfg(test)]

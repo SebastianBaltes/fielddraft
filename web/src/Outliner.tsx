@@ -39,6 +39,7 @@ const KIND_GLYPH: Record<string, string> = {
   sketch: "✎",
   extrude: "↥",
   revolve: "↻",
+  torus: "◎",
   hole: "⊖",
   gyroid: "🕸",
   linear_pattern: "⎡",
