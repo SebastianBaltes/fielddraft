@@ -125,14 +125,11 @@ impl std::error::Error for FeatureError {}
 /// execution.
 pub struct Context<'a> {
     pub document: &'a mut Document,
-    /// K6b.1: solved sketch state per sketch feature id. The
-    /// `sketch` FeatureKind walks its declarative sub-spine of
-    /// sketch-tool calls, builds a [`SketchState`] and stashes
-    /// it here so downstream features (extrude, revolve) can
-    /// look up the resolved 2D geometry by feature id. The map
-    /// is regeneration-local — every `regenerate` pass starts
-    /// from a fresh `Context` and re-solves every sketch.
+    /// K6b.1: solved sketch state per sketch feature id.
     pub sketches: HashMap<FeatureId, crate::sketch_features::SketchData>,
+    /// K10.4: edge fillets collected during regen, applied as a
+    /// post-processing pass on the CsgNode tree.
+    pub edge_fillets: Vec<crate::csg::EdgeFillet>,
 }
 
 impl<'a> Context<'a> {
@@ -140,6 +137,7 @@ impl<'a> Context<'a> {
         Self {
             document,
             sketches: HashMap::new(),
+            edge_fillets: Vec::new(),
         }
     }
 }
@@ -218,6 +216,7 @@ impl FeatureRegistry {
         r.register(Box::new(HexPrismPrimitive));
         r.register(Box::new(ConePrimitive));
         r.register(Box::new(ThreadFeature));
+        r.register(Box::new(FilletEdgeFeature));
         r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
@@ -934,6 +933,68 @@ impl FeatureKind for HexPrismPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+        });
+        Ok(())
+    }
+}
+
+// ─── K10.4: Fillet Edge Feature ──────────────────────────────────
+//
+// A feature that applies per-edge spatial-mask fillets to the
+// CSG tree. The edge fillets are stored in the document and
+// applied as a post-processing pass after from_features builds
+// the base tree. The feature itself doesn't push a spine entry —
+// it modifies the tree shape by replacing Union/Difference
+// nodes with MaskedBlend where the edge specification matches.
+
+/// `fillet_edge` — per-edge fillet with spatial mask.
+#[derive(FeatureSchema)]
+#[schema(type = "fillet_edge")]
+pub struct FilletEdgeDef {
+    /// Flat-numeric id of the first feature at the junction.
+    pub feature_a: f32,
+    /// Flat-numeric id of the second feature.
+    pub feature_b: f32,
+    /// Capsule start [x, y, z].
+    pub mask_p0: [f32; 3],
+    /// Capsule end [x, y, z].
+    pub mask_p1: [f32; 3],
+    /// Capsule radius.
+    #[param(default = 10.0)]
+    pub mask_radius: f32,
+    /// Fillet blend radius.
+    #[param(default = 5.0)]
+    pub blend_radius: f32,
+}
+
+pub struct FilletEdgeFeature;
+
+impl FeatureKind for FilletEdgeFeature {
+    fn type_name(&self) -> &'static str {
+        FilletEdgeDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        FilletEdgeDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = FilletEdgeDef::parse(def)?;
+        // Store the edge fillet specification on the context
+        // for post-processing after from_features completes.
+        ctx.edge_fillets.push(crate::csg::EdgeFillet {
+            feature_a: FeatureId::from_u32(d.feature_a as u32),
+            feature_b: FeatureId::from_u32(d.feature_b as u32),
+            mask_p0: d.mask_p0,
+            mask_p1: d.mask_p1,
+            mask_radius: d.mask_radius,
+            blend_radius: d.blend_radius,
+            blend_mode: crate::csg::BlendMode::Fillet,
         });
         Ok(())
     }
@@ -1969,7 +2030,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 17);
+        assert_eq!(registry.len(), 18);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2025,6 +2086,7 @@ mod tests {
                 "cone",
                 "cylinder",
                 "extrude",
+                "fillet_edge",
                 "gyroid",
                 "hex_prism",
                 "hole",

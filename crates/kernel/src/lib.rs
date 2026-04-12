@@ -503,6 +503,10 @@ pub struct Kernel {
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
     mesh_version: u32,
+    /// K10.4: edge fillets collected from FilletEdgeFeature calls
+    /// during the last regenerate pass. Applied as a post-processing
+    /// step on the CsgNode tree before meshing.
+    edge_fillets: Vec<csg::EdgeFillet>,
 }
 
 impl Kernel {
@@ -715,6 +719,7 @@ impl Kernel {
             // "Hole" glyphs/colours instead of the cylinder one.
             "hole" => "hole",
             "gyroid" => "gyroid",
+            "fillet_edge" => "fillet_edge",
             _ => Self::static_kind_name(type_name),
         }
     }
@@ -730,6 +735,7 @@ impl Kernel {
             "hole" => "hole",
             "gyroid" => "gyroid",
             "imported_mesh" => "imported_mesh",
+            "fillet_edge" => "fillet_edge",
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
@@ -759,6 +765,7 @@ impl Kernel {
             "hole" => "Hole",
             "gyroid" => "Gyroid",
             "imported_mesh" => "Imported mesh",
+            "fillet_edge" => "Fillet edge",
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
@@ -798,6 +805,7 @@ impl Kernel {
             active_body_id: None,
             sync_meshing: true,
             mesh_version: 0,
+            edge_fillets: Vec::new(),
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
         // still want the version counter and buffers initialised).
@@ -860,7 +868,10 @@ impl Kernel {
         self.document.features.clear();
         let result = {
             let mut ctx = features::Context::new(&mut self.document);
-            registry.regenerate(&mut ctx, &calls)
+            let r = registry.regenerate(&mut ctx, &calls);
+            // K10.4: capture edge fillets collected during regen.
+            self.edge_fillets = ctx.edge_fillets;
+            r
         };
         self.document.feature_calls = calls;
         result
@@ -1712,7 +1723,8 @@ impl Kernel {
     /// Empty scenes return all-zero extents.
     #[wasm_bindgen(js_name = sceneAabb)]
     pub fn scene_aabb(&self) -> Result<String, JsError> {
-        let tree = csg::CsgNode::from_features(&self.document.features);
+        let tree = csg::CsgNode::from_features(&self.document.features)
+            .apply_edge_fillets(&self.edge_fillets);
         let bb = tree.aabb();
         let size = bb.size();
         let result = serde_json::json!({
@@ -2393,7 +2405,8 @@ impl Kernel {
         dy: f32,
         dz: f32,
     ) -> String {
-        let csg = CsgNode::from_features(&self.document.features);
+        let csg = CsgNode::from_features(&self.document.features)
+            .apply_edge_fillets(&self.edge_fillets);
         let bounded = BoundedCsg::from_csg(&csg);
         let params = RaycastParams::default();
         match raycast(&bounded, [ox, oy, oz], [dx, dy, dz], params) {

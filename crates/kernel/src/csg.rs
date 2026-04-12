@@ -9,6 +9,8 @@
 //! so that the Dual Contouring mesher can traverse it polymorphically
 //! instead of special-casing the linear list.
 
+use serde::{Deserialize, Serialize};
+
 use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
 use crate::sketch2d::Sketch2d;
@@ -408,7 +410,7 @@ impl Aabb {
 /// K10.2: how to blend the junction between two Boolean
 /// operands. Fillet uses the cubic smin polynomial (rounded
 /// edges); Chamfer uses a linear 45° cut.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BlendMode {
     Fillet,
     Chamfer,
@@ -627,6 +629,107 @@ impl CsgNode {
     }
 
     /// Evaluate the signed distance at a world-space point. Matches
+    /// K10.4: post-process the tree by replacing Union/Difference
+    /// nodes with MaskedBlend where an EdgeFillet matches. A fillet
+    /// matches a junction when one subtree contains feature_a and
+    /// the other contains feature_b (either order).
+    pub fn apply_edge_fillets(self, fillets: &[EdgeFillet]) -> Self {
+        if fillets.is_empty() {
+            return self;
+        }
+        match self {
+            CsgNode::Union(a, b) => {
+                let a = a.apply_edge_fillets(fillets);
+                let b = b.apply_edge_fillets(fillets);
+                if let Some(f) = find_matching_fillet(&a, &b, fillets) {
+                    CsgNode::MaskedBlend {
+                        a: Box::new(a),
+                        b: Box::new(b),
+                        mask_p0: f.mask_p0,
+                        mask_p1: f.mask_p1,
+                        mask_radius: f.mask_radius,
+                        blend_radius: f.blend_radius,
+                        blend_mode: f.blend_mode,
+                        is_difference: false,
+                    }
+                } else {
+                    CsgNode::Union(Box::new(a), Box::new(b))
+                }
+            }
+            CsgNode::Difference(a, b) => {
+                let a = a.apply_edge_fillets(fillets);
+                let b = b.apply_edge_fillets(fillets);
+                if let Some(f) = find_matching_fillet(&a, &b, fillets) {
+                    CsgNode::MaskedBlend {
+                        a: Box::new(a),
+                        b: Box::new(b),
+                        mask_p0: f.mask_p0,
+                        mask_p1: f.mask_p1,
+                        mask_radius: f.mask_radius,
+                        blend_radius: f.blend_radius,
+                        blend_mode: f.blend_mode,
+                        is_difference: true,
+                    }
+                } else {
+                    CsgNode::Difference(Box::new(a), Box::new(b))
+                }
+            }
+            // Recurse into wrappers but don't match on them.
+            CsgNode::Transform(t, inner) => {
+                CsgNode::Transform(t, Box::new(inner.apply_edge_fillets(fillets)))
+            }
+            CsgNode::Twist(inner, r) => {
+                CsgNode::Twist(Box::new(inner.apply_edge_fillets(fillets)), r)
+            }
+            CsgNode::Bend(inner, r) => {
+                CsgNode::Bend(Box::new(inner.apply_edge_fillets(fillets)), r)
+            }
+            CsgNode::Shell(inner, t) => {
+                CsgNode::Shell(Box::new(inner.apply_edge_fillets(fillets)), t)
+            }
+            CsgNode::Displace(inner, d, f) => {
+                CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
+            }
+            // Leaves and already-blended nodes pass through.
+            other => other,
+        }
+    }
+
+    /// Collect all leaf FeatureIds reachable from this node.
+    pub fn leaf_ids(&self) -> Vec<FeatureId> {
+        let mut out = Vec::new();
+        self.collect_leaf_ids(&mut out);
+        out
+    }
+
+    fn collect_leaf_ids(&self, out: &mut Vec<FeatureId>) {
+        match self {
+            CsgNode::Leaf { id, .. } => out.push(id.clone()),
+            CsgNode::Transform(_, inner)
+            | CsgNode::Twist(inner, _)
+            | CsgNode::Bend(inner, _)
+            | CsgNode::Shell(inner, _)
+            | CsgNode::Displace(inner, _, _) => inner.collect_leaf_ids(out),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => {
+                a.collect_leaf_ids(out);
+                b.collect_leaf_ids(out);
+            }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                a.collect_leaf_ids(out);
+                b.collect_leaf_ids(out);
+            }
+            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } => {
+                out.push(id.clone());
+            }
+            CsgNode::Empty => {}
+        }
+    }
+
     /// `sdf_features` when built from the same feature list.
     ///
     /// `mode` is threaded through for future Ghost-Topology dual-path
@@ -1031,6 +1134,46 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     }
     let h = (r - (da - db).abs()).max(0.0) / r;
     da.min(db) - h * h * h * r / 6.0
+}
+
+/// K10.4: find the first EdgeFillet that matches a junction
+/// between two subtrees. A fillet matches when one subtree
+/// contains feature_a and the other contains feature_b.
+fn find_matching_fillet<'a>(
+    left: &CsgNode,
+    right: &CsgNode,
+    fillets: &'a [EdgeFillet],
+) -> Option<&'a EdgeFillet> {
+    let left_ids = left.leaf_ids();
+    let right_ids = right.leaf_ids();
+    fillets.iter().find(|f| {
+        let a_in_left = left_ids.iter().any(|id| *id == f.feature_a);
+        let b_in_right = right_ids.iter().any(|id| *id == f.feature_b);
+        let a_in_right = right_ids.iter().any(|id| *id == f.feature_a);
+        let b_in_left = left_ids.iter().any(|id| *id == f.feature_b);
+        (a_in_left && b_in_right) || (a_in_right && b_in_left)
+    })
+}
+
+/// K10.4: per-edge fillet specification. Identifies a Boolean
+/// junction by the feature IDs of its two operands and places
+/// a capsule mask along the edge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeFillet {
+    /// Feature id of the "left" operand at the junction.
+    pub feature_a: FeatureId,
+    /// Feature id of the "right" operand.
+    pub feature_b: FeatureId,
+    /// Capsule start point (world space).
+    pub mask_p0: [f32; 3],
+    /// Capsule end point.
+    pub mask_p1: [f32; 3],
+    /// Capsule radius — how far the mask extends from the edge.
+    pub mask_radius: f32,
+    /// Blend radius for the fillet.
+    pub blend_radius: f32,
+    /// Fillet or chamfer.
+    pub blend_mode: BlendMode,
 }
 
 /// K10.3: capsule SDF for spatial masks. The capsule is a
