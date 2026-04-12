@@ -328,6 +328,14 @@ impl Aabb {
                 min: [-1000.0; 3],
                 max: [1000.0; 3],
             },
+            Primitive::Thread { nominal_radius, depth, half_height, .. } => {
+                let r = *nominal_radius + *depth;
+                let hh = *half_height;
+                Self {
+                    min: [-r, -hh, -r],
+                    max: [r, hh, r],
+                }
+            }
         }
     }
 

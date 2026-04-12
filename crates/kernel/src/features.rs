@@ -214,6 +214,7 @@ impl FeatureRegistry {
         r.register(Box::new(RevolveFeature));
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
+        r.register(Box::new(ThreadFeature));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
         r.register(Box::new(CircularPatternFeature));
@@ -533,6 +534,81 @@ impl FeatureKind for CylinderPrimitive {
             bend_rate: d.bend_rate,
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
+        });
+        Ok(())
+    }
+}
+
+// ─── K12: Thread ─────────────────────────────────────────────────
+
+/// `thread` — metric-style screw thread via direct helix SDF.
+#[derive(FeatureSchema)]
+#[schema(type = "thread")]
+pub struct ThreadDef {
+    /// Nominal (outer) radius in mm.
+    pub nominal_radius: f32,
+    /// Pitch — distance per revolution in mm.
+    pub pitch: f32,
+    /// Thread depth in mm (groove amplitude).
+    pub depth: f32,
+    /// Half the total bolt length along Y.
+    pub half_height: f32,
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub translate: [f32; 3],
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub op: BoolOp,
+    #[param(name = "Blend radius", default = 0.0)]
+    pub blend_radius: f32,
+    #[param(name = "Chamfer size", default = 0.0)]
+    pub chamfer_size: f32,
+}
+
+pub struct ThreadFeature;
+
+impl FeatureKind for ThreadFeature {
+    fn type_name(&self) -> &'static str {
+        ThreadDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ThreadDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ThreadDef::parse(def)?;
+        positive_f32(d.nominal_radius, ThreadDef::TYPE_NAME, "nominal_radius")?;
+        positive_f32(d.pitch, ThreadDef::TYPE_NAME, "pitch")?;
+        positive_f32(d.depth, ThreadDef::TYPE_NAME, "depth")?;
+        positive_f32(d.half_height, ThreadDef::TYPE_NAME, "half_height")?;
+        let name = optional_display_name(def, || format!("Thread {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        ctx.document.features.push(SpineFeature {
+            id: id.clone(),
+            name,
+            op: d.op,
+            primitive: Primitive::Thread {
+                nominal_radius: d.nominal_radius,
+                pitch: d.pitch,
+                depth: d.depth,
+                half_height: d.half_height,
+            },
+            transform: Transform {
+                translate: d.translate,
+                rotation,
+                scale,
+            },
+            blend_radius: d.blend_radius,
+            chamfer_size: d.chamfer_size,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
         });
         Ok(())
     }
@@ -1557,7 +1633,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 12);
+        assert_eq!(registry.len(), 13);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -1565,6 +1641,7 @@ mod tests {
         assert!(registry.get("revolve").is_some());
         assert!(registry.get("hole").is_some());
         assert!(registry.get("torus").is_some());
+        assert!(registry.get("thread").is_some());
         assert!(registry.get("sketch").is_some());
         assert!(registry.get("linear_pattern").is_some());
         assert!(registry.get("circular_pattern").is_some());
@@ -1614,6 +1691,7 @@ mod tests {
                 "revolve",
                 "sketch",
                 "sphere",
+                "thread",
                 "torus"
             ]
         );

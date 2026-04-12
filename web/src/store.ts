@@ -514,6 +514,9 @@ export class KernelStore {
       case "torus":
         id = this.kernel.addTorus(op, offset, 30, 10);
         break;
+      case "thread":
+        id = this.kernel.addThread(op, offset, 3, 0.5, 0.3);
+        break;
     }
     this.commit(new Set([id]), id);
     return id;

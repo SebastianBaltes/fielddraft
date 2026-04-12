@@ -307,6 +307,13 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             cell_size.to_bits().hash(hasher);
             thickness.to_bits().hash(hasher);
         }
+        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
+            7u8.hash(hasher);
+            nominal_radius.to_bits().hash(hasher);
+            pitch.to_bits().hash(hasher);
+            depth.to_bits().hash(hasher);
+            half_height.to_bits().hash(hasher);
+        }
     }
 }
 

@@ -186,6 +186,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button
           type="button"
           className="tool"
+          title="Add Thread (M6 metric bolt)"
+          data-testid="add-thread"
+          onClick={() => store.addPrimitive("thread")}
+        >
+          ⏍ Thread
+        </button>
+        <button
+          type="button"
+          className="tool"
           title="Add Hole (Ø6 × 40 mm, subtract)"
           data-testid="add-hole"
           onClick={() => store.addHole()}

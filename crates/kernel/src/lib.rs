@@ -234,6 +234,22 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             f.abs() - *thickness
         }
+        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let theta = p[2].atan2(p[0]);
+            // Unwrap helix: map (y, theta) to a linear phase
+            let y_unwrapped = p[1] - *pitch * theta / std::f32::consts::TAU;
+            // Distance to nearest thread crest (periodic)
+            let phase = ((y_unwrapped / pitch).rem_euclid(1.0) - 0.5).abs() * pitch;
+            // Axial bounds
+            let d_axial = p[1].abs() - *half_height;
+            // Cylinder surface + thread groove
+            let d_radial = r - *nominal_radius;
+            let d_groove = phase - *depth;
+            // Thread = cylinder intersected with groove pattern, bounded axially
+            let d_thread = d_radial.max(-d_groove);
+            d_thread.max(d_axial)
+        }
     }
 }
 
@@ -336,6 +352,12 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
         Primitive::Gyroid { cell_size, thickness } => {
             out[4] = *cell_size;
             out[5] = *thickness;
+        }
+        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
+            out[4] = *nominal_radius;
+            out[5] = *pitch;
+            out[6] = *depth;
+            out[7] = *half_height;
         }
     }
     out[7] = feature.op.tag() as f32;
@@ -610,6 +632,7 @@ impl Kernel {
             Primitive::Revolve { .. } => "revolve",
             Primitive::Gyroid { .. } => "gyroid",
             Primitive::Torus { .. } => "torus",
+            Primitive::Thread { .. } => "thread",
         }
     }
 
@@ -624,7 +647,7 @@ impl Kernel {
         prim: &Primitive,
     ) -> &'static str {
         match type_name {
-            "box" | "sphere" | "cylinder" | "torus" => Self::kind_label(prim),
+            "box" | "sphere" | "cylinder" | "torus" | "thread" => Self::kind_label(prim),
             "extrude" => "extrude",
             // K8.9: hole lowers to Primitive::Cylinder but must
             // keep its own outliner label so the row renders
@@ -1719,6 +1742,12 @@ impl Kernel {
                 center: [0.0, 0.0, 0.0],
                 major_radius: p0,
                 minor_radius: p1,
+            },
+            Primitive::KIND_THREAD => Primitive::Thread {
+                nominal_radius: p0,
+                pitch: p1,
+                depth: p2,
+                half_height: 5.0,
             },
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };

@@ -50,6 +50,7 @@ export const PrimitiveKind = {
   Sphere: 1,
   Cylinder: 2,
   Torus: 6,
+  Thread: 7,
 } as const;
 export type PrimitiveKindTag = (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
 
@@ -62,7 +63,7 @@ export const BoolOpTag = {
 export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
 export type BoolOpName = "union" | "difference" | "intersect";
-export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus";
+export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread";
 /** K6b.3a: the kernel's `listFeatures` can now return entries
  *  whose kind is a non-primitive feature type like "sketch" or
  *  "extrude". The outliner handles them generically by keying
@@ -630,6 +631,25 @@ export class Kernel {
       majorRadius,
       minorRadius,
       0,
+    );
+  }
+
+  addThread(
+    op: BoolOpTagValue,
+    translate: [number, number, number],
+    nominalRadius: number,
+    pitch: number,
+    depth: number,
+  ): number {
+    return this.inner.addPrimitive(
+      PrimitiveKind.Thread,
+      op,
+      translate[0],
+      translate[1],
+      translate[2],
+      nominalRadius,
+      pitch,
+      depth,
     );
   }
 
