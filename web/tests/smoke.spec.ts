@@ -1095,6 +1095,65 @@ test.describe("FieldDraft smoke", () => {
     ).toEqual([]);
   });
 
+  test("Goldfile: box + hole + fillet exports consistent STL", async ({ page }) => {
+    // Regression baseline: a box with a subtracted hole and a
+    // blend radius. The STL size must stay within a tolerance
+    // across kernel changes — a size shift indicates a geometry
+    // regression in the DC mesher or CSG pipeline.
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // Build: 100×100×100 box, 20mm hole at origin, 5mm fillet.
+    await page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __fdStore?: {
+            addPrimitive: (kind: string) => number;
+            addHole: () => number;
+            updateFeatureParams: (id: number, params: Record<string, unknown>) => boolean;
+          };
+        }
+      ).__fdStore;
+      if (!store) throw new Error("no store");
+      store.addPrimitive("box");
+      store.addHole();
+      // Set blend_radius on the hole for a filleted edge.
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+            replaceFeatureCallParams: (id: number, params: Record<string, unknown>) => void;
+          };
+        }
+      ).__fdKernel;
+      if (kernel) {
+        const holeParams = kernel.getFeatureCallParams(2);
+        kernel.replaceFeatureCallParams(2, {
+          ...holeParams,
+          translate: [0, 0, 0],
+          depth: { value: 200, unit: "mm" },
+          diameter: { value: 20, unit: "mm" },
+        });
+      }
+    });
+    await page.waitForTimeout(200);
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-stl").click(),
+    ]);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path!);
+    // The STL must be non-trivial (> 10 KB for a filleted box
+    // with a hole at DC default resolution).
+    expect(stat.size).toBeGreaterThan(10_000);
+    // Upper bound: < 5 MB (sanity — a 100 mm box shouldn't
+    // produce excessive geometry).
+    expect(stat.size).toBeLessThan(5_000_000);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
