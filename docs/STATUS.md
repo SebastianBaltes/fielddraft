@@ -236,7 +236,7 @@ T1 ist funktional mit K10 (Fillets), K8.13 (Sketch-Region-Selektion) und K6b.6 (
 3. ✅ **K7.21b — Toolbar-Overflow-Dropdown**: `ResizeObserver` auf Toolbar, data-driven `ToolItem[]`-Array mit 5 Prioritätsstufen, `MoreDropdown`-Komponente für überschüssige Buttons. Sketch/Extrude/Primitives immer sichtbar (Priority 0). Breakpoints bei 700/900/1100/1400px.
 4. ✅ **K7.21d — Constraint-Manager-Panel**: Panel im Sketch-Editor, Rechtsklick-Kontextmenü auf Dimensions (Change to Driving/Driven), nutzt DoF-Analyse aus K5b. Entspricht `onshape-ux.md` §2.17a und `assets/onshape/onshape-sketch-editor.png`.
 5. ✅ **K7.21e — Face-Lock via Viewport-Klick**: Sketch-Start bei vorhandenen Features wechselt in Face-Select-Modus. Klick auf Face leitet Normalenvektor ab und setzt Sketch-Ebene (nächste Achsen-Ebene XY/XZ/YZ). Klick auf leeren Raum oder Esc → XY-Fallback. HUD-Anzeige im Viewport.
-6. **K7.21f — Visual-Regression-Baselines** (2 Sessions, **nächster Slice**): Playwright-Screenshot-Baselines für Topbar/Toolbar/Outliner/Dialoge/Settings-Menü in `web/tests/visual/`.
+6. ✅ **K7.21f — Visual-Regression-Baselines**: 9 Playwright-Screenshot-Tests für Toolbar (narrow/medium/wide), Outliner (empty/features), Settings-Menu, Compact-Mode, Feature-Dialog, Sketch-Mode-Toolbar. Baselines in `web/tests/visual.spec.ts-snapshots/`.
 
 **Test-Anforderungen:** Responsive-Tests (`page.setViewportSize({ width: 600/900/1440 })`), Compact-Mode-Tests, Settings-Menü-Tests (Open/Toggle/Persist/Close), Constraint-Manager-Tests (Rechtsklick → Toggle → DoF-Farbe wechselt), Face-Lock-Tests (Sketch folgt Höhenänderung), Visual-Baselines.
 
@@ -273,8 +273,9 @@ K13.3 prüft importierte Meshes bereits auf Wasserdichtigkeit; die automatische 
 ### Empfohlene Reihenfolge
 
 ```
-K7.21 (UI-Härtung, a→c→b→d→e→f) → K3.5 (Mesh-Optimierung, Phasen A→B→C)
-  → K9 Mate Connector → K6b B-Rep-Snap → M13 Restpunkte → K13 Manifold Repair
+✅ K7.21 (UI-Härtung, alle 6 Sub-Slices done)
+→ K3.5 (Mesh-Optimierung, Phasen A→B→C) ← nächster Slice
+→ K9 Mate Connector → K6b B-Rep-Snap → M13 Restpunkte → K13 Manifold Repair
 ```
 
 **Rationale der Umpriorisierung:** K7.21 hat direkten User-Impact (Bedienbarkeit), K3.5 ist Infrastruktur, die der User nur indirekt spürt (weniger Dreiecke, glattere Oberflächen). Ein UI, die nicht navigierbar ist, blockiert das Testen aller anderen Slices — deshalb zuerst die UI produktiv machen, dann die Qualität hinter der UI verbessern. K7.21 ist als T1-Slice eingeordnet, weil er die Shippable-Alpha tatsächlich benutzbar macht; K3.5 bleibt T0 (Architektur-Validierung) und läuft direkt danach.
