@@ -1,0 +1,183 @@
+/* K7.21a: Burger-Menu + Settings-Panel.
+ *
+ * Top-level class: .fd-settings-menu
+ * Lives in the topbar, right-aligned next to the title. */
+
+.fd-settings-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+
+  & .burger {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-lg);
+    color: var(--color-text-muted);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    line-height: 1;
+    transition: background var(--motion-fast), color var(--motion-fast);
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .popover {
+    position: absolute;
+    top: calc(100% + var(--space-2));
+    left: 0;
+    z-index: 100;
+    min-width: 18rem;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  & .popover-title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-divider);
+  }
+
+  & .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  & .setting-label {
+    font-size: var(--fs-base);
+    color: var(--color-text);
+  }
+
+  /* Toggle button (on/off switch style) */
+  & .toggle {
+    background: var(--color-bg-sunken);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--fs-base);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    min-width: 3.5rem;
+    transition: background var(--motion-fast), color var(--motion-fast),
+      border-color var(--motion-fast);
+
+    &:hover {
+      border-color: var(--color-border-strong);
+    }
+
+    &.is-on {
+      background: var(--color-accent);
+      border-color: var(--color-accent);
+      color: var(--color-text-on-accent);
+    }
+  }
+
+  /* Segmented control (mm/inch, light/dark) */
+  & .segmented {
+    display: inline-flex;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  & .seg {
+    background: var(--color-bg);
+    border: none;
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--fs-base);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    transition: background var(--motion-fast), color var(--motion-fast);
+
+    &:not(:last-child) {
+      border-right: 1px solid var(--color-border);
+    }
+
+    &:hover {
+      background: var(--color-bg-hover);
+    }
+
+    &.is-active {
+      background: var(--color-accent);
+      color: var(--color-text-on-accent);
+    }
+  }
+
+  /* Collapsible section (shortcuts) */
+  & .setting-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: 1px solid var(--color-divider);
+    padding-top: var(--space-3);
+  }
+
+  & .section-toggle {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text);
+    padding: 0;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+
+    &:hover {
+      color: var(--color-accent);
+    }
+  }
+
+  & .chevron {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+    width: 1rem;
+    display: inline-flex;
+    justify-content: center;
+  }
+
+  & .shortcuts-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-base);
+
+    & td {
+      padding: var(--space-1) var(--space-2);
+      border-bottom: 1px solid var(--color-divider);
+    }
+
+    & .shortcut-key {
+      white-space: nowrap;
+      color: var(--color-text-muted);
+    }
+
+    & .shortcut-action {
+      color: var(--color-text);
+    }
+
+    & kbd {
+      background: var(--color-surface-strong, #eee);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      padding: 1px var(--space-2);
+      font-family: var(--font-family-mono);
+      font-size: var(--fs-base);
+    }
+  }
+}

@@ -4,27 +4,15 @@ import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
+import { SettingsMenu, loadSettings } from "./SettingsMenu";
+import type { SettingsState } from "./SettingsMenu";
 
 export function App() {
   const { store, state, error } = useKernelStore();
   const [showHelp, setShowHelp] = useState(false);
-  const [compact, setCompact] = useState(() => {
-    try {
-      return localStorage.getItem("fielddraft.compact") === "true";
-    } catch {
-      return false;
-    }
-  });
+  const [settings, setSettings] = useState<SettingsState>(() => loadSettings());
 
-  const toggleCompact = () => {
-    const next = !compact;
-    setCompact(next);
-    try {
-      localStorage.setItem("fielddraft.compact", String(next));
-    } catch {
-      // ignore
-    }
-  };
+  const compact = settings.compact;
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
@@ -162,14 +150,10 @@ export function App() {
       <header className="topbar">
         <div className="title">
           FieldDraft
-          <button
-            type="button"
-            className="compact-toggle"
-            title={compact ? "Expand toolbar" : "Compact toolbar"}
-            onClick={toggleCompact}
-          >
-            {compact ? "▸" : "◂"}
-          </button>
+          <SettingsMenu
+            settings={settings}
+            onSettingsChange={setSettings}
+          />
         </div>
         <div className="meta">
           {error ? (
@@ -182,6 +166,15 @@ export function App() {
               {state.sceneSize[0] > 0 || state.sceneSize[1] > 0 || state.sceneSize[2] > 0 ? (
                 <span className="scene-size" data-testid="scene-size">
                   {state.sceneSize[0].toFixed(1)} × {state.sceneSize[1].toFixed(1)} × {state.sceneSize[2].toFixed(1)} mm
+                </span>
+              ) : null}
+              {state.transientError ? (
+                <span
+                  className="transient-error"
+                  data-testid="transient-error"
+                  role="alert"
+                >
+                  ⚠ {state.transientError}
                 </span>
               ) : null}
             </>
