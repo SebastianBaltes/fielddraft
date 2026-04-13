@@ -1263,6 +1263,22 @@ export class KernelStore {
     this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
   }
 
+  toggleConstraintDriven(index: number): void {
+    const session = this.state.sketchSession;
+    const call = session.subCalls[index];
+    if (!call) return;
+    const isDimensional =
+      call.type === "sketch_constraint_distance" ||
+      call.type === "sketch_constraint_angle";
+    if (!isDimensional) return;
+    const next = [...session.subCalls];
+    next[index] = {
+      ...call,
+      params: { ...call.params, driven: !call.params.driven },
+    };
+    this.updateSketch({ ...session, subCalls: next });
+  }
+
   /**
    * K6b.3a: commit the current sketch session to the kernel as
    * a real `sketch` FeatureCall. Called from the "Finish"

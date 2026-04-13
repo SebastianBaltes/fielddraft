@@ -21,6 +21,8 @@ import {
   buildDefaultDefinition,
   type FeatureSchema,
 } from "./widgets/schema";
+import { countDegreesOfFreedom } from "./solver/dofPreflight";
+import { buildDraftSketchState } from "./sketchSession";
 
 const OP_LABEL: Record<BoolOpName, string> = {
   union: "+",
@@ -581,27 +583,10 @@ export function Outliner({ store, state }: OutlinerProps) {
               })}
             </ul>
           ) : null}
-          {(() => {
-            const constraints = sketchSession.subCalls.filter((c) =>
-              c.type.startsWith("sketch_constraint"),
-            );
-            if (constraints.length === 0) return null;
-            const counts: Record<string, number> = {};
-            for (const c of constraints) {
-              const label = c.type.replace("sketch_constraint_", "");
-              counts[label] = (counts[label] ?? 0) + 1;
-            }
-            return (
-              <div className="constraint-summary" data-testid="constraint-summary">
-                <span className="label">Constraints:</span>
-                {Object.entries(counts).map(([k, v]) => (
-                  <span key={k} className="badge">
-                    {k} ×{v}
-                  </span>
-                ))}
-              </div>
-            );
-          })()}
+          <ConstraintManagerPanel
+            subCalls={sketchSession.subCalls}
+            store={store}
+          />
         </section>
       ) : null}
       {!sketchSession.active ? (
@@ -1151,6 +1136,160 @@ function FeatureContextMenu({
         () => store.removeFeature(featureId),
         "context-delete",
         true,
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  K7.21d: Constraint Manager Panel                                   */
+/* ------------------------------------------------------------------ */
+
+function ConstraintManagerPanel({
+  subCalls,
+  store,
+}: {
+  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>;
+  store: KernelStore;
+}) {
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    index: number;
+    isDriven: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [contextMenu]);
+
+  const constraintEntries = subCalls
+    .map((call, index) => ({ call, index }))
+    .filter(({ call }) => call.type.startsWith("sketch_constraint"));
+
+  if (constraintEntries.length === 0) return null;
+
+  const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
+  const dof = countDegreesOfFreedom(skState);
+  const dofLabel =
+    dof > 0 ? `Under-constrained (${dof} DoF)` :
+    dof === 0 ? "Fully constrained" :
+    `Over-constrained (${Math.abs(dof)} excess)`;
+  const dofClass =
+    dof > 0 ? "dof-under" :
+    dof === 0 ? "dof-full" :
+    "dof-over";
+
+  const counts: Record<string, number> = {};
+  for (const { call } of constraintEntries) {
+    const label = call.type.replace("sketch_constraint_", "");
+    counts[label] = (counts[label] ?? 0) + 1;
+  }
+
+  return (
+    <div className="constraint-manager" data-testid="constraint-manager">
+      <div className="header">
+        <span>Constraints</span>
+        <span className={`dof-badge ${dofClass}`} data-testid="dof-badge">
+          {dofLabel}
+        </span>
+      </div>
+
+      <div className="constraint-summary" data-testid="constraint-summary">
+        {Object.entries(counts).map(([k, v]) => (
+          <span key={k} className="badge">
+            {k} ×{v}
+          </span>
+        ))}
+      </div>
+
+      <ul className="constraint-list" data-testid="constraint-list">
+        {constraintEntries.map(({ call, index }) => {
+          const isDimensional =
+            call.type === "sketch_constraint_distance" ||
+            call.type === "sketch_constraint_angle";
+          const isDriven = isDimensional && Boolean(call.params.driven);
+          const value = isDimensional
+            ? call.type === "sketch_constraint_distance"
+              ? `${call.params.value_mm ?? "?"} mm`
+              : `${call.params.value_deg ?? "?"}°`
+            : null;
+
+          return (
+            <li
+              key={index}
+              className={
+                "constraint-row" +
+                (isDriven ? " is-driven" : "") +
+                (isDimensional ? " is-dimensional" : "")
+              }
+              data-testid={`constraint-row-${index}`}
+              onContextMenu={(e) => {
+                if (!isDimensional) return;
+                e.preventDefault();
+                setContextMenu({
+                  x: e.clientX,
+                  y: e.clientY,
+                  index,
+                  isDriven,
+                });
+              }}
+            >
+              <span className="glyph">
+                {SKETCH_SUB_GLYPH[call.type] ?? "?"}
+              </span>
+              <span className="name">
+                {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_constraint_", "")}
+              </span>
+              {value && (
+                <span className="value">{value}</span>
+              )}
+              {isDimensional && (
+                <span
+                  className={"driven-tag" + (isDriven ? " is-driven" : "")}
+                  title={isDriven ? "Driven (informational)" : "Driving (controls geometry)"}
+                >
+                  {isDriven ? "D" : "⏚"}
+                </span>
+              )}
+              <button
+                type="button"
+                className="row-delete"
+                title="Delete constraint"
+                data-testid={`constraint-delete-${index}`}
+                onClick={() => store.removeSketchSubCall(index)}
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {contextMenu && (
+        <div
+          className="constraint-context-menu"
+          data-testid="constraint-context-menu"
+          style={{
+            position: "fixed",
+            left: contextMenu.x,
+            top: contextMenu.y,
+          }}
+        >
+          <button
+            type="button"
+            data-testid="toggle-driven"
+            onClick={() => {
+              store.toggleConstraintDriven(contextMenu.index);
+              setContextMenu(null);
+            }}
+          >
+            {contextMenu.isDriven ? "Change to Driving" : "Change to Driven"}
+          </button>
+        </div>
       )}
     </div>
   );
