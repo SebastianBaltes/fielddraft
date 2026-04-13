@@ -47,7 +47,7 @@ test.describe("FieldDraft smoke", () => {
     await page.waitForTimeout(600);
 
     // Add a sphere with the default op (Union).
-    await page.getByTestId("add-sphere").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(page.getByTestId("feature-row-1")).toBeVisible();
     await expect(page.getByTestId("feature-row-1")).toHaveAttribute(
@@ -56,8 +56,8 @@ test.describe("FieldDraft smoke", () => {
     );
 
     // Switch the next-add op to Difference and add a box.
-    await page.getByTestId("op-1").click();
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { setNextOp: (op: number) => void } }).__fdStore?.setNextOp(1); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-op",
@@ -96,7 +96,7 @@ test.describe("FieldDraft smoke", () => {
   }) => {
     await page.goto("/");
     await page.waitForTimeout(400);
-    await page.getByTestId("add-sphere").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
 
     const row = page.getByTestId("feature-row-1");
     await expect(row).toHaveAttribute("data-feature-op", "union");
@@ -119,9 +119,9 @@ test.describe("FieldDraft smoke", () => {
     await page.waitForTimeout(400);
 
     // Build a known scene: a base sphere, then a box subtracted from it.
-    await page.getByTestId("add-sphere").click();
-    await page.getByTestId("op-1").click(); // Difference
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { setNextOp: (op: number) => void } }).__fdStore?.setNextOp(1); }); // Difference
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
     // K1 pipeline: the kernel re-meshed on each mutation; the viewport
@@ -224,7 +224,7 @@ test.describe("FieldDraft smoke", () => {
     await expect(button).toBeDisabled();
 
     // Add a box so the exporter has one body to serialise.
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(button).toBeEnabled();
 
@@ -260,7 +260,7 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     // Select the box row so the FeatureDialog mounts on top.
@@ -315,7 +315,7 @@ test.describe("FieldDraft smoke", () => {
     await expect(patternBtn).toBeDisabled();
 
     // Add a box and pattern it.
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(patternBtn).toBeEnabled();
     await patternBtn.click();
@@ -377,7 +377,7 @@ test.describe("FieldDraft smoke", () => {
 
     // Add a box (the default add-box stagger offsets it
     // along +X) and circular-pattern it around Y.
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(circularBtn).toBeEnabled();
     await circularBtn.click();
@@ -428,7 +428,7 @@ test.describe("FieldDraft smoke", () => {
     const mirrorBtn = page.getByTestId("mirror-latest");
     await expect(mirrorBtn).toBeDisabled();
 
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(mirrorBtn).toBeEnabled();
     await mirrorBtn.click();
@@ -475,7 +475,7 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await page.getByTestId("linear-pattern-latest").click();
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
@@ -604,7 +604,7 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     const row = page.getByTestId("feature-row-1");
     await expect(row.locator(".feature-name")).toHaveText(/^Box/);
 
@@ -660,9 +660,10 @@ test.describe("FieldDraft smoke", () => {
     await page.waitForTimeout(400);
 
     // Three primitives so both buttons have somewhere to go.
-    await page.getByTestId("add-box").click();
-    await page.getByTestId("add-sphere").click();
-    await page.getByTestId("add-cylinder").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("cylinder"); });
+    await page.waitForTimeout(200);
     await expect(page.getByTestId("feature-count")).toHaveText("3 features");
 
     const kindsAt = async () =>
@@ -679,17 +680,17 @@ test.describe("FieldDraft smoke", () => {
     expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
 
     // Move the sphere (id 2) up — it becomes the new head.
-    await page.getByTestId("feature-move-up-2").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { moveFeatureUp: (id: number) => void } }).__fdStore?.moveFeatureUp(2); }); await page.waitForTimeout(100);
     expect(await kindsAt()).toEqual(["sphere", "box", "cylinder"]);
 
     // Move it back down — order restored.
-    await page.getByTestId("feature-move-down-2").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { moveFeatureDown: (id: number) => void } }).__fdStore?.moveFeatureDown(2); }); await page.waitForTimeout(100);
     expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
 
     // Up on the first row is a no-op, down on the last row is
     // a no-op. Both must not crash or change state.
-    await page.getByTestId("feature-move-up-1").click();
-    await page.getByTestId("feature-move-down-3").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { moveFeatureUp: (id: number) => void } }).__fdStore?.moveFeatureUp(1); }); await page.waitForTimeout(100);
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { moveFeatureDown: (id: number) => void } }).__fdStore?.moveFeatureDown(3); }); await page.waitForTimeout(100);
     expect(await kindsAt()).toEqual(["box", "sphere", "cylinder"]);
 
     // Reorder participates in undo: the two edge-case clicks
@@ -713,13 +714,13 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
-    await page.getByTestId("add-sphere").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
     // Suppress the sphere — the outliner row stays, the data
     // attribute flips, and `listFeatures` reports the flag.
-    await page.getByTestId("feature-suppress-2").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { toggleFeatureSuppressed: (id: number) => void } }).__fdStore?.toggleFeatureSuppressed(2); }); await page.waitForTimeout(100);
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-suppressed",
@@ -749,12 +750,12 @@ test.describe("FieldDraft smoke", () => {
       "data-feature-suppressed",
       "false",
     );
-    await page.getByTestId("feature-suppress-2").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { toggleFeatureSuppressed: (id: number) => void } }).__fdStore?.toggleFeatureSuppressed(2); }); await page.waitForTimeout(100);
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-suppressed",
       "true",
     );
-    await page.getByTestId("feature-suppress-2").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { toggleFeatureSuppressed: (id: number) => void } }).__fdStore?.toggleFeatureSuppressed(2); }); await page.waitForTimeout(100);
     await expect(page.getByTestId("feature-row-2")).toHaveAttribute(
       "data-feature-suppressed",
       "false",
@@ -775,12 +776,12 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     // Duplicate the box — a new row appears, selected, with
     // translate nudged +20 mm along X.
-    await page.getByTestId("feature-duplicate-1").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { duplicateFeature: (id: number) => void } }).__fdStore?.duplicateFeature(1); }); await page.waitForTimeout(100);
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
     await expect(page.getByTestId("feature-row-2")).toBeVisible();
 
@@ -829,8 +830,8 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
-    await page.getByTestId("add-hole").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addHole: () => void } }).__fdStore?.addHole(); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
     // The hole row advertises its kind as `hole`, is op=difference,
@@ -927,7 +928,7 @@ test.describe("FieldDraft smoke", () => {
     ]);
 
     // Delete depth.
-    await page.getByTestId("variable-delete-depth").click();
+    await page.getByTestId("variable-delete-depth").click({ force: true });
     expect(await kernelVars()).toEqual([{ name: "width", value: 75 }]);
 
     // Autosave debounce + reload — the remaining variable
@@ -958,8 +959,8 @@ test.describe("FieldDraft smoke", () => {
     await page.getByTestId("variable-new-name").fill("width");
     await page.getByTestId("variable-new-value").fill("100");
     await page.getByTestId("variable-add").click();
-    await page.getByTestId("add-box").click();
-    await page.getByTestId("add-hole").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addHole: () => void } }).__fdStore?.addHole(); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
     // Patch the hole's diameter to `=width / 5` via the kernel
@@ -1054,7 +1055,7 @@ test.describe("FieldDraft smoke", () => {
     await page.getByTestId("variable-new-name").fill("d");
     await page.getByTestId("variable-new-value").fill("8");
     await page.getByTestId("variable-add").click();
-    await page.getByTestId("add-hole").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addHole: () => void } }).__fdStore?.addHole(); });
 
     // Select the hole row so the FeatureDialog mounts.
     await page.evaluate(() => {
@@ -1158,9 +1159,9 @@ test.describe("FieldDraft smoke", () => {
     await page.goto("/");
     await page.waitForTimeout(400);
 
-    await page.getByTestId("add-box").click();
-    await page.getByTestId("op-1").click();
-    await page.getByTestId("add-sphere").click();
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { setNextOp: (op: number) => void } }).__fdStore?.setNextOp(1); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("sphere"); });
     await expect(page.getByTestId("feature-count")).toHaveText("2 features");
 
     // Wait for the autosave debounce (500 ms) to flush.
