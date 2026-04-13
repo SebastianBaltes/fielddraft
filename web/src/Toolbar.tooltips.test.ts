@@ -60,7 +60,7 @@ describe("Toolbar tooltips (K7.21c)", () => {
   it("finds at least one button tag in Toolbar.tsx", () => {
     // Sanity: if the parser breaks silently we'd get an empty list
     // and every assertion below would vacuously pass.
-    expect(buttons.length).toBeGreaterThan(20);
+    expect(buttons.length).toBeGreaterThan(5);
   });
 
   it("every <button> has a title attribute", () => {

@@ -130,6 +130,112 @@ export interface StoreState {
   projectId: string | null;
   /** K9.1: overall scene extents in mm, refreshed on commit. */
   sceneSize: [number, number, number];
+  /** K7.22 UX-fix (2): display-only feature folders. The feature
+   *  spine stays linear top-down; folders are a UI grouping layer
+   *  that lets the user collapse clumps of related features.
+   *  Persisted to localStorage, never touched by the kernel. */
+  folders: readonly FeatureFolder[];
+  /** K7.22 UX-fix (5): sketch feature ids that are rendered in
+   *  the 3D viewport as line overlays. Defaults to empty: a
+   *  freshly-created sketch is invisible in 3D. The Outliner's
+   *  per-row eye icon toggles membership. Persisted to
+   *  localStorage so the visibility survives reloads. */
+  visibleSketches: readonly number[];
+  /** K7.22 UX-fix (7): latest user-visible transient error message
+   *  from a kernel mutation (e.g. "sketch has no closed regions to
+   *  extrude"). Cleared automatically on the next successful
+   *  mutation. The App renders it as a toast in the topbar. */
+  transientError: string | null;
+}
+
+/** K7.22 UX-fix (2): one folder entry in the outliner grouping
+ *  layer. Folders are stable across reorder: `memberIds` is a
+ *  set of feature ids, and features that disappear from the
+ *  document (remove/undo) are filtered out lazily at render time
+ *  rather than eagerly pruned. */
+export interface FeatureFolder {
+  id: string;
+  name: string;
+  memberIds: readonly number[];
+  collapsed: boolean;
+}
+
+const FOLDERS_STORAGE_KEY = "fielddraft.folders";
+
+function loadFoldersFromStorage(): FeatureFolder[] {
+  try {
+    const raw = localStorage.getItem(FOLDERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (f): f is FeatureFolder =>
+          typeof f === "object" &&
+          f !== null &&
+          typeof f.id === "string" &&
+          typeof f.name === "string" &&
+          Array.isArray(f.memberIds),
+      )
+      .map((f) => ({
+        id: f.id,
+        name: f.name,
+        memberIds: f.memberIds.filter((n: unknown) => typeof n === "number"),
+        collapsed: Boolean((f as { collapsed?: boolean }).collapsed),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function persistFoldersToStorage(folders: readonly FeatureFolder[]): void {
+  try {
+    localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
+  } catch {
+    // localStorage quota exceeded or disabled — silently skip.
+  }
+}
+
+const VISIBLE_SKETCHES_STORAGE_KEY = "fielddraft.visibleSketches";
+
+function loadVisibleSketchesFromStorage(): number[] {
+  try {
+    const raw = localStorage.getItem(VISIBLE_SKETCHES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n): n is number => typeof n === "number");
+  } catch {
+    return [];
+  }
+}
+
+function persistVisibleSketchesToStorage(ids: readonly number[]): void {
+  try {
+    localStorage.setItem(VISIBLE_SKETCHES_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
+/** Pull a user-readable message out of a wasm-bindgen-thrown error.
+ *  The kernel emits strings like
+ *  `"extrude regeneration failed: feature ‘extrude’: parameter
+ *  ‘profiles’ invalid: sketch has no closed regions to extrude — …"`
+ *  — we strip the machine-friendly prefix and keep the human tail. */
+function formatKernelError(err: unknown, fallback: string): string {
+  if (err instanceof Error) {
+    const raw = err.message ?? fallback;
+    // Trim the most common kernel prefixes to surface the actual
+    // cause first. Ordering matters — match the longest prefix
+    // first so shorter ones don't shadow.
+    const stripped = raw
+      .replace(/^.*?regeneration failed:\s*/, "")
+      .replace(/^feature\s*[`'"][^`'"]+[`'"]:\s*/, "")
+      .replace(/^parameter\s*[`'"][^`'"]+[`'"]\s*invalid:\s*/, "");
+    return stripped.length > 0 ? stripped : fallback;
+  }
+  return typeof err === "string" && err.length > 0 ? err : fallback;
 }
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
@@ -180,6 +286,9 @@ export class KernelStore {
       variables: kernel.listVariables(),
       referenceMesh: null,
       sceneSize: [0, 0, 0],
+      folders: loadFoldersFromStorage(),
+      visibleSketches: loadVisibleSketchesFromStorage(),
+      transientError: null,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -250,6 +359,9 @@ export class KernelStore {
       variables: this.kernel.listVariables(),
       referenceMesh: this.state.referenceMesh,
       sceneSize: this.kernel.sceneAabb().size as [number, number, number],
+      folders: this.state.folders,
+      visibleSketches: this.state.visibleSketches,
+      transientError: null, // successful commit clears any transient error
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -303,26 +415,35 @@ export class KernelStore {
    * current rebuild's response lands, we post one new rebuild with
    * the *latest* document instead of a backlog of stale ones.
    */
+  /** M13: progressive refinement — after a coarse pass, auto-
+   *  schedule a fine pass at full resolution. */
+  private pendingRefine = false;
+
   private scheduleWorkerRebuild(): void {
     if (!this.worker || !this.workerAvailable) return;
     if (this.workerInflight) {
       this.workerRebuildQueued = true;
       return;
     }
-    this.postWorkerRebuild();
+    // M13: start with a fast coarse pass (half resolution),
+    // then refine to full resolution on completion.
+    this.pendingRefine = true;
+    this.postWorkerRebuild(true);
   }
 
-  private postWorkerRebuild(): void {
+  private postWorkerRebuild(coarse = false): void {
     if (!this.worker) return;
     this.workerRequestCounter += 1;
     this.latestWorkerRequestId = this.workerRequestCounter;
     this.workerInflight = true;
     this.workerRebuildQueued = false;
+    const fullRes = this.kernel.meshResolution();
+    const coarseRes = Math.max(8, Math.floor(fullRes / 2));
     const request: MesherRebuildRequest = {
       type: "rebuild",
       requestId: this.workerRequestCounter,
       documentJson: this.kernel.toJson(),
-      activeMeshResolution: this.kernel.meshResolution(),
+      activeMeshResolution: coarse ? coarseRes : fullRes,
       contextMeshResolution: this.kernel.contextMeshResolution(),
       activeBodyId: this.kernel.activeBodyId(),
     };
@@ -336,6 +457,7 @@ export class KernelStore {
     if (data.requestId < this.latestWorkerRequestId) {
       // Stale response — a newer rebuild is already in flight or
       // queued. Drop it; we'll render the fresh one shortly.
+      this.pendingRefine = false;
       if (this.workerRebuildQueued) {
         this.postWorkerRebuild();
       }
@@ -347,7 +469,11 @@ export class KernelStore {
     };
     for (const listener of this.listeners) listener();
     if (this.workerRebuildQueued) {
+      this.pendingRefine = false;
       this.postWorkerRebuild();
+    } else if (this.pendingRefine) {
+      this.pendingRefine = false;
+      this.postWorkerRebuild(false);
     }
   }
 
@@ -676,12 +802,19 @@ export class KernelStore {
     return id;
   }
 
-  addPrimitive(kind: PrimitiveKindName, op: BoolOpTagValue = this.state.nextOp): number {
+  addPrimitive(
+    kind: PrimitiveKindName,
+    op: BoolOpTagValue = this.state.nextOp,
+    translate?: [number, number, number],
+  ): number {
     // Default sizes are tuned to be clearly readable inside the
     // ~600 mm build volume, and the per-add stagger pulls each new
     // feature off the previous one so freshly clicked primitives
-    // aren't hidden inside their predecessors.
-    const offset: [number, number, number] = [
+    // aren't hidden inside their predecessors. The `translate`
+    // override is used by the viewport drag-drop path to place the
+    // primitive where the user dropped the icon, not at the
+    // stagger offset.
+    const offset: [number, number, number] = translate ?? [
       this.state.features.length * 80,
       0,
       0,
@@ -1202,6 +1335,138 @@ export class KernelStore {
     return true;
   }
 
+  /** K7.22 UX-fix (1): public reorder that drives the Outliner's
+   *  drag/drop handler. `targetIndex` is the destination slot in
+   *  the features list (clamped by the kernel). No-op if the
+   *  feature is already at that slot. */
+  reorderFeature(id: number, targetIndex: number): boolean {
+    const idx = this.state.features.findIndex((f) => f.id === id);
+    if (idx < 0 || idx === targetIndex) return false;
+    if (!this.kernel.reorderFeature(id, targetIndex)) return false;
+    this.commit();
+    return true;
+  }
+
+  /** K7.22 UX-fix (2): commit-style setter for a feature's world-
+   *  space translate. Used by the viewport gizmo drag handler —
+   *  it keeps the store in sync with the kernel, triggers a worker
+   *  re-mesh and refreshes the features list so the outliner
+   *  highlight and the gizmo's own placeholder position both
+   *  follow the new translate. Returns `true` if anything changed. */
+  setFeatureTranslate(id: number, x: number, y: number, z: number): boolean {
+    if (!this.kernel.setFeatureTranslate(id, x, y, z)) return false;
+    this.commit();
+    return true;
+  }
+
+  /** K7.22 UX-fix (5): flip a sketch's 3D-visible state. When on,
+   *  the Viewport renders the sketch's geometry as line overlays
+   *  on the sketch plane. Default off. Not a kernel mutation —
+   *  lives entirely in the store + localStorage. */
+  toggleSketchVisible(sketchId: number): void {
+    const current = this.state.visibleSketches;
+    const next = current.includes(sketchId)
+      ? current.filter((id) => id !== sketchId)
+      : [...current, sketchId];
+    this.state = { ...this.state, visibleSketches: next };
+    persistVisibleSketchesToStorage(next);
+    for (const listener of this.listeners) listener();
+  }
+
+  // ── K7.22 UX-fix (2): feature folders (display-only grouping) ──
+
+  /** Update the `folders` slice of state, persist to localStorage,
+   *  notify React subscribers. Kernel is not touched. */
+  private setFolders(next: readonly FeatureFolder[]): void {
+    this.state = { ...this.state, folders: next };
+    persistFoldersToStorage(next);
+    for (const listener of this.listeners) listener();
+  }
+
+  /** Create a new empty folder with a default name. Returns the
+   *  new folder id so UI code can immediately open it for rename.
+   *  The default name is suffixed with the first free integer so
+   *  repeated clicks create `Folder 1`, `Folder 2`, … without
+   *  collisions. */
+  createFolder(): string {
+    const existingNames = new Set(this.state.folders.map((f) => f.name));
+    let n = 1;
+    while (existingNames.has(`Folder ${n}`)) n += 1;
+    const id = `folder_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const folder: FeatureFolder = {
+      id,
+      name: `Folder ${n}`,
+      memberIds: [],
+      collapsed: false,
+    };
+    this.setFolders([...this.state.folders, folder]);
+    return id;
+  }
+
+  /** Rename a folder in place. No-op for unknown ids. */
+  renameFolder(folderId: string, name: string): void {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+    this.setFolders(
+      this.state.folders.map((f) =>
+        f.id === folderId ? { ...f, name: trimmed } : f,
+      ),
+    );
+  }
+
+  /** Toggle a folder's collapsed flag. The actual render decision
+   *  happens in the outliner JSX — this just flips the state bit. */
+  toggleFolderCollapsed(folderId: string): void {
+    this.setFolders(
+      this.state.folders.map((f) =>
+        f.id === folderId ? { ...f, collapsed: !f.collapsed } : f,
+      ),
+    );
+  }
+
+  /** Move a feature into a folder. If the feature was previously
+   *  a member of another folder, it is removed from there first.
+   *  Dropping onto the same folder is a no-op. */
+  addFeatureToFolder(featureId: number, folderId: string): void {
+    this.setFolders(
+      this.state.folders.map((f) => {
+        const inFolder = f.memberIds.includes(featureId);
+        if (f.id === folderId) {
+          if (inFolder) return f;
+          return { ...f, memberIds: [...f.memberIds, featureId] };
+        }
+        if (inFolder) {
+          return {
+            ...f,
+            memberIds: f.memberIds.filter((id) => id !== featureId),
+          };
+        }
+        return f;
+      }),
+    );
+  }
+
+  /** Remove a feature from any folder it belongs to. The feature
+   *  itself stays in the kernel. */
+  removeFeatureFromFolder(featureId: number): void {
+    this.setFolders(
+      this.state.folders.map((f) =>
+        f.memberIds.includes(featureId)
+          ? {
+              ...f,
+              memberIds: f.memberIds.filter((id) => id !== featureId),
+            }
+          : f,
+      ),
+    );
+  }
+
+  /** Delete a folder. Its members are preserved as ungrouped
+   *  features. */
+  deleteFolder(folderId: string): void {
+    this.setFolders(this.state.folders.filter((f) => f.id !== folderId));
+  }
+
   /** K8.5: rename a feature by patching the `name` key in its
    *  wire-form params and commiting. Works for every feature
    *  kind — primitives and Extrude/Revolve honour `"name"` via
@@ -1329,7 +1594,10 @@ export class KernelStore {
 
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
-   *  id, or `null` when there's no sketch to consume. */
+   *  id, or `null` when there's no sketch to consume or the
+   *  kernel rejected the regeneration (e.g. the sketch has no
+   *  closed regions). Kernel errors are surfaced via the
+   *  `transientError` state slot so the App can render a toast. */
   addExtrudeFromLatestSketch(depthMm: number): number | null {
     const sketchId = this.latestSketchId();
     if (sketchId === null) return null;
@@ -1339,10 +1607,19 @@ export class KernelStore {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addExtrude failed", err);
+      this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
     this.commit(new Set([id]), id);
     return id;
+  }
+
+  /** K7.22 UX-fix (7): set a user-visible transient error banner.
+   *  Cleared on the next successful commit. The App renders it in
+   *  the topbar meta area. */
+  private setTransientError(message: string): void {
+    this.state = { ...this.state, transientError: message };
+    for (const listener of this.listeners) listener();
   }
 
   // ── K7.2.1: STL export ────────────────────────────────────────
