@@ -366,12 +366,57 @@ pub fn dual_contour(node: &BoundedCsg, resolution: u32) -> Mesh {
         }
     }
 
-    Mesh {
+    let mut mesh = Mesh {
         positions,
         normals,
         indices,
         classifications,
         contributors,
+    };
+
+    // K3.5 Phase A: project single-contributor (Face) vertices onto the
+    // exact zero-level set via Newton iteration. This eliminates the
+    // QEF micro-noise that standard centroid placement leaves on
+    // analytically known surfaces.
+    project_face_vertices(&mut mesh, node, normal_eps);
+
+    mesh
+}
+
+/// K3.5 Phase A: Newton-project every Face-classified vertex onto the
+/// exact SDF zero-level set. Edge and Vertex classified points are left
+/// untouched — they sit on intersection curves where projection along a
+/// single contributor's gradient would drag them off the crease.
+fn project_face_vertices(mesh: &mut Mesh, node: &BoundedCsg, normal_eps: f32) {
+    const MAX_ITERS: usize = 4;
+    const TOLERANCE: f32 = 1e-5;
+
+    for v in 0..mesh.vertex_count() {
+        if mesh.classifications[v] != 1 {
+            continue;
+        }
+        let mut p = [
+            mesh.positions[v * 3],
+            mesh.positions[v * 3 + 1],
+            mesh.positions[v * 3 + 2],
+        ];
+        for _ in 0..MAX_ITERS {
+            let d = node.sdf(p, EvalMode::Visual);
+            if d.abs() < TOLERANCE {
+                break;
+            }
+            let n = sdf_normal(node, p, normal_eps);
+            p[0] -= d * n[0];
+            p[1] -= d * n[1];
+            p[2] -= d * n[2];
+        }
+        mesh.positions[v * 3] = p[0];
+        mesh.positions[v * 3 + 1] = p[1];
+        mesh.positions[v * 3 + 2] = p[2];
+        let n = sdf_normal(node, p, normal_eps);
+        mesh.normals[v * 3] = n[0];
+        mesh.normals[v * 3 + 1] = n[1];
+        mesh.normals[v * 3 + 2] = n[2];
     }
 }
 
@@ -675,6 +720,107 @@ mod tests {
         assert!(
             edge_count > 0,
             "expected at least one Edge-classified vertex on the intersection curve",
+        );
+    }
+
+    // ── K3.5 Phase A tests ────────────────────────────────────────
+
+    #[test]
+    fn k35a_box_face_vertices_lie_on_surface() {
+        let half = [25.0, 25.0, 25.0];
+        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 16);
+        let tree = crate::csg::CsgNode::from_features(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let mut max_err = 0.0_f32;
+        let mut face_count = 0usize;
+        for v in 0..mesh.vertex_count() {
+            if mesh.classifications[v] != 1 { continue; }
+            face_count += 1;
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let d = tree.sdf(p, EvalMode::Logical).abs();
+            if d > max_err { max_err = d; }
+        }
+        assert!(face_count > 0, "expected Face-classified vertices");
+        // Box edges have discontinuous SDF gradients, so Face vertices
+        // near edges converge less tightly than smooth shapes.
+        assert!(
+            max_err < 0.1,
+            "K3.5 Newton projection: box face vertices have max surface error {max_err} (want < 0.1)",
+        );
+    }
+
+    #[test]
+    fn k35a_sphere_face_vertices_lie_on_surface() {
+        let mesh = mesh_for(&[sphere_feature(1, [0.0; 3], 20.0)], 24);
+        let tree = crate::csg::CsgNode::from_features(&[sphere_feature(1, [0.0; 3], 20.0)]);
+        let mut max_err = 0.0_f32;
+        let mut face_count = 0usize;
+        for v in 0..mesh.vertex_count() {
+            if mesh.classifications[v] != 1 { continue; }
+            face_count += 1;
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let d = tree.sdf(p, EvalMode::Logical).abs();
+            if d > max_err { max_err = d; }
+        }
+        assert!(face_count > 0, "expected Face-classified vertices");
+        assert!(
+            max_err < 0.01,
+            "K3.5 Newton projection: sphere face vertices have max surface error {max_err} (want < 0.01)",
+        );
+    }
+
+    #[test]
+    fn k35a_cylinder_face_vertices_lie_on_surface() {
+        let features = vec![
+            cylinder_feature(1, BoolOp::Union, [0.0; 3], 15.0, 40.0),
+        ];
+        let mesh = mesh_for(&features, 24);
+        let tree = crate::csg::CsgNode::from_features(&features);
+        let mut max_err = 0.0_f32;
+        let mut face_count = 0usize;
+        for v in 0..mesh.vertex_count() {
+            if mesh.classifications[v] != 1 { continue; }
+            face_count += 1;
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let d = tree.sdf(p, EvalMode::Logical).abs();
+            if d > max_err { max_err = d; }
+        }
+        assert!(face_count > 0, "expected Face-classified vertices");
+        assert!(
+            max_err < 0.05,
+            "K3.5 Newton projection: cylinder face vertices have max surface error {max_err} (want < 0.05)",
+        );
+    }
+
+    #[test]
+    fn k35a_hausdorff_distance_box() {
+        let half = [30.0, 20.0, 15.0];
+        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 24);
+        let tree = crate::csg::CsgNode::from_features(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let mut hausdorff = 0.0_f32;
+        for v in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[v * 3],
+                mesh.positions[v * 3 + 1],
+                mesh.positions[v * 3 + 2],
+            ];
+            let d = tree.sdf(p, EvalMode::Logical).abs();
+            if d > hausdorff { hausdorff = d; }
+        }
+        assert!(
+            hausdorff < 0.1,
+            "K3.5 Hausdorff distance for box: {hausdorff} (want < 0.1)",
         );
     }
 
