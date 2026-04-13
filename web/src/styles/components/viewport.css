@@ -57,6 +57,10 @@
     color: var(--color-text-muted);
     pointer-events: none;
 
+    &.is-idle {
+      display: none;
+    }
+
     &[data-pick-hit="true"] {
       color: var(--color-text);
     }
@@ -99,5 +103,21 @@
     font-weight: var(--fw-semibold);
     color: var(--color-accent);
     pointer-events: none;
+  }
+
+  & > .face-pick-hud {
+    position: absolute;
+    top: var(--space-4);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: var(--space-2) var(--space-5);
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    font-size: var(--fs-base);
+    color: var(--color-accent);
+    pointer-events: none;
+    white-space: nowrap;
   }
 }

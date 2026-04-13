@@ -28,7 +28,11 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera } from "@react-three/drei";
+import {
+  OrbitControls,
+  OrthographicCamera,
+  TransformControls,
+} from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
@@ -36,6 +40,11 @@ import type { PickResult } from "./kernel";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { consumeViewCommand, VIEW_PRESETS } from "./viewCommands";
+import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import {
+  publishPickCamera,
+  getPublishedPickCamera,
+} from "./pickCameraBridge";
 
 /** World-space size of the build-volume reference grid (mm). Matches
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
@@ -321,10 +330,372 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
+      <SelectionTransformGizmo />
+      <SketchOverlay3D />
+      <Invalidator ndc={ndc} />
       {/* Build-volume floor reference. */}
       <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
     </>
   );
+}
+
+/**
+ * Render every sketch whose id is in `state.visibleSketches` as
+ * a set of world-space line overlays on its sketch plane. Sketches
+ * are invisible in the 3D viewport by default (the 2D editor is
+ * the canonical authoring surface); turning on the eye icon in
+ * the outliner flips membership in the store's visibleSketches
+ * list, and this component renders the geometry by reading the
+ * sketch's committed `sub_calls` directly from the kernel.
+ *
+ * Supported sub-call primitives in K7.22:
+ *   - `sketch_line` — single segment
+ *   - `sketch_rectangle` — 4-segment axis-aligned rectangle
+ *   - `sketch_circle` — discretised circle (64 segments)
+ *   - `sketch_polygon` — n-gon
+ *   - `sketch_arc` — discretised arc
+ * Points, constraints, and modifier tools (trim/mirror/offset)
+ * are intentionally skipped — they don't contribute geometry.
+ */
+function SketchOverlay3D() {
+  const { store, state } = useKernelStore();
+  const visibleSketches = state?.visibleSketches;
+
+  const geometries = useMemo(() => {
+    if (!store || !visibleSketches || visibleSketches.length === 0) return [];
+    const out: {
+      id: number;
+      geometry: THREE.BufferGeometry;
+    }[] = [];
+    for (const sketchId of visibleSketches) {
+      try {
+        const params = store.kernel.getFeatureCallParams(sketchId) as {
+          plane?: string;
+          sub_calls?: Array<{ type: string; params: Record<string, unknown> }>;
+        };
+        const plane = parseSketchPlane(params.plane ?? "");
+        const points = collectSketchLineSegments(params.sub_calls ?? [], plane);
+        if (points.length === 0) continue;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(points, 3),
+        );
+        out.push({ id: sketchId, geometry });
+      } catch {
+        // Kernel rejected the id (not a sketch, deleted, etc.) —
+        // silently skip; the outliner will clear its eye toggle
+        // on the next commit if the sketch is gone.
+      }
+    }
+    return out;
+  }, [store, visibleSketches, state?.features]);
+
+  // Dispose old geometries when the list changes.
+  useEffect(() => {
+    return () => {
+      for (const g of geometries) g.geometry.dispose();
+    };
+  }, [geometries]);
+
+  if (geometries.length === 0) return null;
+
+  return (
+    <group>
+      {geometries.map(({ id, geometry }) => (
+        <lineSegments key={id} geometry={geometry}>
+          <lineBasicMaterial color="#2563eb" linewidth={2} />
+        </lineSegments>
+      ))}
+    </group>
+  );
+}
+
+/** Sketch plane descriptor — two orthonormal axes in world space
+ *  that the sketch's 2D (u, v) coordinates map onto. */
+type SketchPlane = {
+  u: [number, number, number];
+  v: [number, number, number];
+};
+
+function parseSketchPlane(query: string): SketchPlane {
+  // K7.22: only the three origin planes are supported here. Any
+  // other query (e.g. `qFaceOf(...)`) falls back to XY so the
+  // sketch at least renders instead of disappearing silently.
+  if (query.includes("origin_plane_xz")) {
+    return { u: [1, 0, 0], v: [0, 0, 1] };
+  }
+  if (query.includes("origin_plane_yz")) {
+    return { u: [0, 1, 0], v: [0, 0, 1] };
+  }
+  // Default: xy plane (z = 0).
+  return { u: [1, 0, 0], v: [0, 1, 0] };
+}
+
+/** Walk a sketch's committed sub_calls and emit a flat Float32
+ *  array of line segment endpoints (pairs of xyz). Each sub-call
+ *  that produces closed geometry (rectangle, circle, polygon,
+ *  arc) is expanded into its own segment list; lines are a
+ *  single segment. Unknown or modifier sub-calls are skipped. */
+function collectSketchLineSegments(
+  subCalls: Array<{ type: string; params: Record<string, unknown> }>,
+  plane: SketchPlane,
+): number[] {
+  const out: number[] = [];
+  const emit = (a: [number, number], b: [number, number]) => {
+    const ax = plane.u[0] * a[0] + plane.v[0] * a[1];
+    const ay = plane.u[1] * a[0] + plane.v[1] * a[1];
+    const az = plane.u[2] * a[0] + plane.v[2] * a[1];
+    const bx = plane.u[0] * b[0] + plane.v[0] * b[1];
+    const by = plane.u[1] * b[0] + plane.v[1] * b[1];
+    const bz = plane.u[2] * b[0] + plane.v[2] * b[1];
+    out.push(ax, ay, az, bx, by, bz);
+  };
+
+  const getVec2 = (v: unknown): [number, number] | null => {
+    if (Array.isArray(v) && v.length >= 2 && typeof v[0] === "number" && typeof v[1] === "number") {
+      return [v[0], v[1]];
+    }
+    return null;
+  };
+  const getNum = (v: unknown): number | null =>
+    typeof v === "number" ? v : null;
+
+  for (const call of subCalls) {
+    const p = call.params;
+    switch (call.type) {
+      case "sketch_line": {
+        const a = getVec2(p.start);
+        const b = getVec2(p.end);
+        if (a && b) emit(a, b);
+        break;
+      }
+      case "sketch_rectangle": {
+        const a = getVec2(p.corner_a);
+        const b = getVec2(p.corner_b);
+        if (a && b) {
+          const x0 = Math.min(a[0], b[0]);
+          const x1 = Math.max(a[0], b[0]);
+          const y0 = Math.min(a[1], b[1]);
+          const y1 = Math.max(a[1], b[1]);
+          emit([x0, y0], [x1, y0]);
+          emit([x1, y0], [x1, y1]);
+          emit([x1, y1], [x0, y1]);
+          emit([x0, y1], [x0, y0]);
+        }
+        break;
+      }
+      case "sketch_circle": {
+        const c = getVec2(p.center);
+        const r = getNum(p.radius);
+        if (c && r !== null && r > 0) {
+          const steps = 64;
+          let prev: [number, number] = [c[0] + r, c[1]];
+          for (let i = 1; i <= steps; i++) {
+            const t = (i / steps) * Math.PI * 2;
+            const next: [number, number] = [
+              c[0] + r * Math.cos(t),
+              c[1] + r * Math.sin(t),
+            ];
+            emit(prev, next);
+            prev = next;
+          }
+        }
+        break;
+      }
+      case "sketch_polygon": {
+        const verts = p.vertices;
+        if (Array.isArray(verts) && verts.length >= 2) {
+          const points: [number, number][] = [];
+          for (const v of verts) {
+            const xy = getVec2(v);
+            if (xy) points.push(xy);
+          }
+          for (let i = 0; i < points.length; i++) {
+            const a = points[i];
+            const b = points[(i + 1) % points.length];
+            emit(a, b);
+          }
+        }
+        break;
+      }
+      case "sketch_arc": {
+        const c = getVec2(p.center);
+        const r = getNum(p.radius);
+        const a0 = getNum(p.start_angle);
+        const a1 = getNum(p.end_angle);
+        if (c && r !== null && r > 0 && a0 !== null && a1 !== null) {
+          const steps = Math.max(8, Math.ceil((Math.abs(a1 - a0) / Math.PI) * 32));
+          let prev: [number, number] = [
+            c[0] + r * Math.cos(a0),
+            c[1] + r * Math.sin(a0),
+          ];
+          for (let i = 1; i <= steps; i++) {
+            const t = a0 + ((a1 - a0) * i) / steps;
+            const next: [number, number] = [
+              c[0] + r * Math.cos(t),
+              c[1] + r * Math.sin(t),
+            ];
+            emit(prev, next);
+            prev = next;
+          }
+        }
+        break;
+      }
+      // sketch_point / sketch_trim / sketch_mirror / sketch_offset /
+      // sketch_constraint_* — no line geometry, skip.
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Drag-to-translate gizmo for the currently selected body.
+ *
+ * Mounts a drei `<TransformControls>` attached to an invisible
+ * placeholder mesh positioned at the selected feature's translate.
+ * While the user drags the gizmo handle, the placeholder moves
+ * freely on the GPU side; on `mouseUp` we push the final world-
+ * space position back into the kernel via `setFeatureTranslate`,
+ * which triggers a re-mesh of the affected body. Rotation and
+ * scale handles are disabled in this first cut — the user's
+ * request only asked for translate, and the kernel's transform
+ * snap semantics for rotation on non-primitive features still
+ * need a separate slice to land cleanly.
+ *
+ * Gizmo vs. OrbitControls interference is handled automatically
+ * by drei's `<TransformControls>`: while a gizmo handle is being
+ * dragged, drei disables the default OrbitControls instance so
+ * the camera doesn't move with the drag.
+ */
+function SelectionTransformGizmo() {
+  const { store, state } = useKernelStore();
+  const meshRef = useRef<THREE.Mesh>(null);
+  // The latest *committed* translate for the selected feature.
+  // We only re-sync the placeholder mesh's position when this
+  // tuple changes — synchronising on every store state update
+  // would race with the TransformControls' own writes mid-drag.
+  const syncedTranslateRef = useRef<[number, number, number] | null>(null);
+
+  // Resolve the single selected feature. The gizmo only shows
+  // for single-selection; multi-select and no-selection both
+  // hide it.
+  const selectedFeature = useMemo(() => {
+    if (!state || state.selection.size !== 1) return undefined;
+    const first = state.selection.values().next().value;
+    if (first === undefined) return undefined;
+    return state.features.find((f) => f.id === first);
+  }, [state]);
+
+  // Sync the placeholder mesh with the feature's translate when:
+  //   (a) a different feature is selected (id change)
+  //   (b) the translate changed externally — via undo/redo, an
+  //       arrow-key nudge, or the feature dialog — rather than
+  //       from the gizmo itself.
+  // We compare the incoming translate against `syncedTranslateRef`
+  // so the onChange path below (which writes the placeholder
+  // position and also commits to the kernel, resulting in a new
+  // store state) doesn't clobber its own work during a drag.
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh || !selectedFeature) {
+      syncedTranslateRef.current = null;
+      return;
+    }
+    const [tx, ty, tz] = selectedFeature.translate;
+    const prev = syncedTranslateRef.current;
+    // Compare the committed translate against the last one we
+    // ourselves committed. If they match, the state change came
+    // *from* us (the gizmo) and we've already moved the mesh —
+    // no need to re-write it. If they differ, the source is
+    // external (undo, nudge, dialog) and we snap the placeholder.
+    if (!prev || prev[0] !== tx || prev[1] !== ty || prev[2] !== tz) {
+      mesh.position.set(tx, ty, tz);
+      syncedTranslateRef.current = [tx, ty, tz];
+    }
+  }, [selectedFeature]);
+
+  if (!selectedFeature || !store) return null;
+
+  // Live commit on every gizmo drag tick. drei's `onChange` fires
+  // continuously while the user drags a handle, so the kernel
+  // feature translate follows the mesh in real time and the
+  // worker re-meshes each step — the user sees the body move
+  // under the gizmo instead of snapping at mouseUp. The
+  // `syncedTranslateRef` bookkeeping above keeps the feedback
+  // loop stable: when our own commit bubbles back as a new
+  // `selectedFeature` object, the useEffect recognises the
+  // translate as self-originated and skips the mesh reset.
+  const handleGizmoChange = () => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const next: [number, number, number] = [
+      mesh.position.x,
+      mesh.position.y,
+      mesh.position.z,
+    ];
+    syncedTranslateRef.current = next;
+    store.setFeatureTranslate(selectedFeature.id, next[0], next[1], next[2]);
+  };
+
+  return (
+    <>
+      <mesh ref={meshRef} visible={false}>
+        <boxGeometry args={[1, 1, 1]} />
+      </mesh>
+      {meshRef.current ? (
+        <TransformControls
+          object={meshRef.current}
+          mode="translate"
+          size={0.75}
+          onObjectChange={handleGizmoChange}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * On-demand frame-loop orchestrator.
+ *
+ * The Canvas runs with `frameloop="demand"` so the browser tab stays
+ * idle when nothing changes. OrbitControls and other drei helpers call
+ * `invalidate()` themselves on user interaction; we only need to
+ * explicitly re-trigger a render when something *outside* the Canvas
+ * changes — new body meshes from the worker, or a pointer-move that
+ * updates the hover pick. Both come in through props/store and are
+ * watched here via `useEffect`.
+ */
+function Invalidator({ ndc }: { ndc: { x: number; y: number; active: boolean } }) {
+  const invalidate = useThree((s) => s.invalidate);
+  const { state } = useKernelStore();
+  const meshedBodies = state?.meshedBodies;
+  const sketchActive = state?.sketchSession.active ?? false;
+  const selection = state?.selection;
+  // K7.22 follow-up: toggling the sketch overlay must redraw the
+  // canvas on a demand-frameloop. Without this dep, the scene
+  // graph was updated correctly (SketchOverlay3D removed its
+  // <lineSegments>) but no frame was ever drawn to the GPU, so
+  // the hide-sketch click appeared to do nothing until the next
+  // unrelated interaction (hover, camera drag) redrew the canvas.
+  const visibleSketches = state?.visibleSketches;
+
+  useEffect(() => {
+    invalidate();
+  }, [
+    invalidate,
+    meshedBodies,
+    sketchActive,
+    selection,
+    visibleSketches,
+    ndc.x,
+    ndc.y,
+    ndc.active,
+  ]);
+
+  return null;
 }
 
 /**
@@ -342,6 +713,18 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
  */
 function CameraBridgePublisher() {
   const { camera, size, gl } = useThree();
+
+  // K7.22: publish the full camera ref for synchronous click-picks
+  // (the viewport host's onClick reads it). Must be kept in sync
+  // whenever R3F re-creates or swaps the camera (e.g. sketch-mode
+  // ortho → perspective round-trips).
+  useEffect(() => {
+    publishPickCamera(camera);
+    return () => {
+      publishPickCamera(null);
+    };
+  }, [camera]);
+
   useFrame(() => {
     const cam = camera as THREE.OrthographicCamera;
     // K6b.3 opening: plane is world XZ, so sketch coords map to
@@ -664,19 +1047,74 @@ export function Viewport() {
     setPickResult(null);
   };
 
-  const handleClick = (): void => {
+  const handleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     if (!store) return;
+
+    // K7.22 follow-up: re-do the pick *synchronously* at the
+    // exact click coordinates, using the camera the
+    // CameraBridgePublisher has been posting to the pickCameraBridge
+    // module. Relying on `pickResult` (React state, fed by the
+    // async `PickProbe.useFrame`) is wrong under `frameloop="demand"`:
+    // the last frame may not have run between the final pointer
+    // move and the click, so `pickResult` is stale or null and the
+    // click either picks the wrong body or selects nothing. A
+    // synchronous `kernel.pick` at the true click NDC is
+    // authoritative.
+    const host = hostRef.current;
+    const camera = getPublishedPickCamera();
+    let click: PickResult | null = null;
+    if (host && camera) {
+      const rect = host.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const cx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
+        const o = raycaster.ray.origin;
+        const d = raycaster.ray.direction;
+        click = store.kernel.pick(
+          [o.x, o.y, o.z],
+          [d.x, d.y, d.z],
+        );
+        // Mirror the fresh pick into the HUD so downstream readers
+        // (measure-mode preview, debug overlay) stay in sync.
+        setPickResult(click);
+      }
+    }
+
+    // K7.22 UX-fix: query-picker has priority over every other
+    // click mode. If a FeatureDialog query widget has armed itself
+    // via `queryPickerBridge.register`, convert the current pick
+    // result into a `qCreatedBy(feature_id)` expression and hand
+    // it to the widget instead of mutating the selection.
+    const picker = getActiveQueryPicker();
+    if (picker && click?.hit && click.contributors.length > 0) {
+      const contributor = click.contributors[0];
+      if (contributor > 0) {
+        const query = `qCreatedBy(${contributor})`;
+        const consumed = picker.onPick(query);
+        if (consumed) return;
+      }
+    }
+
+    // K7.21e: face-pick mode — click a face to set the sketch plane.
+    if (state?.facePickMode) {
+      if (click?.hit && click.contributors.length > 0) {
+        store.enterSketchFromFacePick(click.normal as [number, number, number]);
+      } else {
+        store.cancelFacePickMode();
+        store.enterSketch("qCreatedBy(origin_plane_xy)");
+      }
+      return;
+    }
 
     // Fillet mode: click on a surface → find nearest edge →
     // create fillet_edge feature.
-    if (state?.filletMode && pickResult?.hit && pickResult.contributors.length >= 2) {
-      const a = pickResult.contributors[0];
-      const b = pickResult.contributors[1];
+    if (state?.filletMode && click?.hit && click.contributors.length >= 2) {
+      const a = click.contributors[0];
+      const b = click.contributors[1];
       if (a > 0 && b > 0) {
-        const pt = pickResult.point;
-        // Use the hit point as both capsule endpoints (point
-        // fillet). A smarter version would find the nearest
-        // edge segment and use its full extent.
+        const pt = click.point;
         store.addFilletAtEdge(
           a,
           b,
@@ -689,28 +1127,26 @@ export function Viewport() {
     }
 
     // Measure mode: place points instead of selecting.
-    if (state?.measureMode && pickResult?.hit) {
+    if (state?.measureMode && click?.hit) {
       const pt: [number, number, number] = [
-        pickResult.point[0],
-        pickResult.point[1],
-        pickResult.point[2],
+        click.point[0],
+        click.point[1],
+        click.point[2],
       ];
       if (!measurePoints || measurePoints.b) {
-        // Start new measurement.
         setMeasurePoints({ a: pt });
       } else {
-        // Complete the measurement.
         setMeasurePoints({ ...measurePoints, b: pt });
       }
       return;
     }
 
-    if (!pickResult || !pickResult.hit) {
+    if (!click || !click.hit) {
       store.clearSelection();
       setMeasurePoints(null);
       return;
     }
-    const featureId = pickResult.contributors[0];
+    const featureId = click.contributors[0];
     if (featureId !== undefined && featureId > 0) {
       store.selectOnly(featureId);
     }
@@ -729,8 +1165,19 @@ export function Viewport() {
     if (kind) {
       type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
       const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism", "ellipsoid"];
+      // K7.22 UX-fix: place the new primitive where the user
+      // actually dropped the icon. The hover pick probe has been
+      // publishing the world-space hit point into `pickResult`
+      // throughout the drag, so using its `point` lands the
+      // primitive under the cursor when it's over an existing
+      // body or surface. For drops on empty space we fall back to
+      // the previous stagger-offset behaviour (the store does that
+      // automatically when `translate` is undefined).
+      const translate: [number, number, number] | undefined = pickResult?.hit
+        ? [pickResult.point[0], pickResult.point[1], pickResult.point[2]]
+        : undefined;
       if (valid.includes(kind as PrimName)) {
-        store.addPrimitive(kind as PrimName);
+        store.addPrimitive(kind as PrimName, undefined, translate);
       } else if (kind === "hole") {
         store.addHole();
       } else if (kind === "gyroid") {
@@ -772,6 +1219,7 @@ export function Viewport() {
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
+          frameloop="demand"
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
@@ -813,6 +1261,11 @@ export function Viewport() {
           )}
         </div>
       ) : null}
+      {state?.facePickMode && (
+        <div className="face-pick-hud" data-testid="face-pick-hud">
+          Click a face to set sketch plane — or press Esc for XY
+        </div>
+      )}
     </div>
   );
 }
@@ -825,14 +1278,17 @@ export function Viewport() {
  */
 function PickHud({ result }: { result: PickResult | null }) {
   if (!result || !result.hit) {
+    // No visible HUD while idle — the overlay used to print "no hover"
+    // as a debug readout, but that confused users into thinking it was
+    // a button. The `data-testid` marker stays so smoke tests that
+    // assert the HUD exists keep working.
     return (
       <div
-        className="pick-hud"
+        className="pick-hud is-idle"
         data-testid="fielddraft-pick-hud"
         data-pick-hit="false"
-      >
-        no hover
-      </div>
+        aria-hidden="true"
+      />
     );
   }
   const contributors = result.contributors.join(", ");

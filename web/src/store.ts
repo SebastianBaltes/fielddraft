@@ -146,6 +146,9 @@ export interface StoreState {
    *  extrude"). Cleared automatically on the next successful
    *  mutation. The App renders it as a toast in the topbar. */
   transientError: string | null;
+  /** K7.21e: face-pick mode — the next viewport click selects a
+   *  face to use as the sketch plane instead of defaulting to XY. */
+  facePickMode: boolean;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -223,6 +226,14 @@ function persistVisibleSketchesToStorage(ids: readonly number[]): void {
  *  `"extrude regeneration failed: feature ‘extrude’: parameter
  *  ‘profiles’ invalid: sketch has no closed regions to extrude — …"`
  *  — we strip the machine-friendly prefix and keep the human tail. */
+function normalToPlaneQuery(normal: [number, number, number]): string {
+  const [nx, ny, nz] = normal;
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  if (ay >= ax && ay >= az) return "qCreatedBy(origin_plane_xz)";
+  if (az >= ax && az >= ay) return "qCreatedBy(origin_plane_xy)";
+  return "qCreatedBy(origin_plane_yz)";
+}
+
 function formatKernelError(err: unknown, fallback: string): string {
   if (err instanceof Error) {
     const raw = err.message ?? fallback;
@@ -289,6 +300,7 @@ export class KernelStore {
       folders: loadFoldersFromStorage(),
       visibleSketches: loadVisibleSketchesFromStorage(),
       transientError: null,
+      facePickMode: false,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -362,6 +374,7 @@ export class KernelStore {
       folders: this.state.folders,
       visibleSketches: this.state.visibleSketches,
       transientError: null, // successful commit clears any transient error
+      facePickMode: false,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1132,6 +1145,22 @@ export class KernelStore {
     if (next === this.state.sketchSession) return;
     this.state = { ...this.state, sketchSession: next };
     this.notify();
+  }
+
+  enterFacePickMode(): void {
+    this.state = { ...this.state, facePickMode: true };
+    this.notify();
+  }
+
+  cancelFacePickMode(): void {
+    this.state = { ...this.state, facePickMode: false };
+    this.notify();
+  }
+
+  enterSketchFromFacePick(normal: [number, number, number]): void {
+    this.state = { ...this.state, facePickMode: false };
+    const planeQuery = normalToPlaneQuery(normal);
+    this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
   }
 
   enterSketch(planeQuery: string): void {

@@ -247,7 +247,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
   }, []);
 
   const handleSketchEnter = () => {
-    store.enterSketch(DEFAULT_SKETCH_PLANE_QUERY);
+    if (state.features.length > 0) {
+      store.enterFacePickMode();
+    } else {
+      store.enterSketch(DEFAULT_SKETCH_PLANE_QUERY);
+    }
   };
 
   const handleAddThread = () => {

@@ -74,7 +74,11 @@ export function App() {
       if (!ctrl && !e.shiftKey && !e.altKey) {
         switch (e.key) {
           case "Escape":
-            store.clearSelection();
+            if (state?.facePickMode) {
+              store.cancelFacePickMode();
+            } else {
+              store.clearSelection();
+            }
             e.preventDefault();
             return;
           case "b":
