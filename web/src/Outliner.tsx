@@ -7,12 +7,14 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
-import type { KernelStore, StoreState } from "./store";
+import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { FeatureDialog } from "./widgets/FeatureDialog";
 import {
@@ -69,6 +71,11 @@ const SKETCH_SUB_GLYPH: Record<string, string> = {
   sketch_constraint_distance: "↔",
   sketch_constraint_angle: "∠",
   sketch_constraint_equal: "=",
+  sketch_constraint_parallel: "∥",
+  sketch_constraint_perpendicular: "⊥",
+  sketch_constraint_tangent: "⌒",
+  sketch_constraint_midpoint: "◆",
+  sketch_constraint_symmetric: "⇿",
 };
 
 const SKETCH_SUB_LABEL: Record<string, string> = {
@@ -87,6 +94,11 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_distance: "Distance",
   sketch_constraint_angle: "Angle",
   sketch_constraint_equal: "Equal",
+  sketch_constraint_parallel: "Parallel",
+  sketch_constraint_perpendicular: "Perpendicular",
+  sketch_constraint_tangent: "Tangent",
+  sketch_constraint_midpoint: "Midpoint",
+  sketch_constraint_symmetric: "Symmetric",
 };
 
 function nameToTag(op: BoolOpName): BoolOpTagValue {
@@ -117,12 +129,85 @@ interface OutlinerProps {
   state: StoreState;
 }
 
+/** Outliner-splitter drag constraints. Width is clamped to these
+ *  bounds on every drag tick and on localStorage rehydrate. */
+const OUTLINER_MIN_WIDTH = 220; // px
+const OUTLINER_MAX_WIDTH = 640; // px
+const OUTLINER_WIDTH_STORAGE_KEY = "fielddraft.outlinerWidth";
+
+function clampOutlinerWidth(px: number): number {
+  if (!Number.isFinite(px)) return OUTLINER_MIN_WIDTH;
+  return Math.max(OUTLINER_MIN_WIDTH, Math.min(OUTLINER_MAX_WIDTH, px));
+}
+
+function loadOutlinerWidth(defaultRem: number): number {
+  try {
+    const raw = localStorage.getItem(OUTLINER_WIDTH_STORAGE_KEY);
+    if (raw != null) {
+      const parsed = parseFloat(raw);
+      if (Number.isFinite(parsed)) return clampOutlinerWidth(parsed);
+    }
+  } catch {
+    // localStorage blocked — fall through to default.
+  }
+  // Convert rem → px using the document root font size.
+  const rootFontSize =
+    typeof window !== "undefined"
+      ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      : 16;
+  return clampOutlinerWidth(defaultRem * rootFontSize);
+}
+
 export function Outliner({ store, state }: OutlinerProps) {
   // K6a: memoised Outer API façade over the store's kernel. The
   // `createFdApi` return value is a tiny object of method refs,
   // so re-creating it per render is cheap — but memoising keeps
   // React's reference identity stable for downstream hooks.
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
+
+  // (b) K7.22 UX-fix: resizable outliner via splitter/gutter on the
+  //     left edge. Width persists in localStorage so it survives
+  //     reloads.
+  const [outlinerWidth, setOutlinerWidth] = useState<number>(() =>
+    loadOutlinerWidth(19),
+  );
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OUTLINER_WIDTH_STORAGE_KEY, String(outlinerWidth));
+    } catch {
+      // ignore
+    }
+  }, [outlinerWidth]);
+
+  const handleSplitterPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    dragStateRef.current = { startX: e.clientX, startWidth: outlinerWidth };
+  };
+  const handleSplitterPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag) return;
+    // Splitter is on the LEFT edge of the outliner; dragging left
+    // widens the panel, so the delta is negated.
+    const delta = drag.startX - e.clientX;
+    setOutlinerWidth(clampOutlinerWidth(drag.startWidth + delta));
+  };
+  const handleSplitterPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    dragStateRef.current = null;
+    try {
+      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+  const handleSplitterDoubleClick = () => {
+    // Double-click restores the token default.
+    setOutlinerWidth(loadOutlinerWidth(19));
+  };
 
   // K7.5: the FeatureDialog's working copy mirrors the
   // currently-selected feature's real params. Whenever the
@@ -227,6 +312,93 @@ export function Outliner({ store, state }: OutlinerProps) {
   const [newVarName, setNewVarName] = useState<string>("");
   const [newVarValue, setNewVarValue] = useState<string>("");
 
+  // K7.22 UX-fix (4): right-click context menu state.
+  // `null` when the menu is closed; an object with the click
+  // coordinates + target feature id when open. Dismissed on
+  // scroll, outside-click, or Escape.
+  const [contextMenu, setContextMenu] = useState<
+    { x: number; y: number; featureId: number } | null
+  >(null);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [contextMenu]);
+
+  // K7.22 UX-fix (1): drag/drop reorder state.
+  // `draggingId` is the feature id being dragged; `dropIndex` is
+  // where it will land on drop (the index *in the features list*
+  // where the dragged feature will be inserted). The UI paints a
+  // small horizontal line above the target row while hovering.
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+
+  const handleFeatureDragStart = (
+    e: React.DragEvent<HTMLLIElement>,
+    id: number,
+  ) => {
+    setDraggingId(id);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("fielddraft/feature-id", String(id));
+  };
+  const handleFeatureDragOver = (
+    e: React.DragEvent<HTMLLIElement>,
+    targetIndex: number,
+  ) => {
+    if (draggingId === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLLIElement).getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const insertAbove = e.clientY < midY;
+    setDropIndex(insertAbove ? targetIndex : targetIndex + 1);
+  };
+  const handleFeatureDragLeave = () => {
+    // Defer the clear to the next frame so a DragOver on the
+    // neighbouring row doesn't flicker the indicator.
+    requestAnimationFrame(() => {
+      setDropIndex((prev) => prev);
+    });
+  };
+  const handleFeatureDrop = (e: React.DragEvent<HTMLLIElement>) => {
+    e.preventDefault();
+    if (draggingId === null || dropIndex === null) {
+      setDraggingId(null);
+      setDropIndex(null);
+      return;
+    }
+    const fromIdx = state.features.findIndex((f) => f.id === draggingId);
+    let to = dropIndex;
+    // When inserting below the source row, the array shrinks by
+    // one during the move, so the target index is offset by one.
+    if (fromIdx !== -1 && to > fromIdx) to -= 1;
+    if (fromIdx !== -1 && to !== fromIdx) {
+      store.reorderFeature(draggingId, to);
+    }
+    setDraggingId(null);
+    setDropIndex(null);
+  };
+  const handleFeatureDragEnd = () => {
+    setDraggingId(null);
+    setDropIndex(null);
+  };
+
+  const openContextMenu = (e: React.MouseEvent, featureId: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, featureId });
+  };
+
   const handleAddVariable = () => {
     const trimmed = newVarName.trim();
     if (trimmed.length === 0) return;
@@ -322,7 +494,24 @@ export function Outliner({ store, state }: OutlinerProps) {
   }, [fd, sketchSession.selectedTool]);
 
   return (
-    <aside className="fd-outliner" data-testid="fielddraft-outliner">
+    <aside
+      className="fd-outliner"
+      data-testid="fielddraft-outliner"
+      style={{ width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
+    >
+      <div
+        className="splitter"
+        data-testid="outliner-splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize outliner"
+        title="Drag to resize outliner (double-click to reset)"
+        onPointerDown={handleSplitterPointerDown}
+        onPointerMove={handleSplitterPointerMove}
+        onPointerUp={handleSplitterPointerUp}
+        onPointerCancel={handleSplitterPointerUp}
+        onDoubleClick={handleSplitterDoubleClick}
+      />
       {sketchSession.active ? (
         <section
           className="sketch-session"
@@ -516,132 +705,454 @@ export function Outliner({ store, state }: OutlinerProps) {
           onChange={handleDialogChange}
         />
       ) : null}
-      <div className="header">Features</div>
-      {state.features.length === 0 ? (
+      <div className="header features-header">
+        <span>Features</span>
+        <button
+          type="button"
+          className="new-folder-btn"
+          title="New folder (group features)"
+          data-testid="new-folder"
+          onClick={() => store.createFolder()}
+        >
+          <span className="folder-glyph" aria-hidden="true">📁</span>
+          <span className="plus-glyph" aria-hidden="true">+</span>
+        </button>
+      </div>
+      {state.features.length === 0 && state.folders.length === 0 ? (
         <div className="empty">No features yet.</div>
       ) : (
         <ul className="list">
-          {state.features.map((feature) => {
-            const selected = state.selection.has(feature.id);
-            const tagOp = feature.op;
-            return (
-              <li
-                key={feature.id}
-                className={
-                  "row" +
-                  (selected ? " is-selected" : "") +
-                  (feature.suppressed ? " is-suppressed" : "")
-                }
-                data-testid={`feature-row-${feature.id}`}
-                data-feature-id={feature.id}
-                data-feature-op={tagOp}
-                data-feature-kind={feature.kind}
-                data-feature-suppressed={
-                  feature.suppressed ? "true" : "false"
-                }
-                onClick={(e) => handleRowClick(e, feature.id)}
-                onDoubleClick={() => handleRowDoubleClick(feature)}
-              >
-                <button
-                  type="button"
-                  className={`op op-${tagOp}`}
-                  title={OP_TOOLTIP[tagOp]}
-                  onClick={(e) => handleOpClick(e, feature)}
+          {(() => {
+            // Set of feature ids that live in some folder — used to
+            // filter the ungrouped list at the bottom.
+            const grouped = new Set<number>();
+            for (const folder of state.folders) {
+              for (const id of folder.memberIds) grouped.add(id);
+            }
+
+            // Render a single feature row. Hoisted from the JSX so
+            // both the folder groups and the ungrouped list can
+            // call it with the same args — keeps row styling,
+            // drag/drop wiring and context-menu plumbing in a
+            // single place.
+            const renderFeatureRow = (
+              feature: FeatureSummary,
+              index: number,
+            ) => {
+              const selected = state.selection.has(feature.id);
+              const tagOp = feature.op;
+              const isDragged = draggingId === feature.id;
+              return (
+                <li
+                  key={feature.id}
+                  className={
+                    "row" +
+                    (selected ? " is-selected" : "") +
+                    (feature.suppressed ? " is-suppressed" : "") +
+                    (isDragged ? " is-dragging" : "") +
+                    (dropIndex === index ? " drop-above" : "") +
+                    (dropIndex === index + 1 &&
+                    index === state.features.length - 1
+                      ? " drop-below"
+                      : "")
+                  }
+                  data-testid={`feature-row-${feature.id}`}
+                  data-feature-id={feature.id}
+                  data-feature-op={tagOp}
+                  data-feature-kind={feature.kind}
+                  data-feature-suppressed={feature.suppressed ? "true" : "false"}
+                  draggable
+                  onDragStart={(e) => handleFeatureDragStart(e, feature.id)}
+                  onDragOver={(e) => handleFeatureDragOver(e, index)}
+                  onDragLeave={handleFeatureDragLeave}
+                  onDrop={handleFeatureDrop}
+                  onDragEnd={handleFeatureDragEnd}
+                  onClick={(e) => handleRowClick(e, feature.id)}
+                  onDoubleClick={() => handleRowDoubleClick(feature)}
+                  onContextMenu={(e) => openContextMenu(e, feature.id)}
                 >
-                  {OP_LABEL[tagOp]}
-                </button>
-                <span className="kind">
-                  {KIND_GLYPH[feature.kind] ?? "?"}
-                </span>
-                {renamingId === feature.id ? (
-                  <input
-                    className="feature-name-input"
-                    data-testid={`feature-rename-${feature.id}`}
-                    value={renameDraft}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => setRenameDraft(e.currentTarget.value)}
-                    onKeyDown={handleRenameKey}
-                    onBlur={commitRename}
-                  />
-                ) : (
-                  <span className="feature-name">{feature.name}</span>
-                )}
-                {(feature.translate[0] !== 0 ||
-                  feature.translate[1] !== 0 ||
-                  feature.translate[2] !== 0 ||
-                  feature.scale !== 1) && (
-                  <span
-                    className="feature-meta"
-                    data-testid={`feature-meta-${feature.id}`}
+                  <button
+                    type="button"
+                    className={`op op-${tagOp}`}
+                    title={OP_TOOLTIP[tagOp]}
+                    onClick={(e) => handleOpClick(e, feature)}
                   >
-                    [{feature.translate[0].toFixed(0)},{" "}
-                    {feature.translate[1].toFixed(0)},{" "}
-                    {feature.translate[2].toFixed(0)}]
+                    {OP_LABEL[tagOp]}
+                  </button>
+                  <span className="kind">
+                    {KIND_GLYPH[feature.kind] ?? "?"}
                   </span>
-                )}
-                <button
-                  type="button"
-                  className="row-suppress"
-                  title={feature.suppressed ? "Unsuppress" : "Suppress"}
-                  data-testid={`feature-suppress-${feature.id}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    store.toggleFeatureSuppressed(feature.id);
-                  }}
-                >
-                  {feature.suppressed ? "◎" : "◉"}
-                </button>
-                <button
-                  type="button"
-                  className="row-reorder"
-                  title="Move up"
-                  data-testid={`feature-move-up-${feature.id}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    store.moveFeatureUp(feature.id);
-                  }}
-                >
-                  ▲
-                </button>
-                <button
-                  type="button"
-                  className="row-reorder"
-                  title="Move down"
-                  data-testid={`feature-move-down-${feature.id}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    store.moveFeatureDown(feature.id);
-                  }}
-                >
-                  ▼
-                </button>
-                <button
-                  type="button"
-                  className="row-reorder"
-                  title="Duplicate"
-                  data-testid={`feature-duplicate-${feature.id}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    store.duplicateFeature(feature.id);
-                  }}
-                >
-                  ⧉
-                </button>
-                <button
-                  type="button"
-                  className="row-delete"
-                  title="Delete"
-                  onClick={(e) => handleDelete(e, feature.id)}
-                >
-                  ×
-                </button>
-              </li>
+                  {renamingId === feature.id ? (
+                    <input
+                      className="feature-name-input"
+                      data-testid={`feature-rename-${feature.id}`}
+                      value={renameDraft}
+                      autoFocus
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRenameDraft(e.currentTarget.value)}
+                      onKeyDown={handleRenameKey}
+                      onBlur={commitRename}
+                    />
+                  ) : (
+                    <span className="feature-name">{feature.name}</span>
+                  )}
+                  {feature.kind === "sketch" ? (
+                    <button
+                      type="button"
+                      className={
+                        "row-sketch-visible" +
+                        (state.visibleSketches.includes(feature.id)
+                          ? " is-visible"
+                          : "")
+                      }
+                      title={
+                        state.visibleSketches.includes(feature.id)
+                          ? "Hide sketch in 3D viewport"
+                          : "Show sketch in 3D viewport"
+                      }
+                      aria-label={
+                        state.visibleSketches.includes(feature.id)
+                          ? "Hide sketch in 3D viewport"
+                          : "Show sketch in 3D viewport"
+                      }
+                      data-testid={`sketch-visible-${feature.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        store.toggleSketchVisible(feature.id);
+                      }}
+                      // Two rapid clicks on the eye icon fire a
+                      // `dblclick` event that bubbles up to the row
+                      // <li> and opens the sketch editor via
+                      // `handleRowDoubleClick`. stopPropagation on
+                      // the plain onClick isn't enough — the
+                      // dblclick dispatches separately. Swallow it
+                      // here so the button only ever toggles.
+                      onDoubleClick={(e) => e.stopPropagation()}
+                    >
+                      {state.visibleSketches.includes(feature.id) ? "◉" : "◎"}
+                    </button>
+                  ) : null}
+                  {/* K7.22 UX-fix (4): suppress toggle moved to the
+                      right-click context menu; the row is quieter
+                      without the per-row eye icon. */}
+                  <button
+                    type="button"
+                    className="row-delete"
+                    title="Delete (right-click for more options)"
+                    onClick={(e) => handleDelete(e, feature.id)}
+                  >
+                    ×
+                  </button>
+                </li>
+              );
+            };
+
+            return (
+              <>
+                {state.folders.map((folder) => (
+                  <FolderGroup
+                    key={folder.id}
+                    folder={folder}
+                    features={state.features}
+                    renderFeatureRow={renderFeatureRow}
+                    store={store}
+                  />
+                ))}
+                {state.features
+                  .map((feature, index) => ({ feature, index }))
+                  .filter(({ feature }) => !grouped.has(feature.id))
+                  .map(({ feature, index }) => renderFeatureRow(feature, index))}
+              </>
             );
-          })}
+          })()}
         </ul>
       )}
+      {contextMenu ? (
+        <FeatureContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          featureId={contextMenu.featureId}
+          store={store}
+          onClose={() => setContextMenu(null)}
+          onRename={() => {
+            const f = state.features.find((ff) => ff.id === contextMenu.featureId);
+            if (f) beginRename(f);
+            setContextMenu(null);
+          }}
+        />
+      ) : null}
+      <PartTree store={store} state={state} />
     </aside>
+  );
+}
+
+/**
+ * Part tree — lists the distinct solid bodies currently in the
+ * document. The kernel partitions the feature spine into disjoint
+ * bodies (K3 part 2) where every `Union` that overlaps an existing
+ * body merges into it, so what the user sees here is one row per
+ * physical solid, not per feature. Each body is named after its
+ * seed feature, and clicking a body selects that seed in the
+ * feature tree — a small but important affordance for anyone
+ * editing a multi-body scene, where "which body does this feature
+ * belong to" is otherwise invisible.
+ */
+function PartTree({ store, state }: { store: KernelStore; state: StoreState }) {
+  const bodies = state.meshedBodies;
+  if (bodies.length === 0) return null;
+
+  const selection = state.selection;
+
+  return (
+    <section className="part-tree" data-testid="part-tree">
+      <div className="header">
+        Parts ({bodies.length})
+      </div>
+      <ul className="list">
+        {bodies.map((body, index) => {
+          const seedFeature = state.features.find((f) => f.id === body.id);
+          const name = seedFeature?.name ?? `Body ${index + 1}`;
+          const kind = seedFeature?.kind ?? "body";
+          const selected = seedFeature ? selection.has(seedFeature.id) : false;
+          return (
+            <li
+              key={body.id}
+              className={"row" + (selected ? " is-selected" : "")}
+              data-testid={`part-row-${body.id}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (seedFeature) store.selectOnly(seedFeature.id);
+              }}
+            >
+              <span
+                className="swatch"
+                data-body-index={index}
+                aria-hidden="true"
+              />
+              <span className="kind">{KIND_GLYPH[kind] ?? "▣"}</span>
+              <span className="name">{name}</span>
+              <span className="triangle-count">
+                {Math.round(body.indices.length / 3)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * One collapsible folder group in the Outliner feature list.
+ *
+ * Folders are a pure UI affordance from K7.22 UX-fix (2): they
+ * don't exist in the kernel, they don't participate in the
+ * parametric regeneration, and the feature spine stays linear
+ * top-down regardless of how the user groups things. The folder
+ * header provides:
+ *   - a chevron that collapses/expands the member rows
+ *   - the folder name (double-click to rename)
+ *   - a drop zone that accepts a dragged feature and adds it to
+ *     this folder's membership list
+ *   - a small delete button that ungroups the members
+ */
+function FolderGroup({
+  folder,
+  features,
+  renderFeatureRow,
+  store,
+}: {
+  folder: FeatureFolder;
+  features: readonly FeatureSummary[];
+  renderFeatureRow: (feature: FeatureSummary, index: number) => React.ReactNode;
+  store: KernelStore;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(folder.name);
+
+  // Sync the rename draft with the store when the folder is
+  // renamed externally (undo, other tab, etc.).
+  useEffect(() => {
+    setDraftName(folder.name);
+  }, [folder.name]);
+
+  // Resolve the folder's member ids to actual FeatureSummary
+  // objects, preserving document order (not insertion order) so
+  // the folder's contents track the kernel's truth.
+  const memberSet = new Set(folder.memberIds);
+  const memberRows = features
+    .map((feature, index) => ({ feature, index }))
+    .filter(({ feature }) => memberSet.has(feature.id));
+
+  return (
+    <li
+      className={
+        "folder-group" +
+        (folder.collapsed ? " is-collapsed" : "") +
+        (dragOver ? " drag-over" : "")
+      }
+      data-testid={`folder-${folder.id}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("fielddraft/feature-id")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const raw = e.dataTransfer.getData("fielddraft/feature-id");
+        const featureId = raw ? Number(raw) : NaN;
+        if (Number.isFinite(featureId)) {
+          store.addFeatureToFolder(featureId, folder.id);
+        }
+      }}
+    >
+      <div className="folder-header">
+        <button
+          type="button"
+          className="chevron"
+          title={folder.collapsed ? "Expand folder" : "Collapse folder"}
+          data-testid={`folder-collapse-${folder.id}`}
+          onClick={() => store.toggleFolderCollapsed(folder.id)}
+        >
+          {folder.collapsed ? "▸" : "▾"}
+        </button>
+        <span className="folder-icon" aria-hidden="true">
+          📁
+        </span>
+        {renaming ? (
+          <input
+            className="folder-name-input"
+            autoFocus
+            value={draftName}
+            onChange={(e) => setDraftName(e.currentTarget.value)}
+            onBlur={() => {
+              store.renameFolder(folder.id, draftName);
+              setRenaming(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                (e.currentTarget as HTMLInputElement).blur();
+              } else if (e.key === "Escape") {
+                setDraftName(folder.name);
+                setRenaming(false);
+              }
+            }}
+          />
+        ) : (
+          <span
+            className="folder-name"
+            onDoubleClick={() => setRenaming(true)}
+          >
+            {folder.name}
+          </span>
+        )}
+        <span className="folder-count">({memberRows.length})</span>
+        <button
+          type="button"
+          className="folder-delete"
+          title="Delete folder (features stay)"
+          data-testid={`folder-delete-${folder.id}`}
+          onClick={() => store.deleteFolder(folder.id)}
+        >
+          ×
+        </button>
+      </div>
+      {!folder.collapsed && memberRows.length > 0 ? (
+        <ul className="folder-members">
+          {memberRows.map(({ feature, index }) => renderFeatureRow(feature, index))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * Right-click context menu for a feature row. Floats next to the
+ * cursor with the standard feature operations (rename, duplicate,
+ * suppress, move to folder, delete). The menu closes on
+ * outside-click or Escape — both wired up by the owning
+ * `Outliner` via a `useEffect` that mounts global listeners
+ * while the menu is open.
+ */
+function FeatureContextMenu({
+  x,
+  y,
+  featureId,
+  store,
+  onClose,
+  onRename,
+}: {
+  x: number;
+  y: number;
+  featureId: number;
+  store: KernelStore;
+  onClose: () => void;
+  onRename: () => void;
+}) {
+  // Clamp the menu inside the viewport so it never renders
+  // offscreen. The global outside-click listener lives in the
+  // parent Outliner effect.
+  const clampedX = Math.min(x, window.innerWidth - 220);
+  const clampedY = Math.min(y, window.innerHeight - 240);
+
+  const item = (
+    label: string,
+    action: () => void,
+    testid: string,
+    danger = false,
+  ) => (
+    <button
+      type="button"
+      className={"menu-item" + (danger ? " is-danger" : "")}
+      data-testid={testid}
+      onClick={(e) => {
+        e.stopPropagation();
+        action();
+        onClose();
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      className="fd-context-menu"
+      data-testid="feature-context-menu"
+      style={{ left: `${clampedX}px`, top: `${clampedY}px` }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {item("Rename", onRename, "context-rename")}
+      {item(
+        "Duplicate",
+        () => store.duplicateFeature(featureId),
+        "context-duplicate",
+      )}
+      {item(
+        "Toggle suppress",
+        () => store.toggleFeatureSuppressed(featureId),
+        "context-suppress",
+      )}
+      {item("Move up", () => store.moveFeatureUp(featureId), "context-move-up")}
+      {item(
+        "Move down",
+        () => store.moveFeatureDown(featureId),
+        "context-move-down",
+      )}
+      <div className="menu-sep" aria-hidden="true" />
+      {item(
+        "Delete",
+        () => store.removeFeature(featureId),
+        "context-delete",
+        true,
+      )}
+    </div>
   );
 }
 
