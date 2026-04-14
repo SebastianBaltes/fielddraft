@@ -159,6 +159,63 @@ function solveRevolute(
   };
 }
 
+function solvePrismatic(
+  partA: AssemblyPartInstance,
+  connA: MateConnectorDef,
+  connB: MateConnectorDef,
+  offsetMm: number,
+): AssemblyTransform {
+  const worldA = worldConnectorOrigin(partA, connA);
+  const n = connA.normal;
+  return {
+    translate: [
+      worldA[0] - connB.origin[0] + n[0] * offsetMm,
+      worldA[1] - connB.origin[1] + n[1] * offsetMm,
+      worldA[2] - connB.origin[2] + n[2] * offsetMm,
+    ],
+    rotate: [...partA.transform.rotate],
+  };
+}
+
+function solveCylindrical(
+  partA: AssemblyPartInstance,
+  connA: MateConnectorDef,
+  connB: MateConnectorDef,
+  angleDeg: number,
+  offsetMm: number,
+): AssemblyTransform {
+  const worldA = worldConnectorOrigin(partA, connA);
+  const n = connA.normal;
+  return {
+    translate: [
+      worldA[0] - connB.origin[0] + n[0] * offsetMm,
+      worldA[1] - connB.origin[1] + n[1] * offsetMm,
+      worldA[2] - connB.origin[2] + n[2] * offsetMm,
+    ],
+    rotate: [
+      partA.transform.rotate[0],
+      partA.transform.rotate[1] + angleDeg,
+      partA.transform.rotate[2],
+    ],
+  };
+}
+
+function solveBall(
+  partA: AssemblyPartInstance,
+  connA: MateConnectorDef,
+  connB: MateConnectorDef,
+): AssemblyTransform {
+  const worldA = worldConnectorOrigin(partA, connA);
+  return {
+    translate: [
+      worldA[0] - connB.origin[0],
+      worldA[1] - connB.origin[1],
+      worldA[2] - connB.origin[2],
+    ],
+    rotate: [0, 0, 0],
+  };
+}
+
 /**
  * Run the constraint solver over all mates in the assembly.
  * Returns a new parts array with updated transforms for parts
@@ -186,8 +243,15 @@ export function solveAssembly(doc: AssemblyDocument): AssemblyPartInstance[] {
       case "revolute":
         newTransform = solveRevolute(partA, connA, connB, mate.angle ?? 0);
         break;
-      default:
-        continue;
+      case "prismatic":
+        newTransform = solvePrismatic(partA, connA, connB, mate.offset ?? 0);
+        break;
+      case "cylindrical":
+        newTransform = solveCylindrical(partA, connA, connB, mate.angle ?? 0, mate.offset ?? 0);
+        break;
+      case "ball":
+        newTransform = solveBall(partA, connA, connB);
+        break;
     }
 
     partB.transform = newTransform;

@@ -757,17 +757,30 @@ export function Outliner({ store, state }: OutlinerProps) {
               <ul className="list">
                 {state.assembly.document.mates.map((mate) => (
                   <li key={mate.id} className="row" data-testid={`mate-${mate.id}`}>
-                    <span className="kind">{mate.type === "fixed" ? "🔒" : "🔄"}</span>
+                    <span className="kind">
+                      {mate.type === "fixed" ? "🔒" : mate.type === "ball" ? "⚽" : mate.type === "prismatic" ? "↕" : "🔄"}
+                    </span>
                     <span className="name">{mate.name}</span>
-                    {mate.type === "revolute" && (
+                    {(mate.type === "revolute" || mate.type === "cylindrical") && (
                       <input
                         type="range"
-                        min={-180}
-                        max={180}
+                        min={mate.minAngle ?? -180}
+                        max={mate.maxAngle ?? 180}
                         value={mate.angle ?? 0}
                         title={`${mate.angle ?? 0}°`}
                         className="mate-slider"
                         onChange={(e) => store.setMateAngle(mate.id, Number(e.target.value))}
+                      />
+                    )}
+                    {(mate.type === "prismatic" || mate.type === "cylindrical") && (
+                      <input
+                        type="range"
+                        min={-100}
+                        max={100}
+                        value={mate.offset ?? 0}
+                        title={`${mate.offset ?? 0} mm`}
+                        className="mate-slider"
+                        onChange={(e) => store.setMateOffset(mate.id, Number(e.target.value))}
                       />
                     )}
                     <button
@@ -1292,6 +1305,9 @@ function MateCreator({
         >
           <option value="fixed">Fixed</option>
           <option value="revolute">Revolute</option>
+          <option value="prismatic">Prismatic</option>
+          <option value="cylindrical">Cylindrical</option>
+          <option value="ball">Ball</option>
         </select>
       </div>
       <div className="field">

@@ -1436,6 +1436,21 @@ export class KernelStore {
     this.notify();
   }
 
+  setMateOffset(mateId: string, offsetMm: number): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    const newMates = asm.document.mates.map((m) =>
+      m.id === mateId ? { ...m, offset: offsetMm } : m,
+    );
+    const newDoc = { ...asm.document, mates: newMates };
+    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
+    this.state = {
+      ...this.state,
+      assembly: { ...asm, document: { ...newDoc, parts: solved } },
+    };
+    this.notify();
+  }
+
   setMateJointLimits(mateId: string, minAngle: number, maxAngle: number): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
