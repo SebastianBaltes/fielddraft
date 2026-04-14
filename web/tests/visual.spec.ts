@@ -153,3 +153,50 @@ test.describe("Visual regression: Sketch mode toolbar", () => {
     });
   });
 });
+
+test.describe("Visual regression: Full editor viewport (K9)", () => {
+  test("editor with box — full page layout", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupCleanState(page);
+    await page.evaluate(() => {
+      const s = (window as unknown as { __fdStore: Record<string, (...args: unknown[]) => void> }).__fdStore;
+      s.addPrimitive("box");
+    });
+    await page.waitForTimeout(1000);
+    // Full page screenshot masking the 3D canvas (GPU-dependent).
+    const canvas = page.getByTestId("fielddraft-canvas");
+    await expect(page).toHaveScreenshot("editor-full-box.png", {
+      ...SCREENSHOT_OPTS,
+      mask: [canvas.locator("canvas")],
+    });
+  });
+
+  test("editor with multiple features — outliner populated", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupCleanState(page);
+    await page.evaluate(() => {
+      const s = (window as unknown as { __fdStore: Record<string, (...args: unknown[]) => void> }).__fdStore;
+      s.addPrimitive("box");
+      s.addPrimitive("cylinder");
+      s.addHole();
+    });
+    await page.waitForTimeout(1000);
+    const canvas = page.getByTestId("fielddraft-canvas");
+    await expect(page).toHaveScreenshot("editor-multi-features.png", {
+      ...SCREENSHOT_OPTS,
+      mask: [canvas.locator("canvas")],
+    });
+  });
+
+  test("pick HUD visible on hover", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupCleanState(page);
+    await page.evaluate(() => {
+      const s = (window as unknown as { __fdStore: Record<string, (...args: unknown[]) => void> }).__fdStore;
+      s.addPrimitive("box");
+    });
+    await page.waitForTimeout(800);
+    const hud = page.getByTestId("fielddraft-pick-hud");
+    await expect(hud).toBeAttached();
+  });
+});
