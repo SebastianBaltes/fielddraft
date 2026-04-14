@@ -699,6 +699,42 @@ impl CsgNode {
         }
     }
 
+    /// K3.5C: collect a map of leaf FeatureId → Primitive reference.
+    pub fn leaf_primitives(&self) -> std::collections::HashMap<u32, &Primitive> {
+        let mut out = std::collections::HashMap::new();
+        self.collect_leaf_primitives(&mut out);
+        out
+    }
+
+    fn collect_leaf_primitives<'a>(&'a self, out: &mut std::collections::HashMap<u32, &'a Primitive>) {
+        match self {
+            CsgNode::Leaf { id, primitive, .. } => {
+                if let Some(flat) = id.as_u32_if_flat() {
+                    out.insert(flat, primitive);
+                }
+            }
+            CsgNode::Transform(_, inner)
+            | CsgNode::Twist(inner, _)
+            | CsgNode::Bend(inner, _)
+            | CsgNode::Shell(inner, _)
+            | CsgNode::Displace(inner, _, _) => inner.collect_leaf_primitives(out),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => {
+                a.collect_leaf_primitives(out);
+                b.collect_leaf_primitives(out);
+            }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                a.collect_leaf_primitives(out);
+                b.collect_leaf_primitives(out);
+            }
+            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Empty => {}
+        }
+    }
+
     /// Collect all leaf FeatureIds reachable from this node.
     pub fn leaf_ids(&self) -> Vec<FeatureId> {
         let mut out = Vec::new();

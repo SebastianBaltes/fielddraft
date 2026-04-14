@@ -25,7 +25,7 @@ pub mod raycast;
 pub mod sketch2d;
 pub mod sketch_features;
 
-use body::{build_bounded_for_body, hash_body_payload, partition, Body};
+use body::{build_bounded_for_body, build_bounded_with_primitives, hash_body_payload, partition, Body};
 use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
@@ -656,8 +656,10 @@ impl Kernel {
         if !self.sync_meshing {
             return Mesh::default();
         }
-        let bounded = build_bounded_for_body(&self.document.features, feature_indices);
-        dual_contour(&bounded, resolution)
+        let (bounded, prims) = build_bounded_with_primitives(&self.document.features, feature_indices);
+        let prim_refs: std::collections::HashMap<u32, &Primitive> =
+            prims.iter().map(|(k, v)| (*k, v)).collect();
+        dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs)
     }
 
     /// Pick the voxel grid resolution a body should use right now:
