@@ -71,6 +71,8 @@ export interface AssemblyDocument {
   name: string;
   parts: AssemblyPartInstance[];
   mates: Mate[];
+  /** P2.8: FieldScript source code for kinematic controller. */
+  script?: string;
 }
 
 export function createEmptyAssembly(name = "Assembly 1"): AssemblyDocument {

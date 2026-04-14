@@ -293,4 +293,6 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 
 - ✅ **P3** — Code-First Export: `exportR3F()` generiert `.tsx`-Datei mit R3F-Komponentenbaum. `<group>`-Hierarchie für Part-Transforms, `useGLTF`-Hooks für Mesh-Loading, Props für Revolute-Joint-Winkel. `downloadR3FExport()` + Toolbar-Button. USP: FieldDraft exportiert Interaktion, nicht nur Geometrie.
 
-Nächster Schritt: P2.8 FieldScript (JS-Runtime für Assembly-Kinematik-Controller).
+- ✅ **P2.8** — FieldScript: Deterministische JS-Runtime für Assembly-Kinematik. `@param`-Header-Parser generiert Slider/Button-UI automatisch. `executeScript()` mit ScriptContext (setJointAngle, getJointAngle, time, dt). `setAssemblyScript()` + `runFieldScript()` Store-Methoden.
+
+**Phase 3 ist vollständig.** Alle Roadmap-Slices P1–P3 und P2.5/P2.8 sind implementiert.

@@ -45,6 +45,7 @@ import {
   type MateType,
   type IKTarget,
 } from "./assembly";
+import { executeScript } from "./fieldscript";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -1334,6 +1335,57 @@ export class KernelStore {
       assembly: { ...asm, document: { ...newDoc, parts: solved } },
     };
     this.notify();
+  }
+
+  setAssemblyScript(source: string): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: { ...asm.document, script: source },
+      },
+    };
+    this.notify();
+  }
+
+  runFieldScript(
+    params: Record<string, number | boolean>,
+    time: number,
+    dt: number,
+  ): string | null {
+    const asm = this.state.assembly;
+    if (!asm.active || !asm.document.script) return null;
+
+    const currentAngles = new Map<string, number>();
+    for (const mate of asm.document.mates) {
+      if (mate.type === "revolute") {
+        currentAngles.set(mate.id, mate.angle ?? 0);
+      }
+    }
+
+    const result = executeScript(asm.document.script, params, time, dt, currentAngles);
+
+    if (!result.success) return result.error ?? "script error";
+
+    if (result.jointUpdates.size > 0) {
+      let newMates = [...asm.document.mates];
+      for (const [mateId, angle] of result.jointUpdates) {
+        newMates = newMates.map((m) =>
+          m.id === mateId ? { ...m, angle } : m,
+        );
+      }
+      const newDoc = { ...asm.document, mates: newMates };
+      const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
+      this.state = {
+        ...this.state,
+        assembly: { ...asm, document: { ...newDoc, parts: solved } },
+      };
+      this.notify();
+    }
+
+    return null;
   }
 
   exportR3F(): void {
