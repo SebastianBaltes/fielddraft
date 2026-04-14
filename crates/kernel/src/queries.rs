@@ -75,6 +75,12 @@ pub enum QueryExpr {
     /// the emergent intersection curve between two primitives in
     /// the SDF proxy.
     EdgeBetween(FeatureId, FeatureId),
+    /// K8.13: `qAllRegions(sketch_id)` — all closed regions of a sketch.
+    AllRegions(FeatureId),
+    /// K8.13: `qRegion(sketch_id, region_index)` — a single region.
+    Region(FeatureId, u32),
+    /// K8.13: `qRegions(sketch_id, [indices])` — a subset of regions.
+    Regions(FeatureId, Vec<u32>),
 }
 
 impl fmt::Display for QueryExpr {
@@ -83,6 +89,12 @@ impl fmt::Display for QueryExpr {
             QueryExpr::CreatedBy(id) => write!(f, "qCreatedBy({id})"),
             QueryExpr::FaceOf(id) => write!(f, "qFaceOf({id})"),
             QueryExpr::EdgeBetween(a, b) => write!(f, "qEdgeBetween({a}, {b})"),
+            QueryExpr::AllRegions(id) => write!(f, "qAllRegions({id})"),
+            QueryExpr::Region(id, idx) => write!(f, "qRegion({id}, {idx})"),
+            QueryExpr::Regions(id, indices) => {
+                let list = indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+                write!(f, "qRegions({id}, [{list}])")
+            }
         }
     }
 }
@@ -160,6 +172,35 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
         "qEdgeBetween" => {
             let (a, b) = expect_two_ids(&args, "qEdgeBetween expects two ids")?;
             Ok(QueryExpr::EdgeBetween(a, b))
+        }
+        "qAllRegions" => {
+            let id = expect_one_id(&args, "qAllRegions expects one sketch id")?;
+            Ok(QueryExpr::AllRegions(id))
+        }
+        "qRegion" => {
+            let (a, b) = expect_two_ids(&args, "qRegion expects sketch_id and region_index")?;
+            let idx = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
+                "region index must be a plain number".to_string(),
+            ))?;
+            Ok(QueryExpr::Region(a, idx))
+        }
+        "qRegions" => {
+            if args.len() < 2 {
+                return Err(QueryParseError::MalformedArguments(
+                    "qRegions expects sketch_id and [indices]",
+                ));
+            }
+            let id = parse_feature_id(args[0])?;
+            let mut indices = Vec::new();
+            for arg in &args[1..] {
+                let cleaned = arg.trim_matches(|c: char| c == '[' || c == ']' || c.is_whitespace());
+                if cleaned.is_empty() { continue; }
+                let n: u32 = cleaned.parse().map_err(|_| {
+                    QueryParseError::InvalidFeatureId(format!("invalid region index: {cleaned}"))
+                })?;
+                indices.push(n);
+            }
+            Ok(QueryExpr::Regions(id, indices))
         }
         other => Err(QueryParseError::UnknownQuery(other.to_string())),
     }
@@ -256,6 +297,16 @@ pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
                 Vec::new()
             },
         },
+        QueryExpr::AllRegions(id) | QueryExpr::Region(id, _) | QueryExpr::Regions(id, _) => {
+            QueryResult {
+                kind: QueryElementKind::Face,
+                matches: if feature_exists(document, id) {
+                    vec![vec![id.clone()]]
+                } else {
+                    Vec::new()
+                },
+            }
+        }
     }
 }
 
