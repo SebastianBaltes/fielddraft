@@ -1145,6 +1145,22 @@ export function Viewport() {
       return;
     }
 
+    // P2: IK mode — click sets the IK target position.
+    if (state?.ikMode && state?.assembly.active && click?.hit) {
+      const revMates = state.assembly.document.mates.filter((m: { type: string }) => m.type === "revolute");
+      if (revMates.length > 0) {
+        const lastPart = state.assembly.document.parts[state.assembly.document.parts.length - 1];
+        if (lastPart && lastPart.mateConnectors.length > 0) {
+          store.runIK({
+            position: click.point as [number, number, number],
+            endEffectorPartId: lastPart.id,
+            endEffectorConnectorId: lastPart.mateConnectors[0].featureId,
+          });
+        }
+      }
+      return;
+    }
+
     // K9: mate mode — click a surface to place a mate connector.
     if (state?.mateMode && click?.hit) {
       store.addMateConnectorAtPick(
@@ -1316,6 +1332,11 @@ export function Viewport() {
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Click a surface to place a mate connector
+        </div>
+      )}
+      {state?.ikMode && (
+        <div className="face-pick-hud" data-testid="ik-mode-hud">
+          Click to set IK target position
         </div>
       )}
     </div>

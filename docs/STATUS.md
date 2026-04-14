@@ -287,4 +287,6 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 - ✅ **P1.0** — Assembly-Grundinfrastruktur: Datenmodell, Multi-Part-Viewport-Rendering, Assembly-Panel mit Part-Import/Remove/Select.
 - ✅ **P1.1** — Mate-System: Fixed + Revolute Mate-Typen, `solveAssembly()` Constraint-Solver, addMate/removeMate/setMateAngle Store-Methoden, MateCreator-UI mit Dropdown-Selektion + Revolute-Winkel-Slider.
 
-Nächster Schritt: P2 Kinematik (FK Slider + IK) oder P2.5 Shareable Viewer.
+- ✅ **P2** — Kinematik: CCD-basierter IK-Solver (`solveIK`), Joint-Limits (min/max Winkel), IK-Modus im Viewport (Klick setzt Zielposition), `toggleIKMode`/`runIK`/`setMateJointLimits` Store-Methoden. FK-Slider aus P1.1 + IK-Solver bilden zusammen die vollständige Kinematik-Pipeline.
+
+Nächster Schritt: P2.5 Shareable Viewer oder P2.8 FieldScript.

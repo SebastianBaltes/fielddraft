@@ -55,14 +55,13 @@ export interface Mate {
   id: string;
   name: string;
   type: MateType;
-  /** Part instance ID + mate connector feature ID for side A. */
   connectorA: { partId: string; connectorFeatureId: number };
-  /** Part instance ID + mate connector feature ID for side B. */
   connectorB: { partId: string; connectorFeatureId: number };
-  /** For revolute: current angle in degrees. */
   angle?: number;
-  /** For prismatic: current offset in mm. */
   offset?: number;
+  /** P2: joint limits for revolute mates (degrees). */
+  minAngle?: number;
+  maxAngle?: number;
 }
 
 // ── Assembly document ───────────────────────────────────────────
@@ -193,6 +192,106 @@ export function solveAssembly(doc: AssemblyDocument): AssemblyPartInstance[] {
   }
 
   return parts;
+}
+
+// ── P2: Inverse Kinematics (CCD) ────────────────────────────────
+
+export interface IKTarget {
+  position: [number, number, number];
+  endEffectorPartId: string;
+  endEffectorConnectorId: number;
+}
+
+/**
+ * CCD (Cyclic Coordinate Descent) IK solver for a serial chain of
+ * revolute mates. Iteratively adjusts each joint angle to bring the
+ * end-effector closer to the target position.
+ *
+ * Returns updated mates with solved joint angles, or null if no
+ * revolute chain was found.
+ */
+export function solveIK(
+  doc: AssemblyDocument,
+  target: IKTarget,
+  maxIterations = 20,
+  tolerance = 0.5,
+): Mate[] | null {
+  // Find the revolute chain leading to the end-effector part.
+  const revMates = doc.mates.filter((m) => m.type === "revolute");
+  if (revMates.length === 0) return null;
+
+  const mates = doc.mates.map((m) => ({ ...m }));
+  const revIndices = mates
+    .map((m, i) => (m.type === "revolute" ? i : -1))
+    .filter((i) => i >= 0);
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Solve the assembly with current angles to get world positions.
+    const parts = solveAssembly({ ...doc, mates });
+    const partMap = new Map(parts.map((p) => [p.id, p]));
+
+    // Find end-effector world position.
+    const eePart = partMap.get(target.endEffectorPartId);
+    if (!eePart) return null;
+    const eeConn = eePart.mateConnectors.find(
+      (c) => c.featureId === target.endEffectorConnectorId,
+    );
+    if (!eeConn) return null;
+    const ee: [number, number, number] = [
+      eePart.transform.translate[0] + eeConn.origin[0],
+      eePart.transform.translate[1] + eeConn.origin[1],
+      eePart.transform.translate[2] + eeConn.origin[2],
+    ];
+
+    const dist = Math.hypot(
+      target.position[0] - ee[0],
+      target.position[1] - ee[1],
+      target.position[2] - ee[2],
+    );
+    if (dist < tolerance) break;
+
+    // CCD: iterate joints from end-effector back to base.
+    for (let ji = revIndices.length - 1; ji >= 0; ji--) {
+      const mi = revIndices[ji];
+      const mate = mates[mi];
+
+      // Find the pivot point (connector A's world position).
+      const pivotPart = partMap.get(mate.connectorA.partId);
+      if (!pivotPart) continue;
+      const pivotConn = pivotPart.mateConnectors.find(
+        (c) => c.featureId === mate.connectorA.connectorFeatureId,
+      );
+      if (!pivotConn) continue;
+
+      const pivot: [number, number, number] = [
+        pivotPart.transform.translate[0] + pivotConn.origin[0],
+        pivotPart.transform.translate[1] + pivotConn.origin[1],
+        pivotPart.transform.translate[2] + pivotConn.origin[2],
+      ];
+
+      // Compute angle adjustment in the XZ plane (simplified: Y-axis rotation).
+      const toEE = [ee[0] - pivot[0], ee[2] - pivot[2]];
+      const toTarget = [target.position[0] - pivot[0], target.position[2] - pivot[2]];
+
+      const angleEE = Math.atan2(toEE[1], toEE[0]);
+      const angleTarget = Math.atan2(toTarget[1], toTarget[0]);
+      let delta = ((angleTarget - angleEE) * 180) / Math.PI;
+
+      // Wrap to [-180, 180]
+      while (delta > 180) delta -= 360;
+      while (delta < -180) delta += 360;
+
+      let newAngle = (mate.angle ?? 0) + delta;
+
+      // Apply joint limits
+      if (mate.minAngle !== undefined) newAngle = Math.max(newAngle, mate.minAngle);
+      if (mate.maxAngle !== undefined) newAngle = Math.min(newAngle, mate.maxAngle);
+
+      mate.angle = newAngle;
+    }
+  }
+
+  return mates;
 }
 
 let nextId = 1;

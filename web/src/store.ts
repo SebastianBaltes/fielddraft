@@ -38,10 +38,12 @@ import {
   allocateAssemblyId,
   IDENTITY_TRANSFORM,
   solveAssembly,
+  solveIK,
   type AssemblyPartInstance,
   type AssemblyMeshedBody,
   type Mate,
   type MateType,
+  type IKTarget,
 } from "./assembly";
 
 /**
@@ -164,6 +166,8 @@ export interface StoreState {
   mateMode: boolean;
   /** P1: assembly state — manages multi-part scene graph. */
   assembly: import("./assembly").AssemblyState;
+  /** P2: IK mode — clicking in viewport sets the IK target. */
+  ikMode: boolean;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -318,6 +322,7 @@ export class KernelStore {
       facePickMode: false,
       mateMode: false,
       assembly: INACTIVE_ASSEMBLY,
+      ikMode: false,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -394,6 +399,7 @@ export class KernelStore {
       facePickMode: false,
       mateMode: false,
       assembly: this.state.assembly,
+      ikMode: false,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1326,6 +1332,43 @@ export class KernelStore {
     this.state = {
       ...this.state,
       assembly: { ...asm, document: { ...newDoc, parts: solved } },
+    };
+    this.notify();
+  }
+
+  toggleIKMode(): void {
+    this.state = { ...this.state, ikMode: !this.state.ikMode };
+    this.notify();
+  }
+
+  runIK(target: IKTarget): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    const solved = solveIK(asm.document, target);
+    if (!solved) return;
+    const newDoc = { ...asm.document, mates: solved };
+    const parts = solveAssembly({ ...newDoc, parts: asm.document.parts });
+    this.state = {
+      ...this.state,
+      assembly: { ...asm, document: { ...newDoc, parts } },
+    };
+    this.notify();
+  }
+
+  setMateJointLimits(mateId: string, minAngle: number, maxAngle: number): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: {
+          ...asm.document,
+          mates: asm.document.mates.map((m) =>
+            m.id === mateId ? { ...m, minAngle, maxAngle } : m,
+          ),
+        },
+      },
     };
     this.notify();
   }
