@@ -1120,11 +1120,41 @@ export class KernelStore {
         radius,
       );
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error("fielddraft: addFilletAtEdge failed", err);
       return null;
     }
     this.commit(new Set([id]), id);
+
+    // K10 ghost-edge rollback: if there are older fillet_edge features
+    // that touch the same contributors, reorder this fillet before the
+    // earliest one. This ensures the new fillet applies to the original
+    // edge geometry rather than the already-smoothed surface.
+    try {
+      const features = this.state.features;
+      const newIdx = features.findIndex((f) => f.id === id);
+      if (newIdx >= 0) {
+        let earliestFilletIdx = newIdx;
+        for (let i = 0; i < newIdx; i++) {
+          const f = features[i];
+          if (f.kind === "fillet_edge") {
+            const params = this.kernel.getFeatureCallParams(f.id);
+            const fa = params?.feature_a as number | undefined;
+            const fb = params?.feature_b as number | undefined;
+            if ((fa === featureA || fa === featureB) && (fb === featureA || fb === featureB)) {
+              earliestFilletIdx = i;
+              break;
+            }
+          }
+        }
+        if (earliestFilletIdx < newIdx) {
+          this.kernel.reorderFeature(id, earliestFilletIdx);
+          this.commit(new Set([id]), id);
+        }
+      }
+    } catch {
+      // Rollback is best-effort; don't break the fillet creation.
+    }
+
     return id;
   }
 
