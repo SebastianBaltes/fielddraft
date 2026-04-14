@@ -266,9 +266,9 @@ Die Server-Grundinfrastruktur inkl. Sync, Galerie, Visibility und Quotas steht. 
 - Performance-Pass (WASM-Profiling, Mesher-Optimierung)
 - Thumbnails in der Galerie
 
-### 6. K13 Manifold Repair
+### 6. ✅ K13 Manifold Repair
 
-K13.3 prüft importierte Meshes bereits auf Wasserdichtigkeit; die automatische Reparatur (statt nur Warnung) fehlt noch.
+`MeshSdf::repair()` füllt Löcher in importierten Meshes automatisch: Boundary-Loop-Detection an offenen Kanten, Centroid-Fan-Triangulierung pro Loch, Rebuild des BVH. Auto-Repair wird beim Import transparent angewendet (`add_imported_mesh` prüft `check_manifold().is_watertight`). 3 neue Tests (Loch-Erkennung, Reparatur, Idempotenz).
 
 ### Empfohlene Reihenfolge
 
@@ -277,8 +277,9 @@ K13.3 prüft importierte Meshes bereits auf Wasserdichtigkeit; die automatische 
 ✅ K3.5 Phasen A+B (Newton-Projektion + Planar-Simplifizierung, Phase C deferred)
 ✅ K9 Mate Connector (pick-basierte Platzierung)
 ✅ K6b B-Rep-Snap (projected edge snapping in sketch)
-→ M13 Restpunkte ← nächster Slice
-→ K13 Manifold Repair → K3.5 Phase C
+✅ K13 Manifold Repair (auto hole-fill on import)
+→ M13 Restpunkte ← nächster Slice (Password Reset, Thumbnails)
+→ K3.5 Phase C (developable surfaces)
 ```
 
 **Rationale der Umpriorisierung:** K7.21 hat direkten User-Impact (Bedienbarkeit), K3.5 ist Infrastruktur, die der User nur indirekt spürt (weniger Dreiecke, glattere Oberflächen). Ein UI, die nicht navigierbar ist, blockiert das Testen aller anderen Slices — deshalb zuerst die UI produktiv machen, dann die Qualität hinter der UI verbessern. K7.21 ist als T1-Slice eingeordnet, weil er die Shippable-Alpha tatsächlich benutzbar macht; K3.5 bleibt T0 (Architektur-Validierung) und läuft direkt danach.

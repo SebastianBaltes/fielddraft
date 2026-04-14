@@ -448,6 +448,22 @@ pub fn pack_features(features: &[Feature]) -> Vec<f32> {
     buf
 }
 
+/// Walk the parent chain of `child` and return `true` as soon as any
+/// ancestor equals `ancestor`. Used by `remove_feature` to cascade
+/// deletions across spine clones produced by Pattern/Mirror/Hole
+/// execute paths, which live under hierarchical child ids such as
+/// `fillet_7.mask_0` or `linear_pattern_3.1`.
+fn feature_id_is_descendant_of(child: &FeatureId, ancestor: &FeatureId) -> bool {
+    let mut cur = child.parent();
+    while let Some(p) = cur {
+        if p == ancestor {
+            return true;
+        }
+        cur = p.parent();
+    }
+    false
+}
+
 // ─── wasm-bindgen surface ────────────────────────────────────────────────
 
 /// Compact JS view of one feature for the outliner.
@@ -1497,7 +1513,9 @@ impl Kernel {
             BoolOp::Difference => "difference",
             BoolOp::Intersect => "intersect",
         };
-        let mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
+        let raw_mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
+        let report = raw_mesh.check_manifold();
+        let mesh = if report.is_watertight { raw_mesh } else { raw_mesh.repair() };
         let mesh_json = serde_json::to_value(&mesh)
             .map_err(|e| JsError::new(&format!("mesh serialisation failed: {e}")))?;
         self.snapshot();
@@ -2122,16 +2140,45 @@ impl Kernel {
     /// was removed.
     #[wasm_bindgen(js_name = removeFeature)]
     pub fn remove_feature(&mut self, id: u32) -> bool {
-        let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        if let Some(idx) = pos {
-            self.snapshot();
-            self.document.features.remove(idx);
-            self.rebuild_packed();
-            true
-        } else {
-            false
+        let target_id = FeatureId::from_u32(id);
+
+        // Post-K4.5.4e, `feature_calls` is authoritative for non-spine
+        // feature types (hole, sketch, extrude, gyroid, pattern,
+        // mirror, …). Their spine entries — when they exist at all —
+        // live under a hierarchical child id such as `42.0`, so the
+        // old "scan features by flat id" loop missed them entirely
+        // and left the delete button visually inert for roughly
+        // half the feature types in the registry. The correct
+        // path here is: find the match in *either* storage, then
+        // cascade-remove from both (including any descendant spine
+        // clones produced by Pattern/Mirror/Hole execute paths).
+        let call_pos = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == target_id);
+        let spine_hit = self.document.features.iter().any(|f| {
+            f.id == target_id || feature_id_is_descendant_of(&f.id, &target_id)
+        });
+
+        if call_pos.is_none() && !spine_hit {
+            return false;
         }
+
+        self.snapshot();
+
+        if let Some(idx) = call_pos {
+            self.document.feature_calls.remove(idx);
+        }
+        // Cascade-remove spine features whose id matches the target
+        // or is any descendant of it. `retain` preserves document
+        // order for the survivors.
+        self.document.features.retain(|f| {
+            f.id != target_id && !feature_id_is_descendant_of(&f.id, &target_id)
+        });
+
+        self.rebuild_packed();
+        true
     }
 
     /// Change the boolean op of an existing feature.
@@ -3317,6 +3364,57 @@ mod tests {
         assert_eq!(k.feature_count(), 0);
     }
 
+    /// Regression for the "delete button silently does nothing"
+    /// bug reported in UX testing 2026-04-13. `Hole` is a
+    /// non-spine feature type that pushes its `SpineFeature` under a
+    /// hierarchical child id (`<hole>.0`), so the old scan-by-flat-id
+    /// loop in `remove_feature` couldn't match and returned false for
+    /// every hole. Every feature the outliner shows must be
+    /// removable, regardless of whether it's spine-backed or lives
+    /// purely in `feature_calls`.
+    #[test]
+    fn remove_feature_deletes_hole_and_its_hierarchical_child_spine() {
+        let mut k = Kernel::new();
+        // Seed a base box so the hole has something to subtract from.
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 20.0, 20.0, 20.0)
+            .unwrap();
+        let hole_id = k.add_hole(6.0, 40.0, 0.0, 0.0, 0.0).unwrap();
+
+        // The hole lands in `feature_calls` as a flat-id entry and
+        // its spine mirror lives under the hierarchical child id
+        // `<hole_id>.0`. Both should disappear on remove.
+        assert!(
+            k.document.feature_calls.iter().any(|c| c.id == FeatureId::from_u32(hole_id)),
+            "hole call present before remove"
+        );
+        let hole_spine_pre = k.document.features.iter().filter(|f| {
+            let fid = FeatureId::from_u32(hole_id);
+            f.id == fid || feature_id_is_descendant_of(&f.id, &fid)
+        }).count();
+        assert!(hole_spine_pre > 0, "hole has at least one spine entry before remove");
+
+        assert!(k.remove_feature(hole_id), "delete returns true for a hole");
+        assert!(!k.remove_feature(hole_id), "second delete returns false");
+
+        // The hole is gone from both storages.
+        assert!(
+            !k.document.feature_calls.iter().any(|c| c.id == FeatureId::from_u32(hole_id)),
+            "hole call was removed"
+        );
+        let hole_spine_post = k.document.features.iter().filter(|f| {
+            let fid = FeatureId::from_u32(hole_id);
+            f.id == fid || feature_id_is_descendant_of(&f.id, &fid)
+        }).count();
+        assert_eq!(hole_spine_post, 0, "no descendant spine entries survived");
+
+        // The base box is untouched.
+        assert!(
+            k.document.features.iter().any(|f| f.id == FeatureId::from_u32(box_id)),
+            "unrelated box remains"
+        );
+    }
+
     #[test]
     fn undo_then_redo_restores_state() {
         let mut k = Kernel::new();
@@ -3617,50 +3715,42 @@ mod tests {
         assert_eq!(k.body_id(1), id_b);
     }
 
+    /// K7.22 (3): after the partition-no-auto-merge rewrite, three
+    /// Union boxes — two separate plus a bridging one — land as
+    /// three independent bodies. The user explicitly asked that
+    /// primitives moved into each other stay as separate bodies.
     #[test]
-    fn bridging_union_merges_two_bodies_into_one() {
+    fn bridging_union_keeps_bodies_separate() {
         let mut k = Kernel::new();
-        let id_a = k
+        let _id_a = k
             .add_primitive(
                 Primitive::KIND_BOX,
                 BoolOp::TAG_UNION,
-                0.0,
-                0.0,
-                0.0,
-                10.0,
-                10.0,
-                10.0,
+                0.0, 0.0, 0.0,
+                10.0, 10.0, 10.0,
             )
             .unwrap();
         let _id_b = k
             .add_primitive(
                 Primitive::KIND_BOX,
                 BoolOp::TAG_UNION,
-                60.0,
-                0.0,
-                0.0,
-                10.0,
-                10.0,
-                10.0,
+                60.0, 0.0, 0.0,
+                10.0, 10.0, 10.0,
             )
             .unwrap();
         assert_eq!(k.body_count(), 2);
-        // Add a bridge that overlaps both — they merge into one.
+        // Add a bridge that overlaps both. Under the new partition
+        // rules, every Union lands as its own body, so we end up
+        // with three instead of one merged.
         let _id_bridge = k
             .add_primitive(
                 Primitive::KIND_BOX,
                 BoolOp::TAG_UNION,
-                30.0,
-                0.0,
-                0.0,
-                40.0,
-                10.0,
-                10.0,
+                30.0, 0.0, 0.0,
+                40.0, 10.0, 10.0,
             )
             .unwrap();
-        assert_eq!(k.body_count(), 1);
-        // Merged body keeps the lowest seed id.
-        assert_eq!(k.body_id(0), id_a);
+        assert_eq!(k.body_count(), 3, "unions must not auto-merge on overlap");
     }
 
     #[test]

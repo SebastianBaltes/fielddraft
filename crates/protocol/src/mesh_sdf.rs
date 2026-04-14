@@ -154,6 +154,147 @@ impl MeshSdf {
         }
     }
 
+    /// K13: attempt to repair non-manifold meshes by filling holes.
+    /// Finds boundary loops (chains of open edges) and triangulates
+    /// each hole with a centroid fan. Returns a new MeshSdf with the
+    /// holes filled.
+    pub fn repair(&self) -> Self {
+        use std::collections::HashMap;
+
+        let tri_count = self.tris.len() / 9;
+        if tri_count == 0 {
+            return self.clone();
+        }
+
+        let quantize = |v: f32| -> i64 { (v * 10000.0).round() as i64 };
+        type QVert = (i64, i64, i64);
+
+        let mut edge_counts: HashMap<(QVert, QVert), u32> = HashMap::new();
+        let mut coord_map: HashMap<QVert, [f32; 3]> = HashMap::new();
+
+        for t in 0..tri_count {
+            let base = t * 9;
+            let verts_q: [QVert; 3] = [
+                (quantize(self.tris[base]), quantize(self.tris[base + 1]), quantize(self.tris[base + 2])),
+                (quantize(self.tris[base + 3]), quantize(self.tris[base + 4]), quantize(self.tris[base + 5])),
+                (quantize(self.tris[base + 6]), quantize(self.tris[base + 7]), quantize(self.tris[base + 8])),
+            ];
+            let verts_f: [[f32; 3]; 3] = [
+                [self.tris[base], self.tris[base + 1], self.tris[base + 2]],
+                [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]],
+                [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]],
+            ];
+            for &(a, b) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+                let key = if verts_q[a] < verts_q[b] { (verts_q[a], verts_q[b]) } else { (verts_q[b], verts_q[a]) };
+                *edge_counts.entry(key).or_insert(0) += 1;
+                coord_map.entry(verts_q[a]).or_insert(verts_f[a]);
+                coord_map.entry(verts_q[b]).or_insert(verts_f[b]);
+            }
+        }
+
+        let open_edges: Vec<(QVert, QVert)> = edge_counts
+            .iter()
+            .filter(|&(_, &c)| c == 1)
+            .map(|(k, _)| *k)
+            .collect();
+
+        if open_edges.is_empty() {
+            return self.clone();
+        }
+
+        let mut adj: HashMap<QVert, Vec<QVert>> = HashMap::new();
+        for &(a, b) in &open_edges {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+
+        let mut visited: std::collections::HashSet<QVert> = std::collections::HashSet::new();
+        let mut new_tris: Vec<f32> = Vec::new();
+
+        for &(start, _) in &open_edges {
+            if visited.contains(&start) { continue; }
+
+            let mut loop_verts: Vec<QVert> = Vec::new();
+            let mut curr = start;
+            let mut prev: Option<QVert> = None;
+            let mut ok = true;
+
+            loop {
+                if visited.contains(&curr) && curr != start {
+                    ok = false; break;
+                }
+                loop_verts.push(curr);
+                visited.insert(curr);
+
+                let neighbors = match adj.get(&curr) {
+                    Some(n) => n,
+                    None => { ok = false; break; }
+                };
+                if neighbors.len() != 2 { ok = false; break; }
+
+                let next = if Some(neighbors[0]) == prev { neighbors[1] } else { neighbors[0] };
+                prev = Some(curr);
+                curr = next;
+
+                if curr == start { break; }
+                if loop_verts.len() > open_edges.len() + 1 { ok = false; break; }
+            }
+
+            if !ok || loop_verts.len() < 3 { continue; }
+
+            let coords: Vec<[f32; 3]> = loop_verts.iter()
+                .map(|v| *coord_map.get(v).unwrap_or(&[0.0; 3]))
+                .collect();
+
+            let n = coords.len();
+            let centroid = [
+                coords.iter().map(|c| c[0]).sum::<f32>() / n as f32,
+                coords.iter().map(|c| c[1]).sum::<f32>() / n as f32,
+                coords.iter().map(|c| c[2]).sum::<f32>() / n as f32,
+            ];
+
+            for i in 0..n {
+                let j = (i + 1) % n;
+                new_tris.extend_from_slice(&coords[i]);
+                new_tris.extend_from_slice(&coords[j]);
+                new_tris.extend_from_slice(&centroid);
+            }
+        }
+
+        if new_tris.is_empty() {
+            return self.clone();
+        }
+
+        let mut all_tris = self.tris.clone();
+        all_tris.extend_from_slice(&new_tris);
+
+        let new_tri_count = all_tris.len() / 9;
+        let mut bboxes = Vec::with_capacity(new_tri_count * 6);
+        let mut aabb_min = [f32::INFINITY; 3];
+        let mut aabb_max = [f32::NEG_INFINITY; 3];
+
+        for t in 0..new_tri_count {
+            let base = t * 9;
+            let mut tri_min = [f32::INFINITY; 3];
+            let mut tri_max = [f32::NEG_INFINITY; 3];
+            for vi in 0..3 {
+                for a in 0..3 {
+                    let v = all_tris[base + vi * 3 + a];
+                    tri_min[a] = tri_min[a].min(v);
+                    tri_max[a] = tri_max[a].max(v);
+                }
+            }
+            for a in 0..3 {
+                aabb_min[a] = aabb_min[a].min(tri_min[a]);
+                aabb_max[a] = aabb_max[a].max(tri_max[a]);
+            }
+            bboxes.extend_from_slice(&tri_min);
+            bboxes.extend_from_slice(&tri_max);
+        }
+
+        Self { tris: all_tris, bboxes, aabb_min, aabb_max }
+    }
+
     /// Signed distance from `p` to the mesh surface. Negative
     /// inside, positive outside. Uses brute-force nearest
     /// triangle + pseudo-normal sign (fast enough for meshes
@@ -409,5 +550,57 @@ mod tests {
     fn cube_mesh_outside_is_positive() {
         let m = unit_cube_mesh();
         assert!(m.sdf([3.0, 0.0, 0.0]) > 0.0);
+    }
+
+    fn cube_with_missing_face() -> MeshSdf {
+        #[rustfmt::skip]
+        let positions: Vec<f32> = vec![
+            -1.0,-1.0,-1.0,  1.0,-1.0,-1.0,  1.0, 1.0,-1.0, -1.0, 1.0,-1.0,
+            -1.0,-1.0, 1.0,  1.0,-1.0, 1.0,  1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+        ];
+        // Same as unit_cube but with the +Z face (triangles 4,5,6 4,6,7) removed.
+        #[rustfmt::skip]
+        let indices: Vec<u32> = vec![
+            0,2,1, 0,3,2, // -Z
+            0,1,5, 0,5,4, // -Y
+            3,6,2, 3,7,6, // +Y
+            0,4,7, 0,7,3, // -X
+            1,2,6, 1,6,5, // +X
+        ];
+        MeshSdf::from_buffers(&positions, &indices)
+    }
+
+    #[test]
+    fn k13_cube_with_hole_is_not_watertight() {
+        let m = cube_with_missing_face();
+        let report = m.check_manifold();
+        assert!(!report.is_watertight);
+        assert!(report.open_edges > 0);
+    }
+
+    #[test]
+    fn k13_repair_fills_hole() {
+        let m = cube_with_missing_face();
+        let repaired = m.repair();
+        let report = repaired.check_manifold();
+        assert!(
+            report.is_watertight,
+            "K13: repaired mesh should be watertight, but has {} open edges",
+            report.open_edges,
+        );
+        assert!(
+            repaired.check_manifold().triangle_count > m.check_manifold().triangle_count,
+            "K13: repair should add triangles",
+        );
+    }
+
+    #[test]
+    fn k13_watertight_mesh_unchanged_by_repair() {
+        let m = unit_cube_mesh();
+        let repaired = m.repair();
+        assert_eq!(
+            repaired.check_manifold().triangle_count,
+            m.check_manifold().triangle_count,
+        );
     }
 }
