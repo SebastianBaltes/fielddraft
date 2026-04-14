@@ -1,7 +1,7 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-04-13
-**Branch:** `main` (letzter Commit: `8ef0a7f` — K13.3: manifold check for imported meshes)
+**Stand:** 2026-04-14
+**Branch:** `main`
 
 ---
 
@@ -16,8 +16,8 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 Gemessen an der Roadmap sind ca. **82–87 % des Gesamtumfangs bis T3** implementiert (Korrektur nach unten wegen K7.17-Teilrückstufung und K7.21-Einzug). **T1 ist funktional shippable, aber UI-mäßig noch nicht produktiv navigierbar** — der frühere Blocker K10 ist erledigt, aber Burger-Menu, Toolbar-Overflow und Sketch-Constraint-Manager fehlen. **Der nächste strategische Meilenstein ist K7.21** (UI-Härtung), danach folgt **K3.5** (Mesh-Qualität), der die Viewport-Ästhetik und den STL-Export auf produktives Niveau hebt.
 
 **Registry & Tests (Stand heute):**
-- Feature Registry: **20 FeatureKinds**, **13 Primitive-Typen**
-- Testsuite: **259 Kernel-Tests + 34 Protocol-Tests + 21 Playwright-Tests = 497+ Tests grün**
+- Feature Registry: **21 FeatureKinds**, **13 Primitive-Typen**
+- Testsuite: **271 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 190 Vitest + 30 Playwright = 545+ Tests grün**
 
 ---
 
@@ -273,12 +273,14 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 
 ```
 ✅ K7.21 (UI-Härtung, alle 6 Sub-Slices done)
-✅ K3.5 Phasen A+B (Newton-Projektion + Planar-Simplifizierung, Phase C deferred)
+✅ K3.5 (Mesh-Optimierung, alle 3 Phasen done)
 ✅ K9 Mate Connector (pick-basierte Platzierung)
 ✅ K6b B-Rep-Snap (projected edge snapping in sketch)
 ✅ K13 Manifold Repair (auto hole-fill on import)
 ✅ M13 Restpunkte (Password Reset, Thumbnails, Performance Pass)
-✅ K3.5 Phase C (developable surfaces — cylinder UV-unwrap)
+✅ K14 Sketch-DnD (Drag-Sketch-auf-Face bereits implementiert)
 ```
 
-**Rationale der Umpriorisierung:** K7.21 hat direkten User-Impact (Bedienbarkeit), K3.5 ist Infrastruktur, die der User nur indirekt spürt (weniger Dreiecke, glattere Oberflächen). Ein UI, die nicht navigierbar ist, blockiert das Testen aller anderen Slices — deshalb zuerst die UI produktiv machen, dann die Qualität hinter der UI verbessern. K7.21 ist als T1-Slice eingeordnet, weil er die Shippable-Alpha tatsächlich benutzbar macht; K3.5 bleibt T0 (Architektur-Validierung) und läuft direkt danach.
+**Alle K-Slices (T0–T3) und Backend-Meilensteine (M11–M13) sind abgeschlossen.**
+
+Der nächste strategische Meilenstein ist **Phase 3 — P1 Assemblies** (Multi-Part Scene Graph). P1 nutzt die K9 Mate Connectors als Grundlage und führt Mate-Typen (Fixed, Revolute, Prismatic, Cylindrical, Ball) ein. Siehe ROADMAP.md §Phase 3.
