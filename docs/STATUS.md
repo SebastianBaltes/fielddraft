@@ -17,7 +17,7 @@ Gemessen an der Roadmap sind ca. **82–87 % des Gesamtumfangs bis T3** implemen
 
 **Registry & Tests (Stand heute):**
 - Feature Registry: **21 FeatureKinds**, **13 Primitive-Typen**
-- Testsuite: **271 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 190 Vitest + 30 Playwright = 545+ Tests grün**
+- Testsuite: **271 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 196 Vitest + 30 Playwright = 551+ Tests grün**
 
 ---
 
