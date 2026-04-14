@@ -451,6 +451,7 @@ struct PlanarRegion {
     normal: [f32; 3],
     tris: Vec<usize>,
     boundary: Vec<u32>,
+    holes: Vec<Vec<u32>>,
 }
 
 fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
@@ -513,11 +514,24 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
             }
             let n = [n[0] / len, n[1] / len, n[2] / len];
 
-            if let Some(boundary) = extract_boundary_loop(mesh, &comp) {
+            let loops = extract_boundary_loops(mesh, &comp);
+            if !loops.is_empty() {
+                // Largest loop is outer boundary, rest are holes.
+                let mut sorted = loops;
+                sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+                let boundary = sorted.remove(0);
                 regions.push(PlanarRegion {
                     normal: n,
                     tris: comp,
                     boundary,
+                    holes: sorted,
+                });
+            } else if let Some(boundary) = extract_boundary_loop(mesh, &comp) {
+                regions.push(PlanarRegion {
+                    normal: n,
+                    tris: comp,
+                    boundary,
+                    holes: Vec::new(),
                 });
             }
         }
@@ -574,6 +588,70 @@ fn connected_components(tris: &[usize], mesh: &Mesh) -> Vec<Vec<usize>> {
     }
 
     components
+}
+
+fn extract_boundary_loops(mesh: &Mesh, tris: &[usize]) -> Vec<Vec<u32>> {
+    let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+    for &t in tris {
+        let tri = [mesh.indices[t * 3], mesh.indices[t * 3 + 1], mesh.indices[t * 3 + 2]];
+        for e in 0..3 {
+            let a = tri[e];
+            let b = tri[(e + 1) % 3];
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_count.entry(key).or_default() += 1;
+        }
+    }
+
+    let boundary: Vec<(u32, u32)> = edge_count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect();
+
+    if boundary.is_empty() {
+        return Vec::new();
+    }
+
+    let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(a, b) in &boundary {
+        adj.entry(a).or_default().push(b);
+        adj.entry(b).or_default().push(a);
+    }
+
+    // All boundary vertices must have exactly 2 neighbors
+    for neighbors in adj.values() {
+        if neighbors.len() != 2 {
+            return Vec::new();
+        }
+    }
+
+    let mut visited: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut loops = Vec::new();
+
+    for &(start, _) in &boundary {
+        if visited.contains(&start) { continue; }
+        let mut loop_verts = Vec::new();
+        let mut curr = start;
+        let mut prev = u32::MAX;
+        loop {
+            if visited.contains(&curr) && curr != start { break; }
+            loop_verts.push(curr);
+            visited.insert(curr);
+            let ns = match adj.get(&curr) {
+                Some(n) => n,
+                None => break,
+            };
+            let next = if ns[0] == prev { ns[1] } else { ns[0] };
+            prev = curr;
+            curr = next;
+            if curr == start { break; }
+            if loop_verts.len() > boundary.len() + 1 { break; }
+        }
+        if loop_verts.len() >= 3 {
+            loops.push(loop_verts);
+        }
+    }
+    loops
 }
 
 fn extract_boundary_loop(mesh: &Mesh, tris: &[usize]) -> Option<Vec<u32>> {
@@ -645,22 +723,62 @@ fn extract_boundary_loop(mesh: &Mesh, tris: &[usize]) -> Option<Vec<u32>> {
 fn simplify_region(mesh: &Mesh, region: &PlanarRegion) -> Vec<u32> {
     let (u_axis, v_axis) = orthonormal_basis(region.normal);
 
-    let pts_2d: Vec<[f32; 2]> = region
-        .boundary
-        .iter()
-        .map(|&vi| {
-            let p = vtx_pos(mesh, vi as usize);
-            [dot3(p, u_axis), dot3(p, v_axis)]
-        })
-        .collect();
+    let project = |vi: u32| -> [f32; 2] {
+        let p = vtx_pos(mesh, vi as usize);
+        [dot3(p, u_axis), dot3(p, v_axis)]
+    };
 
-    let tris = earcut_2d(&pts_2d);
+    // Build merged vertex list: outer boundary + holes bridged in.
+    let mut all_verts: Vec<u32> = region.boundary.clone();
+    let mut all_pts: Vec<[f32; 2]> = all_verts.iter().map(|&vi| project(vi)).collect();
+
+    // Bridge each hole into the outer polygon.
+    for hole in &region.holes {
+        if hole.len() < 3 { continue; }
+        let hole_pts: Vec<[f32; 2]> = hole.iter().map(|&vi| project(vi)).collect();
+
+        // Find the rightmost hole vertex
+        let (hole_start, _) = hole_pts.iter().enumerate()
+            .max_by(|a, b| a.1[0].partial_cmp(&b.1[0]).unwrap())
+            .unwrap();
+
+        let hole_start_pt = hole_pts[hole_start];
+
+        // Find the nearest outer vertex to the bridge point
+        let (outer_idx, _) = all_pts.iter().enumerate()
+            .min_by(|a, b| {
+                let da = (a.1[0] - hole_start_pt[0]).powi(2) + (a.1[1] - hole_start_pt[1]).powi(2);
+                let db = (b.1[0] - hole_start_pt[0]).powi(2) + (b.1[1] - hole_start_pt[1]).powi(2);
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap();
+
+        // Insert hole vertices into the outer polygon at the bridge point.
+        // Pattern: ...outer[bridge] → hole[start] → ... → hole[start] → outer[bridge]...
+        let n = hole.len();
+        let mut bridge: Vec<u32> = Vec::with_capacity(n + 2);
+        let mut bridge_pts: Vec<[f32; 2]> = Vec::with_capacity(n + 2);
+        bridge.push(all_verts[outer_idx]);
+        bridge_pts.push(all_pts[outer_idx]);
+        for i in 0..=n {
+            let hi = (hole_start + i) % n;
+            bridge.push(hole[hi]);
+            bridge_pts.push(hole_pts[hi]);
+        }
+        bridge.push(all_verts[outer_idx]);
+        bridge_pts.push(all_pts[outer_idx]);
+
+        all_verts.splice(outer_idx + 1..outer_idx + 1, bridge);
+        all_pts.splice(outer_idx + 1..outer_idx + 1, bridge_pts);
+    }
+
+    let tris = earcut_2d(&all_pts);
 
     let mut indices = Vec::with_capacity(tris.len() * 3);
     for [a, b, c] in tris {
-        indices.push(region.boundary[a]);
-        indices.push(region.boundary[b]);
-        indices.push(region.boundary[c]);
+        indices.push(all_verts[a]);
+        indices.push(all_verts[b]);
+        indices.push(all_verts[c]);
     }
     indices
 }
