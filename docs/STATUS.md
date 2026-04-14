@@ -255,9 +255,9 @@ K3.5 eliminiert das QEF-Mikro-Rauschen auf analytisch bekannten Flächen und red
 
 Pick-basierte Platzierung: `mateMode` Toggle-State in Store, Viewport-Click-Handler nutzt Pick-Ergebnis (Position + Surface-Normal) statt Hardcoded-Koordinaten. HUD-Anzeige, Escape-Handler, Toolbar-Button mit Active-State. Kernel-Feature, WASM-Bindings, 3D-Achstriade-Overlay und Outliner-Integration waren bereits vorhanden.
 
-### 4. K6b Sketch-UX-Härtung (erweitert)
+### 4. ✅ K6b Sketch-UX-Härtung (erweitert)
 
-- B-Rep-Snapping **beim Zeichnen** (Snap auf Kanten/Vertices des 3D-Modells während Linien gezogen werden) — unabhängig von K7.21e, das nur den Face-Lock bei Sketch-Start abdeckt.
+B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketch-Ebene projiziert und als gestrichelte Guide-Lines gerendert. `resolveSnap()` prüft Cursor-Nähe zu projizierten Kanten und Vertices (Segment-Snap + Endpoint-Snap). Niedrigere Priorität als Entity-Snaps (Coincident/H/V), höhere als kein Snap.
 
 ### 5. Backend-Restpunkte (M13)
 
@@ -276,8 +276,9 @@ K13.3 prüft importierte Meshes bereits auf Wasserdichtigkeit; die automatische 
 ✅ K7.21 (UI-Härtung, alle 6 Sub-Slices done)
 ✅ K3.5 Phasen A+B (Newton-Projektion + Planar-Simplifizierung, Phase C deferred)
 ✅ K9 Mate Connector (pick-basierte Platzierung)
-→ K6b B-Rep-Snap ← nächster Slice
-→ M13 Restpunkte → K13 Manifold Repair → K3.5 Phase C
+✅ K6b B-Rep-Snap (projected edge snapping in sketch)
+→ M13 Restpunkte ← nächster Slice
+→ K13 Manifold Repair → K3.5 Phase C
 ```
 
 **Rationale der Umpriorisierung:** K7.21 hat direkten User-Impact (Bedienbarkeit), K3.5 ist Infrastruktur, die der User nur indirekt spürt (weniger Dreiecke, glattere Oberflächen). Ein UI, die nicht navigierbar ist, blockiert das Testen aller anderen Slices — deshalb zuerst die UI produktiv machen, dann die Qualität hinter der UI verbessern. K7.21 ist als T1-Slice eingeordnet, weil er die Shippable-Alpha tatsächlich benutzbar macht; K3.5 bleibt T0 (Architektur-Validierung) und läuft direkt danach.

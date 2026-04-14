@@ -83,6 +83,53 @@ const SNAP_RADIUS_MM = 10;
  *  around the snap anchor. */
 const SNAP_RING_PX = 8;
 
+const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
+
+interface ProjectedEdge {
+  p0: [number, number];
+  p1: [number, number];
+}
+
+function projectEdgesToSketchPlane(
+  edges: { p0: number[]; p1: number[] }[],
+  planeQuery: string | null,
+): ProjectedEdge[] {
+  const isXZ = planeQuery?.includes("origin_plane_xz");
+  const isYZ = planeQuery?.includes("origin_plane_yz");
+
+  return edges.map((e) => {
+    let u0: number, v0: number, u1: number, v1: number;
+    if (isXZ) {
+      u0 = e.p0[0]; v0 = e.p0[2];
+      u1 = e.p1[0]; v1 = e.p1[2];
+    } else if (isYZ) {
+      u0 = e.p0[1]; v0 = e.p0[2];
+      u1 = e.p1[1]; v1 = e.p1[2];
+    } else {
+      u0 = e.p0[0]; v0 = e.p0[1];
+      u1 = e.p1[0]; v1 = e.p1[1];
+    }
+    return { p0: [u0, v0] as [number, number], p1: [u1, v1] as [number, number] };
+  });
+}
+
+function nearestPointOnSegment(
+  p: [number, number],
+  a: [number, number],
+  b: [number, number],
+): [number, number] {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-10) return a;
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  return [a[0] + t * dx, a[1] + t * dy];
+}
+
+function dist2d(a: [number, number], b: [number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
 type DragState =
   | { kind: "idle" }
   | {
@@ -137,6 +184,7 @@ function resolveSnap(
   session: SketchSessionState,
   dragStart: [number, number] | null,
   suppress = false,
+  projectedEdges: ProjectedEdge[] = [],
 ): SnapResolution {
   if (suppress) {
     return {
@@ -156,6 +204,34 @@ function resolveSnap(
     drawingLineFrom: dragStart ? DRAFT_DRAG_START_ID : undefined,
     snapDistanceMm: SNAP_RADIUS_MM,
   });
+
+  // K6b: check B-Rep edge snapping before falling through to no-snap.
+  // Edge snap is lower priority than entity snap (coincident/H/V) but
+  // higher priority than no snap at all.
+  if (cands.length === 0 && projectedEdges.length > 0) {
+    let bestDist = SNAP_RADIUS_MM;
+    let bestPt: [number, number] | null = null;
+    for (const edge of projectedEdges) {
+      // Snap to edge endpoints (vertices)
+      const d0 = dist2d(cursor, edge.p0);
+      if (d0 < bestDist) { bestDist = d0; bestPt = edge.p0; }
+      const d1 = dist2d(cursor, edge.p1);
+      if (d1 < bestDist) { bestDist = d1; bestPt = edge.p1; }
+      // Snap to nearest point on edge segment
+      const np = nearestPointOnSegment(cursor, edge.p0, edge.p1);
+      const dn = dist2d(cursor, np);
+      if (dn < bestDist) { bestDist = dn; bestPt = np; }
+    }
+    if (bestPt) {
+      return {
+        snapped: bestPt,
+        candidate: null,
+        anchor: bestPt,
+        coincidentTargetId: null,
+      };
+    }
+  }
+
   if (cands.length === 0) {
     return {
       snapped: cursor,
@@ -282,6 +358,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const rafRef = useRef<number | null>(null);
   const lastCamVersionRef = useRef<number>(-1);
   const lastSessionRef = useRef<SketchSessionState | null>(null);
+  const projectedEdgesRef = useRef<ProjectedEdge[]>([]);
+
+  // K6b: project 3D B-Rep edges onto the sketch plane for snap targets.
+  useEffect(() => {
+    if (!store) { projectedEdgesRef.current = []; return; }
+    try {
+      const edges = store.kernel.detectEdges();
+      projectedEdgesRef.current = projectEdgesToSketchPlane(edges, session.planeQuery);
+    } catch {
+      projectedEdgesRef.current = [];
+    }
+  }, [store, session.planeQuery]);
 
   // Size the canvas to its container on mount and on resize.
   useLayoutEffect(() => {
@@ -318,6 +406,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             dragRef.current,
             hoverRef.current,
             snapRef.current,
+            projectedEdgesRef.current,
           );
         }
       }
@@ -350,7 +439,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
     // click (no prior move events).
-    const snap = resolveSnap([u, v], session, null, e.shiftKey);
+    const snap = resolveSnap([u, v], session, null, e.shiftKey, projectedEdgesRef.current);
     snapRef.current = snap;
     const [su, sv] = snap.snapped;
     if (session.selectedTool === "sketch_point") {
@@ -451,6 +540,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         session,
         dragRef.current.start,
         e.shiftKey,
+        projectedEdgesRef.current,
       );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
@@ -480,7 +570,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
       // land on.
-      const snap = resolveSnap([u, v], session, null, e.shiftKey);
+      const snap = resolveSnap([u, v], session, null, e.shiftKey, projectedEdgesRef.current);
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
@@ -535,6 +625,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             dragRef.current,
             hoverRef.current,
             snapRef.current,
+            projectedEdgesRef.current,
           );
         }
         return;
@@ -570,6 +661,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             dragRef.current,
             hoverRef.current,
             snapRef.current,
+            projectedEdgesRef.current,
           );
         }
         return;
@@ -596,6 +688,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       session,
       dragRef.current.start,
       e.shiftKey,
+      projectedEdgesRef.current,
     );
     snapRef.current = snap;
     const { start, startAnchorId } = dragRef.current;
@@ -815,6 +908,7 @@ function drawOverlay(
   drag: DragState,
   hover: [number, number] | null,
   snap: SnapResolution,
+  projectedEdges: ProjectedEdge[] | null = null,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -867,6 +961,22 @@ function drawOverlay(
     ctx.moveTo(0, oy);
     ctx.lineTo(cam.width, oy);
     ctx.stroke();
+  }
+
+  // K6b: draw projected B-Rep edges as faint guide lines.
+  if (projectedEdges && projectedEdges.length > 0) {
+    ctx.strokeStyle = COLOR_EDGE_GUIDE;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    for (const edge of projectedEdges) {
+      const [x0, y0] = sketchToScreen(edge.p0[0], edge.p0[1], cam);
+      const [x1, y1] = sketchToScreen(edge.p1[0], edge.p1[1], cam);
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // K6b.6: compute DOF to pick the 3-color status.
