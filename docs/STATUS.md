@@ -246,8 +246,8 @@ K3.5 eliminiert das QEF-Mikro-Rauschen auf analytisch bekannten Flächen und red
 
 **Umsetzungs-Phasen:**
 1. ✅ **Phase A — Zero-Noise-Projektion:** Newton-Projektion (4 Iterationen, ε=1e-5) auf `f_A = 0` für Single-Contributor-Vertices. 4 neue Tests: Box/Sphere/Cylinder Hausdorff < 0.1mm, Face-Vertex Oberflächenfehler < 0.01mm (Sphere/Cylinder) bzw. < 0.1mm (Box wegen diskontinuierter Gradienten an Kanten).
-2. **Phase B — Topologische Simplifizierung planarer Flächen** (**nächster Slice**): Marching Squares im UV-Raum, Earcut-Retriangulierung.
-3. **Phase C — Abwickelbare Flächen:** Zylinder-Mäntel, Kegel, Extrude-Profile.
+2. ✅ **Phase B — Topologische Simplifizierung planarer Flächen**: Gruppen Face-Dreiecke nach (Contributor, geometrischer Normalenrichtung), Connected-Components-Zerlegung, Boundary-Loop-Extraktion, Ear-Clipping-Retriangulierung, Vertex-Kompaktierung. Box 50mm@Res16: 1064→176 Vertices (83%), 2700→340 Dreiecke (87%). 5 neue Tests.
+3. **Phase C — Abwickelbare Flächen** (**nächster Slice**): Zylinder-Mäntel, Kegel, Extrude-Profile.
 
 **Abnahme-Metriken (rein deterministisch, `cargo test`):** Hausdorff-Distanz, Dreieckszahl pro Face-Typ, Manifold-Check, Dreieck-Aspektverhältnis.
 

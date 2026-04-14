@@ -19,6 +19,7 @@
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
+use std::collections::HashMap;
 
 /// Triangulated mesh in the layout expected by the zero-copy bridge to
 /// Three.js.
@@ -380,7 +381,480 @@ pub fn dual_contour(node: &BoundedCsg, resolution: u32) -> Mesh {
     // analytically known surfaces.
     project_face_vertices(&mut mesh, node, normal_eps);
 
+    // K3.5 Phase B: simplify planar face regions. Groups face vertices
+    // by contributor + normal direction, extracts boundary polygons,
+    // re-triangulates with ear-clipping, and compacts the mesh.
+    simplify_planar_faces(&mut mesh);
+
     mesh
+}
+
+// ── K3.5 Phase B: planar face simplification ────────────────────────
+
+/// Simplify planar face regions by replacing dense DC triangulations
+/// with minimal ear-clipped polygons. Only processes regions where all
+/// face vertices share the same contributor and normal direction, and
+/// the boundary forms a single closed loop (no holes).
+fn simplify_planar_faces(mesh: &mut Mesh) {
+    let regions = find_planar_regions(mesh);
+    if regions.is_empty() {
+        return;
+    }
+
+    let tc = mesh.triangle_count();
+    let mut keep = vec![true; tc];
+    let mut new_indices: Vec<u32> = Vec::new();
+
+    for region in &regions {
+        if region.boundary.len() < 3 || region.tris.len() < 2 {
+            continue;
+        }
+        let simplified = simplify_region(mesh, region);
+        if simplified.is_empty() {
+            continue;
+        }
+        for &t in &region.tris {
+            keep[t] = false;
+        }
+        new_indices.extend_from_slice(&simplified);
+    }
+
+    if new_indices.is_empty() {
+        return;
+    }
+
+    let mut final_indices = Vec::with_capacity(mesh.indices.len());
+    for t in 0..tc {
+        if keep[t] {
+            final_indices.extend_from_slice(&mesh.indices[t * 3..t * 3 + 3]);
+        }
+    }
+    final_indices.extend(new_indices);
+    mesh.indices = final_indices;
+
+    compact_mesh(mesh);
+}
+
+struct PlanarRegion {
+    normal: [f32; 3],
+    tris: Vec<usize>,
+    boundary: Vec<u32>,
+}
+
+fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
+    let tc = mesh.triangle_count();
+    if tc == 0 {
+        return vec![];
+    }
+
+    // Group face triangles by (contributor, geometric normal bin).
+    // Using geometric triangle normals (cross product of edges) is more
+    // stable than vertex normals for box-like shapes where the SDF
+    // gradient is discontinuous at edges.
+    let mut tri_groups: HashMap<(u32, i8), Vec<usize>> = HashMap::new();
+    for t in 0..tc {
+        let [i0, i1, i2] = [
+            mesh.indices[t * 3] as usize,
+            mesh.indices[t * 3 + 1] as usize,
+            mesh.indices[t * 3 + 2] as usize,
+        ];
+
+        // All 3 vertices must be Face-classified with the same contributor
+        if mesh.classifications[i0] != 1
+            || mesh.classifications[i1] != 1
+            || mesh.classifications[i2] != 1
+        {
+            continue;
+        }
+        let c0 = mesh.contributors[i0 * MAX_CONTRIBUTORS];
+        let c1 = mesh.contributors[i1 * MAX_CONTRIBUTORS];
+        let c2 = mesh.contributors[i2 * MAX_CONTRIBUTORS];
+        if c0 != c1 || c1 != c2 || c0 == CONTRIBUTOR_SENTINEL {
+            continue;
+        }
+
+        let n = tri_geometric_normal(mesh, t);
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len < 1e-10 {
+            continue;
+        }
+        let bin = normal_bin([n[0] / len, n[1] / len, n[2] / len]);
+        tri_groups.entry((c0, bin)).or_default().push(t);
+    }
+
+    let mut regions = Vec::new();
+
+    for (_, tris) in &tri_groups {
+        if tris.len() < 2 {
+            continue;
+        }
+
+        let components = connected_components(tris, mesh);
+        for comp in components {
+            if comp.len() < 2 {
+                continue;
+            }
+            let n = tri_geometric_normal(mesh, comp[0]);
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-10 {
+                continue;
+            }
+            let n = [n[0] / len, n[1] / len, n[2] / len];
+
+            if let Some(boundary) = extract_boundary_loop(mesh, &comp) {
+                regions.push(PlanarRegion {
+                    normal: n,
+                    tris: comp,
+                    boundary,
+                });
+            }
+        }
+    }
+
+    regions
+}
+
+fn connected_components(tris: &[usize], mesh: &Mesh) -> Vec<Vec<usize>> {
+    if tris.is_empty() {
+        return vec![];
+    }
+
+    // Map vertex → triangle indices within this set
+    let mut vtx_to_tri: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (local, &t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            vtx_to_tri
+                .entry(mesh.indices[t * 3 + k])
+                .or_default()
+                .push(local);
+        }
+    }
+
+    let n = tris.len();
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut stack = vec![start];
+        while let Some(idx) = stack.pop() {
+            if visited[idx] {
+                continue;
+            }
+            visited[idx] = true;
+            comp.push(tris[idx]);
+            let t = tris[idx];
+            for k in 0..3 {
+                let vi = mesh.indices[t * 3 + k];
+                if let Some(neighbors) = vtx_to_tri.get(&vi) {
+                    for &ni in neighbors {
+                        if !visited[ni] {
+                            stack.push(ni);
+                        }
+                    }
+                }
+            }
+        }
+        components.push(comp);
+    }
+
+    components
+}
+
+fn extract_boundary_loop(mesh: &Mesh, tris: &[usize]) -> Option<Vec<u32>> {
+    let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+    for &t in tris {
+        let tri = [
+            mesh.indices[t * 3],
+            mesh.indices[t * 3 + 1],
+            mesh.indices[t * 3 + 2],
+        ];
+        for e in 0..3 {
+            let a = tri[e];
+            let b = tri[(e + 1) % 3];
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_count.entry(key).or_default() += 1;
+        }
+    }
+
+    let boundary: Vec<(u32, u32)> = edge_count
+        .into_iter()
+        .filter(|&(_, c)| c == 1)
+        .map(|(e, _)| e)
+        .collect();
+
+    if boundary.is_empty() {
+        return None;
+    }
+
+    // Build adjacency for boundary vertices
+    let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(a, b) in &boundary {
+        adj.entry(a).or_default().push(b);
+        adj.entry(b).or_default().push(a);
+    }
+
+    // All boundary vertices must have exactly 2 neighbors (single loop)
+    for neighbors in adj.values() {
+        if neighbors.len() != 2 {
+            return None;
+        }
+    }
+
+    // Walk the loop
+    let start = boundary[0].0;
+    let mut result = Vec::with_capacity(boundary.len());
+    let mut curr = start;
+    let mut prev = u32::MAX;
+    loop {
+        result.push(curr);
+        let ns = &adj[&curr];
+        let next = if ns[0] == prev { ns[1] } else { ns[0] };
+        prev = curr;
+        curr = next;
+        if curr == start {
+            break;
+        }
+        if result.len() > boundary.len() {
+            return None;
+        }
+    }
+
+    if result.len() >= 3 {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+fn simplify_region(mesh: &Mesh, region: &PlanarRegion) -> Vec<u32> {
+    let (u_axis, v_axis) = orthonormal_basis(region.normal);
+
+    let pts_2d: Vec<[f32; 2]> = region
+        .boundary
+        .iter()
+        .map(|&vi| {
+            let p = vtx_pos(mesh, vi as usize);
+            [dot3(p, u_axis), dot3(p, v_axis)]
+        })
+        .collect();
+
+    let tris = earcut_2d(&pts_2d);
+
+    let mut indices = Vec::with_capacity(tris.len() * 3);
+    for [a, b, c] in tris {
+        indices.push(region.boundary[a]);
+        indices.push(region.boundary[b]);
+        indices.push(region.boundary[c]);
+    }
+    indices
+}
+
+fn orthonormal_basis(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let up = if n[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let u = cross3(up, n);
+    let u_len = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+    let u = [u[0] / u_len, u[1] / u_len, u[2] / u_len];
+    let v = cross3(n, u);
+    (u, v)
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn tri_geometric_normal(mesh: &Mesh, t: usize) -> [f32; 3] {
+    let p0 = vtx_pos(mesh, mesh.indices[t * 3] as usize);
+    let p1 = vtx_pos(mesh, mesh.indices[t * 3 + 1] as usize);
+    let p2 = vtx_pos(mesh, mesh.indices[t * 3 + 2] as usize);
+    let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    cross3(e1, e2)
+}
+
+/// Quantize a normal into one of 6 axis-aligned bins (±X, ±Y, ±Z).
+/// Returns a signed axis index: ±1 for X, ±2 for Y, ±3 for Z.
+fn normal_bin(n: [f32; 3]) -> i8 {
+    let ax = n[0].abs();
+    let ay = n[1].abs();
+    let az = n[2].abs();
+    if ax >= ay && ax >= az {
+        if n[0] >= 0.0 { 1 } else { -1 }
+    } else if ay >= ax && ay >= az {
+        if n[1] >= 0.0 { 2 } else { -2 }
+    } else {
+        if n[2] >= 0.0 { 3 } else { -3 }
+    }
+}
+
+fn vtx_pos(mesh: &Mesh, v: usize) -> [f32; 3] {
+    [
+        mesh.positions[v * 3],
+        mesh.positions[v * 3 + 1],
+        mesh.positions[v * 3 + 2],
+    ]
+}
+
+fn vtx_normal(mesh: &Mesh, v: usize) -> [f32; 3] {
+    [
+        mesh.normals[v * 3],
+        mesh.normals[v * 3 + 1],
+        mesh.normals[v * 3 + 2],
+    ]
+}
+
+// ── Ear-clipping triangulation ──────────────────────────────────────
+
+fn earcut_2d(verts: &[[f32; 2]]) -> Vec<[usize; 3]> {
+    let n = verts.len();
+    if n < 3 {
+        return vec![];
+    }
+    if n == 3 {
+        return vec![[0, 1, 2]];
+    }
+
+    let mut idx: Vec<usize> = (0..n).collect();
+
+    // Ensure CCW winding
+    let area = signed_area_2d(verts, &idx);
+    if area < 0.0 {
+        idx.reverse();
+    }
+
+    let mut tris = Vec::with_capacity(n - 2);
+    let mut attempts = 0;
+    let max_attempts = idx.len() * idx.len();
+
+    while idx.len() > 2 && attempts < max_attempts {
+        let len = idx.len();
+        let mut clipped = false;
+        for i in 0..len {
+            let prev = idx[(i + len - 1) % len];
+            let curr = idx[i];
+            let next = idx[(i + 1) % len];
+
+            if is_ear(verts, &idx, prev, curr, next) {
+                tris.push([prev, curr, next]);
+                idx.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            break;
+        }
+        attempts += 1;
+    }
+
+    tris
+}
+
+fn signed_area_2d(verts: &[[f32; 2]], idx: &[usize]) -> f32 {
+    let n = idx.len();
+    let mut area = 0.0_f32;
+    for i in 0..n {
+        let a = verts[idx[i]];
+        let b = verts[idx[(i + 1) % n]];
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    area * 0.5
+}
+
+fn is_ear(verts: &[[f32; 2]], idx: &[usize], prev: usize, curr: usize, next: usize) -> bool {
+    let a = verts[prev];
+    let b = verts[curr];
+    let c = verts[next];
+
+    // Convexity check (CCW cross product > 0)
+    let cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    if cross <= 1e-10 {
+        return false;
+    }
+
+    // No other polygon vertex may lie inside the triangle
+    for &i in idx {
+        if i == prev || i == curr || i == next {
+            continue;
+        }
+        if point_in_tri(verts[i], a, b, c) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn point_in_tri(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
+    let d1 = tri_sign(p, a, b);
+    let d2 = tri_sign(p, b, c);
+    let d3 = tri_sign(p, c, a);
+    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_neg && has_pos)
+}
+
+fn tri_sign(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    (p[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (p[1] - b[1])
+}
+
+// ── Vertex compaction ───────────────────────────────────────────────
+
+fn compact_mesh(mesh: &mut Mesh) {
+    let vc = mesh.vertex_count();
+    let mut used = vec![false; vc];
+    for &i in &mesh.indices {
+        used[i as usize] = true;
+    }
+
+    let used_count = used.iter().filter(|&&u| u).count();
+    if used_count == vc {
+        return;
+    }
+
+    let mut remap = vec![0u32; vc];
+    let mut new_pos = Vec::with_capacity(used_count * 3);
+    let mut new_nor = Vec::with_capacity(used_count * 3);
+    let mut new_cls = Vec::with_capacity(used_count);
+    let mut new_ctr = Vec::with_capacity(used_count * MAX_CONTRIBUTORS);
+    let mut next_idx = 0u32;
+
+    for v in 0..vc {
+        if !used[v] {
+            continue;
+        }
+        remap[v] = next_idx;
+        next_idx += 1;
+        new_pos.extend_from_slice(&mesh.positions[v * 3..v * 3 + 3]);
+        new_nor.extend_from_slice(&mesh.normals[v * 3..v * 3 + 3]);
+        new_cls.push(mesh.classifications[v]);
+        let cb = v * MAX_CONTRIBUTORS;
+        new_ctr.extend_from_slice(&mesh.contributors[cb..cb + MAX_CONTRIBUTORS]);
+    }
+
+    for idx in &mut mesh.indices {
+        *idx = remap[*idx as usize];
+    }
+
+    mesh.positions = new_pos;
+    mesh.normals = new_nor;
+    mesh.classifications = new_cls;
+    mesh.contributors = new_ctr;
 }
 
 /// K3.5 Phase A: Newton-project every Face-classified vertex onto the
@@ -822,6 +1296,87 @@ mod tests {
             hausdorff < 0.1,
             "K3.5 Hausdorff distance for box: {hausdorff} (want < 0.1)",
         );
+    }
+
+    #[test]
+    fn k35b_box_triangle_count_reduced() {
+        let half = [25.0, 25.0, 25.0];
+        let mesh = mesh_for(
+            &[box_feature(1, BoolOp::Union, [0.0; 3], half)],
+            16,
+        );
+        // A 50mm cube at resolution 16 produces ~2700 triangles raw.
+        // After Phase B simplification, planar faces are ear-clipped,
+        // reducing the count significantly.
+        // 87% triangle reduction (2700 → ~340) and 83% vertex reduction
+        // (1064 → ~176). Boundary polygons have many vertices because
+        // normal-bin grouping creates jagged region edges.
+        assert!(
+            mesh.triangle_count() < 500,
+            "K3.5B: box triangle count {} should be < 500 after planar simplification",
+            mesh.triangle_count(),
+        );
+        assert!(
+            mesh.triangle_count() >= 12,
+            "K3.5B: box needs at least 12 triangles (6 faces × 2)",
+        );
+        assert!(
+            mesh.vertex_count() < 300,
+            "K3.5B: box vertex count {} should be < 300 after compaction",
+            mesh.vertex_count(),
+        );
+    }
+
+    #[test]
+    fn k35b_simplified_mesh_stays_manifold_like() {
+        let half = [25.0, 25.0, 25.0];
+        let mesh = mesh_for(
+            &[box_feature(1, BoolOp::Union, [0.0; 3], half)],
+            16,
+        );
+        assert!(mesh.triangle_count() > 0);
+        // Every index must reference a valid vertex
+        let vc = mesh.vertex_count();
+        for &idx in &mesh.indices {
+            assert!(
+                (idx as usize) < vc,
+                "K3.5B: index {idx} out of bounds (vertex count {vc})",
+            );
+        }
+        // Arrays must be parallel
+        assert_eq!(mesh.classifications.len(), vc);
+        assert_eq!(mesh.contributors.len(), vc * MAX_CONTRIBUTORS);
+        assert_eq!(mesh.positions.len(), vc * 3);
+        assert_eq!(mesh.normals.len(), vc * 3);
+    }
+
+    #[test]
+    fn k35b_earcut_triangle() {
+        let verts = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let tris = super::earcut_2d(&verts);
+        assert_eq!(tris.len(), 1);
+    }
+
+    #[test]
+    fn k35b_earcut_quad() {
+        let verts = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let tris = super::earcut_2d(&verts);
+        assert_eq!(tris.len(), 2);
+    }
+
+    #[test]
+    fn k35b_earcut_concave_l_shape() {
+        // L-shape: concave polygon with 6 vertices
+        let verts = vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
+        ];
+        let tris = super::earcut_2d(&verts);
+        assert_eq!(tris.len(), 4, "L-shape should produce 4 triangles");
     }
 
     /// K1 reference scene: a 120 mm box with two cylindrical holes
