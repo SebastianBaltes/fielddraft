@@ -2088,6 +2088,45 @@ impl Kernel {
         true
     }
 
+    /// K7.21h: replace the rotation component of a feature's transform.
+    /// Quaternion order: (x, y, z, w).
+    #[wasm_bindgen(js_name = setFeatureRotation)]
+    pub fn set_feature_rotation(
+        &mut self,
+        id: u32,
+        rx: f32,
+        ry: f32,
+        rz: f32,
+        rw: f32,
+    ) -> bool {
+        let id = FeatureId::from_u32(id);
+        let pos = self.document.features.iter().position(|f| f.id == id);
+        let Some(idx) = pos else { return false };
+        let rot = [rx, ry, rz, rw];
+        if self.document.features[idx].transform.rotation == rot {
+            return false;
+        }
+        self.snapshot();
+        self.document.features[idx].transform.rotation = rot;
+        self.rebuild_packed();
+        true
+    }
+
+    /// K7.21h: replace the uniform scale of a feature's transform.
+    #[wasm_bindgen(js_name = setFeatureScale)]
+    pub fn set_feature_scale(&mut self, id: u32, scale: f32) -> bool {
+        let id = FeatureId::from_u32(id);
+        let pos = self.document.features.iter().position(|f| f.id == id);
+        let Some(idx) = pos else { return false };
+        if (self.document.features[idx].transform.scale - scale).abs() < 1e-7 {
+            return false;
+        }
+        self.snapshot();
+        self.document.features[idx].transform.scale = scale;
+        self.rebuild_packed();
+        true
+    }
+
     /// Add `(dx, dy, dz)` to a feature's translate. Convenience for
     /// keyboard nudging.
     #[wasm_bindgen(js_name = nudgeFeature)]

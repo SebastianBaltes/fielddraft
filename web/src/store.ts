@@ -169,6 +169,8 @@ export interface StoreState {
   assembly: import("./assembly").AssemblyState;
   /** P2: IK mode — clicking in viewport sets the IK target. */
   ikMode: boolean;
+  /** K7.21h: transform gizmo mode. */
+  gizmoMode: "translate" | "rotate" | "scale";
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -324,6 +326,7 @@ export class KernelStore {
       mateMode: false,
       assembly: INACTIVE_ASSEMBLY,
       ikMode: false,
+      gizmoMode: "translate" as const,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -401,6 +404,7 @@ export class KernelStore {
       mateMode: false,
       assembly: this.state.assembly,
       ikMode: false,
+      gizmoMode: "translate" as const,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1785,8 +1789,25 @@ export class KernelStore {
    *  re-mesh and refreshes the features list so the outliner
    *  highlight and the gizmo's own placeholder position both
    *  follow the new translate. Returns `true` if anything changed. */
+  setGizmoMode(mode: "translate" | "rotate" | "scale"): void {
+    this.state = { ...this.state, gizmoMode: mode };
+    this.notify();
+  }
+
   setFeatureTranslate(id: number, x: number, y: number, z: number): boolean {
     if (!this.kernel.setFeatureTranslate(id, x, y, z)) return false;
+    this.commit();
+    return true;
+  }
+
+  setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+    if (!this.kernel.setFeatureRotation(id, rx, ry, rz, rw)) return false;
+    this.commit();
+    return true;
+  }
+
+  setFeatureScale(id: number, scale: number): boolean {
+    if (!this.kernel.setFeatureScale(id, scale)) return false;
     this.commit();
     return true;
   }

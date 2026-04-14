@@ -836,6 +836,16 @@ export class Kernel {
     return this.inner.setFeatureTranslate(id, x, y, z);
   }
 
+  setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.inner as any).setFeatureRotation(id, rx, ry, rz, rw);
+  }
+
+  setFeatureScale(id: number, scale: number): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.inner as any).setFeatureScale(id, scale);
+  }
+
   nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {
     return this.inner.nudgeFeature(id, dx, dy, dz);
   }

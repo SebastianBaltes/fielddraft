@@ -628,16 +628,26 @@ function SelectionTransformGizmo() {
   // loop stable: when our own commit bubbles back as a new
   // `selectedFeature` object, the useEffect recognises the
   // translate as self-originated and skips the mesh reset.
+  const gizmoMode = state?.gizmoMode ?? "translate";
+
   const handleGizmoChange = () => {
     const mesh = meshRef.current;
     if (!mesh) return;
-    const next: [number, number, number] = [
-      mesh.position.x,
-      mesh.position.y,
-      mesh.position.z,
-    ];
-    syncedTranslateRef.current = next;
-    store.setFeatureTranslate(selectedFeature.id, next[0], next[1], next[2]);
+
+    if (gizmoMode === "translate") {
+      const next: [number, number, number] = [
+        mesh.position.x,
+        mesh.position.y,
+        mesh.position.z,
+      ];
+      syncedTranslateRef.current = next;
+      store.setFeatureTranslate(selectedFeature.id, next[0], next[1], next[2]);
+    } else if (gizmoMode === "rotate") {
+      const q = mesh.quaternion;
+      store.setFeatureRotation(selectedFeature.id, q.x, q.y, q.z, q.w);
+    } else if (gizmoMode === "scale") {
+      store.setFeatureScale(selectedFeature.id, mesh.scale.x);
+    }
   };
 
   return (
@@ -648,7 +658,7 @@ function SelectionTransformGizmo() {
       {meshRef.current ? (
         <TransformControls
           object={meshRef.current}
-          mode="translate"
+          mode={gizmoMode}
           size={0.75}
           onObjectChange={handleGizmoChange}
         />

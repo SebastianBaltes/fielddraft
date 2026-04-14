@@ -103,6 +103,14 @@ export function App() {
             store.addHole();
             e.preventDefault();
             return;
+          case "g":
+            store.setGizmoMode("translate");
+            e.preventDefault();
+            return;
+          case "r":
+            store.setGizmoMode("rotate");
+            e.preventDefault();
+            return;
           case "1":
             requestView("front");
             e.preventDefault();
