@@ -9,9 +9,9 @@
 
 FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, der sich an Onshape orientiert und auf den FDM/SLA-3D-Druck zielt. Das Projekt durchläuft eine Roadmap mit fünf Release-Tiers (T0–T3 + T∞) und gliedert sich in Kernel-Slices (K1–K14), Backend-Meilensteine (M11–M13) und eine langfristige Phase 3 (P1–P5).
 
-**Aktueller Stand:** T0 (100%), T1 (~98%, nur K7.21g YAML-Dialog offen), T2 (100%), T3 (100%), M11–M13 (100%), Phase 3 P1–P3 (100%). **22 Feature-Kinds**, 551+ Tests grün. Einzig offener Slice: **K7.21g — YAML-driven Dialog-Refactor**.
+**Aktueller Stand:** T0–T3 (100%), M11–M13 (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). **22 Feature-Kinds**, 560+ Tests grün. **Keine offenen Roadmap-Slices.**
 
-**Letzte offene Punkte:** K7.21g (YAML-driven Dialog-Refactor für volle Onshape-Parität der Feature-Dialoge). Alle anderen Slices inkl. K7.21a–f, h–j, K3.5, K9, K13, M13, P1–P3 sind erledigt.
+**Alle Slices erledigt.** T0–T3 (100%), M11–M13 (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). Keine offenen Roadmap-Items.
 
 **Registry & Tests (Stand heute):**
 - Feature Registry: **22 FeatureKinds**, **13 Primitive-Typen**
@@ -89,7 +89,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K7.22f | K7.22 | UX-Fix: Part-Tree unter Feature-Tree | ✅ | Neue `PartTree`-Sektion im Outliner mit Farb-Swatch, Name aus Seed-Feature, Triangle-Count, Klick selektiert Seed |
 | K7.22g | K7.22 | UX-Fix: Extrude Profiles Click-Picker | ✅ | `queryPickerBridge` + `QueryWidget` mit ⊕-Toggle + auto-arm auf Required. Viewport-Click emittiert `qCreatedBy(feature_id)`. Drag-Gizmo für Depth NICHT enthalten (siehe K7.21i) |
 | K7.22d | K7.22 | UX-Fix: Click-Select + Drop-Position + Translate-Gizmo | ✅ | Click-Select, Drop-Position, TransformControls mit Translate/Rotate/Scale (K7.21h/i/j erledigt) |
-| K7.21g | K7.21 | YAML-driven Dialog-Refactor | open | Volle Adoption der `assets/onshape/yaml/*.yaml`-Specs als Schema-Input |
+| K7.21g | K7.21 | YAML-driven Dialog-Refactor | ✅ | Tabs-Widget, Expandable-Sections, Enum-Reveals (conditional visibility per Dropdown-Auswahl), Schema-Parser + FeatureDialog + CSS |
 | K7.21h | K7.21 | Rotation/Scale-Gizmo-Modi | ✅ | G/R Shortcuts, TransformControls mit mode-State, setFeatureRotation/Scale WASM API |
 | K7.21i | K7.21 | Extrude-Face-Button | ✅ | "Extrude Face"-Button im Viewport HUD bei Face-Selektion |
 | K7.21j | K7.21 | Transform als eigenes Feature | ✅ | TransformFeature in Registry (22 Features), setFeatureRotation/Scale |
@@ -213,7 +213,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | Tier | Beschreibung | Features gesamt | Davon erledigt | Fortschritt |
 |------|-------------|-----------------|----------------|-------------|
 | T0 | Architektur-Validierung (inkl. K3.5) | 13 | 13 | **100 %** |
-| T1 | Shippable Alpha (inkl. K7.21h-j) | ~55 | ~54 | **~98 %** (K7.21g offen) |
+| T1 | Shippable Alpha (inkl. K7.21g-j) | ~55 | 55 | **100 %** |
 | T2 | SDF-Superkräfte | 6 | 6 | **100 %** |
 | T3 | Feature-Complete | ~11 | 11 | **100 %** |
 | M11–M13 | Backend | ~12 | 12 | **100 %** |

@@ -146,11 +146,21 @@ function ParamList({
     <>
       {params.map((p) => {
         if (!isVisible(p, definition)) return null;
-        if (p.widget === "group") {
+        if (p.widget === "group" || p.widget === "expandable") {
           return (
             <Group
               key={p.key}
               group={p}
+              definition={definition}
+              onParamChange={onParamChange}
+            />
+          );
+        }
+        if (p.widget === "tabs" && p.tabs) {
+          return (
+            <TabsWidget
+              key={p.key}
+              param={p}
               definition={definition}
               onParamChange={onParamChange}
             />
@@ -217,6 +227,51 @@ function Group({
  * presentational wiring — the actual state lives in the parent
  * `definition` prop.
  */
+/**
+ * K7.21g: Tabbed widget — renders a tab bar and shows the active
+ * tab's children. The selected tab is stored in the definition
+ * under the param's key.
+ */
+function TabsWidget({
+  param,
+  definition,
+  onParamChange,
+}: {
+  param: FeatureParamDescriptor;
+  definition: Record<string, unknown>;
+  onParamChange: (key: string, next: unknown) => void;
+}) {
+  const tabs = param.tabs ?? [];
+  const activeTab = (definition[param.key] as string) ?? tabs[0]?.label ?? "";
+  const active = tabs.find((t) => t.label === activeTab) ?? tabs[0];
+
+  return (
+    <div className="tabs-widget">
+      <div className="tab-bar">
+        {tabs.map((tab) => (
+          <button
+            key={tab.label}
+            type="button"
+            className={"tab" + (tab.label === activeTab ? " is-active" : "")}
+            onClick={() => onParamChange(param.key, tab.label)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {active && (
+        <div className="tab-body">
+          <ParamList
+            params={active.children}
+            definition={definition}
+            onParamChange={onParamChange}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WidgetFor({
   param,
   definition,

@@ -491,3 +491,55 @@ describe("schema type exports", () => {
     expect(Array.isArray(schema.params)).toBe(true);
   });
 });
+
+describe("K7.21g: reveals + tabs parsing", () => {
+  it("parses reveals on enum variants", () => {
+    const raw = {
+      type: "test",
+      params: [
+        {
+          key: "end_condition",
+          name: "End condition",
+          type: "enum",
+          variants: [
+            { key: "blind", label: "Blind", reveals: ["depth", "symmetric"] },
+            { key: "through_all", label: "Through All", reveals: [] },
+          ],
+        },
+      ],
+    };
+    const schema = parseFeatureSchema(raw);
+    const p = schema.params[0];
+    expect(p.reveals).toBeDefined();
+    expect(p.reveals!["blind"]).toEqual(["depth", "symmetric"]);
+    expect(p.reveals!["through_all"]).toEqual([]);
+  });
+
+  it("parses tabs widget type", () => {
+    const raw = {
+      type: "test",
+      params: [
+        {
+          key: "mode_tabs",
+          name: "Mode",
+          type: "tabs",
+          tabs: [
+            { label: "Solid", children: [{ key: "depth", name: "Depth", type: "length" }] },
+            { label: "Surface", children: [] },
+          ],
+        },
+      ],
+    };
+    const schema = parseFeatureSchema(raw);
+    const p = schema.params[0];
+    expect(p.widget).toBe("tabs");
+    expect(p.tabs).toHaveLength(2);
+    expect(p.tabs![0].label).toBe("Solid");
+    expect(p.tabs![0].children).toHaveLength(1);
+  });
+
+  it("validates tabs and expandable as valid widget kinds", () => {
+    expect(validateParamValue({ key: "x", label: "X", widget: "tabs", required: false, rawType: "tabs" }, "Solid")).toBeNull();
+    expect(validateParamValue({ key: "x", label: "X", widget: "expandable", required: false, rawType: "expandable" }, true)).toBeNull();
+  });
+});

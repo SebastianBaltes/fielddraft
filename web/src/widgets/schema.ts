@@ -48,6 +48,9 @@
 export interface RawEnumVariant {
   key: string;
   label: string;
+  /** K7.21g: when this variant is selected, these child param keys
+   *  become visible. Maps to the YAML `reveals:` pattern. */
+  reveals?: string[];
 }
 
 /** Raw param entry. Groups carry `type: "group"` and a `children`
@@ -90,6 +93,8 @@ export type WidgetKind =
   | "slider"
   | "flip"
   | "group"
+  | "tabs"
+  | "expandable"
   | "unknown";
 
 export type UiHint = "horizontal_enum" | "opposite_direction" | "slider";
@@ -120,11 +125,18 @@ export interface FeatureParamDescriptor {
   /** K6b query picker metadata. Populated when `widget === "query"`. */
   entityFilter?: string;
   maxPicks?: number;
-  /** Group children — only set when `widget === "group"`. */
+  /** Group/tabs/expandable children. */
   children?: FeatureParamDescriptor[];
   /** Name of a sibling bool param that drives this group's
    *  aufklappen/zuklappen state. */
   drivingParam?: string;
+  /** K7.21g: per-variant reveals mapping. Keys are variant keys,
+   *  values are arrays of child param keys that become visible
+   *  when that variant is selected. */
+  reveals?: Record<string, string[]>;
+  /** K7.21g: tab definitions for `widget === "tabs"`. Each tab has
+   *  a label and a list of child param descriptors. */
+  tabs?: { label: string; children: FeatureParamDescriptor[] }[];
 }
 
 export interface FeatureSchema {
@@ -137,6 +149,52 @@ export interface FeatureSchema {
  * Throws on shape errors so bugs in the Rust side surface
  * immediately rather than silently rendering a broken dialog.
  */
+/**
+ * K7.22 UX-fix (9): parameters on primitive feature schemas that
+ * are never meant to show up in the editable dialog.
+ *
+ * Historically, every primitive (box, sphere, cylinder, …) carries
+ * these "noise" parameters in its Rust struct so the derive macro
+ * can emit them in the wire form and feed them back into the
+ * kernel at regen time. But from the user's perspective a box
+ * dialog should only show `half_extents` — the rest are managed
+ * by dedicated tools (Transform for center/translate, Boolean for
+ * op, Fillet/Chamfer/Shell for blend_radius/chamfer_size/shell,
+ * Deform for twist/bend, Displace for displace_depth/freq).
+ *
+ * Hiding is a pure rendering filter — the wire form still carries
+ * the fields and the kernel still reads them. Setting them
+ * requires a separate feature (or a direct wire-form edit).
+ */
+const HIDDEN_PRIMITIVE_PARAM_KEYS = new Set<string>([
+  "center",
+  "translate",
+  "op",
+  "blend_radius",
+  "chamfer_size",
+  "twist_rate",
+  "bend_rate",
+  "displace_depth",
+  "displace_freq",
+  "shell_thickness",
+]);
+
+/** Primitive feature types that get the "size and shape only"
+ *  treatment above. Other feature types (extrude, fillet, pattern,
+ *  …) are unaffected — they already expose curated dialogs. */
+const PRIMITIVE_FEATURE_TYPES = new Set<string>([
+  "box",
+  "sphere",
+  "cylinder",
+  "hex_prism",
+  "ellipsoid",
+  "capsule",
+  "cone",
+  "torus",
+  "thread",
+  "hole",
+]);
+
 export function parseFeatureSchema(value: unknown): FeatureSchema {
   if (!value || typeof value !== "object") {
     throw new Error("parseFeatureSchema: expected a JSON object");
@@ -150,7 +208,15 @@ export function parseFeatureSchema(value: unknown): FeatureSchema {
   if (!Array.isArray(rawParams)) {
     throw new Error("parseFeatureSchema: missing `params` array");
   }
-  const params = rawParams.map((raw, i) => parseParam(raw, `params[${i}]`));
+  let params = rawParams.map((raw, i) => parseParam(raw, `params[${i}]`));
+  // K7.22 (9): drop the primitive noise params from the dialog-
+  // visible schema. The wire form on the kernel side still
+  // carries them; they're just not rendered by the FeatureDialog.
+  if (PRIMITIVE_FEATURE_TYPES.has(typeField)) {
+    params = params.filter(
+      (p) => p.widget === "group" || !HIDDEN_PRIMITIVE_PARAM_KEYS.has(p.key),
+    );
+  }
   return { type: typeField, params };
 }
 
@@ -180,7 +246,7 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
     uiHint,
   };
 
-  if (widget === "group") {
+  if (widget === "group" || widget === "expandable") {
     const rawChildren = p.children;
     if (!Array.isArray(rawChildren)) {
       throw new Error(`parseFeatureSchema: ${where}.children must be an array`);
@@ -196,6 +262,21 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
     }
   }
 
+  if (widget === "tabs") {
+    const rawTabs = p.tabs;
+    if (Array.isArray(rawTabs)) {
+      descriptor.tabs = rawTabs.map((tab, i) => {
+        const t = tab as Record<string, unknown>;
+        return {
+          label: asString(t.label, `${where}.tabs[${i}].label`),
+          children: Array.isArray(t.children)
+            ? (t.children as unknown[]).map((c, j) => parseParam(c, `${where}.tabs[${i}].children[${j}]`))
+            : [],
+        };
+      });
+    }
+  }
+
   if (widget === "enum") {
     const rawVariants = p.variants;
     if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
@@ -203,6 +284,7 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
         `parseFeatureSchema: ${where}.variants must be a non-empty array`,
       );
     }
+    const revealsMap: Record<string, string[]> = {};
     descriptor.variants = rawVariants.map((v, i) => {
       if (!v || typeof v !== "object") {
         throw new Error(
@@ -210,11 +292,19 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
         );
       }
       const vr = v as Record<string, unknown>;
+      const variantKey = asString(vr.key, `${where}.variants[${i}].key`);
+      if (Array.isArray(vr.reveals)) {
+        revealsMap[variantKey] = (vr.reveals as unknown[]).map(String);
+      }
       return {
-        key: asString(vr.key, `${where}.variants[${i}].key`),
+        key: variantKey,
         label: asString(vr.label, `${where}.variants[${i}].label`),
+        reveals: Array.isArray(vr.reveals) ? (vr.reveals as unknown[]).map(String) : undefined,
       };
     });
+    if (Object.keys(revealsMap).length > 0) {
+      descriptor.reveals = revealsMap;
+    }
   }
 
   if (widget === "slider") {
@@ -316,6 +406,8 @@ export function widgetKindFor(
   uiHint?: UiHint,
 ): WidgetKind {
   if (rawType === "group") return "group";
+  if (rawType === "tabs") return "tabs";
+  if (rawType === "expandable") return "expandable";
   if (rawType === "enum") return "enum";
   if (rawType === "bool" && uiHint === "opposite_direction") return "flip";
   if (rawType === "f32" && uiHint === "slider") return "slider";
@@ -519,6 +611,8 @@ export function validateParamValue(
     case "angle":
       return validateValueUnit(value, param.label, param.widget);
     case "group":
+    case "tabs":
+    case "expandable":
     case "unknown":
       return null;
   }
