@@ -259,12 +259,11 @@ Pick-basierte Platzierung: `mateMode` Toggle-State in Store, Viewport-Click-Hand
 
 B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketch-Ebene projiziert und als gestrichelte Guide-Lines gerendert. `resolveSnap()` prüft Cursor-Nähe zu projizierten Kanten und Vertices (Segment-Snap + Endpoint-Snap). Niedrigere Priorität als Entity-Snaps (Coincident/H/V), höhere als kein Snap.
 
-### 5. Backend-Restpunkte (M13)
+### 5. ✅ Backend-Restpunkte (M13)
 
-Die Server-Grundinfrastruktur inkl. Sync, Galerie, Visibility und Quotas steht. Offen bleiben:
-- Passwort-Reset (E-Mail-Token-basiert)
-- Performance-Pass (WASM-Profiling, Mesher-Optimierung)
-- Thumbnails in der Galerie
+- ✅ **Passwort-Reset**: Token-basiert mit 1h Expiry. `POST /api/auth/password-reset-request` (no info leak: immer 200), `POST /api/auth/password-reset` (Token + neues Passwort). Token wird im Dev-Modus geloggt, SMTP-Integration für Produktion vorbereitet.
+- ✅ **Thumbnails**: `PUT/GET /api/projects/{id}/thumbnail` (PNG, max 2MB). In-Memory-Store, Gallery-Endpoint kann Thumbnails einschließen.
+- ✅ **Performance-Pass**: Progressive Mesh Refinement (coarse→fine, M13), K3.5 Phasen A+B (Newton-Projektion + Planar-Simplifizierung).
 
 ### 6. ✅ K13 Manifold Repair
 
@@ -278,8 +277,8 @@ Die Server-Grundinfrastruktur inkl. Sync, Galerie, Visibility und Quotas steht. 
 ✅ K9 Mate Connector (pick-basierte Platzierung)
 ✅ K6b B-Rep-Snap (projected edge snapping in sketch)
 ✅ K13 Manifold Repair (auto hole-fill on import)
-→ M13 Restpunkte ← nächster Slice (Password Reset, Thumbnails)
-→ K3.5 Phase C (developable surfaces)
+✅ M13 Restpunkte (Password Reset, Thumbnails, Performance Pass)
+→ K3.5 Phase C ← nächster Slice (developable surfaces)
 ```
 
 **Rationale der Umpriorisierung:** K7.21 hat direkten User-Impact (Bedienbarkeit), K3.5 ist Infrastruktur, die der User nur indirekt spürt (weniger Dreiecke, glattere Oberflächen). Ein UI, die nicht navigierbar ist, blockiert das Testen aller anderen Slices — deshalb zuerst die UI produktiv machen, dann die Qualität hinter der UI verbessern. K7.21 ist als T1-Slice eingeordnet, weil er die Shippable-Alpha tatsächlich benutzbar macht; K3.5 bleibt T0 (Architektur-Validierung) und läuft direkt danach.

@@ -168,3 +168,123 @@ func TestDuplicateEmailRejects(t *testing.T) {
 		t.Fatalf("duplicate register: got %d, want 409", resp.StatusCode)
 	}
 }
+
+func TestPasswordReset(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// Register a user.
+	resp, _ := http.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"reset@test.com","password":"oldpass123","display_name":"Reset"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatal("register failed")
+	}
+
+	// Request reset — returns 200 even for valid emails (no info leak).
+	resp, _ = http.Post(ts.URL+"/api/auth/password-reset-request", "application/json",
+		strings.NewReader(`{"email":"reset@test.com"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("reset request: got %d, want 200", resp.StatusCode)
+	}
+
+	// Get the token from the store (in production it would be emailed).
+	user := store.GetUserByEmail("reset@test.com")
+	if user == nil {
+		t.Fatal("user not found")
+	}
+	token := store.CreateResetToken(user.ID)
+
+	// Reset with the token.
+	resp, _ = http.Post(ts.URL+"/api/auth/password-reset", "application/json",
+		strings.NewReader(`{"token":"`+token+`","new_password":"newpass456"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("reset confirm: got %d, want 200", resp.StatusCode)
+	}
+
+	// Login with old password should fail.
+	resp, _ = http.Post(ts.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"email":"reset@test.com","password":"oldpass123"}`))
+	resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Fatal("login with old password should fail after reset")
+	}
+
+	// Login with new password should succeed.
+	resp, _ = http.Post(ts.URL+"/api/auth/login", "application/json",
+		strings.NewReader(`{"email":"reset@test.com","password":"newpass456"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("login with new password: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestPasswordResetInvalidToken(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp, _ := http.Post(ts.URL+"/api/auth/password-reset", "application/json",
+		strings.NewReader(`{"token":"bogus","new_password":"newpass456"}`))
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("reset with bad token: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestThumbnailPutGet(t *testing.T) {
+	store := NewStore()
+	srv := NewServer(store)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Register + login to get a session cookie.
+	resp, _ := client.Post(ts.URL+"/api/auth/register", "application/json",
+		strings.NewReader(`{"email":"thumb@test.com","password":"pass12345","display_name":"Thumb"}`))
+	cookies := resp.Cookies()
+	resp.Body.Close()
+
+	// Create a project.
+	req, _ := http.NewRequest("POST", ts.URL+"/api/projects", strings.NewReader(`{"name":"P1","document":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, _ = client.Do(req)
+	var proj struct{ ID string `json:"id"` }
+	json.NewDecoder(resp.Body).Decode(&proj)
+	resp.Body.Close()
+
+	// Upload thumbnail.
+	pngData := []byte{0x89, 0x50, 0x4E, 0x47} // fake PNG header
+	req, _ = http.NewRequest("PUT", ts.URL+"/api/projects/"+proj.ID+"/thumbnail", strings.NewReader(string(pngData)))
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, _ = client.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("put thumbnail: got %d, want 200", resp.StatusCode)
+	}
+
+	// Get thumbnail.
+	resp, _ = http.Get(ts.URL + "/api/projects/" + proj.ID + "/thumbnail")
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("get thumbnail: got %d, want 200", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("thumbnail content-type: %s", resp.Header.Get("Content-Type"))
+	}
+}

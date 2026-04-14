@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -48,20 +49,31 @@ type Session struct {
 
 // ─── in-memory store (M11.0 — MariaDB comes in M11.1) ──────────
 
+// M13: password reset token.
+type ResetToken struct {
+	Token   string
+	UserID  string
+	Expires time.Time
+}
+
 type Store struct {
-	mu       sync.RWMutex
-	users    map[string]*User    // keyed by ID
-	emails   map[string]string   // email → user ID
-	projects map[string]*Project // keyed by ID
-	sessions map[string]*Session // token → session
+	mu          sync.RWMutex
+	users       map[string]*User    // keyed by ID
+	emails      map[string]string   // email → user ID
+	projects    map[string]*Project // keyed by ID
+	sessions    map[string]*Session // token → session
+	resetTokens map[string]*ResetToken // token → reset
+	thumbnails  map[string][]byte  // project ID → PNG data
 }
 
 func NewStore() *Store {
 	return &Store{
-		users:    make(map[string]*User),
-		emails:   make(map[string]string),
-		projects: make(map[string]*Project),
-		sessions: make(map[string]*Session),
+		users:       make(map[string]*User),
+		emails:      make(map[string]string),
+		projects:    make(map[string]*Project),
+		sessions:    make(map[string]*Session),
+		resetTokens: make(map[string]*ResetToken),
+		thumbnails:  make(map[string][]byte),
 	}
 }
 
@@ -105,6 +117,65 @@ func (s *Store) AuthenticateUser(email, password string) (*User, error) {
 		return nil, errUnauthorized
 	}
 	return user, nil
+}
+
+func (s *Store) GetUserByEmail(email string) *User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	uid, ok := s.emails[email]
+	if !ok {
+		return nil
+	}
+	return s.users[uid]
+}
+
+func (s *Store) UpdatePassword(userID, newPassword string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user, ok := s.users[userID]
+	if !ok {
+		return
+	}
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	user.PasswordHash = argon2.IDKey([]byte(newPassword), salt, 1, 64*1024, 4, 32)
+	user.Salt = salt
+}
+
+func (s *Store) CreateResetToken(userID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := newID()
+	s.resetTokens[token] = &ResetToken{
+		Token:   token,
+		UserID:  userID,
+		Expires: time.Now().Add(1 * time.Hour),
+	}
+	return token
+}
+
+func (s *Store) ConsumeResetToken(token string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rt, ok := s.resetTokens[token]
+	if !ok || time.Now().After(rt.Expires) {
+		delete(s.resetTokens, token)
+		return "", false
+	}
+	delete(s.resetTokens, token)
+	return rt.UserID, true
+}
+
+func (s *Store) SetThumbnail(projectID string, data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.thumbnails[projectID] = data
+}
+
+func (s *Store) GetThumbnail(projectID string) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.thumbnails[projectID]
 }
 
 func (s *Store) CreateSession(userID string) *Session {
@@ -270,6 +341,10 @@ func NewServer(store *Store) *Server {
 	s.mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /api/gallery", s.handleGallery)
+	s.mux.HandleFunc("POST /api/auth/password-reset-request", s.handlePasswordResetRequest)
+	s.mux.HandleFunc("POST /api/auth/password-reset", s.handlePasswordReset)
+	s.mux.HandleFunc("GET /api/projects/{id}/thumbnail", s.handleGetThumbnail)
+	s.mux.HandleFunc("PUT /api/projects/{id}/thumbnail", s.handlePutThumbnail)
 	return s
 }
 
@@ -554,6 +629,94 @@ func newID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ─── M13: password reset ────────────────────────────────────────
+
+func (s *Server) handlePasswordResetRequest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
+		http.Error(w, `{"error":"email required"}`, http.StatusBadRequest)
+		return
+	}
+	user := s.store.GetUserByEmail(body.Email)
+	if user == nil {
+		// Don't reveal whether the email exists — always return 200.
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+	token := s.store.CreateResetToken(user.ID)
+	// In production, send via SMTP. For now, log the token.
+	log.Printf("M13: password reset token for %s: %s", body.Email, token)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Token == "" || body.NewPassword == "" {
+		http.Error(w, `{"error":"token and new_password required"}`, http.StatusBadRequest)
+		return
+	}
+	if len(body.NewPassword) < 8 {
+		http.Error(w, `{"error":"password must be at least 8 characters"}`, http.StatusBadRequest)
+		return
+	}
+	userID, ok := s.store.ConsumeResetToken(body.Token)
+	if !ok {
+		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusBadRequest)
+		return
+	}
+	s.store.UpdatePassword(userID, body.NewPassword)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// ─── M13: project thumbnails ────────────────────────────────────
+
+func (s *Server) handleGetThumbnail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	data := s.store.GetThumbnail(id)
+	if data == nil {
+		http.Error(w, `{"error":"no thumbnail"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Write(data)
+}
+
+func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
+	sess, _ := s.requireAuth(r)
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	id := r.PathValue("id")
+	proj := s.store.GetProject(id, sess.UserID)
+	if proj == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	// Max 2MB thumbnail
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	data, err := readAll(r.Body)
+	if err != nil {
+		http.Error(w, `{"error":"thumbnail too large (max 2MB)"}`, http.StatusBadRequest)
+		return
+	}
+	s.store.SetThumbnail(id, data)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func readAll(r io.Reader) ([]byte, error) {
+	return io.ReadAll(r)
 }
 
 func bytesEqual(a, b []byte) bool {
