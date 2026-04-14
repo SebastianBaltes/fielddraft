@@ -289,4 +289,6 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 
 - ✅ **P2** — Kinematik: CCD-basierter IK-Solver (`solveIK`), Joint-Limits (min/max Winkel), IK-Modus im Viewport (Klick setzt Zielposition), `toggleIKMode`/`runIK`/`setMateJointLimits` Store-Methoden. FK-Slider aus P1.1 + IK-Solver bilden zusammen die vollständige Kinematik-Pipeline.
 
-Nächster Schritt: P2.5 Shareable Viewer oder P2.8 FieldScript.
+- ✅ **P2.5** — Shareable Viewer: `POST /api/projects/{id}/publish` erstellt Snapshot, `GET /api/v/{id}` liefert Snapshot-JSON. Read-only `Viewer.tsx` mit OrbitControls + Kernel-Meshing. Share-Button im Toolbar kopiert `<iframe>`-Embed-Code in Clipboard.
+
+Nächster Schritt: P2.8 FieldScript oder P3 Code-First-Export.

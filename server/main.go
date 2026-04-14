@@ -56,6 +56,14 @@ type ResetToken struct {
 	Expires time.Time
 }
 
+// P2.5: published snapshot for shareable viewer.
+type Snapshot struct {
+	ID        string          `json:"id"`
+	ProjectID string          `json:"project_id"`
+	Document  json.RawMessage `json:"document"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 type Store struct {
 	mu          sync.RWMutex
 	users       map[string]*User    // keyed by ID
@@ -64,6 +72,7 @@ type Store struct {
 	sessions    map[string]*Session // token → session
 	resetTokens map[string]*ResetToken // token → reset
 	thumbnails  map[string][]byte  // project ID → PNG data
+	snapshots   map[string]*Snapshot // snapshot ID → snapshot
 }
 
 func NewStore() *Store {
@@ -74,6 +83,7 @@ func NewStore() *Store {
 		sessions:    make(map[string]*Session),
 		resetTokens: make(map[string]*ResetToken),
 		thumbnails:  make(map[string][]byte),
+		snapshots:   make(map[string]*Snapshot),
 	}
 }
 
@@ -176,6 +186,25 @@ func (s *Store) GetThumbnail(projectID string) []byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.thumbnails[projectID]
+}
+
+func (s *Store) CreateSnapshot(projectID string, doc json.RawMessage) *Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := &Snapshot{
+		ID:        newID(),
+		ProjectID: projectID,
+		Document:  doc,
+		CreatedAt: time.Now(),
+	}
+	s.snapshots[snap.ID] = snap
+	return snap
+}
+
+func (s *Store) GetSnapshot(id string) *Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshots[id]
 }
 
 func (s *Store) CreateSession(userID string) *Session {
@@ -345,6 +374,8 @@ func NewServer(store *Store) *Server {
 	s.mux.HandleFunc("POST /api/auth/password-reset", s.handlePasswordReset)
 	s.mux.HandleFunc("GET /api/projects/{id}/thumbnail", s.handleGetThumbnail)
 	s.mux.HandleFunc("PUT /api/projects/{id}/thumbnail", s.handlePutThumbnail)
+	s.mux.HandleFunc("POST /api/projects/{id}/publish", s.handlePublish)
+	s.mux.HandleFunc("GET /api/v/{id}", s.handleViewSnapshot)
 	return s
 }
 
@@ -713,6 +744,37 @@ func (s *Server) handlePutThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.SetThumbnail(id, data)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// ─── P2.5: publish + viewer ─────────────────────────────────────
+
+func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	sess, _ := s.requireAuth(r)
+	if sess == nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	id := r.PathValue("id")
+	proj := s.store.GetProject(id, sess.UserID)
+	if proj == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	snap := s.store.CreateSnapshot(proj.ID, proj.Document)
+	json.NewEncoder(w).Encode(map[string]string{
+		"snapshot_id": snap.ID,
+		"view_url":    "/api/v/" + snap.ID,
+	})
+}
+
+func (s *Server) handleViewSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	snap := s.store.GetSnapshot(id)
+	if snap == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(snap)
 }
 
 func readAll(r io.Reader) ([]byte, error) {

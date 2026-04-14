@@ -1336,6 +1336,28 @@ export class KernelStore {
     this.notify();
   }
 
+  async publishProject(): Promise<string | null> {
+    if (!this.state.projectId) return null;
+    try {
+      const resp = await fetch(`/api/projects/${this.state.projectId}/publish`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const viewUrl = data.view_url ?? `/api/v/${data.snapshot_id}`;
+      const embed = `<iframe src="${window.location.origin}${viewUrl}" width="640" height="480" frameborder="0" allow="webgpu"></iframe>`;
+      try {
+        await navigator.clipboard.writeText(embed);
+      } catch {
+        prompt("Share embed code:", embed);
+      }
+      return data.snapshot_id;
+    } catch {
+      return null;
+    }
+  }
+
   toggleIKMode(): void {
     this.state = { ...this.state, ikMode: !this.state.ikMode };
     this.notify();

@@ -371,6 +371,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "import", priority: 5, group: 2, glyph: "📁", label: "Import", title: "Import STL as visual reference", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
     { id: "convert-solid", priority: 5, group: 2, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
     { id: "assembly", priority: 4, group: 2, glyph: "🔗", label: "Assembly", title: "Enter assembly mode (multi-part scene)", testId: "enter-assembly", disabled: false, active: state.assembly.active, onClick: () => { if (state.assembly.active) store.exitAssembly(); else store.enterAssembly(); } },
+    { id: "share", priority: 4, group: 2, glyph: "🔗", label: "Share", title: "Publish and get a shareable link", testId: "share-project", disabled: !hasFeatures || !state.projectId, active: false, onClick: () => store.publishProject() },
     // Group 3: View
     { id: "view-front", priority: 5, group: 3, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
     { id: "view-top", priority: 5, group: 3, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
