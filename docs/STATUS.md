@@ -291,4 +291,6 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 
 - ✅ **P2.5** — Shareable Viewer: `POST /api/projects/{id}/publish` erstellt Snapshot, `GET /api/v/{id}` liefert Snapshot-JSON. Read-only `Viewer.tsx` mit OrbitControls + Kernel-Meshing. Share-Button im Toolbar kopiert `<iframe>`-Embed-Code in Clipboard.
 
-Nächster Schritt: P2.8 FieldScript oder P3 Code-First-Export.
+- ✅ **P3** — Code-First Export: `exportR3F()` generiert `.tsx`-Datei mit R3F-Komponentenbaum. `<group>`-Hierarchie für Part-Transforms, `useGLTF`-Hooks für Mesh-Loading, Props für Revolute-Joint-Winkel. `downloadR3FExport()` + Toolbar-Button. USP: FieldDraft exportiert Interaktion, nicht nur Geometrie.
+
+Nächster Schritt: P2.8 FieldScript (JS-Runtime für Assembly-Kinematik-Controller).

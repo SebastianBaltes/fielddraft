@@ -1336,6 +1336,13 @@ export class KernelStore {
     this.notify();
   }
 
+  exportR3F(): void {
+    if (!this.state.assembly.active) return;
+    import("./exportR3F").then(({ downloadR3FExport }) => {
+      downloadR3FExport(this.state.assembly.document);
+    });
+  }
+
   async publishProject(): Promise<string | null> {
     if (!this.state.projectId) return null;
     try {
