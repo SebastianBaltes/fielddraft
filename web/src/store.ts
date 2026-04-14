@@ -149,6 +149,9 @@ export interface StoreState {
   /** K7.21e: face-pick mode — the next viewport click selects a
    *  face to use as the sketch plane instead of defaulting to XY. */
   facePickMode: boolean;
+  /** K9: mate connector placement mode — the next viewport click
+   *  places a mate connector at the surface hit point. */
+  mateMode: boolean;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -301,6 +304,7 @@ export class KernelStore {
       visibleSketches: loadVisibleSketchesFromStorage(),
       transientError: null,
       facePickMode: false,
+      mateMode: false,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -375,6 +379,7 @@ export class KernelStore {
       visibleSketches: this.state.visibleSketches,
       transientError: null, // successful commit clears any transient error
       facePickMode: false,
+      mateMode: false,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1103,12 +1108,17 @@ export class KernelStore {
   }
 
   toggleMeasureMode(): void {
-    this.state = { ...this.state, measureMode: !this.state.measureMode, filletMode: false };
+    this.state = { ...this.state, measureMode: !this.state.measureMode, filletMode: false, mateMode: false };
     for (const listener of this.listeners) listener();
   }
 
   toggleFilletMode(): void {
-    this.state = { ...this.state, filletMode: !this.state.filletMode, measureMode: false };
+    this.state = { ...this.state, filletMode: !this.state.filletMode, measureMode: false, mateMode: false };
+    for (const listener of this.listeners) listener();
+  }
+
+  toggleMateMode(): void {
+    this.state = { ...this.state, mateMode: !this.state.mateMode, filletMode: false, measureMode: false };
     for (const listener of this.listeners) listener();
   }
 

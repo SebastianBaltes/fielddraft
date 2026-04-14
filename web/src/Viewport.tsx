@@ -1108,6 +1108,15 @@ export function Viewport() {
       return;
     }
 
+    // K9: mate mode — click a surface to place a mate connector.
+    if (state?.mateMode && click?.hit) {
+      store.addMateConnectorAtPick(
+        click.point as [number, number, number],
+        click.normal as [number, number, number],
+      );
+      return;
+    }
+
     // Fillet mode: click on a surface → find nearest edge →
     // create fillet_edge feature.
     if (state?.filletMode && click?.hit && click.contributors.length >= 2) {
@@ -1264,6 +1273,11 @@ export function Viewport() {
       {state?.facePickMode && (
         <div className="face-pick-hud" data-testid="face-pick-hud">
           Click a face to set sketch plane — or press Esc for XY
+        </div>
+      )}
+      {state?.mateMode && (
+        <div className="face-pick-hud" data-testid="mate-mode-hud">
+          Click a surface to place a mate connector
         </div>
       )}
     </div>

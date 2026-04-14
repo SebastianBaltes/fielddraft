@@ -356,7 +356,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "mirror", priority: 3, group: 0, glyph: "◫", label: "Mirror", title: "Mirror the latest feature through the world YZ plane", testId: "mirror-latest", disabled: !hasFeatures, active: false, onClick: () => store.addMirrorOfLatest() },
     // Group 1: Tools
     { id: "delete", priority: 1, group: 1, glyph: "", label: "Delete", title: "Delete selection (Del)", testId: "delete-selection", disabled: state.selection.size === 0, active: false, onClick: () => store.removeSelected() },
-    { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Place a mate connector on a surface", testId: "add-mate-connector", disabled: !hasFeatures, active: false, onClick: () => store.addMateConnectorAtPick([0, 0, 0], [0, 1, 0]) },
+    { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
     { id: "fillet", priority: 2, group: 1, glyph: "◠", label: "Fillet", title: "Click an edge to fillet it", testId: "fillet-toggle", disabled: false, active: state.filletMode, onClick: () => store.toggleFilletMode() },
     { id: "measure", priority: 3, group: 1, glyph: "📏", label: "Measure", title: "Measure distance (click two points)", testId: "measure-toggle", disabled: false, active: state.measureMode, onClick: () => store.toggleMeasureMode() },
     { id: "undo", priority: 1, group: 1, glyph: "⟲", label: `Undo${state.undoDepth > 0 ? ` (${state.undoDepth})` : ""}`, title: "Undo (Ctrl+Z)", testId: "undo", disabled: !state.canUndo, active: false, onClick: () => store.undo() },

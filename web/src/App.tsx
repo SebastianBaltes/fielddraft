@@ -76,6 +76,8 @@ export function App() {
           case "Escape":
             if (state?.facePickMode) {
               store.cancelFacePickMode();
+            } else if (state?.mateMode) {
+              store.toggleMateMode();
             } else {
               store.clearSelection();
             }
