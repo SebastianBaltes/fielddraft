@@ -814,6 +814,39 @@
       font-size: var(--fs-base);
       cursor: pointer;
       &:hover { background: var(--color-bg-hover); }
+      &:disabled { opacity: 0.45; cursor: not-allowed; }
+    }
+
+    & .mate-slider {
+      width: 60px;
+      flex-shrink: 0;
+    }
+
+    & .mate-creator {
+      padding: var(--space-2) var(--space-4);
+      border-top: 1px solid var(--color-divider);
+
+      & .field {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        margin-bottom: var(--space-2);
+        font-size: var(--fs-base);
+
+        & label {
+          min-width: 4.5rem;
+          color: var(--color-text-muted);
+        }
+        & select {
+          flex: 1;
+          font-size: var(--fs-base);
+          padding: var(--space-1) var(--space-2);
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-sm);
+          background: var(--color-bg);
+          color: var(--color-text);
+        }
+      }
     }
   }
 }

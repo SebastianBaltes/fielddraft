@@ -99,37 +99,100 @@ export const INACTIVE_ASSEMBLY: AssemblyState = {
 
 // ── Mate constraint solver ──────────────────────────────────────
 
-/**
- * Solve Fixed mates: part B's transform is computed so its mate
- * connector aligns with part A's mate connector.
- *
- * For a Fixed mate, the two connectors must coincide in world space
- * (same origin, same orientation). This sets part B's position to:
- *   partB.translate = partA.translate + connA.origin - connB.origin
- *
- * This is a simplified solver — a full solver would handle chains
- * of mates and kinematic loops.
- */
-export function solveFixedMate(
+function findConnector(
+  part: AssemblyPartInstance,
+  featureId: number,
+): MateConnectorDef | undefined {
+  return part.mateConnectors.find((c) => c.featureId === featureId);
+}
+
+function worldConnectorOrigin(
+  part: AssemblyPartInstance,
+  conn: MateConnectorDef,
+): [number, number, number] {
+  return [
+    part.transform.translate[0] + conn.origin[0],
+    part.transform.translate[1] + conn.origin[1],
+    part.transform.translate[2] + conn.origin[2],
+  ];
+}
+
+function solveFixed(
   partA: AssemblyPartInstance,
   connA: MateConnectorDef,
-  _partB: AssemblyPartInstance,
-  _connB: MateConnectorDef,
+  connB: MateConnectorDef,
 ): AssemblyTransform {
-  const worldA = [
-    partA.transform.translate[0] + connA.origin[0],
-    partA.transform.translate[1] + connA.origin[1],
-    partA.transform.translate[2] + connA.origin[2],
-  ] as [number, number, number];
-
+  const worldA = worldConnectorOrigin(partA, connA);
   return {
     translate: [
-      worldA[0] - _connB.origin[0],
-      worldA[1] - _connB.origin[1],
-      worldA[2] - _connB.origin[2],
+      worldA[0] - connB.origin[0],
+      worldA[1] - connB.origin[1],
+      worldA[2] - connB.origin[2],
     ],
-    rotate: partA.transform.rotate,
+    rotate: [...partA.transform.rotate],
   };
+}
+
+function solveRevolute(
+  partA: AssemblyPartInstance,
+  connA: MateConnectorDef,
+  connB: MateConnectorDef,
+  angleDeg: number,
+): AssemblyTransform {
+  const worldA = worldConnectorOrigin(partA, connA);
+  // Revolute: part B can rotate around the connector normal axis.
+  // The rotation is applied around the connector origin in part B's
+  // local space. For simplicity, we add the angle to the Y-axis
+  // rotation (assuming connectors are Y-up aligned).
+  return {
+    translate: [
+      worldA[0] - connB.origin[0],
+      worldA[1] - connB.origin[1],
+      worldA[2] - connB.origin[2],
+    ],
+    rotate: [
+      partA.transform.rotate[0],
+      partA.transform.rotate[1] + angleDeg,
+      partA.transform.rotate[2],
+    ],
+  };
+}
+
+/**
+ * Run the constraint solver over all mates in the assembly.
+ * Returns a new parts array with updated transforms for parts
+ * constrained by mates. Part A of each mate is treated as the
+ * grounded/fixed side; part B is repositioned.
+ */
+export function solveAssembly(doc: AssemblyDocument): AssemblyPartInstance[] {
+  const parts = doc.parts.map((p) => ({ ...p }));
+  const partMap = new Map(parts.map((p) => [p.id, p]));
+
+  for (const mate of doc.mates) {
+    const partA = partMap.get(mate.connectorA.partId);
+    const partB = partMap.get(mate.connectorB.partId);
+    if (!partA || !partB) continue;
+
+    const connA = findConnector(partA, mate.connectorA.connectorFeatureId);
+    const connB = findConnector(partB, mate.connectorB.connectorFeatureId);
+    if (!connA || !connB) continue;
+
+    let newTransform: AssemblyTransform;
+    switch (mate.type) {
+      case "fixed":
+        newTransform = solveFixed(partA, connA, connB);
+        break;
+      case "revolute":
+        newTransform = solveRevolute(partA, connA, connB, mate.angle ?? 0);
+        break;
+      default:
+        continue;
+    }
+
+    partB.transform = newTransform;
+  }
+
+  return parts;
 }
 
 let nextId = 1;

@@ -283,4 +283,8 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 
 **Alle K-Slices (T0–T3) und Backend-Meilensteine (M11–M13) sind abgeschlossen.**
 
-**Phase 3 hat begonnen:** P1.0 (Assembly-Grundinfrastruktur) ist implementiert — Assembly-Datenmodell, Multi-Part-Viewport-Rendering, Assembly-Panel im Outliner mit Part-Import/Remove/Select. Nächster Schritt: P1.1 (Fixed + Revolute Mate-Typen mit Constraint-Solver).
+**Phase 3 hat begonnen:**
+- ✅ **P1.0** — Assembly-Grundinfrastruktur: Datenmodell, Multi-Part-Viewport-Rendering, Assembly-Panel mit Part-Import/Remove/Select.
+- ✅ **P1.1** — Mate-System: Fixed + Revolute Mate-Typen, `solveAssembly()` Constraint-Solver, addMate/removeMate/setMateAngle Store-Methoden, MateCreator-UI mit Dropdown-Selektion + Revolute-Winkel-Slider.
+
+Nächster Schritt: P2 Kinematik (FK Slider + IK) oder P2.5 Shareable Viewer.

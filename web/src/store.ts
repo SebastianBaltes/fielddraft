@@ -37,8 +37,11 @@ import {
   INACTIVE_ASSEMBLY,
   allocateAssemblyId,
   IDENTITY_TRANSFORM,
+  solveAssembly,
   type AssemblyPartInstance,
   type AssemblyMeshedBody,
+  type Mate,
+  type MateType,
 } from "./assembly";
 
 /**
@@ -1262,6 +1265,67 @@ export class KernelStore {
           ),
         },
       },
+    };
+    this.notify();
+  }
+
+  addMate(
+    type: MateType,
+    partAId: string,
+    connAFeatureId: number,
+    partBId: string,
+    connBFeatureId: number,
+  ): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    const mate: Mate = {
+      id: allocateAssemblyId(),
+      name: `${type} mate`,
+      type,
+      connectorA: { partId: partAId, connectorFeatureId: connAFeatureId },
+      connectorB: { partId: partBId, connectorFeatureId: connBFeatureId },
+      angle: type === "revolute" ? 0 : undefined,
+      offset: type === "prismatic" ? 0 : undefined,
+    };
+    const newDoc = {
+      ...asm.document,
+      mates: [...asm.document.mates, mate],
+    };
+    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
+    this.state = {
+      ...this.state,
+      assembly: { ...asm, document: { ...newDoc, parts: solved } },
+    };
+    this.notify();
+  }
+
+  removeMate(mateId: string): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: {
+          ...asm.document,
+          mates: asm.document.mates.filter((m) => m.id !== mateId),
+        },
+      },
+    };
+    this.notify();
+  }
+
+  setMateAngle(mateId: string, angleDeg: number): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    const newMates = asm.document.mates.map((m) =>
+      m.id === mateId ? { ...m, angle: angleDeg } : m,
+    );
+    const newDoc = { ...asm.document, mates: newMates };
+    const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
+    this.state = {
+      ...this.state,
+      assembly: { ...asm, document: { ...newDoc, parts: solved } },
     };
     this.notify();
   }

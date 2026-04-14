@@ -748,6 +748,45 @@ export function Outliner({ store, state }: OutlinerProps) {
           >
             + Add Part
           </button>
+
+          {state.assembly.document.mates.length > 0 && (
+            <>
+              <div className="header" style={{ marginTop: "var(--space-3)" }}>
+                <span>Mates</span>
+              </div>
+              <ul className="list">
+                {state.assembly.document.mates.map((mate) => (
+                  <li key={mate.id} className="row" data-testid={`mate-${mate.id}`}>
+                    <span className="kind">{mate.type === "fixed" ? "🔒" : "🔄"}</span>
+                    <span className="name">{mate.name}</span>
+                    {mate.type === "revolute" && (
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        value={mate.angle ?? 0}
+                        title={`${mate.angle ?? 0}°`}
+                        className="mate-slider"
+                        onChange={(e) => store.setMateAngle(mate.id, Number(e.target.value))}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="row-delete"
+                      title="Remove mate"
+                      onClick={() => store.removeMate(mate.id)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {state.assembly.document.parts.length >= 2 && (
+            <MateCreator parts={state.assembly.document.parts} store={store} />
+          )}
         </section>
       )}
       {!sketchSession.active && selectedSchema ? (
@@ -1204,6 +1243,124 @@ function FeatureContextMenu({
         "context-delete",
         true,
       )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  P1.1: Mate Creator                                                 */
+/* ------------------------------------------------------------------ */
+
+function MateCreator({
+  parts,
+  store,
+}: {
+  parts: ReadonlyArray<import("./assembly").AssemblyPartInstance>;
+  store: KernelStore;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [mateType, setMateType] = useState<import("./assembly").MateType>("fixed");
+  const [partAId, setPartAId] = useState(parts[0]?.id ?? "");
+  const [connAId, setConnAId] = useState(0);
+  const [partBId, setPartBId] = useState(parts[1]?.id ?? "");
+  const [connBId, setConnBId] = useState(0);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="tool"
+        style={{ marginTop: "var(--space-1)" }}
+        data-testid="add-mate-btn"
+        onClick={() => setExpanded(true)}
+      >
+        + Add Mate
+      </button>
+    );
+  }
+
+  const partA = parts.find((p) => p.id === partAId);
+  const partB = parts.find((p) => p.id === partBId);
+
+  return (
+    <div className="mate-creator" data-testid="mate-creator">
+      <div className="field">
+        <label>Type</label>
+        <select
+          value={mateType}
+          onChange={(e) => setMateType(e.target.value as import("./assembly").MateType)}
+        >
+          <option value="fixed">Fixed</option>
+          <option value="revolute">Revolute</option>
+        </select>
+      </div>
+      <div className="field">
+        <label>Part A</label>
+        <select value={partAId} onChange={(e) => setPartAId(e.target.value)}>
+          {parts.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+      {partA && partA.mateConnectors.length > 0 && (
+        <div className="field">
+          <label>Connector A</label>
+          <select
+            value={connAId}
+            onChange={(e) => setConnAId(Number(e.target.value))}
+          >
+            {partA.mateConnectors.map((c) => (
+              <option key={c.featureId} value={c.featureId}>
+                #{c.featureId} ({c.origin.map((v) => v.toFixed(0)).join(", ")})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div className="field">
+        <label>Part B</label>
+        <select value={partBId} onChange={(e) => setPartBId(e.target.value)}>
+          {parts.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+      {partB && partB.mateConnectors.length > 0 && (
+        <div className="field">
+          <label>Connector B</label>
+          <select
+            value={connBId}
+            onChange={(e) => setConnBId(Number(e.target.value))}
+          >
+            {partB.mateConnectors.map((c) => (
+              <option key={c.featureId} value={c.featureId}>
+                #{c.featureId} ({c.origin.map((v) => v.toFixed(0)).join(", ")})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div className="field" style={{ display: "flex", gap: "var(--space-2)" }}>
+        <button
+          type="button"
+          className="tool"
+          data-testid="confirm-mate"
+          disabled={partAId === partBId}
+          onClick={() => {
+            store.addMate(mateType, partAId, connAId, partBId, connBId);
+            setExpanded(false);
+          }}
+        >
+          Create
+        </button>
+        <button
+          type="button"
+          className="tool"
+          onClick={() => setExpanded(false)}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
