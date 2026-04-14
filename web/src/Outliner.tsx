@@ -683,6 +683,73 @@ export function Outliner({ store, state }: OutlinerProps) {
           </div>
         </section>
       ) : null}
+      {!sketchSession.active && state.assembly.active && (
+        <section className="assembly-panel" data-testid="assembly-panel">
+          <div className="header">
+            <span>Assembly</span>
+            <button
+              type="button"
+              className="exit-btn"
+              title="Exit assembly mode"
+              data-testid="exit-assembly"
+              onClick={() => store.exitAssembly()}
+            >
+              ✗
+            </button>
+          </div>
+          {state.assembly.document.parts.length === 0 ? (
+            <div className="empty">No parts. Import a .fdraft file.</div>
+          ) : (
+            <ul className="list">
+              {state.assembly.document.parts.map((part) => (
+                <li
+                  key={part.id}
+                  className={"row" + (part.id === state.assembly.selectedPartId ? " is-selected" : "")}
+                  data-testid={`assembly-part-${part.id}`}
+                  onClick={() => store.selectAssemblyPart(part.id)}
+                >
+                  <span className="kind">▣</span>
+                  <span className="name">{part.name}</span>
+                  <span className="meta">{part.meshBodies.length} bodies</span>
+                  <button
+                    type="button"
+                    className="row-delete"
+                    title="Remove part"
+                    onClick={(e) => { e.stopPropagation(); store.removePartFromAssembly(part.id); }}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <input
+            type="file"
+            accept=".fdraft,.json"
+            className="hidden-file-input"
+            data-testid="assembly-import-input"
+            onChange={(e) => {
+              const file = e.currentTarget.files?.[0];
+              if (!file) return;
+              file.text().then((json) => {
+                store.addPartToAssembly(json, file.name.replace(/\.(fdraft|json)$/, ""));
+              });
+              e.currentTarget.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="tool"
+            title="Add a part (.fdraft file)"
+            data-testid="assembly-add-part"
+            onClick={() => {
+              document.querySelector<HTMLInputElement>('[data-testid="assembly-import-input"]')?.click();
+            }}
+          >
+            + Add Part
+          </button>
+        </section>
+      )}
       {!sketchSession.active && selectedSchema ? (
         <FeatureDialog
           schema={selectedSchema}

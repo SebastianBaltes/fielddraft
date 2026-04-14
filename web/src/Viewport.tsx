@@ -813,6 +813,43 @@ function EdgeOverlay() {
 }
 
 /** K9.6: render mate connectors as small axis triads. */
+/** P1: render assembly part instances as positioned mesh groups. */
+function AssemblyParts() {
+  const { state } = useKernelStore();
+  const assembly = state?.assembly;
+  if (!assembly?.active || assembly.document.parts.length === 0) return null;
+
+  return (
+    <>
+      {assembly.document.parts.map((part) => {
+        const rot = part.transform.rotate.map((d: number) => (d * Math.PI) / 180) as [number, number, number];
+        return (
+          <group
+            key={part.id}
+            position={part.transform.translate}
+            rotation={rot}
+          >
+            {part.meshBodies.map((body, i: number) => {
+              const geom = new THREE.BufferGeometry();
+              geom.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+              geom.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
+              geom.setIndex(new THREE.BufferAttribute(body.indices, 1));
+              return (
+                <mesh key={i} geometry={geom}>
+                  <meshStandardMaterial
+                    color={part.id === assembly.selectedPartId ? "#6366f1" : "#94a3b8"}
+                    side={THREE.DoubleSide}
+                  />
+                </mesh>
+              );
+            })}
+          </group>
+        );
+      })}
+    </>
+  );
+}
+
 function MateConnectorOverlay() {
   const { store, state } = useKernelStore();
   const groupRef = useRef<THREE.Group>(null);
@@ -1245,6 +1282,7 @@ export function Viewport() {
           <ReferenceMesh />
           <EdgeOverlay />
           <MateConnectorOverlay />
+          <AssemblyParts />
           <WorldGrid />
           <CameraRig />
           <ViewCommandConsumer />

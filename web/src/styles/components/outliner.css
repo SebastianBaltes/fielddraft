@@ -738,4 +738,82 @@
       }
     }
   }
+
+  /* P1: Assembly panel */
+  & .assembly-panel {
+    border-top: 1px solid var(--color-divider);
+    padding: var(--space-3) 0;
+
+    & .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4) var(--space-2);
+      font-weight: var(--fw-semibold);
+      font-size: var(--fs-base);
+    }
+
+    & .exit-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
+      padding: var(--space-1);
+      &:hover { color: var(--color-danger, #dc2626); }
+    }
+
+    & .empty {
+      padding: var(--space-2) var(--space-4);
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
+    }
+
+    & .list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    & .row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-1) var(--space-4);
+      cursor: pointer;
+      font-size: var(--fs-base);
+
+      &:hover { background: var(--color-bg-hover); }
+      &.is-selected { background: var(--color-accent-soft); }
+
+      & .kind { width: 1.25rem; text-align: center; flex-shrink: 0; }
+      & .name { flex: 1; min-width: 0; }
+      & .meta { color: var(--color-text-muted); font-size: var(--fs-sm, 0.85rem); }
+
+      & .row-delete {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--color-text-muted);
+        opacity: 0;
+        &:hover { color: var(--color-danger, #dc2626); }
+      }
+      &:hover .row-delete { opacity: 1; }
+    }
+
+    & .tool {
+      margin: var(--space-2) var(--space-4) 0;
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      background: var(--color-bg);
+      color: var(--color-text);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--fs-base);
+      cursor: pointer;
+      &:hover { background: var(--color-bg-hover); }
+    }
+  }
 }

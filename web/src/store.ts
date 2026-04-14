@@ -33,6 +33,13 @@ import {
   setSketchToolDraft as reduceSetDraft,
   removeSketchSubCallAt as reduceRemoveAt,
 } from "./sketchSession";
+import {
+  INACTIVE_ASSEMBLY,
+  allocateAssemblyId,
+  IDENTITY_TRANSFORM,
+  type AssemblyPartInstance,
+  type AssemblyMeshedBody,
+} from "./assembly";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -152,6 +159,8 @@ export interface StoreState {
   /** K9: mate connector placement mode — the next viewport click
    *  places a mate connector at the surface hit point. */
   mateMode: boolean;
+  /** P1: assembly state — manages multi-part scene graph. */
+  assembly: import("./assembly").AssemblyState;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -305,6 +314,7 @@ export class KernelStore {
       transientError: null,
       facePickMode: false,
       mateMode: false,
+      assembly: INACTIVE_ASSEMBLY,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -380,6 +390,7 @@ export class KernelStore {
       transientError: null, // successful commit clears any transient error
       facePickMode: false,
       mateMode: false,
+      assembly: this.state.assembly,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1120,6 +1131,139 @@ export class KernelStore {
   toggleMateMode(): void {
     this.state = { ...this.state, mateMode: !this.state.mateMode, filletMode: false, measureMode: false };
     for (const listener of this.listeners) listener();
+  }
+
+  // ── P1: Assembly management ────────────────────────────────────
+
+  enterAssembly(): void {
+    this.state = {
+      ...this.state,
+      assembly: {
+        active: true,
+        document: { ...this.state.assembly.document },
+        selectedPartId: null,
+      },
+    };
+    this.notify();
+  }
+
+  exitAssembly(): void {
+    this.state = { ...this.state, assembly: INACTIVE_ASSEMBLY };
+    this.notify();
+  }
+
+  addPartToAssembly(documentJson: string, name?: string): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+
+    const id = allocateAssemblyId();
+    const partName = name ?? `Part ${asm.document.parts.length + 1}`;
+
+    // Mesh the part using the store's kernel (save/restore current state).
+    let meshBodies: AssemblyMeshedBody[] = [];
+    let mateConnectors: import("./assembly").MateConnectorDef[] = [];
+    try {
+      const savedJson = this.kernel.toJson();
+      this.kernel.loadJson(documentJson);
+      const bodyCount = this.kernel.bodyCount();
+      for (let i = 0; i < bodyCount; i++) {
+        meshBodies.push({
+          positions: this.kernel.bodyPositionsView(i).slice(),
+          normals: this.kernel.bodyNormalsView(i).slice(),
+          indices: this.kernel.bodyIndicesView(i).slice(),
+        });
+      }
+      // Extract mate connectors from the part's features
+      const features = JSON.parse(this.kernel.toJson()).feature_calls ?? [];
+      for (const fc of features) {
+        if (fc.type === "mate_connector" && fc.params) {
+          const origin = fc.params.origin ?? [0, 0, 0];
+          const normal = fc.params.normal ?? [0, 1, 0];
+          mateConnectors.push({
+            featureId: fc.id ?? 0,
+            origin: [origin[0], origin[1], origin[2]],
+            normal: [normal[0], normal[1], normal[2]],
+          });
+        }
+      }
+      // Restore the original document
+      this.kernel.loadJson(savedJson);
+    } catch {
+      // Meshing failed — add the part with empty meshes
+    }
+
+    const newPart: AssemblyPartInstance = {
+      id,
+      name: partName,
+      documentJson,
+      transform: IDENTITY_TRANSFORM,
+      meshBodies,
+      mateConnectors,
+    };
+
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: {
+          ...asm.document,
+          parts: [...asm.document.parts, newPart],
+        },
+      },
+    };
+    this.notify();
+  }
+
+  removePartFromAssembly(partId: string): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: {
+          ...asm.document,
+          parts: asm.document.parts.filter((p) => p.id !== partId),
+          mates: asm.document.mates.filter(
+            (m) => m.connectorA.partId !== partId && m.connectorB.partId !== partId,
+          ),
+        },
+        selectedPartId: asm.selectedPartId === partId ? null : asm.selectedPartId,
+      },
+    };
+    this.notify();
+  }
+
+  selectAssemblyPart(partId: string | null): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: { ...asm, selectedPartId: partId },
+    };
+    this.notify();
+  }
+
+  setPartTransform(
+    partId: string,
+    translate: [number, number, number],
+    rotate: [number, number, number],
+  ): void {
+    const asm = this.state.assembly;
+    if (!asm.active) return;
+    this.state = {
+      ...this.state,
+      assembly: {
+        ...asm,
+        document: {
+          ...asm.document,
+          parts: asm.document.parts.map((p) =>
+            p.id === partId ? { ...p, transform: { translate, rotate } } : p,
+          ),
+        },
+      },
+    };
+    this.notify();
   }
 
   selectAll(): void {
