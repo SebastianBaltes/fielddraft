@@ -1789,6 +1789,20 @@ export class KernelStore {
    *  re-mesh and refreshes the features list so the outliner
    *  highlight and the gizmo's own placeholder position both
    *  follow the new translate. Returns `true` if anything changed. */
+  extrudeFace(
+    point: [number, number, number],
+    normal: [number, number, number],
+    depth = 20,
+  ): void {
+    const halfDepth = depth / 2;
+    const translate: [number, number, number] = [
+      point[0] + normal[0] * halfDepth,
+      point[1] + normal[1] * halfDepth,
+      point[2] + normal[2] * halfDepth,
+    ];
+    this.addPrimitive("box", undefined, translate);
+  }
+
   setGizmoMode(mode: "translate" | "rotate" | "scale"): void {
     this.state = { ...this.state, gizmoMode: mode };
     this.notify();

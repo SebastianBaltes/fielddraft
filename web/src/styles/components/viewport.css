@@ -105,6 +105,27 @@
     pointer-events: none;
   }
 
+  & > .extrude-face-btn {
+    position: absolute;
+    bottom: calc(var(--space-4) + 2.5rem);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: var(--space-2) var(--space-5);
+    background: var(--color-accent);
+    color: var(--color-text-on-accent, white);
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    z-index: 10;
+
+    &:hover {
+      filter: brightness(1.1);
+    }
+  }
+
   & > .face-pick-hud {
     position: absolute;
     top: var(--space-4);

@@ -1344,6 +1344,21 @@ export function Viewport() {
           Click a surface to place a mate connector
         </div>
       )}
+      {pickResult?.hit && pickResult.element === "face" && pickResult.contributors.length === 1 && state?.selection.size === 1 && !state?.filletMode && !state?.mateMode && !state?.measureMode && !state?.sketchSession.active && (
+        <button
+          type="button"
+          className="extrude-face-btn"
+          data-testid="extrude-face-btn"
+          onClick={() => {
+            store?.extrudeFace(
+              pickResult.point as [number, number, number],
+              pickResult.normal as [number, number, number],
+            );
+          }}
+        >
+          ↥ Extrude Face
+        </button>
+      )}
       {state?.ikMode && (
         <div className="face-pick-hud" data-testid="ik-mode-hud">
           Click to set IK target position
