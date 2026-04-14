@@ -86,6 +86,7 @@ export type FeatureKindName =
   | "fillet_edge"
   | "sweep"
   | "imported_mesh"
+  | "transform"
   | "unknown";
 
 export interface FeatureSummary {

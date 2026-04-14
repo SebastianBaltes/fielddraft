@@ -226,6 +226,7 @@ impl FeatureRegistry {
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
+        r.register(Box::new(TransformFeature));
         r
     }
 
@@ -1187,6 +1188,89 @@ impl FeatureKind for MateConnectorFeature {
     }
 }
 
+// ─── K7.21j: Transform Feature ──────────────────────────────────
+
+#[derive(Debug, Default)]
+struct TransformDef {
+    target_id: u32,
+    translate: [f32; 3],
+    rotation: [f32; 4],
+    scale: f32,
+}
+
+impl TransformDef {
+    const TYPE_NAME: &'static str = "transform";
+
+    fn schema_json() -> Value {
+        serde_json::json!({
+            "type": Self::TYPE_NAME,
+            "inputs": [
+                {"name": "target_id", "type": "Integer", "default": 0},
+                {"name": "translate_x", "type": "Length", "default": 0.0},
+                {"name": "translate_y", "type": "Length", "default": 0.0},
+                {"name": "translate_z", "type": "Length", "default": 0.0},
+                {"name": "rotation_x", "type": "Length", "default": 0.0},
+                {"name": "rotation_y", "type": "Length", "default": 0.0},
+                {"name": "rotation_z", "type": "Length", "default": 0.0},
+                {"name": "rotation_w", "type": "Length", "default": 1.0},
+                {"name": "scale", "type": "Length", "default": 1.0},
+            ]
+        })
+    }
+
+    fn from_params(params: &Value) -> Self {
+        Self {
+            target_id: params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            translate: [
+                params.get("translate_x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                params.get("translate_y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                params.get("translate_z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+            ],
+            rotation: [
+                params.get("rotation_x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                params.get("rotation_y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                params.get("rotation_z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                params.get("rotation_w").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+            ],
+            scale: params.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+        }
+    }
+}
+
+pub struct TransformFeature;
+
+impl FeatureKind for TransformFeature {
+    fn type_name(&self) -> &'static str {
+        TransformDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        TransformDef::schema_json()
+    }
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let td = TransformDef::from_params(def);
+        let target = FeatureId::from_u32(td.target_id);
+        let pos = ctx.document.features.iter().position(|f| f.id == target);
+        if let Some(idx) = pos {
+            let t = &mut ctx.document.features[idx].transform;
+            t.translate[0] += td.translate[0];
+            t.translate[1] += td.translate[1];
+            t.translate[2] += td.translate[2];
+            if td.rotation != [0.0, 0.0, 0.0, 1.0] {
+                t.rotation = td.rotation;
+            }
+            if (td.scale - 1.0).abs() > 1e-7 {
+                t.scale *= td.scale;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ─── K10.4: Fillet Edge Feature ──────────────────────────────────
 //
 // A feature that applies per-edge spatial-mask fillets to the
@@ -1660,7 +1744,17 @@ impl FeatureKind for ExtrudeFeature {
         // profile. The K4.5.8 fallback (Box stand-in) stays
         // for documents that don't yet point at a resolvable
         // sketch, so existing tests keep running unchanged.
+        //
+        // K7.22 follow-up: when the `profiles` query *does*
+        // resolve to a sketch but the sketch has no closed
+        // regions (e.g. the user drew lines/points but no
+        // rectangle/circle), we used to fall through to the
+        // legacy fallback and die on the `profile_half_x > 0`
+        // guard with an unhelpful message. Distinguish the
+        // three states explicitly: resolved-and-extrudable,
+        // resolved-but-empty, no-resolve-use-fallback.
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
+        let mut sketch_was_found_but_empty = false;
         if let Ok(expr) = crate::queries::parse_query(d.profiles.as_str()) {
             if let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr {
                 if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
@@ -1669,9 +1763,28 @@ impl FeatureKind for ExtrudeFeature {
                     );
                     if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
                         resolved_sketch = Some(sketch2d);
+                    } else {
+                        sketch_was_found_but_empty = true;
                     }
                 }
             }
+        }
+
+        // K7.22 follow-up: emit a clear, user-facing error when
+        // the caller *intended* to drive the extrude from a sketch
+        // (profile_half_x/y both left at 0) but the sketch has no
+        // extrudable regions. The legacy-API test path that passes
+        // explicit non-zero half-extents still falls through to
+        // the Box fallback below so existing callers keep working.
+        if sketch_was_found_but_empty
+            && d.profile_half_x == 0.0
+            && d.profile_half_y == 0.0
+        {
+            return Err(FeatureError::InvalidParameter {
+                feature: ExtrudeDef::TYPE_NAME,
+                name: "profiles",
+                message: "sketch has no closed regions to extrude — draw a rectangle, circle or polygon first".to_string(),
+            });
         }
 
         let name = optional_display_name(def, || format!("Extrude {id}"));
@@ -2279,7 +2392,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 21);
+        assert_eq!(registry.len(), 22);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2350,7 +2463,8 @@ mod tests {
                 "sphere",
                 "sweep",
                 "thread",
-                "torus"
+                "torus",
+                "transform"
             ]
         );
     }
@@ -4314,6 +4428,67 @@ mod tests {
             assert_eq!(*half_extents, [3.0, 4.0, 5.0]);
         } else {
             panic!("expected Primitive::Box");
+        }
+    }
+
+    /// Regression for the UX-test bug where clicking the Extrude
+    /// toolbar button on a sketch that only has lines/points
+    /// crashed with "profile_half_x invalid: must be > 0".
+    /// When the profiles query resolves to an actually-stored
+    /// sketch *and* the caller left the legacy fallback fields
+    /// at 0 (the K7.3 flow), the extrude should return a clean,
+    /// user-facing error instead of falling through to the
+    /// profile_half_x positive-guard.
+    #[test]
+    fn extrude_returns_clean_error_when_sketch_is_empty_and_no_fallback_dims() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let extrude_id = id(2);
+
+        let result = registry.regenerate(
+            &mut ctx,
+            &[
+                FeatureCall::new(
+                    "sketch",
+                    sketch_id.clone(),
+                    json!({
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            {
+                                "type": "sketch_line",
+                                "id": "l1",
+                                "params": {
+                                    "start": [0.0, 0.0],
+                                    "end": [10.0, 0.0],
+                                }
+                            }
+                        ]
+                    }),
+                ),
+                FeatureCall::new(
+                    "extrude",
+                    extrude_id.clone(),
+                    json!({
+                        "profiles": format!("qCreatedBy({sketch_id})"),
+                        "depth": { "value": 8.0, "unit": "mm" },
+                        "profile_half_x": 0.0,
+                        "profile_half_y": 0.0,
+                    }),
+                ),
+            ],
+        );
+        let err = result.err().expect("extrude must fail on empty sketch with zero fallback");
+        match err {
+            FeatureError::InvalidParameter { name, message, .. } => {
+                assert_eq!(name, "profiles");
+                assert!(
+                    message.contains("closed regions"),
+                    "expected user-facing message, got {message}"
+                );
+            }
+            other => panic!("expected InvalidParameter, got {other:?}"),
         }
     }
 
