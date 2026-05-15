@@ -146,9 +146,8 @@ function ToolButton({ item }: { item: ToolItem }) {
       onClick={item.onClick}
       {...(item.drag ?? {})}
     >
-      {item.glyph}
-      {item.glyph ? " " : ""}
-      {item.label}
+      {item.glyph && <span className="glyph" aria-hidden="true">{item.glyph}</span>}
+      <span className="tool-label">{item.label}</span>
     </button>
   );
 }
@@ -317,7 +316,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
                 data-testid={`sketch-tool-${type}`}
                 onClick={() => handleSketchToolPick(type)}
               >
-                {label.glyph} {label.label}
+                <span className="glyph" aria-hidden="true">{label.glyph}</span>
+                <span className="tool-label">{label.label}</span>
               </button>
             );
           })}
@@ -330,7 +330,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
               data-testid={`sketch-tool-${stub.type}`}
               disabled
             >
-              {stub.glyph} {stub.label}
+              <span className="glyph" aria-hidden="true">{stub.glyph}</span>
+              <span className="tool-label">{stub.label}</span>
             </button>
           ))}
         </div>
@@ -503,7 +504,8 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
         {...dragProps(current.kind)}
         onClick={() => invoke(current.kind)}
       >
-        {current.glyph} {current.label}
+        <span className="glyph" aria-hidden="true">{current.glyph}</span>
+        <span className="tool-label">{current.label}</span>
       </button>
       <button
         type="button"
