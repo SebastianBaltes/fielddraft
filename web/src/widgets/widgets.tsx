@@ -25,7 +25,12 @@
  *   in one place.
  */
 
-import { useId } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import {
+  register as registerQueryPicker,
+  isActive as isQueryPickerActive,
+  subscribe as subscribeQueryPicker,
+} from "../queryPickerBridge";
 import {
   ANGLE_UNITS,
   LENGTH_UNITS,
@@ -544,10 +549,22 @@ export function GroupHeader({
 // ─── query ──────────────────────────────────────────────────────
 
 /**
- * K6a: a minimal text-input for query strings. K6b will swap
- * this out for a real `QueryPicker` that lets the user click
- * into the viewport and resolves the click into a `qFaceOf` or
- * `qEdgeBetween` expression via the B-Rep proxy.
+ * Query picker widget (K7.22 UX-fix, onshape-ux `Selection-Input`).
+ *
+ * The widget starts in click-focus mode automatically when it
+ * receives the empty string — matching the Onshape convention
+ * where the Profiles field of a freshly-opened Extrude dialog
+ * already has the viewport click focus. A small ⊕ button toggles
+ * the focus manually; the raw expression is also editable via the
+ * text input for power users who want to type `qCreatedBy(…)`
+ * directly.
+ *
+ * When focused, the module-level `queryPickerBridge` carries a
+ * registration over to the Viewport click handler. The next
+ * click in the 3D scene that hits a proxy entity gets converted
+ * into a `qContributor(…)` expression and written back into the
+ * dialog's definition via `onChange`. The widget then drops its
+ * focus automatically.
  */
 export function QueryWidget({
   label,
@@ -557,17 +574,110 @@ export function QueryWidget({
   required,
 }: WidgetProps<string>) {
   const id = useId();
+  const [text, setText] = useState<string>(value);
+
+  // Keep the text input in sync when the definition changes
+  // externally (e.g. a viewport pick wrote a new query string
+  // through `onChange`).
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  // Subscribe to the bridge so the widget re-renders when
+  // another picker claims focus (deactivating this one).
+  const active = useSyncExternalStore(
+    subscribeQueryPicker,
+    () => isQueryPickerActive(id),
+    () => false,
+  );
+
+  // Register with the bridge while `active` is true. The register
+  // function returns an unregister closure that we wire up as
+  // the effect's cleanup.
+  useEffect(() => {
+    if (!active) return;
+    return registerQueryPicker({
+      ownerId: id,
+      onPick: (query: string) => {
+        setText(query);
+        onChange(query);
+        return true;
+      },
+    });
+  }, [active, id, onChange]);
+
+  // Auto-activate on an empty required field so a freshly-opened
+  // dialog already has the viewport click focus on its primary
+  // selection input — matches the Onshape `status: "Active/Highlight"`
+  // convention.
+  const [autoArmed, setAutoArmed] = useState<boolean>(
+    Boolean(required) && value === "",
+  );
+  useEffect(() => {
+    if (autoArmed && value === "" && !active) {
+      // Flip `autoArmed` off before registering to avoid re-arming
+      // after the first pick.
+      setAutoArmed(false);
+      registerQueryPicker({
+        ownerId: id,
+        onPick: (query: string) => {
+          setText(query);
+          onChange(query);
+          return true;
+        },
+      });
+    }
+  }, [autoArmed, value, active, id, onChange]);
+
+  const activate = () => {
+    registerQueryPicker({
+      ownerId: id,
+      onPick: (query: string) => {
+        setText(query);
+        onChange(query);
+        return true;
+      },
+    });
+  };
+
+  const commitText = () => {
+    if (text !== value) onChange(text);
+  };
+
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
-      <input
-        id={id}
-        className="input query-input"
-        type="text"
-        spellCheck={false}
-        placeholder="qCreatedBy(…)"
-        value={value}
-        onChange={(e) => onChange(e.currentTarget.value)}
-      />
+      <div className={"query-picker" + (active ? " is-active" : "")}>
+        <button
+          type="button"
+          className="query-focus-toggle"
+          aria-pressed={active}
+          title={
+            active
+              ? "Click in the viewport to select, or click here to cancel"
+              : "Click here, then click in the viewport to select"
+          }
+          onClick={activate}
+        >
+          {active ? "◎" : "⊕"}
+        </button>
+        <input
+          id={id}
+          className="input query-input"
+          type="text"
+          spellCheck={false}
+          placeholder={
+            active ? "Click in the viewport…" : "qCreatedBy(…) — or click ⊕"
+          }
+          value={text}
+          onChange={(e) => setText(e.currentTarget.value)}
+          onBlur={commitText}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              (e.currentTarget as HTMLInputElement).blur();
+            }
+          }}
+        />
+      </div>
     </Field>
   );
 }

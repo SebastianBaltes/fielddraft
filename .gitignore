@@ -28,3 +28,7 @@ dist-ssr/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Root test artifacts
+/test-results/
+CLAUDE.md.bak*

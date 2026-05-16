@@ -21,7 +21,10 @@ pub mod edge_detect;
 pub mod sketch_regions;
 pub mod queries;
 pub mod export;
+pub mod export_3mf;
 pub mod raycast;
+pub mod step_classifier;
+pub mod step_commands;
 pub mod sketch2d;
 pub mod sketch_features;
 
@@ -1517,7 +1520,11 @@ impl Kernel {
         };
         let raw_mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
         let report = raw_mesh.check_manifold();
-        let mesh = if report.is_watertight { raw_mesh } else { raw_mesh.repair() };
+        let mesh = if report.is_watertight {
+            raw_mesh
+        } else {
+            fielddraft_protocol::voxel_repair::repair_voxel(&raw_mesh, 256)
+        };
         let mesh_json = serde_json::to_value(&mesh)
             .map_err(|e| JsError::new(&format!("mesh serialisation failed: {e}")))?;
         self.snapshot();
@@ -2373,6 +2380,33 @@ impl Kernel {
         };
         self.restore_sync_meshing(prev);
         out
+    }
+
+    // ── M14a: 3MF export ────────────────────────────────────────
+
+    #[wasm_bindgen(js_name = export3mf)]
+    pub fn export_3mf(&mut self) -> Vec<u8> {
+        let prev = self.ensure_bodies_for_export();
+        let out = {
+            let meshes: Vec<&Mesh> = self.bodies.iter().map(|b| &b.mesh).collect();
+            export_3mf::export_3mf(&meshes)
+        };
+        self.restore_sync_meshing(prev);
+        out
+    }
+
+    // ── M14b: STEP classification ─────────────────────────────────
+
+    #[wasm_bindgen(js_name = classifyForStep)]
+    pub fn classify_for_step(&self) -> String {
+        let report = step_classifier::classify(&self.document.features);
+        report.to_json().to_string()
+    }
+
+    #[wasm_bindgen(js_name = stepCommands)]
+    pub fn step_commands(&self) -> String {
+        let cmds = step_commands::build_step_commands(&self.document.features);
+        cmds.to_string()
     }
 
     /// Force the main-thread body cache to be populated so

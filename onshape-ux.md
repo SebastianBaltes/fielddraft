@@ -1,5 +1,9 @@
 # FieldDraft UX‑Spezifikation (Onshape‑Abgleich)
 
+> **⚠ Teilweise veraltet — Dialog‑Strukturen siehe `docs/TOOL-DIALOGS.md`.**
+>
+> Dieses Dokument wurde im April 2026 als "fehlerhaft, lückenhaft, älter" identifiziert. Die **authoritative Dialog‑Struktur** pro Tool (Header, Tabs, Body, Parameter, Modes, Reveals, Footer) steht jetzt in **`docs/TOOL-DIALOGS.md`**, rekonstruiert aus den YAML‑Specs in `assets/onshape/yaml/*.yaml`. Wenn du einen Feature‑Dialog implementierst, lies TOOL‑DIALOGS.md **zuerst** — diese Datei hier ist nur noch als UX‑Philosophie‑Ergänzung nützlich (Sketch‑Paritäts‑Szenarien, Modifier‑Tasten, Drag‑Stabilität), nicht als Dialog‑Referenz. Die Feature‑Parameter‑Tabellen unten sind an mehreren Stellen unvollständig oder widersprechen den YAMLs.
+
 Dieses Dokument beschreibt pro Tool, welche **Parameter**, **Freiheitsgrade** und **UX‑Verhalten** wir aus Onshape übernehmen, vereinfachen oder streichen — fokussiert auf den MVP‑Scope aus `README.md` §6. Es ersetzt nicht die Feature‑Tabellen in der README, sondern konkretisiert sie.
 
 ## Verhältnis zur README

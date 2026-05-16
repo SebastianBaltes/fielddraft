@@ -15,6 +15,7 @@ use smol_str::SmolStr;
 
 pub mod mesh_sdf;
 pub mod sketch2d;
+pub mod voxel_repair;
 pub use mesh_sdf::MeshSdf;
 pub use sketch2d::{Aabb2, Sketch2d, Sketch2dPrimitive};
 

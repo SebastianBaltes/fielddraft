@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-04-14
+**Stand:** 2026-05-15
 **Branch:** `main`
 
 ---
@@ -9,13 +9,11 @@
 
 FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, der sich an Onshape orientiert und auf den FDM/SLA-3D-Druck zielt. Das Projekt durchläuft eine Roadmap mit fünf Release-Tiers (T0–T3 + T∞) und gliedert sich in Kernel-Slices (K1–K14), Backend-Meilensteine (M11–M13) und eine langfristige Phase 3 (P1–P5).
 
-**Aktueller Stand:** T0–T3 (100%), M11–M13 (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). **22 Feature-Kinds**, 560+ Tests grün. **Keine offenen Roadmap-Slices.**
-
-**Alle Slices erledigt.** T0–T3 (100%), M11–M13 (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). Keine offenen Roadmap-Items.
+**Aktueller Stand:** T0–T3 (100%), M11–M14i (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). **22 Feature-Kinds**, 590+ Tests grün. **M14 (STEP/3MF) vollständig.**
 
 **Registry & Tests (Stand heute):**
 - Feature Registry: **22 FeatureKinds**, **13 Primitive-Typen**
-- Testsuite: **273 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 196 Vitest + 30 Playwright = 553+ Tests grün**
+- Testsuite: **310 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 199 Vitest + 38 Playwright = 601+ Tests grün**
 
 ---
 
@@ -203,8 +201,13 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | P3 | R3F Code-Export | ✅ | exportR3F() → TSX mit Joint-Props |
 | P4 | Masse/Kollision/Toolpaths | open | Volumen, SDF-Kollision, CNC-Pfade |
 | P5 | Netzfreie FEM | open | Finite Cell Method auf SDF-Voxelgitter |
-| M14+ | STEP Import/Export | open | OpenCASCADE Batch-Worker |
-| M14+ | Loft, Curved Patterns, 3MF | open | Erweiterte Geometrie-Features |
+| M14a | 3MF Export | ✅ | Inline ZIP-Writer, Per-Body-Farben, 11 Tests |
+| M14b | STEP Classifier | ✅ | Hard/Degraded/Excluded-Klassifikation, 12 Tests |
+| M14c | OCCT Worker Scaffold | ✅ | Web Worker + Lazy OpenCASCADE (~25 MB), Promise-Bridge |
+| M14d | STEP Command Builder | ✅ | Feature→StepCommand JSON, Primitives+Transforms+Booleans+Extrude/Revolve, 16 Tests |
+| M14h | Degradation UI | ✅ | Confirm-Dialog mit Feature-Report vor STEP-Export |
+| M14i | STEP Import | ✅ | OCCT→Tessellation→K13 MeshSdf, Round-Trip E2E-Test |
+| M14+ | Loft, Curved Patterns | open | Erweiterte Geometrie-Features |
 
 ---
 
@@ -294,3 +297,14 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 - ✅ **P2.8** — FieldScript: Deterministische JS-Runtime für Assembly-Kinematik. `@param`-Header-Parser generiert Slider/Button-UI automatisch. `executeScript()` mit ScriptContext (setJointAngle, getJointAngle, time, dt). `setAssemblyScript()` + `runFieldScript()` Store-Methoden.
 
 **Phase 3 ist vollständig.** Alle Roadmap-Slices P1–P3 und P2.5/P2.8 sind implementiert.
+
+### 7. M14 — STEP/3MF Export (neu)
+
+- ✅ **M14a** — 3MF Export: Inline-ZIP-Writer (STORE, kein Kompressions-Dep), Per-Body-Farben aus `BODY_COLORS`-Palette, Multi-Body als separate `<object>`-Elemente. 11 Tests.
+- ✅ **M14b** — STEP Classifier: Kategorisiert Features als Hard/Degraded/Excluded/NonGeometric. Hard: Box, Sphere, Cylinder, Cone, Torus, Extrude, Revolve, HexPrism. Degraded: blend/chamfer/shell. Excluded: twist/bend/displacement/Thread/Gyroid/ImportedMesh. 12 Tests.
+- ✅ **M14c** — OCCT Worker Scaffold: Web Worker mit Lazy OpenCASCADE-Loading (~25 MB WASM), Promise-Bridge mit Progress-Events.
+- ✅ **M14d** — STEP Command Builder: `build_step_commands()` im Kernel konvertiert Feature-Spine → JSON StepCommand[]. Handles: alle Hard-Primitives, non-identity Transforms, Boolean-Chaining (Union/Difference/Intersect), Sketch2d→Wire (Polygon/Rectangle/Circle/Sector). 16 Tests.
+- ✅ **M14h** — Degradation UI: `confirm()`-Dialog vor Export zeigt Excluded/Degraded-Features mit Gründen.
+- ✅ **M14i** — STEP Import: OCCT Worker liest STEP via `STEPControl_Reader`, tesselliert mit `BRepMesh_IncrementalMesh`, extrahiert Dreiecke per `TopExp_Explorer`/`BRep_Tool.Triangulation`, übergibt an K13 `MeshSdf`. Toolbar akzeptiert `.step/.stp`. Round-Trip Playwright E2E-Test (Export → Import → Feature).
+
+**M14 ist vollständig.** Nächster Schritt: P4 (Masse/Kollision/Toolpaths) oder M14+ (Loft, Curved Patterns).

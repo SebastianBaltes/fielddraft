@@ -1155,6 +1155,443 @@ test.describe("FieldDraft smoke", () => {
     expect(stat.size).toBeLessThan(5_000_000);
   });
 
+  test("M14: Export STEP downloads a non-empty .step file via OpenCASCADE", async ({ page }) => {
+    // The OCCT WASM is ~50 MB and takes considerable time to fetch + compile,
+    // especially under software rendering (SwiftShader). Allow 5 minutes.
+    test.setTimeout(120_000);
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    let alertMsg = "";
+    page.on("dialog", async (dialog) => {
+      alertMsg = dialog.message();
+      await dialog.accept();
+    });
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 90_000 }),
+      page.evaluate(() => { (window as unknown as { __fdStore?: { downloadStep: () => Promise<void> } }).__fdStore?.downloadStep(); }),
+    ]);
+    expect(alertMsg, `alert was shown: ${alertMsg}`).toBe("");
+    expect(download.suggestedFilename()).toBe("fielddraft.step");
+
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path!);
+    expect(stat.size).toBeGreaterThan(100);
+
+    const content = await fs.readFile(path!, "utf-8");
+    expect(content).toContain("ISO-10303-21");
+  });
+
+  test("M14: STEP export with degraded feature shows confirm and downloads", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    await page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            getFeatureCallParams: (id: number) => Record<string, unknown>;
+            replaceFeatureCallParams: (id: number, params: Record<string, unknown>) => void;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) throw new Error("no kernel");
+      const params = kernel.getFeatureCallParams(1);
+      kernel.replaceFeatureCallParams(1, { ...params, blend_radius: 5.0 });
+    });
+    await page.waitForTimeout(100);
+
+    let dialogMessage = "";
+    page.on("dialog", (dialog) => {
+      dialogMessage = dialog.message();
+      dialog.accept();
+    });
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 60_000 }),
+      page.evaluate(() => { (window as unknown as { __fdStore?: { downloadStep: () => Promise<void> } }).__fdStore?.downloadStep(); }),
+    ]);
+    expect(download.suggestedFilename()).toBe("fielddraft.step");
+    expect(dialogMessage).toContain("DEGRADED");
+
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(path!);
+    expect(stat.size).toBeGreaterThan(100);
+  });
+
+  test("M14: STEP export with excluded feature can be cancelled via confirm dialog", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addGyroid: () => void } }).__fdStore?.addGyroid(); });
+    await expect(page.getByTestId("feature-count")).toHaveText("2 features");
+
+    let dialogMessage = "";
+    page.on("dialog", (dialog) => {
+      dialogMessage = dialog.message();
+      dialog.dismiss();
+    });
+
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { downloadStep: () => Promise<void> } }).__fdStore?.downloadStep(); });
+    await page.waitForTimeout(500);
+
+    expect(dialogMessage).toContain("EXCLUDED");
+    expect(dialogMessage).toContain("Gyroid");
+  });
+
+  test("M14i: Import STEP file creates an ImportedMesh feature via round-trip", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    // 1. Create a box and export it as STEP
+    await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    page.on("dialog", async (dialog) => { await dialog.accept(); });
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 90_000 }),
+      page.evaluate(() => { (window as unknown as { __fdStore?: { downloadStep: () => Promise<void> } }).__fdStore?.downloadStep(); }),
+    ]);
+    const stepPath = await download.path();
+    expect(stepPath).not.toBeNull();
+
+    const fs = await import("node:fs/promises");
+    const stepBytes = await fs.readFile(stepPath!);
+    expect(stepBytes.length).toBeGreaterThan(100);
+
+    // 2. Clear the project, then import the STEP file
+    await page.evaluate(() => {
+      (window as unknown as { __fdStore?: { newProject: () => void } }).__fdStore?.newProject();
+    });
+    await expect(page.getByTestId("feature-count")).toHaveText("0 features");
+
+    // Pass the STEP bytes into the page and call importStepFile
+    const featureId = await page.evaluate(async (b64) => {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const store = (window as unknown as { __fdStore?: { importStepFile: (buf: ArrayBuffer) => Promise<number | null> } }).__fdStore;
+      if (!store) throw new Error("no store");
+      return store.importStepFile(bytes.buffer);
+    }, stepBytes.toString("base64"));
+
+    expect(featureId).not.toBeNull();
+    expect(typeof featureId).toBe("number");
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+  });
+
+  test("M14i: Import Sprengfass.step from disk and verify rendering", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const stepFile = path.resolve(thisDir, "../../assets/models/Sprengfass.step");
+    const stepBytes = await fs.readFile(stepFile);
+    expect(stepBytes.length).toBeGreaterThan(1000);
+
+    // Import the STEP via the OCCT worker (tessellate only). The DC
+    // mesher can't handle complex imported meshes in reasonable time,
+    // so we render the tessellated output directly.
+    const meshInfo = await page.evaluate(async (b64: string) => {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+      const { importStep } = await import("/src/stepImport.ts");
+      const { positions, indices } = await importStep(bytes);
+      const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
+      const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+
+      // Compute bounding box and center
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (let i = 0; i < posF32.length; i += 3) {
+        minX = Math.min(minX, posF32[i]);
+        minY = Math.min(minY, posF32[i + 1]);
+        minZ = Math.min(minZ, posF32[i + 2]);
+        maxX = Math.max(maxX, posF32[i]);
+        maxY = Math.max(maxY, posF32[i + 1]);
+        maxZ = Math.max(maxZ, posF32[i + 2]);
+      }
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+      const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+
+      // Render using WebGL directly (no Three.js bare-import available
+      // in page.evaluate). Simple flat-shaded triangle rendering.
+      const cv = document.createElement("canvas");
+      cv.width = 800; cv.height = 600;
+      const gl = cv.getContext("webgl2")!;
+      gl.viewport(0, 0, 800, 600);
+      gl.clearColor(0.94, 0.94, 0.94, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+
+      const vs = `#version 300 es
+        in vec3 aPos;
+        uniform mat4 uMVP;
+        out vec3 vPos;
+        void main() {
+          vPos = aPos;
+          gl_Position = uMVP * vec4(aPos, 1.0);
+        }`;
+      const fsrc = `#version 300 es
+        precision mediump float;
+        in vec3 vPos;
+        out vec4 fragColor;
+        void main() {
+          vec3 dx = dFdx(vPos);
+          vec3 dy = dFdy(vPos);
+          vec3 n = normalize(cross(dx, dy));
+          float light = max(dot(n, normalize(vec3(1.0, 1.5, 1.0))), 0.0) * 0.7 + 0.3;
+          fragColor = vec4(vec3(0.55, 0.65, 0.85) * light, 1.0);
+        }`;
+      function compileShader(src: string, type: number) {
+        const s = gl.createShader(type)!;
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        return s;
+      }
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, compileShader(vs, gl.VERTEX_SHADER));
+      gl.attachShader(prog, compileShader(fsrc, gl.FRAGMENT_SHADER));
+      gl.linkProgram(prog);
+      gl.useProgram(prog);
+
+      const vbo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, posF32, gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(prog, "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+      const ibo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxU32, gl.STATIC_DRAW);
+
+      // Simple perspective MVP matrix
+      const fov = 45 * Math.PI / 180, aspect = 800 / 600;
+      const near = size * 0.01, far = size * 10;
+      const f = 1 / Math.tan(fov / 2);
+      const proj = [
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) / (near - far), -1,
+        0, 0, 2 * far * near / (near - far), 0,
+      ];
+      // Camera position: offset from center
+      const d = size * 1.5;
+      const ex = cx + d * 0.7, ey = cy + d * 0.5, ez = cz + d * 0.7;
+      // lookAt
+      const fwd = [cx - ex, cy - ey, cz - ez];
+      const flen = Math.sqrt(fwd[0] ** 2 + fwd[1] ** 2 + fwd[2] ** 2);
+      fwd[0] /= flen; fwd[1] /= flen; fwd[2] /= flen;
+      const up = [0, 1, 0];
+      const right = [
+        fwd[1] * up[2] - fwd[2] * up[1],
+        fwd[2] * up[0] - fwd[0] * up[2],
+        fwd[0] * up[1] - fwd[1] * up[0],
+      ];
+      const rlen = Math.sqrt(right[0] ** 2 + right[1] ** 2 + right[2] ** 2);
+      right[0] /= rlen; right[1] /= rlen; right[2] /= rlen;
+      const realUp = [
+        right[1] * fwd[2] - right[2] * fwd[1],
+        right[2] * fwd[0] - right[0] * fwd[2],
+        right[0] * fwd[1] - right[1] * fwd[0],
+      ];
+      const view = [
+        right[0], realUp[0], -fwd[0], 0,
+        right[1], realUp[1], -fwd[1], 0,
+        right[2], realUp[2], -fwd[2], 0,
+        -(right[0] * ex + right[1] * ey + right[2] * ez),
+        -(realUp[0] * ex + realUp[1] * ey + realUp[2] * ez),
+        -(-fwd[0] * ex + -fwd[1] * ey + -fwd[2] * ez),
+        1,
+      ];
+      // MVP = proj * view
+      const mvp = new Float32Array(16);
+      for (let r = 0; r < 4; r++)
+        for (let c = 0; c < 4; c++) {
+          let s = 0;
+          for (let k = 0; k < 4; k++) s += proj[r + k * 4] * view[k + c * 4];
+          mvp[r + c * 4] = s;
+        }
+
+      gl.uniformMatrix4fv(gl.getUniformLocation(prog, "uMVP"), false, mvp);
+      gl.drawElements(gl.TRIANGLES, idxU32.length, gl.UNSIGNED_INT, 0);
+      gl.finish();
+
+      const dataUrl = cv.toDataURL("image/png");
+      return {
+        vertexCount: posF32.length / 3,
+        triangleCount: idxU32.length / 3,
+        bbox: { minX, minY, minZ, maxX, maxY, maxZ },
+        size,
+        screenshot: dataUrl,
+      };
+    }, stepBytes.toString("base64"));
+
+    expect(meshInfo.vertexCount).toBeGreaterThan(100);
+    expect(meshInfo.triangleCount).toBeGreaterThan(100);
+    console.log(
+      `Barrel: ${meshInfo.vertexCount} verts, ${meshInfo.triangleCount} tris, ` +
+      `bbox=[${meshInfo.bbox.minX.toFixed(1)}..${meshInfo.bbox.maxX.toFixed(1)}, ` +
+      `${meshInfo.bbox.minY.toFixed(1)}..${meshInfo.bbox.maxY.toFixed(1)}, ` +
+      `${meshInfo.bbox.minZ.toFixed(1)}..${meshInfo.bbox.maxZ.toFixed(1)}], ` +
+      `size=${meshInfo.size.toFixed(1)}`,
+    );
+
+    // Decode the data URL and save as PNG
+    const pngB64 = meshInfo.screenshot.replace(/^data:image\/png;base64,/, "");
+    const pngBuf = Buffer.from(pngB64, "base64");
+    expect(pngBuf.length).toBeGreaterThan(1000);
+
+    const outDir = path.resolve(thisDir, "../../assets/screenshots");
+    await fs.mkdir(outDir, { recursive: true });
+    await fs.writeFile(path.join(outDir, "sprengfass-import.png"), pngBuf);
+
+    // Second render: top-down view of the lid to show tessellated symbols
+    const lidShot = await page.evaluate(async (b64: string) => {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+      const { importStep } = await import("/src/stepImport.ts");
+      const { positions, indices } = await importStep(bytes);
+      const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
+      const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+
+      const cv = document.createElement("canvas");
+      cv.width = 800; cv.height = 800;
+      const gl = cv.getContext("webgl2")!;
+      gl.viewport(0, 0, 800, 800);
+      gl.clearColor(0.94, 0.94, 0.94, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+
+      const vs = `#version 300 es
+        in vec3 aPos;
+        uniform mat4 uMVP;
+        out vec3 vPos;
+        void main() { vPos = aPos; gl_Position = uMVP * vec4(aPos, 1.0); }`;
+      const fsrc = `#version 300 es
+        precision mediump float;
+        in vec3 vPos;
+        out vec4 fragColor;
+        void main() {
+          vec3 dx = dFdx(vPos);
+          vec3 dy = dFdy(vPos);
+          vec3 n = normalize(cross(dx, dy));
+          float light = max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0) * 0.8 + 0.2;
+          fragColor = vec4(vec3(0.55, 0.65, 0.85) * light, 1.0);
+        }`;
+      function compileShader(src: string, type: number) {
+        const s = gl.createShader(type)!;
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        return s;
+      }
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, compileShader(vs, gl.VERTEX_SHADER));
+      gl.attachShader(prog, compileShader(fsrc, gl.FRAGMENT_SHADER));
+      gl.linkProgram(prog);
+      gl.useProgram(prog);
+
+      const vbo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, posF32, gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(prog, "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+      const ibo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idxU32, gl.STATIC_DRAW);
+
+      // Top-down orthographic projection looking at the lid (Y≈100mm)
+      const span = 55.0;
+      const orthoN = 1.0, orthoF = 300.0;
+      const proj = [
+        2 / (2 * span), 0, 0, 0,
+        0, 2 / (2 * span), 0, 0,
+        0, 0, -2 / (orthoF - orthoN), 0,
+        0, 0, -(orthoF + orthoN) / (orthoF - orthoN), 1,
+      ];
+      // lookAt: eye=(0,200,0), target=(0,100,0), up=(0,0,-1)
+      // f=(0,-1,0), s=cross(f,up)=(1,0,0), u=cross(s,f)=(0,0,-1)
+      const view = [
+        1, 0, 0, 0,
+        0, 0, 1, 0,
+        0, -1, 0, 0,
+        0, 0, -200, 1,
+      ];
+      const mvp = new Float32Array(16);
+      for (let r = 0; r < 4; r++)
+        for (let c = 0; c < 4; c++) {
+          let s = 0;
+          for (let k = 0; k < 4; k++) s += proj[r + k * 4] * view[k + c * 4];
+          mvp[r + c * 4] = s;
+        }
+
+      gl.uniformMatrix4fv(gl.getUniformLocation(prog, "uMVP"), false, mvp);
+      gl.drawElements(gl.TRIANGLES, idxU32.length, gl.UNSIGNED_INT, 0);
+      gl.finish();
+
+      return cv.toDataURL("image/png");
+    }, stepBytes.toString("base64"));
+
+    const lidB64 = lidShot.replace(/^data:image\/png;base64,/, "");
+    const lidBuf = Buffer.from(lidB64, "base64");
+    await fs.writeFile(path.join(outDir, "sprengfass-lid-top.png"), lidBuf);
+
+    // Verify the rendered image shows a barrel (not just background).
+    const stats = await page.evaluate(async (b64: string) => {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bin], { type: "image/png" });
+      const bitmap = await createImageBitmap(blob);
+      const cv = document.createElement("canvas");
+      cv.width = Math.min(bitmap.width, 512);
+      cv.height = Math.min(bitmap.height, 512);
+      const ctx = cv.getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0, cv.width, cv.height);
+      const data = ctx.getImageData(0, 0, cv.width, cv.height).data;
+
+      let meshPixels = 0;
+      const total = cv.width * cv.height;
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        if ((r + g + b) > 30 && (r + g + b) < 700) meshPixels++;
+      }
+      return { total, meshPixels };
+    }, pngB64);
+
+    expect(
+      stats.meshPixels,
+      `barrel not visible — only ${stats.meshPixels}/${stats.total} mesh pixels`,
+    ).toBeGreaterThan(stats.total * 0.05);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

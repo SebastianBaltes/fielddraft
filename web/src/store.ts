@@ -2134,6 +2134,128 @@ export class KernelStore {
     URL.revokeObjectURL(url);
   }
 
+  /** M14a: export the current scene as a 3MF archive with
+   *  per-body colors. Same WASM→Blob→download pattern as STL. */
+  download3mf(filename = "fielddraft.3mf"): void {
+    if (
+      typeof window === "undefined" ||
+      typeof document === "undefined" ||
+      typeof URL === "undefined" ||
+      typeof URL.createObjectURL !== "function"
+    ) {
+      return;
+    }
+    const bytes = this.kernel.export3mf();
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    const blob = new Blob([copy], { type: "application/vnd.ms-package.3dmanufacturing-3dmodel+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /** M14c: export the mechanical core of the scene as STEP via
+   *  the OCCT Web Worker. Lazy-loads opencascade.js (~25 MB)
+   *  on first call. */
+  async downloadStep(filename = "fielddraft.step"): Promise<void> {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    try {
+      const classJson = this.kernel.classifyForStep();
+      const report = JSON.parse(classJson) as {
+        hard: number;
+        degraded: number;
+        excluded: number;
+        total_geometric: number;
+        features: Array<{ id: string; name: string; status: string }>;
+      };
+
+      if (report.total_geometric === 0) {
+        alert("No geometric features to export.");
+        return;
+      }
+
+      if (report.degraded > 0 || report.excluded > 0) {
+        const lines: string[] = ["STEP Export — Feature Report\n"];
+        if (report.excluded > 0) {
+          lines.push(`${report.excluded} feature(s) will be EXCLUDED (not exportable):`);
+          for (const f of report.features) {
+            if (f.status.startsWith("excluded:")) {
+              lines.push(`  • ${f.name}: ${f.status.slice(10)}`);
+            }
+          }
+          lines.push("");
+        }
+        if (report.degraded > 0) {
+          lines.push(`${report.degraded} feature(s) will be DEGRADED (sharp edges instead of fillets/chamfers):`);
+          for (const f of report.features) {
+            if (f.status.startsWith("degraded:")) {
+              lines.push(`  • ${f.name}: ${f.status.slice(10)}`);
+            }
+          }
+          lines.push("");
+        }
+        lines.push(`${report.hard} feature(s) will export exactly.`);
+        lines.push("\nProceed with export?");
+
+        if (!confirm(lines.join("\n"))) return;
+      }
+
+      const { exportStep } = await import("./stepExport");
+      const commandsJson = this.kernel.stepCommands();
+      const commands = JSON.parse(commandsJson);
+      if (!Array.isArray(commands) || commands.length === 0) {
+        alert("No STEP-exportable features found.");
+        return;
+      }
+      const stepBytes = await exportStep(commands);
+      const copy = new Uint8Array(stepBytes.length);
+      copy.set(stepBytes);
+      const blob = new Blob([copy], { type: "application/step" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("STEP export failed:", e);
+      alert(`STEP export failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  /** M14i: import a STEP file via the OCCT worker. Tessellates
+   *  the B-Rep geometry and adds it as an ImportedMesh feature. */
+  async importStepFile(buffer: ArrayBuffer): Promise<number | null> {
+    if (typeof window === "undefined") return null;
+    try {
+      const { importStep } = await import("./stepImport");
+      const fileBytes = new Uint8Array(buffer);
+      const { positions, indices } = await importStep(fileBytes);
+
+      const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
+      const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+
+      const id = this.kernel.addImportedMesh(
+        posF32,
+        idxU32,
+        BoolOpTag.Union,
+      );
+      this.commit(new Set([id]), id);
+      return id;
+    } catch (e) {
+      console.error("STEP import failed:", e);
+      alert(`STEP import failed: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
+  }
+
   /** K12.1: export the current scene as a binary GLB file
    *  (glTF 2.0). Builds a temporary Three.js scene from the
    *  body mesh cache and runs the GLTFExporter. */

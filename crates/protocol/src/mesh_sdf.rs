@@ -37,10 +37,15 @@ pub struct MeshSdf {
 }
 
 impl MeshSdf {
+    pub fn tris(&self) -> &[f32] {
+        &self.tris
+    }
+
     /// Build from flat position + index arrays (the same layout
     /// the STL importer produces on the TS side).
     pub fn from_buffers(positions: &[f32], indices: &[u32]) -> Self {
         let tri_count = indices.len() / 3;
+        let vert_count = positions.len() / 3;
         let mut tris = Vec::with_capacity(tri_count * 9);
         let mut bboxes = Vec::with_capacity(tri_count * 6);
         let mut aabb_min = [f32::INFINITY; 3];
@@ -50,6 +55,9 @@ impl MeshSdf {
             let i0 = indices[t * 3] as usize;
             let i1 = indices[t * 3 + 1] as usize;
             let i2 = indices[t * 3 + 2] as usize;
+            if i0 >= vert_count || i1 >= vert_count || i2 >= vert_count {
+                continue;
+            }
             let mut tri_min = [f32::INFINITY; 3];
             let mut tri_max = [f32::NEG_INFINITY; 3];
             for &idx in &[i0, i1, i2] {

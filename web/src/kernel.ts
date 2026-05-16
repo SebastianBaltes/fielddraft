@@ -553,6 +553,21 @@ export class Kernel {
     return this.inner.exportStlBinary();
   }
 
+  /** M14a: serialise the current scene as a 3MF ZIP archive. */
+  export3mf(): Uint8Array {
+    return this.inner.export3mf();
+  }
+
+  /** M14b: classify features for STEP export capability. */
+  classifyForStep(): string {
+    return this.inner.classifyForStep();
+  }
+
+  /** M14d: build the StepCommand[] JSON from the feature spine. */
+  stepCommands(): string {
+    return this.inner.stepCommands();
+  }
+
   /**
    * K6b.3b: replace an existing sketch's plane and sub_calls in
    * place, keeping the feature id stable. Used by the edit
