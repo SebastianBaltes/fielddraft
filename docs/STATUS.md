@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-05-15
+**Stand:** 2026-05-16
 **Branch:** `main`
 
 ---
@@ -207,6 +207,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | M14d | STEP Command Builder | ✅ | Feature→StepCommand JSON, Primitives+Transforms+Booleans+Extrude/Revolve, 16 Tests |
 | M14h | Degradation UI | ✅ | Confirm-Dialog mit Feature-Report vor STEP-Export |
 | M14i | STEP Import | ✅ | OCCT→Tessellation→K13 MeshSdf, Round-Trip E2E-Test |
+| M14i+ | Import Passthrough-Rendering | ✅ | Importierte Meshes umgehen DC — direktes Rendering der Tessellation. Kompakte Speicherung (~2.7MB statt 175MB). Worker produziert Bodies in <8s für 50K-Tri-Modelle. DC nur bei CSG auf importierten Bodies. (Commit `d25fe77`) |
 | M14+ | Loft, Curved Patterns | open | Erweiterte Geometrie-Features |
 
 ---
