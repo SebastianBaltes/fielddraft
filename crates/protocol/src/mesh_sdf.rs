@@ -41,6 +41,88 @@ impl MeshSdf {
         &self.tris
     }
 
+    pub fn tri_count(&self) -> usize {
+        self.tris.len() / 9
+    }
+
+    /// Build a flat display mesh from the stored triangles.
+    /// Returns (positions, normals, indices) suitable for GPU rendering.
+    /// Uses per-face normals with shared vertices where positions match.
+    pub fn to_display_mesh(&self) -> (Vec<f32>, Vec<f32>, Vec<u32>) {
+        let tri_count = self.tri_count();
+        if tri_count == 0 {
+            return (vec![], vec![], vec![]);
+        }
+
+        // Deduplicate vertices by quantized position to recover sharing.
+        use std::collections::HashMap;
+        let quantize = |v: f32| -> i64 { (v * 10000.0).round() as i64 };
+
+        let mut vert_map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let mut positions: Vec<f32> = Vec::with_capacity(tri_count * 3);
+        let mut indices: Vec<u32> = Vec::with_capacity(tri_count * 3);
+
+        for t in 0..tri_count {
+            let base = t * 9;
+            for v in 0..3 {
+                let vb = base + v * 3;
+                let key = (
+                    quantize(self.tris[vb]),
+                    quantize(self.tris[vb + 1]),
+                    quantize(self.tris[vb + 2]),
+                );
+                let idx = *vert_map.entry(key).or_insert_with(|| {
+                    let i = (positions.len() / 3) as u32;
+                    positions.push(self.tris[vb]);
+                    positions.push(self.tris[vb + 1]);
+                    positions.push(self.tris[vb + 2]);
+                    i
+                });
+                indices.push(idx);
+            }
+        }
+
+        // Compute smooth vertex normals (area-weighted face normal accumulation).
+        let vert_count = positions.len() / 3;
+        let mut normals = vec![0.0f32; vert_count * 3];
+
+        for t in 0..tri_count {
+            let i0 = indices[t * 3] as usize;
+            let i1 = indices[t * 3 + 1] as usize;
+            let i2 = indices[t * 3 + 2] as usize;
+
+            let v0 = [positions[i0*3], positions[i0*3+1], positions[i0*3+2]];
+            let v1 = [positions[i1*3], positions[i1*3+1], positions[i1*3+2]];
+            let v2 = [positions[i2*3], positions[i2*3+1], positions[i2*3+2]];
+
+            let e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+            let e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+            // Cross product (area-weighted normal)
+            let nx = e1[1]*e2[2] - e1[2]*e2[1];
+            let ny = e1[2]*e2[0] - e1[0]*e2[2];
+            let nz = e1[0]*e2[1] - e1[1]*e2[0];
+
+            for &idx in &[i0, i1, i2] {
+                normals[idx*3]   += nx;
+                normals[idx*3+1] += ny;
+                normals[idx*3+2] += nz;
+            }
+        }
+
+        // Normalize
+        for v in 0..vert_count {
+            let b = v * 3;
+            let len = (normals[b]*normals[b] + normals[b+1]*normals[b+1] + normals[b+2]*normals[b+2]).sqrt();
+            if len > 1e-10 {
+                normals[b]   /= len;
+                normals[b+1] /= len;
+                normals[b+2] /= len;
+            }
+        }
+
+        (positions, normals, indices)
+    }
+
     /// Build from flat position + index arrays (the same layout
     /// the STL importer produces on the TS side).
     pub fn from_buffers(positions: &[f32], indices: &[u32]) -> Self {

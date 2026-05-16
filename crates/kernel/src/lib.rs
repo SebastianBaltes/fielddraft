@@ -659,10 +659,30 @@ impl Kernel {
         if !self.sync_meshing {
             return Mesh::default();
         }
+
+        // Passthrough fast-path: a body consisting of a single ImportedMesh
+        // feature is rendered directly from its triangles — no DC needed.
+        if feature_indices.len() == 1 {
+            let f = &self.document.features[feature_indices[0]];
+            if let Primitive::ImportedMesh { mesh } = &f.primitive {
+                return Self::mesh_from_imported(mesh);
+            }
+        }
+
         let (bounded, prims) = build_bounded_with_primitives(&self.document.features, feature_indices);
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
         dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs)
+    }
+
+    /// Convert an ImportedMesh's triangle data directly into a renderable
+    /// Mesh without running Dual Contouring.
+    fn mesh_from_imported(mesh: &fielddraft_protocol::MeshSdf) -> Mesh {
+        let (positions, normals, indices) = mesh.to_display_mesh();
+        let vert_count = positions.len() / 3;
+        let classifications = vec![0u8; vert_count];
+        let contributors = vec![dc::CONTRIBUTOR_SENTINEL; vert_count * csg::MAX_CONTRIBUTORS];
+        Mesh { positions, normals, indices, classifications, contributors }
     }
 
     /// Pick the voxel grid resolution a body should use right now:
@@ -1505,6 +1525,9 @@ impl Kernel {
     }
 
     /// K13.1: import triangle data as a solid CSG leaf.
+    /// Stores only the original positions+indices in the document (~2MB)
+    /// instead of the full MeshSdf with tris/bboxes (~175MB after voxel repair).
+    /// The MeshSdf is rebuilt on-demand in feature execution.
     #[wasm_bindgen(js_name = addImportedMesh)]
     pub fn add_imported_mesh(
         &mut self,
@@ -1520,13 +1543,7 @@ impl Kernel {
         };
         let raw_mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
         let report = raw_mesh.check_manifold();
-        let mesh = if report.is_watertight {
-            raw_mesh
-        } else {
-            fielddraft_protocol::voxel_repair::repair_voxel(&raw_mesh, 256)
-        };
-        let mesh_json = serde_json::to_value(&mesh)
-            .map_err(|e| JsError::new(&format!("mesh serialisation failed: {e}")))?;
+
         self.snapshot();
         let id = self.document.allocate_id();
         let flat = id
@@ -1534,7 +1551,9 @@ impl Kernel {
             .expect("K4.5.1 still issues flat-numeric feature ids");
         let params = serde_json::json!({
             "op": op_wire,
-            "__mesh": mesh_json,
+            "__positions": positions,
+            "__indices": indices,
+            "__watertight": report.is_watertight,
         });
         let call = fielddraft_protocol::FeatureCall::new("imported_mesh", id, params);
         self.document.feature_calls.push(call);

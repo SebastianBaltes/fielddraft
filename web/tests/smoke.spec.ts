@@ -1592,6 +1592,71 @@ test.describe("FieldDraft smoke", () => {
     ).toBeGreaterThan(stats.total * 0.05);
   });
 
+  test("M14i: Kernel passthrough renders imported mesh without DC", async ({ page }) => {
+    test.setTimeout(60_000);
+
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error" || msg.text().includes("failed") || msg.text().includes("Error")) {
+        errors.push(`[${msg.type()}] ${msg.text()}`);
+      }
+    });
+    page.on("pageerror", (err) => errors.push(`[pageerror] ${err.message}`));
+
+    await page.goto("/");
+    await page.waitForTimeout(400);
+
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const thisDir = path.dirname(fileURLToPath(import.meta.url));
+    const stepFile = path.resolve(thisDir, "../../assets/models/Sprengfass.step");
+    const stepBytes = await fs.readFile(stepFile);
+
+    const result = await page.evaluate(async (b64: string) => {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const store = (window as unknown as { __fdStore?: {
+        importStepFile: (buf: ArrayBuffer) => Promise<number | null>;
+        getState: () => { meshedBodies: { id: number; positions: Float32Array; indices: Uint32Array }[] };
+        kernel: { toJson: () => string };
+      } }).__fdStore;
+      if (!store) throw new Error("no store");
+
+      const featureId = await store.importStepFile(bytes.buffer);
+      const jsonLen = store.kernel.toJson().length;
+
+      // Wait for worker to produce bodies (up to 15s)
+      let bodies: { id: number; positions: Float32Array; indices: Uint32Array }[] = [];
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        bodies = store.getState().meshedBodies as typeof bodies;
+        if (bodies.length > 0 && bodies[0].positions.length > 0) break;
+      }
+
+      return {
+        featureId,
+        jsonLen,
+        bodyCount: bodies.length,
+        vertexCount: bodies[0]?.positions?.length / 3 || 0,
+        indexCount: bodies[0]?.indices?.length || 0,
+      };
+    }, stepBytes.toString("base64"));
+
+    console.log(
+      `Passthrough: featureId=${result.featureId}, jsonLen=${result.jsonLen}, ` +
+      `bodies=${result.bodyCount}, verts=${result.vertexCount}, tris=${result.indexCount / 3}`,
+    );
+    if (errors.length > 0) console.log(`Errors:\n${errors.join("\n")}`);
+
+    // Document JSON should be compact (~2-5MB, not 175MB)
+    expect(result.jsonLen, "document JSON too large — passthrough storage not working").toBeLessThan(10_000_000);
+    expect(result.featureId).not.toBeNull();
+    expect(result.bodyCount).toBeGreaterThan(0);
+    expect(result.vertexCount, "worker produced empty mesh — passthrough not working").toBeGreaterThan(100);
+  });
+
   test("persists feature list across reloads via localStorage", async ({ page }) => {
     await page.goto("/");
     await page.waitForTimeout(400);

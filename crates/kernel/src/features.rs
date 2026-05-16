@@ -1371,29 +1371,48 @@ impl FeatureKind for ImportedMeshFeature {
     ) -> Result<(), FeatureError> {
         let d = ImportedMeshDef::parse(def)?;
 
-        // The mesh data lives in the params JSON under the
-        // key "__mesh". The wasm addImportedMesh method puts
-        // it there; the FeatureDialog doesn't see it because
-        // the derive doesn't emit it as a schema param.
-        let mesh_val = def.get("__mesh").ok_or(FeatureError::MissingParameter {
-            feature: ImportedMeshDef::TYPE_NAME,
-            name: "__mesh",
-        })?;
-        let mesh: fielddraft_protocol::MeshSdf =
+        // Compact format (v2): positions + indices stored separately.
+        // Legacy format (v1): full MeshSdf under "__mesh".
+        let mesh: fielddraft_protocol::MeshSdf = if let Some(pos_val) = def.get("__positions") {
+            let positions: Vec<f32> = serde_json::from_value(pos_val.clone()).map_err(|e| {
+                FeatureError::InvalidParameter {
+                    feature: ImportedMeshDef::TYPE_NAME,
+                    name: "__positions",
+                    message: e.to_string(),
+                }
+            })?;
+            let idx_val = def.get("__indices").ok_or(FeatureError::MissingParameter {
+                feature: ImportedMeshDef::TYPE_NAME,
+                name: "__indices",
+            })?;
+            let indices: Vec<u32> = serde_json::from_value(idx_val.clone()).map_err(|e| {
+                FeatureError::InvalidParameter {
+                    feature: ImportedMeshDef::TYPE_NAME,
+                    name: "__indices",
+                    message: e.to_string(),
+                }
+            })?;
+            fielddraft_protocol::MeshSdf::from_buffers(&positions, &indices)
+        } else {
+            let mesh_val = def.get("__mesh").ok_or(FeatureError::MissingParameter {
+                feature: ImportedMeshDef::TYPE_NAME,
+                name: "__mesh",
+            })?;
             serde_json::from_value(mesh_val.clone()).map_err(|e| {
                 FeatureError::InvalidParameter {
                     feature: ImportedMeshDef::TYPE_NAME,
                     name: "__mesh",
                     message: e.to_string(),
                 }
-            })?;
+            })?
+        };
 
         let name = optional_display_name(def, || format!("Imported mesh {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
         ctx.document.features.push(SpineFeature {
-            id: id.child("0"),
+            id: id.clone(),
             name,
             op: d.op,
             primitive: Primitive::ImportedMesh {
