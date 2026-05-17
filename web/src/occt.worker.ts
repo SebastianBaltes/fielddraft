@@ -18,7 +18,7 @@
  *   worker → main : { type: "step-result", data: Uint8Array }
  *                  | { type: "step-error", message: string }
  *                  | { type: "step-progress", phase: string }
- *                  | { type: "import-result", positions: Float32Array, indices: Uint32Array }
+ *                  | { type: "import-result", positions: Float32Array, normals: Float32Array, indices: Uint32Array }
  */
 
 // ─── Command protocol ──────────────────────────────────────────
@@ -57,7 +57,7 @@ export type StepWorkerMessage =
   | { type: "step-result"; data: Uint8Array }
   | { type: "step-error"; message: string }
   | { type: "step-progress"; phase: string }
-  | { type: "import-result"; positions: Float32Array; indices: Uint32Array };
+  | { type: "import-result"; positions: Float32Array; normals: Float32Array; indices: Uint32Array };
 
 // ─── Worker implementation ─────────────────────────────────────
 
@@ -68,17 +68,33 @@ async function ensureOcct(): Promise<void> {
   if (oc) return;
   post({ type: "step-progress", phase: "Loading OpenCASCADE (~25 MB)..." });
   try {
-    // Dynamic import — opencascade.js is an optional peer dependency
-    // that's only loaded when the user clicks "Export STEP". The
-    // @ts-ignore suppresses the missing-module error at type-check
-    // time; the runtime import will fail gracefully if the package
-    // isn't installed.
     // @ts-ignore — optional dynamic dependency
     const initOpenCascade = (await import("opencascade.js")).default;
     oc = await initOpenCascade();
   } catch (e) {
     throw new Error(
       `Failed to load OpenCASCADE WASM. Install it with: npm install opencascade.js@beta\n${e}`,
+    );
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let occtImporter: any = null;
+
+async function ensureOcctImporter(): Promise<any> {
+  if (occtImporter) return occtImporter;
+  post({ type: "step-progress", phase: "Loading occt-import-js (~12 MB)..." });
+  try {
+    // @ts-ignore — optional dynamic dependency
+    const init = (await import("occt-import-js")).default;
+    occtImporter = await init({
+      locateFile: (name: string) =>
+        name.endsWith(".wasm") ? "/occt-import-js.wasm" : name,
+    });
+    return occtImporter;
+  } catch (e) {
+    throw new Error(
+      `Failed to load occt-import-js WASM. Install it with: npm install occt-import-js\n${e}`,
     );
   }
 }
@@ -119,40 +135,10 @@ self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
     }
   } else if (e.data.type === "import-step") {
     try {
-      // Decode text before OCCT consumes the buffer
-      const stepText = new TextDecoder().decode(e.data.data);
-
-      await ensureOcct();
-      const brep = readAndTessellateStep(e.data.data);
-
-      // Parse AP242 tessellated shells (mesh-only bodies like ConvergentBody)
-      post({ type: "step-progress", phase: "Parsing tessellated shells..." });
-      const tess = parseTessellatedShells(stepText);
-
-      let positions: Float32Array;
-      let indices: Uint32Array;
-
-      if (tess) {
-        // Merge B-Rep tessellation with parsed tessellated shells
-        const brepVerts = brep.positions.length / 3;
-        positions = new Float32Array(brep.positions.length + tess.positions.length);
-        positions.set(brep.positions);
-        positions.set(tess.positions, brep.positions.length);
-
-        const mergedIndices = new Uint32Array(brep.indices.length + tess.indices.length);
-        mergedIndices.set(brep.indices);
-        for (let i = 0; i < tess.indices.length; i++) {
-          mergedIndices[brep.indices.length + i] = tess.indices[i] + brepVerts;
-        }
-        indices = mergedIndices;
-      } else {
-        positions = brep.positions;
-        indices = brep.indices;
-      }
-
+      const result = await importStepViaOcctImportJs(e.data.data);
       post(
-        { type: "import-result", positions, indices },
-        [positions.buffer, indices.buffer],
+        { type: "import-result", ...result },
+        [result.positions.buffer, result.normals.buffer, result.indices.buffer],
       );
     } catch (err) {
       post({
@@ -394,256 +380,322 @@ function writeStep(shapes: Map<string, unknown>): Uint8Array {
   return stepData;
 }
 
-// ─── M14i: STEP reader + tessellation ─────────────────────────
+// ─── M14i: STEP import via occt-import-js ─────────────────────
 
-function readAndTessellateStep(
+async function importStepViaOcctImportJs(
   fileBytes: Uint8Array,
-): { positions: Float32Array; indices: Uint32Array } {
+): Promise<{ positions: Float32Array; normals: Float32Array; indices: Uint32Array }> {
   post({ type: "step-progress", phase: "Reading STEP file..." });
-
-  const tmpFile = "/tmp/fielddraft_import.step";
-  oc.FS.writeFile(tmpFile, fileBytes);
-
-  const reader = new oc.STEPControl_Reader_1();
-  const status = reader.ReadFile(tmpFile);
-  try { oc.FS.unlink(tmpFile); } catch { /* best-effort */ }
-
-  if (status !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) {
-    reader.delete();
-    throw new Error("Failed to parse STEP file (invalid format or empty).");
-  }
-
-  const progress = new oc.Message_ProgressRange_1();
-  reader.TransferRoots(progress);
-  progress.delete();
-
-  const shape = reader.OneShape();
-  reader.delete();
+  const occtImp = await ensureOcctImporter();
 
   post({ type: "step-progress", phase: "Tessellating B-Rep..." });
+  const result = occtImp.ReadStepFile(fileBytes, {
+    linearUnit: "millimeter",
+    linearDeflectionType: "absolute_value",
+    linearDeflection: 0.02,
+    angularDeflection: 0.1,
+  });
 
-  const linDeflection = 0.1;
-  const angDeflection = 0.5;
-  const mesher = new oc.BRepMesh_IncrementalMesh_2(
-    shape, linDeflection, false, angDeflection, false,
-  );
-  mesher.Perform_1(new oc.Message_ProgressRange_1());
-  mesher.delete();
+  if (!result.success) {
+    throw new Error("Failed to parse STEP file (invalid format or empty).");
+  }
 
   post({ type: "step-progress", phase: "Extracting triangles..." });
 
   const allPositions: number[] = [];
+  const allNormals: number[] = [];
   const allIndices: number[] = [];
   let vertexOffset = 0;
 
-  const explorer = new oc.TopExp_Explorer_2(
-    shape,
-    oc.TopAbs_ShapeEnum.TopAbs_FACE,
-    oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
-  );
+  for (const mesh of result.meshes) {
+    const pos = mesh.attributes.position.array;
+    const nrm = mesh.attributes.normal?.array;
+    const idx = mesh.index.array;
 
-  while (explorer.More()) {
-    const face = oc.TopoDS.Face_1(explorer.Current());
-    const loc = new oc.TopLoc_Location_1();
-    const handleTri = oc.BRep_Tool.Triangulation(face, loc, 0);
+    for (let i = 0; i < pos.length; i++) allPositions.push(pos[i]);
 
-    if (!handleTri.IsNull()) {
-      const tri = handleTri.get();
-      const trsf = loc.Transformation();
-      const nbNodes = tri.NbNodes();
-      const nbTris = tri.NbTriangles();
-
-      for (let i = 1; i <= nbNodes; i++) {
-        const p = tri.Node(i).Transformed(trsf);
-        allPositions.push(p.X(), p.Y(), p.Z());
-        p.delete();
-      }
-
-      for (let i = 1; i <= nbTris; i++) {
-        const t = tri.Triangle(i);
-        allIndices.push(
-          t.Value(1) - 1 + vertexOffset,
-          t.Value(2) - 1 + vertexOffset,
-          t.Value(3) - 1 + vertexOffset,
-        );
-        t.delete();
-      }
-
-      vertexOffset += nbNodes;
+    if (nrm && nrm.length === pos.length) {
+      for (let i = 0; i < nrm.length; i++) allNormals.push(nrm[i]);
+    } else {
+      for (let i = 0; i < pos.length; i++) allNormals.push(0);
     }
 
-    loc.delete();
-    explorer.Next();
+    for (let i = 0; i < idx.length; i++) allIndices.push(idx[i] + vertexOffset);
+    vertexOffset += pos.length / 3;
   }
 
-  explorer.delete();
-  try { shape.delete(); } catch { /* already freed */ }
+  // AP242 STEP files may contain COMPLEX_TRIANGULATED_FACE entities
+  // (convergent bodies / embedded meshes) that occt-import-js skips.
+  const stepText = new TextDecoder().decode(fileBytes);
+  if (stepText.includes("COMPLEX_TRIANGULATED_FACE")) {
+    post({ type: "step-progress", phase: "Extracting embedded meshes..." });
+    const tess = extractTessellatedGeometry(stepText);
+    if (tess) {
+      for (let i = 0; i < tess.positions.length; i++) allPositions.push(tess.positions[i]);
+      for (let i = 0; i < tess.normals.length; i++) allNormals.push(tess.normals[i]);
+      for (let i = 0; i < tess.indices.length; i++) allIndices.push(tess.indices[i] + vertexOffset);
+      vertexOffset += tess.positions.length / 3;
+    }
+  }
 
   if (allPositions.length === 0) {
     throw new Error("STEP file contains no geometry (0 triangles after tessellation).");
   }
 
-  const positions = new Float32Array(allPositions);
-  const indices = new Uint32Array(allIndices);
-  return { positions, indices };
+  return {
+    positions: new Float32Array(allPositions),
+    normals: new Float32Array(allNormals),
+    indices: new Uint32Array(allIndices),
+  };
 }
 
-// ─── AP242 tessellated geometry parser ────────────────────────────
-//
-// Parses COORDINATES_LIST and COMPLEX_TRIANGULATED_FACE entities
-// directly from STEP text. These represent mesh-only bodies (e.g.
-// Onshape ConvergentBody) that OCCT's STEPControl_Reader cannot
-// tessellate via BRep_Tool.Triangulation.
+// ─── AP242 tessellated geometry parser ────────────────────────
 
-function parseTessellatedShells(
-  stepText: string,
-): { positions: Float32Array; indices: Uint32Array } | null {
-  // Flatten multi-line entities into single lines keyed by entity ID.
-  // STEP entities start with #<id>= and end with ;
-  const entityMap = new Map<number, string>();
-  const entityRegex = /#(\d+)\s*=\s*/g;
-  let match: RegExpExecArray | null;
-
-  // Find all entity starts and extract their full content up to ;
-  const lines = stepText;
-  while ((match = entityRegex.exec(lines)) !== null) {
-    const id = parseInt(match[1], 10);
-    const startIdx = match.index + match[0].length;
-    const endIdx = lines.indexOf(";", startIdx);
-    if (endIdx === -1) continue;
-    const content = lines.substring(startIdx, endIdx).replace(/\s+/g, " ");
-    entityMap.set(id, content);
-  }
-
-  // Extract COORDINATES_LIST: entity content looks like:
-  // COORDINATES_LIST('',<count>,((<x>,<y>,<z>),(<x>,<y>,<z>),...))
+function extractTessellatedGeometry(stepText: string): {
+  positions: number[];
+  normals: number[];
+  indices: number[];
+} | null {
   const coordsMap = new Map<number, Float64Array>();
-  for (const [id, content] of entityMap) {
-    if (!content.startsWith("COORDINATES_LIST")) continue;
-    const dataStart = content.indexOf(",((");
-    if (dataStart === -1) continue;
-    const dataStr = content.substring(dataStart + 2, content.lastIndexOf(")") + 1);
-    const nums = dataStr.replace(/[()]/g, "").split(",").map(Number);
-    coordsMap.set(id, new Float64Array(nums));
+
+  const coordsRe = /#(\d+)\s*=\s*COORDINATES_LIST\s*\(\s*'[^']*'\s*,\s*(\d+)\s*,/g;
+  let cm;
+  while ((cm = coordsRe.exec(stepText)) !== null) {
+    const entityId = parseInt(cm[1]);
+    const count = parseInt(cm[2]);
+    const dataStart = cm.index + cm[0].length;
+
+    const nums = parseNumbersFromParenBlock(stepText, dataStart, count * 3);
+    if (nums.length === count * 3) {
+      coordsMap.set(entityId, new Float64Array(nums));
+    }
   }
 
   if (coordsMap.size === 0) return null;
 
-  // Determine length unit scale factor (STEP → mm, OCCT's internal unit).
-  // Look for SI_UNIT($,.METRE.) inside a LENGTH_UNIT() complex entity.
-  let unitScale = 1000.0; // default: meters → mm
-  const milliMatch = stepText.match(
-    /LENGTH_UNIT\(\)\s*NAMED_UNIT\(\*\)\s*SI_UNIT\(\.(MILLI)\.,\.METRE\.\)/,
-  );
-  if (milliMatch) unitScale = 1.0; // already mm
-
-  // Apply scale to all coordinate lists
-  for (const [id, coords] of coordsMap) {
-    if (unitScale !== 1.0) {
-      const scaled = new Float64Array(coords.length);
-      for (let i = 0; i < coords.length; i++) scaled[i] = coords[i] * unitScale;
-      coordsMap.set(id, scaled);
-    }
-  }
-
-  // Extract COMPLEX_TRIANGULATED_FACE entities
   const allPositions: number[] = [];
+  const allNormals: number[] = [];
   const allIndices: number[] = [];
   let vertexOffset = 0;
 
-  for (const [, content] of entityMap) {
-    if (!content.startsWith("COMPLEX_TRIANGULATED_FACE")) continue;
+  const faceRe = /#(\d+)\s*=\s*COMPLEX_TRIANGULATED_FACE\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*,\s*(\d+)\s*,/g;
+  let fm;
+  while ((fm = faceRe.exec(stepText)) !== null) {
+    const coordRef = parseInt(fm[2]);
+    const pnmax = parseInt(fm[3]);
+    const coords = coordsMap.get(coordRef);
+    if (!coords || pnmax === 0) continue;
 
-    // Parse reference to COORDINATES_LIST: second argument is #<id>
-    const refMatch = content.match(/COMPLEX_TRIANGULATED_FACE\('[^']*',#(\d+)/);
-    if (!refMatch) continue;
-    const coordsId = parseInt(refMatch[1], 10);
-    const coords = coordsMap.get(coordsId);
-    if (!coords) continue;
+    const afterHeader = fm.index + fm[0].length;
+    const face = parseTessellatedFace(stepText, afterHeader, pnmax, coords);
+    if (!face) continue;
 
-    const nbVerts = coords.length / 3;
-
-    // Find the triangle list — the last non-empty parenthesized group
-    // before the final ");". Format: ((v1,v2,v3),(v1,v2,v3),...)
-    // The pnindex field (before triangles) may be $ or a parenthesized list.
-    // Triangle strips come after pnindex, triangle fans after that.
-    //
-    // Strategy: find the section that contains triangle tuples.
-    // After the normals array and pnindex, there's ((i,i,i),...) for strips/triangles.
-    // We look for all occurrences of ((<digits>,<digits>,<digits>),...)
-    // that come after the normals.
-
-    // Find end of normals array — the normals are the large ((...)) block
-    // after the count. Skip past: name, coordsRef, normalsCount, normalsArray.
-    // Then we have: pnindex, triangle_strips, triangle_fans
-    const normCountMatch = content.match(
-      /COMPLEX_TRIANGULATED_FACE\('[^']*',#\d+,(\d+),/,
-    );
-    if (!normCountMatch) continue;
-
-    // Find the position after the normals array ends.
-    // Normals array starts with (( after the count.
-    const normCountEnd = content.indexOf(
-      normCountMatch[0],
-    ) + normCountMatch[0].length;
-    // Find the matching closing )) of the normals array
-    let depth = 0;
-    let normEnd = normCountEnd;
-    for (let i = normCountEnd; i < content.length; i++) {
-      if (content[i] === "(") depth++;
-      else if (content[i] === ")") {
-        depth--;
-        if (depth === 0) {
-          normEnd = i + 1;
-          break;
-        }
-      }
-    }
-
-    // After normals: ,<pnindex>,<triangle_strips>,<triangle_fans>
-    // pnindex can be $ or (...)
-    const afterNormals = content.substring(normEnd);
-
-    // Skip comma and pnindex
-    const pnMatch = afterNormals.match(/^\s*,\s*(\$|\([^)]*\))\s*,\s*/);
-    if (!pnMatch) continue;
-    const afterPnindex = afterNormals.substring(pnMatch[0].length);
-
-    // Triangle strips/list: ((v1,v2,v3),(v4,v5,v6),...)
-    // Extract all triangle tuples from this section
-    const triRegex = /\((\d+),(\d+),(\d+)\)/g;
-    let triMatch: RegExpExecArray | null;
-    const localIndices: number[] = [];
-
-    while ((triMatch = triRegex.exec(afterPnindex)) !== null) {
-      const a = parseInt(triMatch[1], 10) - 1; // 1-based → 0-based
-      const b = parseInt(triMatch[2], 10) - 1;
-      const c = parseInt(triMatch[3], 10) - 1;
-      localIndices.push(
-        a + vertexOffset,
-        b + vertexOffset,
-        c + vertexOffset,
-      );
-    }
-
-    if (localIndices.length === 0) continue;
-
-    // Add vertices
-    for (let i = 0; i < coords.length; i++) {
-      allPositions.push(coords[i]);
-    }
-
-    for (const idx of localIndices) {
-      allIndices.push(idx);
-    }
-
-    vertexOffset += nbVerts;
+    for (let i = 0; i < face.positions.length; i++) allPositions.push(face.positions[i]);
+    for (let i = 0; i < face.normals.length; i++) allNormals.push(face.normals[i]);
+    for (let i = 0; i < face.indices.length; i++) allIndices.push(face.indices[i] + vertexOffset);
+    vertexOffset += face.positions.length / 3;
   }
 
   if (allPositions.length === 0) return null;
+  return { positions: allPositions, normals: allNormals, indices: allIndices };
+}
 
-  return {
-    positions: new Float32Array(allPositions),
-    indices: new Uint32Array(allIndices),
-  };
+function parseTessellatedFace(
+  text: string,
+  offset: number,
+  pnmax: number,
+  coords: Float64Array,
+): { positions: number[]; normals: number[]; indices: number[] } | null {
+  // Parse normals list: ((nx,ny,nz),(nx,ny,nz),...)
+  const normalsStart = text.indexOf("((", offset);
+  if (normalsStart === -1) return null;
+  const normNums = parseNumbersFromParenBlock(text, normalsStart, pnmax * 3);
+  if (normNums.length < pnmax * 3) return null;
+
+  // Skip past normals block
+  let pos = normalsStart;
+  pos = skipParenBlock(text, pos);
+  if (pos === -1) return null;
+
+  // Skip comma and '$' (derived attribute)
+  pos = skipWhitespaceAndComma(text, pos);
+  if (text[pos] === "$") {
+    pos++;
+    pos = skipWhitespaceAndComma(text, pos);
+  }
+
+  // Parse pnindex: (i1,i2,i3,...) — maps point index → coordinate index (1-based)
+  let pnindex: number[] | null = null;
+  if (text[pos] === "(") {
+    const nextChar = text[pos + 1];
+    if (nextChar !== "(" && nextChar !== ")") {
+      pnindex = parseIntList(text, pos);
+      pos = skipParenBlock(text, pos);
+      if (pos === -1) return null;
+      pos = skipWhitespaceAndComma(text, pos);
+    }
+  }
+
+  // Parse triangle strips: ((a,b,c),(d,e,f),...) or ()
+  const triangleIndices: number[] = [];
+  if (text[pos] === "(") {
+    if (text[pos + 1] === "(") {
+      parseTriangleStrips(text, pos, triangleIndices);
+    }
+    pos = skipParenBlock(text, pos);
+    if (pos === -1) return null;
+    pos = skipWhitespaceAndComma(text, pos);
+  }
+
+  // Parse triangle fans: ((center,a,b,c,...),(...),...) or ()
+  if (text[pos] === "(") {
+    if (text[pos + 1] === "(") {
+      parseTriangleFans(text, pos, triangleIndices);
+    }
+  }
+
+  if (triangleIndices.length === 0) return null;
+
+  // Build output: expand each point into position + normal
+  // Triangle indices reference "points" (1-based into pnindex/normals)
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const pointMap = new Map<number, number>(); // point_1based → output vertex index
+  let outIdx = 0;
+
+  for (let t = 0; t < triangleIndices.length; t += 3) {
+    for (let k = 0; k < 3; k++) {
+      const ptIdx = triangleIndices[t + k]; // 1-based point index
+      let vi = pointMap.get(ptIdx);
+      if (vi === undefined) {
+        vi = outIdx++;
+        pointMap.set(ptIdx, vi);
+
+        const coordIdx = pnindex ? pnindex[ptIdx - 1] - 1 : ptIdx - 1;
+        const ni = ptIdx - 1;
+        const nx = normNums[ni * 3], ny = normNums[ni * 3 + 1], nz = normNums[ni * 3 + 2];
+        const bias = 0.1; // mm — nudge along normal to win depth test over B-Rep
+        positions.push(coords[coordIdx * 3] * 1000 + nx * bias);
+        positions.push(coords[coordIdx * 3 + 1] * 1000 + ny * bias);
+        positions.push(coords[coordIdx * 3 + 2] * 1000 + nz * bias);
+
+        normals.push(nx);
+        normals.push(ny);
+        normals.push(nz);
+      }
+      indices.push(vi);
+    }
+  }
+
+  return { positions, normals, indices };
+}
+
+function parseNumbersFromParenBlock(text: string, start: number, maxCount: number): number[] {
+  const nums: number[] = [];
+  let i = start;
+  while (i < text.length && nums.length < maxCount) {
+    const c = text[i];
+    if (c === "-" || c === "." || (c >= "0" && c <= "9")) {
+      let end = i + 1;
+      while (end < text.length && "0123456789.eE+-".includes(text[end])) end++;
+      nums.push(parseFloat(text.substring(i, end)));
+      i = end;
+    } else if (c === ";" || (c === ")" && text[i + 1] === ";")) {
+      break;
+    } else {
+      i++;
+    }
+  }
+  return nums;
+}
+
+function parseIntList(text: string, start: number): number[] {
+  const end = text.indexOf(")", start);
+  if (end === -1) return [];
+  const inner = text.substring(start + 1, end);
+  return inner.split(",").map((s) => parseInt(s.trim())).filter((n) => !isNaN(n));
+}
+
+function parseTriangleStrips(text: string, start: number, out: number[]): void {
+  // ((a,b,c),(d,e,f),...) — each inner list is a triangle strip
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    if (text[i] === "(") {
+      depth++;
+      if (depth === 2) {
+        // Start of a strip
+        const end = text.indexOf(")", i);
+        if (end === -1) return;
+        const inner = text.substring(i + 1, end);
+        const vals = inner.split(",").map((s) => parseInt(s.trim()));
+        // Convert strip to triangles
+        for (let j = 2; j < vals.length; j++) {
+          if (j % 2 === 0) {
+            out.push(vals[j - 2], vals[j - 1], vals[j]);
+          } else {
+            out.push(vals[j - 1], vals[j - 2], vals[j]);
+          }
+        }
+        i = end + 1;
+        depth--;
+      } else {
+        i++;
+      }
+    } else if (text[i] === ")") {
+      depth--;
+      if (depth <= 0) return;
+      i++;
+    } else {
+      i++;
+    }
+  }
+}
+
+function parseTriangleFans(text: string, start: number, out: number[]): void {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    if (text[i] === "(") {
+      depth++;
+      if (depth === 2) {
+        const end = text.indexOf(")", i);
+        if (end === -1) return;
+        const inner = text.substring(i + 1, end);
+        const vals = inner.split(",").map((s) => parseInt(s.trim()));
+        // Fan: first vertex is center, triangles are (center, v[j], v[j+1])
+        for (let j = 1; j + 1 < vals.length; j++) {
+          out.push(vals[0], vals[j], vals[j + 1]);
+        }
+        i = end + 1;
+        depth--;
+      } else {
+        i++;
+      }
+    } else if (text[i] === ")") {
+      depth--;
+      if (depth <= 0) return;
+      i++;
+    } else {
+      i++;
+    }
+  }
+}
+
+function skipParenBlock(text: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+function skipWhitespaceAndComma(text: string, pos: number): number {
+  while (pos < text.length && " \t\n\r,".includes(text[pos])) pos++;
+  return pos;
 }

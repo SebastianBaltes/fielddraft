@@ -1318,9 +1318,11 @@ test.describe("FieldDraft smoke", () => {
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
       const { importStep } = await import("/src/stepImport.ts");
-      const { positions, indices } = await importStep(bytes);
+      const { positions, normals, indices } = await importStep(bytes);
       const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
+      const nrmF32 = normals instanceof Float32Array ? normals : new Float32Array(normals);
       const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+      const hasNormals = nrmF32.some((v: number) => v !== 0);
 
       // Compute bounding box and center
       let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -1345,25 +1347,40 @@ test.describe("FieldDraft smoke", () => {
       gl.clearColor(0.94, 0.94, 0.94, 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
 
       const vs = `#version 300 es
         in vec3 aPos;
+        in vec3 aNrm;
         uniform mat4 uMVP;
         out vec3 vPos;
+        out vec3 vNrm;
         void main() {
           vPos = aPos;
+          vNrm = aNrm;
           gl_Position = uMVP * vec4(aPos, 1.0);
         }`;
       const fsrc = `#version 300 es
         precision mediump float;
         in vec3 vPos;
+        in vec3 vNrm;
         out vec4 fragColor;
         void main() {
-          vec3 dx = dFdx(vPos);
-          vec3 dy = dFdy(vPos);
-          vec3 n = normalize(cross(dx, dy));
-          float light = max(dot(n, normalize(vec3(1.0, 1.5, 1.0))), 0.0) * 0.7 + 0.3;
-          fragColor = vec4(vec3(0.55, 0.65, 0.85) * light, 1.0);
+          vec3 n;
+          if (length(vNrm) > 0.01) {
+            n = normalize(vNrm);
+          } else {
+            n = normalize(cross(dFdx(vPos), dFdy(vPos)));
+          }
+          if (!gl_FrontFacing) n = -n;
+          vec3 key  = normalize(vec3(0.4, 1.0, 0.5));
+          vec3 fill = normalize(vec3(-0.6, 0.2, 0.8));
+          vec3 rim  = normalize(vec3(0.0, -0.3, -1.0));
+          float d1 = max(dot(n, key),  0.0);
+          float d2 = max(dot(n, fill), 0.0);
+          float d3 = max(dot(n, rim),  0.0);
+          float light = d1 * 0.45 + d2 * 0.2 + d3 * 0.1 + 0.3;
+          fragColor = vec4(vec3(0.6, 0.65, 0.7) * light, 1.0);
         }`;
       function compileShader(src: string, type: number) {
         const s = gl.createShader(type)!;
@@ -1383,6 +1400,15 @@ test.describe("FieldDraft smoke", () => {
       const aPos = gl.getAttribLocation(prog, "aPos");
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+      if (hasNormals) {
+        const nbo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+        gl.bufferData(gl.ARRAY_BUFFER, nrmF32, gl.STATIC_DRAW);
+        const aNrm = gl.getAttribLocation(prog, "aNrm");
+        gl.enableVertexAttribArray(aNrm);
+        gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
+      }
 
       const ibo = gl.createBuffer()!;
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
@@ -1476,9 +1502,11 @@ test.describe("FieldDraft smoke", () => {
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
       const { importStep } = await import("/src/stepImport.ts");
-      const { positions, indices } = await importStep(bytes);
+      const { positions, normals, indices } = await importStep(bytes);
       const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
+      const nrmF32 = normals instanceof Float32Array ? normals : new Float32Array(normals);
       const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+      const hasNormals = nrmF32.some((v: number) => v !== 0);
 
       const cv = document.createElement("canvas");
       cv.width = 800; cv.height = 800;
@@ -1487,22 +1515,37 @@ test.describe("FieldDraft smoke", () => {
       gl.clearColor(0.94, 0.94, 0.94, 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
 
       const vs = `#version 300 es
         in vec3 aPos;
+        in vec3 aNrm;
         uniform mat4 uMVP;
         out vec3 vPos;
-        void main() { vPos = aPos; gl_Position = uMVP * vec4(aPos, 1.0); }`;
+        out vec3 vNrm;
+        void main() { vPos = aPos; vNrm = aNrm; gl_Position = uMVP * vec4(aPos, 1.0); }`;
       const fsrc = `#version 300 es
         precision mediump float;
         in vec3 vPos;
+        in vec3 vNrm;
         out vec4 fragColor;
         void main() {
-          vec3 dx = dFdx(vPos);
-          vec3 dy = dFdy(vPos);
-          vec3 n = normalize(cross(dx, dy));
-          float light = max(dot(n, normalize(vec3(0.3, 1.0, 0.2))), 0.0) * 0.8 + 0.2;
-          fragColor = vec4(vec3(0.55, 0.65, 0.85) * light, 1.0);
+          vec3 n;
+          if (length(vNrm) > 0.01) {
+            n = normalize(vNrm);
+          } else {
+            n = normalize(cross(dFdx(vPos), dFdy(vPos)));
+          }
+          if (!gl_FrontFacing) n = -n;
+          vec3 key  = normalize(vec3(1.0, 0.15, 0.3));
+          vec3 fill = normalize(vec3(-0.6, 0.1, 0.8));
+          float d1 = max(dot(n, key),  0.0);
+          float d2 = max(dot(n, fill), 0.0);
+          float light = d1 * 0.45 + d2 * 0.2 + 0.25;
+          float depthEdge = clamp(1.0 - fwidth(vPos.y) * 60.0, 0.0, 1.0);
+          float heightTint = smoothstep(98.8, 100.0, vPos.y);
+          float ao = depthEdge * mix(0.75, 1.0, heightTint);
+          fragColor = vec4(vec3(0.75, 0.78, 0.72) * light * ao, 1.0);
         }`;
       function compileShader(src: string, type: number) {
         const s = gl.createShader(type)!;
@@ -1522,6 +1565,15 @@ test.describe("FieldDraft smoke", () => {
       const aPos = gl.getAttribLocation(prog, "aPos");
       gl.enableVertexAttribArray(aPos);
       gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+      if (hasNormals) {
+        const nbo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+        gl.bufferData(gl.ARRAY_BUFFER, nrmF32, gl.STATIC_DRAW);
+        const aNrm = gl.getAttribLocation(prog, "aNrm");
+        gl.enableVertexAttribArray(aNrm);
+        gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 0, 0);
+      }
 
       const ibo = gl.createBuffer()!;
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);

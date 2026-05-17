@@ -247,11 +247,16 @@ export function createRaymarchMaterial(): RaymarchHandle {
     const finalColor = bg.toVar();
     If(hit.greaterThan(0.5), () => {
       const n = sceneNormal({ p: hitPos });
-      const lightDir = normalize(vec3(0.4, 1, 0.5));
-      const diffuse = max(n.dot(lightDir), float(0));
-      const ambient = float(0.35);
+      const key = normalize(vec3(0.4, 1, 0.5));
+      const fill = normalize(vec3(-0.6, 0.2, 0.8));
+      const rim = normalize(vec3(0.0, -0.3, -1.0));
+      const dKey = max(n.dot(key), float(0));
+      const dFill = max(n.dot(fill), float(0));
+      const dRim = max(n.dot(rim), float(0));
+      const ambient = float(0.3);
+      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
       const baseColor = vec3(0.55, 0.65, 0.85);
-      const lit = baseColor.mul(diffuse.add(ambient));
+      const lit = baseColor.mul(light);
       finalColor.assign(lit);
     });
 
