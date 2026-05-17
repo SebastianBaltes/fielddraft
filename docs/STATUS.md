@@ -125,7 +125,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K10.1 | K10 | Per-Feature Blend Radius | ✅ | Blend-Radius pro Feature einstellbar |
 | K10.2 | K10 | Chamfer Blend Mode | ✅ | Flache 45°-Schnitt-Variante |
 | K10.3 | K10 | Spatial Mask Infrastructure | ✅ | MaskedBlend CSG-Knoten mit Per-Edge-Masken, hierarchischen Sub-IDs und BVH-Integration |
-| K10.4 | K10 | Ghost Topology (Dual-Path) | ✅ | Visual vs. Logical Path, History-Rollback auf Ghost-Edges, Picking snappt auf scharfe Original-Kanten |
+| K10.4 | K10 | Ghost Topology (Dual-Path) | partial | EvalMode-Enum (Visual/Logical) vorhanden, aber nur Visual wird in Mesher/Picking genutzt. Divergenz nicht implementiert — beide Pfade liefern identische Ergebnisse. |
 | K10.5 | K10 | Edge Detection | ✅ | Proxy-basierte Edge-Extraktion für interaktive Selektion |
 | K10.6 | K10 | Edge Rendering | ✅ | Viewport-Overlay für B-Rep-Edges mit Hover/Select-States |
 | K10.7 | K10 | Click-to-Fillet UI | ✅ | Click-to-Fillet-Tool, Edge-Picking, Radius-Eingabe, Live-Preview, Fillet-all-edges-Stresstest grün |

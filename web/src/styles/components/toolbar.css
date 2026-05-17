@@ -98,7 +98,8 @@
    *          Main button + chevron share a border so they read as
    *          one control; the dropdown anchors to the combo and
    *          lists every primitive with a drag-start handle. */
-  & .primitive-split-button {
+  & .primitive-split-button,
+  & .thread-split-button {
     position: relative;
     display: inline-flex;
     align-items: stretch;
@@ -117,7 +118,8 @@
       font-size: var(--fs-sm, 0.85rem);
     }
 
-    & > .primitive-dropdown {
+    & > .primitive-dropdown,
+    & > .thread-dropdown {
       position: absolute;
       top: calc(100% + var(--space-1));
       left: 0;

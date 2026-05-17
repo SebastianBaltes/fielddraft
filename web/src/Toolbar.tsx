@@ -69,7 +69,29 @@ function savelastUsedPrimitive(kind: PrimitiveToolKind): void {
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 
-const DEFAULT_THREAD_M6 = { radius: 3.0, pitch: 1.0, depth: 0.613 };
+/* ------------------------------------------------------------------ */
+/*  ISO metric thread presets (DIN 13 / ISO 261)                       */
+/* ------------------------------------------------------------------ */
+
+interface ThreadPreset {
+  key: string;
+  label: string;
+  radius: number;
+  pitch: number;
+  depth: number;
+}
+
+const THREAD_PRESETS: ThreadPreset[] = [
+  { key: "M3",  label: "M3",  radius: 1.5,  pitch: 0.5,  depth: 0.307 },
+  { key: "M4",  label: "M4",  radius: 2.0,  pitch: 0.7,  depth: 0.429 },
+  { key: "M5",  label: "M5",  radius: 2.5,  pitch: 0.8,  depth: 0.491 },
+  { key: "M6",  label: "M6",  radius: 3.0,  pitch: 1.0,  depth: 0.613 },
+  { key: "M8",  label: "M8",  radius: 4.0,  pitch: 1.25, depth: 0.767 },
+  { key: "M10", label: "M10", radius: 5.0,  pitch: 1.5,  depth: 0.920 },
+  { key: "M12", label: "M12", radius: 6.0,  pitch: 1.75, depth: 1.074 },
+];
+
+const THREAD_LAST_USED_KEY = "fielddraft.lastUsedThread";
 
 const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
   sketch_point: { label: "Point", glyph: "•" },
@@ -253,12 +275,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   };
 
-  const handleAddThread = () => {
-    store.addThreadPreset(
-      DEFAULT_THREAD_M6.radius,
-      DEFAULT_THREAD_M6.pitch,
-      DEFAULT_THREAD_M6.depth,
-    );
+  const handleAddThread = (preset?: ThreadPreset) => {
+    const p = preset ?? THREAD_PRESETS.find((t) => t.key === "M6")!;
+    store.addThreadPreset(p.radius, p.pitch, p.depth);
   };
 
   const handleSketchToolPick = (typeName: string) => {
@@ -346,7 +365,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
   const items: ToolItem[] = [
     // Group 0: Modeling
-    { id: "thread", priority: 2, group: 0, glyph: "⏍", label: "Thread", title: "Add Thread (M6 default — edit radius/pitch/depth via feature dialog)", testId: "add-thread", disabled: false, active: false, onClick: handleAddThread },
+    { id: "thread", priority: 2, group: 0, glyph: "⏍", label: "Thread", title: "Add Thread (M6 default)", testId: "add-thread", disabled: false, active: false, onClick: () => handleAddThread() },
     { id: "hole", priority: 2, group: 0, glyph: "⊖", label: "Hole", title: "Add Hole (Ø6 × 40 mm, subtract)", testId: "add-hole", disabled: false, active: false, onClick: () => store.addHole(), drag: dragProps("hole") },
     { id: "gyroid", priority: 3, group: 0, glyph: "🕸", label: "Gyroid", title: "Add Gyroid infill (10 mm cells, 1 mm walls, intersect)", testId: "add-gyroid", disabled: !hasFeatures, active: false, onClick: () => store.addGyroid(), drag: dragProps("gyroid") },
     { id: "sketch", priority: 0, group: 0, glyph: "✎", label: "Sketch", title: "Sketch on XY plane (plane editable via feature dialog)", testId: "enter-sketch", disabled: false, active: false, onClick: handleSketchEnter, drag: sketchDragProps() },
@@ -394,10 +413,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
       <div className="group">
         <PrimitiveSplitButton store={store} />
         {visible
-          .filter((i) => i.group === 0)
+          .filter((i) => i.group === 0 && i.id !== "thread")
           .map((item) => (
             <ToolButton key={item.id} item={item} />
           ))}
+        {visible.some((i) => i.id === "thread") && (
+          <ThreadSplitButton onAdd={handleAddThread} />
+        )}
       </div>
 
       {/* Remaining groups render only when they have visible items */}
@@ -549,6 +571,94 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
                   {tool.glyph}
                 </span>
                 <span className="label">{tool.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Thread preset split-button (K12.2)                                 */
+/* ------------------------------------------------------------------ */
+
+function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void }) {
+  const [lastUsed, setLastUsed] = useState<string>(() => {
+    try {
+      const raw = localStorage.getItem(THREAD_LAST_USED_KEY);
+      if (raw && THREAD_PRESETS.some((t) => t.key === raw)) return raw;
+    } catch { /* ignore */ }
+    return "M6";
+  });
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest(".thread-split-button")) setOpen(false);
+    };
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  const current = THREAD_PRESETS.find((t) => t.key === lastUsed) ?? THREAD_PRESETS[3];
+
+  const invoke = (preset: ThreadPreset) => {
+    onAdd(preset);
+    if (preset.key !== lastUsed) {
+      setLastUsed(preset.key);
+      try { localStorage.setItem(THREAD_LAST_USED_KEY, preset.key); } catch { /* ignore */ }
+    }
+  };
+
+  return (
+    <div className="thread-split-button" data-testid="thread-split-button">
+      <button
+        type="button"
+        className="tool primary"
+        title={`Add Thread (${current.label})`}
+        data-testid="add-thread"
+        onClick={() => invoke(current)}
+      >
+        <span className="glyph" aria-hidden="true">⏍</span>
+        <span className="tool-label">{current.label}</span>
+      </button>
+      <button
+        type="button"
+        className="tool chevron"
+        title="Other thread sizes"
+        data-testid="thread-split-button-chevron"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        ▾
+      </button>
+      {open ? (
+        <div className="thread-dropdown" role="menu">
+          {THREAD_PRESETS.map((preset) => {
+            const active = preset.key === lastUsed;
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                role="menuitem"
+                className={"primitive-row" + (active ? " is-active" : "")}
+                title={`${preset.label}: Ø${preset.radius * 2} mm, pitch ${preset.pitch} mm`}
+                data-testid={`thread-dropdown-${preset.key.toLowerCase()}`}
+                onClick={() => {
+                  invoke(preset);
+                  setOpen(false);
+                }}
+              >
+                <span className="glyph" aria-hidden="true">⏍</span>
+                <span className="label">{preset.label}</span>
               </button>
             );
           })}
