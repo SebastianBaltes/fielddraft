@@ -1,0 +1,62 @@
+hole_dialog:
+  header:
+    type_summary: { type: "Label", example: "ø 6.528 mm ↧ 12 mm" }
+    measurement_system:
+      type: "Segmented-Control"
+      options:
+        - Inch: { standards: ["ANSI"] }
+        - Metric: { active: true, standards: ["ISO", "DIN"] }
+    hole_form_tabs:
+      - Simple: { active: true }
+      - Counterbore: { reveals: [cbore_dia, cbore_depth] }
+      - Countersink: { reveals: [csink_dia, csink_angle] }
+    actions:
+      - ok_button: { type: "Button", icon: "Check" }
+      - cancel_button: { type: "Button", icon: "X" }
+
+  state_matrix:
+    primary_parameters:
+      locations: { type: "Selection-Input", label: "Sketch points and mate connectors", mate_connector_invokable: true }
+      merge_scope: { type: "Selection-Input", label: "Merge scope", mate_connector_invokable: true }
+      
+      hole_style:
+        type: "Dropdown"
+        options:
+          Drilled: { reveals: [diameter, point_angle] }
+          Clearance: { reveals: [standard, size, fit, clearance_dia] }
+          Tapped: { reveals: [standard, size, thread_pitch, thread_class, tap_drill_dia] }
+
+      standard_selection:
+        visible_if: "Style: [Clearance, Tapped]"
+        standard: { type: "Dropdown" }
+        size: { type: "Dropdown" }
+        fit: { type: "Dropdown", visible_if: "Style: Clearance" }
+
+      details:
+        diameter: { type: "Distance-Input", label: "Hole diameter" }
+        point_angle: { type: "Angle-Input", label: "Point angle", options: ["118 deg", "135 deg", "Flat"] }
+        cbore_dia: { type: "Distance-Input", label: "Counterbore diameter" }
+        cbore_depth: { type: "Distance-Input", label: "Counterbore depth" }
+        csink_dia: { type: "Distance-Input", label: "Countersink diameter" }
+        csink_angle: { type: "Angle-Input", label: "Countersink angle" }
+
+      termination:
+        type: "Dropdown"
+        options:
+          Blind: { reveals: [depth] }
+          Through_all: { reveals: [] }
+          Up_to_next: { reveals: [] }
+          Up_to_entity: { reveals: [target_entity, offset_from_tip], mate_connector_invokable: true }
+      
+      start_logic:
+        type: "Dropdown"
+        label: "Start plane"
+        options:
+          Start_from_sketch_plane: { reveals: [] }
+          Start_from_part: { reveals: [] }
+          Start_from_face: { reveals: [start_face_selection], mate_connector_invokable: true }
+
+  footer:
+    show_custom_clearance: { type: "Checkbox" }
+    opposite_direction: { type: "Icon-Button", icon: "Flip" }
+    help: { type: "Button", icon: "Question-Mark" }

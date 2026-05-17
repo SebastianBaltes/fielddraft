@@ -29,7 +29,7 @@ function getWorker(): Worker {
 export function importStep(
   fileBytes: Uint8Array,
   onProgress?: StepProgress,
-): Promise<{ positions: Float32Array; indices: Uint32Array }> {
+): Promise<{ positions: Float32Array; normals: Float32Array; indices: Uint32Array }> {
   return new Promise((resolve, reject) => {
     const worker = getWorker();
 
@@ -40,7 +40,11 @@ export function importStep(
           break;
         case "import-result":
           worker.removeEventListener("message", handler);
-          resolve({ positions: e.data.positions, indices: e.data.indices });
+          resolve({
+            positions: e.data.positions,
+            normals: e.data.normals,
+            indices: e.data.indices,
+          });
           break;
         case "step-error":
           worker.removeEventListener("message", handler);

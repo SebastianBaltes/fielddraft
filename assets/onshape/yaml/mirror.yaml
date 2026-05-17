@@ -1,0 +1,34 @@
+mirror_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Mirror 1" }
+    mirror_type:
+      type: "Dropdown"
+      label: "Mirror type"
+      options:
+        Part_mirror: { entities_label: "Entities to mirror", shows_boolean_modes: true }
+        Feature_mirror: { entities_label: "Features to mirror", reveals: [reapply_features_checkbox] }
+        Face_mirror: { entities_label: "Faces to mirror" }
+    actions:
+      - ok_button: { type: "Button", icon: "Check" }
+      - cancel_button: { type: "Button", icon: "X" }
+
+  state_matrix:
+    modes:
+      visible_if: "Type: Part_mirror"
+      options: [New, Add, Remove, Intersect]
+    
+    parameters:
+      entities: { type: "Selection-Input", label: "Dynamic (Entities / Features / Faces)", mate_connector_invokable: true }
+      mirror_plane: { type: "Selection-Input", label: "Mirror plane", mate_connector_invokable: true }
+
+    options:
+      reapply_features: { type: "Checkbox", visible_if: "Type: Feature_pattern", default: true }
+      
+      merge_options:
+        visible_if: "Type: Part_mirror"
+        elements:
+          merge_with_all: { type: "Checkbox", default: true }
+          merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

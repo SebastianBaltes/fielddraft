@@ -1,0 +1,66 @@
+revolve_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Revolve 1" }
+    tabs:
+      - Solid: { status: "Active" }
+      - Surface: { status: "Inactive" }
+      - Thin: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Solid:
+        modes: [New, Add, Remove, Intersect]
+        parameters:
+          faces_and_sketch_regions: { type: "Selection-Input", label: "Faces and sketch regions to revolve", mate_connector_invokable: true }
+          revolve_axis: { type: "Selection-Input", label: "Revolve axis", mate_connector_invokable: true }
+          full_revolve:
+            type: "Checkbox"
+            default: true
+            reveals_if_unchecked:
+              revolve_type:
+                type: "Dropdown"
+                options:
+                  Blind:
+                    reveals: [revolve_angle, symmetric, second_end_position]
+                  Symmetric:
+                    reveals: [revolve_angle]
+                    note: "Splits total angle equally; disables 'Second end position'"
+                  Up_to_next: { reveals: [] }
+                  Up_to_face: { reveals: [target_face, offset_checkbox] }
+                  Up_to_part: { reveals: [target_part, offset_checkbox] }
+                  Up_to_vertex: { reveals: [target_vertex, offset_checkbox] }
+              revolve_angle: { type: "Angle-Input", default: "30 deg" }
+              second_end_position:
+                type: "Checkbox-Group"
+                label: "Second end position"
+                reveals_if_checked:
+                  second_revolve_type: { type: "Dropdown", options: "Same as revolve_type" }
+                  second_revolve_angle: { type: "Angle-Input", visible_if: "Type: Blind" }
+          merge_options:
+            visible_if: "Mode: [Add, Remove, Intersect]"
+            elements:
+              merge_with_all: { type: "Checkbox", default: true }
+              merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False" }
+
+      Surface:
+        modes: [New, Add]
+        comment: "Commonly used for construction geometry. Lacks Remove/Intersect in many contexts."
+        parameters:
+          edges_and_curves: { type: "Selection-Input", label: "Edges and sketch curves to revolve" }
+          revolve_axis: { type: "Selection-Input", label: "Revolve axis" }
+          full_revolve: { type: "Checkbox", default: true }
+
+      Thin:
+        modes: [New, Add, Remove, Intersect]
+        additional_parameters:
+          mid_plane: { type: "Checkbox", default: false }
+          thickness_type: { type: "Dropdown", options: ["One direction", "Symmetric", "Two directions"] }
+          thickness_1: { type: "Distance-Input", label: "Thickness 1", default: "5 mm" }
+          thickness_2: { type: "Distance-Input", label: "Thickness 2", visible_if: "Type: Two directions" }
+
+  footer:
+    diagnostic_tools: { type: "Button", icon: "Pencil-Magnifier" }
+    help: { type: "Button", icon: "Question-Mark" }

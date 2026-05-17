@@ -1,0 +1,32 @@
+plane_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Plane 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    parameters:
+      plane_type:
+        type: "Dropdown"
+        options:
+          Offset: { reveals: [entities, offset_distance, flip_normal], mate_connector_invokable: true }
+          Plane_point: { reveals: [entities, point_selection, flip_normal], mate_connector_invokable: true }
+          Line_angle: { reveals: [entities, line_selection, angle_input, flip_normal], mate_connector_invokable: true }
+          Point_normal: { reveals: [point_selection, line_selection, flip_normal], mate_connector_invokable: true }
+          Three_point: { reveals: [points_selection, flip_normal], mate_connector_invokable: true }
+          Mid_plane: { reveals: [entities, flip_normal], mate_connector_invokable: true }
+          Curve_point: { reveals: [curve_selection, point_selection, flip_normal, flip_alignment], mate_connector_invokable: true }
+          Tangent: { reveals: [surface_selection, point_or_plane, flip_normal, flip_alignment], mate_connector_invokable: true }
+
+    mode_specific_details:
+      numerical_inputs:
+        offset_distance: { type: "Distance-Input", label: "Offset distance", default: "25 mm" }
+        angle: { type: "Angle-Input", label: "Angle", default: "0 deg" }
+      
+    options:
+      flip_normal: { type: "Checkbox", label: "Flip normal" }
+      flip_alignment: { type: "Checkbox", label: "Flip alignment", visible_if: "Type: [Curve_point, Tangent]" }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

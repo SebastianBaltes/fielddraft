@@ -1,0 +1,33 @@
+shell_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Shell 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    parameters:
+      hollow_toggle:
+        type: "Checkbox"
+        label: "Hollow"
+        default: false
+        reveals_if_checked:
+          entities_label: "Parts to hollow"
+        reveals_if_unchecked:
+          entities_label: "Faces to remove"
+      
+      selection_box:
+        type: "Selection-Input"
+        label: "Dynamic (Faces to remove / Parts to hollow)"
+        comment: "Label changes based on Hollow checkbox state"
+        mate_connector_invokable: true
+      
+      thickness_control:
+        type: "Composite-Input"
+        elements:
+          thickness_input: { type: "Distance-Input", label: "Shell thickness", default: "2.5 mm" }
+          thickness_slider: { type: "Slider", range: "Dynamic" }
+          opposite_direction: { type: "Icon-Button", icon: "Flip-Arrow", tooltip: "Opposite direction" }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

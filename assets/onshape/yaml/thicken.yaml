@@ -1,0 +1,38 @@
+thicken_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Thicken 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    modes: [New, Add, Remove, Intersect]
+    parameters:
+      entities_to_thicken: { type: "Selection-Input", label: "Faces or surfaces to thicken", mate_connector_invokable: true }
+      mid_plane:
+        type: "Checkbox"
+        default: false
+        reveals_if_checked:
+          thickness: { type: "Distance-Input", label: "Thickness" }
+        reveals_if_unchecked:
+          thickness_1: { type: "Distance-Input", label: "Thickness 1" }
+          thickness_2: { type: "Distance-Input", label: "Thickness 2" }
+          opposite_direction: { type: "Toggle-Button", label: "Opposite direction" }
+      
+      direction:
+        type: "Expandable-Section"
+        label: "Direction"
+        reveals_if_checked:
+          direction_entity: { type: "Selection-Input", label: "Direction", comment: "Optional override for face normal", mate_connector_invokable: true }
+
+      options:
+        keep_tools: { type: "Checkbox", label: "Keep tools", default: false }
+        
+      merge_options:
+        visible_if: "Mode: [Add, Remove, Intersect]"
+        elements:
+          merge_with_all: { type: "Checkbox", default: true }
+          merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

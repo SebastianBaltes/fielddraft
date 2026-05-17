@@ -1,0 +1,23 @@
+enclose_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Enclose 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    modes: [New, Add, Remove, Intersect]
+    parameters:
+      entities_to_enclose: { type: "Selection-Input", label: "Entities", comment: "Surfaces and planes to enclose", mate_connector_invokable: true }
+      
+      options:
+        keep_tools: { type: "Checkbox", label: "Keep tools", default: false }
+        
+      merge_options:
+        visible_if: "Mode: [Add, Remove, Intersect]"
+        elements:
+          merge_with_all: { type: "Checkbox", default: true }
+          merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

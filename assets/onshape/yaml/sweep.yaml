@@ -1,0 +1,74 @@
+sweep_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Sweep 1" }
+    tabs:
+      - Solid: { status: "Active" }
+      - Surface: { status: "Inactive" }
+      - Thin: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Solid:
+        modes: [New, Add, Remove, Intersect]
+        parameters:
+          faces_and_regions: { type: "Selection-Input", label: "Faces and sketch regions to sweep", mate_connector_invokable: true }
+          sweep_path: { type: "Selection-Input", label: "Sweep path", mate_connector_invokable: true }
+          
+          profile_control:
+            type: "Dropdown"
+            label: "Profile control"
+            options:
+              None: { reveals: [twist_section, scale_section] }
+              Keep_profile_orientation: { reveals: [twist_section, scale_section] }
+              Lock_profile_faces: 
+                reveals: [faces_to_lock, twist_section, scale_section]
+                comment: "Adds a new selection box for faces"
+                mate_connector_invokable: true
+              Lock_profile_direction: 
+                reveals: [direction_selection, twist_section, scale_section]
+                comment: "Adds a direction selection box"
+                mate_connector_invokable: true
+          
+          twist_section:
+            type: "Checkbox-Group"
+            label: "Twist"
+            reveals_if_checked:
+              twist_type:
+                type: "Dropdown"
+                options:
+                  Turns: { reveals: [revolutions_input] }
+                  Angle: { reveals: [twist_angle_input] }
+                  Pitch: { reveals: [pitch_distance_input] }
+          
+          scale_section:
+            type: "Checkbox-Group"
+            label: "Scale"
+            reveals_if_checked:
+              scale_factor: { type: "Number-Input", default: "1.0" }
+
+          trim_ends: { type: "Checkbox", label: "Trim ends", default: false }
+
+          merge_options:
+            visible_if: "Mode: [Add, Remove, Intersect]"
+            elements:
+              merge_with_all: { type: "Checkbox", default: true }
+              merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+      Surface:
+        modes: [New, Add, Remove, Intersect]
+        comment: "Mapping similar to Solid, but specific to non-solid bodies."
+
+      Thin:
+        modes: [New, Add, Remove, Intersect]
+        additional_parameters:
+          mid_plane: { type: "Checkbox" }
+          thickness_type: { type: "Dropdown", options: ["One direction", "Symmetric", "Two directions"] }
+          thickness_1: { type: "Distance-Input" }
+          thickness_2: { type: "Distance-Input", visible_if: "Type: Two directions" }
+
+  footer:
+    diagnostic_tools: { type: "Button", icon: "Pencil-Magnifier" }
+    help: { type: "Button", icon: "Question-Mark" }

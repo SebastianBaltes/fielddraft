@@ -1,0 +1,38 @@
+split_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Split 1" }
+    tabs:
+      - Part: { status: "Active" }
+      - Face: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Part:
+        parameters:
+          entities_to_split: { type: "Selection-Input", label: "Parts, surfaces, or curves to split", mate_connector_invokable: true }
+          split_tool: { type: "Selection-Input", label: "Entity to split with", mate_connector_invokable: true }
+          options:
+            keep_tools: { type: "Checkbox", default: false }
+            trim_to_face: { type: "Checkbox", label: "Trim to face boundaries" }
+            keep_both_sides: { type: "Checkbox", default: true }
+      
+      Face:
+        parameters:
+          faces_to_split: { type: "Selection-Input", label: "Faces to split", mate_connector_invokable: true }
+          split_tool: { type: "Selection-Input", label: "Entities to split with", mate_connector_invokable: true }
+          projection_options:
+            type: "Expandable-Section"
+            label: "Edge projection options"
+            reveals:
+              projection_type:
+                type: "Dropdown"
+                options:
+                  Normal_to_target: { reveals: [] }
+                  Direction: { reveals: [direction_selection, use_sketch_plane_checkbox], mate_connector_invokable: true }
+              keep_tool_entities: { type: "Checkbox", label: "Keep tool surfaces and curves", default: false }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

@@ -1,0 +1,39 @@
+boolean_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Boolean 1" }
+    tabs:
+      - Union: { status: "Active" }
+      - Subtract: { status: "Inactive" }
+      - Intersect: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Union:
+        parameters:
+          tools: { type: "Selection-Input", label: "Tools", comment: "Parts to join together", mate_connector_invokable: true }
+      
+      Subtract:
+        parameters:
+          tools: { type: "Selection-Input", label: "Tools", comment: "Parts to use as cutters", mate_connector_invokable: true }
+          targets: { type: "Selection-Input", label: "Targets", comment: "Parts to be cut", mate_connector_invokable: true }
+          offset_section:
+            type: "Checkbox-Group"
+            label: "Offset"
+            reveals_if_checked:
+              offset_all: { type: "Checkbox", label: "Offset all", default: false }
+              faces_to_offset: { type: "Selection-Input", label: "Faces to offset", visible_if: "Offset all: False", mate_connector_invokable: true }
+              offset_distance: { type: "Distance-Input", label: "Offset distance" }
+              reapply_fillet: { type: "Checkbox", label: "Reapply fillet" }
+      
+      Intersect:
+        parameters:
+          tools: { type: "Selection-Input", label: "Tools", comment: "Parts to find intersection of", mate_connector_invokable: true }
+
+    common_options:
+      keep_tools: { type: "Checkbox", label: "Keep tools", default: false }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

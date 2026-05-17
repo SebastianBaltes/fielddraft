@@ -1,0 +1,36 @@
+transform_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Transform 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    parameters:
+      entities_to_transform: { type: "Selection-Input", label: "Entities to transform or copy", mate_connector_invokable: true }
+      
+      transform_mode:
+        type: "Dropdown"
+        options:
+          Translate_by_line: { reveals: [direction_selection, distance_input], mate_connector_invokable: true }
+          Translate_by_distance: { reveals: [direction_selection, distance_input], mate_connector_invokable: true }
+          Translate_by_XYZ: { reveals: [dx_input, dy_input, dz_input] }
+          Transform_by_mate_connectors: { reveals: [from_mate_connector, to_mate_connector], mate_connector_invokable: true }
+          Rotate: { reveals: [axis_selection, angle_input], mate_connector_invokable: true }
+          Copy_in_place: { reveals: [], comment: "Always results in a copy" }
+          Scale: { reveals: [scale_uniformly_checkbox, scale_input, point_or_connector], mate_connector_invokable: true }
+
+    mode_specific_details:
+      Scale_logic:
+        scale_uniformly: { type: "Checkbox", default: true }
+        uniform_fields: [scale_factor]
+        non_uniform_fields:
+          visible_if: "scale_uniformly: False"
+          elements: [scale_x, scale_y, scale_z]
+        point_reference: { type: "Selection-Input", label: "Point or mate connector", comment: "Required for all scaling", mate_connector_invokable: true }
+
+    options:
+      copy_part: { type: "Checkbox", label: "Copy part", default: false, note: "Implicitly true for Copy in place" }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

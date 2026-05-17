@@ -1,0 +1,87 @@
+sketch_dialog:
+  header:
+    name_field: 
+      type: "Text-Input"
+      default_value: "Sketch 1"
+      label: "Sketch name"
+      comment: "Allows renaming the sketch feature immediately."
+    actions:
+      ok_button: 
+        type: "Button"
+        icon: "Check-Green"
+        tooltip: "Finalize sketch"
+      cancel_button: 
+        type: "Button"
+        icon: "X-Red"
+        tooltip: "Cancel sketch"
+
+  body:
+    parameters:
+      sketch_plane:
+        type: "Selection-Input"
+        placeholder: "Sketch plane"
+        status: "Active/Highlight"
+        mate_connector_invokable: true
+        sub_elements:
+          - { type: "History-Icon", tooltip: "Parameter history", comment: "Shows previous selections for this field." }
+          - { type: "Clear-Button", icon: "X", action: "Clear selection", visibility: "Only when field is populated" }
+    options:
+      disable_imprinting: 
+        type: "Checkbox"
+        label: "Disable imprinting"
+        default: false
+      show_constraints: 
+        type: "Checkbox"
+        label: "Show constraints"
+        default: true
+        hotkey: "Shift + C (Global toggle)"
+      show_expressions: 
+        type: "Checkbox"
+        label: "Show expressions"
+        default: false
+        comment: "Shows variable names/formulas instead of just values."
+      show_errors: 
+        type: "Checkbox"
+        label: "Show errors"
+        default: true
+        comment: "Highlights over-defined or conflicting constraints."
+
+  footer:
+    tools:
+      sketch_diagnostics:
+        type: "Dropdown-Button"
+        label: "Sketch diagnostics"
+        icon: "Pencil-with-Magnifier"
+        menu_items:
+          - profile_inspector:
+              label: "Profile inspector..."
+              sub_panel:
+                title: "Profile inspector"
+                elements:
+                  - { type: "Label", text: "Loose ends" }
+                  - { type: "Status-Message", text: "No loose ends found", style: "Success" }
+                  - { type: "Navigation-Group", buttons: ["Previous", "Next"] }
+                  - { type: "Close-Icon", icon: "X" }
+                  - { type: "Help-Icon", tooltip: "Help about Profile inspector" }
+          - constraint_manager:
+              label: "Constraint manager..."
+              sub_panel:
+                title: "Constraint manager"
+                header:
+                  - { type: "Close-Icon", icon: "X" }
+                  - { type: "Dropdown", label: "Filters" }
+                  - { type: "Toggle", label: "Automatically select constraints", default: true }
+                icon_groups:
+                  types: ["Coincident", "Concentric", "Parallel", "Tangent", "Horizontal", "Vertical", "Perpendicular", "Equal", "Midpoint", "Normal", "Pierce", "Symmetric", "Fix", "Equal curvature"]
+                  modes: ["Internal", "External", "In-context"]
+                  statuses: ["Driven", "Solved", "Overconstrained"]
+                navigation:
+                  tabs: ["Sort by constraint", "Sort by entity"]
+                  search_field: { type: "Search-Input", placeholder: "Entities and constraints" }
+                actions:
+                  - { type: "Button", label: "Delete all", state: "Disabled (when no selection)" }
+      help_link: 
+        type: "Link-Icon"
+        icon: "Question-Mark"
+        tooltip: "Help"
+        url: "/help/index.htm#cshid=sketch_tools"

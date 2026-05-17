@@ -1,0 +1,76 @@
+extrude_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Extrude 1" }
+    tabs:
+      - Solid: { status: "Active" }
+      - Surface: { status: "Inactive" }
+      - Thin: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Solid:
+        modes: [New, Add, Remove, Intersect]
+        parameters:
+          faces_and_regions: { type: "Selection-Input", label: "Faces and sketch regions to extrude", mate_connector_invokable: true }
+          end_condition:
+            type: "Dropdown"
+            options:
+              Blind: { reveals: [depth, symmetric] }
+              Symmetric: { reveals: [depth], note: "Disables 'Second end position' checkbox" }
+              Up_to_next: { reveals: [] }
+              Up_to_face: { reveals: [up_to_face_entity, offset_distance_checkbox], mate_connector_invokable: true }
+              Up_to_part: { reveals: [up_to_part_entity, offset_distance_checkbox], mate_connector_invokable: true }
+              Up_to_vertex: { reveals: [up_to_vertex_entity, offset_distance_checkbox], mate_connector_invokable: true }
+              Through_all: { reveals: [] }
+          direction_section:
+            type: "Expandable-Section"
+            label: "Direction"
+            reveals_if_checked:
+              direction_entity: { type: "Selection-Input", label: "Direction", mate_connector_invokable: true }
+          starting_offset_section:
+            type: "Checkbox-Group"
+            label: "Starting offset"
+            reveals_if_checked:
+              type: { type: "Dropdown", options: [Blind, Entity] }
+              offset_distance: { type: "Distance-Input", visible_if: "Type: Blind" }
+              offset_entity: { type: "Selection-Input", visible_if: "Type: Entity", mate_connector_invokable: true }
+              opposite_direction: { type: "Toggle" }
+          draft_section:
+            type: "Checkbox-Group"
+            label: "Draft"
+            reveals_if_checked:
+              draft_angle: { type: "Angle-Input", default: "3 deg" }
+              opposite_direction: { type: "Toggle" }
+          second_end_position_section:
+            type: "Checkbox-Group"
+            label: "Second end position"
+            visible_if: "Symmetric: False"
+            reveals_if_checked:
+              second_end_condition: { type: "Dropdown", options: "Same as end_condition" }
+              second_depth: { type: "Distance-Input", visible_if: "Second end condition: Blind" }
+              second_draft: { type: "Checkbox-Group", label: "Draft", reveals: [second_draft_angle, second_draft_opposite] }
+          merge_options:
+            visible_if: "Mode: [Add, Remove, Intersect]"
+            elements:
+              merge_with_all: { type: "Checkbox", default: true }
+              merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+      
+      Surface:
+        comment: "Similar to Solid, but lacks 'Draft' at the top level and has unique surface-only conditions in some edge cases."
+        modes: [New, Add, Remove, Intersect]
+      
+      Thin:
+        comment: "Adds wall thickness parameters."
+        additional_parameters:
+          mid_plane: { type: "Checkbox", label: "Mid plane" }
+          thickness_type: { type: "Dropdown", options: ["One direction", "Symmetric", "Two directions"] }
+          thickness_1: { type: "Distance-Input", label: "Thickness 1" }
+          thickness_2: { type: "Distance-Input", label: "Thickness 2", visible_if: "Type: Two directions" }
+
+  footer:
+    diagnostic_tools: { type: "Button", icon: "Pencil-Magnifier", tooltip: "Show analysis" }
+    help: { type: "Button", icon: "Question-Mark" }
+    rollback_status: { type: "Progress-Bar", comment: "Interactive bar at bottom of dialog" }

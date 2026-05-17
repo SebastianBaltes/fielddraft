@@ -1,0 +1,134 @@
+ui_structure:
+  header_global_system:
+    type: Header-Container
+    description: "Zentrale Steuerung für Dokument-Management und Cloud-Synchronisation."
+    elements:
+      logo_home: { type: Icon, label: "Onshape Logo", action: "Dashboard-Return" }
+      document_menu: 
+        type: Dropdown-Button
+        label: "Document Menu (Hamburger)"
+        actions: [Rename, Copy, Units, Print, Workspace settings]
+        comment: "Hier werden die grundlegenden Dokumenteinstellungen (z.B. Millimeter vs. Inch) verwaltet."
+      breadcrumb_nav:
+        type: Breadcrumb
+        elements:
+          - { name: "Dummy", type: "Document-Name", status: "Editable" }
+          - { name: "Main", type: "Workspace-Badge", tooltip: "Current Workspace" }
+      version_and_history:
+        type: Toolbar-Group
+        elements:
+          - { icon: "Graph", tooltip: "Manage versions and history", comment: "Einzigartige Onshape-Funktion für Git-ähnliches Branching." }
+          - { icon: "Clock", tooltip: "Show history", comment: "Erlaubt das 'Zurückrollen' der Zeit im Dokument." }
+      collaboration_status:
+        type: Display-Group
+        elements:
+          - { icon: "Link", tooltip: "Copy workspace link" }
+          - { icon: "Comment", label: "0", tooltip: "Comments" }
+          - { icon: "Users", label: "0", tooltip: "Share status/Active users" }
+      system_utilities:
+        type: Toolbar-Group
+        elements:
+          - { icon: "S", label: "Standard", tooltip: "Onshape Standard App" }
+          - { icon: "{}", tooltip: "FeatureScript", comment: "Editor für benutzerdefinierte CAD-Features." }
+          - { label: "Explore Onshape", type: "Search-Button" }
+          - { icon: "Bell", label: "1", tooltip: "Notifications" }
+      primary_actions:
+        type: Button-Group
+        elements:
+          - { label: "App Store", icon: "Grid" }
+          - { label: "Learning Center", icon: "Graduation-Cap" }
+          - { label: "Share", style: "Primary-Blue", comment: "Zentrales Element für granulare Team-Berechtigungen." }
+      user_account: { type: Profile-Dropdown, label: "Sebastian Baltes" }
+
+  main_toolbar_part_studio:
+    type: Contextual-Toolbar
+    description: "Die Haupt-Werkzeugleiste (ändert sich je nachdem, ob man im Sketch- oder Part-Modus ist)."
+    groups:
+      creation_sketch:
+        - { label: "Sketch", hotkey: "S", icon: "Pencil", tooltip: "Create a new sketch" }
+      solid_primitive_features:
+        - { label: "Extrude", hotkey: "Shift+E", tooltip: "Add or remove material along a path" }
+        - { label: "Revolve", tooltip: "Create feature by revolving around an axis" }
+        - { label: "Sweep", tooltip: "Drive a profile along a path" }
+        - { label: "Loft", tooltip: "Blend between two or more profiles" }
+        - { label: "Thicken", tooltip: "Add thickness to a surface" }
+      finishing_tools:
+        - { label: "Fillet", hotkey: "F", tooltip: "Round edges" }
+        - { label: "Chamfer", tooltip: "Bevel edges" }
+        - { label: "Draft", tooltip: "Apply taper to faces" }
+        - { label: "Shell", tooltip: "Hollow out a part" }
+        - { label: "Hole", tooltip: "Create standardized holes" }
+      patterns_and_transform:
+        - { label: "Linear Pattern", tooltip: "Repeat features in a line" }
+        - { label: "Mirror", tooltip: "Reflect features across a plane" }
+        - { label: "Boolean", tooltip: "Join, subtract, or intersect parts" }
+        - { label: "Split", tooltip: "Divide parts or faces" }
+        - { label: "Transform", tooltip: "Move, rotate, or scale parts" }
+      construction_geometry:
+        - { label: "Plane", tooltip: "Create a construction plane" }
+        - { label: "Helix", tooltip: "Create a spiral curve" }
+        - { label: "Mate Connector", tooltip: "Define coordinate systems for future assembly" }
+      search:
+        - { type: "Search-Input", placeholder: "Search tools...", hotkey: "Alt+C" }
+
+  sidebar_left_feature_tree:
+    type: Multi-Panel-Sidebar
+    description: "Der 'Geist' des Modells - enthält die gesamte parametrische Historie."
+    sub_elements:
+      utility_icons_far_left:
+        - { icon: "Document-Elements", active: true }
+        - { icon: "Versions-History" }
+        - { icon: "Properties" }
+        - { icon: "Appearance-Manager" }
+      feature_list_container:
+        header: { label: "Features (4)", controls: ["Folder", "Rollback-Bar", "Search"] }
+        filter_box: { type: "Search", placeholder: "Filter by name or type" }
+        tree_items:
+          - folder: "Default geometry"
+            children:
+              - { name: "Origin", type: "Point", icons: ["Eye (Show/Hide)"] }
+              - { name: "Top", type: "Plane", icons: ["Eye"] }
+              - { name: "Front", type: "Plane", icons: ["Eye"] }
+              - { name: "Right", type: "Plane", icons: ["Eye"] }
+      parts_list_container:
+        header: { label: "Parts (0)", controls: ["Visibility-All"] }
+        comment: "Hier erscheinen Festkörper, sobald die erste Extrusion erfolgt."
+
+  graphics_area_3d:
+    type: Viewport
+    description: "Der interaktive 3D-Canvas."
+    overlay_elements:
+      view_cube:
+        type: Navigation-Widget
+        labels: [Top, Front, Right, Back, Left, Bottom]
+        comment: "Inklusive Hotspots für Ecken und Kanten zur präzisen Kameraausrichtung."
+      orientation_menu:
+        type: Dropdown
+        label: "Isometric", icon: "Cube-Outline"
+      display_style:
+        type: Dropdown
+        label: "Shaded", options: [Hidden lines removed, Wireframe, Section view]
+      scene_geometry:
+        - { label: "Front Plane", interaction: "Selectable/Highlightable" }
+        - { label: "Right Plane", interaction: "Selectable/Highlightable" }
+        - { label: "Top Plane", interaction: "Selectable/Highlightable" }
+        - { label: "Origin", interaction: "Snap-Point" }
+
+  sidebar_right_utility:
+    type: Floating-Icon-Bar
+    elements:
+      - { icon: "Configuration", tooltip: "Configuration panel", comment: "Erlaubt das Erstellen von Varianten (z.B. verschiedene Längen)." }
+      - { icon: "Table", tooltip: "Custom tables" }
+      - { icon: "Appearance", tooltip: "Appearance panel" }
+
+  footer_navigation:
+    type: Navigation-Bar
+    elements:
+      add_tab_button: { type: "Icon-Plus", tooltip: "Insert new element" }
+      tab_list:
+        - { label: "Part Studio 1", type: "Modeling-Env", active: true, icon: "S" }
+        - { label: "Assembly 1", type: "Assembly-Env", active: false, icon: "A" }
+      analysis_tools_right:
+        - { icon: "Tape-Measure", label: "Measure", tooltip: "Measure entities (Hotkey: M)" }
+        - { icon: "Mass-Properties", tooltip: "Display mass properties" }
+        - { icon: "Conflict-Detector", tooltip: "Performance monitor" }

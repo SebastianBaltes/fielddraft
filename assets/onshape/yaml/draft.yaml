@@ -1,0 +1,55 @@
+draft_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Draft 1" }
+    tabs:
+      - Neutral_plane: { status: "Active" }
+      - Parting_line: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Neutral_plane:
+        parameters:
+          pull_direction: { type: "Selection-Input", label: "Pull direction", comment: "Optional, defaults to Neutral Plane normal", mate_connector_invokable: true }
+          neutral_plane: { type: "Selection-Input", label: "Neutral plane", mate_connector_invokable: true }
+          entities_to_draft: { type: "Selection-Input", label: "Entities to draft", mate_connector_invokable: true }
+          draft_angle: 
+            type: "Angle-Input"
+            default: "3 deg"
+            has_toggle: { type: "Icon-Button", icon: "Opposite-Arrows", tooltip: "Opposite direction" }
+        options:
+          tangent_propagation: { type: "Checkbox", default: true }
+          reapply_fillet: { type: "Checkbox", default: false }
+
+      Parting_line:
+        parameters:
+          pull_direction: { type: "Selection-Input", label: "Pull direction", mate_connector_invokable: true }
+          parting_lines: { type: "Selection-Input", label: "Parting lines", mate_connector_invokable: true }
+          entities_to_draft: { type: "Selection-Input", label: "Entities to draft", mate_connector_invokable: true }
+          sides_selection:
+            type: "Dropdown"
+            options:
+              One_sided:
+                reveals: [draft_angle_1]
+              Symmetric:
+                reveals: [draft_angle_1]
+                comment: "Same angle applies to both sides of parting line"
+              Two_sided:
+                reveals: [draft_angle_1, draft_angle_2]
+          draft_angle_1: 
+            type: "Angle-Input"
+            label: "Draft angle"
+            has_toggle: { type: "Icon-Button", icon: "Opposite-Arrows" }
+          draft_angle_2: 
+            type: "Angle-Input"
+            label: "Second draft angle"
+            visible_with: "Two_sided"
+            has_toggle: { type: "Icon-Button", icon: "Opposite-Arrows" }
+        options:
+          parting_line_propagation: { type: "Checkbox", default: true, note: "Renamed from Tangent Propagation" }
+          reapply_fillet: { type: "Checkbox", default: false }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

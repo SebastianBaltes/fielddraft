@@ -1,0 +1,80 @@
+implicit_mate_connector_dialog:
+  header:
+    title: "Mate connector"
+    type: "feature-sub-dialog"
+    actions:
+      - close_button: { type: "Button", icon: "X" }
+
+  parameters:
+    origin_type:
+      id: "originType"
+      type: "Enum-Dropdown"
+      label: "Origin type"
+      current_value: "On entity"
+      options: [On entity, Between entities, etc.]
+
+    origin_entity:
+      id: "originQuery"
+      type: "Selection-Input"
+      label: "Origin entity"
+      example_value: "Edge of Sketch 3"
+
+    realign_toggle:
+      id: "realign"
+      type: "Checkbox"
+      label: "Realign"
+      reveals_if_checked:
+        primary_axis: { type: "Selection-Input", label: "Primary axis entity" }
+        secondary_axis: { type: "Selection-Input", label: "Secondary axis entity" }
+
+    move_toggle:
+      id: "transform"
+      type: "Checkbox"
+      label: "Move"
+      reveals_if_checked:
+        translation_x:
+          id: "translationX"
+          type: "Quantity-Input"
+          icon: "XYZ-Icons-AlongX"
+          tooltip: "X translation"
+          default: "0 cm"
+        translation_y:
+          id: "translationY"
+          type: "Quantity-Input"
+          icon: "XYZ-Icons-AlongY"
+          tooltip: "Y translation"
+          default: "0 cm"
+        translation_z:
+          id: "translationZ"
+          type: "Quantity-Input"
+          icon: "XYZ-Icons-AlongZ"
+          tooltip: "Z translation"
+          default: "0 cm"
+        rotation_axis:
+          id: "rotationType"
+          type: "Enum-Dropdown"
+          label: "Rotation axis"
+          current_value: "Rotate about X"
+        rotation_angle:
+          id: "rotation"
+          type: "Quantity-Input"
+          label: "Rotation angle"
+          default: "0 deg"
+
+    axis_controls:
+      flip_primary:
+        id: "flipPrimary"
+        type: "Icon-Button"
+        icon: "flip-direction-opposite"
+        tooltip: "Flip primary axis"
+      reorient_secondary:
+        id: "secondaryAxisType"
+        type: "Icon-Button"
+        icon: "realign-mate-dialog"
+        tooltip: "Reorient secondary axis"
+
+  footer:
+    help:
+      type: "Help-Link"
+      url_anchor: "mateconnector"
+      icon: "help-button"

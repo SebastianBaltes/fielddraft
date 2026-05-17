@@ -1,0 +1,51 @@
+helix_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Helix 1" }
+    tabs:
+      - Cylinder_Cone: { status: "Active" }
+      - Axis: { status: "Inactive" }
+      - Circle: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    common_parameters:
+      input_type:
+        type: "Dropdown"
+        options:
+          Turns: { reveals: [revolutions_field] }
+          Pitch: { reveals: [pitch_field] }
+          Turns_and_pitch: { reveals: [revolutions_field, pitch_field] }
+      direction:
+        type: "Dropdown"
+        options: [Clockwise, Counter_clockwise]
+      options:
+        show_profiles: { type: "Checkbox", label: "Show start and end profiles", default: false }
+
+    tabs:
+      Cylinder_Cone:
+        parameters:
+          reference: { type: "Selection-Input", label: "Conical or cylindrical face", mate_connector_invokable: true }
+          opposite_direction: { type: "Icon-Button", icon: "Flip" }
+      
+      Axis:
+        parameters:
+          helix_axis: { type: "Selection-Input", label: "Helix axis", mate_connector_invokable: true }
+          start_condition:
+            type: "Dropdown"
+            options:
+              Start_angle: { reveals: [angle_input, start_radius_input] }
+              Start_point: { reveals: [point_selection], mate_connector_invokable: true }
+      
+      Circle:
+        parameters:
+          circular_edge: { type: "Selection-Input", label: "Circular edge", mate_connector_invokable: true }
+          end_condition:
+            type: "Dropdown"
+            options:
+              Height: { reveals: [height_input] }
+              End_point: { reveals: [point_selection], mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

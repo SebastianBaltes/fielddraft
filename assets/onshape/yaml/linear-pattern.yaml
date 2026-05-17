@@ -1,0 +1,52 @@
+linear_pattern_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Linear pattern 1" }
+    pattern_type:
+      type: "Dropdown"
+      options:
+        Part_pattern: { entities_label: "Entities to pattern", shows_boolean_modes: true }
+        Feature_pattern: { entities_label: "Features to pattern", reveals: [reapply_features_checkbox] }
+        Face_pattern: { entities_label: "Faces to pattern" }
+    actions:
+      - ok_button: { type: "Button", icon: "Check" }
+      - cancel_button: { type: "Button", icon: "X" }
+
+  state_matrix:
+    modes:
+      visible_if: "Type: Part_pattern"
+      options: [New, Add, Remove, Intersect]
+    
+    direction_1:
+      label: "Direction 1"
+      elements:
+        direction_input: { type: "Selection-Input", label: "Direction", mate_connector_invokable: true }
+        distance: { type: "Distance-Input", label: "Distance", default: "25 mm" }
+        instance_count: { type: "Number-Input", label: "Instance count", default: "2" }
+        centered: { type: "Checkbox", label: "Centered", default: false }
+        flip_direction: { type: "Icon-Button", icon: "Opposite-Arrow" }
+
+    direction_2:
+      checkbox: "Second direction"
+      reveals_if_checked:
+        direction_input: { type: "Selection-Input", label: "Direction", mate_connector_invokable: true }
+        distance: { type: "Distance-Input", label: "Distance", default: "25 mm" }
+        instance_count: { type: "Number-Input", label: "Instance count", default: "1" }
+        centered: { type: "Checkbox", label: "Centered", default: false }
+        flip_direction: { type: "Icon-Button", icon: "Opposite-Arrow" }
+
+    options:
+      reapply_features: { type: "Checkbox", visible_if: "Type: Feature_pattern", default: true }
+      skip_instances:
+        type: "Checkbox"
+        label: "Skip instances"
+        reveals_if_checked:
+          instances_to_skip: { type: "Selection-Input", label: "Instances to skip", mate_connector_invokable: true }
+      
+      merge_options:
+        visible_if: "Mode: [Add, Remove, Intersect]"
+        elements:
+          merge_with_all: { type: "Checkbox", default: true }
+          merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

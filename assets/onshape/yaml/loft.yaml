@@ -1,0 +1,78 @@
+loft_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Loft 1" }
+    tabs:
+      - Solid: { status: "Active" }
+      - Surface: { status: "Inactive" }
+      - Thin: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Solid:
+        modes: [New, Add, Remove, Intersect]
+        parameters:
+          profiles: { type: "Selection-List", label: "Profiles", comment: "Ordered list of sections", mate_connector_invokable: true }
+          
+          start_end_conditions:
+            start_condition:
+              type: "Dropdown"
+              options:
+                None: { reveals: [] }
+                Normal_to_profile: { reveals: [start_magnitude] }
+                Tangent_to_profile: { reveals: [start_magnitude] }
+                Match_tangent: { reveals: [adjacent_faces, start_magnitude], mate_connector_invokable: true }
+                Match_curvature: { reveals: [adjacent_faces, start_magnitude], mate_connector_invokable: true }
+                Normal_direction: { reveals: [direction_selection, start_magnitude], mate_connector_invokable: true }
+                Tangent_direction: { reveals: [direction_selection, start_magnitude], mate_connector_invokable: true }
+            end_condition:
+              type: "Dropdown"
+              options: "Same logic as start_condition"
+          
+          guides_and_continuity:
+            checkbox: "Guides and continuity"
+            reveals_if_checked:
+              guides: { type: "Selection-List", label: "Guides", mate_connector_invokable: true }
+              continuity: { type: "Dropdown", per_guide: true, options: [G0, G1, G2] }
+          
+          path_section:
+            checkbox: "Path"
+            reveals_if_checked:
+              path_entities: { type: "Selection-Input", label: "Edges, curves and sketches", mate_connector_invokable: true }
+              section_count: { type: "Number-Input", default: "5" }
+
+          connections_header:
+            type: "Expandable-Section"
+            label: "Connections"
+            reveals:
+              match_connections: { type: "Checkbox" }
+              connections_list: { type: "Selection-List", visible_if: "match_connections: True", mate_connector_invokable: true }
+
+          merge_options:
+            visible_if: "Mode: [Add, Remove, Intersect]"
+            elements:
+              merge_with_all: { type: "Checkbox", default: true }
+              merge_scope: { type: "Selection-Input", visible_if: "Merge with all: False", mate_connector_invokable: true }
+
+      Surface:
+        modes: [New, Add]
+        parameters:
+          profiles: { type: "Selection-List" }
+          trim_profiles: { type: "Checkbox", default: false }
+          trim_guides: { type: "Checkbox", visible_if: "Guides active" }
+
+      Thin:
+        modes: [New, Add, Remove, Intersect]
+        parameters:
+          mid_plane: { type: "Checkbox", default: false }
+          thickness_1: { type: "Distance-Input" }
+          thickness_2: { type: "Distance-Input", visible_if: "Mid plane: False" }
+          trim_profiles: { type: "Checkbox" }
+          trim_ends: { type: "Checkbox" }
+
+  footer:
+    isocurves: { type: "Checkbox", label: "Show isocurves" }
+    diagnostic_tools: { type: "Button", icon: "Pencil-Magnifier" }
+    help: { type: "Button", icon: "Question-Mark" }

@@ -1,0 +1,40 @@
+chamfer_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Chamfer 1" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    parameters:
+      entities_to_chamfer: { type: "Selection-Input", label: "Entities to chamfer", mate_connector_invokable: true }
+      
+      measurement:
+        type: "Dropdown"
+        options:
+          Offset: { comment: "Measures distance from the imaginary intersection point" }
+          Tangent: { comment: "Measures distance along the adjacent faces" }
+
+      chamfer_type:
+        type: "Dropdown"
+        options:
+          Equal_distance:
+            reveals: [distance_input]
+          Two_distances:
+            reveals: [distance_1_input, distance_2_input, flip_direction_button]
+          Distance_and_angle:
+            reveals: [distance_input, angle_input, flip_direction_button]
+
+      numerical_inputs:
+        distance: { type: "Distance-Input", label: "Distance" }
+        distance_1: { type: "Distance-Input", label: "Distance 1" }
+        distance_2: { type: "Distance-Input", label: "Distance 2" }
+        angle: { type: "Angle-Input", label: "Angle", default: "45 deg" }
+        flip_direction: { type: "Icon-Button", icon: "Opposite-Arrow", tooltip: "Opposite direction" }
+
+      options:
+        tangent_propagation: { type: "Checkbox", default: true }
+        direction_overrides: { type: "Selection-List", label: "Direction overrides", comment: "Allows flipping direction for specific edges in a set", mate_connector_invokable: true }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }

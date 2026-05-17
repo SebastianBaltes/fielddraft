@@ -1,0 +1,66 @@
+fillet_dialog:
+  header:
+    name_field: { type: "Text-Input", default_value: "Fillet 1" }
+    tabs:
+      - Edge: { status: "Active" }
+      - Full_round: { status: "Inactive" }
+    actions:
+      - ok_button: { type: "Button", color: "Green", icon: "Check" }
+      - cancel_button: { type: "Button", color: "Red", icon: "X" }
+
+  state_matrix:
+    tabs:
+      Edge:
+        parameters:
+          entities_to_fillet: { type: "Selection-Input", label: "Entities to fillet", mate_connector_invokable: true }
+          
+          measurement:
+            type: "Dropdown"
+            options:
+              Radius:
+                reveals: [control, asymmetric_checkbox, partial_fillet_checkbox, variable_fillet_checkbox, overflow_checkbox, smooth_corners_checkbox]
+              Width:
+                reveals: [control, tangent_propagation_checkbox]
+                comment: "Simplifies UI significantly"
+          
+          control:
+            type: "Dropdown"
+            options:
+              Distance: { reveals: [radius_input] }
+              Conic: { reveals: [radius_input, rho_input] }
+              Curvature: { reveals: [radius_input, magnitude_input] }
+          
+          checkbox_expansions:
+            asymmetric:
+              checkbox: "Asymmetric"
+              reveals_if_checked: [second_radius_input]
+            partial_fillet:
+              checkbox: "Partial fillet"
+              reveals_if_checked:
+                - bounds_type: { type: "Dropdown", options: [Offset, Position] }
+                - start_position: { type: "Distance-Input" }
+                - second_bound: 
+                    type: "Checkbox"
+                    reveals_if_checked: [end_position_input]
+            variable_fillet:
+              checkbox: "Variable fillet"
+              reveals_if_checked:
+                - vertices_selection: { type: "Selection-Input", label: "Vertices and points on edges", mate_connector_invokable: true }
+                - smooth_transition: { type: "Checkbox", default: true }
+          
+          options:
+            tangent_propagation: { type: "Checkbox", default: true }
+            allow_edge_overflow: { type: "Checkbox", default: false }
+            smooth_fillet_corners: { type: "Checkbox", default: true }
+
+      Full_round:
+        parameters:
+          side_face_set_1: { type: "Selection-Input", label: "Side face set 1", mate_connector_invokable: true }
+          center_face_set: { type: "Selection-Input", label: "Center face set", mate_connector_invokable: true }
+          side_face_set_2: { type: "Selection-Input", label: "Side face set 2", mate_connector_invokable: true }
+          options:
+            tangent_propagation: { type: "Checkbox", default: true }
+            allow_edge_overflow: { type: "Checkbox", default: false }
+
+  footer:
+    help: { type: "Button", icon: "Question-Mark" }
