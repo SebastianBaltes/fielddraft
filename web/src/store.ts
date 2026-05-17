@@ -1967,6 +1967,7 @@ export class KernelStore {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: replaceFeatureCallParams failed", err);
+      this.setTransientError(formatKernelError(err, "Parameter update failed"));
       return false;
     }
     this.commit();
@@ -1983,7 +1984,7 @@ export class KernelStore {
 
   private static NON_SPINE_KINDS = new Set([
     "sketch", "linear_pattern", "circular_pattern", "mirror",
-    "mate_connector", "imported_mesh", "transform",
+    "mate_connector", "transform", "hole", "fillet_edge",
   ]);
 
   private latestSpineFeature(): FeatureSummary | null {
@@ -2092,12 +2093,17 @@ export class KernelStore {
     return id;
   }
 
-  /** K7.22 UX-fix (7): set a user-visible transient error banner.
-   *  Cleared on the next successful commit. The App renders it in
-   *  the topbar meta area. */
+  private transientErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
   private setTransientError(message: string): void {
+    if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer);
     this.state = { ...this.state, transientError: message };
     for (const listener of this.listeners) listener();
+    this.transientErrorTimer = setTimeout(() => {
+      this.transientErrorTimer = null;
+      this.state = { ...this.state, transientError: null };
+      for (const listener of this.listeners) listener();
+    }, 5000);
   }
 
   // ── K7.2.1: STL export ────────────────────────────────────────

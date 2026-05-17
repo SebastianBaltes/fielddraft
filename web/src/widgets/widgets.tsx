@@ -77,6 +77,63 @@ function Field({
   );
 }
 
+// ─── buffered number input ─────────────────────────────────────
+// type="number" swallows the minus sign on intermediate keystrokes
+// ("-" → empty string → controlled value resets to 0). This
+// component uses type="text" with local state so "-10" works.
+
+function BufferedNumberInput({
+  value,
+  onCommit,
+  ...rest
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+} & Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "value" | "onChange" | "type"
+>) {
+  const display = Number.isFinite(value) ? value : 0;
+  const [raw, setRaw] = useState(String(display));
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setRaw(String(display));
+  }, [display, editing]);
+
+  return (
+    <input
+      {...rest}
+      type="text"
+      inputMode="decimal"
+      value={raw}
+      onChange={(e) => {
+        const s = e.currentTarget.value;
+        setRaw(s);
+        const n = Number(s);
+        if (s.length > 0 && Number.isFinite(n)) {
+          onCommit(n);
+        }
+      }}
+      onFocus={(e) => {
+        setEditing(true);
+        rest.onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setEditing(false);
+        const n = Number(raw);
+        if (Number.isFinite(n)) {
+          onCommit(n);
+          setRaw(String(n));
+        } else {
+          setRaw(String(display));
+        }
+        rest.onBlur?.(e);
+      }}
+    />
+  );
+}
+
 // ─── number ─────────────────────────────────────────────────────
 
 export function NumberWidget({
@@ -89,18 +146,11 @@ export function NumberWidget({
   const id = useId();
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
-      <input
+      <BufferedNumberInput
         id={id}
         className="input"
-        type="number"
-        inputMode="decimal"
         value={Number.isFinite(value) ? value : 0}
-        onChange={(e) => {
-          const n = Number(e.currentTarget.value);
-          if (Number.isFinite(n)) {
-            onChange(n);
-          }
-        }}
+        onCommit={onChange}
       />
     </Field>
   );
@@ -125,20 +175,13 @@ export function Vec2Widget({
     <Field label={label} htmlFor={`${id}-x`} error={error} required={required}>
       <div className="vec3-row">
         {(["x", "y"] as const).map((axis, i) => (
-          <input
+          <BufferedNumberInput
             key={axis}
             id={`${id}-${axis}`}
             className="input"
-            type="number"
-            inputMode="decimal"
             aria-label={`${label} ${axis}`}
             value={Number.isFinite(value[i]) ? value[i] : 0}
-            onChange={(e) => {
-              const n = Number(e.currentTarget.value);
-              if (Number.isFinite(n)) {
-                updateIndex(i as 0 | 1, n);
-              }
-            }}
+            onCommit={(n) => updateIndex(i as 0 | 1, n)}
           />
         ))}
       </div>
@@ -165,20 +208,13 @@ export function Vec3Widget({
     <Field label={label} htmlFor={`${id}-x`} error={error} required={required}>
       <div className="vec3-row">
         {(["x", "y", "z"] as const).map((axis, i) => (
-          <input
+          <BufferedNumberInput
             key={axis}
             id={`${id}-${axis}`}
             className="input"
-            type="number"
-            inputMode="decimal"
             aria-label={`${label} ${axis}`}
             value={Number.isFinite(value[i]) ? value[i] : 0}
-            onChange={(e) => {
-              const n = Number(e.currentTarget.value);
-              if (Number.isFinite(n)) {
-                updateIndex(i as 0 | 1 | 2, n);
-              }
-            }}
+            onCommit={(n) => updateIndex(i as 0 | 1 | 2, n)}
           />
         ))}
       </div>
@@ -266,18 +302,11 @@ export function LengthWidget({
             }
           />
         ) : (
-          <input
+          <BufferedNumberInput
             id={`${id}-value`}
             className="input"
-            type="number"
-            inputMode="decimal"
             value={Number.isFinite(value.value as number) ? (value.value as number) : 0}
-            onChange={(e) => {
-              const n = Number(e.currentTarget.value);
-              if (Number.isFinite(n)) {
-                onChange({ value: n, unit: value.unit });
-              }
-            }}
+            onCommit={(n) => onChange({ value: n, unit: value.unit })}
           />
         )}
         <button
@@ -335,18 +364,11 @@ export function AngleWidget({
   return (
     <Field label={label} htmlFor={`${id}-value`} error={error} required={required}>
       <div className="unit-row">
-        <input
+        <BufferedNumberInput
           id={`${id}-value`}
           className="input"
-          type="number"
-          inputMode="decimal"
           value={Number.isFinite(value.value) ? value.value : 0}
-          onChange={(e) => {
-            const n = Number(e.currentTarget.value);
-            if (Number.isFinite(n)) {
-              onChange({ value: n, unit: value.unit });
-            }
-          }}
+          onCommit={(n) => onChange({ value: n, unit: value.unit })}
         />
         <select
           id={`${id}-unit`}
