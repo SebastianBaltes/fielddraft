@@ -384,13 +384,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "export-stl", priority: 4, group: 1, glyph: "⇩", label: "STL", title: "Export as binary STL", testId: "export-stl", disabled: !hasFeatures, active: false, onClick: () => store.downloadStl() },
     { id: "export-glb", priority: 4, group: 1, glyph: "⇩", label: "GLB", title: "Export as binary GLB (glTF 2.0)", testId: "export-glb", disabled: !hasFeatures, active: false, onClick: () => store.downloadGlb() },
     { id: "export-obj", priority: 4, group: 1, glyph: "⇩", label: "OBJ", title: "Export as Wavefront OBJ", testId: "export-obj", disabled: !hasFeatures, active: false, onClick: () => store.downloadObj() },
-    { id: "export-3mf", priority: 4, group: 1, glyph: "⇩", label: "3MF", title: "Export as 3MF (3D Manufacturing Format)", testId: "export-3mf", disabled: !hasFeatures, active: false, onClick: () => store.download3mf() },
+    { id: "export-3mf", priority: 4, group: 1, glyph: "⇩", label: "3MF", title: "Export as 3MF (3D Manufacturing Format, preserves slicer settings if imported)", testId: "export-3mf", disabled: !hasFeatures, active: false, onClick: () => store.download3mfRoundtrip() },
     { id: "export-step", priority: 5, group: 1, glyph: "⇩", label: "STEP", title: "Export mechanical core as STEP (via OpenCASCADE)", testId: "export-step", disabled: !hasFeatures, active: false, onClick: () => store.downloadStep() },
     // Group 2: File
     { id: "save", priority: 4, group: 2, glyph: "💾", label: "Save", title: "Save project as .fdraft file", testId: "save-project", disabled: false, active: false, onClick: () => store.saveProjectToFile() },
     { id: "open", priority: 4, group: 2, glyph: "📂", label: "Open", title: "Open a .fdraft project file", testId: "load-project", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="load-project-input"]')?.click() },
     { id: "new", priority: 4, group: 2, glyph: "📄", label: "New", title: "New empty project", testId: "new-project", disabled: false, active: false, onClick: () => { if (state.features.length === 0 || confirm("Discard current project?")) store.newProject(); } },
-    { id: "import", priority: 5, group: 2, glyph: "📁", label: "Import", title: "Import STL/OBJ/GLB/STEP file", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
+    { id: "import", priority: 3, group: 2, glyph: "📁", label: "Import", title: "Import STL/OBJ/GLB/STEP file", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
     { id: "convert-solid", priority: 5, group: 2, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
     { id: "assembly", priority: 4, group: 2, glyph: "🔗", label: "Assembly", title: "Enter assembly mode (multi-part scene)", testId: "enter-assembly", disabled: false, active: state.assembly.active, onClick: () => { if (state.assembly.active) store.exitAssembly(); else store.enterAssembly(); } },
     { id: "share", priority: 4, group: 2, glyph: "🔗", label: "Share", title: "Publish and get a shareable link", testId: "share-project", disabled: !hasFeatures || !state.projectId, active: false, onClick: () => store.publishProject() },
@@ -460,14 +460,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
       />
       <input
         type="file"
-        accept=".stl,.glb,.gltf,.obj,.step,.stp"
+        accept=".stl,.glb,.gltf,.obj,.step,.stp,.3mf"
         className="hidden-file-input"
         data-testid="import-stl-input"
         onChange={(e) => {
           const file = e.currentTarget.files?.[0];
           if (!file) return;
           const name = file.name.toLowerCase();
-          if (name.endsWith(".step") || name.endsWith(".stp")) {
+          if (name.endsWith(".3mf")) {
+            file.arrayBuffer().then((buf) => {
+              store.import3mfFile(buf);
+            });
+          } else if (name.endsWith(".step") || name.endsWith(".stp")) {
             file.arrayBuffer().then((buf) => {
               store.importStepFile(buf);
             });

@@ -16,6 +16,8 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@salusoft89/planegcs": "^1.1.7",
+    "fflate": "^0.8.3",
+    "occt-import-js": "^0.0.23",
     "opencascade.js": "^2.0.0-beta.b5ff984",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

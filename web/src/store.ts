@@ -46,6 +46,7 @@ import {
   type IKTarget,
 } from "./assembly";
 import { executeScript } from "./fieldscript";
+import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -171,6 +172,8 @@ export interface StoreState {
   ikMode: boolean;
   /** K7.21h: transform gizmo mode. */
   gizmoMode: "translate" | "rotate" | "scale";
+  /** 3MF roundtrip: stashed slicer metadata from import, used on re-export. */
+  threemfStash: ThreeMfStash | null;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -327,6 +330,7 @@ export class KernelStore {
       assembly: INACTIVE_ASSEMBLY,
       ikMode: false,
       gizmoMode: "translate" as const,
+      threemfStash: null,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -405,6 +409,7 @@ export class KernelStore {
       assembly: this.state.assembly,
       ikMode: false,
       gizmoMode: "translate" as const,
+      threemfStash: this.state.threemfStash,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1970,70 +1975,76 @@ export class KernelStore {
 
   // ── K7.4: extrude convenience ─────────────────────────────────
 
-  /** Find the most recently committed sketch feature (by id)
-   *  or `null` if there isn't one. Used by the toolbar Extrude
-   *  button to pick a default profile. */
   latestSketchId(): number | null {
     const sketches = this.state.features.filter((f) => f.kind === "sketch");
     if (sketches.length === 0) return null;
-    // Ids are monotonic within a document — the highest id is
-    // the most recently added.
     return sketches.reduce((acc, f) => (f.id > acc ? f.id : acc), sketches[0].id);
   }
 
-  /** K8.1: circular-pattern the most recent spine feature
-   *  around the world Y axis at (0, 0, 0) with 6 instances
-   *  over a full 360° sweep. */
+  private static NON_SPINE_KINDS = new Set([
+    "sketch", "linear_pattern", "circular_pattern", "mirror",
+    "mate_connector", "imported_mesh", "transform",
+  ]);
+
+  private latestSpineFeature(): FeatureSummary | null {
+    for (let i = this.state.features.length - 1; i >= 0; i--) {
+      const f = this.state.features[i];
+      if (!KernelStore.NON_SPINE_KINDS.has(f.kind) && !f.suppressed) return f;
+    }
+    return null;
+  }
+
   addCircularPatternOfLatest(): number | null {
-    if (this.state.features.length === 0) return null;
-    const source = this.state.features[this.state.features.length - 1];
+    const source = this.latestSpineFeature();
+    if (!source) {
+      this.setTransientError("Circular Pattern: no valid source feature");
+      return null;
+    }
     let id: number;
     try {
       id = this.kernel.addCircularPattern(source.id, 0, 1, 0, 0, 0, 0, 6, 360);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addCircularPattern failed", err);
+      this.setTransientError(formatKernelError(err, "Circular Pattern failed"));
       return null;
     }
     this.commit(new Set([id]), id);
     return id;
   }
 
-  /** K8.0: pattern the most recent spine feature along +X
-   *  with default count 3 and spacing 60 mm. MVP — a future
-   *  slice grows a pattern-parameter dialog so the user can
-   *  pick direction / count / spacing per call. */
   addLinearPatternOfLatest(): number | null {
-    if (this.state.features.length === 0) return null;
-    // Pick the *last* spine entry as source. Same heuristic
-    // as addExtrudeFromLatestSketch but doesn't filter by
-    // kind — box/sphere/cylinder/extrude all pattern.
-    const source = this.state.features[this.state.features.length - 1];
+    const source = this.latestSpineFeature();
+    if (!source) {
+      this.setTransientError("Linear Pattern: no valid source feature");
+      return null;
+    }
     let id: number;
     try {
       id = this.kernel.addLinearPattern(source.id, 1, 0, 0, 3, 60);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addLinearPattern failed", err);
+      this.setTransientError(formatKernelError(err, "Linear Pattern failed"));
       return null;
     }
     this.commit(new Set([id]), id);
     return id;
   }
 
-  /** K8.2: mirror the most recent spine feature through the
-   *  world YZ plane (normal `+X`, point at origin). MVP — a
-   *  future slice pops a dialog so the user can pick the
-   *  mirror plane. */
   addMirrorOfLatest(): number | null {
-    if (this.state.features.length === 0) return null;
-    const source = this.state.features[this.state.features.length - 1];
+    const source = this.latestSpineFeature();
+    if (!source) {
+      this.setTransientError("Mirror: no valid source feature");
+      return null;
+    }
     let id: number;
     try {
       id = this.kernel.addMirror(source.id, 1, 0, 0, 0, 0, 0);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addMirror failed", err);
+      this.setTransientError(formatKernelError(err, "Mirror failed"));
       return null;
     }
     this.commit(new Set([id]), id);
@@ -2158,6 +2169,65 @@ export class KernelStore {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+
+  /** Import a .3mf file: extract meshes as CSG solids, stash
+   *  slicer metadata for roundtrip re-export. */
+  import3mfFile(buffer: ArrayBuffer): number[] {
+    const result = import3mf(buffer);
+    const ids: number[] = [];
+    for (const mesh of result.meshes) {
+      const id = this.kernel.addImportedMesh(
+        mesh.positions,
+        mesh.indices,
+        BoolOpTag.Union,
+      );
+      ids.push(id);
+    }
+    this.state = { ...this.state, threemfStash: result.stash };
+    if (ids.length > 0) {
+      this.commit(new Set(ids), ids[0]);
+    } else {
+      this.notify();
+    }
+    return ids;
+  }
+
+  /** Re-export as 3MF, preserving stashed slicer metadata from the
+   *  last import. Falls back to normal 3MF export if no stash exists. */
+  download3mfRoundtrip(filename = "fielddraft.3mf"): void {
+    if (
+      typeof window === "undefined" ||
+      typeof document === "undefined" ||
+      typeof URL === "undefined" ||
+      typeof URL.createObjectURL !== "function"
+    ) {
+      return;
+    }
+    const stash = this.state.threemfStash;
+    if (!stash) {
+      this.download3mf(filename);
+      return;
+    }
+    const kernelZip = this.kernel.export3mf();
+    const copy = new Uint8Array(kernelZip.length);
+    copy.set(kernelZip);
+    const modelXmlOnly = extractModelXml(copy);
+    const bytes = export3mfRoundtrip(modelXmlOnly, stash);
+    const blobData = new Uint8Array(bytes.length);
+    blobData.set(bytes);
+    const blob = new Blob([blobData as unknown as BlobPart], {
+      type: "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
 
   /** M14c: export the mechanical core of the scene as STEP via
    *  the OCCT Web Worker. Lazy-loads opencascade.js (~25 MB)
