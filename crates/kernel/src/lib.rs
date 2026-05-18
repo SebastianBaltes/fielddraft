@@ -3451,6 +3451,44 @@ mod tests {
         assert!((after_arr[0].as_f64().unwrap() - 25.0).abs() < 1e-5);
     }
 
+    #[test]
+    fn replace_feature_call_params_preserves_blend_radius_through_sync() {
+        let mut k = Kernel::new();
+        let id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_UNION,
+                0.0, 0.0, 0.0,
+                10.0, 10.0, 10.0,
+            )
+            .unwrap();
+
+        let new_params = serde_json::json!({
+            "half_extents": [10.0, 10.0, 10.0],
+            "center": [0.0, 0.0, 0.0],
+            "translate": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": 1.0,
+            "op": "union",
+            "blend_radius": 5.0,
+            "twist_rate": 0.3,
+        });
+        k.replace_feature_call_params(id, &new_params.to_string())
+            .unwrap();
+
+        let after = k.get_feature_call_params(id).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert!((v["blend_radius"].as_f64().unwrap() - 5.0).abs() < 1e-5);
+        assert!((v["twist_rate"].as_f64().unwrap() - 0.3).abs() < 1e-5);
+
+        let json = k.to_json().unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let calls = doc["feature_calls"].as_array().unwrap();
+        let call = calls.iter().find(|c| c["id"] == id).unwrap();
+        assert!((call["params"]["blend_radius"].as_f64().unwrap() - 5.0).abs() < 1e-5);
+        assert!((call["params"]["twist_rate"].as_f64().unwrap() - 0.3).abs() < 1e-5);
+    }
+
     // ─── primitive mutations + undo/redo ─────────────────────────────
 
     #[test]

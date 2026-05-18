@@ -728,7 +728,7 @@ impl FeatureCall {
         let scale = f.transform.scale;
         let name = &f.name;
 
-        let params = match &f.primitive {
+        let mut params = match &f.primitive {
             Primitive::Box {
                 center,
                 half_extents,
@@ -871,6 +871,30 @@ impl FeatureCall {
                 "name": name,
             }),
         };
+
+        if let serde_json::Value::Object(ref mut map) = params {
+            if f.blend_radius != 0.0 {
+                map.insert("blend_radius".into(), f.blend_radius.into());
+            }
+            if f.chamfer_size != 0.0 {
+                map.insert("chamfer_size".into(), f.chamfer_size.into());
+            }
+            if f.twist_rate != 0.0 {
+                map.insert("twist_rate".into(), f.twist_rate.into());
+            }
+            if f.bend_rate != 0.0 {
+                map.insert("bend_rate".into(), f.bend_rate.into());
+            }
+            if f.displace_depth != 0.0 {
+                map.insert("displace_depth".into(), f.displace_depth.into());
+            }
+            if f.displace_freq != 0.0 {
+                map.insert("displace_freq".into(), f.displace_freq.into());
+            }
+            if f.shell_thickness != 0.0 {
+                map.insert("shell_thickness".into(), f.shell_thickness.into());
+            }
+        }
 
         Self {
             type_name: type_name.to_string(),
@@ -1238,6 +1262,35 @@ mod tests {
         assert_eq!(call.params["radius"], serde_json::json!(1.5));
         assert_eq!(call.params["half_height"], serde_json::json!(10.0));
         assert_eq!(call.params["op"], serde_json::json!("intersect"));
+    }
+
+    #[test]
+    fn from_spine_feature_preserves_advanced_fields() {
+        let feature = Feature {
+            id: FeatureId::from_u32(1),
+            name: "Blended".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [10.0, 10.0, 10.0],
+            },
+            transform: Transform::IDENTITY,
+            blend_radius: 3.5,
+            chamfer_size: 0.0,
+            twist_rate: 0.25,
+            bend_rate: 0.0,
+            displace_depth: 2.0,
+            displace_freq: 0.5,
+            shell_thickness: 1.0,
+        };
+        let call = FeatureCall::from_spine_feature(&feature);
+        assert!((call.params["blend_radius"].as_f64().unwrap() - 3.5).abs() < 1e-5);
+        assert!((call.params["twist_rate"].as_f64().unwrap() - 0.25).abs() < 1e-5);
+        assert!((call.params["displace_depth"].as_f64().unwrap() - 2.0).abs() < 1e-5);
+        assert!((call.params["displace_freq"].as_f64().unwrap() - 0.5).abs() < 1e-5);
+        assert!((call.params["shell_thickness"].as_f64().unwrap() - 1.0).abs() < 1e-5);
+        assert!(call.params.get("chamfer_size").is_none());
+        assert!(call.params.get("bend_rate").is_none());
     }
 
     #[test]

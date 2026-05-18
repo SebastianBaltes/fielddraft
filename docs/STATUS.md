@@ -149,7 +149,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 
 | Ref | Meilenstein | Feature | Status | Beschreibung |
 |-----|-------------|---------|--------|--------------|
-| K12 | K12 | Analytisches Gewinde | ✅ | Helix-SDF Thread-Primitiv |
+| K12 | K12 | Analytisches Gewinde | ✅ | Helix-SDF Thread-Primitiv (Bug #1 fix: `fc77aee` — Cosine-Profil statt broken groove intersection) |
 | K12.1 | K12 | GLB-Export | ✅ | glTF 2.0 Binary Export |
 | K12.2 | K12 | Metrische Thread-Presets | ✅ | M3–M12 Dropdown |
 | K13.0 | K13 | mesh_sdf Modul | ✅ | Triangle-Distance + Ray-Parity Sign |
@@ -309,3 +309,9 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 - ✅ **M14i** — STEP Import: OCCT Worker liest STEP via `STEPControl_Reader`, tesselliert mit `BRepMesh_IncrementalMesh`, extrahiert Dreiecke per `TopExp_Explorer`/`BRep_Tool.Triangulation`, übergibt an K13 `MeshSdf`. Toolbar akzeptiert `.step/.stp`. Round-Trip Playwright E2E-Test (Export → Import → Feature).
 
 **M14 ist vollständig.** Nächster Schritt: P4 (Masse/Kollision/Toolpaths) oder M14+ (Loft, Curved Patterns).
+
+### 8. Bugfixes (laufend)
+
+- ✅ **Bug #19/#24** — STEP-Export: `writeStep()` schrieb alle Shape-Handles statt nur Root-Shapes. Fix: consumed-handle Set, nur unverbrauchte Shapes transferieren (`7ffdf92`).
+- ✅ **Bug #1** — Thread-SDF: Groove-Intersection-Formel war mathematisch fehlerhaft (`depth > 0.5*pitch` für alle ISO-Presets → SDF permanent positiv → 0 DC-Dreiecke). Fix: Cosine-Profil-SDF, r_profile oszilliert zwischen nominal_radius und nominal_radius−depth (`fc77aee`).
+- ✅ **Bug #11** — `updateFeatureParams` Race Condition: `sync_feature_calls()` → `from_spine_feature()` hat advanced Feature-Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) beim Rebuild der wire-form FeatureCalls nicht serialisiert. Ergebnis: Params gehen nach `replaceFeatureCallParams` → `rebuild_packed` verloren. Fix: `from_spine_feature()` merged non-zero advanced fields in die params-JSON.
