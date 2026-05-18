@@ -16,7 +16,7 @@ import {
 import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
-import { FeatureDialog } from "./widgets/FeatureDialog";
+import { FeatureDialog, FEATURE_TYPE_LABELS } from "./widgets/FeatureDialog";
 import {
   buildDefaultDefinition,
   type FeatureSchema,
@@ -79,6 +79,29 @@ const SKETCH_SUB_GLYPH: Record<string, string> = {
   sketch_constraint_midpoint: "◆",
   sketch_constraint_symmetric: "⇿",
 };
+
+const PLANE_QUERY_LABELS: Record<string, string> = {
+  "qCreatedBy(origin_plane_xy)": "XY Plane",
+  "qCreatedBy(origin_plane_xz)": "XZ Plane",
+  "qCreatedBy(origin_plane_yz)": "YZ Plane",
+};
+
+function formatPlaneQuery(query: string | null): string {
+  if (!query) return "—";
+  if (PLANE_QUERY_LABELS[query]) return PLANE_QUERY_LABELS[query];
+  const match = query.match(/^qCreatedBy\((.+)\)$/);
+  if (match) return match[1].replace(/_/g, " ");
+  return query;
+}
+
+function prettifyFeatureName(name: string, kind: string): string {
+  const prettyKind = FEATURE_TYPE_LABELS[kind];
+  if (!prettyKind) return name;
+  if (name === kind) return prettyKind;
+  const suffix = name.startsWith(kind + " ") ? name.slice(kind.length) : null;
+  if (suffix) return prettyKind + suffix;
+  return name;
+}
 
 const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_point: "Point",
@@ -263,12 +286,25 @@ export function Outliner({ store, state }: OutlinerProps) {
     }
   }
 
-  // K7.5: committing a dialog change writes back through the
-  // store, which re-runs regeneration. The commit bumps the
-  // store version, which forces a re-render and a new
-  // `selectedFeature` reference. The `draftKey` equality
-  // guard above prevents the reload from clobbering an
-  // in-progress edit because the feature id hasn't changed.
+  // Resync dialogDraft when the store's params change externally
+  // (e.g. JS API call from DevTools). The features array reference
+  // only changes on commit(), so this check fires exactly when the
+  // kernel mutated — not on selection changes or mesh updates.
+  const prevFeaturesRef = useRef(state.features);
+  if (
+    state.features !== prevFeaturesRef.current &&
+    draftKey === lastDraftKey &&
+    selectedFeature &&
+    selectedSchema
+  ) {
+    try {
+      const storeParams = store.getFeatureParams(selectedFeature.id);
+      if (JSON.stringify(storeParams) !== JSON.stringify(dialogDraft)) {
+        setDialogDraft(storeParams);
+      }
+    } catch { /* ignore */ }
+  }
+  prevFeaturesRef.current = state.features;
   const handleDialogChange = (next: Record<string, unknown>) => {
     setDialogDraft(next);
     if (!selectedFeature) return;
@@ -525,7 +561,7 @@ export function Outliner({ store, state }: OutlinerProps) {
               className="plane-query"
               data-testid="sketch-session-plane"
             >
-              {sketchSession.planeQuery ?? "—"}
+              {formatPlaneQuery(sketchSession.planeQuery)}
             </span>
           </div>
           {sketchSession.selectedTool && sketchToolSchema ? (
@@ -898,7 +934,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                       onBlur={commitRename}
                     />
                   ) : (
-                    <span className="feature-name">{feature.name}</span>
+                    <span className="feature-name">{prettifyFeatureName(feature.name, feature.kind)}</span>
                   )}
                   {feature.kind === "sketch" ? (
                     <button
@@ -1014,13 +1050,13 @@ function PartTree({ store, state }: { store: KernelStore; state: StoreState }) {
       </div>
       <ul className="list">
         {bodies.map((body, index) => {
-          const seedFeature = state.features.find((f) => f.id === body.id);
+          const seedFeature = state.features.find((f) => f.id === body.seedId);
           const name = seedFeature?.name ?? `Body ${index + 1}`;
           const kind = seedFeature?.kind ?? "body";
           const selected = seedFeature ? selection.has(seedFeature.id) : false;
           return (
             <li
-              key={body.id}
+              key={`${body.id}-${index}`}
               className={"row" + (selected ? " is-selected" : "")}
               data-testid={`part-row-${body.id}`}
               onClick={(e) => {
@@ -1412,8 +1448,13 @@ function ConstraintManagerPanel({
 
   if (constraintEntries.length === 0) return null;
 
-  const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
-  const dof = countDegreesOfFreedom(skState);
+  let dof = 0;
+  try {
+    const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
+    dof = countDegreesOfFreedom(skState);
+  } catch {
+    // Malformed sub-calls (e.g. after undo) — fall back to 0 DoF.
+  }
   const dofLabel =
     dof > 0 ? `Under-constrained (${dof} DoF)` :
     dof === 0 ? "Fully constrained" :
