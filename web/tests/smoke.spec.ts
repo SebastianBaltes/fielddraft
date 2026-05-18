@@ -375,8 +375,7 @@ test.describe("FieldDraft smoke", () => {
     const circularBtn = page.getByTestId("circular-pattern-latest");
     await expect(circularBtn).toBeDisabled();
 
-    // Add a box (the default add-box stagger offsets it
-    // along +X) and circular-pattern it around Y.
+    // Add a box and circular-pattern it around Y.
     await page.evaluate(() => { (window as unknown as { __fdStore?: { addPrimitive: (k: string) => void } }).__fdStore?.addPrimitive("box"); });
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     await expect(circularBtn).toBeEnabled();

@@ -859,14 +859,8 @@ export class KernelStore {
     return id;
   }
 
-  /** K8.9: append a hole feature at the next per-add stagger
-   *  position. Defaults to a 6 mm through-hole 40 mm deep. */
   addHole(diameterMm = 6, depthMm = 40): number {
-    const offset: [number, number, number] = [
-      this.state.features.length * 80,
-      0,
-      0,
-    ];
+    const offset: [number, number, number] = [0, 0, 0];
     let id: number;
     try {
       id = this.kernel.addHole(
@@ -890,18 +884,7 @@ export class KernelStore {
     op: BoolOpTagValue = this.state.nextOp,
     translate?: [number, number, number],
   ): number {
-    // Default sizes are tuned to be clearly readable inside the
-    // ~600 mm build volume, and the per-add stagger pulls each new
-    // feature off the previous one so freshly clicked primitives
-    // aren't hidden inside their predecessors. The `translate`
-    // override is used by the viewport drag-drop path to place the
-    // primitive where the user dropped the icon, not at the
-    // stagger offset.
-    const offset: [number, number, number] = translate ?? [
-      this.state.features.length * 80,
-      0,
-      0,
-    ];
+    const offset: [number, number, number] = translate ?? [0, 0, 0];
     let id: number;
     switch (kind) {
       case "box":

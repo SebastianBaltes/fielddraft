@@ -39,7 +39,7 @@ import { createKernelMeshMaterial } from "./meshMaterial";
 import type { PickResult } from "./kernel";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
-import { consumeViewCommand, VIEW_PRESETS } from "./viewCommands";
+import { consumeViewCommand, peekViewCommand, registerInvalidate, VIEW_PRESETS } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import {
   publishPickCamera,
@@ -79,6 +79,7 @@ interface BodyEntry {
  */
 function KernelMesh() {
   const { state } = useKernelStore();
+  const invalidate = useThree((s) => s.invalidate);
   const sketchActive = state?.sketchSession.active ?? false;
 
   // K6b.3 opening: ghost all body materials while a sketch
@@ -171,6 +172,13 @@ function KernelMesh() {
     }
   });
 
+  // After the body set changes (add/remove), React re-renders to
+  // mount/unmount <mesh> elements. With frameloop="demand" no frame
+  // is auto-scheduled for the new scene graph, so we must invalidate.
+  useEffect(() => {
+    if (bodySetVersion > 0) invalidate();
+  }, [bodySetVersion, invalidate]);
+
   // Dispose everything on unmount.
   useEffect(() => {
     return () => {
@@ -194,6 +202,10 @@ function KernelMesh() {
       depthWrite: false,
     });
   }
+
+  useEffect(() => {
+    return () => { wireMatRef.current?.dispose(); };
+  }, []);
 
   // Active body id for selection highlight.
   const { store: kernelStore } = useKernelStore();
@@ -505,11 +517,14 @@ function collectSketchLineSegments(
       }
       case "sketch_polygon": {
         const verts = p.vertices;
-        if (Array.isArray(verts) && verts.length >= 2) {
+        if (Array.isArray(verts) && verts.length >= 4) {
           const points: [number, number][] = [];
-          for (const v of verts) {
-            const xy = getVec2(v);
-            if (xy) points.push(xy);
+          for (let i = 0; i + 1 < verts.length; i += 2) {
+            const x = Number(verts[i]);
+            const y = Number(verts[i + 1]);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+              points.push([x, y]);
+            }
           }
           for (let i = 0; i < points.length; i++) {
             const a = points[i];
@@ -523,8 +538,9 @@ function collectSketchLineSegments(
         const c = getVec2(p.center);
         const r = getNum(p.radius);
         const a0 = getNum(p.start_angle);
-        const a1 = getNum(p.end_angle);
-        if (c && r !== null && r > 0 && a0 !== null && a1 !== null) {
+        const sweep = getNum(p.sweep_angle);
+        if (c && r !== null && r > 0 && a0 !== null && sweep !== null) {
+          const a1 = a0 + sweep;
           const steps = Math.max(8, Math.ceil((Math.abs(a1 - a0) / Math.PI) * 32));
           let prev: [number, number] = [
             c[0] + r * Math.cos(a0),
@@ -779,20 +795,20 @@ function EdgeOverlay() {
     new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 1 }),
   );
   const cachedVersionRef = useRef(-1);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (!store || !state || state.meshedBodies.length === 0) return;
-    // Only recompute when the mesh has actually changed.
+    if (!store || !state || state.meshedBodies.length === 0) {
+      setReady(false);
+      return;
+    }
     const version = store.kernel.meshVersion();
     if (version === cachedVersionRef.current) return;
     cachedVersionRef.current = version;
     try {
       const edges = store.kernel.detectEdges();
       if (edges.length === 0) {
-        geometryRef.current.setAttribute(
-          "position",
-          new THREE.BufferAttribute(new Float32Array(0), 3),
-        );
+        setReady(false);
         return;
       }
       const positions = new Float32Array(edges.length * 6);
@@ -808,10 +824,21 @@ function EdgeOverlay() {
         "position",
         new THREE.BufferAttribute(positions, 3),
       );
+      geometryRef.current.computeBoundingSphere();
+      setReady(true);
     } catch {
-      // Edge detection may fail on empty scenes.
+      setReady(false);
     }
   }, [store, state?.meshedBodies]);
+
+  useEffect(() => {
+    return () => {
+      geometryRef.current.dispose();
+      materialRef.current.dispose();
+    };
+  }, []);
+
+  if (!ready) return null;
 
   return (
     <lineSegments
@@ -824,6 +851,33 @@ function EdgeOverlay() {
 
 /** K9.6: render mate connectors as small axis triads. */
 /** P1: render assembly part instances as positioned mesh groups. */
+function AssemblyPartBody({ body, isSelected }: {
+  body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+  isSelected: boolean;
+}) {
+  const geometry = useMemo(() => {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+    geom.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
+    geom.setIndex(new THREE.BufferAttribute(body.indices, 1));
+    geom.computeBoundingSphere();
+    return geom;
+  }, [body.positions, body.normals, body.indices]);
+
+  useEffect(() => {
+    return () => geometry.dispose();
+  }, [geometry]);
+
+  return (
+    <mesh geometry={geometry}>
+      <meshStandardMaterial
+        color={isSelected ? "#6366f1" : "#94a3b8"}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
 function AssemblyParts() {
   const { state } = useKernelStore();
   const assembly = state?.assembly;
@@ -839,20 +893,13 @@ function AssemblyParts() {
             position={part.transform.translate}
             rotation={rot}
           >
-            {part.meshBodies.map((body, i: number) => {
-              const geom = new THREE.BufferGeometry();
-              geom.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
-              geom.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
-              geom.setIndex(new THREE.BufferAttribute(body.indices, 1));
-              return (
-                <mesh key={i} geometry={geom}>
-                  <meshStandardMaterial
-                    color={part.id === assembly.selectedPartId ? "#6366f1" : "#94a3b8"}
-                    side={THREE.DoubleSide}
-                  />
-                </mesh>
-              );
-            })}
+            {part.meshBodies.map((body, i: number) => (
+              <AssemblyPartBody
+                key={`${part.id}-body-${i}`}
+                body={body}
+                isSelected={part.id === assembly.selectedPartId}
+              />
+            ))}
           </group>
         );
       })}
@@ -867,9 +914,14 @@ function MateConnectorOverlay() {
   useEffect(() => {
     const group = groupRef.current;
     if (!group || !state) return;
-    // Clear previous children.
+    // Clear previous children — dispose GPU resources to prevent leaks.
     while (group.children.length > 0) {
-      group.remove(group.children[0]);
+      const child = group.children[0];
+      group.remove(child);
+      if (child instanceof THREE.LineSegments) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
     }
     // Find mate_connector features.
     const connectors = state.features.filter(
@@ -925,9 +977,46 @@ function MateConnectorOverlay() {
         // Skip if params can't be read.
       }
     }
+    return () => {
+      if (!group) return;
+      while (group.children.length > 0) {
+        const child = group.children[0];
+        group.remove(child);
+        if (child instanceof THREE.LineSegments) {
+          child.geometry.dispose();
+          (child.material as THREE.Material).dispose();
+        }
+      }
+    };
   }, [store, state?.features]);
 
   return <group ref={groupRef} />;
+}
+
+function ClearColorSync() {
+  const gl = useThree((s) => s.gl);
+  const invalidate = useThree((s) => s.invalidate);
+
+  useEffect(() => {
+    const apply = () => {
+      const bg = getComputedStyle(document.documentElement)
+        .getPropertyValue("--color-bg")
+        .trim();
+      if (bg) {
+        gl.setClearColor(new THREE.Color(bg), 1);
+        invalidate();
+      }
+    };
+    apply();
+    const obs = new MutationObserver(apply);
+    obs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => obs.disconnect();
+  }, [gl, invalidate]);
+
+  return null;
 }
 
 function WorldGrid() {
@@ -945,6 +1034,10 @@ function ReferenceMesh() {
   const { state } = useKernelStore();
   const ref = useRef<THREE.Mesh>(null);
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
+
+  useEffect(() => {
+    return () => { geometry.dispose(); };
+  }, [geometry]);
 
   useEffect(() => {
     const mesh = state?.referenceMesh;
@@ -976,19 +1069,32 @@ function ReferenceMesh() {
 }
 
 function ViewCommandConsumer() {
-  const { camera, controls } = useThree();
-  useFrame(() => {
-    const cmd = consumeViewCommand();
-    if (!cmd) return;
+  const controlsRef = useRef<THREE.EventDispatcher | null>(null);
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    registerInvalidate(invalidate);
+    return () => registerInvalidate(() => {});
+  }, [invalidate]);
+  useFrame(({ camera, controls }) => {
+    if (controls) controlsRef.current = controls as unknown as THREE.EventDispatcher;
+    if (!peekViewCommand()) return;
+    const ctrl = controlsRef.current as unknown as {
+      target?: THREE.Vector3;
+      object?: THREE.Camera;
+      update?: () => void;
+    } | null;
+    if (!ctrl) return;
+    const cmd = consumeViewCommand()!;
     const preset = VIEW_PRESETS[cmd];
     camera.position.set(...preset.position);
     camera.up.set(...preset.up);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
-    const orbit = controls as { target?: THREE.Vector3; update?: () => void } | null;
-    if (orbit?.target) {
-      orbit.target.set(0, 0, 0);
-      orbit.update?.();
+    if (ctrl.target) {
+      ctrl.target.set(0, 0, 0);
+    }
+    if (ctrl.update) {
+      ctrl.update();
     }
   });
   return null;
@@ -1182,7 +1288,12 @@ export function Viewport() {
 
     // Fillet mode: click on a surface → find nearest edge →
     // create fillet_edge feature.
-    if (state?.filletMode && click?.hit && click.contributors.length >= 2) {
+    if (state?.filletMode) {
+      if (!click?.hit) return;
+      if (click.contributors.length < 2) {
+        store.showTransientError("Fillet requires an edge between two features — click where two bodies meet.");
+        return;
+      }
       const a = click.contributors[0];
       const b = click.contributors[1];
       if (a > 0 && b > 0) {
@@ -1237,14 +1348,8 @@ export function Viewport() {
     if (kind) {
       type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
       const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism", "ellipsoid"];
-      // K7.22 UX-fix: place the new primitive where the user
-      // actually dropped the icon. The hover pick probe has been
-      // publishing the world-space hit point into `pickResult`
-      // throughout the drag, so using its `point` lands the
-      // primitive under the cursor when it's over an existing
-      // body or surface. For drops on empty space we fall back to
-      // the previous stagger-offset behaviour (the store does that
-      // automatically when `translate` is undefined).
+      // Place the new primitive where the user dropped the icon.
+      // For drops on empty space, translate is undefined → origin.
       const translate: [number, number, number] | undefined = pickResult?.hit
         ? [pickResult.point[0], pickResult.point[1], pickResult.point[2]]
         : undefined;
@@ -1300,10 +1405,13 @@ export function Viewport() {
               antialias: true,
             });
             await renderer.init();
-            renderer.setClearColor(new THREE.Color("#f6f6f4"), 1);
             return renderer;
           }}
+          onCreated={(rootState) => {
+            rootState.invalidate();
+          }}
         >
+          <ClearColorSync />
           <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
           <ReferenceMesh />
           <EdgeOverlay />
