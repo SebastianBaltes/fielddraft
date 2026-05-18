@@ -330,8 +330,8 @@ impl Aabb {
                 min: [-1000.0; 3],
                 max: [1000.0; 3],
             },
-            Primitive::Thread { nominal_radius, depth, half_height, .. } => {
-                let r = *nominal_radius + *depth;
+            Primitive::Thread { nominal_radius, half_height, .. } => {
+                let r = *nominal_radius;
                 let hh = *half_height;
                 Self {
                     min: [-r, -hh, -r],
@@ -841,21 +841,21 @@ impl CsgNode {
                 is_difference,
             } => {
                 let da = a.sdf(p, mode);
-                let db = if *is_difference { -b.sdf(p, mode) } else { b.sdf(p, mode) };
+                let db_raw = b.sdf(p, mode);
                 match mode {
                     EvalMode::Logical => {
-                        if *is_difference { da.max(-db) } else { da.min(db) }
+                        if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
                     }
                     EvalMode::Visual => {
                         let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
                         if mask_d < 0.0 {
                             if *is_difference {
-                                -blend_min(-da, db, *blend_radius, *blend_mode)
+                                -blend_min(-da, db_raw, *blend_radius, *blend_mode)
                             } else {
-                                blend_min(da, db, *blend_radius, *blend_mode)
+                                blend_min(da, db_raw, *blend_radius, *blend_mode)
                             }
                         } else {
-                            if *is_difference { da.max(-db) } else { da.min(db) }
+                            if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
                         }
                     }
                 }
@@ -1009,9 +1009,9 @@ impl CsgNode {
                         let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
                         if mask_d < 0.0 {
                             let d = if *is_difference {
-                                -blend_min(-da, db, *blend_radius, *blend_mode)
+                                -blend_min(-da, db_raw, *blend_radius, *blend_mode)
                             } else {
-                                blend_min(da, db, *blend_radius, *blend_mode)
+                                blend_min(da, db_raw, *blend_radius, *blend_mode)
                             };
                             let mut c = ca;
                             c.extend(cb);

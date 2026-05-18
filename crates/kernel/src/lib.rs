@@ -245,18 +245,12 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
         Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
             let theta = p[2].atan2(p[0]);
-            // Unwrap helix: map (y, theta) to a linear phase
             let y_unwrapped = p[1] - *pitch * theta / std::f32::consts::TAU;
-            // Distance to nearest thread crest (periodic)
-            let phase = ((y_unwrapped / pitch).rem_euclid(1.0) - 0.5).abs() * pitch;
-            // Axial bounds
+            let phase = (y_unwrapped / pitch) * std::f32::consts::TAU;
+            let r_profile = *nominal_radius - *depth * 0.5 * (1.0 - phase.cos());
+            let d_radial = r - r_profile;
             let d_axial = p[1].abs() - *half_height;
-            // Cylinder surface + thread groove
-            let d_radial = r - *nominal_radius;
-            let d_groove = phase - *depth;
-            // Thread = cylinder intersected with groove pattern, bounded axially
-            let d_thread = d_radial.max(-d_groove);
-            d_thread.max(d_axial)
+            d_radial.max(d_axial)
         }
         Primitive::Cone { r_bottom, r_top, half_height } => {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
@@ -403,10 +397,10 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
             out[5] = *thickness;
         }
         Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
+            out[3] = *half_height;
             out[4] = *nominal_radius;
             out[5] = *pitch;
             out[6] = *depth;
-            out[7] = *half_height;
         }
         Primitive::Cone { r_bottom, r_top, half_height } => {
             out[4] = *r_bottom;
@@ -2002,6 +1996,7 @@ impl Kernel {
     ///   - box      → (half_x, half_y, half_z)
     ///   - sphere   → (radius, _, _)
     ///   - cylinder → (radius, half_height, _)
+    ///   - thread   → (nominal_radius, pitch, depth)  half_height defaults to 5
     #[wasm_bindgen(js_name = addPrimitive)]
     pub fn add_primitive(
         &mut self,
@@ -2466,15 +2461,43 @@ impl Kernel {
     /// and the wasm-bindgen bridge should always gate the call on
     /// `bodyCount()`.
     ///
-    /// K4.5.1 compat shim: the return type stays `u32` because every
-    /// id this slice issues is still flat-numeric. A later slice that
-    /// introduces prefix-style ids will move this to `String`.
+    /// Flat-numeric ids pass through as-is. Hierarchical ids
+    /// (pattern clones like "3.1") are hashed to a unique u32 with
+    /// the high bit set so they never collide with flat counters.
     #[wasm_bindgen(js_name = bodyId)]
     pub fn body_id(&self, i: usize) -> u32 {
-        self.bodies[i]
-            .id
-            .as_u32_if_flat()
-            .expect("K4.5.1 body ids are still flat-numeric")
+        let id = &self.bodies[i].id;
+        match id.as_u32_if_flat() {
+            Some(n) => n,
+            None => {
+                let s = id.to_string();
+                let mut h: u32 = 0x811c_9dc5;
+                for b in s.as_bytes() {
+                    h ^= *b as u32;
+                    h = h.wrapping_mul(0x0100_0193);
+                }
+                h | 0x8000_0000
+            }
+        }
+    }
+
+    /// Root feature id that seeded this body. For flat-numeric
+    /// bodies this equals `bodyId`; for pattern clones it returns
+    /// the pattern feature's flat id so the UI can look up the
+    /// feature name even though `bodyId` is a unique hash.
+    #[wasm_bindgen(js_name = bodySeedFeatureId)]
+    pub fn body_seed_feature_id(&self, i: usize) -> u32 {
+        let id = &self.bodies[i].id;
+        match id.as_u32_if_flat() {
+            Some(n) => n,
+            None => {
+                let mut root = id;
+                while let Some(parent) = root.parent() {
+                    root = parent;
+                }
+                root.as_u32_if_flat().unwrap_or(0)
+            }
+        }
     }
 
     /// Per-body version counter. Bumps only when the body's own
@@ -2693,18 +2716,23 @@ impl Kernel {
                 // stable.
                 // Serialise contributor ids as bare integers to stay
                 // byte-compatible with the K2 frontend parser that
-                // expects `contributors: number[]`. K4.5.1 still only
-                // produces flat-numeric ids, so the `expect` never
-                // fires; when a future slice introduces hierarchical
-                // ids the JSON schema will have to widen to strings.
+                // expects `contributors: number[]`. For hierarchical
+                // ids, walk up to the root and use its numeric value.
                 let mut contributors = String::from("[");
                 for (i, id) in hit.contributors.as_slice().iter().enumerate() {
                     if i > 0 {
                         contributors.push(',');
                     }
-                    let flat = id
-                        .as_u32_if_flat()
-                        .expect("K4.5.1 pick hit has flat-numeric contributors");
+                    let flat = match id.as_u32_if_flat() {
+                        Some(n) => n,
+                        None => {
+                            let mut root = id;
+                            while let Some(parent) = root.parent() {
+                                root = parent;
+                            }
+                            root.as_u32_if_flat().unwrap_or(0)
+                        }
+                    };
                     contributors.push_str(&flat.to_string());
                 }
                 contributors.push(']');
