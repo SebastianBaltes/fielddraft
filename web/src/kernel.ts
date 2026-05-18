@@ -68,7 +68,7 @@ export const BoolOpTag = {
 export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
 export type BoolOpName = "union" | "difference" | "intersect";
-export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
+export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid" | "hole" | "linear_pattern" | "circular_pattern";
 /** K6b.3a: the kernel's `listFeatures` can now return entries
  *  whose kind is a non-primitive feature type like "sketch" or
  *  "extrude". The outliner handles them generically by keying
@@ -78,9 +78,6 @@ export type FeatureKindName =
   | "sketch"
   | "extrude"
   | "revolve"
-  | "hole"
-  | "linear_pattern"
-  | "circular_pattern"
   | "mirror"
   | "mate_connector"
   | "fillet_edge"
@@ -120,6 +117,19 @@ async function ensureInit(): Promise<WasmExports> {
 export class Kernel {
   private readonly inner: WasmKernel;
   private readonly memory: WebAssembly.Memory;
+  private mutating = false;
+
+  private guardMut<T>(fn: () => T): T {
+    if (this.mutating) {
+      throw new Error("Kernel: re-entrant mutation rejected (would cause WASM RefCell panic)");
+    }
+    this.mutating = true;
+    try {
+      return fn();
+    } finally {
+      this.mutating = false;
+    }
+  }
 
   private constructor(inner: WasmKernel, memory: WebAssembly.Memory) {
     this.inner = inner;
@@ -200,6 +210,10 @@ export class Kernel {
     return this.inner.bodyId(i);
   }
 
+  bodySeedFeatureId(i: number): number {
+    return this.inner.bodySeedFeatureId(i);
+  }
+
   bodyVersion(i: number): number {
     return this.inner.bodyVersion(i);
   }
@@ -256,6 +270,9 @@ export class Kernel {
     origin: [number, number, number],
     direction: [number, number, number],
   ): PickResult {
+    if (origin.some(Number.isNaN) || direction.some(Number.isNaN)) {
+      return { hit: false } as PickResult;
+    }
     const json = this.inner.pick(
       origin[0],
       origin[1],
@@ -264,7 +281,11 @@ export class Kernel {
       direction[1],
       direction[2],
     );
-    return JSON.parse(json) as PickResult;
+    try {
+      return JSON.parse(json) as PickResult;
+    } catch {
+      return { hit: false } as PickResult;
+    }
   }
 
   meshResolution(): number {
@@ -537,7 +558,7 @@ export class Kernel {
     op: BoolOpTagValue,
     tz = 0,
   ): number {
-    return this.inner.addExtrude(sketchId, depthMm, op, tz);
+    return this.guardMut(() => this.inner.addExtrude(sketchId, depthMm, op, tz));
   }
 
   /** K7.2: serialise the current scene as ASCII STL. */

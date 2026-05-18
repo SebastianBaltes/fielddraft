@@ -931,6 +931,22 @@ export class KernelStore {
       case "ellipsoid":
         id = this.kernel.addEllipsoid(op, offset, 40, 25, 30);
         break;
+      case "hole":
+        return this.addHole();
+      case "linear_pattern": {
+        const pid = this.addLinearPatternOfLatest();
+        if (pid == null) throw new Error("linear_pattern: no valid source feature");
+        return pid;
+      }
+      case "circular_pattern": {
+        const pid = this.addCircularPatternOfLatest();
+        if (pid == null) throw new Error("circular_pattern: no valid source feature");
+        return pid;
+      }
+      default: {
+        const _exhaustive: never = kind;
+        throw new Error(`addPrimitive: unknown kind "${_exhaustive}"`);
+      }
     }
     this.commit(new Set([id]), id);
     return id;
