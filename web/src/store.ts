@@ -363,6 +363,7 @@ export class KernelStore {
       this.state = {
         ...this.state,
         meshedBodies: this.snapshotMainThreadBodies(),
+        sceneSize: this.kernel.sceneAabb().size as [number, number, number],
       };
     }
   }
@@ -408,7 +409,7 @@ export class KernelStore {
       mateMode: false,
       assembly: this.state.assembly,
       ikMode: false,
-      gizmoMode: "translate" as const,
+      gizmoMode: this.state.gizmoMode,
       threemfStash: this.state.threemfStash,
     };
     // Drop selection entries pointing at deleted features.
@@ -514,6 +515,7 @@ export class KernelStore {
     this.state = {
       ...this.state,
       meshedBodies: data.bodies,
+      sceneSize: this.kernel.sceneAabb().size as [number, number, number],
     };
     for (const listener of this.listeners) listener();
     if (this.workerRebuildQueued) {
@@ -537,6 +539,7 @@ export class KernelStore {
     for (let i = 0; i < count; i++) {
       out.push({
         id: this.kernel.bodyId(i),
+        seedId: this.kernel.bodySeedFeatureId(i),
         version: this.kernel.bodyVersion(i),
         positions: this.kernel.bodyPositionsView(i).slice(),
         normals: this.kernel.bodyNormalsView(i).slice(),
@@ -621,9 +624,8 @@ export class KernelStore {
   }
 
   /** K9.2: load a GLB/glTF file as a visual reference mesh.
-   *  Uses Three.js GLTFLoader to parse, extracts the first
-   *  geometry, and feeds it to the same referenceMesh state
-   *  as STL import. */
+   *  Uses Three.js GLTFLoader to parse, merges all mesh
+   *  geometries into one combined referenceMesh. */
   async loadReferenceGlb(buffer: ArrayBuffer): Promise<boolean> {
     try {
       const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
@@ -634,32 +636,65 @@ export class KernelStore {
         },
       );
 
-      let found = false;
+      type GeoLike = { getAttribute: (n: string) => { array: ArrayLike<number>; count: number } | null; getIndex: () => { array: ArrayLike<number> } | null };
+      const allPos: Float32Array[] = [];
+      const allNor: Float32Array[] = [];
+      const allIdx: Uint32Array[] = [];
+      let vertexOffset = 0;
+
       gltf.scene.traverse((child: unknown) => {
-        if (found) return;
-        const mesh = child as { isMesh?: boolean; geometry?: { getAttribute: (n: string) => { array: ArrayLike<number>; count: number } | null; getIndex: () => { array: ArrayLike<number> } | null } };
+        const mesh = child as { isMesh?: boolean; geometry?: GeoLike };
         if (!mesh.isMesh || !mesh.geometry) return;
         const posAttr = mesh.geometry.getAttribute("position");
         if (!posAttr || posAttr.count === 0) return;
 
-        const positions = new Float32Array(posAttr.array as ArrayLike<number>);
+        const pos = new Float32Array(posAttr.array as ArrayLike<number>);
         const normalAttr = mesh.geometry.getAttribute("normal");
-        const normals = normalAttr
+        const nor = normalAttr
           ? new Float32Array(normalAttr.array as ArrayLike<number>)
-          : new Float32Array(positions.length);
+          : new Float32Array(pos.length);
         const indexAttr = mesh.geometry.getIndex();
-        const indices = indexAttr
+        const rawIdx = indexAttr
           ? new Uint32Array(indexAttr.array as ArrayLike<number>)
           : new Uint32Array(Array.from({ length: posAttr.count }, (_, i) => i));
 
-        this.state = {
-          ...this.state,
-          referenceMesh: { positions, normals, indices },
-        };
-        this.notify();
-        found = true;
+        if (vertexOffset > 0) {
+          const offset = new Uint32Array(rawIdx.length);
+          for (let i = 0; i < rawIdx.length; i++) offset[i] = rawIdx[i] + vertexOffset;
+          allIdx.push(offset);
+        } else {
+          allIdx.push(rawIdx);
+        }
+        allPos.push(pos);
+        allNor.push(nor);
+        vertexOffset += posAttr.count;
       });
-      return found;
+
+      if (allPos.length === 0) return false;
+
+      const totalPosLen = allPos.reduce((s, a) => s + a.length, 0);
+      const totalIdxLen = allIdx.reduce((s, a) => s + a.length, 0);
+      const positions = new Float32Array(totalPosLen);
+      const normals = new Float32Array(totalPosLen);
+      const indices = new Uint32Array(totalIdxLen);
+      let pOff = 0;
+      for (let i = 0; i < allPos.length; i++) {
+        positions.set(allPos[i], pOff);
+        normals.set(allNor[i], pOff);
+        pOff += allPos[i].length;
+      }
+      let iOff = 0;
+      for (const idx of allIdx) {
+        indices.set(idx, iOff);
+        iOff += idx.length;
+      }
+
+      this.state = {
+        ...this.state,
+        referenceMesh: { positions, normals, indices },
+      };
+      this.notify();
+      return true;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: loadReferenceGlb failed", err);
@@ -1130,6 +1165,7 @@ export class KernelStore {
       );
     } catch (err) {
       console.error("fielddraft: addFilletAtEdge failed", err);
+      this.setTransientError(formatKernelError(err, "Fillet failed"));
       return null;
     }
     this.commit(new Set([id]), id);
@@ -2095,6 +2131,10 @@ export class KernelStore {
 
   private transientErrorTimer: ReturnType<typeof setTimeout> | null = null;
 
+  showTransientError(message: string): void {
+    this.setTransientError(message);
+  }
+
   private setTransientError(message: string): void {
     if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer);
     this.state = { ...this.state, transientError: message };
@@ -2435,6 +2475,7 @@ export class KernelStore {
     // Fresh sketch draft: drop on cancel / finish-with-empty.
     if (session.subCalls.length === 0) {
       this.exitSketch();
+      this.setTransientError("Sketch discarded — add geometry before finishing.");
       return null;
     }
     let id: number | null = null;
@@ -2446,6 +2487,8 @@ export class KernelStore {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addSketch failed", err);
+      this.setTransientError(formatKernelError(err, "Sketch commit failed"));
+      this.exitSketch();
       return null;
     }
     // Commit goes through the standard store `commit` path so
