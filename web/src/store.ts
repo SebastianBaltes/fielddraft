@@ -1243,11 +1243,11 @@ export class KernelStore {
     const id = allocateAssemblyId();
     const partName = name ?? `Part ${asm.document.parts.length + 1}`;
 
-    // Mesh the part using the store's kernel (save/restore current state).
     let meshBodies: AssemblyMeshedBody[] = [];
     let mateConnectors: import("./assembly").MateConnectorDef[] = [];
+    const savedJson = this.kernel.toJson();
+    const wasSyncOff = this.kernel.setSyncMeshing(true);
     try {
-      const savedJson = this.kernel.toJson();
       this.kernel.loadJson(documentJson);
       const bodyCount = this.kernel.bodyCount();
       for (let i = 0; i < bodyCount; i++) {
@@ -1257,7 +1257,6 @@ export class KernelStore {
           indices: this.kernel.bodyIndicesView(i).slice(),
         });
       }
-      // Extract mate connectors from the part's features
       const features = JSON.parse(this.kernel.toJson()).feature_calls ?? [];
       for (const fc of features) {
         if (fc.type === "mate_connector" && fc.params) {
@@ -1270,10 +1269,11 @@ export class KernelStore {
           });
         }
       }
-      // Restore the original document
-      this.kernel.loadJson(savedJson);
     } catch {
       // Meshing failed — add the part with empty meshes
+    } finally {
+      this.kernel.loadJson(savedJson);
+      if (wasSyncOff) this.kernel.setSyncMeshing(false);
     }
 
     const newPart: AssemblyPartInstance = {
