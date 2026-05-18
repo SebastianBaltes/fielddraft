@@ -105,23 +105,25 @@ function post(msg: StepWorkerMessage, transfer?: Transferable[]): void {
 
 self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
   if (e.data.type === "export-step") {
+    const shapes = new Map<string, unknown>();
     try {
       await ensureOcct();
       post({ type: "step-progress", phase: "Building B-Rep geometry..." });
 
-      const shapes = new Map<string, unknown>();
       for (const cmd of e.data.commands) {
         const shape = executeCommand(cmd, shapes);
         if (shape) shapes.set(cmd.handle, shape);
       }
 
-      post({ type: "step-progress", phase: "Writing STEP file..." });
-      const stepBytes = writeStep(shapes);
-
-      // Clean up OCCT shapes
-      for (const s of shapes.values()) {
-        try { (s as { delete(): void }).delete(); } catch { /* already freed */ }
+      const consumed = new Set<string>();
+      for (const cmd of e.data.commands) {
+        if ("a" in cmd) consumed.add((cmd as { a: string }).a);
+        if ("b" in cmd) consumed.add((cmd as { b: string }).b);
+        if ("source" in cmd) consumed.add((cmd as { source: string }).source);
       }
+
+      post({ type: "step-progress", phase: "Writing STEP file..." });
+      const stepBytes = writeStep(shapes, consumed);
 
       post(
         { type: "step-result", data: stepBytes },
@@ -132,6 +134,10 @@ self.onmessage = async (e: MessageEvent<StepWorkerRequest>) => {
         type: "step-error",
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      for (const s of shapes.values()) {
+        try { (s as { delete(): void }).delete(); } catch { /* already freed */ }
+      }
     }
   } else if (e.data.type === "import-step") {
     try {
@@ -273,7 +279,7 @@ function makeExtrude(cmd: { wirePts: number[]; depth: number; cx: number; cy: nu
   trsf.SetTranslation_1(new oc.gp_Vec_4(cmd.cx, cmd.cy, cmd.cz));
   const moved = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
   const result = moved.Shape();
-  face.delete(); prism.delete(); trsf.delete(); moved.delete();
+  wire.delete(); face.delete(); prism.delete(); trsf.delete(); moved.delete();
   return result;
 }
 
@@ -288,26 +294,32 @@ function makeRevolve(cmd: { wirePts: number[]; angle: number; cx: number; cy: nu
     face.Face(), axis, cmd.angle, true,
   );
   const shape = revol.Shape();
-  face.delete(); axis.delete(); revol.delete();
+  wire.delete(); face.delete(); axis.delete(); revol.delete();
   return shape;
 }
 
 function wireFromPoints(pts: number[]): unknown {
-  const wire = new oc.BRepBuilderAPI_MakeWire_1();
+  const builder = new oc.BRepBuilderAPI_MakeWire_1();
   const count = pts.length / 2;
   for (let i = 0; i < count; i++) {
     const j = (i + 1) % count;
     const p1 = new oc.gp_Pnt_3(pts[i * 2], pts[i * 2 + 1], 0);
     const p2 = new oc.gp_Pnt_3(pts[j * 2], pts[j * 2 + 1], 0);
     const edge = new oc.BRepBuilderAPI_MakeEdge_3(p1, p2);
-    wire.Add_1(edge.Edge());
+    builder.Add_1(edge.Edge());
     p1.delete(); p2.delete(); edge.delete();
   }
-  return wire.Wire();
+  const wire = builder.Wire();
+  builder.delete();
+  return wire;
 }
 
 function boolOp(kind: "fuse" | "cut" | "common", a: unknown, b: unknown): unknown {
-  if (!a || !b) return a ?? b;
+  if (!a || !b) {
+    if (kind === "fuse") return a ?? b;
+    if (kind === "cut") return a ?? null;
+    return null;
+  }
   const progress = new oc.Message_ProgressRange_1();
   let maker;
   switch (kind) {
@@ -321,11 +333,15 @@ function boolOp(kind: "fuse" | "cut" | "common", a: unknown, b: unknown): unknow
       maker = new oc.BRepAlgoAPI_Common_3(a, b, progress);
       break;
   }
-  maker.Build(new oc.Message_ProgressRange_1());
-  const shape = maker.Shape();
-  progress.delete();
-  maker.delete();
-  return shape;
+  const buildProgress = new oc.Message_ProgressRange_1();
+  try {
+    maker.Build(buildProgress);
+    return maker.Shape();
+  } finally {
+    buildProgress.delete();
+    progress.delete();
+    maker.delete();
+  }
 }
 
 function applyTransform(
@@ -356,11 +372,12 @@ function applyTransform(
 
 // ─── STEP writer ───────────────────────────────────────────────
 
-function writeStep(shapes: Map<string, unknown>): Uint8Array {
+function writeStep(shapes: Map<string, unknown>, consumed: Set<string>): Uint8Array {
   const writer = new oc.STEPControl_Writer_1();
   const progress = new oc.Message_ProgressRange_1();
 
-  for (const [, shape] of shapes) {
+  for (const [handle, shape] of shapes) {
+    if (consumed.has(handle)) continue;
     writer.Transfer(
       shape,
       oc.STEPControl_StepModelType.STEPControl_AsIs,
