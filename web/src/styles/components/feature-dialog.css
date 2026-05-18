@@ -124,10 +124,25 @@
     outline-offset: 1px;
   }
 
-  & .vec3-row {
+  & .vec-row {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: var(--space-2);
+  }
+
+  & .vec-cell {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  & .axis-tag {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+    font-weight: var(--fw-medium);
+    flex-shrink: 0;
+    line-height: 1;
   }
 
   & .unit-row {

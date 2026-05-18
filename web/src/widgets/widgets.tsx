@@ -173,16 +173,18 @@ export function Vec2Widget({
   };
   return (
     <Field label={label} htmlFor={`${id}-x`} error={error} required={required}>
-      <div className="vec3-row">
+      <div className="vec-row">
         {(["x", "y"] as const).map((axis, i) => (
-          <BufferedNumberInput
-            key={axis}
-            id={`${id}-${axis}`}
-            className="input"
-            aria-label={`${label} ${axis}`}
-            value={Number.isFinite(value[i]) ? value[i] : 0}
-            onCommit={(n) => updateIndex(i as 0 | 1, n)}
-          />
+          <div key={axis} className="vec-cell">
+            <span className="axis-tag">{axis.toUpperCase()}</span>
+            <BufferedNumberInput
+              id={`${id}-${axis}`}
+              className="input"
+              aria-label={`${label} ${axis}`}
+              value={Number.isFinite(value[i]) ? value[i] : 0}
+              onCommit={(n) => updateIndex(i as 0 | 1, n)}
+            />
+          </div>
         ))}
       </div>
     </Field>
@@ -206,16 +208,18 @@ export function Vec3Widget({
   };
   return (
     <Field label={label} htmlFor={`${id}-x`} error={error} required={required}>
-      <div className="vec3-row">
+      <div className="vec-row">
         {(["x", "y", "z"] as const).map((axis, i) => (
-          <BufferedNumberInput
-            key={axis}
-            id={`${id}-${axis}`}
-            className="input"
-            aria-label={`${label} ${axis}`}
-            value={Number.isFinite(value[i]) ? value[i] : 0}
-            onCommit={(n) => updateIndex(i as 0 | 1 | 2, n)}
-          />
+          <div key={axis} className="vec-cell">
+            <span className="axis-tag">{axis.toUpperCase()}</span>
+            <BufferedNumberInput
+              id={`${id}-${axis}`}
+              className="input"
+              aria-label={`${label} ${axis}`}
+              value={Number.isFinite(value[i]) ? value[i] : 0}
+              onCommit={(n) => updateIndex(i as 0 | 1 | 2, n)}
+            />
+          </div>
         ))}
       </div>
     </Field>
@@ -588,6 +592,19 @@ export function GroupHeader({
  * dialog's definition via `onChange`. The widget then drops its
  * focus automatically.
  */
+const QUERY_DISPLAY_LABELS: Record<string, string> = {
+  "qCreatedBy(origin_plane_xy)": "XY Plane",
+  "qCreatedBy(origin_plane_xz)": "XZ Plane",
+  "qCreatedBy(origin_plane_yz)": "YZ Plane",
+};
+
+function formatQueryDisplay(raw: string): string {
+  if (QUERY_DISPLAY_LABELS[raw]) return QUERY_DISPLAY_LABELS[raw];
+  const match = raw.match(/^qCreatedBy\((.+)\)$/);
+  if (match) return match[1].replace(/_/g, " ");
+  return raw;
+}
+
 export function QueryWidget({
   label,
   value,
@@ -597,6 +614,7 @@ export function QueryWidget({
 }: WidgetProps<string>) {
   const id = useId();
   const [text, setText] = useState<string>(value);
+  const [focused, setFocused] = useState(false);
 
   // Keep the text input in sync when the definition changes
   // externally (e.g. a viewport pick wrote a new query string
@@ -690,9 +708,10 @@ export function QueryWidget({
           placeholder={
             active ? "Click in the viewport…" : "qCreatedBy(…) — or click ⊕"
           }
-          value={text}
+          value={focused ? text : formatQueryDisplay(text)}
           onChange={(e) => setText(e.currentTarget.value)}
-          onBlur={commitText}
+          onFocus={() => setFocused(true)}
+          onBlur={() => { setFocused(false); commitText(); }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               (e.currentTarget as HTMLInputElement).blur();
