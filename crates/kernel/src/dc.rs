@@ -19,7 +19,8 @@
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
-use fielddraft_protocol::Primitive;
+use crate::world_to_local;
+use fielddraft_protocol::{Primitive, Transform};
 use std::collections::HashMap;
 
 /// Triangulated mesh in the layout expected by the zero-copy bridge to
@@ -395,7 +396,8 @@ pub fn dual_contour_with_primitives(
 
     // K3.5 Phase C: simplify developable surfaces (cylinders, cones).
     if !leaf_primitives.is_empty() {
-        simplify_developable_faces(&mut mesh, leaf_primitives);
+        let leaf_transforms = node.leaf_world_transforms();
+        simplify_developable_faces(&mut mesh, leaf_primitives, &leaf_transforms);
     }
 
     mesh
@@ -950,7 +952,11 @@ fn tri_sign(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 /// Simplify cylinder and cone face regions by unrolling them into
 /// 2D (θ, h) parameter space, extracting boundary, ear-clipping,
 /// and mapping back to 3D.
-fn simplify_developable_faces(mesh: &mut Mesh, prims: &HashMap<u32, &Primitive>) {
+fn simplify_developable_faces(
+    mesh: &mut Mesh,
+    prims: &HashMap<u32, &Primitive>,
+    transforms: &HashMap<u32, Transform>,
+) {
     let tc = mesh.triangle_count();
     if tc == 0 {
         return;
@@ -1010,17 +1016,21 @@ fn simplify_developable_faces(mesh: &mut Mesh, prims: &HashMap<u32, &Primitive>)
             _ => continue,
         };
 
+        let xf = transforms.get(&contrib).copied().unwrap_or(Transform::IDENTITY);
+        let normal_xf = Transform { translate: [0.0, 0.0, 0.0], rotation: xf.rotation, scale: 1.0 };
+
         // Split by normal bin to separate top/bottom caps from lateral surface.
-        // Lateral surface normals are radial (perpendicular to Y axis).
-        // Cap normals point along ±Y.
+        // Lateral surface normals are radial (perpendicular to Y axis in
+        // the cylinder's local frame). We transform world-space normals
+        // into the primitive's local frame so rotated cylinders are
+        // classified correctly.
         let mut lateral: Vec<usize> = Vec::new();
         for &t in tris {
             let n = tri_geometric_normal(mesh, t);
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             if len < 1e-10 { continue; }
-            let ny = n[1] / len;
-            // Lateral triangles have |ny| < 0.5 (normal nearly perpendicular to Y)
-            if ny.abs() < 0.5 {
+            let n_local = world_to_local(&normal_xf, [n[0] / len, n[1] / len, n[2] / len]);
+            if n_local[1].abs() < 0.5 {
                 lateral.push(t);
             }
         }
@@ -1045,14 +1055,17 @@ fn simplify_developable_faces(mesh: &mut Mesh, prims: &HashMap<u32, &Primitive>)
             let mut vert_list: Vec<u32> = comp_verts.into_iter().collect();
             vert_list.sort();
 
-            // Convert to (θ, h) in cylinder local coords
+            // Convert to (θ, h) in cylinder local coords.
+            // Mesh vertices are in world space; transform them back
+            // to the primitive's local frame before parameterization.
             let mut theta_h: HashMap<u32, [f32; 2]> = HashMap::new();
             for &vi in &vert_list {
                 let p = vtx_pos(mesh, vi as usize);
-                let dx = p[0] - center[0];
-                let dz = p[2] - center[2];
+                let local = world_to_local(&xf, p);
+                let dx = local[0] - center[0];
+                let dz = local[2] - center[2];
                 let theta = dz.atan2(dx);
-                let h = p[1] - center[1];
+                let h = local[1] - center[1];
                 theta_h.insert(vi, [theta, h]);
             }
 
@@ -1723,6 +1736,54 @@ mod tests {
         }
         assert_eq!(mesh.classifications.len(), vc);
         assert_eq!(mesh.contributors.len(), vc * MAX_CONTRIBUTORS);
+    }
+
+    #[test]
+    fn k35c_translated_hole_matches_center_hole() {
+        // Bug #25: Phase C parameterised vertices in world space
+        // instead of primitive-local space, so a cylinder hole
+        // positioned via transform.translate got broken θ/h mapping
+        // and skipped simplification.
+        //
+        // Scenario: a box with a cylinder hole. One version uses
+        // primitive `center` to place the hole, the other uses
+        // `transform.translate`. Both should produce equivalent meshes.
+        // Place a box with a small cylinder hole far from origin.
+        // The bug manifests when translation >> cylinder radius:
+        // θ = atan2(dz, dx) collapses toward 0 when dx ≈ 500
+        // instead of the correct ±radius.
+        let offset = [500.0_f32, 0.0, 0.0];
+        let r = 2.0_f32;
+        let center_version = vec![
+            box_feature(1, BoolOp::Union, offset, [30.0, 20.0, 30.0]),
+            cylinder_feature(2, BoolOp::Difference, offset, r, 30.0),
+        ];
+        let mut translate_version = vec![
+            box_feature(1, BoolOp::Union, offset, [30.0, 20.0, 30.0]),
+            cylinder_feature(2, BoolOp::Difference, [0.0, 0.0, 0.0], r, 30.0),
+        ];
+        translate_version[1].transform.translate = offset;
+
+        let mesh_center = mesh_for_with_primitives(&center_version, 32);
+        let mesh_translate = mesh_for_with_primitives(&translate_version, 32);
+
+        eprintln!(
+            "center-hole: {} verts / {} tris | translate-hole: {} verts / {} tris",
+            mesh_center.vertex_count(), mesh_center.triangle_count(),
+            mesh_translate.vertex_count(), mesh_translate.triangle_count(),
+        );
+
+        assert!(mesh_center.vertex_count() > 0);
+        assert!(mesh_translate.vertex_count() > 0);
+
+        let ratio = mesh_translate.triangle_count() as f64 / mesh_center.triangle_count() as f64;
+        assert!(
+            (0.8..=1.2).contains(&ratio),
+            "translate-hole tris ({}) should be within ±20% of center-hole tris ({}) — ratio {:.2}",
+            mesh_translate.triangle_count(),
+            mesh_center.triangle_count(),
+            ratio,
+        );
     }
 
     /// K1 reference scene: a 120 mm box with two cylindrical holes

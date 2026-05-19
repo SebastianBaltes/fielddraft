@@ -4706,4 +4706,32 @@ mod tests {
         // on load, so the mesh has real geometry.
         assert!(k2.mesh_vertex_count() > 0);
     }
+
+    #[test]
+    fn bug25_translated_cylinder_mesh_consistency() {
+        let mut k = Kernel::new();
+
+        // Two identical standalone cylinders, one at origin, one translated.
+        let _id1 = k
+            .add_primitive(
+                Primitive::KIND_CYLINDER,
+                BoolOp::TAG_UNION,
+                0.0, 0.0, 0.0,
+                0.6, 2.5, 0.0,
+            )
+            .unwrap();
+        let _id2 = k
+            .add_primitive(
+                Primitive::KIND_CYLINDER,
+                BoolOp::TAG_UNION,
+                200.0, 0.0, 0.0,
+                0.6, 2.5, 0.0,
+            )
+            .unwrap();
+
+        assert_eq!(k.body_count(), 2);
+        let v0 = k.body_vertex_count(0);
+        let v1 = k.body_vertex_count(1);
+        assert_eq!(v0, v1, "identical cylinders at different positions must mesh identically");
+    }
 }

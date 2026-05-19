@@ -177,6 +177,44 @@ impl BoundedCsg {
         }
     }
 
+    /// Collect the accumulated world transform for every leaf,
+    /// keyed by the flat `u32` feature id. Used by Phase C
+    /// (developable-surface simplification) to convert mesh
+    /// vertices from world space back to primitive-local space.
+    pub fn leaf_world_transforms(&self) -> std::collections::HashMap<u32, Transform> {
+        let mut out = std::collections::HashMap::new();
+        self.collect_leaf_transforms(&mut out);
+        out
+    }
+
+    fn collect_leaf_transforms(&self, out: &mut std::collections::HashMap<u32, Transform>) {
+        match self {
+            BoundedCsg::Empty => {}
+            BoundedCsg::Leaf { id, world_transform, .. } => {
+                if let Some(flat) = id.as_u32_if_flat() {
+                    out.insert(flat, *world_transform);
+                }
+            }
+            BoundedCsg::Union { left, right, .. }
+            | BoundedCsg::Difference { left, right, .. }
+            | BoundedCsg::Intersection { left, right, .. }
+            | BoundedCsg::SmoothUnion { left, right, .. }
+            | BoundedCsg::SmoothDifference { left, right, .. }
+            | BoundedCsg::MaskedBlend { left, right, .. }
+            | BoundedCsg::Morph { left, right, .. } => {
+                left.collect_leaf_transforms(out);
+                right.collect_leaf_transforms(out);
+            }
+            BoundedCsg::Twist { inner, .. }
+            | BoundedCsg::Bend { inner, .. }
+            | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Shell { inner, .. } => {
+                inner.collect_leaf_transforms(out);
+            }
+            BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {}
+        }
+    }
+
     /// Pruned signed-distance query. Produces the same value as the
     /// equivalent [`CsgNode::sdf`] call (modulo the `EvalMode` split
     /// that K10 will introduce) but short-circuits boolean branches
@@ -302,21 +340,21 @@ impl BoundedCsg {
                 ..
             } => {
                 let da = left.sdf(p, mode);
-                let db = if *is_difference { -right.sdf(p, mode) } else { right.sdf(p, mode) };
+                let db_raw = right.sdf(p, mode);
                 match mode {
                     EvalMode::Logical => {
-                        if *is_difference { da.max(-db) } else { da.min(db) }
+                        if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
                     }
                     EvalMode::Visual => {
                         let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
                         if mask_d < 0.0 {
                             if *is_difference {
-                                -crate::csg::blend_min(-da, db, *blend_radius, *blend_mode)
+                                -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
                             } else {
-                                crate::csg::blend_min(da, db, *blend_radius, *blend_mode)
+                                crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
                             }
                         } else {
-                            if *is_difference { da.max(-db) } else { da.min(db) }
+                            if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
                         }
                     }
                 }
@@ -477,9 +515,9 @@ impl BoundedCsg {
                         let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
                         if mask_d < 0.0 {
                             let d = if *is_difference {
-                                -crate::csg::blend_min(-da, db, *blend_radius, *blend_mode)
+                                -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
                             } else {
-                                crate::csg::blend_min(da, db, *blend_radius, *blend_mode)
+                                crate::csg::blend_min(da, db_raw, *blend_radius, *blend_mode)
                             };
                             let mut c = ca;
                             c.extend(cb);
