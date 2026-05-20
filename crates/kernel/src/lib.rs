@@ -26,6 +26,7 @@ pub mod export_3mf;
 pub mod raycast;
 pub mod step_classifier;
 pub mod step_commands;
+pub mod sdf_compiler;
 pub mod sketch2d;
 pub mod sketch_features;
 
