@@ -655,7 +655,7 @@ impl Kernel {
                 prev.transform_hash = transform_hash;
                 prev.mesh_resolution = target_resolution;
                 prev.mesh = mesh;
-                prev.compiled_sdf = None;
+                prev.compiled_sdf = Some(self.compile_sdf_for(&prev.feature_indices));
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
@@ -667,6 +667,7 @@ impl Kernel {
                     .iter()
                     .map(|&i| self.document.features[i].transform)
                     .collect();
+                let compiled = self.compile_sdf_for(&part.feature_indices);
                 new_bodies.push(Body {
                     id,
                     feature_indices: part.feature_indices,
@@ -679,7 +680,7 @@ impl Kernel {
                     version: 1,
                     transform_delta: None,
                     last_mesh_transforms: transforms,
-                    compiled_sdf: None,
+                    compiled_sdf: Some(compiled),
                 });
             }
         }

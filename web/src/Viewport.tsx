@@ -37,6 +37,12 @@ import * as THREE from "three";
 import { useKernelStore } from "./store";
 import { createKernelMeshMaterial } from "./meshMaterial";
 import type { PickResult } from "./kernel";
+import {
+  createSdfBody,
+  updateSdfBody,
+  disposeSdfBody,
+  type SdfBodyHandle,
+} from "./sdfRenderer";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { consumeViewCommand, peekViewCommand, registerInvalidate, VIEW_PRESETS } from "./viewCommands";
@@ -342,6 +348,75 @@ function HitMarker({ result }: { result: PickResult | null }) {
   );
 }
 
+function SdfOverlay() {
+  const { store } = useKernelStore();
+  const groupRef = useRef<THREE.Group>(null);
+  const handlesRef = useRef<
+    Map<number, SdfBodyHandle & { version: number }>
+  >(new Map());
+  const invalidate = useThree((s) => s.invalidate);
+
+  useFrame(() => {
+    if (!store || !groupRef.current) return;
+    const k = store.kernel;
+    const count = k.bodyCount();
+    const seen = new Set<number>();
+    let changed = false;
+
+    for (let i = 0; i < count; i++) {
+      const bodyId = k.bodyId(i);
+      const version = k.bodyVersion(i);
+      seen.add(bodyId);
+
+      const existing = handlesRef.current.get(bodyId);
+      if (existing && existing.version === version) continue;
+
+      const opcodesView = k.bodySdfOpcodesView(i);
+      if (opcodesView.length === 0) continue;
+      const opcodes = opcodesView.slice();
+      const aabb = k.bodySdfAabb(i);
+
+      if (!existing) {
+        const handle = createSdfBody(opcodes, aabb);
+        groupRef.current.add(handle.mesh);
+        handlesRef.current.set(bodyId, { ...handle, version });
+        changed = true;
+      } else {
+        const oldMesh = existing.mesh;
+        const updated = updateSdfBody(existing, opcodes, aabb);
+        if (updated.mesh !== oldMesh) {
+          groupRef.current.remove(oldMesh);
+          groupRef.current.add(updated.mesh);
+        }
+        handlesRef.current.set(bodyId, { ...updated, version });
+        changed = true;
+      }
+    }
+
+    for (const [id, handle] of handlesRef.current) {
+      if (!seen.has(id)) {
+        groupRef.current.remove(handle.mesh);
+        disposeSdfBody(handle);
+        handlesRef.current.delete(id);
+        changed = true;
+      }
+    }
+
+    if (changed) invalidate();
+  });
+
+  useEffect(() => {
+    return () => {
+      for (const handle of handlesRef.current.values()) {
+        disposeSdfBody(handle);
+      }
+      handlesRef.current.clear();
+    };
+  }, []);
+
+  return <group ref={groupRef} />;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -353,6 +428,7 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
+      <SdfOverlay />
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
