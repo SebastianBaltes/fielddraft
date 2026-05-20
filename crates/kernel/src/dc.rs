@@ -62,7 +62,7 @@ pub const CONTRIBUTOR_SENTINEL: u32 = u32::MAX;
 /// (otherwise a box exactly filling its bounds would produce edges with
 /// a zero sample on one end, which the sign-change test can't classify
 /// reliably).
-const DC_MARGIN_CELLS: f32 = 2.0;
+pub(crate) const DC_MARGIN_CELLS: f32 = 2.0;
 
 /// Mesh a CSG tree with a uniform-grid Dual Contouring pass.
 ///
@@ -107,7 +107,8 @@ pub fn dual_contour_with_primitives(
     let normal_eps = cell * 0.25;
 
     let mut mesh = if nx.max(ny).max(nz) > 64 {
-        dc_core_sparse(node, grid.min, cell, nx, ny, nz)
+        let grid_size = size[0].max(size[1]).max(size[2]);
+        crate::mdc::mdc_core(node, grid.min, grid_size, resolution)
     } else {
         dc_core_dense(node, grid.min, cell, nx, ny, nz)
     };
@@ -333,6 +334,7 @@ fn dc_core_dense(
 
 // ── Sparse narrow-band path (resolution > 64 cells per axis) ──────
 
+#[allow(dead_code)]
 fn dc_core_sparse(
     node: &BoundedCsg,
     grid_min: [f32; 3],
@@ -1494,7 +1496,7 @@ fn project_face_vertices(mesh: &mut Mesh, node: &BoundedCsg, normal_eps: f32) {
 /// Returns a unit vector; collapses to `+Y` when the gradient is
 /// numerically zero (only possible in degenerate cases like an empty
 /// tree, which the caller already guards against).
-fn sdf_normal(node: &BoundedCsg, p: [f32; 3], eps: f32) -> [f32; 3] {
+pub(crate) fn sdf_normal(node: &BoundedCsg, p: [f32; 3], eps: f32) -> [f32; 3] {
     let eps = eps.max(1e-4);
     let m = EvalMode::Visual;
     let dx = node.sdf([p[0] + eps, p[1], p[2]], m)

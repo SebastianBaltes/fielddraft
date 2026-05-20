@@ -12,6 +12,7 @@ pub mod body;
 pub mod bvh;
 pub mod csg;
 pub mod dc;
+pub mod mdc;
 pub mod expr;
 pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
