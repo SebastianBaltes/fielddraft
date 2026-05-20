@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-05-20
+**Stand:** 2026-05-21
 **Branch:** `main`
 
 ---
@@ -13,7 +13,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 
 **Registry & Tests (Stand heute):**
 - Feature Registry: **22 FeatureKinds**, **13 Primitive-Typen**
-- Testsuite: **310 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 199 Vitest + 38 Playwright = 601+ Tests grün**
+- Testsuite: **310 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 204 Vitest + 38 Playwright = 606+ Tests grün**
 
 ---
 
@@ -190,6 +190,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | Ref | Feature | Status | Beschreibung |
 |-----|---------|--------|--------------|
 | K-Exp1 | Analytischer Preview-Pfad | open | Skelett-First-Rendering, 3-Stufen-Orchestrierung |
+| K-Exp2 | SDF Raymarching Performance (60fps@4K) | ✅ | 4 Rendering-Modi (sdf/sdf-vm/sdf-baked/sdf-batch), renderMode-Toggle in Settings, PerfMonitor+HUD (F2), GPU Bytecode VM (uniformArray, keine Recompilation), Baked 3D Distance Field (Storage3DTexture, progressive 64→128→256), Batchmarching Compute Wavefront (INIT→MARCH→SHADE Dispatches), Shared VM-Interpreter (`sdfVmInterpreter.ts`), Benchmark-Infrastruktur mit CSV-Export. Commits `5ec29e1`–`324e928`. |
 
 ---
 
