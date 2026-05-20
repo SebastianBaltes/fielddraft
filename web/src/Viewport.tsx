@@ -45,6 +45,11 @@ import {
   publishPickCamera,
   getPublishedPickCamera,
 } from "./pickCameraBridge";
+import {
+  createSdfBodyMaterial,
+  disposeSdfBody,
+  type SdfBodyHandle,
+} from "./sdfRenderer";
 
 /** World-space size of the build-volume reference grid (mm). Matches
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
@@ -252,6 +257,76 @@ function KernelMesh() {
   );
 }
 
+interface SdfEntry {
+  handle: SdfBodyHandle;
+  version: number;
+}
+
+function SdfOverlay() {
+  const { store } = useKernelStore();
+  const invalidate = useThree((s) => s.invalidate);
+  const scene = useThree((s) => s.scene);
+  const entriesRef = useRef<Map<number, SdfEntry>>(new Map());
+
+  useFrame(() => {
+    if (!store) return;
+    const kernel = store.kernel;
+    const count = kernel.bodyCount();
+    const seen = new Set<number>();
+    let changed = false;
+
+    for (let i = 0; i < count; i++) {
+      const id = kernel.bodyId(i);
+      const ver = kernel.bodyVersion(i);
+      seen.add(id);
+
+      const existing = entriesRef.current.get(id);
+      if (existing && existing.version === ver) continue;
+
+      const opcodes = kernel.bodySdfOpcodesView(i);
+      const aabb = kernel.bodySdfAabb(i);
+      if (opcodes.length === 0) continue;
+
+      if (existing) {
+        scene.remove(existing.handle.mesh);
+        disposeSdfBody(existing.handle);
+      }
+
+      try {
+        const handle = createSdfBodyMaterial(opcodes, aabb);
+        scene.add(handle.mesh);
+        entriesRef.current.set(id, { handle, version: ver });
+        changed = true;
+      } catch {
+        // Shader compilation can fail for edge cases; skip silently
+      }
+    }
+
+    for (const [id, entry] of entriesRef.current) {
+      if (!seen.has(id)) {
+        scene.remove(entry.handle.mesh);
+        disposeSdfBody(entry.handle);
+        entriesRef.current.delete(id);
+        changed = true;
+      }
+    }
+
+    if (changed) invalidate();
+  });
+
+  useEffect(() => {
+    return () => {
+      for (const entry of entriesRef.current.values()) {
+        scene.remove(entry.handle.mesh);
+        disposeSdfBody(entry.handle);
+      }
+      entriesRef.current.clear();
+    };
+  }, [scene]);
+
+  return null;
+}
+
 /**
  * Hover-picking probe.
  *
@@ -351,6 +426,7 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
+      <SdfOverlay />
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
