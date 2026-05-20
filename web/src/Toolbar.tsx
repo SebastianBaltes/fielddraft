@@ -309,7 +309,65 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   };
 
-  /* ---------- Sketch mode toolbar (unchanged) ---------- */
+  /* ---------- Items + overflow (must be before early returns to keep hook order) ---------- */
+
+  const hasSketch = state.features.some((f) => f.kind === "sketch");
+  const hasFeatures = state.features.length > 0;
+
+  const items: ToolItem[] = [
+    // Group 0: Modeling
+    { id: "thread", priority: 2, group: 0, glyph: "⏍", label: "Thread", title: "Add Thread (M6 default)", testId: "add-thread", disabled: false, active: false, onClick: () => handleAddThread() },
+    { id: "hole", priority: 2, group: 0, glyph: "⊖", label: "Hole", title: "Add Hole (Ø6 × 40 mm, subtract)", testId: "add-hole", disabled: false, active: false, onClick: () => store.addHole(), drag: dragProps("hole") },
+    { id: "gyroid", priority: 3, group: 0, glyph: "🕸", label: "Gyroid", title: "Add Gyroid infill (10 mm cells, 1 mm walls, intersect)", testId: "add-gyroid", disabled: !hasFeatures, active: false, onClick: () => store.addGyroid(), drag: dragProps("gyroid") },
+    { id: "sketch", priority: 0, group: 0, glyph: "✎", label: "Sketch", title: "Sketch on XY plane (plane editable via feature dialog)", testId: "enter-sketch", disabled: false, active: false, onClick: handleSketchEnter, drag: sketchDragProps() },
+    { id: "extrude", priority: 0, group: 0, glyph: "↥", label: "Extrude", title: "Extrude the most recent sketch (20 mm depth)", testId: "extrude-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addExtrudeFromLatestSketch(20) },
+    { id: "revolve", priority: 2, group: 0, glyph: "↻", label: "Revolve", title: "Revolve the most recent sketch around the world Y axis", testId: "revolve-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addRevolveFromLatestSketch() },
+    { id: "linear-pattern", priority: 3, group: 0, glyph: "⎡⎡⎡", label: "Pattern", title: "Linear pattern the latest feature (+X, 3×, 60 mm)", testId: "linear-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addLinearPatternOfLatest() },
+    { id: "circular-pattern", priority: 3, group: 0, glyph: "↻", label: "Circ", title: "Circular pattern the latest feature around Y axis (6×, 360°)", testId: "circular-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addCircularPatternOfLatest() },
+    { id: "mirror", priority: 3, group: 0, glyph: "◫", label: "Mirror", title: "Mirror the latest feature through the world YZ plane", testId: "mirror-latest", disabled: !hasFeatures, active: false, onClick: () => store.addMirrorOfLatest() },
+    // Group 1: Tools
+    { id: "delete", priority: 1, group: 1, glyph: "", label: "Delete", title: "Delete selection (Del)", testId: "delete-selection", disabled: state.selection.size === 0, active: false, onClick: () => store.removeSelected() },
+    { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
+    { id: "fillet", priority: 2, group: 1, glyph: "◠", label: "Fillet", title: "Click an edge to fillet it", testId: "fillet-toggle", disabled: false, active: state.filletMode, onClick: () => store.toggleFilletMode() },
+    { id: "measure", priority: 3, group: 1, glyph: "📏", label: "Measure", title: "Measure distance (click two points)", testId: "measure-toggle", disabled: false, active: state.measureMode, onClick: () => store.toggleMeasureMode() },
+    { id: "undo", priority: 1, group: 1, glyph: "⟲", label: `Undo${state.undoDepth > 0 ? ` (${state.undoDepth})` : ""}`, title: "Undo (Ctrl+Z)", testId: "undo", disabled: !state.canUndo, active: false, onClick: () => store.undo() },
+    { id: "redo", priority: 1, group: 1, glyph: "⟳", label: `Redo${state.redoDepth > 0 ? ` (${state.redoDepth})` : ""}`, title: "Redo (Ctrl+Shift+Z)", testId: "redo", disabled: !state.canRedo, active: false, onClick: () => store.redo() },
+    { id: "export-stl", priority: 4, group: 1, glyph: "⇩", label: "STL", title: "Export as binary STL", testId: "export-stl", disabled: !hasFeatures, active: false, onClick: () => store.downloadStl() },
+    { id: "export-glb", priority: 4, group: 1, glyph: "⇩", label: "GLB", title: "Export as binary GLB (glTF 2.0)", testId: "export-glb", disabled: !hasFeatures, active: false, onClick: () => store.downloadGlb() },
+    { id: "export-obj", priority: 4, group: 1, glyph: "⇩", label: "OBJ", title: "Export as Wavefront OBJ", testId: "export-obj", disabled: !hasFeatures, active: false, onClick: () => store.downloadObj() },
+    { id: "export-3mf", priority: 4, group: 1, glyph: "⇩", label: "3MF", title: "Export as 3MF (3D Manufacturing Format, preserves slicer settings if imported)", testId: "export-3mf", disabled: !hasFeatures, active: false, onClick: () => store.download3mfRoundtrip() },
+    { id: "export-step", priority: 5, group: 1, glyph: "⇩", label: "STEP", title: "Export mechanical core as STEP (via OpenCASCADE)", testId: "export-step", disabled: !hasFeatures, active: false, onClick: () => store.downloadStep() },
+    // Group 2: File
+    { id: "save", priority: 4, group: 2, glyph: "💾", label: "Save", title: "Save project as .fdraft file", testId: "save-project", disabled: false, active: false, onClick: () => store.saveProjectToFile() },
+    { id: "open", priority: 4, group: 2, glyph: "📂", label: "Open", title: "Open a .fdraft project file", testId: "load-project", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="load-project-input"]')?.click() },
+    { id: "new", priority: 4, group: 2, glyph: "📄", label: "New", title: "New empty project", testId: "new-project", disabled: false, active: false, onClick: () => { if (state.features.length === 0 || confirm("Discard current project?")) store.newProject(); } },
+    { id: "import", priority: 3, group: 2, glyph: "📁", label: "Import", title: "Import STL/OBJ/GLB/STEP file", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
+    { id: "convert-solid", priority: 5, group: 2, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
+    { id: "assembly", priority: 4, group: 2, glyph: "🔗", label: "Assembly", title: "Enter assembly mode (multi-part scene)", testId: "enter-assembly", disabled: false, active: state.assembly.active, onClick: () => { if (state.assembly.active) store.exitAssembly(); else store.enterAssembly(); } },
+    { id: "share", priority: 4, group: 2, glyph: "🔗", label: "Share", title: "Publish and get a shareable link", testId: "share-project", disabled: !hasFeatures || !state.projectId, active: false, onClick: () => store.publishProject() },
+    { id: "export-r3f", priority: 5, group: 2, glyph: "⚛", label: "R3F", title: "Export assembly as React Three Fiber component", testId: "export-r3f", disabled: !state.assembly.active || state.assembly.document.parts.length === 0, active: false, onClick: () => store.exportR3F() },
+    // Group 3: View
+    { id: "view-front", priority: 5, group: 3, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
+    { id: "view-top", priority: 5, group: 3, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
+    { id: "view-right", priority: 5, group: 3, glyph: "◲", label: "Right", title: "Right view", testId: "view-right", disabled: false, active: false, onClick: () => requestView("right") },
+    { id: "view-iso", priority: 5, group: 3, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
+  ];
+
+  const hiddenIds = useMemo(() => {
+    const collapsible = items
+      .filter((i) => i.priority > ALWAYS_VISIBLE_PRIORITY)
+      .sort((a, b) => b.priority - a.priority || items.indexOf(b) - items.indexOf(a));
+    const ids = new Set<string>();
+    for (let i = 0; i < hideCount && i < collapsible.length; i++) {
+      ids.add(collapsible[i].id);
+    }
+    return ids;
+  }, [items, hideCount]);
+
+  const visible = items.filter((i) => !hiddenIds.has(i.id));
+  const overflow = items.filter((i) => hiddenIds.has(i.id));
+
+  /* ---------- Sketch mode toolbar ---------- */
 
   if (sketchSession.active) {
     return (
@@ -379,62 +437,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
   }
 
   /* ---------- Main toolbar with overflow ---------- */
-
-  const hasSketch = state.features.some((f) => f.kind === "sketch");
-  const hasFeatures = state.features.length > 0;
-
-  const items: ToolItem[] = [
-    // Group 0: Modeling
-    { id: "thread", priority: 2, group: 0, glyph: "⏍", label: "Thread", title: "Add Thread (M6 default)", testId: "add-thread", disabled: false, active: false, onClick: () => handleAddThread() },
-    { id: "hole", priority: 2, group: 0, glyph: "⊖", label: "Hole", title: "Add Hole (Ø6 × 40 mm, subtract)", testId: "add-hole", disabled: false, active: false, onClick: () => store.addHole(), drag: dragProps("hole") },
-    { id: "gyroid", priority: 3, group: 0, glyph: "🕸", label: "Gyroid", title: "Add Gyroid infill (10 mm cells, 1 mm walls, intersect)", testId: "add-gyroid", disabled: !hasFeatures, active: false, onClick: () => store.addGyroid(), drag: dragProps("gyroid") },
-    { id: "sketch", priority: 0, group: 0, glyph: "✎", label: "Sketch", title: "Sketch on XY plane (plane editable via feature dialog)", testId: "enter-sketch", disabled: false, active: false, onClick: handleSketchEnter, drag: sketchDragProps() },
-    { id: "extrude", priority: 0, group: 0, glyph: "↥", label: "Extrude", title: "Extrude the most recent sketch (20 mm depth)", testId: "extrude-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addExtrudeFromLatestSketch(20) },
-    { id: "revolve", priority: 2, group: 0, glyph: "↻", label: "Revolve", title: "Revolve the most recent sketch around the world Y axis", testId: "revolve-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addRevolveFromLatestSketch() },
-    { id: "linear-pattern", priority: 3, group: 0, glyph: "⎡⎡⎡", label: "Pattern", title: "Linear pattern the latest feature (+X, 3×, 60 mm)", testId: "linear-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addLinearPatternOfLatest() },
-    { id: "circular-pattern", priority: 3, group: 0, glyph: "↻", label: "Circ", title: "Circular pattern the latest feature around Y axis (6×, 360°)", testId: "circular-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addCircularPatternOfLatest() },
-    { id: "mirror", priority: 3, group: 0, glyph: "◫", label: "Mirror", title: "Mirror the latest feature through the world YZ plane", testId: "mirror-latest", disabled: !hasFeatures, active: false, onClick: () => store.addMirrorOfLatest() },
-    // Group 1: Tools
-    { id: "delete", priority: 1, group: 1, glyph: "", label: "Delete", title: "Delete selection (Del)", testId: "delete-selection", disabled: state.selection.size === 0, active: false, onClick: () => store.removeSelected() },
-    { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
-    { id: "fillet", priority: 2, group: 1, glyph: "◠", label: "Fillet", title: "Click an edge to fillet it", testId: "fillet-toggle", disabled: false, active: state.filletMode, onClick: () => store.toggleFilletMode() },
-    { id: "measure", priority: 3, group: 1, glyph: "📏", label: "Measure", title: "Measure distance (click two points)", testId: "measure-toggle", disabled: false, active: state.measureMode, onClick: () => store.toggleMeasureMode() },
-    { id: "undo", priority: 1, group: 1, glyph: "⟲", label: `Undo${state.undoDepth > 0 ? ` (${state.undoDepth})` : ""}`, title: "Undo (Ctrl+Z)", testId: "undo", disabled: !state.canUndo, active: false, onClick: () => store.undo() },
-    { id: "redo", priority: 1, group: 1, glyph: "⟳", label: `Redo${state.redoDepth > 0 ? ` (${state.redoDepth})` : ""}`, title: "Redo (Ctrl+Shift+Z)", testId: "redo", disabled: !state.canRedo, active: false, onClick: () => store.redo() },
-    { id: "export-stl", priority: 4, group: 1, glyph: "⇩", label: "STL", title: "Export as binary STL", testId: "export-stl", disabled: !hasFeatures, active: false, onClick: () => store.downloadStl() },
-    { id: "export-glb", priority: 4, group: 1, glyph: "⇩", label: "GLB", title: "Export as binary GLB (glTF 2.0)", testId: "export-glb", disabled: !hasFeatures, active: false, onClick: () => store.downloadGlb() },
-    { id: "export-obj", priority: 4, group: 1, glyph: "⇩", label: "OBJ", title: "Export as Wavefront OBJ", testId: "export-obj", disabled: !hasFeatures, active: false, onClick: () => store.downloadObj() },
-    { id: "export-3mf", priority: 4, group: 1, glyph: "⇩", label: "3MF", title: "Export as 3MF (3D Manufacturing Format, preserves slicer settings if imported)", testId: "export-3mf", disabled: !hasFeatures, active: false, onClick: () => store.download3mfRoundtrip() },
-    { id: "export-step", priority: 5, group: 1, glyph: "⇩", label: "STEP", title: "Export mechanical core as STEP (via OpenCASCADE)", testId: "export-step", disabled: !hasFeatures, active: false, onClick: () => store.downloadStep() },
-    // Group 2: File
-    { id: "save", priority: 4, group: 2, glyph: "💾", label: "Save", title: "Save project as .fdraft file", testId: "save-project", disabled: false, active: false, onClick: () => store.saveProjectToFile() },
-    { id: "open", priority: 4, group: 2, glyph: "📂", label: "Open", title: "Open a .fdraft project file", testId: "load-project", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="load-project-input"]')?.click() },
-    { id: "new", priority: 4, group: 2, glyph: "📄", label: "New", title: "New empty project", testId: "new-project", disabled: false, active: false, onClick: () => { if (state.features.length === 0 || confirm("Discard current project?")) store.newProject(); } },
-    { id: "import", priority: 3, group: 2, glyph: "📁", label: "Import", title: "Import STL/OBJ/GLB/STEP file", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
-    { id: "convert-solid", priority: 5, group: 2, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
-    { id: "assembly", priority: 4, group: 2, glyph: "🔗", label: "Assembly", title: "Enter assembly mode (multi-part scene)", testId: "enter-assembly", disabled: false, active: state.assembly.active, onClick: () => { if (state.assembly.active) store.exitAssembly(); else store.enterAssembly(); } },
-    { id: "share", priority: 4, group: 2, glyph: "🔗", label: "Share", title: "Publish and get a shareable link", testId: "share-project", disabled: !hasFeatures || !state.projectId, active: false, onClick: () => store.publishProject() },
-    { id: "export-r3f", priority: 5, group: 2, glyph: "⚛", label: "R3F", title: "Export assembly as React Three Fiber component", testId: "export-r3f", disabled: !state.assembly.active || state.assembly.document.parts.length === 0, active: false, onClick: () => store.exportR3F() },
-    // Group 3: View
-    { id: "view-front", priority: 5, group: 3, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
-    { id: "view-top", priority: 5, group: 3, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
-    { id: "view-right", priority: 5, group: 3, glyph: "◲", label: "Right", title: "Right view", testId: "view-right", disabled: false, active: false, onClick: () => requestView("right") },
-    { id: "view-iso", priority: 5, group: 3, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
-  ];
-
-  const hiddenIds = useMemo(() => {
-    const collapsible = items
-      .filter((i) => i.priority > ALWAYS_VISIBLE_PRIORITY)
-      .sort((a, b) => b.priority - a.priority || items.indexOf(b) - items.indexOf(a));
-    const ids = new Set<string>();
-    for (let i = 0; i < hideCount && i < collapsible.length; i++) {
-      ids.add(collapsible[i].id);
-    }
-    return ids;
-  }, [items, hideCount]);
-
-  const visible = items.filter((i) => !hiddenIds.has(i.id));
-  const overflow = items.filter((i) => hiddenIds.has(i.id));
 
   const groups = [0, 1, 2, 3] as const;
 
