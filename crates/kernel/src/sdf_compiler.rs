@@ -73,6 +73,7 @@ pub const OP_END: u32            = 0xFF;
 // ── Compiled output ────────────────────────────────────────────────
 
 /// Flat opcode buffer compiled from a single body's CSG tree.
+#[derive(Debug, Clone)]
 pub struct CompiledSdf {
     pub opcodes: Vec<f32>,
     pub aabb: Aabb,

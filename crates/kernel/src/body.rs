@@ -51,6 +51,7 @@ use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive};
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, CsgNode};
 use crate::dc::Mesh;
+use crate::sdf_compiler::CompiledSdf;
 
 /// One partitioned body as seen by the [`partition`] pass — just the
 /// feature indices and the accumulated world AABB, without any
@@ -126,6 +127,9 @@ pub struct Body {
     /// Snapshot of per-feature transforms at the time of the last
     /// full remesh. Used to detect uniform translation deltas.
     pub last_mesh_transforms: Vec<fielddraft_protocol::Transform>,
+    /// Compiled SDF opcode buffer for GPU raymarching. Recompiled
+    /// whenever the body's geometry changes (payload_hash differs).
+    pub compiled_sdf: Option<CompiledSdf>,
 }
 
 /// Walk the feature spine once and return one [`BodyPartition`] per

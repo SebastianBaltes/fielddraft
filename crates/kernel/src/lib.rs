@@ -643,6 +643,7 @@ impl Kernel {
                 }
 
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
+                let compiled_sdf = self.compile_sdf_for(&part.feature_indices);
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
@@ -655,12 +656,14 @@ impl Kernel {
                 prev.transform_hash = transform_hash;
                 prev.mesh_resolution = target_resolution;
                 prev.mesh = mesh;
+                prev.compiled_sdf = Some(compiled_sdf);
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
                 new_bodies.push(prev);
             } else {
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
+                let compiled_sdf = self.compile_sdf_for(&part.feature_indices);
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
@@ -678,6 +681,7 @@ impl Kernel {
                     version: 1,
                     transform_delta: None,
                     last_mesh_transforms: transforms,
+                    compiled_sdf: Some(compiled_sdf),
                 });
             }
         }
@@ -719,6 +723,11 @@ impl Kernel {
         let classifications = vec![0u8; vert_count];
         let contributors = vec![dc::CONTRIBUTOR_SENTINEL; vert_count * csg::MAX_CONTRIBUTORS];
         Mesh { positions, normals, indices, classifications, contributors }
+    }
+
+    fn compile_sdf_for(&self, feature_indices: &[usize]) -> sdf_compiler::CompiledSdf {
+        let bounded = build_bounded_for_body(&self.document.features, feature_indices);
+        sdf_compiler::compile_body(&bounded)
     }
 
     /// Pick the voxel grid resolution a body should use right now:
@@ -2607,6 +2616,35 @@ impl Kernel {
             .transform_delta
             .expect("no transform delta");
         vec![d[0], d[1], d[2]]
+    }
+
+    #[wasm_bindgen(js_name = bodySdfOpcodesPtr)]
+    pub fn body_sdf_opcodes_ptr(&self, i: usize) -> *const f32 {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.opcodes.as_ptr())
+    }
+
+    #[wasm_bindgen(js_name = bodySdfOpcodesLen)]
+    pub fn body_sdf_opcodes_len(&self, i: usize) -> usize {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .map_or(0, |s| s.opcodes.len())
+    }
+
+    #[wasm_bindgen(js_name = bodySdfAabb)]
+    pub fn body_sdf_aabb(&self, i: usize) -> Vec<f32> {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .map_or(vec![0.0; 6], |s| {
+                vec![
+                    s.aabb.min[0], s.aabb.min[1], s.aabb.min[2],
+                    s.aabb.max[0], s.aabb.max[1], s.aabb.max[2],
+                ]
+            })
     }
 
     /// Number of `u32` slots reserved per vertex in the per-body
