@@ -41,7 +41,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K3 | K3 | BVH + Multi-Body + Worker-Mesher | ✅ | 3D-BVH, Body-Partitionierung, Per-Body Mesh-Cache, Active/Context-LOD, Web-Worker |
 | K3.5 | K3.5 | Provenance-gesteuerte Mesh-Optimierung | ✅ | Phase A (Newton-Projektion), Phase B (Planar-Simplifizierung mit Ear-Clipping), Phase C (Zylinder/Kegel UV-Unwrap). 83% Vertex-/87% Dreieck-Reduktion für Boxen. |
 | K3.6 | K3.6 | Dirty-Tracking-Fixes & Affine-Fastpath | ✅ | Hash-Bug (7 fehlende Modifier-Felder), Split-Hash (Geometry/Transform), GPU-Translation-Delta statt Remesh bei reinen Verschiebungen. |
-| K3.7 | K3.7 | Adaptives DC + QEF | open | Octree-basiertes DC mit QEF-Vertex-Placement für scharfe Kanten. |
+| K3.7 | K3.7 | Adaptives DC + QEF | ✅ | Octree + Jacobi-SVD QEF, ProcessCell/Face/Edge Traversierung, ersetzt sparse DC für Res>64. 5 Tests. |
 | K3.8 | K3.8 | SDF-CWF Export-Mesher | open | CVT+QEM-Optimierung für Slicer-Qualität (Liu et al., CAD 2025). |
 | K4 | K4 | 2D-Kernel + Extrude + Revolve | ✅ | 2D-SDF-AST, 2D-BVH, Extrude/Revolve CsgNode-Varianten |
 | K4.5 | K4.5 | Feature-as-Function Refactor | ✅ | FeatureId hierarchisch, Feature-Trait, Registry, FeatureSchema-Derive, Runtime-Types, Query-Minimum, Regeneration-Worker, Dual-API |
@@ -326,4 +326,12 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 - ✅ **Affine-Fastpath:** `rebuild_mesh_internal()` erkennt uniforme Translationen via `detect_uniform_translation()` und setzt `transform_delta` statt Remesh. 4 neue Tests für Delta-Detection.
 - ✅ **Frontend-Brücke:** `bodyHasTransformDelta`/`bodyTransformDelta` WASM-API, Worker-Snapshot, Store-Snapshot, `<group position={delta}>` in Viewport.
 
-**Nächster Slice:** K3.7 (Adaptives DC + QEF — scharfe Kanten, adaptive Auflösung).
+### 10. K3.7 — Adaptives Dual Contouring + QEF
+
+- ✅ **mdc.rs:** Neues Modul mit Octree-Konstruktion (AABB-basiertes Pruning, keine unnötigen SDF-Evaluierungen in leeren Zellen).
+- ✅ **QEF-Solver:** Jacobi-SVD 3×3, Hermite-Daten-Akkumulation (Schnittpunkt + SDF-Gradient pro Kante), mass-point-zentrierte Lösung mit Pseudo-Inverse-Threshold 0.1.
+- ✅ **Quad-Emission:** ProcessCell/ProcessFace/ProcessEdge nach Schaefer/Ju/Warren, T-Junction-Handling an Octree-Level-Grenzen, Sign-basiertes Winding.
+- ✅ **Integration:** Dispatch auf `mdc_core()` für Res>64 in `dual_contour_with_primitives()`. Sparse-DC bleibt als toter Code erhalten. Phase A/B/C unverändert.
+- ✅ **Tests:** `octree_prunes_empty_cells`, `qef_places_vertex_on_edge`, `sphere_vertices_hug_surface`, `mdc_produces_valid_mesh`, `box_preserves_sharp_edges`.
+
+**Nächster Slice:** K3.8 (SDF-CWF Export-Mesher — langfristig, kann separat geplant werden).
