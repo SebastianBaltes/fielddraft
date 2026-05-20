@@ -270,6 +270,17 @@ export class Kernel {
     return new Uint32Array(this.memory.buffer, ptr, count * MESH_CONTRIBUTOR_STRIDE);
   }
 
+  bodySdfOpcodesView(i: number): Float32Array {
+    const ptr = this.inner.bodySdfOpcodesPtr(i);
+    const len = this.inner.bodySdfOpcodesLen(i);
+    if (!ptr || len === 0) return new Float32Array(0);
+    return new Float32Array(this.memory.buffer, ptr, len);
+  }
+
+  bodySdfAabb(i: number): Float32Array {
+    return new Float32Array(this.inner.bodySdfAabb(i));
+  }
+
   /**
    * Cast a world-space ray through the current CSG tree and return
    * the first surface hit, or `{ hit: false }` on a miss. Delegates
