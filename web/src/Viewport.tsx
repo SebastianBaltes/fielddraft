@@ -272,10 +272,14 @@ function SdfOverlay() {
   const { store } = useKernelStore();
   const invalidate = useThree((s) => s.invalidate);
   const scene = useThree((s) => s.scene);
+  const gl = useThree((s) => s.gl);
   const entriesRef = useRef<Map<number, SdfEntry>>(new Map());
 
+  // wgslFn requires the WebGPU backend — skip SDF rendering on WebGL fallback
+  const isWebGPU = (gl as any).backend?.isWebGPUBackend === true;
+
   useFrame(() => {
-    if (!store) return;
+    if (!store || !isWebGPU) return;
     const kernel = store.kernel;
     const count = kernel.bodyCount();
     const seen = new Set<number>();
@@ -1505,6 +1509,12 @@ export function Viewport() {
               antialias: true,
             });
             await renderer.init();
+            if (!(renderer as any).backend?.isWebGPUBackend) {
+              console.warn(
+                "fielddraft: WebGPURenderer fell back to WebGL backend. " +
+                "SDF raymarching is disabled — DC meshes will be used instead.",
+              );
+            }
             return renderer;
           }}
           onCreated={(rootState) => {
