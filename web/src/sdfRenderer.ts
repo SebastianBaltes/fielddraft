@@ -781,11 +781,11 @@ export function createSdfBodyMaterial(
   });
 
   const material = new MeshBasicNodeMaterial();
-  material.colorNode = colorNode();
+  material.outputNode = colorNode();
   material.side = THREE.BackSide;
   material.transparent = true;
   material.depthWrite = false;
-  material.depthTest = true;
+  material.depthTest = false;
   material.toneMapped = false;
 
   // AABB-sized box geometry

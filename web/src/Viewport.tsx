@@ -236,6 +236,7 @@ function KernelMesh() {
         return (
           <group
             key={id}
+            name={`dc-body-${id}`}
             position={entry.transformDelta ?? undefined}
           >
             <mesh
@@ -262,6 +263,11 @@ interface SdfEntry {
   version: number;
 }
 
+function setDcBodyVisible(scene: THREE.Scene, bodyId: number, visible: boolean) {
+  const dcGroup = scene.getObjectByName(`dc-body-${bodyId}`);
+  if (dcGroup) dcGroup.visible = visible;
+}
+
 function SdfOverlay() {
   const { store } = useKernelStore();
   const invalidate = useThree((s) => s.invalidate);
@@ -281,7 +287,10 @@ function SdfOverlay() {
       seen.add(id);
 
       const existing = entriesRef.current.get(id);
-      if (existing && existing.version === ver) continue;
+      if (existing && existing.version === ver) {
+        setDcBodyVisible(scene, id, false);
+        continue;
+      }
 
       const opcodes = kernel.bodySdfOpcodesView(i);
       const aabb = kernel.bodySdfAabb(i);
@@ -296,6 +305,7 @@ function SdfOverlay() {
         const handle = createSdfBodyMaterial(opcodes, aabb);
         scene.add(handle.mesh);
         entriesRef.current.set(id, { handle, version: ver });
+        setDcBodyVisible(scene, id, false);
         changed = true;
       } catch {
         // Shader compilation can fail for edge cases; skip silently
@@ -307,6 +317,7 @@ function SdfOverlay() {
         scene.remove(entry.handle.mesh);
         disposeSdfBody(entry.handle);
         entriesRef.current.delete(id);
+        setDcBodyVisible(scene, id, true);
         changed = true;
       }
     }
@@ -316,9 +327,10 @@ function SdfOverlay() {
 
   useEffect(() => {
     return () => {
-      for (const entry of entriesRef.current.values()) {
+      for (const [id, entry] of entriesRef.current.entries()) {
         scene.remove(entry.handle.mesh);
         disposeSdfBody(entry.handle);
+        setDcBodyVisible(scene, id, true);
       }
       entriesRef.current.clear();
     };
