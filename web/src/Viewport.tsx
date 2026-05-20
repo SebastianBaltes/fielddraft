@@ -22,6 +22,7 @@ import {
   type ErrorInfo,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -268,12 +269,15 @@ function setDcBodyVisible(scene: THREE.Scene, bodyId: number, visible: boolean) 
   if (dcGroup) dcGroup.visible = visible;
 }
 
+const SDF_SETTLE_MS = 300;
+
 function SdfOverlay() {
   const { store } = useKernelStore();
   const invalidate = useThree((s) => s.invalidate);
   const scene = useThree((s) => s.scene);
   const gl = useThree((s) => s.gl);
   const entriesRef = useRef<Map<number, SdfEntry>>(new Map());
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // wgslFn requires the WebGPU backend — skip SDF rendering on WebGL fallback
   const isWebGPU = (gl as any).backend?.isWebGPUBackend === true;
@@ -287,12 +291,11 @@ function SdfOverlay() {
     );
   }
 
-  useFrame(() => {
-    if (!store || !isWebGPU) return;
+  const rebuildSdf = useCallback(() => {
+    if (!store) return;
     const kernel = store.kernel;
     const count = kernel.bodyCount();
     const seen = new Set<number>();
-    let changed = false;
 
     for (let i = 0; i < count; i++) {
       const id = kernel.bodyId(i);
@@ -301,6 +304,7 @@ function SdfOverlay() {
 
       const existing = entriesRef.current.get(id);
       if (existing && existing.version === ver) {
+        existing.handle.mesh.visible = true;
         setDcBodyVisible(scene, id, false);
         continue;
       }
@@ -320,9 +324,8 @@ function SdfOverlay() {
         entriesRef.current.set(id, { handle, version: ver });
         setDcBodyVisible(scene, id, false);
         console.log(`fielddraft: body ${id} → SDF raymarching (${opcodes.length} opcodes)`);
-        changed = true;
       } catch {
-        // Shader compilation can fail for edge cases; skip silently
+        setDcBodyVisible(scene, id, true);
       }
     }
 
@@ -332,15 +335,45 @@ function SdfOverlay() {
         disposeSdfBody(entry.handle);
         entriesRef.current.delete(id);
         setDcBodyVisible(scene, id, true);
-        changed = true;
       }
     }
 
-    if (changed) invalidate();
+    invalidate();
+  }, [store, scene, invalidate]);
+
+  useFrame(() => {
+    if (!store || !isWebGPU) return;
+    const kernel = store.kernel;
+    const count = kernel.bodyCount();
+
+    let anyDirty = false;
+    const seen = new Set<number>();
+    for (let i = 0; i < count; i++) {
+      const id = kernel.bodyId(i);
+      const ver = kernel.bodyVersion(i);
+      seen.add(id);
+      const existing = entriesRef.current.get(id);
+      if (!existing || existing.version !== ver) {
+        anyDirty = true;
+        if (existing) existing.handle.mesh.visible = false;
+        setDcBodyVisible(scene, id, true);
+      }
+    }
+    for (const [id] of entriesRef.current) {
+      if (!seen.has(id)) anyDirty = true;
+    }
+
+    if (!anyDirty) return;
+
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      rebuildSdf();
+    }, SDF_SETTLE_MS);
   });
 
   useEffect(() => {
     return () => {
+      clearTimeout(debounceRef.current);
       for (const [id, entry] of entriesRef.current.entries()) {
         scene.remove(entry.handle.mesh);
         disposeSdfBody(entry.handle);
