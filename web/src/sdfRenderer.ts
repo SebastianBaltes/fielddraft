@@ -46,50 +46,50 @@ import { MeshBasicNodeMaterial } from "three/webgpu";
 
 // ── Opcode tags (mirror crates/kernel/src/sdf_compiler.rs) ──────────
 
-const OP_PRIM_BOX       = 0x01;
-const OP_PRIM_SPHERE    = 0x02;
-const OP_PRIM_CYLINDER  = 0x03;
-const OP_PRIM_TORUS     = 0x04;
-const OP_PRIM_CONE      = 0x05;
-const OP_PRIM_CAPSULE   = 0x06;
-const OP_PRIM_HEX_PRISM = 0x07;
-const OP_PRIM_ELLIPSOID = 0x08;
-const OP_PRIM_CONST     = 0x09;
-const OP_PRIM_GYROID    = 0x0A;
-const OP_PRIM_THREAD    = 0x0B;
+export const OP_PRIM_BOX       = 0x01;
+export const OP_PRIM_SPHERE    = 0x02;
+export const OP_PRIM_CYLINDER  = 0x03;
+export const OP_PRIM_TORUS     = 0x04;
+export const OP_PRIM_CONE      = 0x05;
+export const OP_PRIM_CAPSULE   = 0x06;
+export const OP_PRIM_HEX_PRISM = 0x07;
+export const OP_PRIM_ELLIPSOID = 0x08;
+export const OP_PRIM_CONST     = 0x09;
+export const OP_PRIM_GYROID    = 0x0A;
+export const OP_PRIM_THREAD    = 0x0B;
 
-const OP_PRIM2D_CIRCLE  = 0x10;
-const OP_PRIM2D_RECT    = 0x11;
-const OP_PRIM2D_POLY    = 0x12;
-const OP_PRIM2D_SECTOR  = 0x13;
+export const OP_PRIM2D_CIRCLE  = 0x10;
+export const OP_PRIM2D_RECT    = 0x11;
+export const OP_PRIM2D_POLY    = 0x12;
+export const OP_PRIM2D_SECTOR  = 0x13;
 
-const OP_UNION          = 0x20;
-const OP_DIFFERENCE     = 0x21;
-const OP_INTERSECT      = 0x22;
-const OP_SMOOTH_UNION   = 0x23;
-const OP_SMOOTH_DIFF    = 0x24;
+export const OP_UNION          = 0x20;
+export const OP_DIFFERENCE     = 0x21;
+export const OP_INTERSECT      = 0x22;
+export const OP_SMOOTH_UNION   = 0x23;
+export const OP_SMOOTH_DIFF    = 0x24;
 
-const OP_SHELL          = 0x29;
-const OP_MORPH          = 0x2A;
-const OP_DISPLACE_VAL   = 0x2B;
-const OP_EXTRUDE        = 0x2C;
-const OP_REVOLVE_SCALE  = 0x2D;
-const OP_OFFSET_2D      = 0x2E;
+export const OP_SHELL          = 0x29;
+export const OP_MORPH          = 0x2A;
+export const OP_DISPLACE_VAL   = 0x2B;
+export const OP_EXTRUDE        = 0x2C;
+export const OP_REVOLVE_SCALE  = 0x2D;
+export const OP_OFFSET_2D      = 0x2E;
 
-const OP_WARP_PUSH      = 0x30;
-const OP_WARP_POP       = 0x31;
-const OP_WARP_TWIST     = 0x32;
-const OP_WARP_BEND      = 0x33;
-const OP_WARP_TRANSFORM = 0x34;
-const OP_WARP_REVOLVE   = 0x35;
+export const OP_WARP_PUSH      = 0x30;
+export const OP_WARP_POP       = 0x31;
+export const OP_WARP_TWIST     = 0x32;
+export const OP_WARP_BEND      = 0x33;
+export const OP_WARP_TRANSFORM = 0x34;
+export const OP_WARP_REVOLVE   = 0x35;
 
-const OP_MASKED_BLEND   = 0x40;
+export const OP_MASKED_BLEND   = 0x40;
 
-const OP_END            = 0xFF;
+export const OP_END            = 0xFF;
 
 // ── WGSL helper functions ───────────────────────────────────────────
 
-const worldToLocalFn = wgslFn(`
+export const worldToLocalFn = wgslFn(`
   fn fd_world_to_local(p: vec3f, translate: vec3f, quat: vec4f, scale: f32) -> vec3f {
     let c = p - translate;
     let qx = -quat.x;
@@ -108,7 +108,7 @@ const worldToLocalFn = wgslFn(`
   }
 `);
 
-const sdfBoxFn = wgslFn(`
+export const sdfBoxFn = wgslFn(`
   fn fd_sdf_box(p: vec3f, h: vec3f) -> f32 {
     let q = abs(p) - h;
     let outside = length(max(q, vec3f(0.0)));
@@ -117,13 +117,13 @@ const sdfBoxFn = wgslFn(`
   }
 `);
 
-const sdfSphereFn = wgslFn(`
+export const sdfSphereFn = wgslFn(`
   fn fd_sdf_sphere(p: vec3f, r: f32) -> f32 {
     return length(p) - r;
   }
 `);
 
-const sdfCylinderFn = wgslFn(`
+export const sdfCylinderFn = wgslFn(`
   fn fd_sdf_cylinder(p: vec3f, r: f32, hh: f32) -> f32 {
     let radial = length(vec2f(p.x, p.z)) - r;
     let axial = abs(p.y) - hh;
@@ -133,14 +133,14 @@ const sdfCylinderFn = wgslFn(`
   }
 `);
 
-const sdfTorusFn = wgslFn(`
+export const sdfTorusFn = wgslFn(`
   fn fd_sdf_torus(p: vec3f, major: f32, minor: f32) -> f32 {
     let q0 = length(vec2f(p.x, p.z)) - major;
     return length(vec2f(q0, p.y)) - minor;
   }
 `);
 
-const sdfConeFn = wgslFn(`
+export const sdfConeFn = wgslFn(`
   fn fd_sdf_cone(p: vec3f, rb: f32, rt: f32, hh: f32) -> f32 {
     let r = length(vec2f(p.x, p.z));
     let t = clamp((p.y + hh) / (2.0 * hh), 0.0, 1.0);
@@ -154,7 +154,7 @@ const sdfConeFn = wgslFn(`
   }
 `);
 
-const sdfCapsuleFn = wgslFn(`
+export const sdfCapsuleFn = wgslFn(`
   fn fd_sdf_capsule(p: vec3f, r: f32, hh: f32) -> f32 {
     let rv = length(vec2f(p.x, p.z));
     let yc = clamp(p.y, -hh, hh);
@@ -163,7 +163,7 @@ const sdfCapsuleFn = wgslFn(`
   }
 `);
 
-const sdfHexPrismFn = wgslFn(`
+export const sdfHexPrismFn = wgslFn(`
   fn fd_sdf_hex_prism(p: vec3f, apothem: f32, hh: f32) -> f32 {
     let qx = abs(p.x);
     let qz = abs(p.z);
@@ -176,7 +176,7 @@ const sdfHexPrismFn = wgslFn(`
   }
 `);
 
-const sdfEllipsoidFn = wgslFn(`
+export const sdfEllipsoidFn = wgslFn(`
   fn fd_sdf_ellipsoid(p: vec3f, radii: vec3f) -> f32 {
     let r_min = min(radii.x, min(radii.y, radii.z));
     let q = p / radii;
@@ -184,7 +184,7 @@ const sdfEllipsoidFn = wgslFn(`
   }
 `);
 
-const sdfGyroidFn = wgslFn(`
+export const sdfGyroidFn = wgslFn(`
   fn fd_sdf_gyroid(p: vec3f, cell_size: f32, thickness: f32) -> f32 {
     let s = p / cell_size;
     let f = sin(s.x) * cos(s.y) + sin(s.y) * cos(s.z) + sin(s.z) * cos(s.x);
@@ -192,7 +192,7 @@ const sdfGyroidFn = wgslFn(`
   }
 `);
 
-const sdfThreadFn = wgslFn(`
+export const sdfThreadFn = wgslFn(`
   fn fd_sdf_thread(p: vec3f, nom_r: f32, pitch: f32, depth: f32, hh: f32) -> f32 {
     let r = length(vec2f(p.x, p.z));
     let theta = atan2(p.z, p.x);
@@ -205,7 +205,7 @@ const sdfThreadFn = wgslFn(`
   }
 `);
 
-const blendMinFn = wgslFn(`
+export const blendMinFn = wgslFn(`
   fn fd_blend_min(a: f32, b: f32, r: f32, mode: f32) -> f32 {
     if (mode < 0.5) {
       let h = clamp(0.5 + 0.5 * (b - a) / r, 0.0, 1.0);
@@ -216,7 +216,7 @@ const blendMinFn = wgslFn(`
   }
 `);
 
-const sdfCapsule3dFn = wgslFn(`
+export const sdfCapsule3dFn = wgslFn(`
   fn fd_sdf_capsule_3d(p: vec3f, a: vec3f, b: vec3f, r: f32) -> f32 {
     let ab = b - a;
     let ap = p - a;
@@ -230,7 +230,7 @@ const sdfCapsule3dFn = wgslFn(`
   }
 `);
 
-const sdfExtrudeFn = wgslFn(`
+export const sdfExtrudeFn = wgslFn(`
   fn fd_sdf_extrude(d2d: f32, z: f32, half_h: f32) -> f32 {
     let wz = abs(z) - half_h;
     let outside = length(vec2f(max(d2d, 0.0), max(wz, 0.0)));
@@ -239,7 +239,7 @@ const sdfExtrudeFn = wgslFn(`
   }
 `);
 
-const sdfRect2dFn = wgslFn(`
+export const sdfRect2dFn = wgslFn(`
   fn fd_sdf_rect_2d(p: vec2f, center: vec2f, half: vec2f) -> f32 {
     let q = abs(p - center) - half;
     let outside = length(max(q, vec2f(0.0)));
@@ -248,13 +248,13 @@ const sdfRect2dFn = wgslFn(`
   }
 `);
 
-const sdfCircle2dFn = wgslFn(`
+export const sdfCircle2dFn = wgslFn(`
   fn fd_sdf_circle_2d(p: vec2f, center: vec2f, r: f32) -> f32 {
     return length(p - center) - r;
   }
 `);
 
-const sdfSector2dFn = wgslFn(`
+export const sdfSector2dFn = wgslFn(`
   fn fd_sdf_sector_2d(p: vec2f, cx: f32, cy: f32, r: f32, start_angle: f32, sweep_angle: f32) -> f32 {
     let dx = p.x - cx;
     let dy = p.y - cy;
@@ -278,7 +278,7 @@ const sdfSector2dFn = wgslFn(`
   }
 `);
 
-const ALL_INCLUDES = [
+export const ALL_INCLUDES = [
   worldToLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
@@ -288,10 +288,10 @@ const ALL_INCLUDES = [
 
 // ── Raymarching constants ───────────────────────────────────────────
 
-const MAX_STEPS = 96;
-const SURFACE_EPS = 0.001;
-const NORMAL_EPS = 0.01;
-const MAX_DIST = 1200;
+export const MAX_STEPS = 96;
+export const SURFACE_EPS = 0.001;
+export const NORMAL_EPS = 0.01;
+export const MAX_DIST = 1200;
 
 // ── Opcode → WGSL transpiler ────────────────────────────────────────
 
