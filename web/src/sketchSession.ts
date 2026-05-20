@@ -242,6 +242,26 @@ export function buildDraftSketchState(
           line: leftId,
         });
       }
+    } else if (call.type === "sketch_polygon") {
+      const verts = call.params.vertices;
+      if (Array.isArray(verts)) {
+        for (let i = 0; i + 1 < verts.length; i += 2) {
+          state.entities.push({
+            kind: "point",
+            id: state.next_entity_id++,
+            at: { x: Number(verts[i]), y: Number(verts[i + 1]) },
+          });
+        }
+      }
+    } else if (call.type === "sketch_arc") {
+      const center = call.params.center;
+      if (Array.isArray(center) && center.length === 2) {
+        state.entities.push({
+          kind: "point",
+          id: state.next_entity_id++,
+          at: { x: Number(center[0]), y: Number(center[1]) },
+        });
+      }
     } else if (call.type === "sketch_constraint_horizontal") {
       const line = Number(call.params.line);
       if (Number.isFinite(line)) {

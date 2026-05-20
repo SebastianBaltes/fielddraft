@@ -76,6 +76,40 @@ export interface FeatureDialogProps {
   footer?: React.ReactNode;
 }
 
+export const FEATURE_TYPE_LABELS: Record<string, string> = {
+  box: "Box",
+  sphere: "Sphere",
+  cylinder: "Cylinder",
+  hex_prism: "Hex Prism",
+  ellipsoid: "Ellipsoid",
+  capsule: "Capsule",
+  cone: "Cone",
+  torus: "Torus",
+  sketch: "Sketch",
+  extrude: "Extrude",
+  revolve: "Revolve",
+  hole: "Hole",
+  thread: "Thread",
+  gyroid: "Gyroid",
+  linear_pattern: "Linear Pattern",
+  circular_pattern: "Circular Pattern",
+  mirror: "Mirror",
+  mate_connector: "Mate Connector",
+  fillet_edge: "Fillet Edge",
+  sweep: "Sweep",
+  transform: "Transform",
+  imported_mesh: "Imported Mesh",
+  sketch_line: "Line",
+  sketch_rectangle: "Rectangle",
+  sketch_circle: "Circle",
+  sketch_polygon: "Polygon",
+  sketch_arc: "Arc",
+  sketch_point: "Point",
+  sketch_mirror: "Mirror",
+  sketch_trim: "Trim",
+  sketch_offset: "Offset",
+};
+
 export function FeatureDialog({
   schema,
   definition,
@@ -90,7 +124,7 @@ export function FeatureDialog({
   return (
     <div className="fd-feature-dialog" data-feature-type={schema.type}>
       <div className="header">
-        <div className="title">{schema.type}</div>
+        <div className="title">{FEATURE_TYPE_LABELS[schema.type] ?? schema.type}</div>
         {onCommit || onCancel ? (
           <div className="header-actions">
             {onCommit ? (
@@ -408,7 +442,7 @@ function WidgetFor({
     case "unknown":
       return (
         <UnknownWidget
-          label={`${param.label} (raw)`}
+          label={param.label}
           value={value}
           required={param.required}
           error={error}

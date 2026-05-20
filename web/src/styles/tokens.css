@@ -87,3 +87,40 @@
   --toolbar-height: 3rem;
   --outliner-width: 19rem;
 }
+
+/* ── Dark mode overrides ──────────────────────────────────── */
+[data-theme="dark"] {
+  --color-bg: #1e1e22;
+  --color-bg-elevated: #2a2a30;
+  --color-bg-sunken: #16161a;
+  --color-bg-hover: #333339;
+  --color-bg-active: #3e3e46;
+
+  --color-border: #3e3e46;
+  --color-border-strong: #56565e;
+  --color-divider: #333339;
+
+  --color-text: #e8e8ec;
+  --color-text-muted: #a0a0aa;
+  --color-text-subtle: #7c7c86;
+  --color-text-on-accent: #ffffff;
+
+  --color-accent: #5b8fd9;
+  --color-accent-hover: #7aa8e8;
+  --color-accent-soft: #1e3350;
+
+  --color-union: #4db86a;
+  --color-union-soft: #1a3324;
+  --color-difference: #e05555;
+  --color-difference-soft: #3a1a1a;
+  --color-intersect: #d4952e;
+  --color-intersect-soft: #3a2e14;
+
+  --color-error: #e05555;
+  --color-warning: #d4952e;
+  --color-success: #4db86a;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+}

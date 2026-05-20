@@ -35,6 +35,7 @@ export function AppShell() {
   // responds (200 or 401), show the auth gate. If the fetch
   // fails or times out (no server), go to offline mode.
   useEffect(() => {
+    if (skipProbe) return;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1000);
     fetch("/api/me", {
@@ -53,6 +54,10 @@ export function AppShell() {
         clearTimeout(timer);
         setRoute({ view: "offline" });
       });
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, []);
 
   switch (route.view) {

@@ -7,10 +7,22 @@
 
 export type ViewPreset = "front" | "top" | "right" | "iso" | null;
 
-const state: { pending: ViewPreset } = { pending: null };
+const state: { pending: ViewPreset; invalidate: (() => void) | null } = {
+  pending: null,
+  invalidate: null,
+};
+
+export function registerInvalidate(fn: () => void): void {
+  state.invalidate = fn;
+}
 
 export function requestView(preset: ViewPreset): void {
   state.pending = preset;
+  state.invalidate?.();
+}
+
+export function peekViewCommand(): ViewPreset {
+  return state.pending;
 }
 
 export function consumeViewCommand(): ViewPreset {

@@ -111,6 +111,8 @@ export function downloadR3FExport(assembly: AssemblyDocument): void {
   const a = document.createElement("a");
   a.href = url;
   a.download = `${sanitizeName(assembly.name) || "assembly"}.tsx`;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }

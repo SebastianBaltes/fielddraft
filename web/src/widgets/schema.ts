@@ -226,7 +226,7 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
   }
   const p = raw as Record<string, unknown>;
   const key = asString(p.key, `${where}.key`);
-  const label = asString(p.name, `${where}.name`);
+  const label = prettifyLabel(asString(p.name, `${where}.name`));
   const rawType = asString(p.type, `${where}.type`);
   // `required` is optional for group entries — they have no
   // inherent required-ness. For leaf params the derive always
@@ -337,6 +337,12 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
   }
 
   return descriptor;
+}
+
+const UNIT_SUFFIXES = /\s+(deg|rad|mm|cm|m|in)$/i;
+
+function prettifyLabel(label: string): string {
+  return label.replace(UNIT_SUFFIXES, "");
 }
 
 function asString(value: unknown, where: string): string {

@@ -34,6 +34,9 @@
     }
 
     & .meta {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
       font-size: var(--fs-base);
       color: var(--color-text-muted);
     }

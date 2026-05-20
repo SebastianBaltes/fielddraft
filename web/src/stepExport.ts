@@ -11,28 +11,28 @@ import type {
   StepExportRequest,
   StepWorkerMessage,
 } from "./occt.worker";
+import { getOcctWorker } from "./occtWorkerSingleton";
 
 export type StepProgress = (phase: string) => void;
 
-let workerInstance: Worker | null = null;
-
-function getWorker(): Worker {
-  if (!workerInstance) {
-    workerInstance = new Worker(
-      new URL("./occt.worker.ts", import.meta.url),
-      { type: "module" },
-    );
-  }
-  return workerInstance;
-}
+let inflight = false;
 
 export function exportStep(
   commands: StepCommand[],
   onProgress?: StepProgress,
 ): Promise<Uint8Array> {
+  if (inflight) {
+    return Promise.reject(new Error("A STEP export is already in progress"));
+  }
+  inflight = true;
+  let worker: Worker;
+  try {
+    worker = getOcctWorker();
+  } catch (e) {
+    inflight = false;
+    return Promise.reject(e);
+  }
   return new Promise((resolve, reject) => {
-    const worker = getWorker();
-
     const handler = (e: MessageEvent<StepWorkerMessage>) => {
       switch (e.data.type) {
         case "step-progress":
@@ -40,10 +40,12 @@ export function exportStep(
           break;
         case "step-result":
           worker.removeEventListener("message", handler);
+          inflight = false;
           resolve(e.data.data);
           break;
         case "step-error":
           worker.removeEventListener("message", handler);
+          inflight = false;
           reject(new Error(e.data.message));
           break;
       }
@@ -58,4 +60,3 @@ export function exportStep(
     worker.postMessage(request);
   });
 }
-

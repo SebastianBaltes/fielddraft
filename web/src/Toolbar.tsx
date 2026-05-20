@@ -10,7 +10,7 @@
  * are always visible.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
@@ -24,7 +24,7 @@ const PRIMITIVE_TOOLS: { kind: PrimitiveToolKind; glyph: string; label: string; 
   { kind: "box", glyph: "▣", label: "Box", title: "Add Box" },
   { kind: "sphere", glyph: "●", label: "Sphere", title: "Add Sphere" },
   { kind: "cylinder", glyph: "⬢", label: "Cylinder", title: "Add Cylinder" },
-  { kind: "hex_prism", glyph: "⬡", label: "Hex", title: "Add Hex Prism (apothem 25 mm)" },
+  { kind: "hex_prism", glyph: "⬡", label: "Hex Prism", title: "Add Hex Prism (apothem 25 mm)" },
   { kind: "ellipsoid", glyph: "⬬", label: "Ellipsoid", title: "Add Ellipsoid (40×25×30 mm)" },
   { kind: "capsule", glyph: "⬭", label: "Capsule", title: "Add Capsule (R20 × H80 mm)" },
   { kind: "cone", glyph: "△", label: "Cone", title: "Add Cone (frustum R40/10 × H120 mm)" },
@@ -149,13 +149,7 @@ interface ToolItem {
   group: number;
 }
 
-function getOverflowThreshold(width: number): number {
-  if (width >= 1400) return 6;
-  if (width >= 1100) return 5;
-  if (width >= 900) return 4;
-  if (width >= 700) return 3;
-  return 2;
-}
+const ALWAYS_VISIBLE_PRIORITY = 0;
 
 function ToolButton({ item }: { item: ToolItem }) {
   return (
@@ -176,6 +170,8 @@ function ToolButton({ item }: { item: ToolItem }) {
 
 function MoreDropdown({ items }: { items: ToolItem[] }) {
   const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -187,11 +183,18 @@ function MoreDropdown({ items }: { items: ToolItem[] }) {
     return () => window.removeEventListener("click", close);
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+  }, [open]);
+
   if (items.length === 0) return null;
 
   return (
     <div className="more-dropdown-wrapper">
       <button
+        ref={btnRef}
         type="button"
         className="tool"
         title="More tools"
@@ -205,8 +208,12 @@ function MoreDropdown({ items }: { items: ToolItem[] }) {
       >
         ··· More
       </button>
-      {open && (
-        <div className="more-dropdown" role="menu">
+      {open && pos && (
+        <div
+          className="more-dropdown"
+          role="menu"
+          style={{ top: pos.top, right: pos.right }}
+        >
           {items.map((item) => (
             <button
               key={item.id}
@@ -246,7 +253,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
   const sketchSession = state.sketchSession;
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const [threshold, setThreshold] = useState(6);
+  const [hideCount, setHideCount] = useState(0);
+  const prevWidth = useRef(0);
 
   const [sketchToolTypes, setSketchToolTypes] = useState<readonly string[]>([]);
   useEffect(() => {
@@ -261,11 +269,23 @@ export function Toolbar({ store, state }: ToolbarProps) {
     const el = toolbarRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
-      setThreshold(getOverflowThreshold(entry.contentRect.width));
+      const w = entry.contentRect.width;
+      if (w > prevWidth.current) {
+        setHideCount(0);
+      }
+      prevWidth.current = w;
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      setHideCount((c) => c + 1);
+    }
+  });
 
   const handleSketchEnter = () => {
     if (state.features.length > 0) {
@@ -402,8 +422,19 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "view-iso", priority: 5, group: 3, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
   ];
 
-  const visible = items.filter((i) => i.priority < threshold);
-  const overflow = items.filter((i) => i.priority >= threshold);
+  const hiddenIds = useMemo(() => {
+    const collapsible = items
+      .filter((i) => i.priority > ALWAYS_VISIBLE_PRIORITY)
+      .sort((a, b) => b.priority - a.priority || items.indexOf(b) - items.indexOf(a));
+    const ids = new Set<string>();
+    for (let i = 0; i < hideCount && i < collapsible.length; i++) {
+      ids.add(collapsible[i].id);
+    }
+    return ids;
+  }, [items, hideCount]);
+
+  const visible = items.filter((i) => !hiddenIds.has(i.id));
+  const overflow = items.filter((i) => hiddenIds.has(i.id));
 
   const groups = [0, 1, 2, 3] as const;
 
@@ -504,6 +535,8 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
     loadLastUsedPrimitive(),
   );
   const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -513,6 +546,12 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
     };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !wrapperRef.current) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left });
   }, [open]);
 
   const current =
@@ -527,7 +566,7 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
   };
 
   return (
-    <div className="primitive-split-button" data-testid="primitive-split-button">
+    <div className="primitive-split-button" data-testid="primitive-split-button" ref={wrapperRef}>
       <button
         type="button"
         className="tool primary"
@@ -553,8 +592,8 @@ function PrimitiveSplitButton({ store }: { store: KernelStore }) {
       >
         ▾
       </button>
-      {open ? (
-        <div className="primitive-dropdown" role="menu">
+      {open && pos ? (
+        <div className="primitive-dropdown" role="menu" style={{ top: pos.top, left: pos.left }}>
           {PRIMITIVE_TOOLS.map((tool) => {
             const active = tool.kind === lastUsed;
             return (
@@ -597,6 +636,8 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
     return "M6";
   });
   const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -606,6 +647,12 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
     };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !wrapperRef.current) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left });
   }, [open]);
 
   const current = THREAD_PRESETS.find((t) => t.key === lastUsed) ?? THREAD_PRESETS[3];
@@ -619,7 +666,7 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
   };
 
   return (
-    <div className="thread-split-button" data-testid="thread-split-button">
+    <div className="thread-split-button" data-testid="thread-split-button" ref={wrapperRef}>
       <button
         type="button"
         className="tool primary"
@@ -644,8 +691,8 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
       >
         ▾
       </button>
-      {open ? (
-        <div className="thread-dropdown" role="menu">
+      {open && pos ? (
+        <div className="thread-dropdown" role="menu" style={{ top: pos.top, left: pos.left }}>
           {THREAD_PRESETS.map((preset) => {
             const active = preset.key === lastUsed;
             return (

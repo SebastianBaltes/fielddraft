@@ -583,6 +583,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         dragRef.current,
         hoverRef.current,
         snapRef.current,
+        projectedEdgesRef.current,
       );
     }
   };
@@ -709,6 +710,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           dragRef.current,
           hoverRef.current,
           snapRef.current,
+          projectedEdgesRef.current,
         );
       }
       return;
@@ -882,8 +884,28 @@ function rebuildSubCallsFromSolved(
         params: { ...call.params, corner_a: bl, corner_b: tr },
       };
     }
-    // Constraint calls don't allocate entities; leave them
-    // verbatim.
+    if (call.type === "sketch_polygon") {
+      const verts = call.params.vertices;
+      if (Array.isArray(verts)) {
+        const numPoints = Math.floor(verts.length / 2);
+        const newVerts: number[] = [];
+        for (let i = 0; i < numPoints; i++) {
+          const pt = pointAt(nextId++);
+          if (pt) {
+            newVerts.push(pt[0], pt[1]);
+          } else {
+            newVerts.push(Number(verts[i * 2]), Number(verts[i * 2 + 1]));
+          }
+        }
+        return { ...call, params: { ...call.params, vertices: newVerts } };
+      }
+      return call;
+    }
+    if (call.type === "sketch_arc") {
+      const center = pointAt(nextId++);
+      if (!center) return call;
+      return { ...call, params: { ...call.params, center } };
+    }
     return call;
   });
 }
@@ -1012,6 +1034,48 @@ function drawOverlay(
       const radius = Number(call.params.radius);
       if (center && Number.isFinite(radius) && radius > 0) {
         drawCircle(ctx, center, radius, cam, committedColor);
+        drawPoint(ctx, center, cam, committedColor);
+      }
+    } else if (call.type === "sketch_polygon") {
+      const verts = call.params.vertices;
+      if (Array.isArray(verts) && verts.length >= 4) {
+        const points: [number, number][] = [];
+        for (let i = 0; i + 1 < verts.length; i += 2) {
+          points.push([Number(verts[i]), Number(verts[i + 1])]);
+        }
+        for (let i = 0; i < points.length; i++) {
+          const a = points[i];
+          const b = points[(i + 1) % points.length];
+          drawLine(ctx, a, b, cam, committedColor, STROKE_PX);
+        }
+        for (const p of points) {
+          drawPoint(ctx, p, cam, committedColor);
+        }
+      }
+    } else if (call.type === "sketch_arc") {
+      const center = toXy(call.params.center);
+      const radius = Number(call.params.radius);
+      const a0 = Number(call.params.start_angle);
+      const sweep = Number(call.params.sweep_angle);
+      if (
+        center &&
+        Number.isFinite(radius) &&
+        radius > 0 &&
+        Number.isFinite(a0) &&
+        Number.isFinite(sweep)
+      ) {
+        const a1 = a0 + sweep;
+        const [cx, cy] = sketchToScreen(center[0], center[1], cam);
+        const radiusPx = radius * cam.zoom;
+        if (radiusPx >= 0.5) {
+          ctx.save();
+          ctx.strokeStyle = committedColor;
+          ctx.lineWidth = STROKE_PX;
+          ctx.beginPath();
+          ctx.arc(cx, cy, radiusPx, a0, a1, sweep < 0);
+          ctx.stroke();
+          ctx.restore();
+        }
         drawPoint(ctx, center, cam, committedColor);
       }
     }

@@ -14,6 +14,10 @@ export function App() {
 
   const compact = settings.compact;
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.theme;
+  }, [settings.theme]);
+
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
   useEffect(() => {
@@ -73,16 +77,19 @@ export function App() {
       // focus is in an input (guard at the top of onKey).
       if (!ctrl && !e.shiftKey && !e.altKey) {
         switch (e.key) {
-          case "Escape":
-            if (state?.facePickMode) {
+          case "Escape": {
+            const cur = store.getState();
+            if (cur.facePickMode) {
               store.cancelFacePickMode();
-            } else if (state?.mateMode) {
+              store.enterSketch("qCreatedBy(origin_plane_xy)");
+            } else if (cur.mateMode) {
               store.toggleMateMode();
             } else {
               store.clearSelection();
             }
             e.preventDefault();
             return;
+          }
           case "b":
             store.addPrimitive("box");
             e.preventDefault();

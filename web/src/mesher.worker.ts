@@ -63,6 +63,7 @@ interface ReadyKernel {
 
 export interface MesherBodyPayload {
   id: number;
+  seedId: number;
   version: number;
   positions: Float32Array;
   normals: Float32Array;
@@ -190,6 +191,7 @@ function snapshotBodies(
 
     bodies.push({
       id: kernel.bodyId(i),
+      seedId: kernel.bodySeedFeatureId(i),
       version: kernel.bodyVersion(i),
       positions,
       normals,
@@ -284,6 +286,13 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
     handleFdCall(msg).catch((err) => {
       // eslint-disable-next-line no-console
       console.error("fielddraft mesher worker: fd_call failed", err);
+      const errorResponse: FdCallResponse = {
+        type: "fd_result",
+        requestId: msg.requestId,
+        ok: false,
+        error: String(err),
+      };
+      self.postMessage(errorResponse);
     });
     return;
   }
@@ -291,10 +300,13 @@ self.addEventListener("message", (event: MessageEvent<unknown>) => {
   const rebuild = msg as MesherRequest;
   if (rebuild.type !== "rebuild") return;
   handleRebuild(rebuild).catch((err) => {
-    // Surface worker-side failures to the main thread's console
-    // instead of dying silently — the store has no way to detect
-    // a crash otherwise.
     // eslint-disable-next-line no-console
     console.error("fielddraft mesher worker: rebuild failed", err);
+    const errorResponse: MesherBodiesResponse = {
+      type: "bodies",
+      requestId: (rebuild as MesherRebuildRequest).requestId,
+      bodies: [],
+    };
+    self.postMessage(errorResponse);
   });
 });

@@ -2,37 +2,36 @@
  * M14i: STEP import bridge.
  *
  * Wraps the OCCT Web Worker with a promise-based API for importing
- * STEP files. Reuses the same worker instance as stepExport.ts.
- * The worker reads the STEP file via OpenCASCADE, tessellates the
- * B-Rep shapes, and returns positions + indices for MeshSdf.
+ * STEP files. Shares the same worker instance as stepExport.ts via
+ * the occtWorkerSingleton module.
  */
 
 import type {
   StepImportRequest,
   StepWorkerMessage,
 } from "./occt.worker";
+import { getOcctWorker } from "./occtWorkerSingleton";
 
 export type StepProgress = (phase: string) => void;
 
-let workerInstance: Worker | null = null;
-
-function getWorker(): Worker {
-  if (!workerInstance) {
-    workerInstance = new Worker(
-      new URL("./occt.worker.ts", import.meta.url),
-      { type: "module" },
-    );
-  }
-  return workerInstance;
-}
+let inflight = false;
 
 export function importStep(
   fileBytes: Uint8Array,
   onProgress?: StepProgress,
 ): Promise<{ positions: Float32Array; normals: Float32Array; indices: Uint32Array }> {
+  if (inflight) {
+    return Promise.reject(new Error("A STEP import is already in progress"));
+  }
+  inflight = true;
+  let worker: Worker;
+  try {
+    worker = getOcctWorker();
+  } catch (e) {
+    inflight = false;
+    return Promise.reject(e);
+  }
   return new Promise((resolve, reject) => {
-    const worker = getWorker();
-
     const handler = (e: MessageEvent<StepWorkerMessage>) => {
       switch (e.data.type) {
         case "step-progress":
@@ -40,6 +39,7 @@ export function importStep(
           break;
         case "import-result":
           worker.removeEventListener("message", handler);
+          inflight = false;
           resolve({
             positions: e.data.positions,
             normals: e.data.normals,
@@ -48,6 +48,7 @@ export function importStep(
           break;
         case "step-error":
           worker.removeEventListener("message", handler);
+          inflight = false;
           reject(new Error(e.data.message));
           break;
       }

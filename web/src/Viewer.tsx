@@ -96,8 +96,13 @@ function ViewerBody({ body }: { body: ViewerBody }) {
     g.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
     g.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
     g.setIndex(new THREE.BufferAttribute(body.indices, 1));
+    g.computeBoundingSphere();
     return g;
   }, [body]);
+
+  useEffect(() => {
+    return () => geom.dispose();
+  }, [geom]);
 
   return (
     <mesh geometry={geom}>
