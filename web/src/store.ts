@@ -537,6 +537,11 @@ export class KernelStore {
     const count = this.kernel.bodyCount();
     const out: MeshedBody[] = [];
     for (let i = 0; i < count; i++) {
+      let transformDelta: [number, number, number] | null = null;
+      if (this.kernel.bodyHasTransformDelta(i)) {
+        const d = this.kernel.bodyTransformDelta(i);
+        transformDelta = [d[0], d[1], d[2]];
+      }
       out.push({
         id: this.kernel.bodyId(i),
         seedId: this.kernel.bodySeedFeatureId(i),
@@ -546,6 +551,7 @@ export class KernelStore {
         indices: this.kernel.bodyIndicesView(i).slice(),
         classifications: this.kernel.bodyClassificationsView(i).slice(),
         contributors: this.kernel.bodyContributorsView(i).slice(),
+        transformDelta,
       });
     }
     return out;

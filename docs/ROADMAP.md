@@ -68,6 +68,28 @@ Dieser Slice ist Infrastruktur, kein User‑Feature: Er baut im Meshing‑Worker
 - **Testsuite (rein deterministisch, `cargo test`, keine UI):** Fixture‑Suite kanonischer Referenzkörper (Box, Zylinder mit Bohrung, Box mit Fillet, Union zweier Zylinder). Vier Metriken: (a) **Hausdorff‑Distanz** (`|SDF(v)| < ε` für analytische Flächen nach Newton‑Projektion), (b) **Dreieckszahl pro Face‑Typ** (planare Box‑Seite von ~5.000 auf einstellig), (c) **Manifold‑Check** (jede Kante exakt zwei Dreiecke), (d) **Dreieck‑Aspektverhältnis** (Sliver‑Detection).
 - **Abnahme:** Alle vier Metriken grün auf der Referenz‑Suite; Standard‑DC‑Pfad bleibt als Fallback im Worker erhalten und wird während Live‑Drags aktiviert; K1/K2/K3/K4‑Goldfiles laufen unverändert grün.
 
+### T1 · K3.6 — Dirty‑Tracking‑Fixes & Affine‑Transform‑Fastpath
+
+- **Hash‑Bug‑Fix:** 7 geometrie‑beeinflussende Feature‑Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) fehlten im Payload‑Hash → Änderungen an diesen Feldern triggerten kein Remesh.
+- **Split‑Hash:** `hash_body_payload` aufgeteilt in `geometry_hash` (Primitiv + Modifier) und `transform_hash` (Translate/Rotation/Scale). Ermöglicht Erkennung reiner Transformations‑Änderungen.
+- **Affine‑Fastpath:** Wenn `geometry_hash` unverändert und nur eine uniforme Translation erkannt wird, setzt der Kernel ein `transform_delta` statt ein volles Remesh auszulösen. Frontend wendet das Delta als GPU‑Matrix an (`mesh.position.set`).
+- **WASM‑API:** `bodyHasTransformDelta(i)`, `bodyTransformDelta(i)` für die Frontend‑Brücke.
+
+### T2 · K3.7 — Adaptives Dual Contouring + QEF *(offen)*
+
+- Neues Modul `mdc.rs`: Adaptive Octree‑Konstruktion mit rekursiver Unterteilung bei Sign‑Changes, Pruning homogener Zellen.
+- **QEF‑Solver:** 3×3 SVD‑basiert, akkumuliert Hermite‑Daten (Schnittpunkte + SDF‑Gradienten), optimale Vertex‑Platzierung statt Centroid.
+- **Quad‑Emission:** ProcessCell/ProcessFace/ProcessEdge‑Traversierung nach Schaefer/Ju/Warren, T‑Junction‑Handling an Octree‑Level‑Grenzen.
+- **Integration:** Dispatch auf `mdc_core` für Resolutions > 64, dichter DC‑Pfad bleibt für kleine Grids. Phase A/B/C Post‑Processing unverändert.
+- **Ziel:** Scharfe Kanten bei Boxen, adaptive Auflösung (fein an Kanten, grob auf Flächen), weniger Dreiecke insgesamt.
+
+### T3 · K3.8 — SDF‑CWF Export‑Mesher *(offen, langfristig)*
+
+- Neues Modul `cwf.rs`: Implementierung des SDF‑CWF‑Verfahrens (Liu et al., CAD 2025) für Slicer‑/STEP‑Export‑Qualität.
+- **Pipeline:** MC‑Seed → CVT + QEM‑Energie‑Optimierung → Power‑Diagram‑Triangulierung. L‑BFGS‑Solver, Feature‑Weights für Kantenerhaltung, abklingendes λ_CVT.
+- **Qualität:** 0 Non‑Manifold‑Vertices, 0 Open‑Boundaries, optimale Dreiecksqualität.
+- **Integration:** Export‑Button im Frontend triggert CWF‑Mesher im Worker. Nicht für Live‑Display gedacht.
+
 ### T0 · K4 — 2D‑Kernel, 2D‑BVH, Extrude, Revolve *(done)*
 - 2D‑SDF‑AST: Linie, Kreisbogen, Polygon, Offset‑Region; Composing über `min`/`max` analog zu 3D.
 - 2D‑BVH als Pflicht‑Pfad für **jede** Skizze, ohne adaptive Sonderfälle (kein Baking, kein Modulo).

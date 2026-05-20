@@ -70,6 +70,7 @@ export interface MesherBodyPayload {
   indices: Uint32Array;
   classifications: Uint8Array;
   contributors: Uint32Array;
+  transformDelta: [number, number, number] | null;
 }
 
 export interface MesherRebuildRequest {
@@ -189,6 +190,12 @@ function snapshotBodies(
       vertexCount * MESH_CONTRIBUTOR_STRIDE,
     ).slice();
 
+    let transformDelta: [number, number, number] | null = null;
+    if (kernel.bodyHasTransformDelta(i)) {
+      const d = kernel.bodyTransformDelta(i);
+      transformDelta = [d[0], d[1], d[2]];
+    }
+
     bodies.push({
       id: kernel.bodyId(i),
       seedId: kernel.bodySeedFeatureId(i),
@@ -198,6 +205,7 @@ function snapshotBodies(
       indices,
       classifications,
       contributors,
+      transformDelta,
     });
 
     transfers.push(

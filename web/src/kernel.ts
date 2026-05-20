@@ -220,6 +220,14 @@ export class Kernel {
     return this.inner.bodyVersion(i);
   }
 
+  bodyHasTransformDelta(i: number): boolean {
+    return this.inner.bodyHasTransformDelta(i);
+  }
+
+  bodyTransformDelta(i: number): Float32Array {
+    return this.inner.bodyTransformDelta(i);
+  }
+
   bodyVertexCount(i: number): number {
     return this.inner.bodyVertexCount(i);
   }

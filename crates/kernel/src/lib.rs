@@ -28,7 +28,10 @@ pub mod step_commands;
 pub mod sketch2d;
 pub mod sketch_features;
 
-use body::{build_bounded_for_body, build_bounded_with_primitives, hash_body_payload, partition, Body};
+use body::{
+    build_bounded_for_body, build_bounded_with_primitives, detect_uniform_translation,
+    hash_body_payload, hash_body_payload_split, partition, Body,
+};
 use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
@@ -582,10 +585,6 @@ impl Kernel {
     fn rebuild_mesh_internal(&mut self) {
         let partitions = partition(&self.document.features);
 
-        // Build a lookup of existing bodies keyed by stable id so we
-        // can tell which partitions just shuffled vs. which actually
-        // changed. `std::mem::take` lets us move meshes out of the
-        // old Vec without cloning their potentially-large buffers.
         let mut previous: std::collections::HashMap<FeatureId, Body> =
             std::mem::take(&mut self.bodies)
                 .into_iter()
@@ -595,52 +594,91 @@ impl Kernel {
         let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
         for part in partitions {
             let id = part.seed_id(&self.document.features);
-            let payload_hash =
-                hash_body_payload(&self.document.features, &part.feature_indices);
+            let (geometry_hash, transform_hash) =
+                hash_body_payload_split(&self.document.features, &part.feature_indices);
+            let payload_hash = hash_body_payload(&self.document.features, &part.feature_indices);
             let target_resolution = self.target_resolution_for(&id);
 
             if let Some(mut prev) = previous.remove(&id) {
                 if prev.payload_hash == payload_hash
                     && prev.mesh_resolution == target_resolution
                 {
-                    // Identical payload and LOD → reuse the cached
-                    // mesh as-is. Feature indices may have shifted
-                    // because other bodies were removed around it;
-                    // refresh the bookkeeping without touching the
-                    // mesh buffers or the per-body `version`.
                     prev.feature_indices = part.feature_indices;
                     prev.aabb = part.aabb;
                     new_bodies.push(prev);
                     continue;
                 }
-                // Either the payload *or* the LOD changed → re-mesh
-                // and bump this body's version counter.
+
+                // K3.6: affine fast-path — geometry unchanged, only
+                // transforms differ, and the change is a uniform
+                // translation across all features in the body.
+                if prev.geometry_hash == geometry_hash
+                    && prev.mesh_resolution == target_resolution
+                {
+                    let new_transforms: Vec<fielddraft_protocol::Transform> = part
+                        .feature_indices
+                        .iter()
+                        .map(|&i| self.document.features[i].transform)
+                        .collect();
+                    if let Some(delta) = detect_uniform_translation(
+                        &prev.last_mesh_transforms,
+                        &new_transforms,
+                    ) {
+                        let cumulative = match prev.transform_delta {
+                            Some([px, py, pz]) => [px + delta[0], py + delta[1], pz + delta[2]],
+                            None => delta,
+                        };
+                        prev.feature_indices = part.feature_indices;
+                        prev.aabb = part.aabb;
+                        prev.payload_hash = payload_hash;
+                        prev.geometry_hash = geometry_hash;
+                        prev.transform_hash = transform_hash;
+                        prev.transform_delta = Some(cumulative);
+                        prev.version = prev.version.wrapping_add(1);
+                        new_bodies.push(prev);
+                        continue;
+                    }
+                }
+
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
+                let transforms: Vec<fielddraft_protocol::Transform> = part
+                    .feature_indices
+                    .iter()
+                    .map(|&i| self.document.features[i].transform)
+                    .collect();
                 prev.feature_indices = part.feature_indices;
                 prev.aabb = part.aabb;
                 prev.payload_hash = payload_hash;
+                prev.geometry_hash = geometry_hash;
+                prev.transform_hash = transform_hash;
                 prev.mesh_resolution = target_resolution;
                 prev.mesh = mesh;
                 prev.version = prev.version.wrapping_add(1);
+                prev.transform_delta = None;
+                prev.last_mesh_transforms = transforms;
                 new_bodies.push(prev);
             } else {
-                // Fresh body — mesh from scratch at the target LOD.
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
+                let transforms: Vec<fielddraft_protocol::Transform> = part
+                    .feature_indices
+                    .iter()
+                    .map(|&i| self.document.features[i].transform)
+                    .collect();
                 new_bodies.push(Body {
                     id,
                     feature_indices: part.feature_indices,
                     aabb: part.aabb,
                     payload_hash,
+                    geometry_hash,
+                    transform_hash,
                     mesh_resolution: target_resolution,
                     mesh,
                     version: 1,
+                    transform_delta: None,
+                    last_mesh_transforms: transforms,
                 });
             }
         }
-        // Anything left in `previous` corresponds to bodies that no
-        // longer exist (their seed was removed / merged). They're
-        // dropped along with their meshes automatically when the
-        // map goes out of scope.
 
         self.bodies = new_bodies;
         self.mesh_version = self.mesh_version.wrapping_add(1);
@@ -2548,6 +2586,25 @@ impl Kernel {
     #[wasm_bindgen(js_name = bodyContributorsPtr)]
     pub fn body_contributors_ptr(&self, i: usize) -> *const u32 {
         self.bodies[i].mesh.contributors.as_ptr()
+    }
+
+    /// K3.6: returns `true` when the i-th body has a pending
+    /// translation delta that the frontend should apply as a GPU
+    /// matrix instead of re-uploading geometry.
+    #[wasm_bindgen(js_name = bodyHasTransformDelta)]
+    pub fn body_has_transform_delta(&self, i: usize) -> bool {
+        self.bodies[i].transform_delta.is_some()
+    }
+
+    /// K3.6: returns a 3-element `Float32Array` [dx, dy, dz] for
+    /// the i-th body's pending translation delta. Panics if the
+    /// body has no delta — guard with `bodyHasTransformDelta` first.
+    #[wasm_bindgen(js_name = bodyTransformDelta)]
+    pub fn body_transform_delta(&self, i: usize) -> Vec<f32> {
+        let d = self.bodies[i]
+            .transform_delta
+            .expect("no transform delta");
+        vec![d[0], d[1], d[2]]
     }
 
     /// Number of `u32` slots reserved per vertex in the per-body

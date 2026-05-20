@@ -102,6 +102,13 @@ pub struct Body {
     /// successful mesh rebuild. `rebuild_bodies` skips re-meshing
     /// when the hash still matches after a partition.
     pub payload_hash: u64,
+    /// Geometry-only hash (primitives, booleans, modifiers — no
+    /// transforms). Used by the affine fast-path: when this matches
+    /// but `transform_hash` doesn't, a pure translation can be
+    /// resolved as a GPU matrix instead of a full remesh.
+    pub geometry_hash: u64,
+    /// Transform-only hash (translate, rotation, scale per feature).
+    pub transform_hash: u64,
     /// Voxel grid resolution this body's cached mesh was built at.
     /// Stored alongside the hash so a change from active to context
     /// LOD (or vice versa) correctly invalidates the cache even
@@ -112,6 +119,13 @@ pub struct Body {
     /// actually rebuilt (payload hash changed or LOD switched),
     /// not on bookkeeping updates like feature-index renumbering.
     pub version: u32,
+    /// When set, the frontend applies this translation offset as a
+    /// GPU matrix instead of uploading new geometry. Cleared on the
+    /// next full remesh.
+    pub transform_delta: Option<[f32; 3]>,
+    /// Snapshot of per-feature transforms at the time of the last
+    /// full remesh. Used to detect uniform translation deltas.
+    pub last_mesh_transforms: Vec<fielddraft_protocol::Transform>,
 }
 
 /// Walk the feature spine once and return one [`BodyPartition`] per
@@ -180,35 +194,100 @@ fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
         && a.max[2] >= b.min[2]
 }
 
-/// Deterministic hash of a body's feature payload. Drives the
-/// incremental re-meshing decision in `Kernel::rebuild_bodies`: when
-/// the hash is unchanged across a mutation, the existing mesh is
-/// kept verbatim.
+/// Split hash of a body's feature payload: geometry vs. transform.
 ///
-/// The hash covers every f32 as its raw `u32` bit pattern — that
-/// sidesteps `f32`'s lack of `Hash` and, because the kernel only
-/// ever produces bit-identical floats for identical inputs, is
-/// stable across rebuilds.
-pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    // Salt the hash with the feature count so an otherwise
-    // coincidental f32 pattern from a different feature set doesn't
-    // look identical.
-    indices.len().hash(&mut hasher);
+/// `geometry_hash` covers everything that affects the CSG tree shape
+/// (primitive params, boolean op, modifier fields). `transform_hash`
+/// covers the per-feature affine placement (translate, rotation,
+/// scale). The combined `payload_hash` is a simple XOR of both —
+/// identical to the old single hash for cache-invalidation purposes,
+/// but the split lets `rebuild_mesh_internal` detect pure-translation
+/// changes and apply them as a GPU matrix without a full remesh.
+pub fn hash_body_payload_split(
+    features: &[Feature],
+    indices: &[usize],
+) -> (u64, u64) {
+    let mut geo = DefaultHasher::new();
+    let mut xform = DefaultHasher::new();
+    indices.len().hash(&mut geo);
+    indices.len().hash(&mut xform);
     for &i in indices {
         let f = &features[i];
-        f.id.hash(&mut hasher);
-        f.op.tag().hash(&mut hasher);
-        hash_primitive(&f.primitive, &mut hasher);
+        f.id.hash(&mut geo);
+        f.op.tag().hash(&mut geo);
+        hash_primitive(&f.primitive, &mut geo);
+        f.blend_radius.to_bits().hash(&mut geo);
+        f.chamfer_size.to_bits().hash(&mut geo);
+        f.twist_rate.to_bits().hash(&mut geo);
+        f.bend_rate.to_bits().hash(&mut geo);
+        f.displace_depth.to_bits().hash(&mut geo);
+        f.displace_freq.to_bits().hash(&mut geo);
+        f.shell_thickness.to_bits().hash(&mut geo);
+
+        f.id.hash(&mut xform);
         for v in f.transform.translate {
-            v.to_bits().hash(&mut hasher);
+            v.to_bits().hash(&mut xform);
         }
         for v in f.transform.rotation {
-            v.to_bits().hash(&mut hasher);
+            v.to_bits().hash(&mut xform);
         }
-        f.transform.scale.to_bits().hash(&mut hasher);
+        f.transform.scale.to_bits().hash(&mut xform);
     }
-    hasher.finish()
+    (geo.finish(), xform.finish())
+}
+
+/// Combined payload hash — backwards-compatible single value for
+/// the cache-invalidation check.
+pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
+    let (g, t) = hash_body_payload_split(features, indices);
+    combine_hashes(g, t)
+}
+
+fn combine_hashes(geometry: u64, transform: u64) -> u64 {
+    let mut h = DefaultHasher::new();
+    geometry.hash(&mut h);
+    transform.hash(&mut h);
+    h.finish()
+}
+
+/// Returns `Some([dx, dy, dz])` when every transform pair differs by
+/// the same pure translation (rotation + scale unchanged). Returns
+/// `None` on rotation/scale changes, mixed translations, or empty
+/// input.
+pub fn detect_uniform_translation(
+    old: &[fielddraft_protocol::Transform],
+    new: &[fielddraft_protocol::Transform],
+) -> Option<[f32; 3]> {
+    if old.len() != new.len() || old.is_empty() {
+        return None;
+    }
+    let mut delta: Option<[f32; 3]> = None;
+    for (o, n) in old.iter().zip(new.iter()) {
+        if o.rotation != n.rotation || o.scale != n.scale {
+            return None;
+        }
+        let d = [
+            n.translate[0] - o.translate[0],
+            n.translate[1] - o.translate[1],
+            n.translate[2] - o.translate[2],
+        ];
+        match delta {
+            None => delta = Some(d),
+            Some(prev) => {
+                if (d[0] - prev[0]).abs() > 1e-7
+                    || (d[1] - prev[1]).abs() > 1e-7
+                    || (d[2] - prev[2]).abs() > 1e-7
+                {
+                    return None;
+                }
+            }
+        }
+    }
+    let d = delta?;
+    if d[0] == 0.0 && d[1] == 0.0 && d[2] == 0.0 {
+        return None;
+    }
+    Some(d)
 }
 
 fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
@@ -597,5 +676,103 @@ mod tests {
 
         let diff = vec![box_feat(1, BoolOp::Difference, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
         assert_ne!(h0, hash_body_payload(&diff, &[0]));
+    }
+
+    fn with_modifier(mut f: Feature, field: &str, val: f32) -> Feature {
+        match field {
+            "blend_radius" => f.blend_radius = val,
+            "chamfer_size" => f.chamfer_size = val,
+            "twist_rate" => f.twist_rate = val,
+            "bend_rate" => f.bend_rate = val,
+            "displace_depth" => f.displace_depth = val,
+            "displace_freq" => f.displace_freq = val,
+            "shell_thickness" => f.shell_thickness = val,
+            _ => panic!("unknown field {field}"),
+        }
+        f
+    }
+
+    #[test]
+    fn hash_split_geometry_vs_transform() {
+        let base = vec![box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
+        let (g0, t0) = hash_body_payload_split(&base, &[0]);
+
+        let mut translated = base.clone();
+        translated[0].transform.translate = [1.0, 0.0, 0.0];
+        let (g1, t1) = hash_body_payload_split(&translated, &[0]);
+        assert_eq!(g0, g1, "geometry hash must not change on translation");
+        assert_ne!(t0, t1, "transform hash must change on translation");
+
+        let mut rotated = base.clone();
+        rotated[0].transform.rotation = [0.0, 0.707, 0.0, 0.707];
+        let (g2, t2) = hash_body_payload_split(&rotated, &[0]);
+        assert_eq!(g0, g2, "geometry hash must not change on rotation");
+        assert_ne!(t0, t2, "transform hash must change on rotation");
+
+        let mut blended = base.clone();
+        blended[0].blend_radius = 2.0;
+        let (g3, t3) = hash_body_payload_split(&blended, &[0]);
+        assert_ne!(g0, g3, "geometry hash must change on blend_radius");
+        assert_eq!(t0, t3, "transform hash must not change on blend_radius");
+    }
+
+    #[test]
+    fn detect_uniform_translation_pure_shift() {
+        use fielddraft_protocol::Transform;
+        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        let new = vec![Transform { translate: [5.0, 3.0, -1.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        assert_eq!(
+            detect_uniform_translation(&old, &new),
+            Some([5.0, 3.0, -1.0])
+        );
+    }
+
+    #[test]
+    fn detect_uniform_translation_rejects_rotation_change() {
+        use fielddraft_protocol::Transform;
+        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        let new = vec![Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.707, 0.0, 0.707], scale: 1.0 }];
+        assert_eq!(detect_uniform_translation(&old, &new), None);
+    }
+
+    #[test]
+    fn detect_uniform_translation_rejects_mixed_deltas() {
+        use fielddraft_protocol::Transform;
+        let old = vec![
+            Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+            Transform { translate: [10.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+        ];
+        let new = vec![
+            Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+            Transform { translate: [12.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+        ];
+        assert_eq!(detect_uniform_translation(&old, &new), None);
+    }
+
+    #[test]
+    fn detect_uniform_translation_returns_none_on_zero_delta() {
+        use fielddraft_protocol::Transform;
+        let t = vec![Transform { translate: [1.0, 2.0, 3.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        assert_eq!(detect_uniform_translation(&t, &t), None);
+    }
+
+    #[test]
+    fn hash_changes_when_modifier_fields_change() {
+        let base = box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+        let h0 = hash_body_payload(&[base.clone()], &[0]);
+
+        for field in [
+            "blend_radius",
+            "chamfer_size",
+            "twist_rate",
+            "bend_rate",
+            "displace_depth",
+            "displace_freq",
+            "shell_thickness",
+        ] {
+            let modified = with_modifier(base.clone(), field, 1.5);
+            let h1 = hash_body_payload(&[modified], &[0]);
+            assert_ne!(h0, h1, "hash must change when {field} changes");
+        }
     }
 }

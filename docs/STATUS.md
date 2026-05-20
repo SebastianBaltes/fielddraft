@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-05-16
+**Stand:** 2026-05-20
 **Branch:** `main`
 
 ---
@@ -40,6 +40,9 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K2 | K2 | Provenance + Picking | ✅ | Contributor-Tracking, Sphere-Tracing Raycaster, B-Rep-Proxy (grob) |
 | K3 | K3 | BVH + Multi-Body + Worker-Mesher | ✅ | 3D-BVH, Body-Partitionierung, Per-Body Mesh-Cache, Active/Context-LOD, Web-Worker |
 | K3.5 | K3.5 | Provenance-gesteuerte Mesh-Optimierung | ✅ | Phase A (Newton-Projektion), Phase B (Planar-Simplifizierung mit Ear-Clipping), Phase C (Zylinder/Kegel UV-Unwrap). 83% Vertex-/87% Dreieck-Reduktion für Boxen. |
+| K3.6 | K3.6 | Dirty-Tracking-Fixes & Affine-Fastpath | ✅ | Hash-Bug (7 fehlende Modifier-Felder), Split-Hash (Geometry/Transform), GPU-Translation-Delta statt Remesh bei reinen Verschiebungen. |
+| K3.7 | K3.7 | Adaptives DC + QEF | open | Octree-basiertes DC mit QEF-Vertex-Placement für scharfe Kanten. |
+| K3.8 | K3.8 | SDF-CWF Export-Mesher | open | CVT+QEM-Optimierung für Slicer-Qualität (Liu et al., CAD 2025). |
 | K4 | K4 | 2D-Kernel + Extrude + Revolve | ✅ | 2D-SDF-AST, 2D-BVH, Extrude/Revolve CsgNode-Varianten |
 | K4.5 | K4.5 | Feature-as-Function Refactor | ✅ | FeatureId hierarchisch, Feature-Trait, Registry, FeatureSchema-Derive, Runtime-Types, Query-Minimum, Regeneration-Worker, Dual-API |
 | K5a | K5a | PlaneGCS-Integration | ✅ | Separater WASM-Build, Solver-Datenmodell |
@@ -315,3 +318,12 @@ B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketc
 - ✅ **Bug #19/#24** — STEP-Export: `writeStep()` schrieb alle Shape-Handles statt nur Root-Shapes. Fix: consumed-handle Set, nur unverbrauchte Shapes transferieren (`7ffdf92`).
 - ✅ **Bug #1** — Thread-SDF: Groove-Intersection-Formel war mathematisch fehlerhaft (`depth > 0.5*pitch` für alle ISO-Presets → SDF permanent positiv → 0 DC-Dreiecke). Fix: Cosine-Profil-SDF, r_profile oszilliert zwischen nominal_radius und nominal_radius−depth (`fc77aee`).
 - ✅ **Bug #11** — `updateFeatureParams` Race Condition: `sync_feature_calls()` → `from_spine_feature()` hat advanced Feature-Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) beim Rebuild der wire-form FeatureCalls nicht serialisiert. Ergebnis: Params gehen nach `replaceFeatureCallParams` → `rebuild_packed` verloren. Fix: `from_spine_feature()` merged non-zero advanced fields in die params-JSON.
+
+### 9. K3.6 — Dirty-Tracking-Fixes & Affine-Transform-Fastpath
+
+- ✅ **Hash-Bug:** 7 geometrie-beeinflussende Feature-Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) in `hash_body_payload` aufgenommen. Regression-Tests mit `with_modifier`-Helper.
+- ✅ **Split-Hash:** `hash_body_payload_split()` liefert `(geometry_hash, transform_hash)`. 3 neue Tests: Translation ändert nur transform_hash, Rotation ebenso, blend_radius nur geometry_hash.
+- ✅ **Affine-Fastpath:** `rebuild_mesh_internal()` erkennt uniforme Translationen via `detect_uniform_translation()` und setzt `transform_delta` statt Remesh. 4 neue Tests für Delta-Detection.
+- ✅ **Frontend-Brücke:** `bodyHasTransformDelta`/`bodyTransformDelta` WASM-API, Worker-Snapshot, Store-Snapshot, `<group position={delta}>` in Viewport.
+
+**Nächster Slice:** K3.7 (Adaptives DC + QEF — scharfe Kanten, adaptive Auflösung).

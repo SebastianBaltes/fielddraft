@@ -57,6 +57,7 @@ interface BodyEntry {
    *  other bodies mutate around this one; bumps only when the
    *  kernel actually re-meshed this body. */
   version: number;
+  transformDelta: [number, number, number] | null;
 }
 
 /**
@@ -149,10 +150,18 @@ function KernelMesh() {
         const geometry = new THREE.BufferGeometry();
         uploadBody(body, geometry);
         const mat = createKernelMeshMaterial(bi);
-        bodyEntriesRef.current.set(body.id, { geometry, material: mat, version: body.version });
+        bodyEntriesRef.current.set(body.id, {
+          geometry, material: mat, version: body.version,
+          transformDelta: body.transformDelta,
+        });
         idSetChanged = true;
       } else if (existing.version !== body.version) {
-        uploadBody(body, existing.geometry);
+        if (body.transformDelta && !existing.transformDelta) {
+          existing.transformDelta = body.transformDelta;
+        } else {
+          uploadBody(body, existing.geometry);
+          existing.transformDelta = body.transformDelta;
+        }
         existing.version = body.version;
       }
     }
@@ -220,7 +229,10 @@ function KernelMesh() {
         if (!entry) return null;
         const isActive = id === activeBodyId && activeBodyId !== 0;
         return (
-          <group key={id}>
+          <group
+            key={id}
+            position={entry.transformDelta ?? undefined}
+          >
             <mesh
               geometry={entry.geometry}
               material={entry.material}
