@@ -277,6 +277,15 @@ function SdfOverlay() {
 
   // wgslFn requires the WebGPU backend — skip SDF rendering on WebGL fallback
   const isWebGPU = (gl as any).backend?.isWebGPUBackend === true;
+  const loggedRef = useRef(false);
+  if (!loggedRef.current) {
+    loggedRef.current = true;
+    console.log(
+      isWebGPU
+        ? "fielddraft: SdfOverlay — using SDF raymarching (WebGPU)"
+        : "fielddraft: SdfOverlay — using DC meshes (WebGL fallback)",
+    );
+  }
 
   useFrame(() => {
     if (!store || !isWebGPU) return;
@@ -310,6 +319,7 @@ function SdfOverlay() {
         scene.add(handle.mesh);
         entriesRef.current.set(id, { handle, version: ver });
         setDcBodyVisible(scene, id, false);
+        console.log(`fielddraft: body ${id} → SDF raymarching (${opcodes.length} opcodes)`);
         changed = true;
       } catch {
         // Shader compilation can fail for edge cases; skip silently
@@ -1509,7 +1519,12 @@ export function Viewport() {
               antialias: true,
             });
             await renderer.init();
-            if (!(renderer as any).backend?.isWebGPUBackend) {
+            const gpuBackend = (renderer as any).backend?.isWebGPUBackend === true;
+            if (gpuBackend) {
+              console.log(
+                "fielddraft: WebGPU backend active — SDF raymarching enabled.",
+              );
+            } else {
               console.warn(
                 "fielddraft: WebGPURenderer fell back to WebGL backend. " +
                 "SDF raymarching is disabled — DC meshes will be used instead.",
