@@ -29,6 +29,7 @@ function setup() {
     compact: false,
     units: "mm",
     theme: "light",
+    renderMode: "dc",
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -191,7 +192,7 @@ describe("loadSettings", () => {
 
   it("returns defaults when localStorage is empty", () => {
     const s = loadSettings();
-    expect(s).toEqual({ compact: false, units: "mm", theme: "light" });
+    expect(s).toEqual({ compact: false, units: "mm", theme: "light", renderMode: "dc" });
   });
 
   it("reads stored values", () => {
@@ -200,7 +201,7 @@ describe("loadSettings", () => {
     localStorage.setItem("fielddraft.theme", "dark");
 
     const s = loadSettings();
-    expect(s).toEqual({ compact: true, units: "inch", theme: "dark" });
+    expect(s).toEqual({ compact: true, units: "inch", theme: "dark", renderMode: "dc" });
   });
 
   it("ignores invalid values and falls back to defaults", () => {

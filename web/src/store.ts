@@ -300,6 +300,7 @@ export class KernelStore {
    *  its own `body*` views. Loses the off-thread benefit but keeps
    *  the app rendering. */
   private workerAvailable = false;
+  private dcMeshingEnabled = true;
 
   constructor(kernel: Kernel, autosave: AutoSaveHandle) {
     this.kernel = kernel;
@@ -451,6 +452,7 @@ export class KernelStore {
       this.scheduleWorkerRebuild();
       return;
     }
+    if (!this.dcMeshingEnabled) return;
     this.state = {
       ...this.state,
       meshedBodies: this.snapshotMainThreadBodies(),
@@ -468,8 +470,17 @@ export class KernelStore {
    *  schedule a fine pass at full resolution. */
   private pendingRefine = false;
 
+  setDcMeshingEnabled(enabled: boolean): void {
+    if (this.dcMeshingEnabled === enabled) return;
+    this.dcMeshingEnabled = enabled;
+    if (enabled) {
+      this.scheduleWorkerRebuild();
+    }
+  }
+
   private scheduleWorkerRebuild(): void {
     if (!this.worker || !this.workerAvailable) return;
+    if (!this.dcMeshingEnabled) return;
     if (this.workerInflight) {
       this.workerRebuildQueued = true;
       return;

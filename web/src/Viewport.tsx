@@ -43,6 +43,7 @@ import {
   disposeSdfBody,
   type SdfBodyHandle,
 } from "./sdfRenderer";
+import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import { consumeViewCommand, peekViewCommand, registerInvalidate, VIEW_PRESETS } from "./viewCommands";
@@ -421,21 +422,22 @@ interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
   pickResult: PickResult | null;
+  renderMode: string;
 }
-function Scene({ ndc, onPick, pickResult }: SceneProps) {
+function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
   const { store } = useKernelStore();
   if (!store) return null;
   return (
     <>
-      <KernelMesh />
-      <SdfOverlay />
+      {renderMode === "dc" && <KernelMesh />}
+      {renderMode === "sdf" && <SdfOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
       <SelectionTransformGizmo />
       <SketchOverlay3D />
       <Invalidator ndc={ndc} />
-      {/* Build-volume floor reference. */}
+      <PerfProbe renderMode={renderMode} />
       <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
     </>
   );
@@ -1264,7 +1266,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
   }
 }
 
-export function Viewport() {
+export function Viewport({ renderMode }: { renderMode: string }) {
   if (typeof navigator !== "undefined" && !("gpu" in navigator)) {
     console.warn(
       "fielddraft: navigator.gpu not available. WebGPU is a hard requirement — the viewport will fail to initialize on this browser.",
@@ -1516,7 +1518,7 @@ export function Viewport() {
           }}
         >
           <ClearColorSync />
-          <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} />
+          <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} renderMode={renderMode} />
           <ReferenceMesh />
           <EdgeOverlay />
           <MateConnectorOverlay />
@@ -1529,6 +1531,7 @@ export function Viewport() {
       {state?.sketchSession.active ? (
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}
+      <PerfHud renderMode={renderMode} />
       <PickHud result={pickResult} />
       {measurePoints ? (
         <div className="measure-hud" data-testid="measure-hud">

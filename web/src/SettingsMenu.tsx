@@ -17,14 +17,19 @@ import { useEffect, useRef, useState, useCallback } from "react";
 const LS_COMPACT = "fielddraft.compact";
 const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
+const LS_RENDER_MODE = "fielddraft.renderMode";
 
 export type WorkspaceUnits = "mm" | "inch";
 export type ThemeChoice = "light" | "dark";
+export type RenderMode = "dc" | "sdf" | "sdf-vm" | "sdf-baked" | "sdf-batch";
+
+const VALID_RENDER_MODES: RenderMode[] = ["dc", "sdf", "sdf-vm", "sdf-baked", "sdf-batch"];
 
 export interface SettingsState {
   compact: boolean;
   units: WorkspaceUnits;
   theme: ThemeChoice;
+  renderMode: RenderMode;
 }
 
 /** Load all settings from localStorage with safe fallbacks. */
@@ -32,16 +37,20 @@ export function loadSettings(): SettingsState {
   let compact = false;
   let units: WorkspaceUnits = "mm";
   let theme: ThemeChoice = "light";
+  let renderMode: RenderMode = "dc";
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     const rawUnits = localStorage.getItem(LS_UNITS);
     if (rawUnits === "mm" || rawUnits === "inch") units = rawUnits;
     const rawTheme = localStorage.getItem(LS_THEME);
     if (rawTheme === "light" || rawTheme === "dark") theme = rawTheme;
+    const rawMode = localStorage.getItem(LS_RENDER_MODE);
+    if (rawMode && VALID_RENDER_MODES.includes(rawMode as RenderMode))
+      renderMode = rawMode as RenderMode;
   } catch {
     // localStorage may be unavailable (private browsing, etc.)
   }
-  return { compact, units, theme };
+  return { compact, units, theme, renderMode };
 }
 
 /** Persist a single setting to localStorage. */
@@ -144,6 +153,12 @@ export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) 
     onSettingsChange(next);
   };
 
+  const setRenderMode = (mode: RenderMode) => {
+    const next = { ...settings, renderMode: mode };
+    saveSetting(LS_RENDER_MODE, mode);
+    onSettingsChange(next);
+  };
+
   return (
     <div className="fd-settings-menu" data-testid="settings-menu">
       <button
@@ -228,6 +243,25 @@ export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) 
                 Dark
               </button>
             </div>
+          </div>
+
+          {/* ── Render Mode ─────────────────────────────── */}
+          <div className="setting-row" data-testid="setting-render-mode">
+            <span className="setting-label">Render</span>
+            <select
+              className="mode-select"
+              value={settings.renderMode}
+              data-testid="setting-render-mode-select"
+              onChange={(e) =>
+                setRenderMode(e.target.value as RenderMode)
+              }
+            >
+              <option value="dc">DC Mesh</option>
+              <option value="sdf">SDF Transpiled</option>
+              <option value="sdf-vm">SDF VM</option>
+              <option value="sdf-baked">SDF Baked</option>
+              <option value="sdf-batch">Batchmarch</option>
+            </select>
           </div>
 
           {/* ── Keyboard Shortcuts ────────────────────────── */}

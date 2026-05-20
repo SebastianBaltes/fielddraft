@@ -18,6 +18,10 @@ export function App() {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
 
+  useEffect(() => {
+    if (store) store.setDcMeshingEnabled(settings.renderMode === "dc");
+  }, [store, settings.renderMode]);
+
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
   useEffect(() => {
@@ -206,7 +210,7 @@ export function App() {
       </header>
       {store && state ? <Toolbar store={store} state={state} /> : null}
       <main className="main">
-        <Viewport />
+        <Viewport renderMode={settings.renderMode} />
         {store && state ? <Outliner store={store} state={state} /> : null}
       </main>
       {showHelp ? (
