@@ -142,8 +142,8 @@ export class Kernel {
       throw new Error("fielddraft kernel: wasm memory export not found");
     }
     const inner = new WasmKernel();
-    inner.setMeshResolution(256);
-    inner.setContextMeshResolution(128);
+    inner.setMeshResolution(64);
+    inner.setContextMeshResolution(32);
     return new Kernel(inner, exports.memory);
   }
 

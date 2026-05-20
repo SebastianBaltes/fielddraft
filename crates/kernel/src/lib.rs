@@ -643,7 +643,6 @@ impl Kernel {
                 }
 
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
-                let compiled_sdf = self.compile_sdf_for(&part.feature_indices);
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
@@ -656,14 +655,13 @@ impl Kernel {
                 prev.transform_hash = transform_hash;
                 prev.mesh_resolution = target_resolution;
                 prev.mesh = mesh;
-                prev.compiled_sdf = Some(compiled_sdf);
+                prev.compiled_sdf = None;
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
                 new_bodies.push(prev);
             } else {
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
-                let compiled_sdf = self.compile_sdf_for(&part.feature_indices);
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
@@ -681,7 +679,7 @@ impl Kernel {
                     version: 1,
                     transform_delta: None,
                     last_mesh_transforms: transforms,
-                    compiled_sdf: Some(compiled_sdf),
+                    compiled_sdf: None,
                 });
             }
         }
