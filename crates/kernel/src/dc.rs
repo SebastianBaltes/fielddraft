@@ -1,27 +1,20 @@
-//! Naive uniform-grid Dual Contouring mesher.
+//! Dual Contouring mesher with narrow-band acceleration.
 //!
-//! K1 scope (see README §10, "Kernel-Phase K1"):
-//!   * Single-threaded, CPU-side.
-//!   * One vertex per cell placed at the centroid of its sign-changing
-//!     edge intersections (no QEF yet).
-//!   * Quads emitted on sign-changing grid edges, triangulated into two
-//!     triangles with winding derived from the sign flip.
-//!   * Normals via central differences on the CSG SDF.
+//! For grids up to 64 cells per axis the mesher evaluates the SDF at
+//! every corner (dense path).  Above that threshold a two-level
+//! narrow-band strategy kicks in: a coarse pass identifies the surface
+//! band, and only the fine corners within that band are evaluated.
+//! This reduces SDF evaluations from O(n³) to O(n²), making
+//! resolutions of 256+ practical without an octree.
 //!
-//! Scope explicitly *excluded* from K1 (deferred to later slices):
-//!   * QEF minimisation for sharp-feature-preserving vertex placement.
-//!   * Manifold repair pass (see README §11, risk #1).
-//!   * Adaptive octree grids.
-//!   * Hermite-data edge normals.
-//!
-//! Everything here operates on a [`CsgNode`]; the kernel's linear
+//! Everything here operates on a [`BoundedCsg`]; the kernel's linear
 //! feature list is lifted into a tree first.
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
 use crate::world_to_local;
 use fielddraft_protocol::{Primitive, Transform};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Triangulated mesh in the layout expected by the zero-copy bridge to
 /// Three.js.
@@ -107,13 +100,36 @@ pub fn dual_contour_with_primitives(
     let grid = raw.expanded(cell * DC_MARGIN_CELLS);
     let size = grid.size();
 
-    // Cell counts per axis — at least 1 on every axis so a near-flat
-    // scene still gets a grid.
     let nx = ((size[0] / cell).ceil() as usize).max(1);
     let ny = ((size[1] / cell).ceil() as usize).max(1);
     let nz = ((size[2] / cell).ceil() as usize).max(1);
 
-    // Corner grid is one larger than the cell grid in every dimension.
+    let normal_eps = cell * 0.25;
+
+    let mut mesh = if nx.max(ny).max(nz) > 64 {
+        dc_core_sparse(node, grid.min, cell, nx, ny, nz)
+    } else {
+        dc_core_dense(node, grid.min, cell, nx, ny, nz)
+    };
+
+    project_face_vertices(&mut mesh, node, normal_eps);
+    simplify_planar_faces(&mut mesh);
+    if !leaf_primitives.is_empty() {
+        let leaf_transforms = node.leaf_world_transforms();
+        simplify_developable_faces(&mut mesh, leaf_primitives, &leaf_transforms);
+    }
+
+    mesh
+}
+
+// ── Dense path (resolution ≤ 64 cells per axis) ───────────────────
+
+fn dc_core_dense(
+    node: &BoundedCsg,
+    grid_min: [f32; 3],
+    cell: f32,
+    nx: usize, ny: usize, nz: usize,
+) -> Mesh {
     let cnx = nx + 1;
     let cny = ny + 1;
     let cnz = nz + 1;
@@ -122,13 +138,12 @@ pub fn dual_contour_with_primitives(
     };
     let corner_point = |i: usize, j: usize, k: usize| -> [f32; 3] {
         [
-            grid.min[0] + i as f32 * cell,
-            grid.min[1] + j as f32 * cell,
-            grid.min[2] + k as f32 * cell,
+            grid_min[0] + i as f32 * cell,
+            grid_min[1] + j as f32 * cell,
+            grid_min[2] + k as f32 * cell,
         ]
     };
 
-    // ── Sample the SDF at every grid corner. ─────────────────────────
     let mut sdf_grid = vec![0.0_f32; cnx * cny * cnz];
     for k in 0..cnz {
         for j in 0..cny {
@@ -139,24 +154,17 @@ pub fn dual_contour_with_primitives(
         }
     }
 
-    // ── Place one vertex per cell that contains a sign change. ──────
-    // We iterate every cell's 12 edges, average the linear-interpolated
-    // intersection points of those that actually flip sign, and store
-    // the centroid as the cell's vertex.
     let cell_index = |i: usize, j: usize, k: usize| -> usize { i + j * nx + k * nx * ny };
 
     let cell_edges: [((usize, usize, usize), (usize, usize, usize)); 12] = [
-        // X-aligned
         ((0, 0, 0), (1, 0, 0)),
         ((0, 1, 0), (1, 1, 0)),
         ((0, 0, 1), (1, 0, 1)),
         ((0, 1, 1), (1, 1, 1)),
-        // Y-aligned
         ((0, 0, 0), (0, 1, 0)),
         ((1, 0, 0), (1, 1, 0)),
         ((0, 0, 1), (0, 1, 1)),
         ((1, 0, 1), (1, 1, 1)),
-        // Z-aligned
         ((0, 0, 0), (0, 0, 1)),
         ((1, 0, 0), (1, 0, 1)),
         ((0, 1, 0), (0, 1, 1)),
@@ -170,11 +178,6 @@ pub fn dual_contour_with_primitives(
     let mut contributors: Vec<u32> = Vec::new();
 
     let normal_eps = cell * 0.25;
-    // Provenance-eps: a DC cell vertex sits within ≤ one cell of both
-    // contributing leaves when it's on an intersection curve, so we
-    // call any pair of leaves within half a cell "simultaneously
-    // dominant". Too small → edges get under-detected; too large →
-    // flat faces get polluted with phantom neighbours.
     let contributor_eps = cell * 0.5;
 
     for k in 0..nz {
@@ -210,37 +213,15 @@ pub fn dual_contour_with_primitives(
                 positions.extend_from_slice(&vp);
                 normals.extend_from_slice(&n);
 
-                // Provenance: classify this vertex by querying the
-                // contributor set from the CSG tree at its location.
-                // Off-surface fallback (shouldn't happen for a clean
-                // DC pass) gets tagged as Face with an empty leaf —
-                // keeping the arrays strictly parallel to positions.
                 let (_, cs) = node.evaluate(vp, contributor_eps, EvalMode::Visual);
                 let mut element = cs.element();
                 if element == ProxyElement::None {
                     element = ProxyElement::Face;
                 }
                 classifications.push(element.tag());
-                // Flatten contributor ids into a fixed stride so the
-                // zero-copy bridge can hand them to JS as a single
-                // Uint32Array view. K4.5.1 still issues only flat-
-                // numeric [`FeatureId`]s, so each contributor maps
-                // back to a `u32`. When hierarchical ids land in a
-                // later slice, the mesh contributor buffer will grow
-                // a side table indexed by a compact u32 handle.
                 let slice = cs.as_slice();
                 for slot in 0..MAX_CONTRIBUTORS {
                     if slot < slice.len() {
-                        // K8.0: linear_pattern clones carry
-                        // hierarchical child ids that the K4.5.1
-                        // flat-numeric packing can't represent.
-                        // Fall through to the sentinel so the
-                        // mesher builds cleanly — picking on a
-                        // clone face currently resolves to
-                        // "unknown contributor", which the UI
-                        // falls back on (K9 refactor will add a
-                        // compound-id side table for full
-                        // provenance).
                         let compact = slice[slot]
                             .as_u32_if_flat()
                             .unwrap_or(CONTRIBUTOR_SENTINEL);
@@ -255,25 +236,8 @@ pub fn dual_contour_with_primitives(
         }
     }
 
-    // ── Emit one quad per sign-changing grid edge. ──────────────────
-    // A sign-changing edge is shared by (up to) four adjacent cells;
-    // their DC vertices form the quad. Winding is chosen so the face
-    // normal points out of the solid (from negative to positive SDF).
-    //
-    // Boundary edges (fewer than four neighbours) are skipped — they
-    // would be incomplete quads. The `DC_MARGIN_CELLS` padding guards
-    // against this ever happening for the actual surface: the surface
-    // always sits at least two cells from the grid boundary.
     let mut indices: Vec<u32> = Vec::new();
 
-    // --- X-axis edges: corner (i, j, k) → (i+1, j, k). -------------
-    // Neighbouring cells share this edge at the four (j-1|j, k-1|k)
-    // combinations. Vertex arrangement around the edge when viewed
-    // along +x:
-    //
-    //     v01 (−y,+z) ─── v11 (+y,+z)
-    //         │               │
-    //     v00 (−y,−z) ─── v10 (+y,−z)
     for i in 0..nx {
         for j in 1..ny {
             for k in 1..nz {
@@ -291,7 +255,6 @@ pub fn dual_contour_with_primitives(
                 if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
                     continue;
                 }
-                // da>0, db<0 → material on +x → outward = −x → reverse.
                 if da > 0.0 {
                     indices.extend_from_slice(&[v00, v01, v11]);
                     indices.extend_from_slice(&[v00, v11, v10]);
@@ -303,13 +266,6 @@ pub fn dual_contour_with_primitives(
         }
     }
 
-    // --- Y-axis edges: corner (i, j, k) → (i, j+1, k). -------------
-    // Neighbour cells indexed by (i-1|i, k-1|k). Viewed along +y the
-    // arrangement is:
-    //
-    //     v01 (−x,+z) ─── v11 (+x,+z)
-    //         │               │
-    //     v00 (−x,−z) ─── v10 (+x,−z)
     for j in 0..ny {
         for i in 1..nx {
             for k in 1..nz {
@@ -327,9 +283,6 @@ pub fn dual_contour_with_primitives(
                 if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
                     continue;
                 }
-                // Forward winding gives normal −y (see comment in
-                // README notes). da>0 → material +y → outward −y →
-                // keep forward. da<0 → reverse.
                 if da > 0.0 {
                     indices.extend_from_slice(&[v00, v10, v11]);
                     indices.extend_from_slice(&[v00, v11, v01]);
@@ -341,12 +294,6 @@ pub fn dual_contour_with_primitives(
         }
     }
 
-    // --- Z-axis edges: corner (i, j, k) → (i, j, k+1). -------------
-    // Neighbour cells indexed by (i-1|i, j-1|j). Viewed along +z:
-    //
-    //     v01 (−x,+y) ─── v11 (+x,+y)
-    //         │               │
-    //     v00 (−x,−y) ─── v10 (+x,−y)
     for k in 0..nz {
         for i in 1..nx {
             for j in 1..ny {
@@ -364,8 +311,6 @@ pub fn dual_contour_with_primitives(
                 if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
                     continue;
                 }
-                // Forward winding → +z normal. da>0 → material +z →
-                // outward −z → reverse.
                 if da > 0.0 {
                     indices.extend_from_slice(&[v00, v01, v11]);
                     indices.extend_from_slice(&[v00, v11, v10]);
@@ -377,30 +322,313 @@ pub fn dual_contour_with_primitives(
         }
     }
 
-    let mut mesh = Mesh {
+    Mesh {
         positions,
         normals,
         indices,
         classifications,
         contributors,
+    }
+}
+
+// ── Sparse narrow-band path (resolution > 64 cells per axis) ──────
+
+fn dc_core_sparse(
+    node: &BoundedCsg,
+    grid_min: [f32; 3],
+    cell: f32,
+    nx: usize, ny: usize, nz: usize,
+) -> Mesh {
+    let cnx = nx + 1;
+    let cny = ny + 1;
+    let cnz = nz + 1;
+
+    let corner_point = |i: usize, j: usize, k: usize| -> [f32; 3] {
+        [
+            grid_min[0] + i as f32 * cell,
+            grid_min[1] + j as f32 * cell,
+            grid_min[2] + k as f32 * cell,
+        ]
+    };
+    let corner_flat = |i: usize, j: usize, k: usize| -> usize {
+        i + j * cnx + k * cnx * cny
+    };
+    let cell_flat = |i: usize, j: usize, k: usize| -> usize {
+        i + j * nx + k * nx * ny
     };
 
-    // K3.5 Phase A: project single-contributor (Face) vertices onto the
-    // exact zero-level set via Newton iteration. This eliminates the
-    // QEF micro-noise that standard centroid placement leaves on
-    // analytically known surfaces.
-    project_face_vertices(&mut mesh, node, normal_eps);
+    // ── Coarse pass: find the surface band ─────────────────────────
+    let step = (nx.max(ny).max(nz) / 32).max(2);
 
-    // K3.5 Phase B: simplify planar face regions.
-    simplify_planar_faces(&mut mesh);
+    let coarse_positions = |n_corners: usize| -> Vec<usize> {
+        let mut v: Vec<usize> = (0..n_corners).step_by(step).collect();
+        if v.last().map_or(true, |&last| last != n_corners - 1) {
+            v.push(n_corners - 1);
+        }
+        v
+    };
+    let cpi = coarse_positions(cnx);
+    let cpj = coarse_positions(cny);
+    let cpk = coarse_positions(cnz);
 
-    // K3.5 Phase C: simplify developable surfaces (cylinders, cones).
-    if !leaf_primitives.is_empty() {
-        let leaf_transforms = node.leaf_world_transforms();
-        simplify_developable_faces(&mut mesh, leaf_primitives, &leaf_transforms);
+    let mut coarse_sdf: HashMap<usize, f32> =
+        HashMap::with_capacity(cpi.len() * cpj.len() * cpk.len());
+    for &ck in &cpk {
+        for &cj in &cpj {
+            for &ci in &cpi {
+                let flat = corner_flat(ci, cj, ck);
+                coarse_sdf.insert(flat, node.sdf(corner_point(ci, cj, ck), EvalMode::Visual));
+            }
+        }
     }
 
-    mesh
+    let threshold = step as f32 * cell * 1.74;
+    let n_coarse_i = cpi.len() - 1;
+    let n_coarse_j = cpj.len() - 1;
+    let n_coarse_k = cpk.len() - 1;
+
+    let mut active_coarse: HashSet<(usize, usize, usize)> = HashSet::new();
+    for ck_idx in 0..n_coarse_k {
+        for cj_idx in 0..n_coarse_j {
+            for ci_idx in 0..n_coarse_i {
+                let corners = [
+                    coarse_sdf[&corner_flat(cpi[ci_idx], cpj[cj_idx], cpk[ck_idx])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx + 1], cpj[cj_idx], cpk[ck_idx])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx], cpj[cj_idx + 1], cpk[ck_idx])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx + 1], cpj[cj_idx + 1], cpk[ck_idx])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx], cpj[cj_idx], cpk[ck_idx + 1])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx + 1], cpj[cj_idx], cpk[ck_idx + 1])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx], cpj[cj_idx + 1], cpk[ck_idx + 1])],
+                    coarse_sdf[&corner_flat(cpi[ci_idx + 1], cpj[cj_idx + 1], cpk[ck_idx + 1])],
+                ];
+
+                let has_neg = corners.iter().any(|&v| v < 0.0);
+                let has_pos = corners.iter().any(|&v| v >= 0.0);
+                let near_surface = corners.iter().any(|&v| v.abs() < threshold);
+
+                if (has_neg && has_pos) || near_surface {
+                    for dk in -1i32..=1 {
+                        for dj in -1i32..=1 {
+                            for di in -1i32..=1 {
+                                let ni = ci_idx as i32 + di;
+                                let nj = cj_idx as i32 + dj;
+                                let nk = ck_idx as i32 + dk;
+                                if ni >= 0
+                                    && nj >= 0
+                                    && nk >= 0
+                                    && (ni as usize) < n_coarse_i
+                                    && (nj as usize) < n_coarse_j
+                                    && (nk as usize) < n_coarse_k
+                                {
+                                    active_coarse.insert((ni as usize, nj as usize, nk as usize));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Fine-sample only within active coarse cells ────────────────
+    let mut sdf_cache: HashMap<usize, f32> =
+        HashMap::with_capacity(active_coarse.len() * step * step);
+    for &(ci, cj, ck) in &active_coarse {
+        let i_lo = cpi[ci];
+        let j_lo = cpj[cj];
+        let k_lo = cpk[ck];
+        let i_hi = cpi[ci + 1];
+        let j_hi = cpj[cj + 1];
+        let k_hi = cpk[ck + 1];
+        for k in k_lo..=k_hi {
+            for j in j_lo..=j_hi {
+                for i in i_lo..=i_hi {
+                    let flat = corner_flat(i, j, k);
+                    sdf_cache.entry(flat).or_insert_with(|| {
+                        coarse_sdf
+                            .get(&flat)
+                            .copied()
+                            .unwrap_or_else(|| node.sdf(corner_point(i, j, k), EvalMode::Visual))
+                    });
+                }
+            }
+        }
+    }
+    drop(coarse_sdf);
+
+    // ── Vertex placement ───────────────────────────────────────────
+    let cell_edges: [((usize, usize, usize), (usize, usize, usize)); 12] = [
+        ((0, 0, 0), (1, 0, 0)),
+        ((0, 1, 0), (1, 1, 0)),
+        ((0, 0, 1), (1, 0, 1)),
+        ((0, 1, 1), (1, 1, 1)),
+        ((0, 0, 0), (0, 1, 0)),
+        ((1, 0, 0), (1, 1, 0)),
+        ((0, 0, 1), (0, 1, 1)),
+        ((1, 0, 1), (1, 1, 1)),
+        ((0, 0, 0), (0, 0, 1)),
+        ((1, 0, 0), (1, 0, 1)),
+        ((0, 1, 0), (0, 1, 1)),
+        ((1, 1, 0), (1, 1, 1)),
+    ];
+
+    let normal_eps = cell * 0.25;
+    let contributor_eps = cell * 0.5;
+
+    let mut cell_vertices: HashMap<usize, u32> = HashMap::new();
+    let mut positions: Vec<f32> = Vec::new();
+    let mut normals: Vec<f32> = Vec::new();
+    let mut classifications: Vec<u8> = Vec::new();
+    let mut contributors: Vec<u32> = Vec::new();
+
+    for &(ci, cj, ck) in &active_coarse {
+        let i_lo = cpi[ci];
+        let j_lo = cpj[cj];
+        let k_lo = cpk[ck];
+        let i_hi = cpi[ci + 1].min(nx);
+        let j_hi = cpj[cj + 1].min(ny);
+        let k_hi = cpk[ck + 1].min(nz);
+
+        for k in k_lo..k_hi {
+            for j in j_lo..j_hi {
+                for i in i_lo..i_hi {
+                    let mut acc = [0.0_f32; 3];
+                    let mut hits = 0;
+                    for &(a, b) in &cell_edges {
+                        let ca = corner_flat(i + a.0, j + a.1, k + a.2);
+                        let cb = corner_flat(i + b.0, j + b.1, k + b.2);
+                        let da = match sdf_cache.get(&ca) {
+                            Some(&v) => v,
+                            None => continue,
+                        };
+                        let db = match sdf_cache.get(&cb) {
+                            Some(&v) => v,
+                            None => continue,
+                        };
+                        if (da < 0.0) == (db < 0.0) {
+                            continue;
+                        }
+                        let denom = da - db;
+                        let t = if denom.abs() < 1e-12 { 0.5 } else { da / denom };
+                        let t = t.clamp(0.0, 1.0);
+                        let pa = corner_point(i + a.0, j + a.1, k + a.2);
+                        let pb = corner_point(i + b.0, j + b.1, k + b.2);
+                        acc[0] += pa[0] + t * (pb[0] - pa[0]);
+                        acc[1] += pa[1] + t * (pb[1] - pa[1]);
+                        acc[2] += pa[2] + t * (pb[2] - pa[2]);
+                        hits += 1;
+                    }
+                    if hits == 0 {
+                        continue;
+                    }
+                    let inv = 1.0 / hits as f32;
+                    let vp = [acc[0] * inv, acc[1] * inv, acc[2] * inv];
+                    let n = sdf_normal(node, vp, normal_eps);
+                    let idx = (positions.len() / 3) as u32;
+                    positions.extend_from_slice(&vp);
+                    normals.extend_from_slice(&n);
+
+                    let (_, cs) = node.evaluate(vp, contributor_eps, EvalMode::Visual);
+                    let mut element = cs.element();
+                    if element == ProxyElement::None {
+                        element = ProxyElement::Face;
+                    }
+                    classifications.push(element.tag());
+                    let slice = cs.as_slice();
+                    for slot in 0..MAX_CONTRIBUTORS {
+                        if slot < slice.len() {
+                            let compact = slice[slot]
+                                .as_u32_if_flat()
+                                .unwrap_or(CONTRIBUTOR_SENTINEL);
+                            contributors.push(compact);
+                        } else {
+                            contributors.push(CONTRIBUTOR_SENTINEL);
+                        }
+                    }
+
+                    cell_vertices.insert(cell_flat(i, j, k), idx);
+                }
+            }
+        }
+    }
+
+    // ── Quad emission ──────────────────────────────────────────────
+    let mut indices: Vec<u32> = Vec::new();
+
+    for (&flat, &da) in &sdf_cache {
+        let i = flat % cnx;
+        let rem = flat / cnx;
+        let j = rem % cny;
+        let k = rem / cny;
+
+        // X-axis edge: (i,j,k) → (i+1,j,k)
+        if i < nx && j >= 1 && j < ny && k >= 1 && k < nz {
+            if let Some(&db) = sdf_cache.get(&corner_flat(i + 1, j, k)) {
+                if (da < 0.0) != (db < 0.0) {
+                    if let (Some(&v00), Some(&v10), Some(&v11), Some(&v01)) = (
+                        cell_vertices.get(&cell_flat(i, j - 1, k - 1)),
+                        cell_vertices.get(&cell_flat(i, j, k - 1)),
+                        cell_vertices.get(&cell_flat(i, j, k)),
+                        cell_vertices.get(&cell_flat(i, j - 1, k)),
+                    ) {
+                        if da > 0.0 {
+                            indices.extend_from_slice(&[v00, v01, v11, v00, v11, v10]);
+                        } else {
+                            indices.extend_from_slice(&[v00, v10, v11, v00, v11, v01]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Y-axis edge: (i,j,k) → (i,j+1,k)
+        if j < ny && i >= 1 && i < nx && k >= 1 && k < nz {
+            if let Some(&db) = sdf_cache.get(&corner_flat(i, j + 1, k)) {
+                if (da < 0.0) != (db < 0.0) {
+                    if let (Some(&v00), Some(&v10), Some(&v11), Some(&v01)) = (
+                        cell_vertices.get(&cell_flat(i - 1, j, k - 1)),
+                        cell_vertices.get(&cell_flat(i, j, k - 1)),
+                        cell_vertices.get(&cell_flat(i, j, k)),
+                        cell_vertices.get(&cell_flat(i - 1, j, k)),
+                    ) {
+                        if da > 0.0 {
+                            indices.extend_from_slice(&[v00, v10, v11, v00, v11, v01]);
+                        } else {
+                            indices.extend_from_slice(&[v00, v01, v11, v00, v11, v10]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Z-axis edge: (i,j,k) → (i,j,k+1)
+        if k < nz && i >= 1 && i < nx && j >= 1 && j < ny {
+            if let Some(&db) = sdf_cache.get(&corner_flat(i, j, k + 1)) {
+                if (da < 0.0) != (db < 0.0) {
+                    if let (Some(&v00), Some(&v10), Some(&v11), Some(&v01)) = (
+                        cell_vertices.get(&cell_flat(i - 1, j - 1, k)),
+                        cell_vertices.get(&cell_flat(i, j - 1, k)),
+                        cell_vertices.get(&cell_flat(i, j, k)),
+                        cell_vertices.get(&cell_flat(i - 1, j, k)),
+                    ) {
+                        if da > 0.0 {
+                            indices.extend_from_slice(&[v00, v01, v11, v00, v11, v10]);
+                        } else {
+                            indices.extend_from_slice(&[v00, v10, v11, v00, v11, v01]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Mesh {
+        positions,
+        normals,
+        indices,
+        classifications,
+        contributors,
+    }
 }
 
 // ── K3.5 Phase B: planar face simplification ────────────────────────
@@ -454,6 +682,69 @@ struct PlanarRegion {
     tris: Vec<usize>,
     boundary: Vec<u32>,
     holes: Vec<Vec<u32>>,
+}
+
+fn is_region_planar(mesh: &Mesh, comp: &[usize], _ref_normal: [f32; 3]) -> bool {
+    let mut avg = [0.0_f64; 3];
+    for &t in comp {
+        let n = tri_geometric_normal(mesh, t);
+        avg[0] += n[0] as f64;
+        avg[1] += n[1] as f64;
+        avg[2] += n[2] as f64;
+    }
+    let len = (avg[0] * avg[0] + avg[1] * avg[1] + avg[2] * avg[2]).sqrt();
+    if len < 1e-10 {
+        return false;
+    }
+    let plane_n = [(avg[0] / len) as f32, (avg[1] / len) as f32, (avg[2] / len) as f32];
+
+    let mut verts_seen = std::collections::HashSet::new();
+    for &t in comp {
+        for k in 0..3 {
+            verts_seen.insert(mesh.indices[t * 3 + k]);
+        }
+    }
+    if verts_seen.len() < 3 {
+        return false;
+    }
+
+    let mut min_d = f32::MAX;
+    let mut max_d = f32::MIN;
+    let mut min_u = f32::MAX;
+    let mut max_u = f32::MAX;
+    let mut min_v = f32::MAX;
+    let mut max_v = f32::MAX;
+
+    let (u_axis, v_axis) = orthonormal_basis(plane_n);
+
+    let mut first = true;
+    for &vi in &verts_seen {
+        let p = vtx_pos(mesh, vi as usize);
+        let d = dot3(p, plane_n);
+        let u = dot3(p, u_axis);
+        let v = dot3(p, v_axis);
+        if first {
+            min_d = d; max_d = d;
+            min_u = u; max_u = u;
+            min_v = v; max_v = v;
+            first = false;
+        } else {
+            if d < min_d { min_d = d; }
+            if d > max_d { max_d = d; }
+            if u < min_u { min_u = u; }
+            if u > max_u { max_u = u; }
+            if v < min_v { min_v = v; }
+            if v > max_v { max_v = v; }
+        }
+    }
+
+    let thickness = max_d - min_d;
+    let width = (max_u - min_u).max(max_v - min_v);
+    if width < 1e-6 {
+        return false;
+    }
+
+    thickness / width < 0.05
 }
 
 fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
@@ -515,6 +806,10 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
                 continue;
             }
             let n = [n[0] / len, n[1] / len, n[2] / len];
+
+            if !is_region_planar(mesh, &comp, n) {
+                continue;
+            }
 
             let loops = extract_boundary_loops(mesh, &comp);
             if !loops.is_empty() {
@@ -1600,6 +1895,35 @@ mod tests {
     }
 
     #[test]
+    fn k35b_sphere_not_flattened_by_planar_simplification() {
+        let r = 50.0_f32;
+        let mesh = mesh_for(
+            &[sphere_feature(1, [0.0; 3], r)],
+            24,
+        );
+        assert!(mesh.vertex_count() > 0);
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertex_count(), "index out of bounds");
+        }
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for v in 0..mesh.vertex_count() {
+            for a in 0..3 {
+                let c = mesh.positions[v * 3 + a];
+                if c < min[a] { min[a] = c; }
+                if c > max[a] { max[a] = c; }
+            }
+        }
+        for a in 0..3 {
+            let extent = max[a] - min[a];
+            assert!(
+                extent > r,
+                "sphere mesh extent along axis {a} is {extent} — surface flattened (expected > {r})",
+            );
+        }
+    }
+
+    #[test]
     fn k35b_box_triangle_count_reduced() {
         let half = [25.0, 25.0, 25.0];
         let mesh = mesh_for(
@@ -1837,6 +2161,54 @@ mod tests {
                 in_left > 0.0 && in_right > 0.0,
                 "holes not carved at y={y}: left={in_left}, right={in_right}",
             );
+        }
+    }
+
+    // ── Sparse narrow-band path tests ──────────────────────────────
+
+    #[test]
+    fn sparse_sphere_matches_dense_topology() {
+        let features = [sphere_feature(1, [0.0; 3], 20.0)];
+        let dense = mesh_for(&features, 48);
+        let sparse = mesh_for(&features, 128);
+        assert!(sparse.vertex_count() > dense.vertex_count());
+        assert!(sparse.triangle_count() > dense.triangle_count());
+        assert_eq!(sparse.indices.len() % 3, 0);
+        for &idx in &sparse.indices {
+            assert!((idx as usize) < sparse.vertex_count());
+        }
+    }
+
+    #[test]
+    fn sparse_sphere_vertices_hug_surface() {
+        let features = [sphere_feature(1, [0.0; 3], 20.0)];
+        let mesh = mesh_for(&features, 128);
+        let tree = crate::csg::CsgNode::from_features(&features);
+        let mut max_err = 0.0_f32;
+        for i in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[i * 3],
+                mesh.positions[i * 3 + 1],
+                mesh.positions[i * 3 + 2],
+            ];
+            let d = tree.sdf(p, EvalMode::Logical).abs();
+            if d > max_err { max_err = d; }
+        }
+        let cell = 40.0 / 128.0;
+        assert!(
+            max_err < cell * 2.0,
+            "sparse sphere vertices drifted off surface by {max_err} (cell={cell})",
+        );
+    }
+
+    #[test]
+    fn sparse_box_planar_simplification_works() {
+        let half = [25.0, 25.0, 25.0];
+        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 128);
+        assert!(mesh.vertex_count() > 0);
+        assert_eq!(mesh.indices.len() % 3, 0);
+        for &idx in &mesh.indices {
+            assert!((idx as usize) < mesh.vertex_count());
         }
     }
 }

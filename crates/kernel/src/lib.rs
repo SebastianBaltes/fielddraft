@@ -40,6 +40,8 @@ use wasm_bindgen::prelude::*;
 /// user is currently editing. 48 cells along the longest AABB axis
 /// strikes a balance between rebuild latency (a handful of ms for a
 /// small spine) and visible smoothness for a 300 mm build volume.
+/// The frontend overrides this to 256 for high-quality display; the
+/// narrow-band mesher makes that practical.
 pub const DEFAULT_MESH_RESOLUTION: u32 = 48;
 
 /// Default voxel grid resolution for *context* bodies — the ones
