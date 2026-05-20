@@ -647,23 +647,21 @@ function SelectionTransformGizmo() {
     }
   }, [selectedFeature]);
 
+  const gizmoThrottleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const gizmoPendingRef = useRef(false);
+
+  useEffect(() => {
+    return () => clearTimeout(gizmoThrottleRef.current);
+  }, []);
+
   if (!selectedFeature || !store) return null;
 
-  // Live commit on every gizmo drag tick. drei's `onChange` fires
-  // continuously while the user drags a handle, so the kernel
-  // feature translate follows the mesh in real time and the
-  // worker re-meshes each step — the user sees the body move
-  // under the gizmo instead of snapping at mouseUp. The
-  // `syncedTranslateRef` bookkeeping above keeps the feedback
-  // loop stable: when our own commit bubbles back as a new
-  // `selectedFeature` object, the useEffect recognises the
-  // translate as self-originated and skips the mesh reset.
   const gizmoMode = state?.gizmoMode ?? "translate";
 
-  const handleGizmoChange = () => {
+  const commitGizmo = () => {
     const mesh = meshRef.current;
     if (!mesh) return;
-
+    gizmoPendingRef.current = false;
     if (gizmoMode === "translate") {
       const next: [number, number, number] = [
         mesh.position.x,
@@ -678,6 +676,16 @@ function SelectionTransformGizmo() {
     } else if (gizmoMode === "scale") {
       store.setFeatureScale(selectedFeature.id, mesh.scale.x);
     }
+  };
+
+  const handleGizmoChange = () => {
+    gizmoPendingRef.current = true;
+    if (gizmoThrottleRef.current !== undefined) return;
+    commitGizmo();
+    gizmoThrottleRef.current = setTimeout(() => {
+      gizmoThrottleRef.current = undefined;
+      if (gizmoPendingRef.current) commitGizmo();
+    }, 50);
   };
 
   return (
