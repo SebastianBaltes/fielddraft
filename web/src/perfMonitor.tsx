@@ -85,6 +85,16 @@ export class PerfMonitor {
     return lines.join("\n");
   }
 
+  sampleCount(): number {
+    return this.count;
+  }
+
+  avgFrameMs(): number {
+    const all = this.samples();
+    if (all.length === 0) return 0;
+    return all.reduce((a, s) => a + s.frameTimeMs, 0) / all.length;
+  }
+
   reset(): void {
     this.head = 0;
     this.count = 0;
@@ -124,6 +134,79 @@ export function PerfProbe({ renderMode }: { renderMode: string }) {
   });
 
   return null;
+}
+
+// ── Benchmark infrastructure ──────────────────────────────────────
+
+export interface BenchmarkResult {
+  scene: string;
+  renderMode: string;
+  resolution: string;
+  samples: number;
+  avgFrameMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  avgFps: number;
+}
+
+export function collectBenchmarkResult(
+  sceneName: string,
+): BenchmarkResult | null {
+  const latest = perfMonitor.latest();
+  if (!latest) return null;
+
+  return {
+    scene: sceneName,
+    renderMode: latest.renderMode,
+    resolution: latest.resolution,
+    samples: perfMonitor.sampleCount(),
+    avgFrameMs: perfMonitor.avgFrameMs(),
+    p50Ms: perfMonitor.p50(),
+    p95Ms: perfMonitor.p95(),
+    p99Ms: perfMonitor.p99(),
+    avgFps: perfMonitor.avgFps(),
+  };
+}
+
+export function benchmarkResultsToCSV(results: BenchmarkResult[]): string {
+  const lines = [
+    "scene,renderMode,resolution,samples,avgFrameMs,p50Ms,p95Ms,p99Ms,avgFps",
+  ];
+  for (const r of results) {
+    lines.push(
+      `${r.scene},${r.renderMode},${r.resolution},${r.samples},` +
+      `${r.avgFrameMs.toFixed(2)},${r.p50Ms.toFixed(2)},${r.p95Ms.toFixed(2)},` +
+      `${r.p99Ms.toFixed(2)},${r.avgFps.toFixed(1)}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function downloadCSV(csv: string, filename: string): void {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+if (typeof window !== "undefined" && import.meta.env.DEV) {
+  (window as unknown as {
+    __fdBenchmark?: {
+      collect: typeof collectBenchmarkResult;
+      toCSV: typeof benchmarkResultsToCSV;
+      download: typeof downloadCSV;
+      monitor: PerfMonitor;
+    };
+  }).__fdBenchmark = {
+    collect: collectBenchmarkResult,
+    toCSV: benchmarkResultsToCSV,
+    download: downloadCSV,
+    monitor: perfMonitor,
+  };
 }
 
 export function PerfHud({ renderMode }: { renderMode: string }) {
