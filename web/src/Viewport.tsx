@@ -57,6 +57,14 @@ import {
   scheduleRefinement,
   type SdfBakedBodyHandle,
 } from "./sdfBakedRenderer";
+import {
+  initBatchmarch,
+  updateBatchmarchOpcodes,
+  updateBatchmarchCamera,
+  runBatchmarchFrame,
+  disposeBatchmarch,
+  type BatchmarchState,
+} from "./sdfBatchmarch";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -568,6 +576,61 @@ function SdfBakedOverlay() {
   return <group ref={groupRef} />;
 }
 
+function SdfBatchOverlay() {
+  const { store } = useKernelStore();
+  const gl = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const invalidate = useThree((s) => s.invalidate);
+  const stateRef = useRef<BatchmarchState | null>(null);
+  const groupRef = useRef<THREE.Group>(null);
+
+  useEffect(() => {
+    const w = Math.max(size.width, 1);
+    const h = Math.max(size.height, 1);
+    if (stateRef.current) {
+      disposeBatchmarch(stateRef.current);
+    }
+    stateRef.current = initBatchmarch(w, h);
+    if (groupRef.current) {
+      groupRef.current.clear();
+      groupRef.current.add(stateRef.current.blitMesh);
+    }
+    invalidate();
+    return () => {
+      if (stateRef.current) {
+        disposeBatchmarch(stateRef.current);
+        stateRef.current = null;
+      }
+    };
+  }, [size.width, size.height]);
+
+  useFrame(() => {
+    if (!store || !stateRef.current) return;
+    const k = store.kernel;
+    const count = k.bodyCount();
+
+    if (count > 0) {
+      const opcodesView = k.bodySdfOpcodesView(0);
+      if (opcodesView.length > 0) {
+        updateBatchmarchOpcodes(stateRef.current, opcodesView.slice());
+      }
+    }
+
+    updateBatchmarchCamera(stateRef.current, camera);
+
+    try {
+      runBatchmarchFrame(stateRef.current, gl);
+    } catch (e) {
+      console.warn("sdf-batch: compute dispatch failed", e);
+    }
+
+    invalidate();
+  });
+
+  return <group ref={groupRef} />;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -583,6 +646,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf" && <SdfOverlay />}
       {renderMode === "sdf-vm" && <SdfVmOverlay />}
       {renderMode === "sdf-baked" && <SdfBakedOverlay />}
+      {renderMode === "sdf-batch" && <SdfBatchOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
