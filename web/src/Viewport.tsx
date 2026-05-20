@@ -49,6 +49,14 @@ import {
   disposeSdfVmBody,
   type SdfVmBodyHandle,
 } from "./sdfVmRenderer";
+import {
+  createSdfBakedBody,
+  updateSdfBakedBody,
+  disposeSdfBakedBody,
+  bakeVolume,
+  scheduleRefinement,
+  type SdfBakedBodyHandle,
+} from "./sdfBakedRenderer";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -493,6 +501,73 @@ function SdfVmOverlay() {
   return <group ref={groupRef} />;
 }
 
+function SdfBakedOverlay() {
+  const { store } = useKernelStore();
+  const groupRef = useRef<THREE.Group>(null);
+  const handlesRef = useRef<
+    Map<number, SdfBakedBodyHandle & { version: number }>
+  >(new Map());
+  const invalidate = useThree((s) => s.invalidate);
+  const gl = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
+
+  useFrame(() => {
+    if (!store || !groupRef.current) return;
+    const k = store.kernel;
+    const count = k.bodyCount();
+    const seen = new Set<number>();
+    let changed = false;
+
+    for (let i = 0; i < count; i++) {
+      const bodyId = k.bodyId(i);
+      const version = k.bodyVersion(i);
+      seen.add(bodyId);
+
+      const existing = handlesRef.current.get(bodyId);
+      if (existing && existing.version === version) continue;
+
+      const opcodesView = k.bodySdfOpcodesView(i);
+      if (opcodesView.length === 0) continue;
+      const opcodes = opcodesView.slice();
+      const aabb = k.bodySdfAabb(i);
+
+      if (!existing) {
+        const handle = createSdfBakedBody(opcodes, aabb);
+        bakeVolume(handle, gl, 64);
+        scheduleRefinement(handle, gl, invalidate);
+        groupRef.current.add(handle.mesh);
+        handlesRef.current.set(bodyId, { ...handle, version });
+        changed = true;
+      } else {
+        const updated = updateSdfBakedBody(existing, opcodes, aabb, gl, invalidate);
+        handlesRef.current.set(bodyId, { ...updated, version });
+        changed = true;
+      }
+    }
+
+    for (const [id, handle] of handlesRef.current) {
+      if (!seen.has(id)) {
+        groupRef.current.remove(handle.mesh);
+        disposeSdfBakedBody(handle);
+        handlesRef.current.delete(id);
+        changed = true;
+      }
+    }
+
+    if (changed) invalidate();
+  });
+
+  useEffect(() => {
+    return () => {
+      for (const handle of handlesRef.current.values()) {
+        disposeSdfBakedBody(handle);
+      }
+      handlesRef.current.clear();
+    };
+  }, []);
+
+  return <group ref={groupRef} />;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -507,6 +582,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "dc" && <KernelMesh />}
       {renderMode === "sdf" && <SdfOverlay />}
       {renderMode === "sdf-vm" && <SdfVmOverlay />}
+      {renderMode === "sdf-baked" && <SdfBakedOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
