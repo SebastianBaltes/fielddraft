@@ -704,6 +704,7 @@ fn aabb_point_dist_sq(p: [f32; 3], aabb_min: [f32; 3], aabb_max: [f32; 3]) -> f3
 }
 
 /// Squared distance from point `p` to triangle `(v0, v1, v2)`.
+/// Eberly's Voronoi-region algorithm for exact closest-point.
 fn point_triangle_dist_sq(
     p: [f32; 3],
     v0: [f32; 3],
@@ -714,27 +715,77 @@ fn point_triangle_dist_sq(
     let e1 = sub3(v2, v0);
     let v = sub3(p, v0);
 
-    let d00 = dot3(e0, e0);
-    let d01 = dot3(e0, e1);
-    let d11 = dot3(e1, e1);
-    let d20 = dot3(v, e0);
-    let d21 = dot3(v, e1);
+    let a = dot3(e0, e0);
+    let b = dot3(e0, e1);
+    let c = dot3(e1, e1);
+    let d = dot3(e0, v);
+    let ee = dot3(e1, v);
 
-    let denom = d00 * d11 - d01 * d01;
-    if denom.abs() < 1e-12 {
-        return dot3(v, v);
-    }
+    let det = a * c - b * b;
+    let mut s = c * d - b * ee;
+    let mut t = a * ee - b * d;
 
-    let inv = 1.0 / denom;
-    let mut s = (d11 * d20 - d01 * d21) * inv;
-    let mut t = (d00 * d21 - d01 * d20) * inv;
-
-    if s < 0.0 { s = 0.0; }
-    if t < 0.0 { t = 0.0; }
-    if s + t > 1.0 {
-        let scale = 1.0 / (s + t);
-        s *= scale;
-        t *= scale;
+    if s + t <= det {
+        if s < 0.0 {
+            if t < 0.0 {
+                if d > 0.0 {
+                    t = 0.0;
+                    s = if d >= a { 1.0 } else { d / a };
+                } else {
+                    s = 0.0;
+                    t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
+                }
+            } else {
+                s = 0.0;
+                t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
+            }
+        } else if t < 0.0 {
+            t = 0.0;
+            s = if d <= 0.0 { 0.0 } else if d >= a { 1.0 } else { d / a };
+        } else {
+            if det.abs() < 1e-12 {
+                s = 0.0;
+                t = 0.0;
+            } else {
+                let inv = 1.0 / det;
+                s *= inv;
+                t *= inv;
+            }
+        }
+    } else if s < 0.0 {
+        let tmp0 = b - d;
+        let tmp1 = c - ee;
+        if tmp1 > tmp0 {
+            let numer = tmp1 - tmp0;
+            let denom = a - 2.0 * b + c;
+            s = if numer >= denom { 1.0 } else { (numer / denom).max(0.0) };
+            t = 1.0 - s;
+        } else {
+            s = 0.0;
+            t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
+        }
+    } else if t < 0.0 {
+        let tmp0 = b - ee;
+        let tmp1 = a - d;
+        if tmp1 > tmp0 {
+            let numer = tmp1 - tmp0;
+            let denom = a - 2.0 * b + c;
+            t = if numer >= denom { 1.0 } else { (numer / denom).max(0.0) };
+            s = 1.0 - t;
+        } else {
+            t = 0.0;
+            s = if d <= 0.0 { 0.0 } else if d >= a { 1.0 } else { d / a };
+        }
+    } else {
+        let numer = (c - ee) - (b - d);
+        if numer <= 0.0 {
+            s = 0.0;
+            t = 1.0;
+        } else {
+            let denom = a - 2.0 * b + c;
+            s = if numer >= denom { 1.0 } else { numer / denom };
+            t = 1.0 - s;
+        }
     }
 
     let closest = [

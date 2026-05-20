@@ -175,6 +175,19 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
+        if self.pos < self.src.len()
+            && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E')
+        {
+            self.pos += 1;
+            if self.pos < self.src.len()
+                && (self.src[self.pos] == b'+' || self.src[self.pos] == b'-')
+            {
+                self.pos += 1;
+            }
+            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
         let slice = std::str::from_utf8(&self.src[start..self.pos])
             .map_err(|_| FormulaError::Parse("invalid utf-8 in number".to_string()))?;
         slice

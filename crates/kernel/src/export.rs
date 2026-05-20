@@ -92,12 +92,18 @@ fn append_mesh_ascii(out: &mut String, mesh: &Mesh) {
 ///   attribute byte count — u16 little-endian (always 0)
 /// ```
 pub fn export_binary(meshes: &[&Mesh]) -> Vec<u8> {
-    // Pre-count triangles so we can stamp the header count
-    // before writing the triangle records.
-    let triangle_count: u32 = meshes
+    // Collect valid triangles first so the header count matches
+    // the actual number of records (load_triangle skips
+    // out-of-bounds indices).
+    let triangles: Vec<([f32; 3], [f32; 3], [f32; 3])> = meshes
         .iter()
-        .map(|m| (m.indices.len() / 3) as u32)
-        .sum();
+        .flat_map(|mesh| {
+            mesh.indices
+                .chunks_exact(3)
+                .filter_map(|tri| load_triangle(mesh, tri))
+        })
+        .collect();
+    let triangle_count = triangles.len() as u32;
 
     let mut out = Vec::with_capacity(
         80 + 4 + triangle_count as usize * 50,
@@ -112,29 +118,21 @@ pub fn export_binary(meshes: &[&Mesh]) -> Vec<u8> {
     out.extend_from_slice(&header);
     out.extend_from_slice(&triangle_count.to_le_bytes());
 
-    for mesh in meshes {
-        for tri in mesh.indices.chunks_exact(3) {
-            let Some((a, b, c)) = load_triangle(mesh, tri) else {
-                continue;
-            };
-            let normal = face_normal(a, b, c);
-            for v in normal {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in a {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in b {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in c {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            // Attribute byte count — every mainstream writer
-            // sets this to zero and every mainstream reader
-            // ignores it.
-            out.extend_from_slice(&0u16.to_le_bytes());
+    for (a, b, c) in &triangles {
+        let normal = face_normal(*a, *b, *c);
+        for v in normal {
+            out.extend_from_slice(&v.to_le_bytes());
         }
+        for v in *a {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in *b {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in *c {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&0u16.to_le_bytes());
     }
 
     out

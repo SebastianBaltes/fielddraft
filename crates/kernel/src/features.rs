@@ -306,7 +306,7 @@ impl FeatureRegistry {
                 .map_err(|e| FeatureError::InvalidParameter {
                     feature: "<formula>",
                     name: "params",
-                    message: e.to_string(),
+                    message: format!("{} (in {})", e, call.type_name),
                 })?;
             feature.execute(ctx, &call.id, &resolved)?;
         }
@@ -1255,17 +1255,20 @@ impl FeatureKind for TransformFeature {
         let td = TransformDef::from_params(def);
         let target = FeatureId::from_u32(td.target_id);
         let pos = ctx.document.features.iter().position(|f| f.id == target);
-        if let Some(idx) = pos {
-            let t = &mut ctx.document.features[idx].transform;
-            t.translate[0] += td.translate[0];
-            t.translate[1] += td.translate[1];
-            t.translate[2] += td.translate[2];
-            if td.rotation != [0.0, 0.0, 0.0, 1.0] {
-                t.rotation = td.rotation;
-            }
-            if (td.scale - 1.0).abs() > 1e-7 {
-                t.scale *= td.scale;
-            }
+        let idx = pos.ok_or_else(|| FeatureError::InvalidParameter {
+            feature: "transform",
+            name: "target_id",
+            message: format!("target feature {} not found", td.target_id),
+        })?;
+        let t = &mut ctx.document.features[idx].transform;
+        t.translate[0] += td.translate[0];
+        t.translate[1] += td.translate[1];
+        t.translate[2] += td.translate[2];
+        if td.rotation != [0.0, 0.0, 0.0, 1.0] {
+            t.rotation = td.rotation;
+        }
+        if (td.scale - 1.0).abs() > 1e-7 {
+            t.scale *= td.scale;
         }
         Ok(())
     }
@@ -1318,8 +1321,20 @@ impl FeatureKind for FilletEdgeFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = FilletEdgeDef::parse(def)?;
-        // Store the edge fillet specification on the context
-        // for post-processing after from_features completes.
+        if d.blend_radius < 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: FilletEdgeDef::TYPE_NAME,
+                name: "blend_radius",
+                message: format!("must be >= 0, got {}", d.blend_radius),
+            });
+        }
+        if d.mask_radius < 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: FilletEdgeDef::TYPE_NAME,
+                name: "mask_radius",
+                message: format!("must be >= 0, got {}", d.mask_radius),
+            });
+        }
         ctx.edge_fillets.push(crate::csg::EdgeFillet {
             feature_a: FeatureId::from_u32(d.feature_a as u32),
             feature_b: FeatureId::from_u32(d.feature_b as u32),
