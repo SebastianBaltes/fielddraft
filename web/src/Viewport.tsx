@@ -22,7 +22,6 @@ import {
   type ErrorInfo,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -46,11 +45,6 @@ import {
   publishPickCamera,
   getPublishedPickCamera,
 } from "./pickCameraBridge";
-import {
-  createSdfBodyMaterial,
-  disposeSdfBody,
-  type SdfBodyHandle,
-} from "./sdfRenderer";
 
 /** World-space size of the build-volume reference grid (mm). Matches
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
@@ -259,132 +253,6 @@ function KernelMesh() {
   );
 }
 
-interface SdfEntry {
-  handle: SdfBodyHandle;
-  version: number;
-}
-
-function setDcBodyVisible(scene: THREE.Scene, bodyId: number, visible: boolean) {
-  const dcGroup = scene.getObjectByName(`dc-body-${bodyId}`);
-  if (dcGroup) dcGroup.visible = visible;
-}
-
-const SDF_SETTLE_MS = 300;
-
-function SdfOverlay() {
-  const { store } = useKernelStore();
-  const invalidate = useThree((s) => s.invalidate);
-  const scene = useThree((s) => s.scene);
-  const gl = useThree((s) => s.gl);
-  const entriesRef = useRef<Map<number, SdfEntry>>(new Map());
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  // wgslFn requires the WebGPU backend — skip SDF rendering on WebGL fallback
-  const isWebGPU = (gl as any).backend?.isWebGPUBackend === true;
-  const loggedRef = useRef(false);
-  if (!loggedRef.current) {
-    loggedRef.current = true;
-    console.log(
-      isWebGPU
-        ? "fielddraft: SdfOverlay — using SDF raymarching (WebGPU)"
-        : "fielddraft: SdfOverlay — using DC meshes (WebGL fallback)",
-    );
-  }
-
-  const rebuildSdf = useCallback(() => {
-    if (!store) return;
-    const kernel = store.kernel;
-    const count = kernel.bodyCount();
-    const seen = new Set<number>();
-
-    for (let i = 0; i < count; i++) {
-      const id = kernel.bodyId(i);
-      const ver = kernel.bodyVersion(i);
-      seen.add(id);
-
-      const existing = entriesRef.current.get(id);
-      if (existing && existing.version === ver) {
-        existing.handle.mesh.visible = true;
-        setDcBodyVisible(scene, id, false);
-        continue;
-      }
-
-      const opcodes = kernel.bodySdfOpcodesView(i);
-      const aabb = kernel.bodySdfAabb(i);
-      if (opcodes.length === 0) continue;
-
-      if (existing) {
-        scene.remove(existing.handle.mesh);
-        disposeSdfBody(existing.handle);
-      }
-
-      try {
-        const handle = createSdfBodyMaterial(opcodes, aabb);
-        scene.add(handle.mesh);
-        entriesRef.current.set(id, { handle, version: ver });
-        setDcBodyVisible(scene, id, false);
-        console.log(`fielddraft: body ${id} → SDF raymarching (${opcodes.length} opcodes)`);
-      } catch {
-        setDcBodyVisible(scene, id, true);
-      }
-    }
-
-    for (const [id, entry] of entriesRef.current) {
-      if (!seen.has(id)) {
-        scene.remove(entry.handle.mesh);
-        disposeSdfBody(entry.handle);
-        entriesRef.current.delete(id);
-        setDcBodyVisible(scene, id, true);
-      }
-    }
-
-    invalidate();
-  }, [store, scene, invalidate]);
-
-  useFrame(() => {
-    if (!store || !isWebGPU) return;
-    const kernel = store.kernel;
-    const count = kernel.bodyCount();
-
-    let anyDirty = false;
-    const seen = new Set<number>();
-    for (let i = 0; i < count; i++) {
-      const id = kernel.bodyId(i);
-      const ver = kernel.bodyVersion(i);
-      seen.add(id);
-      const existing = entriesRef.current.get(id);
-      if (!existing || existing.version !== ver) {
-        anyDirty = true;
-        if (existing) existing.handle.mesh.visible = false;
-        setDcBodyVisible(scene, id, true);
-      }
-    }
-    for (const [id] of entriesRef.current) {
-      if (!seen.has(id)) anyDirty = true;
-    }
-
-    if (!anyDirty) return;
-
-    clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      rebuildSdf();
-    }, SDF_SETTLE_MS);
-  });
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(debounceRef.current);
-      for (const [id, entry] of entriesRef.current.entries()) {
-        scene.remove(entry.handle.mesh);
-        disposeSdfBody(entry.handle);
-        setDcBodyVisible(scene, id, true);
-      }
-      entriesRef.current.clear();
-    };
-  }, [scene]);
-
-  return null;
-}
 
 /**
  * Hover-picking probe.
@@ -485,7 +353,6 @@ function Scene({ ndc, onPick, pickResult }: SceneProps) {
   return (
     <>
       <KernelMesh />
-      <SdfOverlay />
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
@@ -1553,16 +1420,11 @@ export function Viewport() {
             });
             await renderer.init();
             const gpuBackend = (renderer as any).backend?.isWebGPUBackend === true;
-            if (gpuBackend) {
-              console.log(
-                "fielddraft: WebGPU backend active — SDF raymarching enabled.",
-              );
-            } else {
-              console.warn(
-                "fielddraft: WebGPURenderer fell back to WebGL backend. " +
-                "SDF raymarching is disabled — DC meshes will be used instead.",
-              );
-            }
+            console.log(
+              gpuBackend
+                ? "fielddraft: WebGPU backend active."
+                : "fielddraft: WebGPURenderer fell back to WebGL backend.",
+            );
             return renderer;
           }}
           onCreated={(rootState) => {
