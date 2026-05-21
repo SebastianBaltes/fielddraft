@@ -21,9 +21,9 @@ const LS_RENDER_MODE = "fielddraft.renderMode";
 
 export type WorkspaceUnits = "mm" | "inch";
 export type ThemeChoice = "light" | "dark";
-export type RenderMode = "dc" | "sdf" | "sdf-vm" | "sdf-baked" | "sdf-batch";
+export type RenderMode = "dc" | "sdf" | "sdf-vm" | "sdf-baked" | "sdf-batch" | "sdf-hybrid";
 
-const VALID_RENDER_MODES: RenderMode[] = ["dc", "sdf", "sdf-vm", "sdf-baked", "sdf-batch"];
+const VALID_RENDER_MODES: RenderMode[] = ["dc", "sdf", "sdf-vm", "sdf-baked", "sdf-batch", "sdf-hybrid"];
 
 export interface SettingsState {
   compact: boolean;
@@ -261,6 +261,7 @@ export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) 
               <option value="sdf-vm">SDF VM</option>
               <option value="sdf-baked">SDF Baked</option>
               <option value="sdf-batch">Batchmarch</option>
+              <option value="sdf-hybrid">Hybrid</option>
             </select>
           </div>
 

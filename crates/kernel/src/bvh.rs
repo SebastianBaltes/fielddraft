@@ -24,11 +24,36 @@
 //! K3 only implements the scaffolding and the single-body pruning.
 //! Multi-body isolation and async meshing live in the next slice.
 
+use serde::Serialize;
+
 use fielddraft_protocol::{Primitive, Transform};
 
 use crate::csg::{sdf_extrude, Aabb, BlendMode, Contributors, CsgNode, EvalMode, NodeId};
 use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
+
+// ── Hybrid renderer classification ────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HybridLeafInfo {
+    pub kind: String,
+    pub aabb: [f32; 6],
+    pub transform: [f32; 8],
+    pub params: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SdfRegionInfo {
+    pub aabb: [f32; 6],
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HybridInfo {
+    pub leaves: Vec<HybridLeafInfo>,
+    pub sdf_regions: Vec<SdfRegionInfo>,
+    pub needs_full_sdf: bool,
+    pub is_union_only: bool,
+}
 
 /// BVH-annotated CSG node. Every variant carries a world-space AABB
 /// — `Empty`'s is the empty sentinel, and leaves additionally carry
@@ -213,6 +238,20 @@ impl BoundedCsg {
             }
             BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {}
         }
+    }
+
+    /// Classify this CSG tree for the hybrid mesh+SDF renderer.
+    /// Returns leaf info for meshable primitives, SDF overlay regions
+    /// for boolean overlap zones, and flags for full-SDF fallback.
+    pub fn classify_for_hybrid(&self) -> HybridInfo {
+        let mut info = HybridInfo {
+            leaves: Vec::new(),
+            sdf_regions: Vec::new(),
+            needs_full_sdf: false,
+            is_union_only: true,
+        };
+        classify_walk(self, &mut info);
+        info
     }
 
     /// Pruned signed-distance query. Produces the same value as the
@@ -856,6 +895,168 @@ fn combine_max(
         (da, ca)
     } else {
         (db, cb)
+    }
+}
+
+fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
+    match node {
+        BoundedCsg::Empty => {}
+        BoundedCsg::Leaf { primitive, world_transform, aabb, .. } => {
+            if let Some(leaf) = primitive_to_leaf_info(primitive, world_transform, aabb) {
+                info.leaves.push(leaf);
+            } else {
+                info.needs_full_sdf = true;
+            }
+        }
+        BoundedCsg::Union { left, right, .. } => {
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::Difference { left, right, .. } => {
+            info.is_union_only = false;
+            let overlap = Aabb::intersect(left.aabb(), right.aabb());
+            if !overlap.is_empty() {
+                info.sdf_regions.push(SdfRegionInfo {
+                    aabb: aabb_to_flat(overlap),
+                });
+            }
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::Intersection { left, right, .. } => {
+            info.is_union_only = false;
+            let overlap = Aabb::intersect(left.aabb(), right.aabb());
+            if !overlap.is_empty() {
+                info.sdf_regions.push(SdfRegionInfo {
+                    aabb: aabb_to_flat(overlap),
+                });
+            }
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::SmoothUnion { left, right, radius, .. } => {
+            info.is_union_only = false;
+            let overlap = Aabb::intersect(left.aabb(), right.aabb()).expanded(*radius);
+            if !overlap.is_empty() {
+                info.sdf_regions.push(SdfRegionInfo {
+                    aabb: aabb_to_flat(overlap),
+                });
+            }
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::SmoothDifference { left, right, radius, .. } => {
+            info.is_union_only = false;
+            let overlap = Aabb::intersect(left.aabb(), right.aabb()).expanded(*radius);
+            if !overlap.is_empty() {
+                info.sdf_regions.push(SdfRegionInfo {
+                    aabb: aabb_to_flat(overlap),
+                });
+            }
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::MaskedBlend { left, right, mask_p0, mask_p1, mask_radius, blend_radius, .. } => {
+            info.is_union_only = false;
+            let capsule_aabb = capsule_aabb(*mask_p0, *mask_p1, *mask_radius).expanded(*blend_radius);
+            let overlap = Aabb::intersect(
+                Aabb::intersect(left.aabb(), right.aabb()),
+                capsule_aabb,
+            );
+            if !overlap.is_empty() {
+                info.sdf_regions.push(SdfRegionInfo {
+                    aabb: aabb_to_flat(overlap),
+                });
+            }
+            classify_walk(left, info);
+            classify_walk(right, info);
+        }
+        BoundedCsg::Twist { .. }
+        | BoundedCsg::Bend { .. }
+        | BoundedCsg::Displace { .. }
+        | BoundedCsg::Shell { .. }
+        | BoundedCsg::Morph { .. } => {
+            info.is_union_only = false;
+            info.needs_full_sdf = true;
+        }
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
+            info.needs_full_sdf = true;
+        }
+    }
+}
+
+fn primitive_to_leaf_info(
+    prim: &Primitive,
+    wt: &Transform,
+    aabb: &Aabb,
+) -> Option<HybridLeafInfo> {
+    let tf = [
+        wt.translate[0], wt.translate[1], wt.translate[2],
+        wt.rotation[0], wt.rotation[1], wt.rotation[2], wt.rotation[3],
+        wt.scale,
+    ];
+    let flat_aabb = aabb_to_flat(*aabb);
+
+    match prim {
+        Primitive::Box { center, half_extents } => Some(HybridLeafInfo {
+            kind: "box".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![
+                half_extents[0], half_extents[1], half_extents[2],
+                center[0], center[1], center[2],
+            ],
+        }),
+        Primitive::Sphere { center, radius } => Some(HybridLeafInfo {
+            kind: "sphere".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![*radius, center[0], center[1], center[2]],
+        }),
+        Primitive::Cylinder { center, radius, half_height } => Some(HybridLeafInfo {
+            kind: "cylinder".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![*radius, *half_height, center[0], center[1], center[2]],
+        }),
+        Primitive::Torus { center, major_radius, minor_radius } => Some(HybridLeafInfo {
+            kind: "torus".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![*major_radius, *minor_radius, center[0], center[1], center[2]],
+        }),
+        Primitive::Cone { r_bottom, r_top, half_height } => Some(HybridLeafInfo {
+            kind: "cone".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![*r_bottom, *r_top, *half_height],
+        }),
+        Primitive::Capsule { radius, half_height } => Some(HybridLeafInfo {
+            kind: "capsule".into(),
+            aabb: flat_aabb,
+            transform: tf,
+            params: vec![*radius, *half_height],
+        }),
+        _ => None,
+    }
+}
+
+fn aabb_to_flat(aabb: Aabb) -> [f32; 6] {
+    [aabb.min[0], aabb.min[1], aabb.min[2], aabb.max[0], aabb.max[1], aabb.max[2]]
+}
+
+fn capsule_aabb(p0: [f32; 3], p1: [f32; 3], radius: f32) -> Aabb {
+    Aabb {
+        min: [
+            p0[0].min(p1[0]) - radius,
+            p0[1].min(p1[1]) - radius,
+            p0[2].min(p1[2]) - radius,
+        ],
+        max: [
+            p0[0].max(p1[0]) + radius,
+            p0[1].max(p1[1]) + radius,
+            p0[2].max(p1[2]) + radius,
+        ],
     }
 }
 

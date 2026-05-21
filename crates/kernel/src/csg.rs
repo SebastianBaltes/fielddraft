@@ -220,6 +220,25 @@ impl Aabb {
         }
     }
 
+    pub fn intersect(a: Self, b: Self) -> Self {
+        if a.is_empty() || b.is_empty() {
+            return Self::EMPTY;
+        }
+        let result = Self {
+            min: [
+                a.min[0].max(b.min[0]),
+                a.min[1].max(b.min[1]),
+                a.min[2].max(b.min[2]),
+            ],
+            max: [
+                a.max[0].min(b.max[0]),
+                a.max[1].min(b.max[1]),
+                a.max[2].min(b.max[2]),
+            ],
+        };
+        if result.is_empty() { Self::EMPTY } else { result }
+    }
+
     pub fn expanded(&self, margin: f32) -> Self {
         if self.is_empty() {
             return *self;

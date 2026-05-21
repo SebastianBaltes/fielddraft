@@ -86,6 +86,24 @@ export type FeatureKindName =
   | "transform"
   | "unknown";
 
+export interface HybridLeafInfo {
+  kind: string;
+  aabb: [number, number, number, number, number, number];
+  transform: [number, number, number, number, number, number, number, number];
+  params: number[];
+}
+
+export interface SdfRegionInfo {
+  aabb: [number, number, number, number, number, number];
+}
+
+export interface HybridInfo {
+  leaves: HybridLeafInfo[];
+  sdf_regions: SdfRegionInfo[];
+  needs_full_sdf: boolean;
+  is_union_only: boolean;
+}
+
 export interface FeatureSummary {
   id: number;
   name: string;
@@ -279,6 +297,10 @@ export class Kernel {
 
   bodySdfAabb(i: number): Float32Array {
     return new Float32Array(this.inner.bodySdfAabb(i));
+  }
+
+  bodyHybridInfo(i: number): HybridInfo {
+    return JSON.parse(this.inner.bodyHybridInfoJson(i));
   }
 
   /**

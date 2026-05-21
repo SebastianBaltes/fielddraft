@@ -2646,6 +2646,16 @@ impl Kernel {
             })
     }
 
+    #[wasm_bindgen(js_name = bodyHybridInfoJson)]
+    pub fn body_hybrid_info_json(&self, i: usize) -> String {
+        let bounded = body::build_bounded_for_body(
+            &self.document.features,
+            &self.bodies[i].feature_indices,
+        );
+        let info = bounded.classify_for_hybrid();
+        serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())
+    }
+
     /// Number of `u32` slots reserved per vertex in the per-body
     /// contributor flat buffer. Matches `csg::MAX_CONTRIBUTORS`.
     #[wasm_bindgen(js_name = meshContributorStride)]

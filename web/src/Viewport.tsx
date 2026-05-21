@@ -65,6 +65,12 @@ import {
   disposeBatchmarch,
   type BatchmarchState,
 } from "./sdfBatchmarch";
+import {
+  createHybridBody,
+  updateHybridBody,
+  disposeHybridBody,
+  type SdfHybridBodyHandle,
+} from "./sdfHybridRenderer";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -631,6 +637,76 @@ function SdfBatchOverlay() {
   return <group ref={groupRef} />;
 }
 
+function SdfHybridOverlay() {
+  const { store } = useKernelStore();
+  const groupRef = useRef<THREE.Group>(null);
+  const handlesRef = useRef<
+    Map<number, SdfHybridBodyHandle & { version: number }>
+  >(new Map());
+  const invalidate = useThree((s) => s.invalidate);
+
+  useFrame(() => {
+    if (!store || !groupRef.current) return;
+    const k = store.kernel;
+    const count = k.bodyCount();
+    const seen = new Set<number>();
+    let changed = false;
+
+    for (let i = 0; i < count; i++) {
+      const bodyId = k.bodyId(i);
+      const version = k.bodyVersion(i);
+      seen.add(bodyId);
+
+      const existing = handlesRef.current.get(bodyId);
+      if (existing && existing.version === version) continue;
+
+      const hybridInfo = k.bodyHybridInfo(i);
+      const opcodesView = k.bodySdfOpcodesView(i);
+      const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
+      const aabb = k.bodySdfAabb(i);
+
+      if (!existing) {
+        const handle = createHybridBody(hybridInfo, i, opcodes, aabb);
+        for (const m of handle.meshes) groupRef.current.add(m);
+        if (handle.sdfFallback) groupRef.current.add(handle.sdfFallback.mesh);
+        handlesRef.current.set(bodyId, { ...handle, version });
+        changed = true;
+      } else {
+        for (const m of existing.meshes) groupRef.current.remove(m);
+        if (existing.sdfFallback) groupRef.current.remove(existing.sdfFallback.mesh);
+        const handle = updateHybridBody(existing, hybridInfo, i, opcodes, aabb);
+        for (const m of handle.meshes) groupRef.current.add(m);
+        if (handle.sdfFallback) groupRef.current.add(handle.sdfFallback.mesh);
+        handlesRef.current.set(bodyId, { ...handle, version });
+        changed = true;
+      }
+    }
+
+    for (const [id, handle] of handlesRef.current) {
+      if (!seen.has(id)) {
+        for (const m of handle.meshes) groupRef.current.remove(m);
+        if (handle.sdfFallback) groupRef.current.remove(handle.sdfFallback.mesh);
+        disposeHybridBody(handle);
+        handlesRef.current.delete(id);
+        changed = true;
+      }
+    }
+
+    if (changed) invalidate();
+  });
+
+  useEffect(() => {
+    return () => {
+      for (const handle of handlesRef.current.values()) {
+        disposeHybridBody(handle);
+      }
+      handlesRef.current.clear();
+    };
+  }, []);
+
+  return <group ref={groupRef} />;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -647,6 +723,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf-vm" && <SdfVmOverlay />}
       {renderMode === "sdf-baked" && <SdfBakedOverlay />}
       {renderMode === "sdf-batch" && <SdfBatchOverlay />}
+      {renderMode === "sdf-hybrid" && <SdfHybridOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
