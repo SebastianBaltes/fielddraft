@@ -28,6 +28,7 @@ import {
   type SdfBodyHandle,
 } from "./sdfRenderer";
 import { buildSdfEvalFn, extractTopology } from "./sdfRenderer";
+import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
 
 const BODY_COLORS: [number, number, number][] = [
   [0.55, 0.65, 0.85],
@@ -270,6 +271,94 @@ function createSdfOverlay(
   return mesh;
 }
 
+// ── SDF overlay box (VM interpreter, no shader recompilation) ────
+
+function createSdfOverlayVm(
+  opcodes: Float32Array,
+  region: SdfRegionInfo,
+  bodyIndex: number,
+): THREE.Mesh {
+  const opcodeData = new Float32Array(VM_MAX_OPCODES);
+  opcodeData.set(opcodes.subarray(0, Math.min(opcodes.length, VM_MAX_OPCODES)));
+  const opBuf = uniformArray(opcodeData, "float");
+  const sceneSdf = buildVmSdfEvalFn(opBuf);
+
+  const sceneNormal = Fn(({ p }: { p: any }) => {
+    const ex = vec3(NORMAL_EPS, 0, 0);
+    const ey = vec3(0, NORMAL_EPS, 0);
+    const ez = vec3(0, 0, NORMAL_EPS);
+    return normalize(vec3(
+      sceneSdf({ p: p.add(ex) }).sub(sceneSdf({ p: p.sub(ex) })),
+      sceneSdf({ p: p.add(ey) }).sub(sceneSdf({ p: p.sub(ey) })),
+      sceneSdf({ p: p.add(ez) }).sub(sceneSdf({ p: p.sub(ez) })),
+    ));
+  });
+
+  const [r, g, b] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
+
+  const colorNode = Fn(() => {
+    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
+    const ro = cameraPosition;
+    const rd = normalize(worldPos.sub(ro));
+    const t = float(0).toVar();
+    const hit = float(0).toVar();
+    const hitPos = vec3(0).toVar();
+
+    Loop(int(MAX_STEPS), () => {
+      const p = ro.add(rd.mul(t));
+      const d = sceneSdf({ p });
+      If(d.lessThan(SURFACE_EPS), () => {
+        hit.assign(1);
+        hitPos.assign(p);
+        Break();
+      });
+      t.addAssign(d);
+      If(t.greaterThan(MAX_DIST), () => { Break(); });
+    });
+
+    const finalColor = vec3(0).toVar();
+    const finalAlpha = float(0).toVar();
+    If(hit.greaterThan(0.5), () => {
+      const n = sceneNormal({ p: hitPos });
+      const key = normalize(vec3(0.4, 1, 0.5));
+      const fill = normalize(vec3(-0.6, 0.2, 0.8));
+      const rim = normalize(vec3(0.0, -0.3, -1.0));
+      const dKey = max(n.dot(key), float(0));
+      const dFill = max(n.dot(fill), float(0));
+      const dRim = max(n.dot(rim), float(0));
+      const ambient = float(0.3);
+      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
+      finalColor.assign(vec3(r, g, b).mul(light));
+      finalAlpha.assign(1);
+    });
+
+    return vec4(finalColor, finalAlpha);
+  });
+
+  const material = new MeshBasicNodeMaterial();
+  material.outputNode = colorNode();
+  material.side = THREE.BackSide;
+  material.transparent = true;
+  material.depthWrite = false;
+  material.depthTest = true;
+  material.toneMapped = false;
+
+  const a = region.aabb;
+  const margin = 2.0;
+  const sx = a[3] - a[0] + margin * 2;
+  const sy = a[4] - a[1] + margin * 2;
+  const sz = a[5] - a[2] + margin * 2;
+  const cx = (a[0] + a[3]) * 0.5;
+  const cy = (a[1] + a[4]) * 0.5;
+  const cz = (a[2] + a[5]) * 0.5;
+
+  const geometry = new THREE.BoxGeometry(sx, sy, sz);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(cx, cy, cz);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
 // ── Body handle ───────────────────────────────────────────────────
 
 export interface SdfHybridBodyHandle {
@@ -283,12 +372,17 @@ export function createHybridBody(
   bodyIndex: number,
   opcodes: Float32Array,
   aabb: Float32Array,
+  useVm = false,
 ): SdfHybridBodyHandle {
+  const empty: SdfHybridBodyHandle = { meshes: [], overlays: [], sdfFallback: null };
+
   // Full SDF fallback for domain warps etc.
+  // Always use baked approach here — the VM shader is too heavy for
+  // full-body raymarching and can crash the GPU on some hardware.
   if (hybridInfo.needs_full_sdf) {
-    if (opcodes.length === 0) return { meshes: [], overlays: [], sdfFallback: null };
+    if (opcodes.length === 0) return empty;
     const sdf = createSdfBody(opcodes, aabb);
-    return { meshes: [], overlays: [], sdfFallback: { ...sdf, version: 0 } };
+    return { ...empty, sdfFallback: { ...sdf, version: 0 } };
   }
 
   // Union-only: pure mesh, no SDF
@@ -297,7 +391,7 @@ export function createHybridBody(
   }
 
   // Phase 2: mesh + SDF overlay in overlap regions
-  return createMeshPlusSdfBody(hybridInfo, bodyIndex, opcodes, aabb);
+  return createMeshPlusSdfBody(hybridInfo, bodyIndex, opcodes, aabb, useVm);
 }
 
 function createMeshOnlyBody(
@@ -326,18 +420,18 @@ function createMeshPlusSdfBody(
   bodyIndex: number,
   opcodes: Float32Array,
   aabb: Float32Array,
+  useVm = false,
 ): SdfHybridBodyHandle {
+  const empty: SdfHybridBodyHandle = { meshes: [], overlays: [], sdfFallback: null };
   const meshLeaves = hybridInfo.leaves.filter(l => l.role === "mesh");
   const hasAllMeshable = meshLeaves.every(l => createPrimitiveGeometry(l) !== null);
 
-  // If not all mesh leaves are meshable, fall back to full SDF
   if (!hasAllMeshable || meshLeaves.length === 0 || opcodes.length === 0) {
-    if (opcodes.length === 0) return { meshes: [], overlays: [], sdfFallback: null };
+    if (opcodes.length === 0) return empty;
     const sdf = createSdfBody(opcodes, aabb);
-    return { meshes: [], overlays: [], sdfFallback: { ...sdf, version: 0 } };
+    return { ...empty, sdfFallback: { ...sdf, version: 0 } };
   }
 
-  // Create mesh leaves with clip-AABB material
   const material = createClipMaterial(bodyIndex, hybridInfo.sdf_regions);
   const meshes: THREE.Mesh[] = [];
   for (const leaf of meshLeaves) {
@@ -348,11 +442,10 @@ function createMeshPlusSdfBody(
     meshes.push(mesh);
   }
 
-  // Create SDF overlay boxes for each overlap region
   const overlays: THREE.Mesh[] = [];
+  const overlayFactory = useVm ? createSdfOverlayVm : createSdfOverlay;
   for (const region of hybridInfo.sdf_regions) {
-    const overlay = createSdfOverlay(opcodes, region, bodyIndex);
-    overlays.push(overlay);
+    overlays.push(overlayFactory(opcodes, region, bodyIndex));
   }
 
   return { meshes, overlays, sdfFallback: null };
@@ -367,9 +460,7 @@ export function disposeHybridBody(handle: SdfHybridBodyHandle): void {
     overlay.geometry.dispose();
     (overlay.material as THREE.Material).dispose();
   }
-  if (handle.sdfFallback) {
-    disposeSdfBody(handle.sdfFallback);
-  }
+  if (handle.sdfFallback) disposeSdfBody(handle.sdfFallback);
 }
 
 export function updateHybridBody(
@@ -378,7 +469,8 @@ export function updateHybridBody(
   bodyIndex: number,
   opcodes: Float32Array,
   aabb: Float32Array,
+  useVm = false,
 ): SdfHybridBodyHandle {
   disposeHybridBody(handle);
-  return createHybridBody(hybridInfo, bodyIndex, opcodes, aabb);
+  return createHybridBody(hybridInfo, bodyIndex, opcodes, aabb, useVm);
 }

@@ -637,7 +637,7 @@ function SdfBatchOverlay() {
   return <group ref={groupRef} />;
 }
 
-function SdfHybridOverlay() {
+function SdfHybridOverlay({ useVm = false }: { useVm?: boolean } = {}) {
   const { store } = useKernelStore();
   const groupRef = useRef<THREE.Group>(null);
   const handlesRef = useRef<
@@ -666,20 +666,23 @@ function SdfHybridOverlay() {
       const aabb = k.bodySdfAabb(i);
 
       if (!existing) {
-        const handle = createHybridBody(hybridInfo, i, opcodes, aabb);
+        const handle = createHybridBody(hybridInfo, i, opcodes, aabb, useVm);
         for (const m of handle.meshes) groupRef.current.add(m);
         for (const o of handle.overlays) groupRef.current.add(o);
         if (handle.sdfFallback) groupRef.current.add(handle.sdfFallback.mesh);
+
         handlesRef.current.set(bodyId, { ...handle, version });
         changed = true;
       } else {
         for (const m of existing.meshes) groupRef.current.remove(m);
         for (const o of existing.overlays) groupRef.current.remove(o);
         if (existing.sdfFallback) groupRef.current.remove(existing.sdfFallback.mesh);
-        const handle = updateHybridBody(existing, hybridInfo, i, opcodes, aabb);
+
+        const handle = updateHybridBody(existing, hybridInfo, i, opcodes, aabb, useVm);
         for (const m of handle.meshes) groupRef.current.add(m);
         for (const o of handle.overlays) groupRef.current.add(o);
         if (handle.sdfFallback) groupRef.current.add(handle.sdfFallback.mesh);
+
         handlesRef.current.set(bodyId, { ...handle, version });
         changed = true;
       }
@@ -690,6 +693,7 @@ function SdfHybridOverlay() {
         for (const m of handle.meshes) groupRef.current.remove(m);
         for (const o of handle.overlays) groupRef.current.remove(o);
         if (handle.sdfFallback) groupRef.current.remove(handle.sdfFallback.mesh);
+
         disposeHybridBody(handle);
         handlesRef.current.delete(id);
         changed = true;
@@ -728,6 +732,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf-baked" && <SdfBakedOverlay />}
       {renderMode === "sdf-batch" && <SdfBatchOverlay />}
       {renderMode === "sdf-hybrid" && <SdfHybridOverlay />}
+      {renderMode === "sdf-hybrid-vm" && <SdfHybridOverlay useVm />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
