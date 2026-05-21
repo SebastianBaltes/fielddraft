@@ -1389,6 +1389,9 @@ function ViewCommandConsumer() {
   const invalidate = useThree((s) => s.invalidate);
   useEffect(() => {
     registerInvalidate(invalidate);
+    if (import.meta.env.DEV) {
+      (window as unknown as { __fdInvalidate?: () => void }).__fdInvalidate = invalidate;
+    }
     return () => registerInvalidate(() => {});
   }, [invalidate]);
   useFrame(({ camera, controls }) => {
