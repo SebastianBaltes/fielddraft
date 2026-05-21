@@ -40,6 +40,7 @@ pub struct HybridLeafInfo {
     pub aabb: [f32; 6],
     pub transform: [f32; 8],
     pub params: Vec<f32>,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -250,7 +251,7 @@ impl BoundedCsg {
             needs_full_sdf: false,
             is_union_only: true,
         };
-        classify_walk(self, &mut info);
+        classify_walk(self, &mut info, "mesh");
         info
     }
 
@@ -898,19 +899,20 @@ fn combine_max(
     }
 }
 
-fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
+fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
     match node {
         BoundedCsg::Empty => {}
         BoundedCsg::Leaf { primitive, world_transform, aabb, .. } => {
-            if let Some(leaf) = primitive_to_leaf_info(primitive, world_transform, aabb) {
+            if let Some(mut leaf) = primitive_to_leaf_info(primitive, world_transform, aabb) {
+                leaf.role = role.into();
                 info.leaves.push(leaf);
             } else {
                 info.needs_full_sdf = true;
             }
         }
         BoundedCsg::Union { left, right, .. } => {
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, role);
+            classify_walk(right, info, role);
         }
         BoundedCsg::Difference { left, right, .. } => {
             info.is_union_only = false;
@@ -920,8 +922,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, role);
+            classify_walk(right, info, "skip");
         }
         BoundedCsg::Intersection { left, right, .. } => {
             info.is_union_only = false;
@@ -931,8 +933,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, "skip");
+            classify_walk(right, info, "skip");
         }
         BoundedCsg::SmoothUnion { left, right, radius, .. } => {
             info.is_union_only = false;
@@ -942,8 +944,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, role);
+            classify_walk(right, info, role);
         }
         BoundedCsg::SmoothDifference { left, right, radius, .. } => {
             info.is_union_only = false;
@@ -953,10 +955,10 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, role);
+            classify_walk(right, info, "skip");
         }
-        BoundedCsg::MaskedBlend { left, right, mask_p0, mask_p1, mask_radius, blend_radius, .. } => {
+        BoundedCsg::MaskedBlend { left, right, mask_p0, mask_p1, mask_radius, blend_radius, is_difference, .. } => {
             info.is_union_only = false;
             let capsule_aabb = capsule_aabb(*mask_p0, *mask_p1, *mask_radius).expanded(*blend_radius);
             let overlap = Aabb::intersect(
@@ -968,8 +970,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info);
-            classify_walk(right, info);
+            classify_walk(left, info, role);
+            classify_walk(right, info, if *is_difference { "skip" } else { role });
         }
         BoundedCsg::Twist { .. }
         | BoundedCsg::Bend { .. }
@@ -997,45 +999,38 @@ fn primitive_to_leaf_info(
     ];
     let flat_aabb = aabb_to_flat(*aabb);
 
+    let role = String::new(); // set by caller
     match prim {
         Primitive::Box { center, half_extents } => Some(HybridLeafInfo {
-            kind: "box".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "box".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![
                 half_extents[0], half_extents[1], half_extents[2],
                 center[0], center[1], center[2],
             ],
         }),
         Primitive::Sphere { center, radius } => Some(HybridLeafInfo {
-            kind: "sphere".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![*radius, center[0], center[1], center[2]],
         }),
         Primitive::Cylinder { center, radius, half_height } => Some(HybridLeafInfo {
-            kind: "cylinder".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![*radius, *half_height, center[0], center[1], center[2]],
         }),
         Primitive::Torus { center, major_radius, minor_radius } => Some(HybridLeafInfo {
-            kind: "torus".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "torus".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![*major_radius, *minor_radius, center[0], center[1], center[2]],
         }),
         Primitive::Cone { r_bottom, r_top, half_height } => Some(HybridLeafInfo {
-            kind: "cone".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "cone".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![*r_bottom, *r_top, *half_height],
         }),
         Primitive::Capsule { radius, half_height } => Some(HybridLeafInfo {
-            kind: "capsule".into(),
-            aabb: flat_aabb,
-            transform: tf,
+            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role,
             params: vec![*radius, *half_height],
+        }),
+        Primitive::Thread { nominal_radius, half_height, .. } => Some(HybridLeafInfo {
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role,
+            params: vec![*nominal_radius, *half_height, 0.0, 0.0, 0.0],
         }),
         _ => None,
     }

@@ -744,7 +744,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
 
 const MAX_PARAMS = 2048;
 
-function extractTopology(opcodes: Float32Array): {
+export function extractTopology(opcodes: Float32Array): {
   topologyKey: string;
   paramValues: Float32Array;
   paramCount: number;
@@ -837,7 +837,7 @@ function extractTopology(opcodes: Float32Array): {
   };
 }
 
-function buildSdfEvalFn(
+export function buildSdfEvalFn(
   opcodes: Float32Array,
   params: ReturnType<typeof uniformArray>,
 ) {

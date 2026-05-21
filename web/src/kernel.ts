@@ -91,6 +91,7 @@ export interface HybridLeafInfo {
   aabb: [number, number, number, number, number, number];
   transform: [number, number, number, number, number, number, number, number];
   params: number[];
+  role: "mesh" | "skip";
 }
 
 export interface SdfRegionInfo {
