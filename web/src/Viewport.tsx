@@ -71,6 +71,17 @@ import {
   disposeHybridBody,
   type SdfHybridBodyHandle,
 } from "./sdfHybridRenderer";
+import {
+  initComputePipeline,
+  createComputeBody,
+  updateComputeBodyOpcodes,
+  updateComputeCamera,
+  runComputeFrame,
+  disposeComputeBody,
+  disposeComputePipeline,
+  type ComputePipelineState,
+  type ComputeBodyHandle,
+} from "./sdfHybridComputeRenderer";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -715,6 +726,100 @@ function SdfHybridOverlay({ useVm = false }: { useVm?: boolean } = {}) {
   return <group ref={groupRef} />;
 }
 
+function SdfHybridComputeOverlay() {
+  const { store } = useKernelStore();
+  const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
+  const size = useThree((s) => s.size);
+  const invalidate = useThree((s) => s.invalidate);
+
+  const pipelineRef = useRef<ComputePipelineState | null>(null);
+  const bodiesRef = useRef<
+    Map<number, ComputeBodyHandle & { version: number }>
+  >(new Map());
+
+  useEffect(() => {
+    if (pipelineRef.current) {
+      for (const body of bodiesRef.current.values()) disposeComputeBody(body);
+      bodiesRef.current.clear();
+      disposeComputePipeline(pipelineRef.current);
+    }
+    const w = Math.max(size.width, 1);
+    const h = Math.max(size.height, 1);
+    pipelineRef.current = initComputePipeline(w, h);
+    invalidate();
+    return () => {
+      if (pipelineRef.current) {
+        for (const body of bodiesRef.current.values()) disposeComputeBody(body);
+        bodiesRef.current.clear();
+        disposeComputePipeline(pipelineRef.current);
+        pipelineRef.current = null;
+      }
+    };
+  }, [size.width, size.height]);
+
+  useFrame(({ gl: renderer }) => {
+    if (!store || !pipelineRef.current) return;
+    const pipeline = pipelineRef.current;
+    const k = store.kernel;
+    const count = k.bodyCount();
+    const seen = new Set<number>();
+
+    for (let i = 0; i < count; i++) {
+      const bodyId = k.bodyId(i);
+      const version = k.bodyVersion(i);
+      seen.add(bodyId);
+
+      const existing = bodiesRef.current.get(bodyId);
+      if (existing && existing.version === version) continue;
+
+      const opcodesView = k.bodySdfOpcodesView(i);
+      if (opcodesView.length === 0) continue;
+      const opcodes = opcodesView.slice();
+
+      if (existing) {
+        updateComputeBodyOpcodes(existing, opcodes);
+        existing.version = version;
+      } else {
+        const handle = createComputeBody(pipeline, opcodes, i);
+        bodiesRef.current.set(bodyId, { ...handle, version });
+      }
+    }
+
+    for (const [id, handle] of bodiesRef.current) {
+      if (!seen.has(id)) {
+        disposeComputeBody(handle);
+        bodiesRef.current.delete(id);
+      }
+    }
+
+    updateComputeCamera(pipeline, camera);
+
+    const bodies = Array.from(bodiesRef.current.values());
+    try {
+      runComputeFrame(
+        pipeline,
+        bodies,
+        renderer as unknown as THREE.WebGPURenderer,
+      );
+    } catch (e) {
+      console.warn("sdf-hybrid-compute: compute dispatch failed", e);
+    }
+
+    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    wgpuRenderer.render(scene, camera);
+
+    const prevAutoClear = (wgpuRenderer as any).autoClear;
+    (wgpuRenderer as any).autoClear = false;
+    wgpuRenderer.render(pipeline.blitScene, pipeline.blitCamera);
+    (wgpuRenderer as any).autoClear = prevAutoClear;
+
+    invalidate();
+  }, 1);
+
+  return null;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -733,6 +838,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf-batch" && <SdfBatchOverlay />}
       {renderMode === "sdf-hybrid" && <SdfHybridOverlay />}
       {renderMode === "sdf-hybrid-vm" && <SdfHybridOverlay useVm />}
+      {renderMode === "sdf-hybrid-compute" && <SdfHybridComputeOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
