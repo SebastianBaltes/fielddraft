@@ -34,7 +34,7 @@ import {
   uint,
   uniformArray,
   uv,
-  uvec3,
+  uvec2,
   vec3,
   vec4,
 } from "three/tsl";
@@ -43,8 +43,10 @@ import { MeshBasicNodeMaterial, StorageTexture } from "three/webgpu";
 import { SURFACE_EPS, MAX_DIST } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
 
-const MAX_STEPS = 96;
+const MAX_STEPS = 64;
 const NORMAL_EPS = 0.01;
+const COMPUTE_SCALE = 0.5;
+export const MAX_COMPUTE_BODIES = 4;
 
 const BODY_COLORS: [number, number, number][] = [
   [0.55, 0.65, 0.85],
@@ -83,15 +85,17 @@ export interface ComputeBodyHandle {
 // ── Pipeline init ──────────────────────────────────────────────────
 
 export function initComputePipeline(
-  width: number,
-  height: number,
+  viewportWidth: number,
+  viewportHeight: number,
 ): ComputePipelineState {
+  const width = Math.max(1, Math.round(viewportWidth * COMPUTE_SCALE));
+  const height = Math.max(1, Math.round(viewportHeight * COMPUTE_SCALE));
   const sdfColorTex = new StorageTexture(width, height);
   sdfColorTex.type = THREE.UnsignedByteType;
   sdfColorTex.format = THREE.RGBAFormat;
   sdfColorTex.internalFormat = "rgba8unorm";
-  sdfColorTex.minFilter = THREE.NearestFilter;
-  sdfColorTex.magFilter = THREE.NearestFilter;
+  sdfColorTex.minFilter = THREE.LinearFilter;
+  sdfColorTex.magFilter = THREE.LinearFilter;
 
   const cameraData = new Float32Array(16);
   const cameraBuf = uniformArray(cameraData, "float");
@@ -102,7 +106,7 @@ export function initComputePipeline(
     const w = uint(width);
     const px = instanceIndex.mod(w);
     const py = instanceIndex.div(w);
-    textureStore(ct, uvec3(px, py, uint(0)), vec4(0, 0, 0, 0)).toWriteOnly();
+    textureStore(ct, uvec2(px, py), vec4(0, 0, 0, 0)).toWriteOnly();
   });
   const clearNode = clearKernel({ ct: sdfColorTex })
     .compute(width * height, [64]);
@@ -241,7 +245,7 @@ export function createComputeBody(
       );
       textureStore(
         ct,
-        uvec3(px, py, uint(0)),
+        uvec2(px, py),
         vec4(baseColor.mul(light), 1),
       ).toWriteOnly();
     });

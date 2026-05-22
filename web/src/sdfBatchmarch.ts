@@ -33,7 +33,7 @@ import {
   textureStore,
   uint,
   uniformArray,
-  uvec3,
+  uvec2,
   vec3,
   vec4,
 } from "three/tsl";
@@ -129,7 +129,7 @@ export function initBatchmarch(
     const w = uint(width);
     const px = instanceIndex.mod(w);
     const py = instanceIndex.div(w);
-    textureStore(rayStateTex, uvec3(px, py, uint(0)), vec4(0, 0, 0, 0)).toWriteOnly();
+    textureStore(rayStateTex, uvec2(px, py), vec4(0, 0, 0, 0)).toWriteOnly();
   });
 
   const initNode = initKernel({ rayStateTex }).compute(width * height, [64]);
@@ -141,7 +141,7 @@ export function initBatchmarch(
     const px = instanceIndex.mod(w);
     const py = instanceIndex.div(w);
 
-    const state = textureStore(rayStateTex, uvec3(px, py, uint(0)), null).toReadWrite();
+    const state = textureStore(rayStateTex, uvec2(px, py), null).toReadWrite();
     const t = state.x.toVar();
     const hitFlag = state.y.toVar();
 
@@ -163,7 +163,7 @@ export function initBatchmarch(
       });
     });
 
-    textureStore(rayStateTex, uvec3(px, py, uint(0)), vec4(t, hitFlag, 0, 0)).toWriteOnly();
+    textureStore(rayStateTex, uvec2(px, py), vec4(t, hitFlag, 0, 0)).toWriteOnly();
   });
 
   const marchNodes = [];
@@ -180,12 +180,12 @@ export function initBatchmarch(
     const px = instanceIndex.mod(w);
     const py = instanceIndex.div(w);
 
-    const state = textureStore(rayStateTex, uvec3(px, py, uint(0)), null).toReadOnly();
+    const state = textureStore(rayStateTex, uvec2(px, py), null).toReadOnly();
     const t = state.x;
     const hitFlag = state.y;
 
     If(hitFlag.lessThan(0.5), () => {
-      textureStore(outputTex, uvec3(px, py, uint(0)), vec4(0, 0, 0, 0)).toWriteOnly();
+      textureStore(outputTex, uvec2(px, py), vec4(0, 0, 0, 0)).toWriteOnly();
       return;
     });
 
@@ -213,7 +213,7 @@ export function initBatchmarch(
     const baseColor = vec3(0.55, 0.65, 0.85);
     const color = baseColor.mul(light);
 
-    textureStore(outputTex, uvec3(px, py, uint(0)), vec4(color, 1)).toWriteOnly();
+    textureStore(outputTex, uvec2(px, py), vec4(color, 1)).toWriteOnly();
   });
 
   const shadeNode = shadeKernel({ rayStateTex, outputTex, cameraBuf })

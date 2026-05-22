@@ -79,6 +79,7 @@ import {
   runComputeFrame,
   disposeComputeBody,
   disposeComputePipeline,
+  MAX_COMPUTE_BODIES,
   type ComputePipelineState,
   type ComputeBodyHandle,
 } from "./sdfHybridComputeRenderer";
@@ -774,7 +775,7 @@ function SdfHybridComputeOverlay() {
     }
 
     const k = store.kernel;
-    const count = k.bodyCount();
+    const count = Math.min(k.bodyCount(), MAX_COMPUTE_BODIES);
     const seen = new Set<number>();
 
     for (let i = 0; i < count; i++) {
