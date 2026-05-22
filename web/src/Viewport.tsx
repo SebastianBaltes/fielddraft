@@ -849,7 +849,7 @@ function SdfDeferredOverlay() {
 
   const pipelineRef = useRef<DeferredPipelineState | null>(null);
   const versionsRef = useRef<Map<number, number>>(new Map());
-  const compilingRef = useRef(false);
+  const compilingRef = useRef(true);
 
   useEffect(() => {
     if (pipelineRef.current) {
@@ -859,7 +859,7 @@ function SdfDeferredOverlay() {
     const h = Math.max(size.height, 1);
     pipelineRef.current = initDeferredPipeline(w, h);
     versionsRef.current.clear();
-    compilingRef.current = false;
+    compilingRef.current = true;
 
     const overlay = document.getElementById("fd-shader-compiling");
     const label = document.getElementById("fd-shader-compiling-label");
