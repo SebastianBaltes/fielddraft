@@ -170,7 +170,7 @@ function SdfVmOverlay() {
       const aabb = k.bodySdfAabb(i);
 
       if (!existing) {
-        const handle = createSdfVmBody(opcodes, aabb);
+        const handle = createSdfVmBody(opcodes, aabb, i);
         groupRef.current.add(handle.mesh);
         handlesRef.current.set(bodyId, { ...handle, version });
         changed = true;

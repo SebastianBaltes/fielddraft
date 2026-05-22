@@ -19,7 +19,7 @@ export function App() {
   }, [settings.theme]);
 
   useEffect(() => {
-    if (store) store.setDcMeshingEnabled(settings.renderMode === "dc");
+    if (store) store.setDcMeshingEnabled(false);
   }, [store, settings.renderMode]);
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
