@@ -737,6 +737,7 @@ function SdfHybridComputeOverlay() {
   const bodiesRef = useRef<
     Map<number, ComputeBodyHandle & { version: number }>
   >(new Map());
+  const hasWebGPU = useRef<boolean | null>(null);
 
   useEffect(() => {
     if (pipelineRef.current) {
@@ -761,6 +762,17 @@ function SdfHybridComputeOverlay() {
   useFrame(({ gl: renderer }) => {
     if (!store || !pipelineRef.current) return;
     const pipeline = pipelineRef.current;
+
+    if (hasWebGPU.current === null) {
+      hasWebGPU.current =
+        (renderer as any).backend?.isWebGPUBackend === true;
+      if (!hasWebGPU.current) {
+        console.warn(
+          "sdf-hybrid-compute: WebGPU backend required but not available. Rendering scene without SDF compute.",
+        );
+      }
+    }
+
     const k = store.kernel;
     const count = k.bodyCount();
     const seen = new Set<number>();
@@ -793,26 +805,26 @@ function SdfHybridComputeOverlay() {
       }
     }
 
-    updateComputeCamera(pipeline, camera);
+    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
 
-    const bodies = Array.from(bodiesRef.current.values());
-    try {
-      runComputeFrame(
-        pipeline,
-        bodies,
-        renderer as unknown as THREE.WebGPURenderer,
-      );
-    } catch (e) {
-      console.warn("sdf-hybrid-compute: compute dispatch failed", e);
+    if (hasWebGPU.current) {
+      updateComputeCamera(pipeline, camera);
+      const bodies = Array.from(bodiesRef.current.values());
+      try {
+        runComputeFrame(pipeline, bodies, wgpuRenderer);
+      } catch (e) {
+        console.warn("sdf-hybrid-compute: compute dispatch failed", e);
+      }
     }
 
-    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
     wgpuRenderer.render(scene, camera);
 
-    const prevAutoClear = (wgpuRenderer as any).autoClear;
-    (wgpuRenderer as any).autoClear = false;
-    wgpuRenderer.render(pipeline.blitScene, pipeline.blitCamera);
-    (wgpuRenderer as any).autoClear = prevAutoClear;
+    if (hasWebGPU.current) {
+      const prevAutoClear = (wgpuRenderer as any).autoClear;
+      (wgpuRenderer as any).autoClear = false;
+      wgpuRenderer.render(pipeline.blitScene, pipeline.blitCamera);
+      (wgpuRenderer as any).autoClear = prevAutoClear;
+    }
 
     invalidate();
   }, 1);
