@@ -237,28 +237,53 @@ function createShadeMaterial(
 
       Loop(int(DEFERRED_MARCH_STEPS), () => {
         const p = transWorldPos.add(rd.mul(t));
-        const minD = float(1e30).toVar();
+        const minSdf = float(1e30).toVar();
+        const minStep = float(1e30).toVar();
         const closestBody = int(0).toVar();
 
         Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
           const bit = shiftLeft(uint(1), uint(bodyIdx));
           If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
-            const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-            const d = sdfEval({ p, baseOffset: baseOff });
-            If(d.lessThan(minD), () => {
-              minD.assign(d);
-              closestBody.assign(bodyIdx);
+            const base = bodyIdx.mul(6);
+            const bminX = aabbBuf.element(base);
+            const bminY = aabbBuf.element(base.add(1));
+            const bminZ = aabbBuf.element(base.add(2));
+            const bmaxX = aabbBuf.element(base.add(3));
+            const bmaxY = aabbBuf.element(base.add(4));
+            const bmaxZ = aabbBuf.element(base.add(5));
+
+            // Distance from p to AABB (0 when inside)
+            const cx = max(bminX, min(p.x, bmaxX));
+            const cy = max(bminY, min(p.y, bmaxY));
+            const cz = max(bminZ, min(p.z, bmaxZ));
+            const ddx = p.x.sub(cx);
+            const ddy = p.y.sub(cy);
+            const ddz = p.z.sub(cz);
+            const aabbDist = vec3(ddx, ddy, ddz).length();
+
+            If(aabbDist.lessThan(float(0.001)), () => {
+              // Inside AABB: evaluate real SDF
+              const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+              const d = sdfEval({ p, baseOffset: baseOff });
+              If(d.lessThan(minSdf), () => {
+                minSdf.assign(d);
+                closestBody.assign(bodyIdx);
+              });
+              minStep.assign(min(minStep, d));
+            }).Else(() => {
+              // Outside AABB: use AABB distance for step sizing only
+              minStep.assign(min(minStep, aabbDist));
             });
           });
         });
 
-        If(minD.lessThan(float(SURFACE_EPS)), () => {
+        If(minSdf.lessThan(float(SURFACE_EPS)), () => {
           hit.assign(1);
           hitPos.assign(p);
           hitBody.assign(closestBody);
           Break();
         });
-        t.addAssign(max(minD, float(SURFACE_EPS)));
+        t.addAssign(max(minStep, float(SURFACE_EPS)));
         If(t.greaterThan(tMax), () => { Break(); });
       });
 
