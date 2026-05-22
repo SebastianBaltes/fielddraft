@@ -29,6 +29,7 @@ import {
   instanceIndex,
   int,
   max,
+  min,
   normalize,
   screenCoordinate,
   shiftLeft,
@@ -81,10 +82,13 @@ export interface DeferredPipelineState {
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
-  maxMarchDistUniform: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
+  bodyBackMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
+  transparentBackRT: THREE.WebGLRenderTarget;
+  transparentBackScene: THREE.Scene;
+  backFaceMaterial: MeshBasicNodeMaterial;
   bitmaskAttr: any;
   bitmaskBuf: any;
   clearNode: any;
@@ -132,17 +136,39 @@ function createTransparentGBufferMaterial(
   return material;
 }
 
+// ── Back-face material (scalar distance, MAX blending) ─────────────
+
+function createBackFaceMaterial(
+  camPosU: ReturnType<typeof uniform>,
+): MeshBasicNodeMaterial {
+  const material = new MeshBasicNodeMaterial();
+  material.outputNode = Fn(() => {
+    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
+    const dist = worldPos.sub(camPosU).length();
+    return vec4(dist, 0, 0, 1);
+  })();
+  material.side = THREE.BackSide;
+  material.depthTest = false;
+  material.depthWrite = false;
+  material.blending = THREE.CustomBlending;
+  material.blendEquation = THREE.MaxEquation;
+  material.blendSrc = THREE.OneFactor;
+  material.blendDst = THREE.OneFactor;
+  material.toneMapped = false;
+  return material;
+}
+
 // ── Shade material (reads both G-buffers, sphere-traces, lights) ────
 
 function createShadeMaterial(
   opaqueGbufTex: THREE.Texture,
   transGbufTex: THREE.Texture,
+  transBackTex: THREE.Texture,
   bitmaskBuf: any,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
-  maxMarchDistU: ReturnType<typeof uniform>,
   width: number,
   height: number,
 ): MeshBasicNodeMaterial {
@@ -175,13 +201,20 @@ function createShadeMaterial(
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      const tMax = float(maxMarchDistU).toVar();
+      // tMax from back-face RT (farthest exit across all hulls via MAX blending)
+      const backDist = texture(transBackTex, texUv).x;
+      const frontDist = transWorldPos.sub(camPosU).length();
+      const tMax = float(MAX_MARCH_DIST).toVar();
+      If(backDist.greaterThan(float(0)), () => {
+        tMax.assign(backDist.sub(frontDist));
+      });
+
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
         const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
         const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit).greaterThan(uint(0));
         If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
-          tMax.assign(opaqueDist);
+          tMax.assign(min(tMax, opaqueDist));
         });
       });
 
@@ -291,9 +324,17 @@ export function initDeferredPipeline(
 
   const opaqueRT = makeRT();
   const transparentRT = makeRT();
+  const transparentBackRT = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: false,
+  });
 
   const opaqueScene = new THREE.Scene();
   const transparentScene = new THREE.Scene();
+  const transparentBackScene = new THREE.Scene();
 
   const opcodeData = new Float32Array(DEFERRED_MAX_OPCODES);
   const opcodeBuf = uniformArray(opcodeData, "float");
@@ -311,7 +352,7 @@ export function initDeferredPipeline(
   const colorBuf = uniformArray(colorData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  const maxMarchDistUniform = uniform(MAX_MARCH_DIST);
+  const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
   const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
   const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
@@ -322,12 +363,12 @@ export function initDeferredPipeline(
   const shadeMaterial = createShadeMaterial(
     opaqueRT.texture,
     transparentRT.texture,
+    transparentBackRT.texture,
     bitmaskBuf,
     opcodeBuf,
     offsetBuf,
     colorBuf,
     camPosUniform,
-    maxMarchDistUniform,
     width,
     height,
   );
@@ -360,10 +401,13 @@ export function initDeferredPipeline(
     colorBuf,
     colorData,
     camPosUniform,
-    maxMarchDistUniform,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
+    bodyBackMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
+    transparentBackRT,
+    transparentBackScene,
+    backFaceMaterial,
     bitmaskAttr,
     bitmaskBuf,
     clearNode,
@@ -397,8 +441,15 @@ export function rebuildDeferredBodies(
       (m.material as THREE.Material).dispose();
     }
   }
+  for (const meshes of state.bodyBackMeshes.values()) {
+    for (const m of meshes) {
+      state.transparentBackScene.remove(m);
+      m.geometry.dispose();
+    }
+  }
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
+  state.bodyBackMeshes.clear();
   state.bodyOpcodeRanges.clear();
 
   state.opcodeData.fill(0);
@@ -426,6 +477,7 @@ export function rebuildDeferredBodies(
     );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
+    const backMeshes: THREE.Mesh[] = [];
 
     if (hybridInfo.needs_full_sdf) {
       // Non-meshable (gyroid, domain warp) -> transparent AABB only
@@ -434,6 +486,7 @@ export function rebuildDeferredBodies(
         : computeLeafAABB(hybridInfo.leaves);
       if (fb) {
         addAabbBox(fb, transMat, state.transparentScene, transMeshes);
+        addAabbBox(fb, state.backFaceMaterial, state.transparentBackScene, backMeshes);
       }
     } else {
       for (const leaf of hybridInfo.leaves) {
@@ -465,6 +518,17 @@ export function rebuildDeferredBodies(
             state.transparentScene.add(tMesh);
             transMeshes.push(tMesh);
           }
+
+          // Back-face mesh (same inflated geometry, shared back-face material)
+          const bGeo = createPrimitiveGeometry(leaf);
+          if (bGeo) {
+            bGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+            const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
+            applyLeafTransform(bMesh, leaf);
+            bMesh.frustumCulled = false;
+            state.transparentBackScene.add(bMesh);
+            backMeshes.push(bMesh);
+          }
         }
       }
 
@@ -475,27 +539,15 @@ export function rebuildDeferredBodies(
           : computeLeafAABB(hybridInfo.leaves);
         if (fb) {
           addAabbBox(fb, transMat, state.transparentScene, transMeshes);
+          addAabbBox(fb, state.backFaceMaterial, state.transparentBackScene, backMeshes);
         }
       }
     }
 
     state.bodyOpaqueMeshes.set(bodyIndex, opaqueMeshes);
     state.bodyTransparentMeshes.set(bodyIndex, transMeshes);
+    state.bodyBackMeshes.set(bodyIndex, backMeshes);
   }
-
-  let maxDiag = 0;
-  for (const { hybridInfo, aabb } of bodies) {
-    const ab = aabb
-      ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
-      : computeLeafAABB(hybridInfo.leaves);
-    if (!ab) continue;
-    const dx = ab[3] - ab[0];
-    const dy = ab[4] - ab[1];
-    const dz = ab[5] - ab[2];
-    const diag = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (diag > maxDiag) maxDiag = diag;
-  }
-  state.maxMarchDistUniform.value = maxDiag > 0 ? maxDiag + 1 : MAX_MARCH_DIST;
 }
 
 function addAabbBox(
@@ -559,13 +611,19 @@ export function renderDeferredFrame(
   renderer.clear(true, true, false);
   renderer.render(state.opaqueScene, camera);
 
-  // Pass 2: transparent G-buffer
+  // Pass 2: transparent G-buffer (front faces)
   renderer.setRenderTarget(state.transparentRT);
   renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
   renderer.clear(true, true, false);
   renderer.render(state.transparentScene, camera);
 
-  // Pass 3: shade (reads both RTs, composites to screen)
+  // Pass 2b: transparent back-face distances (MAX blending, no depth)
+  renderer.setRenderTarget(state.transparentBackRT);
+  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
+  renderer.clear(true, false, false);
+  renderer.render(state.transparentBackScene, camera);
+
+  // Pass 3: shade (reads all RTs, composites to screen)
   renderer.setRenderTarget(null);
   renderer.render(state.shadeScene, state.shadeCamera);
 }
@@ -584,6 +642,7 @@ export async function compileDeferredPipeline(
   await Promise.all([
     renderer.compileAsync(state.opaqueScene, camera),
     renderer.compileAsync(state.transparentScene, camera),
+    renderer.compileAsync(state.transparentBackScene, camera),
     renderer.compileAsync(state.shadeScene, state.shadeCamera),
   ]);
 
@@ -608,9 +667,17 @@ export function disposeDeferredPipeline(state: DeferredPipelineState): void {
       (m.material as THREE.Material).dispose();
     }
   }
+  for (const meshes of state.bodyBackMeshes.values()) {
+    for (const m of meshes) {
+      m.geometry.dispose();
+    }
+  }
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
+  state.bodyBackMeshes.clear();
   state.opaqueRT.dispose();
   state.transparentRT.dispose();
+  state.transparentBackRT.dispose();
+  state.backFaceMaterial.dispose();
   state.shadeMaterial.dispose();
 }
