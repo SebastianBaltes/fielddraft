@@ -920,16 +920,16 @@ function SdfDeferredOverlay() {
       });
     }
 
+    if (compilingRef.current) return;
+
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
 
     wgpuRenderer.render(scene, camera);
 
-    if (!compilingRef.current) {
-      const prevAutoClear = (wgpuRenderer as any).autoClear;
-      (wgpuRenderer as any).autoClear = false;
-      renderDeferredFrame(pipeline, wgpuRenderer, camera);
-      (wgpuRenderer as any).autoClear = prevAutoClear;
-    }
+    const prevAutoClear = (wgpuRenderer as any).autoClear;
+    (wgpuRenderer as any).autoClear = false;
+    renderDeferredFrame(pipeline, wgpuRenderer, camera);
+    (wgpuRenderer as any).autoClear = prevAutoClear;
 
     invalidate();
   }, 1);
