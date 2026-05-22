@@ -1928,7 +1928,19 @@ export function Viewport({ renderMode }: { renderMode: string }) {
               ...(props as object),
               antialias: true,
             });
-            await renderer.init();
+            try {
+              await renderer.init();
+            } catch (e) {
+              console.warn("fielddraft: WebGPU init failed, retrying with WebGL fallback:", e);
+              const fallback = new WebGPURenderer({
+                ...(props as object),
+                antialias: true,
+                forceWebGL: true,
+              });
+              await fallback.init();
+              console.log("fielddraft: WebGL fallback active.");
+              return fallback;
+            }
             const gpuBackend = (renderer as any).backend?.isWebGPUBackend === true;
             console.log(
               gpuBackend
