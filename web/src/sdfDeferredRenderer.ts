@@ -63,7 +63,6 @@ const DEFERRED_MARCH_STEPS = 128;
 const SURFACE_EPS = 0.001;
 const MAX_MARCH_DIST = 3000;
 const HULL_INFLATE = 1.005;
-const STEP_RELAX = 0.7;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -208,7 +207,7 @@ function createShadeMaterial(
           hitBody.assign(closestBody);
           Break();
         });
-        t.addAssign(max(minD.mul(STEP_RELAX), float(SURFACE_EPS)));
+        t.addAssign(max(minD, float(SURFACE_EPS)));
         If(t.greaterThan(tMax), () => { Break(); });
       });
 
