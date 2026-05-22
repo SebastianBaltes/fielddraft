@@ -87,6 +87,7 @@ import {
   initDeferredPipeline,
   rebuildDeferredBodies,
   renderDeferredFrame,
+  compileDeferredPipeline,
   disposeDeferredPipeline,
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
@@ -848,6 +849,7 @@ function SdfDeferredOverlay() {
 
   const pipelineRef = useRef<DeferredPipelineState | null>(null);
   const versionsRef = useRef<Map<number, number>>(new Map());
+  const compilingRef = useRef(false);
 
   useEffect(() => {
     if (pipelineRef.current) {
@@ -857,6 +859,7 @@ function SdfDeferredOverlay() {
     const h = Math.max(size.height, 1);
     pipelineRef.current = initDeferredPipeline(w, h);
     versionsRef.current.clear();
+    compilingRef.current = false;
     invalidate();
     return () => {
       if (pipelineRef.current) {
@@ -883,7 +886,7 @@ function SdfDeferredOverlay() {
     }
     if (versionsRef.current.size !== currentVersions.size) needsRebuild = true;
 
-    if (needsRebuild) {
+    if (needsRebuild && !compilingRef.current) {
       const bodies = [];
       for (let i = 0; i < count; i++) {
         const hybridInfo = k.bodyHybridInfo(i);
@@ -894,16 +897,25 @@ function SdfDeferredOverlay() {
       }
       rebuildDeferredBodies(pipeline, bodies);
       versionsRef.current = currentVersions;
+
+      compilingRef.current = true;
+      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      compileDeferredPipeline(pipeline, wgpu, camera).then(() => {
+        compilingRef.current = false;
+        invalidate();
+      });
     }
 
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
 
     wgpuRenderer.render(scene, camera);
 
-    const prevAutoClear = (wgpuRenderer as any).autoClear;
-    (wgpuRenderer as any).autoClear = false;
-    renderDeferredFrame(pipeline, wgpuRenderer, camera);
-    (wgpuRenderer as any).autoClear = prevAutoClear;
+    if (!compilingRef.current) {
+      const prevAutoClear = (wgpuRenderer as any).autoClear;
+      (wgpuRenderer as any).autoClear = false;
+      renderDeferredFrame(pipeline, wgpuRenderer, camera);
+      (wgpuRenderer as any).autoClear = prevAutoClear;
+    }
 
     invalidate();
   }, 1);

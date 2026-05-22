@@ -551,6 +551,20 @@ export function renderDeferredFrame(
   renderer.render(state.shadeScene, state.shadeCamera);
 }
 
+// ── Async pipeline compilation ─────────────────────────────────────
+
+export async function compileDeferredPipeline(
+  state: DeferredPipelineState,
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+): Promise<void> {
+  await Promise.all([
+    renderer.compileAsync(state.opaqueScene, camera),
+    renderer.compileAsync(state.transparentScene, camera),
+    renderer.compileAsync(state.shadeScene, state.shadeCamera),
+  ]);
+}
+
 // ── Dispose ─────────────────────────────────────────────────────────
 
 export function disposeDeferredPipeline(state: DeferredPipelineState): void {
