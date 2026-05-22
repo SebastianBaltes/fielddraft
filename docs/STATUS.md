@@ -191,6 +191,8 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 |-----|---------|--------|--------------|
 | K-Exp1 | Analytischer Preview-Pfad | open | Skelett-First-Rendering, 3-Stufen-Orchestrierung |
 | K-Exp2 | SDF Raymarching Performance (60fps@4K) | ✅ | 4 Rendering-Modi (sdf/sdf-vm/sdf-baked/sdf-batch), renderMode-Toggle in Settings, PerfMonitor+HUD (F2), GPU Bytecode VM (uniformArray, keine Recompilation), Baked 3D Distance Field (Storage3DTexture, progressive 64→128→256), Batchmarching Compute Wavefront (INIT→MARCH→SHADE Dispatches), Shared VM-Interpreter (`sdfVmInterpreter.ts`), Benchmark-Infrastruktur mit CSV-Export. Commits `5ec29e1`–`324e928`. |
+| K-Exp3 | Hybrid Mesh+SDF Renderer | ✅ | Phase 1 (Union-only mesh rendering), Phase 2 (SDF overlays in overlap regions), Phase 3 (Fillets + Domain Warps), Phase 4 (Extrude/Revolve native mesh via Marching Squares contours), Phase 4b (sdf-hybrid-vm), Phase 5 (sdf-hybrid-compute), sdf-deferred mode. 10 Render-Modi total (dc/sdf/sdf-vm/sdf-baked/sdf-batch/sdf-hybrid/sdf-hybrid-vm/sdf-hybrid-compute/sdf-deferred). |
+| K-Exp3.4 | Extrude/Revolve Contour Meshes | ✅ | Marching Squares Kontur-Extraktion aus Sketch-SDF, EdgeKey-Segment-Chaining, Douglas-Peucker-Simplifizierung, Area-basierte Contour-Klassifikation (outer/hole), Three.js ExtrudeGeometry/LatheGeometry. 5 neue Tests in sketch2d.rs. Commit `fb0177c`. |
 
 ---
 
