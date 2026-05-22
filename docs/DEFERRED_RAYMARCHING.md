@@ -142,26 +142,48 @@ Vorteile gegenüber nur-inflated Meshes:
 - **Weniger SDF-Arbeit**: Für opak-only Pixel (Fall A) entfällt der
   Sphere-Trace komplett — nur 6 SDF-Evals für die Normale.
 
-### Two-RT-Implementierungsvariante
+### Two-RT + Bitmask-Implementierung
 
-Die aktuelle Implementierung nutzt zwei separate Render Targets statt
-Fragment-Shader-Atomics für das Per-Pixel Term-ID Encoding:
+Die aktuelle Implementierung nutzt zwei Render Targets plus einen
+Fragment-Shader-Atomic-Bitmask-Buffer für Multi-Body-Transparent-Collect:
 
 - **RT1 (Opaque)**: Nicht-inflated Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`
 - **RT2 (Transparent)**: Inflated/Volume Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`
+- **Bitmask Buffer**: `uint32` pro Pixel, Fragment-Shader schreibt via
+  `atomicOr(buf[pixelIdx], 1u << bodyIdx)` — sammelt alle transparenten
+  Body-IDs, nicht nur den vordersten.
 
-Der Shade-Pass (Fullscreen-Quad) liest beide RTs und entscheidet:
+#### Pipeline (4 Passes)
 
-- **Fall A** (`hasOpaque && !hasTrans`): 6 SDF-Evals für Normale + Lighting.
-- **Fall B** (`hasTrans`): Ray bauen, Sphere-Trace `[0, t_max]` mit VM-SDF.
+```
+Pass 0: Compute Clear   → atomicStore(bitmaskBuf[i], 0) für alle Pixel
+Pass 1: Opaque Raster   → RT1 (worldPos + bodyTag)
+Pass 2: Transparent Raster → RT2 (worldPos + bodyTag)
+        + atomicOr(bitmaskBuf[pixelIdx], 1u << bodyIdx)
+Pass 3: Unified Shade    → liest RT1, RT2, bitmaskBuf
+```
+
+#### Shade-Logik (Pass 3)
+
+- **Fall A** (`!hasTrans && hasOpaque`): 6 SDF-Evals für Normale + Lighting.
+- **Fall B** (`hasTrans`): Multi-Body Sphere-Trace. Iteriert über alle
+  Bits in der Bitmask, evaluiert SDF nur für gesetzte Bodies. Der nächste
+  Treffer (min distance) wird geshaded.
   Hit → Shade. Kein Hit + hasOpaque → Fall A. Kein Hit + !hasOpaque → Discard.
 - **Fall C** (`!hasOpaque && !hasTrans`): Hintergrund (Discard).
 
-Einschränkung: Pro Pixel wird nur ein transparenter Body erfasst (der
-vorderste gewinnt per Depth-Test). Für typische CAD-Szenen mit wenigen
-räumlichen Überlappungen transparenter Terme reicht dies aus. Ein Upgrade
-auf Fragment-Shader-Atomics (Phase 3) erlaubt beliebig viele transparente
-Überlappungen pro Pixel.
+#### THREE.js Patches für Fragment-Shader Atomics
+
+Die WebGPU-Spec erlaubt `GPUBufferBindingType.Storage` (read_write) in
+Fragment-Shadern, aber THREE.js r183 blockiert dies an zwei Stellen:
+
+1. **WGSLNodeBuilder.getNodeAccess()**: Warnte bei Atomics in
+   Nicht-Compute-Stages. Patch: Warnung entfernt (Logik war bereits korrekt).
+2. **WebGPUBindingUtils**: Erzwang `ReadOnlyStorage` für alle
+   Nicht-Compute-Stages. Patch: Respektiert `binding.access` für alle Stages.
+
+Patches liegen als `patch-package` in `web/patches/three+0.183.2.patch`
+und werden via `postinstall` automatisch angewendet.
 
 ---
 
