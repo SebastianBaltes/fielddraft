@@ -860,6 +860,12 @@ function SdfDeferredOverlay() {
     pipelineRef.current = initDeferredPipeline(w, h);
     versionsRef.current.clear();
     compilingRef.current = false;
+
+    const overlay = document.getElementById("fd-shader-compiling");
+    const label = document.getElementById("fd-shader-compiling-label");
+    if (overlay) overlay.style.display = "flex";
+    if (label) label.textContent = "Initializing…";
+
     invalidate();
     return () => {
       if (pipelineRef.current) {
@@ -887,6 +893,12 @@ function SdfDeferredOverlay() {
     if (versionsRef.current.size !== currentVersions.size) needsRebuild = true;
 
     if (needsRebuild && !compilingRef.current) {
+      const overlay = document.getElementById("fd-shader-compiling");
+      const label = document.getElementById("fd-shader-compiling-label");
+
+      if (overlay) overlay.style.display = "flex";
+      if (label) label.textContent = "Building SDF…";
+
       const bodies = [];
       for (let i = 0; i < count; i++) {
         const hybridInfo = k.bodyHybridInfo(i);
@@ -898,9 +910,8 @@ function SdfDeferredOverlay() {
       rebuildDeferredBodies(pipeline, bodies);
       versionsRef.current = currentVersions;
 
+      if (label) label.textContent = "Compiling shader…";
       compilingRef.current = true;
-      const overlay = document.getElementById("fd-shader-compiling");
-      if (overlay) overlay.style.display = "flex";
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera).then(() => {
         compilingRef.current = false;
@@ -2067,7 +2078,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         style={{ display: "none" }}
       >
         <div className="spinner" />
-        Compiling shader…
+        <span id="fd-shader-compiling-label">Building SDF…</span>
       </div>
       <PerfHud renderMode={renderMode} />
       <PickHud result={pickResult} />
