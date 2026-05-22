@@ -176,7 +176,11 @@ function createShadeMaterial(
       const tMax = float(MAX_MARCH_DIST).toVar();
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
-        If(opaqueDist.greaterThan(float(0)), () => { tMax.assign(opaqueDist); });
+        const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
+        const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit).greaterThan(uint(0));
+        If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
+          tMax.assign(opaqueDist);
+        });
       });
 
       const t = float(0).toVar();
