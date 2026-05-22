@@ -915,24 +915,49 @@ function SdfDeferredOverlay() {
       if (label) label.textContent = "Compiling shader…";
       compilingRef.current = true;
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
-      compileDeferredPipeline(pipeline, wgpu, camera).then(() => {
-        compilingRef.current = false;
-        readyRef.current = true;
-        if (overlay) overlay.style.display = "none";
-        invalidate();
-      });
+      compileDeferredPipeline(pipeline, wgpu, camera)
+        .then(() => {
+          compilingRef.current = false;
+          readyRef.current = true;
+          if (overlay) overlay.style.display = "none";
+          invalidate();
+        })
+        .catch((err) => {
+          compilingRef.current = false;
+          const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
+          if (spinnerEl) spinnerEl.style.display = "none";
+          if (label) label.textContent = `GPU error: ${err.message}`;
+          if (overlay) {
+            overlay.style.opacity = "1";
+            overlay.style.color = "var(--color-error, #c00)";
+          }
+        });
     }
 
     if (!readyRef.current || compilingRef.current) return;
 
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
 
-    wgpuRenderer.render(scene, camera);
+    try {
+      wgpuRenderer.render(scene, camera);
 
-    const prevAutoClear = (wgpuRenderer as any).autoClear;
-    (wgpuRenderer as any).autoClear = false;
-    renderDeferredFrame(pipeline, wgpuRenderer, camera);
-    (wgpuRenderer as any).autoClear = prevAutoClear;
+      const prevAutoClear = (wgpuRenderer as any).autoClear;
+      (wgpuRenderer as any).autoClear = false;
+      renderDeferredFrame(pipeline, wgpuRenderer, camera);
+      (wgpuRenderer as any).autoClear = prevAutoClear;
+    } catch (err) {
+      readyRef.current = false;
+      const overlay = document.getElementById("fd-shader-compiling");
+      const label = document.getElementById("fd-shader-compiling-label");
+      const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
+      if (spinnerEl) spinnerEl.style.display = "none";
+      if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
+      if (overlay) {
+        overlay.style.display = "flex";
+        overlay.style.opacity = "1";
+        overlay.style.color = "var(--color-error, #c00)";
+      }
+    }
 
     invalidate();
   }, 1);

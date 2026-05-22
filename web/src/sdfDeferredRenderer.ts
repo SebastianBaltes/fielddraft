@@ -558,11 +558,20 @@ export async function compileDeferredPipeline(
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
 ): Promise<void> {
+  const device = (renderer as any).backend?.device as GPUDevice | undefined;
+
+  if (device) device.pushErrorScope("validation");
+
   await Promise.all([
     renderer.compileAsync(state.opaqueScene, camera),
     renderer.compileAsync(state.transparentScene, camera),
     renderer.compileAsync(state.shadeScene, state.shadeCamera),
   ]);
+
+  if (device) {
+    const err = await device.popErrorScope();
+    if (err) throw new Error(err.message);
+  }
 }
 
 // ── Dispose ─────────────────────────────────────────────────────────
