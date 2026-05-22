@@ -64,6 +64,7 @@ const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
 const HULL_INFLATE = 1.001;
+const AABB_PAD = 0.5;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -81,14 +82,12 @@ export interface DeferredPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  aabbBuf: ReturnType<typeof uniformArray>;
+  aabbData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
-  bodyBackMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
-  transparentBackRT: THREE.WebGLRenderTarget;
-  transparentBackScene: THREE.Scene;
-  backFaceMaterial: MeshBasicNodeMaterial;
   bitmaskAttr: any;
   bitmaskBuf: any;
   clearNode: any;
@@ -136,31 +135,16 @@ function createTransparentGBufferMaterial(
   return material;
 }
 
-// ── Back-face material (worldPos G-buffer, BackSide) ──────────────
-
-function createBackFaceMaterial(): MeshBasicNodeMaterial {
-  const material = new MeshBasicNodeMaterial();
-  material.outputNode = Fn(() => {
-    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    return vec4(worldPos, 1);
-  })();
-  material.side = THREE.BackSide;
-  material.depthTest = true;
-  material.depthWrite = true;
-  material.toneMapped = false;
-  return material;
-}
-
 // ── Shade material (reads both G-buffers, sphere-traces, lights) ────
 
 function createShadeMaterial(
   opaqueGbufTex: THREE.Texture,
   transGbufTex: THREE.Texture,
-  transBackTex: THREE.Texture,
   bitmaskBuf: any,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
+  aabbBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   width: number,
   height: number,
@@ -194,14 +178,49 @@ function createShadeMaterial(
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      // tMax from back-face RT (exit worldPos via BackSide depth test)
-      const backGbuf = texture(transBackTex, texUv);
-      const hasBack = backGbuf.w.greaterThan(float(0.5));
-      const tMax = float(MAX_MARCH_DIST).toVar();
-      If(hasBack, () => {
-        tMax.assign(backGbuf.xyz.sub(transWorldPos).dot(rd));
+      // tMax via analytical ray-AABB exit (slab method)
+      const invRd = vec3(
+        float(1).div(rd.x),
+        float(1).div(rd.y),
+        float(1).div(rd.z),
+      );
+      const tMax = float(0).toVar();
+
+      Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+        const bit = shiftLeft(uint(1), uint(bodyIdx));
+        If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
+          const base = bodyIdx.mul(6);
+          const bminX = aabbBuf.element(base);
+          const bminY = aabbBuf.element(base.add(1));
+          const bminZ = aabbBuf.element(base.add(2));
+          const bmaxX = aabbBuf.element(base.add(3));
+          const bmaxY = aabbBuf.element(base.add(4));
+          const bmaxZ = aabbBuf.element(base.add(5));
+
+          const t1x = bminX.sub(transWorldPos.x).mul(invRd.x);
+          const t2x = bmaxX.sub(transWorldPos.x).mul(invRd.x);
+          const tFarX = max(t1x, t2x);
+
+          const t1y = bminY.sub(transWorldPos.y).mul(invRd.y);
+          const t2y = bmaxY.sub(transWorldPos.y).mul(invRd.y);
+          const tFarY = max(t1y, t2y);
+
+          const t1z = bminZ.sub(transWorldPos.z).mul(invRd.z);
+          const t2z = bmaxZ.sub(transWorldPos.z).mul(invRd.z);
+          const tFarZ = max(t1z, t2z);
+
+          // Exit = min of far-plane distances (slab method)
+          const tExit = min(tFarX, min(tFarY, tFarZ));
+          tMax.assign(max(tMax, tExit));
+        });
       });
 
+      // Fallback if no AABB produced a positive exit
+      If(tMax.lessThan(float(0.001)), () => {
+        tMax.assign(float(MAX_MARCH_DIST));
+      });
+
+      // Opaque body behind transparent is a tighter bound
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
         const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
@@ -317,11 +336,9 @@ export function initDeferredPipeline(
 
   const opaqueRT = makeRT();
   const transparentRT = makeRT();
-  const transparentBackRT = makeRT();
 
   const opaqueScene = new THREE.Scene();
   const transparentScene = new THREE.Scene();
-  const transparentBackScene = new THREE.Scene();
 
   const opcodeData = new Float32Array(DEFERRED_MAX_OPCODES);
   const opcodeBuf = uniformArray(opcodeData, "float");
@@ -338,8 +355,10 @@ export function initDeferredPipeline(
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const aabbData = new Float32Array(MAX_BODIES * 6);
+  const aabbBuf = uniformArray(aabbData, "float");
+
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  const backFaceMaterial = createBackFaceMaterial();
 
   const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
   const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
@@ -350,11 +369,11 @@ export function initDeferredPipeline(
   const shadeMaterial = createShadeMaterial(
     opaqueRT.texture,
     transparentRT.texture,
-    transparentBackRT.texture,
     bitmaskBuf,
     opcodeBuf,
     offsetBuf,
     colorBuf,
+    aabbBuf,
     camPosUniform,
     width,
     height,
@@ -387,14 +406,12 @@ export function initDeferredPipeline(
     offsetData,
     colorBuf,
     colorData,
+    aabbBuf,
+    aabbData,
     camPosUniform,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
-    bodyBackMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
-    transparentBackRT,
-    transparentBackScene,
-    backFaceMaterial,
     bitmaskAttr,
     bitmaskBuf,
     clearNode,
@@ -428,19 +445,13 @@ export function rebuildDeferredBodies(
       (m.material as THREE.Material).dispose();
     }
   }
-  for (const meshes of state.bodyBackMeshes.values()) {
-    for (const m of meshes) {
-      state.transparentBackScene.remove(m);
-      m.geometry.dispose();
-    }
-  }
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
-  state.bodyBackMeshes.clear();
   state.bodyOpcodeRanges.clear();
 
   state.opcodeData.fill(0);
   state.offsetData.fill(0);
+  state.aabbData.fill(0);
 
   let cursor = 0;
 
@@ -458,22 +469,29 @@ export function rebuildDeferredBodies(
     state.offsetData[bodyIndex * 2 + 1] = len;
     state.bodyOpcodeRanges.set(bodyIndex, { start, length: len });
 
+    // Compute body AABB for analytical ray-exit in shade pass
+    const bodyAABB = aabb
+      ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+      : computeLeafAABB(hybridInfo.leaves);
+    if (bodyAABB) {
+      state.aabbData[bodyIndex * 6 + 0] = bodyAABB[0] - AABB_PAD;
+      state.aabbData[bodyIndex * 6 + 1] = bodyAABB[1] - AABB_PAD;
+      state.aabbData[bodyIndex * 6 + 2] = bodyAABB[2] - AABB_PAD;
+      state.aabbData[bodyIndex * 6 + 3] = bodyAABB[3] + AABB_PAD;
+      state.aabbData[bodyIndex * 6 + 4] = bodyAABB[4] + AABB_PAD;
+      state.aabbData[bodyIndex * 6 + 5] = bodyAABB[5] + AABB_PAD;
+    }
+
     const gbufMaterial = createGBufferMaterial(bodyIndex);
     const transMat = createTransparentGBufferMaterial(
       bodyIndex, state.bitmaskBuf, state.width, state.height,
     );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
-    const backMeshes: THREE.Mesh[] = [];
 
     if (hybridInfo.needs_full_sdf) {
-      // Non-meshable (gyroid, domain warp) -> transparent AABB only
-      const fb = aabb
-        ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
-        : computeLeafAABB(hybridInfo.leaves);
-      if (fb) {
-        addAabbBox(fb, transMat, state.transparentScene, transMeshes);
-        addAabbBox(fb, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+      if (bodyAABB) {
+        addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
       }
     } else {
       for (const leaf of hybridInfo.leaves) {
@@ -482,14 +500,12 @@ export function rebuildDeferredBodies(
         if (!geo) continue;
 
         if (leaf.kind === "box") {
-          // Box: opaque only (exact convex shape, no inflation needed)
           const mesh = new THREE.Mesh(geo, gbufMaterial);
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
         } else {
-          // All other primitives: opaque (exact) + transparent (inflated)
           const mesh = new THREE.Mesh(geo, gbufMaterial);
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
@@ -505,35 +521,18 @@ export function rebuildDeferredBodies(
             state.transparentScene.add(tMesh);
             transMeshes.push(tMesh);
           }
-
-          // Back-face mesh (same inflated geometry, shared back-face material)
-          const bGeo = createPrimitiveGeometry(leaf);
-          if (bGeo) {
-            bGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
-            const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
-            applyLeafTransform(bMesh, leaf);
-            bMesh.frustumCulled = false;
-            state.transparentBackScene.add(bMesh);
-            backMeshes.push(bMesh);
-          }
         }
       }
 
-      // Fallback: AABB box as transparent if no meshes created
       if (opaqueMeshes.length === 0 && transMeshes.length === 0 && opcodes.length > 0) {
-        const fb = aabb
-          ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
-          : computeLeafAABB(hybridInfo.leaves);
-        if (fb) {
-          addAabbBox(fb, transMat, state.transparentScene, transMeshes);
-          addAabbBox(fb, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+        if (bodyAABB) {
+          addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
         }
       }
     }
 
     state.bodyOpaqueMeshes.set(bodyIndex, opaqueMeshes);
     state.bodyTransparentMeshes.set(bodyIndex, transMeshes);
-    state.bodyBackMeshes.set(bodyIndex, backMeshes);
   }
 }
 
@@ -543,7 +542,7 @@ function addAabbBox(
   scene: THREE.Scene,
   meshes: THREE.Mesh[],
 ): void {
-  const pad = 0.5;
+  const pad = AABB_PAD;
   const sx = (aabb[3] - aabb[0]) + pad * 2;
   const sy = (aabb[4] - aabb[1]) + pad * 2;
   const sz = (aabb[5] - aabb[2]) + pad * 2;
@@ -604,13 +603,7 @@ export function renderDeferredFrame(
   renderer.clear(true, true, false);
   renderer.render(state.transparentScene, camera);
 
-  // Pass 2b: transparent back-face G-buffer (BackSide, standard depth)
-  renderer.setRenderTarget(state.transparentBackRT);
-  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
-  renderer.clear(true, true, false);
-  renderer.render(state.transparentBackScene, camera);
-
-  // Pass 3: shade (reads all RTs, composites to screen)
+  // Pass 3: shade (reads all RTs + AABB uniforms, composites to screen)
   renderer.setRenderTarget(null);
   renderer.render(state.shadeScene, state.shadeCamera);
 }
@@ -629,7 +622,6 @@ export async function compileDeferredPipeline(
   await Promise.all([
     renderer.compileAsync(state.opaqueScene, camera),
     renderer.compileAsync(state.transparentScene, camera),
-    renderer.compileAsync(state.transparentBackScene, camera),
     renderer.compileAsync(state.shadeScene, state.shadeCamera),
   ]);
 
@@ -654,17 +646,9 @@ export function disposeDeferredPipeline(state: DeferredPipelineState): void {
       (m.material as THREE.Material).dispose();
     }
   }
-  for (const meshes of state.bodyBackMeshes.values()) {
-    for (const m of meshes) {
-      m.geometry.dispose();
-    }
-  }
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
-  state.bodyBackMeshes.clear();
   state.opaqueRT.dispose();
   state.transparentRT.dispose();
-  state.transparentBackRT.dispose();
-  state.backFaceMaterial.dispose();
   state.shadeMaterial.dispose();
 }
