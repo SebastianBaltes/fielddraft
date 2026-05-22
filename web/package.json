@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:install": "playwright install chromium"
+    "e2e:install": "playwright install chromium",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -31,6 +32,7 @@
     "@types/three": "^0.183.1",
     "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^27.0.1",
+    "patch-package": "^8.0.1",
     "typescript": "^6.0.2",
     "vite": "^8.0.8",
     "vitest": "^3.2.4"

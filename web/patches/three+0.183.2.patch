@@ -1,0 +1,109 @@
+diff --git a/node_modules/three/build/three.webgpu.js b/node_modules/three/build/three.webgpu.js
+index ff56ac4..75c7e15 100644
+--- a/node_modules/three/build/three.webgpu.js
++++ b/node_modules/three/build/three.webgpu.js
+@@ -74422,8 +74422,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+ 
+ 			if ( node.isAtomic === true ) {
+ 
+-				warn( 'WebGPURenderer: Atomic operations are only supported in compute shaders.' );
+-
+ 				return NodeAccess.READ_WRITE;
+ 
+ 			}
+@@ -77000,19 +76998,9 @@ class WebGPUBindingUtils {
+ 
+ 				if ( binding.isStorageBuffer ) {
+ 
+-					if ( binding.visibility & GPUShaderStage.COMPUTE ) {
+-
+-						// compute
+-
+-						if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+-
+-							buffer.type = GPUBufferBindingType.Storage;
++					if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+ 
+-						} else {
+-
+-							buffer.type = GPUBufferBindingType.ReadOnlyStorage;
+-
+-						}
++						buffer.type = GPUBufferBindingType.Storage;
+ 
+ 					} else {
+ 
+diff --git a/node_modules/three/build/three.webgpu.nodes.js b/node_modules/three/build/three.webgpu.nodes.js
+index 58195f2..6500308 100644
+--- a/node_modules/three/build/three.webgpu.nodes.js
++++ b/node_modules/three/build/three.webgpu.nodes.js
+@@ -74422,8 +74422,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+ 
+ 			if ( node.isAtomic === true ) {
+ 
+-				warn( 'WebGPURenderer: Atomic operations are only supported in compute shaders.' );
+-
+ 				return NodeAccess.READ_WRITE;
+ 
+ 			}
+@@ -77000,19 +76998,9 @@ class WebGPUBindingUtils {
+ 
+ 				if ( binding.isStorageBuffer ) {
+ 
+-					if ( binding.visibility & GPUShaderStage.COMPUTE ) {
+-
+-						// compute
+-
+-						if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+-
+-							buffer.type = GPUBufferBindingType.Storage;
++					if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+ 
+-						} else {
+-
+-							buffer.type = GPUBufferBindingType.ReadOnlyStorage;
+-
+-						}
++						buffer.type = GPUBufferBindingType.Storage;
+ 
+ 					} else {
+ 
+diff --git a/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js b/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
+index 12d41fe..793eb0e 100644
+--- a/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
++++ b/node_modules/three/src/renderers/webgpu/nodes/WGSLNodeBuilder.js
+@@ -1024,8 +1024,6 @@ class WGSLNodeBuilder extends NodeBuilder {
+ 
+ 			if ( node.isAtomic === true ) {
+ 
+-				warn( 'WebGPURenderer: Atomic operations are only supported in compute shaders.' );
+-
+ 				return NodeAccess.READ_WRITE;
+ 
+ 			}
+diff --git a/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js b/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
+index e08aeb5..81cc5a4 100644
+--- a/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
++++ b/node_modules/three/src/renderers/webgpu/utils/WebGPUBindingUtils.js
+@@ -433,19 +433,9 @@ class WebGPUBindingUtils {
+ 
+ 				if ( binding.isStorageBuffer ) {
+ 
+-					if ( binding.visibility & GPUShaderStage.COMPUTE ) {
+-
+-						// compute
+-
+-						if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+-
+-							buffer.type = GPUBufferBindingType.Storage;
++					if ( binding.access === NodeAccess.READ_WRITE || binding.access === NodeAccess.WRITE_ONLY ) {
+ 
+-						} else {
+-
+-							buffer.type = GPUBufferBindingType.ReadOnlyStorage;
+-
+-						}
++						buffer.type = GPUBufferBindingType.Storage;
+ 
+ 					} else {
+ 

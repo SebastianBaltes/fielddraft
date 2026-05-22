@@ -21,11 +21,19 @@ import {
   Fn,
   If,
   Loop,
+  atomicOr,
+  atomicStore,
+  bitAnd,
   float,
+  instanceIndex,
   int,
   max,
   normalize,
+  screenCoordinate,
+  shiftLeft,
+  storage,
   texture,
+  uint,
   uniform,
   uniformArray,
   uv,
@@ -35,7 +43,7 @@ import {
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
-import { MeshBasicNodeMaterial } from "three/webgpu";
+import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
@@ -75,6 +83,9 @@ export interface DeferredPipelineState {
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
+  bitmaskAttr: any;
+  bitmaskBuf: any;
+  clearNode: any;
   width: number;
   height: number;
 }
@@ -94,15 +105,43 @@ function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
   return material;
 }
 
+// ── Transparent G-Buffer material (+ bitmask atomicOr) ─────────────
+
+function createTransparentGBufferMaterial(
+  bodyIndex: number,
+  bitmaskBuf: any,
+  width: number,
+  height: number,
+): MeshBasicNodeMaterial {
+  const material = new MeshBasicNodeMaterial();
+  material.outputNode = Fn(() => {
+    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
+    const px = int(screenCoordinate.x);
+    const py = int(screenCoordinate.y);
+    const pixelIdx = py.mul(int(width)).add(px);
+    const bit = shiftLeft(uint(1), uint(bodyIndex));
+    atomicOr(bitmaskBuf.element(pixelIdx), bit);
+    return vec4(worldPos, float(bodyIndex + 1));
+  })();
+  material.depthWrite = true;
+  material.depthTest = true;
+  material.side = THREE.FrontSide;
+  material.toneMapped = false;
+  return material;
+}
+
 // ── Shade material (reads both G-buffers, sphere-traces, lights) ────
 
 function createShadeMaterial(
   opaqueGbufTex: THREE.Texture,
   transGbufTex: THREE.Texture,
+  bitmaskBuf: any,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
+  width: number,
+  height: number,
 ): MeshBasicNodeMaterial {
   const sdfEval = buildVmSdfEvalFn(opcodeBuf, { withBaseOffset: true });
 
@@ -113,9 +152,13 @@ function createShadeMaterial(
     const transGbuf = texture(transGbufTex, texUv);
 
     const opaqueTag = opaqueGbuf.w;
-    const transTag = transGbuf.w;
     const hasOpaque = opaqueTag.greaterThan(float(0.5));
-    const hasTrans = transTag.greaterThan(float(0.5));
+
+    const px = int(screenCoordinate.x);
+    const py = int(screenCoordinate.y);
+    const pixelIdx = py.mul(int(width)).add(px);
+    const mask = uint(bitmaskBuf.element(pixelIdx)).toVar();
+    const hasTrans = mask.greaterThan(uint(0));
 
     // Fall C: no geometry at this pixel
     If(hasOpaque.not().and(hasTrans.not()), () => { Discard(); });
@@ -125,13 +168,10 @@ function createShadeMaterial(
     const shadeBodyIdx = int(0).toVar();
 
     If(hasTrans, () => {
-      // Fall B: transparent hull -> sphere-trace into volume
-      const transBodyIdx = int(transTag.sub(0.5));
-      const transBaseOff = int(offsetBuf.element(transBodyIdx.mul(2)));
+      // Fall B: transparent hull(s) -> multi-body sphere-trace
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      // Limit march distance to opaque surface behind (if any)
       const tMax = float(MAX_MARCH_DIST).toVar();
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
@@ -141,30 +181,43 @@ function createShadeMaterial(
       const t = float(0).toVar();
       const hitPos = vec3(0, 0, 0).toVar();
       const hit = float(0).toVar();
+      const hitBody = int(0).toVar();
 
       Loop(int(DEFERRED_MARCH_STEPS), () => {
         const p = transWorldPos.add(rd.mul(t));
-        const d = sdfEval({ p, baseOffset: transBaseOff });
-        If(d.lessThan(float(SURFACE_EPS)), () => {
+        const minD = float(1e30).toVar();
+        const closestBody = int(0).toVar();
+
+        Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+          const bit = shiftLeft(uint(1), uint(bodyIdx));
+          If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
+            const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+            const d = sdfEval({ p, baseOffset: baseOff });
+            If(d.lessThan(minD), () => {
+              minD.assign(d);
+              closestBody.assign(bodyIdx);
+            });
+          });
+        });
+
+        If(minD.lessThan(float(SURFACE_EPS)), () => {
           hit.assign(1);
           hitPos.assign(p);
+          hitBody.assign(closestBody);
           Break();
         });
-        t.addAssign(max(d, float(SURFACE_EPS)));
+        t.addAssign(max(minD, float(SURFACE_EPS)));
         If(t.greaterThan(tMax), () => { Break(); });
       });
 
       If(hit.greaterThan(float(0.5)), () => {
         shadePos.assign(hitPos);
-        shadeBodyIdx.assign(transBodyIdx);
+        shadeBodyIdx.assign(hitBody);
       }).Else(() => {
-        // No SDF surface in transparent zone
         If(hasOpaque, () => {
-          // Fall through to opaque surface behind
           shadePos.assign(opaqueGbuf.xyz);
           shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
         }).Else(() => {
-          // Transparent hole (gyroid gap, thread groove)
           Discard();
         });
       });
@@ -252,13 +305,22 @@ export function initDeferredPipeline(
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
 
+  const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
+  const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
+  const clearNode = Fn(() => {
+    atomicStore(bitmaskBuf.element(instanceIndex), uint(0));
+  })().compute(width * height);
+
   const shadeMaterial = createShadeMaterial(
     opaqueRT.texture,
     transparentRT.texture,
+    bitmaskBuf,
     opcodeBuf,
     offsetBuf,
     colorBuf,
     camPosUniform,
+    width,
+    height,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -292,6 +354,9 @@ export function initDeferredPipeline(
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
+    bitmaskAttr,
+    bitmaskBuf,
+    clearNode,
     width,
     height,
   };
@@ -346,6 +411,9 @@ export function rebuildDeferredBodies(
     state.bodyOpcodeRanges.set(bodyIndex, { start, length: len });
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
+    const transMat = createTransparentGBufferMaterial(
+      bodyIndex, state.bitmaskBuf, state.width, state.height,
+    );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
 
@@ -355,7 +423,7 @@ export function rebuildDeferredBodies(
         ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
         : computeLeafAABB(hybridInfo.leaves);
       if (fb) {
-        addAabbBox(fb, gbufMaterial, state.transparentScene, transMeshes);
+        addAabbBox(fb, transMat, state.transparentScene, transMeshes);
       }
     } else {
       for (const leaf of hybridInfo.leaves) {
@@ -381,7 +449,7 @@ export function rebuildDeferredBodies(
           const tGeo = createPrimitiveGeometry(leaf);
           if (tGeo) {
             tGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
-            const tMesh = new THREE.Mesh(tGeo, gbufMaterial);
+            const tMesh = new THREE.Mesh(tGeo, transMat);
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
             state.transparentScene.add(tMesh);
@@ -396,7 +464,7 @@ export function rebuildDeferredBodies(
           ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
           : computeLeafAABB(hybridInfo.leaves);
         if (fb) {
-          addAabbBox(fb, gbufMaterial, state.transparentScene, transMeshes);
+          addAabbBox(fb, transMat, state.transparentScene, transMeshes);
         }
       }
     }
@@ -457,6 +525,9 @@ export function renderDeferredFrame(
 ): void {
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
+
+  // Pass 0: clear bitmask buffer
+  renderer.compute(state.clearNode);
 
   // Pass 1: opaque G-buffer
   renderer.setRenderTarget(state.opaqueRT);
