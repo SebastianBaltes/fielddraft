@@ -34,25 +34,31 @@ mit minimal einem einzigen Auswertungsschritt.
 
 Jeder SDF-Term (oder jede Gruppe zusammengehöriger Terme) bekommt ein
 **Hüll-Mesh**: ein Dreiecksnetz, das den Raumbereich, in dem der Term
-gilt, scharf und vollständig umschließt. Hüll-Meshes sind keine groben
-Bounding Boxes — sie schmiegen sich eng an die mathematische Geometrie an:
+gilt, vollständig umschließt. Hüll-Meshes werden um einen kleinen Faktor
+(**HULL_INFLATE = 2%**) aufgeblasen, um sicherzustellen, dass die
+tessellierte Polygon-Oberfläche die mathematische SDF-Fläche an allen
+Stellen überdeckt — insbesondere an Silhouetten-Kanten, wo die
+Polygon-Sehne kürzer ist als der Kreisbogen:
 
-- Ein Quader-Term bekommt ein exaktes Quader-Mesh (6 Dreiecke).
-- Ein Kugel-Term bekommt ein Ikosaeder oder Kugel-Approximation.
+- Ein Quader-Term bekommt ein leicht aufgeblasenes Quader-Mesh.
+- Ein Kugel-Term bekommt eine SphereGeometry (32 Segmente) × 1.02.
 - Ein Fillet-Term (smin-Übergangszone) bekommt ein Mesh, das entlang der
   betroffenen Kante extrudiert ist und den Blend-Radius einschließt.
-- Ein Gyroid-Term bekommt ein Mesh, das das gesamte Volumen des Gyroids
-  umschließt.
+- Ein Gyroid-Term bekommt ein Mesh (AABB-Box + Padding), das das gesamte
+  Volumen des Gyroids umschließt.
 
 ### Opak und Transparent
 
 Hüll-Meshes werden in zwei Klassen eingeteilt:
 
 **Opake Hüll-Meshes** repräsentieren Raumbereiche, in denen ein einziger
-SDF-Term die Oberfläche vollständig bestimmt. An Pixeln, die nur von opaken
-Meshes getroffen werden, ist das Rasterisierungsergebnis bereits die korrekte
-Oberfläche. Der Raymarcher evaluiert dort genau einen SDF-Schritt — der
-Startpunkt liegt auf oder unmittelbar vor der Oberfläche.
+SDF-Term die Oberfläche vollständig bestimmt. Da die Meshes leicht
+aufgeblasen sind (HULL_INFLATE), liegt der Startpunkt des Rays knapp
+*außerhalb* der mathematischen Oberfläche. Der Sphere-Tracer konvergiert
+in 1–3 Schritten von der aufgeblasenen Mesh-Position zur echten
+SDF-Oberfläche. Für volumetrische Bodies (Gyroid, Thread) werden Rays,
+die keine SDF-Oberfläche finden, verworfen (discard) — so entstehen
+korrekte Durchsichten und Transparenzen.
 
 **Transparente Hüll-Meshes** repräsentieren Raumbereiche, in denen mehrere
 SDF-Terme zusammenwirken müssen (Booleans, Fillets, Domain Warps). An Pixeln,
@@ -91,11 +97,14 @@ nötig sind. Außerhalb des Hüll-Meshes ist per Definition der opake Körper
    der Kamera. Typische Einsparung: 50–90% der Marching-Schritte.
 2. **Minimale SDF-Terme**: Pro Pixel werden nur die tatsächlich relevanten
    Terme evaluiert, nicht der gesamte CSG-Baum der Szene.
-3. **Opake Pixel sind fast kostenlos**: Einfache Körper (Quader, Zylinder)
-   benötigen nur 1 SDF-Auswertung pro Pixel — der Startpunkt liegt bereits
-   auf der Oberfläche.
+3. **Einfache Körper sind fast kostenlos**: Durch die 2% Hull-Inflation
+   startet der Ray knapp außerhalb der Oberfläche. Sphere-Tracing konvergiert
+   in 1–3 Schritten (+ 6 für Normale) = 7–9 SDF-Evaluationen pro Pixel.
 4. **Hardware-Culling**: Die GPU verwirft transparente Hüll-Meshes hinter
    opaken Oberflächen automatisch per Z-Test (Early-Z).
+5. **Transparenz ohne Sorting**: Volumetrische Bodies (Gyroid, Thread)
+   benötigen keine spezielle Transparenz-Behandlung — Rays die keine
+   SDF-Oberfläche treffen werden einfach discardet.
 
 ---
 

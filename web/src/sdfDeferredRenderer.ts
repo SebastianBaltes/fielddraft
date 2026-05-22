@@ -1,28 +1,35 @@
 /**
- * Deferred Raymarching SDF renderer — Phase 1 (Opaque-only).
+ * Deferred Raymarching SDF renderer.
  *
  * Pipeline per frame:
- *   1. G-BUFFER: Opaque hull-meshes → float RT (worldPos + bodyIndex)
- *   2. SHADE:    Fullscreen quad reads G-Buffer, evaluates SDF normals
- *                via VM interpreter, applies unified lighting
+ *   1. G-BUFFER: Inflated hull-meshes → float RT (worldPos + bodyIndex)
+ *   2. SHADE:    Fullscreen quad reads G-Buffer, sphere-traces from hull
+ *                surface into the volume to find the actual SDF surface,
+ *                evaluates normals via VM interpreter, applies lighting.
+ *                Pixels where no SDF surface is found are discarded
+ *                (transparency for gyroid holes, thread gaps, etc.).
  *
- * All bodies' opcodes are concatenated into a single buffer with an
- * offset table.  The VM interpreter starts at the snippet offset for
- * the body at each pixel (baseOffset parameter).
+ * Hull meshes are scaled slightly larger than the mathematical SDF surface
+ * (HULL_INFLATE) so that tessellated polygon edges never clip the true
+ * silhouette.  The sphere-tracer converges from the inflated position to
+ * the actual surface in 1–3 steps for simple primitives.
  */
 
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
 
 import * as THREE from "three";
 import {
+  Break,
   Discard,
   Fn,
   If,
+  Loop,
   float,
   int,
   max,
   normalize,
   texture,
+  uniform,
   uv,
   vec2,
   vec3,
@@ -46,6 +53,10 @@ import type { HybridInfo, HybridLeafInfo } from "./kernel";
 
 const DEFERRED_MAX_OPCODES = 4096;
 const MAX_BODIES = 32;
+const DEFERRED_MARCH_STEPS = 64;
+const SURFACE_EPS = 0.001;
+const MAX_MARCH_DIST = 3000;
+const HULL_INFLATE = 1.02;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -61,6 +72,7 @@ export interface DeferredPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  camPosUniform: ReturnType<typeof uniform>;
   bodyMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
   width: number;
@@ -82,13 +94,14 @@ function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
   return material;
 }
 
-// ── Shade material (reads G-Buffer, evaluates SDF normals) ──────────
+// ── Shade material (sphere-traces from hull surface to SDF surface) ─
 
 function createShadeMaterial(
   gBufferTex: THREE.Texture,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
+  camPosU: ReturnType<typeof uniform>,
 ): MeshBasicNodeMaterial {
   const sdfEval = buildVmSdfEvalFn(opcodeBuf, { withBaseOffset: true });
 
@@ -96,7 +109,7 @@ function createShadeMaterial(
   material.outputNode = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
     const gbuf = texture(gBufferTex, texUv);
-    const worldPos = gbuf.xyz;
+    const meshWorldPos = gbuf.xyz;
     const bodyTag = gbuf.w;
 
     If(bodyTag.lessThan(float(0.5)), () => {
@@ -106,7 +119,31 @@ function createShadeMaterial(
     const bodyIdx = int(bodyTag.sub(0.5));
     const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
 
-    const p = worldPos;
+    // View ray from camera through this pixel
+    const rd = normalize(meshWorldPos.sub(camPosU));
+
+    // Sphere-trace from hull mesh surface into the volume
+    const t = float(0).toVar();
+    const hitPos = vec3(0, 0, 0).toVar();
+    const hit = float(0).toVar();
+
+    Loop(int(DEFERRED_MARCH_STEPS), () => {
+      const p = meshWorldPos.add(rd.mul(t));
+      const d = sdfEval({ p, baseOffset: baseOff });
+      If(d.lessThan(float(SURFACE_EPS)), () => {
+        hit.assign(1);
+        hitPos.assign(p);
+        Break();
+      });
+      t.addAssign(max(d, float(SURFACE_EPS)));
+      If(t.greaterThan(float(MAX_MARCH_DIST)), () => { Break(); });
+    });
+
+    // No surface found → transparent (gyroid holes, thread gaps, etc.)
+    If(hit.lessThan(float(0.5)), () => { Discard(); });
+
+    // Normal via central differences at the actual hit point
+    const p = hitPos;
     const eps = float(NORMAL_EPS);
     const ex = vec3(eps, 0, 0);
     const ey = vec3(0, eps, 0);
@@ -120,6 +157,7 @@ function createShadeMaterial(
         .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff })),
     ));
 
+    // Lighting
     const keyDir = normalize(vec3(0.4, 1, 0.5));
     const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
     const rimDir = normalize(vec3(0.0, -0.3, -1.0));
@@ -139,6 +177,7 @@ function createShadeMaterial(
   material.depthWrite = false;
   material.depthTest = false;
   material.toneMapped = false;
+  material.transparent = true;
   return material;
 }
 
@@ -172,11 +211,14 @@ export function initDeferredPipeline(
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
+
   const shadeMaterial = createShadeMaterial(
     gBufferRT.texture,
     opcodeBuf,
     offsetBuf,
     colorBuf,
+    camPosUniform,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -204,6 +246,7 @@ export function initDeferredPipeline(
     offsetData,
     colorBuf,
     colorData,
+    camPosUniform,
     bodyMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
     width,
@@ -219,6 +262,7 @@ export function rebuildDeferredBodies(
     bodyIndex: number;
     hybridInfo: HybridInfo;
     opcodes: Float32Array;
+    aabb?: Float32Array;
   }[],
 ): void {
   for (const meshes of state.bodyMeshes.values()) {
@@ -236,7 +280,7 @@ export function rebuildDeferredBodies(
 
   let cursor = 0;
 
-  for (const { bodyIndex, hybridInfo, opcodes } of bodies) {
+  for (const { bodyIndex, hybridInfo, opcodes, aabb } of bodies) {
     if (bodyIndex >= MAX_BODIES) continue;
 
     const start = cursor;
@@ -257,6 +301,7 @@ export function rebuildDeferredBodies(
       if (leaf.role === "skip") continue;
       const geo = createPrimitiveGeometry(leaf);
       if (!geo) continue;
+      geo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
       const mesh = new THREE.Mesh(geo, material);
       applyLeafTransform(mesh, leaf);
       mesh.frustumCulled = false;
@@ -264,18 +309,22 @@ export function rebuildDeferredBodies(
       meshes.push(mesh);
     }
 
+    // Fallback: use body AABB (from kernel) or leaf AABB union
     if (meshes.length === 0 && opcodes.length > 0) {
-      const aabb = computeLeafAABB(hybridInfo.leaves);
-      if (aabb) {
-        const sx = aabb[3] - aabb[0];
-        const sy = aabb[4] - aabb[1];
-        const sz = aabb[5] - aabb[2];
+      const fallbackAabb = aabb
+        ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+        : computeLeafAABB(hybridInfo.leaves);
+      if (fallbackAabb) {
+        const pad = 0.5;
+        const sx = (fallbackAabb[3] - fallbackAabb[0]) + pad * 2;
+        const sy = (fallbackAabb[4] - fallbackAabb[1]) + pad * 2;
+        const sz = (fallbackAabb[5] - fallbackAabb[2]) + pad * 2;
         const geo = new THREE.BoxGeometry(sx, sy, sz);
         const mesh = new THREE.Mesh(geo, material);
         mesh.position.set(
-          (aabb[0] + aabb[3]) * 0.5,
-          (aabb[1] + aabb[4]) * 0.5,
-          (aabb[2] + aabb[5]) * 0.5,
+          (fallbackAabb[0] + fallbackAabb[3]) * 0.5,
+          (fallbackAabb[1] + fallbackAabb[4]) * 0.5,
+          (fallbackAabb[2] + fallbackAabb[5]) * 0.5,
         );
         mesh.frustumCulled = false;
         state.opaqueScene.add(mesh);
@@ -307,11 +356,17 @@ function computeLeafAABB(
 
 // ── Render frame ────────────────────────────────────────────────────
 
+const _camWorldPos = new THREE.Vector3();
+
 export function renderDeferredFrame(
   state: DeferredPipelineState,
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
 ): void {
+  // Update camera position uniform for the shade pass view-ray computation
+  camera.getWorldPosition(_camWorldPos);
+  state.camPosUniform.value.copy(_camWorldPos);
+
   renderer.setRenderTarget(state.gBufferRT);
   renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
   renderer.clear(true, true, false);

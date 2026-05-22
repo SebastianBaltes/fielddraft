@@ -889,7 +889,8 @@ function SdfDeferredOverlay() {
         const hybridInfo = k.bodyHybridInfo(i);
         const opcodesView = k.bodySdfOpcodesView(i);
         const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
-        bodies.push({ bodyIndex: i, hybridInfo, opcodes });
+        const aabb = k.bodySdfAabb(i);
+        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb });
       }
       rebuildDeferredBodies(pipeline, bodies);
       versionsRef.current = currentVersions;
