@@ -60,9 +60,13 @@ export const floatToIntFn = wgslFn(`
   }
 `);
 
-export function buildVmSdfEvalFn(opBuf: ReturnType<typeof uniformArray>) {
-  return Fn(({ p: pIn }: { p: any }) => {
-    const pc = int(0).toVar();
+export function buildVmSdfEvalFn(
+  opBuf: ReturnType<typeof uniformArray>,
+  options?: { withBaseOffset?: boolean },
+) {
+  const useBaseOffset = options?.withBaseOffset ?? false;
+  return Fn(({ p: pIn, baseOffset }: any) => {
+    const pc = useBaseOffset ? int(baseOffset).toVar() : int(0).toVar();
 
     const vs0 = float(0).toVar(), vs1 = float(0).toVar();
     const vs2 = float(0).toVar(), vs3 = float(0).toVar();

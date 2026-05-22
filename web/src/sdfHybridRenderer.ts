@@ -33,7 +33,7 @@ import {
 import { buildSdfEvalFn, extractTopology } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
 
-const BODY_COLORS: [number, number, number][] = [
+export const BODY_COLORS: [number, number, number][] = [
   [0.55, 0.65, 0.85],
   [0.65, 0.85, 0.55],
   [0.85, 0.55, 0.65],
@@ -51,7 +51,7 @@ const NORMAL_EPS = 0.01;
 
 // ── Primitive mesh factory ────────────────────────────────────────
 
-function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
   const p = leaf.params;
   switch (leaf.kind) {
     case "box":
@@ -71,7 +71,7 @@ function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | n
   }
 }
 
-function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
+export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
   const t = leaf.transform;
   const translate = new THREE.Vector3(t[0], t[1], t[2]);
   const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);
@@ -90,7 +90,7 @@ function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
   mesh.matrix.compose(translate, quat, new THREE.Vector3(scale, scale, scale));
 }
 
-function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
+export function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
   const p = leaf.params;
   switch (leaf.kind) {
     case "box": return [p[3], p[4], p[5]];

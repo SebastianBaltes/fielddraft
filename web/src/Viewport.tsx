@@ -83,6 +83,13 @@ import {
   type ComputePipelineState,
   type ComputeBodyHandle,
 } from "./sdfHybridComputeRenderer";
+import {
+  initDeferredPipeline,
+  rebuildDeferredBodies,
+  renderDeferredFrame,
+  disposeDeferredPipeline,
+  type DeferredPipelineState,
+} from "./sdfDeferredRenderer";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -833,6 +840,76 @@ function SdfHybridComputeOverlay() {
   return null;
 }
 
+function SdfDeferredOverlay() {
+  const { store } = useKernelStore();
+  const scene = useThree((s) => s.scene);
+  const size = useThree((s) => s.size);
+  const invalidate = useThree((s) => s.invalidate);
+
+  const pipelineRef = useRef<DeferredPipelineState | null>(null);
+  const versionsRef = useRef<Map<number, number>>(new Map());
+
+  useEffect(() => {
+    if (pipelineRef.current) {
+      disposeDeferredPipeline(pipelineRef.current);
+    }
+    const w = Math.max(size.width, 1);
+    const h = Math.max(size.height, 1);
+    pipelineRef.current = initDeferredPipeline(w, h);
+    versionsRef.current.clear();
+    invalidate();
+    return () => {
+      if (pipelineRef.current) {
+        disposeDeferredPipeline(pipelineRef.current);
+        pipelineRef.current = null;
+      }
+    };
+  }, [size.width, size.height]);
+
+  useFrame(({ gl: renderer, camera }) => {
+    if (!store || !pipelineRef.current) return;
+    const pipeline = pipelineRef.current;
+    const k = store.kernel;
+    const count = k.bodyCount();
+
+    let needsRebuild = false;
+    const currentVersions = new Map<number, number>();
+    for (let i = 0; i < count; i++) {
+      const bodyId = k.bodyId(i);
+      const version = k.bodyVersion(i);
+      currentVersions.set(bodyId, version);
+      const prev = versionsRef.current.get(bodyId);
+      if (prev === undefined || prev !== version) needsRebuild = true;
+    }
+    if (versionsRef.current.size !== currentVersions.size) needsRebuild = true;
+
+    if (needsRebuild) {
+      const bodies = [];
+      for (let i = 0; i < count; i++) {
+        const hybridInfo = k.bodyHybridInfo(i);
+        const opcodesView = k.bodySdfOpcodesView(i);
+        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
+        bodies.push({ bodyIndex: i, hybridInfo, opcodes });
+      }
+      rebuildDeferredBodies(pipeline, bodies);
+      versionsRef.current = currentVersions;
+    }
+
+    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+
+    wgpuRenderer.render(scene, camera);
+
+    const prevAutoClear = (wgpuRenderer as any).autoClear;
+    (wgpuRenderer as any).autoClear = false;
+    renderDeferredFrame(pipeline, wgpuRenderer, camera);
+    (wgpuRenderer as any).autoClear = prevAutoClear;
+
+    invalidate();
+  }, 1);
+
+  return null;
+}
+
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
@@ -852,6 +929,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf-hybrid" && <SdfHybridOverlay />}
       {renderMode === "sdf-hybrid-vm" && <SdfHybridOverlay useVm />}
       {renderMode === "sdf-hybrid-compute" && <SdfHybridComputeOverlay />}
+      {renderMode === "sdf-deferred" && <SdfDeferredOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <HitMarker result={pickResult} />
