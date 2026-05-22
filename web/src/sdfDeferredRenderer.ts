@@ -21,6 +21,7 @@ import {
   Fn,
   If,
   Loop,
+  atomicLoad,
   atomicOr,
   atomicStore,
   bitAnd,
@@ -157,7 +158,7 @@ function createShadeMaterial(
     const px = int(screenCoordinate.x);
     const py = int(screenCoordinate.y);
     const pixelIdx = py.mul(int(width)).add(px);
-    const mask = uint(bitmaskBuf.element(pixelIdx)).toVar();
+    const mask = atomicLoad(bitmaskBuf.element(pixelIdx)).toVar();
     const hasTrans = mask.greaterThan(uint(0));
 
     // Fall C: no geometry at this pixel
