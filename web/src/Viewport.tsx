@@ -848,7 +848,7 @@ function SdfDeferredOverlay() {
   const invalidate = useThree((s) => s.invalidate);
 
   const pipelineRef = useRef<DeferredPipelineState | null>(null);
-  const versionsRef = useRef<Map<number, number>>(new Map());
+  const sdfFingerprintRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
 
@@ -859,7 +859,7 @@ function SdfDeferredOverlay() {
     const w = Math.max(size.width, 1);
     const h = Math.max(size.height, 1);
     pipelineRef.current = initDeferredPipeline(w, h);
-    versionsRef.current.clear();
+    sdfFingerprintRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
 
@@ -883,16 +883,12 @@ function SdfDeferredOverlay() {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    let needsRebuild = false;
-    const currentVersions = new Map<number, number>();
+    const fpParts: (string | number)[] = [count];
     for (let i = 0; i < count; i++) {
-      const bodyId = k.bodyId(i);
-      const version = k.bodyVersion(i);
-      currentVersions.set(bodyId, version);
-      const prev = versionsRef.current.get(bodyId);
-      if (prev === undefined || prev !== version) needsRebuild = true;
+      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length);
     }
-    if (versionsRef.current.size !== currentVersions.size) needsRebuild = true;
+    const fp = fpParts.join(",");
+    const needsRebuild = fp !== sdfFingerprintRef.current;
 
     if (needsRebuild && !compilingRef.current) {
       const overlay = document.getElementById("fd-shader-compiling");
@@ -910,7 +906,7 @@ function SdfDeferredOverlay() {
         bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb });
       }
       rebuildDeferredBodies(pipeline, bodies);
-      versionsRef.current = currentVersions;
+      sdfFingerprintRef.current = fp;
 
       if (label) label.textContent = "Compiling shader…";
       compilingRef.current = true;
