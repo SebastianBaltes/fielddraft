@@ -136,24 +136,17 @@ function createTransparentGBufferMaterial(
   return material;
 }
 
-// ── Back-face material (scalar distance, MAX blending) ─────────────
+// ── Back-face material (worldPos G-buffer, BackSide) ──────────────
 
-function createBackFaceMaterial(
-  camPosU: ReturnType<typeof uniform>,
-): MeshBasicNodeMaterial {
+function createBackFaceMaterial(): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    const dist = worldPos.sub(camPosU).length();
-    return vec4(dist, 0, 0, 1);
+    return vec4(worldPos, 1);
   })();
   material.side = THREE.BackSide;
-  material.depthTest = false;
-  material.depthWrite = false;
-  material.blending = THREE.CustomBlending;
-  material.blendEquation = THREE.MaxEquation;
-  material.blendSrc = THREE.OneFactor;
-  material.blendDst = THREE.OneFactor;
+  material.depthTest = true;
+  material.depthWrite = true;
   material.toneMapped = false;
   return material;
 }
@@ -201,12 +194,12 @@ function createShadeMaterial(
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      // tMax from back-face RT (farthest exit across all hulls via MAX blending)
-      const backDist = texture(transBackTex, texUv).x;
-      const frontDist = transWorldPos.sub(camPosU).length();
+      // tMax from back-face RT (exit worldPos via BackSide depth test)
+      const backGbuf = texture(transBackTex, texUv);
+      const hasBack = backGbuf.w.greaterThan(float(0.5));
       const tMax = float(MAX_MARCH_DIST).toVar();
-      If(backDist.greaterThan(float(0)), () => {
-        tMax.assign(backDist.sub(frontDist));
+      If(hasBack, () => {
+        tMax.assign(backGbuf.xyz.sub(transWorldPos).dot(rd));
       });
 
       If(hasOpaque, () => {
@@ -324,13 +317,7 @@ export function initDeferredPipeline(
 
   const opaqueRT = makeRT();
   const transparentRT = makeRT();
-  const transparentBackRT = new THREE.WebGLRenderTarget(width, height, {
-    type: THREE.HalfFloatType,
-    format: THREE.RGBAFormat,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
-    depthBuffer: false,
-  });
+  const transparentBackRT = makeRT();
 
   const opaqueScene = new THREE.Scene();
   const transparentScene = new THREE.Scene();
@@ -352,7 +339,7 @@ export function initDeferredPipeline(
   const colorBuf = uniformArray(colorData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  const backFaceMaterial = createBackFaceMaterial(camPosUniform);
+  const backFaceMaterial = createBackFaceMaterial();
 
   const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
   const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
@@ -617,10 +604,10 @@ export function renderDeferredFrame(
   renderer.clear(true, true, false);
   renderer.render(state.transparentScene, camera);
 
-  // Pass 2b: transparent back-face distances (MAX blending, no depth)
+  // Pass 2b: transparent back-face G-buffer (BackSide, standard depth)
   renderer.setRenderTarget(state.transparentBackRT);
   renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
-  renderer.clear(true, false, false);
+  renderer.clear(true, true, false);
   renderer.render(state.transparentBackScene, camera);
 
   // Pass 3: shade (reads all RTs, composites to screen)
