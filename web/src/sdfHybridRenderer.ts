@@ -8,6 +8,8 @@ import {
   Break,
   Discard,
   cameraPosition,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
   float,
   int,
   max,
@@ -15,6 +17,7 @@ import {
   normalize,
   normalWorld,
   positionGeometry,
+  property,
   uniform,
   uniformArray,
   vec3,
@@ -208,6 +211,8 @@ function createSdfOverlay(
 
   const [r, g, b] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
 
+  const hitDepthProp = property('float', 'hitDepth');
+
   const colorNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
     const ro = cameraPosition;
@@ -224,12 +229,11 @@ function createSdfOverlay(
         hitPos.assign(p);
         Break();
       });
-      t.addAssign(d);
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => { Break(); });
     });
 
     const finalColor = vec3(0).toVar();
-    const finalAlpha = float(0).toVar();
     If(hit.greaterThan(0.5), () => {
       const n = sceneNormal({ p: hitPos });
       const key = normalize(vec3(0.4, 1, 0.5));
@@ -241,17 +245,20 @@ function createSdfOverlay(
       const ambient = float(0.3);
       const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
       finalColor.assign(vec3(r, g, b).mul(light));
-      finalAlpha.assign(1);
+      const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
+      hitDepthProp.assign(clipPos.z.div(clipPos.w));
+    }).Else(() => {
+      Discard();
     });
 
-    return vec4(finalColor, finalAlpha);
+    return vec4(finalColor, 1);
   });
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = colorNode();
+  material.depthNode = hitDepthProp;
   material.side = THREE.BackSide;
-  material.transparent = true;
-  material.depthWrite = false;
+  material.depthWrite = true;
   material.depthTest = true;
   material.toneMapped = false;
 
@@ -295,6 +302,7 @@ function createSdfOverlayVm(
   });
 
   const [r, g, b] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
+  const hitDepthPropVm = property('float', 'hitDepthVm');
 
   const colorNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
@@ -312,12 +320,11 @@ function createSdfOverlayVm(
         hitPos.assign(p);
         Break();
       });
-      t.addAssign(d);
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => { Break(); });
     });
 
     const finalColor = vec3(0).toVar();
-    const finalAlpha = float(0).toVar();
     If(hit.greaterThan(0.5), () => {
       const n = sceneNormal({ p: hitPos });
       const key = normalize(vec3(0.4, 1, 0.5));
@@ -329,17 +336,20 @@ function createSdfOverlayVm(
       const ambient = float(0.3);
       const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
       finalColor.assign(vec3(r, g, b).mul(light));
-      finalAlpha.assign(1);
+      const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
+      hitDepthPropVm.assign(clipPos.z.div(clipPos.w));
+    }).Else(() => {
+      Discard();
     });
 
-    return vec4(finalColor, finalAlpha);
+    return vec4(finalColor, 1);
   });
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = colorNode();
+  material.depthNode = hitDepthPropVm;
   material.side = THREE.BackSide;
-  material.transparent = true;
-  material.depthWrite = false;
+  material.depthWrite = true;
   material.depthTest = true;
   material.toneMapped = false;
 

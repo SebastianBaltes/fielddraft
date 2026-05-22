@@ -16,16 +16,20 @@
 import * as THREE from "three";
 import {
   Break,
+  Discard,
   Fn,
   If,
   Loop,
   cameraPosition,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
   float,
   int,
   max,
   modelWorldMatrix,
   normalize,
   positionGeometry,
+  property,
   vec3,
   vec4,
   uniformArray,
@@ -72,6 +76,8 @@ export function createSdfVmBody(
     );
   });
 
+  const hitDepthProp = property('float', 'hitDepth');
+
   const colorNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
     const ro = cameraPosition;
@@ -88,14 +94,13 @@ export function createSdfVmBody(
         hitPos.assign(p);
         Break();
       });
-      t.addAssign(d);
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => {
         Break();
       });
     });
 
     const finalColor = vec3(0).toVar();
-    const finalAlpha = float(0).toVar();
     If(hit.greaterThan(0.5), () => {
       const n = sceneNormal({ p: hitPos });
       const key = normalize(vec3(0.4, 1, 0.5));
@@ -112,18 +117,21 @@ export function createSdfVmBody(
         .add(ambient);
       const baseColor = vec3(0.55, 0.65, 0.85);
       finalColor.assign(baseColor.mul(light));
-      finalAlpha.assign(1);
+      const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
+      hitDepthProp.assign(clipPos.z.div(clipPos.w));
+    }).Else(() => {
+      Discard();
     });
 
-    return vec4(finalColor, finalAlpha);
+    return vec4(finalColor, 1);
   });
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = colorNode();
+  material.depthNode = hitDepthProp;
   material.side = THREE.BackSide;
-  material.transparent = true;
-  material.depthWrite = false;
-  material.depthTest = false;
+  material.depthWrite = true;
+  material.depthTest = true;
   material.toneMapped = false;
 
   const minX = aabb[0], minY = aabb[1], minZ = aabb[2];

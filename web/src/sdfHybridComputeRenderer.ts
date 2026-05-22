@@ -35,6 +35,7 @@ import {
   uniformArray,
   uv,
   uvec2,
+  vec2,
   vec3,
   vec4,
 } from "three/tsl";
@@ -115,7 +116,8 @@ export function initComputePipeline(
 
   const blitMaterial = new MeshBasicNodeMaterial();
   blitMaterial.outputNode = Fn(() => {
-    const c = texture(sdfColorTex, uv());
+    const flippedUv = vec2(uv().x, float(1).sub(uv().y));
+    const c = texture(sdfColorTex, flippedUv);
     If(c.w.lessThan(0.5), () => { Discard(); });
     return c;
   })();
@@ -211,7 +213,7 @@ export function createComputeBody(
         hit.assign(1);
         Break();
       });
-      t.addAssign(max(d, float(SURFACE_EPS)));
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => { Break(); });
     });
 

@@ -14,10 +14,13 @@ import {
   If,
   Loop,
   abs,
+  clamp,
   float,
   int,
   max,
   min,
+  sqrt,
+  step,
   vec2,
   vec3,
   vec4,
@@ -29,7 +32,7 @@ import {
   OP_PRIM_BOX, OP_PRIM_SPHERE, OP_PRIM_CYLINDER, OP_PRIM_TORUS,
   OP_PRIM_CONE, OP_PRIM_CAPSULE, OP_PRIM_HEX_PRISM, OP_PRIM_ELLIPSOID,
   OP_PRIM_CONST, OP_PRIM_GYROID, OP_PRIM_THREAD,
-  OP_PRIM2D_CIRCLE, OP_PRIM2D_RECT, OP_PRIM2D_SECTOR,
+  OP_PRIM2D_CIRCLE, OP_PRIM2D_RECT, OP_PRIM2D_POLY, OP_PRIM2D_SECTOR,
   OP_UNION, OP_DIFFERENCE, OP_INTERSECT, OP_SMOOTH_UNION, OP_SMOOTH_DIFF,
   OP_SHELL, OP_MORPH, OP_DISPLACE_VAL, OP_EXTRUDE, OP_REVOLVE_SCALE,
   OP_OFFSET_2D,
@@ -48,6 +51,12 @@ export const VM_MAX_OPCODES = 2048;
 export const bitcastTagFn = wgslFn(`
   fn fd_bitcast_tag(v: f32) -> i32 {
     return i32(bitcast<u32>(v));
+  }
+`);
+
+export const floatToIntFn = wgslFn(`
+  fn fd_f2i(v: f32) -> i32 {
+    return i32(v + 0.5);
   }
 `);
 
@@ -194,6 +203,43 @@ export function buildVmSdfEvalFn(opBuf: ReturnType<typeof uniformArray>) {
       }).ElseIf(tag.equal(int(OP_PRIM2D_RECT)), () => {
         const cx = rd(), cy = rd(), hx = rd(), hy = rd();
         pushV(sdfRect2dFn({ p: vec2(ptx, pty), center: vec2(cx, cy), half: vec2(hx, hy) }));
+      }).ElseIf(tag.equal(int(OP_PRIM2D_POLY)), () => {
+        const nRaw = rd();
+        const nInt = floatToIntFn({ v: nRaw });
+        const vertStart = pc.toVar();
+        pc.addAssign(nInt.mul(2));
+
+        const dSq = float(1e30).toVar();
+        const wSign = float(1).toVar();
+        const ii = int(0).toVar();
+        Loop(int(32), () => {
+          If(ii.greaterThanEqual(nInt), () => { Break(); });
+          const jj = ii.add(nInt).sub(1).mod(nInt);
+          const vix = opBuf.element(vertStart.add(ii.mul(2)));
+          const viy = opBuf.element(vertStart.add(ii.mul(2)).add(1));
+          const vjx = opBuf.element(vertStart.add(jj.mul(2)));
+          const vjy = opBuf.element(vertStart.add(jj.mul(2)).add(1));
+          const eix = vjx.sub(vix);
+          const eiy = vjy.sub(viy);
+          const wix = ptx.sub(vix);
+          const wiy = pty.sub(viy);
+          const dotWE = wix.mul(eix).add(wiy.mul(eiy));
+          const dotEE = eix.mul(eix).add(eiy.mul(eiy));
+          const ti = clamp(dotWE.div(dotEE), 0, 1);
+          const dix = wix.sub(eix.mul(ti));
+          const diy = wiy.sub(eiy.mul(ti));
+          dSq.assign(min(dSq, dix.mul(dix).add(diy.mul(diy))));
+          const crossVal = eix.mul(wiy).sub(eiy.mul(wix));
+          const c1 = step(viy, pty);
+          const c2 = float(1).sub(step(vjy, pty));
+          const c3 = step(float(0), crossVal);
+          const flipAmt = c1.mul(c2).mul(c3).add(
+            float(1).sub(c1).mul(float(1).sub(c2)).mul(float(1).sub(c3)),
+          );
+          wSign.assign(wSign.mul(float(1).sub(flipAmt.mul(2))));
+          ii.addAssign(1);
+        });
+        pushV(wSign.mul(sqrt(dSq)));
       }).ElseIf(tag.equal(int(OP_PRIM2D_SECTOR)), () => {
         const cx = rd(), cy = rd(), r = rd();
         const start_angle = rd(), sweep_angle = rd();

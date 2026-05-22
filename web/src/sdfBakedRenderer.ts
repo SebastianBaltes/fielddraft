@@ -16,10 +16,13 @@
 import * as THREE from "three";
 import {
   Break,
+  Discard,
   Fn,
   If,
   Loop,
   cameraPosition,
+  cameraProjectionMatrix,
+  cameraViewMatrix,
   clamp,
   float,
   int,
@@ -28,6 +31,7 @@ import {
   modelWorldMatrix,
   normalize,
   positionGeometry,
+  property,
   texture3D,
   textureStore,
   uint,
@@ -114,6 +118,8 @@ function createVolumeMaterial(
   volumeTex: Storage3DTexture,
   aabbBuf: ReturnType<typeof uniformArray>,
 ): MeshBasicNodeMaterial {
+  const hitDepthProp = property('float', 'hitDepth');
+
   const colorNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
     const ro = cameraPosition;
@@ -151,14 +157,13 @@ function createVolumeMaterial(
         hitPos.assign(p);
         Break();
       });
-      t.addAssign(max(d, float(SURFACE_EPS)));
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => {
         Break();
       });
     });
 
     const finalColor = vec3(0).toVar();
-    const finalAlpha = float(0).toVar();
     If(hit.greaterThan(0.5), () => {
       const eps = NORMAL_EPS;
       const ex = vec3(eps, 0, 0);
@@ -186,18 +191,21 @@ function createVolumeMaterial(
       const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
       const baseColor = vec3(0.55, 0.65, 0.85);
       finalColor.assign(baseColor.mul(light));
-      finalAlpha.assign(1);
+      const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
+      hitDepthProp.assign(clipPos.z.div(clipPos.w));
+    }).Else(() => {
+      Discard();
     });
 
-    return vec4(finalColor, finalAlpha);
+    return vec4(finalColor, 1);
   });
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = colorNode();
+  material.depthNode = hitDepthProp;
   material.side = THREE.BackSide;
-  material.transparent = true;
-  material.depthWrite = false;
-  material.depthTest = false;
+  material.depthWrite = true;
+  material.depthTest = true;
   material.toneMapped = false;
 
   return material;

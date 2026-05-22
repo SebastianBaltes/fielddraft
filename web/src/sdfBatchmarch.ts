@@ -157,7 +157,7 @@ export function initBatchmarch(
         hitFlag.assign(1);
         Break();
       });
-      t.addAssign(max(d, float(SURFACE_EPS)));
+      t.addAssign(max(d.mul(0.8), float(SURFACE_EPS)));
       If(t.greaterThan(MAX_DIST), () => {
         Break();
       });
