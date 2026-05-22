@@ -59,7 +59,7 @@ const MAX_BODIES = 32;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
-const HULL_INFLATE = 1.001;
+const HULL_INFLATE = 1.01;
 
 // ── Body colors ────────────────────────────────────────────────────
 
