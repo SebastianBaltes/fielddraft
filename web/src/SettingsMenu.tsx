@@ -21,9 +21,9 @@ const LS_RENDER_MODE = "fielddraft.renderMode";
 
 export type WorkspaceUnits = "mm" | "inch";
 export type ThemeChoice = "light" | "dark";
-export type RenderMode = "dc" | "sdf" | "sdf-vm" | "sdf-baked" | "sdf-batch" | "sdf-hybrid" | "sdf-hybrid-vm" | "sdf-hybrid-compute" | "sdf-deferred";
+export type RenderMode = "sdf-vm" | "sdf-deferred";
 
-const VALID_RENDER_MODES: RenderMode[] = ["dc", "sdf", "sdf-vm", "sdf-baked", "sdf-batch", "sdf-hybrid", "sdf-hybrid-vm", "sdf-hybrid-compute", "sdf-deferred"];
+const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred"];
 
 export interface SettingsState {
   compact: boolean;
@@ -37,7 +37,7 @@ export function loadSettings(): SettingsState {
   let compact = false;
   let units: WorkspaceUnits = "mm";
   let theme: ThemeChoice = "light";
-  let renderMode: RenderMode = "dc";
+  let renderMode: RenderMode = "sdf-deferred";
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     const rawUnits = localStorage.getItem(LS_UNITS);
@@ -256,14 +256,7 @@ export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) 
                 setRenderMode(e.target.value as RenderMode)
               }
             >
-              <option value="dc">DC Mesh</option>
-              <option value="sdf">SDF Transpiled</option>
               <option value="sdf-vm">SDF VM</option>
-              <option value="sdf-baked">SDF Baked</option>
-              <option value="sdf-batch">Batchmarch</option>
-              <option value="sdf-hybrid">Hybrid</option>
-              <option value="sdf-hybrid-vm">Hybrid VM</option>
-              <option value="sdf-hybrid-compute">Hybrid Compute</option>
               <option value="sdf-deferred">Deferred</option>
             </select>
           </div>

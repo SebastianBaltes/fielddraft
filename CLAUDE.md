@@ -82,11 +82,3 @@ Für die **architektonische Begründung** eines Slices (warum ist der CSG-Graph 
 
 Volle Deployment-Anleitung in `DEPLOY.md`.
 
-## Chatverlauf
-
-ClaudeDraft speichert jede Nachricht zwischen dir und dem Nutzer persistent in
-einer SQLite-DB. Dieser Verlauf ueberlebt `/clear`, Neustarts des Daemons und
-einen Umzug zwischen Nodes — der frische Claude-Prozess kennt ihn aber zunaechst
-nicht. Wenn der Nutzer sich auf etwas Aelteres bezieht oder du nach einem
-`/clear` den Kontext rekonstruieren willst, ruf das MCP-Tool `chat_history`
-auf (liefert die letzten N Nachrichten als {role, text, ts}).

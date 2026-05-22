@@ -50,11 +50,6 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
-import {
-  BODY_COLORS,
-  createPrimitiveGeometry,
-  applyLeafTransform,
-} from "./sdfHybridRenderer";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -65,6 +60,105 @@ const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
 const HULL_INFLATE = 1.001;
+
+// ── Body colors ────────────────────────────────────────────────────
+
+export const BODY_COLORS: [number, number, number][] = [
+  [0.55, 0.65, 0.85],
+  [0.65, 0.85, 0.55],
+  [0.85, 0.55, 0.65],
+  [0.85, 0.75, 0.50],
+  [0.55, 0.80, 0.80],
+  [0.75, 0.55, 0.85],
+  [0.85, 0.85, 0.55],
+  [0.55, 0.70, 0.70],
+];
+
+// ── Primitive mesh factory ─────────────────────────────────────────
+
+export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  const p = leaf.params;
+  switch (leaf.kind) {
+    case "box":
+      return new THREE.BoxGeometry(p[0] * 2, p[1] * 2, p[2] * 2);
+    case "sphere":
+      return new THREE.SphereGeometry(p[0], 32, 24);
+    case "cylinder":
+      return new THREE.CylinderGeometry(p[0], p[0], p[1] * 2, 32);
+    case "torus": {
+      const tgeo = new THREE.TorusGeometry(p[0], p[1], 24, 48);
+      tgeo.rotateX(Math.PI / 2);
+      return tgeo;
+    }
+    case "cone":
+      return new THREE.CylinderGeometry(p[1], p[0], p[2] * 2, 32);
+    case "capsule":
+      return new THREE.CapsuleGeometry(p[0], p[1] * 2, 16, 24);
+    case "extrude":
+      return createExtrudeGeometry(leaf);
+    case "revolve":
+      return createRevolveGeometry(leaf);
+    default:
+      return null;
+  }
+}
+
+function createExtrudeGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  const contour = leaf.contour;
+  if (!contour || contour.outer.length < 3) return null;
+  const halfHeight = leaf.params[0];
+  const shape = new THREE.Shape(
+    contour.outer.map(([x, y]) => new THREE.Vector2(x, y)),
+  );
+  for (const hole of contour.holes) {
+    shape.holes.push(
+      new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))),
+    );
+  }
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 2 * halfHeight,
+    bevelEnabled: false,
+  });
+  geo.translate(0, 0, -halfHeight);
+  return geo;
+}
+
+function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  const contour = leaf.contour;
+  if (!contour || contour.outer.length < 3) return null;
+  const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
+  return new THREE.LatheGeometry(points, 48);
+}
+
+export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
+  const t = leaf.transform;
+  const translate = new THREE.Vector3(t[0], t[1], t[2]);
+  const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);
+  const scale = t[7];
+  const centerOffset = getCenterOffset(leaf);
+  if (centerOffset) {
+    const localOffset = new THREE.Vector3(
+      centerOffset[0] * scale,
+      centerOffset[1] * scale,
+      centerOffset[2] * scale,
+    );
+    localOffset.applyQuaternion(quat);
+    translate.add(localOffset);
+  }
+  mesh.matrixAutoUpdate = false;
+  mesh.matrix.compose(translate, quat, new THREE.Vector3(scale, scale, scale));
+}
+
+function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
+  const p = leaf.params;
+  switch (leaf.kind) {
+    case "box": return [p[3], p[4], p[5]];
+    case "sphere": return [p[1], p[2], p[3]];
+    case "cylinder": return [p[2], p[3], p[4]];
+    case "torus": return [p[2], p[3], p[4]];
+    default: return null;
+  }
+}
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -139,15 +233,22 @@ function createTransparentGBufferMaterial(
 
 // ── Back-face material (BackSide → worldPos for exit depth) ────────
 
-function createBackFaceMaterial(): MeshBasicNodeMaterial {
+function createBackFaceMaterial(
+  camPosU: ReturnType<typeof uniform>,
+): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    return vec4(worldPos, 1);
+    const dist = worldPos.sub(camPosU).length();
+    return vec4(dist, 0, 0, 1);
   })();
   material.side = THREE.BackSide;
-  material.depthTest = true;
-  material.depthWrite = true;
+  material.depthTest = false;
+  material.depthWrite = false;
+  material.blending = THREE.CustomBlending;
+  material.blendEquation = THREE.MaxEquation;
+  material.blendSrc = THREE.OneFactor;
+  material.blendDst = THREE.OneFactor;
   material.toneMapped = false;
   return material;
 }
@@ -195,19 +296,12 @@ function createShadeMaterial(
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      // tMax from back-face RT (exit worldPos via BackSide depth test)
-      const backGbuf = texture(transBackTex, texUv);
-      const hasBack = backGbuf.w.greaterThan(float(0.5));
-      const tMax = float(MAX_MARCH_DIST).toVar();
+      // tMax: farthest back-face distance (MAX-blended scalar from Pass 2b)
+      const backDist = texture(transBackTex, texUv).x;
+      const frontDist = transWorldPos.sub(camPosU).length();
+      const tMax = backDist.sub(frontDist).toVar();
 
-      If(hasBack, () => {
-        const backDist = backGbuf.xyz.sub(transWorldPos).dot(rd);
-        If(backDist.greaterThan(float(0)), () => {
-          tMax.assign(backDist);
-        });
-      });
-
-      // Opaque body behind transparent is a tighter bound
+      // Opaque behind (different body) tightens the bound
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
         const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
@@ -333,8 +427,13 @@ export function initDeferredPipeline(
 
   const opaqueRT = makeRT();
   const transparentRT = makeRT();
-  // Back-face RT: no explicit depthTexture — let THREE.js manage internally
-  const transparentBackRT = makeRT(false);
+  const transparentBackRT = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: false,
+  });
 
   const opaqueScene = new THREE.Scene();
   const transparentScene = new THREE.Scene();
@@ -356,7 +455,7 @@ export function initDeferredPipeline(
   const colorBuf = uniformArray(colorData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
-  const backFaceMaterial = createBackFaceMaterial();
+  const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
   const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
   const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
@@ -617,10 +716,10 @@ export function renderDeferredFrame(
   renderer.clear(true, true, false);
   renderer.render(state.transparentScene, camera);
 
-  // Pass 2b: transparent back-face G-buffer (exit worldPos)
+  // Pass 2b: back-face distances (MAX-blended scalar, no depth buffer)
   renderer.setRenderTarget(state.transparentBackRT);
   renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
-  renderer.clear(true, true, false);
+  renderer.clear(true, false, false);
   renderer.render(state.transparentBackScene, camera);
 
   // Pass 3: shade (reads all RTs, composites to screen)

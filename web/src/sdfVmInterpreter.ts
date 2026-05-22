@@ -2,8 +2,7 @@
  * Shared GPU bytecode VM interpreter for SDF evaluation.
  *
  * Builds a fixed TSL expression tree that interprets the opcode buffer
- * at runtime.  Used by sdfVmRenderer, sdfBakedRenderer, and
- * sdfBatchmarch — each passes their own uniformArray.
+ * at runtime.  Used by sdfVmRenderer and sdfDeferredRenderer.
  */
 
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
