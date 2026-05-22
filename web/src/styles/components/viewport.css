@@ -152,10 +152,6 @@
     }
   }
 
-  @keyframes fd-spin {
-    to { transform: rotate(360deg); }
-  }
-
   & > .face-pick-hud {
     position: absolute;
     top: var(--space-4);
@@ -171,4 +167,8 @@
     pointer-events: none;
     white-space: nowrap;
   }
+}
+
+@keyframes fd-spin {
+  to { transform: rotate(360deg); }
 }
