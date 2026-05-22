@@ -60,8 +60,11 @@ export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
       return new THREE.SphereGeometry(p[0], 32, 24);
     case "cylinder":
       return new THREE.CylinderGeometry(p[0], p[0], p[1] * 2, 32);
-    case "torus":
-      return new THREE.TorusGeometry(p[0], p[1], 24, 48);
+    case "torus": {
+      const tgeo = new THREE.TorusGeometry(p[0], p[1], 24, 48);
+      tgeo.rotateX(Math.PI / 2);
+      return tgeo;
+    }
     case "cone":
       return new THREE.CylinderGeometry(p[1], p[0], p[2] * 2, 32);
     case "capsule":

@@ -1,21 +1,18 @@
 /**
- * Deferred Raymarching SDF renderer.
+ * Deferred Raymarching SDF renderer -- 3-pass dual-mesh pipeline.
  *
  * Pipeline per frame:
- *   1. G-BUFFER: Inflated hull-meshes → float RT (worldPos + bodyIndex)
- *   2. SHADE:    Fullscreen quad reads G-Buffer, sphere-traces from hull
- *                surface into the volume to find the actual SDF surface,
- *                evaluates normals via VM interpreter, applies lighting.
- *                Pixels where no SDF surface is found are discarded
- *                (transparency for gyroid holes, thread gaps, etc.).
+ *   1. OPAQUE RASTER:      Non-inflated hull-meshes -> opaqueRT (worldPos+tag)
+ *   2. TRANSPARENT COLLECT: Inflated/volume hull-meshes -> transparentRT
+ *   3. UNIFIED SHADE:      Fullscreen quad reads both RTs; sphere-traces
+ *                           transparent volumes; shades via VM SDF normals.
  *
- * Hull meshes are scaled slightly larger than the mathematical SDF surface
- * (HULL_INFLATE) so that tessellated polygon edges never clip the true
- * silhouette.  The sphere-tracer converges from the inflated position to
- * the actual surface in 1–3 steps for simple primitives.
+ * Dual-mesh: each body provides opaque AND/OR transparent hull-meshes.
+ * Box -> opaque only.  Sphere/Cylinder/Torus etc. -> opaque + transparent
+ * (inflated HULL_INFLATE).  Gyroid/DomainWarp -> transparent only (AABB).
  */
 
-// @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
+// @ts-nocheck -- TSL's TypeScript surface in three r183 is intentionally loose.
 
 import * as THREE from "three";
 import {
@@ -30,13 +27,13 @@ import {
   normalize,
   texture,
   uniform,
+  uniformArray,
   uv,
   vec2,
   vec3,
   vec4,
   modelWorldMatrix,
   positionGeometry,
-  uniformArray,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 
@@ -61,8 +58,10 @@ const HULL_INFLATE = 1.02;
 // ── Types ───────────────────────────────────────────────────────────
 
 export interface DeferredPipelineState {
-  gBufferRT: THREE.WebGLRenderTarget;
+  opaqueRT: THREE.WebGLRenderTarget;
+  transparentRT: THREE.WebGLRenderTarget;
   opaqueScene: THREE.Scene;
+  transparentScene: THREE.Scene;
   shadeScene: THREE.Scene;
   shadeCamera: THREE.OrthographicCamera;
   shadeMaterial: MeshBasicNodeMaterial;
@@ -73,7 +72,8 @@ export interface DeferredPipelineState {
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
-  bodyMeshes: Map<number, THREE.Mesh[]>;
+  bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
+  bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
   width: number;
   height: number;
@@ -94,10 +94,11 @@ function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
   return material;
 }
 
-// ── Shade material (sphere-traces from hull surface to SDF surface) ─
+// ── Shade material (reads both G-buffers, sphere-traces, lights) ────
 
 function createShadeMaterial(
-  gBufferTex: THREE.Texture,
+  opaqueGbufTex: THREE.Texture,
+  transGbufTex: THREE.Texture,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
@@ -108,42 +109,74 @@ function createShadeMaterial(
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
-    const gbuf = texture(gBufferTex, texUv);
-    const meshWorldPos = gbuf.xyz;
-    const bodyTag = gbuf.w;
+    const opaqueGbuf = texture(opaqueGbufTex, texUv);
+    const transGbuf = texture(transGbufTex, texUv);
 
-    If(bodyTag.lessThan(float(0.5)), () => {
-      Discard();
-    });
+    const opaqueTag = opaqueGbuf.w;
+    const transTag = transGbuf.w;
+    const hasOpaque = opaqueTag.greaterThan(float(0.5));
+    const hasTrans = transTag.greaterThan(float(0.5));
 
-    const bodyIdx = int(bodyTag.sub(0.5));
-    const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+    // Fall C: no geometry at this pixel
+    If(hasOpaque.not().and(hasTrans.not()), () => { Discard(); });
 
-    // View ray from camera through this pixel
-    const rd = normalize(meshWorldPos.sub(camPosU));
+    // Determine shade target (worldPos + bodyIdx) via Fall A/B logic
+    const shadePos = vec3(0, 0, 0).toVar();
+    const shadeBodyIdx = int(0).toVar();
 
-    // Sphere-trace from hull mesh surface into the volume
-    const t = float(0).toVar();
-    const hitPos = vec3(0, 0, 0).toVar();
-    const hit = float(0).toVar();
+    If(hasTrans, () => {
+      // Fall B: transparent hull -> sphere-trace into volume
+      const transBodyIdx = int(transTag.sub(0.5));
+      const transBaseOff = int(offsetBuf.element(transBodyIdx.mul(2)));
+      const transWorldPos = transGbuf.xyz;
+      const rd = normalize(transWorldPos.sub(camPosU));
 
-    Loop(int(DEFERRED_MARCH_STEPS), () => {
-      const p = meshWorldPos.add(rd.mul(t));
-      const d = sdfEval({ p, baseOffset: baseOff });
-      If(d.lessThan(float(SURFACE_EPS)), () => {
-        hit.assign(1);
-        hitPos.assign(p);
-        Break();
+      // Limit march distance to opaque surface behind (if any)
+      const tMax = float(MAX_MARCH_DIST).toVar();
+      If(hasOpaque, () => {
+        const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
+        If(opaqueDist.greaterThan(float(0)), () => { tMax.assign(opaqueDist); });
       });
-      t.addAssign(max(d, float(SURFACE_EPS)));
-      If(t.greaterThan(float(MAX_MARCH_DIST)), () => { Break(); });
+
+      const t = float(0).toVar();
+      const hitPos = vec3(0, 0, 0).toVar();
+      const hit = float(0).toVar();
+
+      Loop(int(DEFERRED_MARCH_STEPS), () => {
+        const p = transWorldPos.add(rd.mul(t));
+        const d = sdfEval({ p, baseOffset: transBaseOff });
+        If(d.lessThan(float(SURFACE_EPS)), () => {
+          hit.assign(1);
+          hitPos.assign(p);
+          Break();
+        });
+        t.addAssign(max(d, float(SURFACE_EPS)));
+        If(t.greaterThan(tMax), () => { Break(); });
+      });
+
+      If(hit.greaterThan(float(0.5)), () => {
+        shadePos.assign(hitPos);
+        shadeBodyIdx.assign(transBodyIdx);
+      }).Else(() => {
+        // No SDF surface in transparent zone
+        If(hasOpaque, () => {
+          // Fall through to opaque surface behind
+          shadePos.assign(opaqueGbuf.xyz);
+          shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+        }).Else(() => {
+          // Transparent hole (gyroid gap, thread groove)
+          Discard();
+        });
+      });
+    }).Else(() => {
+      // Fall A: opaque only -- shade at mesh surface (no march needed)
+      shadePos.assign(opaqueGbuf.xyz);
+      shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
     });
 
-    // No surface found → transparent (gyroid holes, thread gaps, etc.)
-    If(hit.lessThan(float(0.5)), () => { Discard(); });
-
-    // Normal via central differences at the actual hit point
-    const p = hitPos;
+    // Normal via central differences at shade point
+    const baseOff = int(offsetBuf.element(shadeBodyIdx.mul(2)));
+    const p = shadePos;
     const eps = float(NORMAL_EPS);
     const ex = vec3(eps, 0, 0);
     const ey = vec3(0, eps, 0);
@@ -166,12 +199,12 @@ function createShadeMaterial(
     const dRim = max(n.dot(rimDir), float(0));
     const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
 
-    const cr = colorBuf.element(bodyIdx.mul(3));
-    const cg = colorBuf.element(bodyIdx.mul(3).add(1));
-    const cb = colorBuf.element(bodyIdx.mul(3).add(2));
-    const baseColor = vec3(cr, cg, cb);
+    const cr = colorBuf.element(shadeBodyIdx.mul(3));
+    const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
+    const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
+    const color = vec3(cr, cg, cb).mul(light);
 
-    return vec4(baseColor.mul(light), 1);
+    return vec4(color, 1);
   })();
 
   material.depthWrite = false;
@@ -187,14 +220,20 @@ export function initDeferredPipeline(
   width: number,
   height: number,
 ): DeferredPipelineState {
-  const gBufferRT = new THREE.WebGLRenderTarget(width, height, {
+  const makeRT = () => new THREE.WebGLRenderTarget(width, height, {
     type: THREE.FloatType,
     format: THREE.RGBAFormat,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
     depthBuffer: true,
     depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType),
   });
 
+  const opaqueRT = makeRT();
+  const transparentRT = makeRT();
+
   const opaqueScene = new THREE.Scene();
+  const transparentScene = new THREE.Scene();
 
   const opcodeData = new Float32Array(DEFERRED_MAX_OPCODES);
   const opcodeBuf = uniformArray(opcodeData, "float");
@@ -214,7 +253,8 @@ export function initDeferredPipeline(
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
 
   const shadeMaterial = createShadeMaterial(
-    gBufferRT.texture,
+    opaqueRT.texture,
+    transparentRT.texture,
     opcodeBuf,
     offsetBuf,
     colorBuf,
@@ -235,8 +275,10 @@ export function initDeferredPipeline(
   shadeCamera.updateProjectionMatrix();
 
   return {
-    gBufferRT,
+    opaqueRT,
+    transparentRT,
     opaqueScene,
+    transparentScene,
     shadeScene,
     shadeCamera,
     shadeMaterial,
@@ -247,7 +289,8 @@ export function initDeferredPipeline(
     colorBuf,
     colorData,
     camPosUniform,
-    bodyMeshes: new Map(),
+    bodyOpaqueMeshes: new Map(),
+    bodyTransparentMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
     width,
     height,
@@ -265,14 +308,22 @@ export function rebuildDeferredBodies(
     aabb?: Float32Array;
   }[],
 ): void {
-  for (const meshes of state.bodyMeshes.values()) {
+  for (const meshes of state.bodyOpaqueMeshes.values()) {
     for (const m of meshes) {
       state.opaqueScene.remove(m);
       m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     }
   }
-  state.bodyMeshes.clear();
+  for (const meshes of state.bodyTransparentMeshes.values()) {
+    for (const m of meshes) {
+      state.transparentScene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+  }
+  state.bodyOpaqueMeshes.clear();
+  state.bodyTransparentMeshes.clear();
   state.bodyOpcodeRanges.clear();
 
   state.opcodeData.fill(0);
@@ -294,46 +345,87 @@ export function rebuildDeferredBodies(
     state.offsetData[bodyIndex * 2 + 1] = len;
     state.bodyOpcodeRanges.set(bodyIndex, { start, length: len });
 
-    const meshes: THREE.Mesh[] = [];
-    const material = createGBufferMaterial(bodyIndex);
+    const gbufMaterial = createGBufferMaterial(bodyIndex);
+    const opaqueMeshes: THREE.Mesh[] = [];
+    const transMeshes: THREE.Mesh[] = [];
 
-    for (const leaf of hybridInfo.leaves) {
-      if (leaf.role === "skip") continue;
-      const geo = createPrimitiveGeometry(leaf);
-      if (!geo) continue;
-      geo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
-      const mesh = new THREE.Mesh(geo, material);
-      applyLeafTransform(mesh, leaf);
-      mesh.frustumCulled = false;
-      state.opaqueScene.add(mesh);
-      meshes.push(mesh);
-    }
-
-    // Fallback: use body AABB (from kernel) or leaf AABB union
-    if (meshes.length === 0 && opcodes.length > 0) {
-      const fallbackAabb = aabb
+    if (hybridInfo.needs_full_sdf) {
+      // Non-meshable (gyroid, domain warp) -> transparent AABB only
+      const fb = aabb
         ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
         : computeLeafAABB(hybridInfo.leaves);
-      if (fallbackAabb) {
-        const pad = 0.5;
-        const sx = (fallbackAabb[3] - fallbackAabb[0]) + pad * 2;
-        const sy = (fallbackAabb[4] - fallbackAabb[1]) + pad * 2;
-        const sz = (fallbackAabb[5] - fallbackAabb[2]) + pad * 2;
-        const geo = new THREE.BoxGeometry(sx, sy, sz);
-        const mesh = new THREE.Mesh(geo, material);
-        mesh.position.set(
-          (fallbackAabb[0] + fallbackAabb[3]) * 0.5,
-          (fallbackAabb[1] + fallbackAabb[4]) * 0.5,
-          (fallbackAabb[2] + fallbackAabb[5]) * 0.5,
-        );
-        mesh.frustumCulled = false;
-        state.opaqueScene.add(mesh);
-        meshes.push(mesh);
+      if (fb) {
+        addAabbBox(fb, gbufMaterial, state.transparentScene, transMeshes);
+      }
+    } else {
+      for (const leaf of hybridInfo.leaves) {
+        if (leaf.role === "skip") continue;
+        const geo = createPrimitiveGeometry(leaf);
+        if (!geo) continue;
+
+        if (leaf.kind === "box") {
+          // Box: opaque only (exact convex shape, no inflation needed)
+          const mesh = new THREE.Mesh(geo, gbufMaterial);
+          applyLeafTransform(mesh, leaf);
+          mesh.frustumCulled = false;
+          state.opaqueScene.add(mesh);
+          opaqueMeshes.push(mesh);
+        } else {
+          // All other primitives: opaque (exact) + transparent (inflated)
+          const mesh = new THREE.Mesh(geo, gbufMaterial);
+          applyLeafTransform(mesh, leaf);
+          mesh.frustumCulled = false;
+          state.opaqueScene.add(mesh);
+          opaqueMeshes.push(mesh);
+
+          const tGeo = createPrimitiveGeometry(leaf);
+          if (tGeo) {
+            tGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+            const tMesh = new THREE.Mesh(tGeo, gbufMaterial);
+            applyLeafTransform(tMesh, leaf);
+            tMesh.frustumCulled = false;
+            state.transparentScene.add(tMesh);
+            transMeshes.push(tMesh);
+          }
+        }
+      }
+
+      // Fallback: AABB box as transparent if no meshes created
+      if (opaqueMeshes.length === 0 && transMeshes.length === 0 && opcodes.length > 0) {
+        const fb = aabb
+          ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+          : computeLeafAABB(hybridInfo.leaves);
+        if (fb) {
+          addAabbBox(fb, gbufMaterial, state.transparentScene, transMeshes);
+        }
       }
     }
 
-    state.bodyMeshes.set(bodyIndex, meshes);
+    state.bodyOpaqueMeshes.set(bodyIndex, opaqueMeshes);
+    state.bodyTransparentMeshes.set(bodyIndex, transMeshes);
   }
+}
+
+function addAabbBox(
+  aabb: readonly [number, number, number, number, number, number],
+  material: MeshBasicNodeMaterial,
+  scene: THREE.Scene,
+  meshes: THREE.Mesh[],
+): void {
+  const pad = 0.5;
+  const sx = (aabb[3] - aabb[0]) + pad * 2;
+  const sy = (aabb[4] - aabb[1]) + pad * 2;
+  const sz = (aabb[5] - aabb[2]) + pad * 2;
+  const geo = new THREE.BoxGeometry(sx, sy, sz);
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.position.set(
+    (aabb[0] + aabb[3]) * 0.5,
+    (aabb[1] + aabb[4]) * 0.5,
+    (aabb[2] + aabb[5]) * 0.5,
+  );
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  meshes.push(mesh);
 }
 
 function computeLeafAABB(
@@ -363,29 +455,44 @@ export function renderDeferredFrame(
   renderer: THREE.WebGPURenderer,
   camera: THREE.Camera,
 ): void {
-  // Update camera position uniform for the shade pass view-ray computation
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
 
-  renderer.setRenderTarget(state.gBufferRT);
+  // Pass 1: opaque G-buffer
+  renderer.setRenderTarget(state.opaqueRT);
   renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
   renderer.clear(true, true, false);
   renderer.render(state.opaqueScene, camera);
-  renderer.setRenderTarget(null);
 
+  // Pass 2: transparent G-buffer
+  renderer.setRenderTarget(state.transparentRT);
+  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
+  renderer.clear(true, true, false);
+  renderer.render(state.transparentScene, camera);
+
+  // Pass 3: shade (reads both RTs, composites to screen)
+  renderer.setRenderTarget(null);
   renderer.render(state.shadeScene, state.shadeCamera);
 }
 
 // ── Dispose ─────────────────────────────────────────────────────────
 
 export function disposeDeferredPipeline(state: DeferredPipelineState): void {
-  for (const meshes of state.bodyMeshes.values()) {
+  for (const meshes of state.bodyOpaqueMeshes.values()) {
     for (const m of meshes) {
       m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     }
   }
-  state.bodyMeshes.clear();
-  state.gBufferRT.dispose();
+  for (const meshes of state.bodyTransparentMeshes.values()) {
+    for (const m of meshes) {
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+  }
+  state.bodyOpaqueMeshes.clear();
+  state.bodyTransparentMeshes.clear();
+  state.opaqueRT.dispose();
+  state.transparentRT.dispose();
   state.shadeMaterial.dispose();
 }

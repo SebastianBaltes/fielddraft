@@ -106,6 +106,63 @@ nötig sind. Außerhalb des Hüll-Meshes ist per Definition der opake Körper
    benötigen keine spezielle Transparenz-Behandlung — Rays die keine
    SDF-Oberfläche treffen werden einfach discardet.
 
+### Dual-Mesh-Klassifikation
+
+Jeder Body liefert mindestens ein Hüll-Mesh — opak, transparent oder beides.
+Die Klassifikation erfolgt TypeScript-seitig beim Mesh-Aufbau und richtet
+sich nach der Geometrie des Leaf-Primitives:
+
+| Body-Typ | Opakes Mesh | Transparentes Mesh |
+|---|---|---|
+| Box | BoxGeometry (exakt) | — |
+| Sphere | SphereGeometry (exakt) | SphereGeometry (inflated 1.02) |
+| Cylinder | CylinderGeometry (exakt) | CylinderGeometry (inflated) |
+| Torus | TorusGeometry (exakt, rotateX π/2) | TorusGeometry (inflated) |
+| Capsule | CapsuleGeometry (exakt) | CapsuleGeometry (inflated) |
+| Cone | CylinderGeometry (exakt) | CylinderGeometry (inflated) |
+| Extrude/Revolve | ContourMesh (exakt) | ContourMesh (inflated) |
+| Gyroid (needs_full_sdf) | — | BoxGeometry (AABB) |
+| Domain Warps (needs_full_sdf) | — | BoxGeometry (AABB) |
+
+Regeln:
+- Jeder Body braucht mindestens ein Mesh (opak oder transparent).
+- **Box**: Nur opak — rein konvex, keine Silhouetten-Clipping-Gefahr.
+- **Alle anderen Primitiven**: Opak (exakte Geometrie) + transparent
+  (inflated × HULL_INFLATE). Der Sphere-Tracer konvergiert vom inflated
+  Rand in 1–3 Schritten zur exakten Fläche.
+- **Gyroid / Domain Warps**: Nur transparent (AABB-Box), da keine exakte
+  Mesh-Geometrie darstellbar.
+
+Vorteile gegenüber nur-inflated Meshes:
+- **Kein Inflations-Halo**: Opake Meshes liefern exakte Silhouetten.
+  Am Rand, wo nur das transparente Mesh den Pixel trifft, findet der
+  Sphere-Tracer die SDF-Fläche oder discardet (dünner, kaum sichtbarer Rand).
+- **Gyroid-Durchsicht**: Gyroid-Löcher zeigen das opake Objekt dahinter,
+  weil die opake Schicht (RT1) die Information bewahrt.
+- **Weniger SDF-Arbeit**: Für opak-only Pixel (Fall A) entfällt der
+  Sphere-Trace komplett — nur 6 SDF-Evals für die Normale.
+
+### Two-RT-Implementierungsvariante
+
+Die aktuelle Implementierung nutzt zwei separate Render Targets statt
+Fragment-Shader-Atomics für das Per-Pixel Term-ID Encoding:
+
+- **RT1 (Opaque)**: Nicht-inflated Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`
+- **RT2 (Transparent)**: Inflated/Volume Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`
+
+Der Shade-Pass (Fullscreen-Quad) liest beide RTs und entscheidet:
+
+- **Fall A** (`hasOpaque && !hasTrans`): 6 SDF-Evals für Normale + Lighting.
+- **Fall B** (`hasTrans`): Ray bauen, Sphere-Trace `[0, t_max]` mit VM-SDF.
+  Hit → Shade. Kein Hit + hasOpaque → Fall A. Kein Hit + !hasOpaque → Discard.
+- **Fall C** (`!hasOpaque && !hasTrans`): Hintergrund (Discard).
+
+Einschränkung: Pro Pixel wird nur ein transparenter Body erfasst (der
+vorderste gewinnt per Depth-Test). Für typische CAD-Szenen mit wenigen
+räumlichen Überlappungen transparenter Terme reicht dies aus. Ein Upgrade
+auf Fragment-Shader-Atomics (Phase 3) erlaubt beliebig viele transparente
+Überlappungen pro Pixel.
+
 ---
 
 ## Kapitel 2: GPU-Implementierung
@@ -271,7 +328,6 @@ n = normalize(vec3(
 
 Vorteile:
 - Konsistente Beleuchtung über die gesamte Szene
-- Raytraced Shadows möglich (Schattenstrahl mit derselben SDF)
 - Keine Duplikation von Shading-Code zwischen Mesh- und SDF-Pfad
 
 ### Speicherbedarf
@@ -601,8 +657,6 @@ BoxGeometry-Fallbacks durch enganliegende Meshes ersetzen:
 
 - Workgroup Shared Memory für Opcode-Blöcke
 - Adaptive Step-Count (weniger Steps für kleine `[t_min, t_max]`-Intervalle)
-- Half-Resolution für transparente Regionen + Upscale im Blit
-- Raytraced Shadows (Schattenstrahl mit derselben SDF)
 
 ### Kritische Dateien
 
@@ -632,9 +686,7 @@ Phase 2:
 
 Phase 3:
   - Fillet-Zonen: Enganliegendes Mesh statt Box, weniger verschwendete Pixel
-  - Performance-Vergleich: sdf-deferred vs sdf-hybrid-vm
 
 Phase 4:
   - Benchmark: Shared Memory vs. Uniform Buffer
-  - Schatten-Demo: Raytraced Soft Shadows
 ```
