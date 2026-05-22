@@ -81,6 +81,7 @@ export interface DeferredPipelineState {
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
+  maxMarchDistUniform: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
@@ -141,6 +142,7 @@ function createShadeMaterial(
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
+  maxMarchDistU: ReturnType<typeof uniform>,
   width: number,
   height: number,
 ): MeshBasicNodeMaterial {
@@ -173,7 +175,7 @@ function createShadeMaterial(
       const transWorldPos = transGbuf.xyz;
       const rd = normalize(transWorldPos.sub(camPosU));
 
-      const tMax = float(MAX_MARCH_DIST).toVar();
+      const tMax = float(maxMarchDistU).toVar();
       If(hasOpaque, () => {
         const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
         const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
@@ -309,6 +311,7 @@ export function initDeferredPipeline(
   const colorBuf = uniformArray(colorData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
+  const maxMarchDistUniform = uniform(MAX_MARCH_DIST);
 
   const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
   const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
@@ -324,6 +327,7 @@ export function initDeferredPipeline(
     offsetBuf,
     colorBuf,
     camPosUniform,
+    maxMarchDistUniform,
     width,
     height,
   );
@@ -356,6 +360,7 @@ export function initDeferredPipeline(
     colorBuf,
     colorData,
     camPosUniform,
+    maxMarchDistUniform,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
@@ -477,6 +482,20 @@ export function rebuildDeferredBodies(
     state.bodyOpaqueMeshes.set(bodyIndex, opaqueMeshes);
     state.bodyTransparentMeshes.set(bodyIndex, transMeshes);
   }
+
+  let maxDiag = 0;
+  for (const { hybridInfo, aabb } of bodies) {
+    const ab = aabb
+      ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+      : computeLeafAABB(hybridInfo.leaves);
+    if (!ab) continue;
+    const dx = ab[3] - ab[0];
+    const dy = ab[4] - ab[1];
+    const dz = ab[5] - ab[2];
+    const diag = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (diag > maxDiag) maxDiag = diag;
+  }
+  state.maxMarchDistUniform.value = maxDiag > 0 ? maxDiag + 1 : MAX_MARCH_DIST;
 }
 
 function addAabbBox(
