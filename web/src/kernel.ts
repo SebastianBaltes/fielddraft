@@ -86,12 +86,18 @@ export type FeatureKindName =
   | "transform"
   | "unknown";
 
+export interface ContourData {
+  outer: [number, number][];
+  holes: [number, number][][];
+}
+
 export interface HybridLeafInfo {
   kind: string;
   aabb: [number, number, number, number, number, number];
   transform: [number, number, number, number, number, number, number, number];
   params: number[];
   role: "mesh" | "skip";
+  contour?: ContourData;
 }
 
 export interface SdfRegionInfo {

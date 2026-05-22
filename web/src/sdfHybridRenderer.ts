@@ -66,9 +66,40 @@ export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
       return new THREE.CylinderGeometry(p[1], p[0], p[2] * 2, 32);
     case "capsule":
       return new THREE.CapsuleGeometry(p[0], p[1] * 2, 16, 24);
+    case "extrude":
+      return createExtrudeGeometry(leaf);
+    case "revolve":
+      return createRevolveGeometry(leaf);
     default:
       return null;
   }
+}
+
+function createExtrudeGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  const contour = leaf.contour;
+  if (!contour || contour.outer.length < 3) return null;
+  const halfHeight = leaf.params[0];
+  const shape = new THREE.Shape(
+    contour.outer.map(([x, y]) => new THREE.Vector2(x, y)),
+  );
+  for (const hole of contour.holes) {
+    shape.holes.push(
+      new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))),
+    );
+  }
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 2 * halfHeight,
+    bevelEnabled: false,
+  });
+  geo.translate(0, 0, -halfHeight);
+  return geo;
+}
+
+function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  const contour = leaf.contour;
+  if (!contour || contour.outer.length < 3) return null;
+  const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
+  return new THREE.LatheGeometry(points, 48);
 }
 
 export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {

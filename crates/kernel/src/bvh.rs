@@ -41,6 +41,8 @@ pub struct HybridLeafInfo {
     pub transform: [f32; 8],
     pub params: Vec<f32>,
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contour: Option<crate::sketch2d::ContourData>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -981,8 +983,61 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
             info.is_union_only = false;
             info.needs_full_sdf = true;
         }
-        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
-            info.needs_full_sdf = true;
+        BoundedCsg::Extrude { sketch, half_height, world_transform, aabb, .. } => {
+            let contours = crate::sketch2d::extract_contours(
+                sketch,
+                crate::sketch2d::CONTOUR_RESOLUTION,
+            );
+            if contours.is_empty() {
+                info.needs_full_sdf = true;
+            } else {
+                let tf = [
+                    world_transform.translate[0], world_transform.translate[1],
+                    world_transform.translate[2],
+                    world_transform.rotation[0], world_transform.rotation[1],
+                    world_transform.rotation[2], world_transform.rotation[3],
+                    world_transform.scale,
+                ];
+                let flat_aabb = aabb_to_flat(*aabb);
+                for contour in contours {
+                    info.leaves.push(HybridLeafInfo {
+                        kind: "extrude".into(),
+                        aabb: flat_aabb,
+                        transform: tf,
+                        params: vec![*half_height],
+                        role: role.into(),
+                        contour: Some(contour),
+                    });
+                }
+            }
+        }
+        BoundedCsg::Revolve { sketch, world_transform, aabb, .. } => {
+            let contours = crate::sketch2d::extract_contours(
+                sketch,
+                crate::sketch2d::CONTOUR_RESOLUTION,
+            );
+            if contours.is_empty() {
+                info.needs_full_sdf = true;
+            } else {
+                let tf = [
+                    world_transform.translate[0], world_transform.translate[1],
+                    world_transform.translate[2],
+                    world_transform.rotation[0], world_transform.rotation[1],
+                    world_transform.rotation[2], world_transform.rotation[3],
+                    world_transform.scale,
+                ];
+                let flat_aabb = aabb_to_flat(*aabb);
+                for contour in contours {
+                    info.leaves.push(HybridLeafInfo {
+                        kind: "revolve".into(),
+                        aabb: flat_aabb,
+                        transform: tf,
+                        params: vec![],
+                        role: role.into(),
+                        contour: Some(contour),
+                    });
+                }
+            }
         }
     }
 }
@@ -1000,36 +1055,37 @@ fn primitive_to_leaf_info(
     let flat_aabb = aabb_to_flat(*aabb);
 
     let role = String::new(); // set by caller
+    let c = None; // no contour for standard primitives
     match prim {
         Primitive::Box { center, half_extents } => Some(HybridLeafInfo {
-            kind: "box".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "box".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![
                 half_extents[0], half_extents[1], half_extents[2],
                 center[0], center[1], center[2],
             ],
         }),
         Primitive::Sphere { center, radius } => Some(HybridLeafInfo {
-            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*radius, center[0], center[1], center[2]],
         }),
         Primitive::Cylinder { center, radius, half_height } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*radius, *half_height, center[0], center[1], center[2]],
         }),
         Primitive::Torus { center, major_radius, minor_radius } => Some(HybridLeafInfo {
-            kind: "torus".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "torus".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*major_radius, *minor_radius, center[0], center[1], center[2]],
         }),
         Primitive::Cone { r_bottom, r_top, half_height } => Some(HybridLeafInfo {
-            kind: "cone".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "cone".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*r_bottom, *r_top, *half_height],
         }),
         Primitive::Capsule { radius, half_height } => Some(HybridLeafInfo {
-            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*radius, *half_height],
         }),
         Primitive::Thread { nominal_radius, half_height, .. } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c,
             params: vec![*nominal_radius, *half_height, 0.0, 0.0, 0.0],
         }),
         _ => None,
