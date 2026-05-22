@@ -1,0 +1,16 @@
+{
+  "name": "fielddraft-kernel",
+  "type": "module",
+  "version": "0.0.0",
+  "license": "AGPL-3.0-or-later",
+  "files": [
+    "fielddraft_kernel_bg.wasm",
+    "fielddraft_kernel.js",
+    "fielddraft_kernel.d.ts"
+  ],
+  "main": "fielddraft_kernel.js",
+  "types": "fielddraft_kernel.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

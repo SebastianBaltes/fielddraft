@@ -882,7 +882,7 @@ fn sdf_gyroid_local(p: [f32; 3], cell_size: f32, thickness: f32) -> f32 {
     let y = p[1] / s;
     let z = p[2] / s;
     let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
-    f.abs() - thickness
+    (f.abs() - thickness) * s * 0.2887
 }
 
 fn sdf_thread_local(

@@ -192,7 +192,8 @@ export const sdfGyroidFn = wgslFn(`
   fn fd_sdf_gyroid(p: vec3f, cell_size: f32, thickness: f32) -> f32 {
     let s = p / cell_size;
     let f = sin(s.x) * cos(s.y) + sin(s.y) * cos(s.z) + sin(s.z) * cos(s.x);
-    return abs(f) - thickness;
+    // Normalize by Lipschitz bound (2*sqrt(3)/cell_size) to get a proper distance field.
+    return (abs(f) - thickness) * cell_size * 0.2887;
   }
 `);
 

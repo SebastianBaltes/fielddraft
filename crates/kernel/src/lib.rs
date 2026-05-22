@@ -247,7 +247,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let y = p[1] / s;
             let z = p[2] / s;
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
-            f.abs() - *thickness
+            (f.abs() - *thickness) * s * 0.2887
         }
         Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
