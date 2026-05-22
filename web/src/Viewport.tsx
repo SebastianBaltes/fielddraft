@@ -899,9 +899,12 @@ function SdfDeferredOverlay() {
       versionsRef.current = currentVersions;
 
       compilingRef.current = true;
+      const overlay = document.getElementById("fd-shader-compiling");
+      if (overlay) overlay.style.display = "flex";
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera).then(() => {
         compilingRef.current = false;
+        if (overlay) overlay.style.display = "none";
         invalidate();
       });
     }
@@ -2058,6 +2061,14 @@ export function Viewport({ renderMode }: { renderMode: string }) {
       {state?.sketchSession.active ? (
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}
+      <div
+        id="fd-shader-compiling"
+        className="shader-compiling"
+        style={{ display: "none" }}
+      >
+        <div className="spinner" />
+        Compiling shader…
+      </div>
       <PerfHud renderMode={renderMode} />
       <PickHud result={pickResult} />
       {measurePoints ? (
