@@ -838,6 +838,7 @@ impl Kernel {
             "linear_pattern" => "linear_pattern",
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
+            "boolean" => "boolean",
             _ => "unknown",
         }
     }
@@ -870,6 +871,7 @@ impl Kernel {
             "linear_pattern" => "Linear pattern",
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
+            "boolean" => "Boolean",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -1451,8 +1453,31 @@ impl Kernel {
         Ok(flat)
     }
 
-    /// K8.0: append a `linear_pattern` feature call that
-    /// replicates the source feature along a direction
+    #[wasm_bindgen(js_name = addBoolean)]
+    pub fn add_boolean(&mut self) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "operation": "Union",
+            "tools": "",
+            "targets": "",
+            "keep_tools": false,
+        });
+        let call = fielddraft_protocol::FeatureCall::new("boolean", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "boolean regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// K9.6: add a mate connector at a surface point.
     #[wasm_bindgen(js_name = addMateConnector)]
     pub fn add_mate_connector(

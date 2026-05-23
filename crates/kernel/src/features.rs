@@ -42,7 +42,7 @@ use std::fmt;
 use serde_json::Value;
 
 use fielddraft_protocol::{
-    BoolOp, Document, Feature as SpineFeature, FeatureId, Primitive, Transform,
+    BoolOp, Document, Feature as SpineFeature, FeatureId, MultiQuery, Primitive, Transform,
 };
 
 /// Derive macro that generates `TYPE_NAME`, `type_name()`,
@@ -227,6 +227,7 @@ impl FeatureRegistry {
         r.register(Box::new(MirrorFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
         r.register(Box::new(TransformFeature));
+        r.register(Box::new(BooleanFeature));
         r
     }
 
@@ -2422,6 +2423,79 @@ fn positive_f32(
     }
 }
 
+// ─── Boolean Feature ────────────────────────────────────────────
+//
+// Dedicated Boolean feature with tabbed dialog (Union / Subtract /
+// Intersect). The schema is hand-crafted to emit the "tabs" widget
+// structure; the derive is used only for parse().
+
+#[derive(FeatureSchema)]
+#[schema(type = "boolean")]
+pub struct BooleanDef {
+    #[param(name = "Operation", default = "Union".to_string())]
+    pub operation: String,
+    #[param(name = "Tools")]
+    pub tools: MultiQuery,
+    #[param(name = "Targets", default = MultiQuery::new(""))]
+    pub targets: MultiQuery,
+    #[param(name = "Keep tools", default = false)]
+    pub keep_tools: bool,
+}
+
+pub struct BooleanFeature;
+
+impl FeatureKind for BooleanFeature {
+    fn type_name(&self) -> &'static str {
+        BooleanDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        serde_json::json!({
+            "type": "boolean",
+            "params": [
+                {
+                    "key": "operation",
+                    "name": "Operation",
+                    "type": "tabs",
+                    "required": false,
+                    "tabs": [
+                        {
+                            "label": "Union",
+                            "children": [
+                                { "key": "tools", "name": "Tools", "type": "multi_query", "required": true }
+                            ]
+                        },
+                        {
+                            "label": "Subtract",
+                            "children": [
+                                { "key": "tools", "name": "Tools", "type": "multi_query", "required": true },
+                                { "key": "targets", "name": "Targets", "type": "multi_query", "required": true }
+                            ]
+                        },
+                        {
+                            "label": "Intersect",
+                            "children": [
+                                { "key": "tools", "name": "Tools", "type": "multi_query", "required": true }
+                            ]
+                        }
+                    ]
+                },
+                { "key": "keep_tools", "name": "Keep tools", "type": "bool", "required": false }
+            ]
+        })
+    }
+
+    fn execute(
+        &self,
+        _ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let _d = BooleanDef::parse(def)?;
+        Ok(())
+    }
+}
+
 // ─── tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2440,7 +2514,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 22);
+        assert_eq!(registry.len(), 23);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2491,6 +2565,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "boolean",
                 "box",
                 "capsule",
                 "circular_pattern",

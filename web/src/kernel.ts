@@ -84,6 +84,7 @@ export type FeatureKindName =
   | "sweep"
   | "imported_mesh"
   | "transform"
+  | "boolean"
   | "unknown";
 
 export interface ContourData {
@@ -598,6 +599,10 @@ export class Kernel {
   /** K11.0: append a gyroid TPMS infill feature. */
   addGyroid(cellSizeMm: number, thicknessMm: number, op: BoolOpTagValue): number {
     return this.inner.addGyroid(cellSizeMm, thicknessMm, op);
+  }
+
+  addBoolean(): number {
+    return this.inner.addBoolean();
   }
 
   /** K8.4: append a revolve feature that consumes the sketch

@@ -956,6 +956,19 @@ export class KernelStore {
     return id;
   }
 
+  addBoolean(): number {
+    let id: number;
+    try {
+      id = this.kernel.addBoolean();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addBoolean failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   addHole(diameterMm = 6, depthMm = 40): number {
     const offset: [number, number, number] = [0, 0, 0];
     let id: number;

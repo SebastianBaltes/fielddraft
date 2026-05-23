@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_kernel_free: (a: number, b: number) => void;
 export const kernel_activeBodyId: (a: number) => number;
+export const kernel_addBoolean: (a: number) => [number, number, number];
 export const kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
 export const kernel_addExtrude: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const kernel_addFilletEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];

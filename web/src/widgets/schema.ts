@@ -467,6 +467,13 @@ function applyDefaults(
       if (p.children) applyDefaults(p.children, def);
       continue;
     }
+    if (p.widget === "tabs" && p.tabs) {
+      def[p.key] = p.tabs[0]?.label ?? "";
+      for (const tab of p.tabs) {
+        applyDefaults(tab.children, def);
+      }
+      continue;
+    }
     def[p.key] = defaultForParam(p);
   }
 }
@@ -497,7 +504,11 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
       return "";
     case "slider":
       return p.min ?? 0;
+    case "tabs":
+      return p.tabs && p.tabs.length > 0 ? p.tabs[0].label : "";
     case "group":
+      return undefined;
+    case "expandable":
       return undefined;
     case "unknown":
       return null;

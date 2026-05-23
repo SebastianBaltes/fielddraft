@@ -18,6 +18,7 @@ export class Kernel {
      * allocated starting at `1` so `0` is unambiguous.
      */
     activeBodyId(): number;
+    addBoolean(): number;
     /**
      * K8.1: append a `circular_pattern` feature call that
      * replicates the source around an axis-through-center
@@ -71,8 +72,6 @@ export class Kernel {
      */
     addLinearPattern(source_id: number, dx: number, dy: number, dz: number, count: number, spacing_mm: number): number;
     /**
-     * K8.0: append a `linear_pattern` feature call that
-     * replicates the source feature along a direction
      * K9.6: add a mate connector at a surface point.
      */
     addMateConnector(ox: number, oy: number, oz: number, nx: number, ny: number, nz: number): number;
@@ -487,6 +486,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_kernel_free: (a: number, b: number) => void;
     readonly kernel_activeBodyId: (a: number) => number;
+    readonly kernel_addBoolean: (a: number) => [number, number, number];
     readonly kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly kernel_addExtrude: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_addFilletEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];

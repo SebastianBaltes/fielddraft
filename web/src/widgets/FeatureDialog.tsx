@@ -98,6 +98,7 @@ export const FEATURE_TYPE_LABELS: Record<string, string> = {
   mate_connector: "Mate Connector",
   fillet_edge: "Fillet Edge",
   sweep: "Sweep",
+  boolean: "Boolean",
   transform: "Transform",
   imported_mesh: "Imported Mesh",
   sketch_line: "Line",

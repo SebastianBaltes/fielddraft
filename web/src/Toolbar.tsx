@@ -293,6 +293,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="glyph" aria-hidden="true">◫</span>
           <span className="tool-label">Mirror</span>
         </button>
+        <button type="button" className="tool" title="Boolean (Union / Subtract / Intersect)" data-testid="add-boolean" disabled={!hasFeatures} onClick={() => store.addBoolean()}>
+          <span className="glyph" aria-hidden="true">⊕</span>
+          <span className="tool-label">Boolean</span>
+        </button>
       </div>
 
       {/* Boolean op toggles */}

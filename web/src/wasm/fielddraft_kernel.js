@@ -30,6 +30,16 @@ export class Kernel {
         return ret >>> 0;
     }
     /**
+     * @returns {number}
+     */
+    addBoolean() {
+        const ret = wasm.kernel_addBoolean(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * K8.1: append a `circular_pattern` feature call that
      * replicates the source around an axis-through-center
      * pivot. `angle_deg` is the full sweep (360° for a
@@ -175,8 +185,6 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
-     * K8.0: append a `linear_pattern` feature call that
-     * replicates the source feature along a direction
      * K9.6: add a mate connector at a surface point.
      * @param {number} ox
      * @param {number} oy
