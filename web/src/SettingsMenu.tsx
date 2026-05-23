@@ -334,13 +334,13 @@ export function SettingsMenu({
           } else if (name.endsWith(".obj")) {
             file.text().then((text) => {
               if (!store.loadReferenceObj(text)) {
-                alert("OBJ import failed — no geometry found in file.");
+                alert("OBJ import failed — no geometry found in file or SDF conversion failed.");
               }
             });
           } else {
             file.arrayBuffer().then((buf) => {
               if (!store.loadReferenceMesh(buf)) {
-                alert("STL import failed — file may be ASCII STL (only binary STL is supported) or corrupt.");
+                alert("STL import failed — file may be ASCII STL (only binary STL is supported), corrupt, or SDF conversion failed.");
               }
             });
           }

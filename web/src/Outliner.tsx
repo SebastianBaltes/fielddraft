@@ -870,6 +870,18 @@ export function Outliner({ store, state }: OutlinerProps) {
           onChange={handleDialogChange}
         />
       ) : null}
+      {!sketchSession.active && selectedFeature?.kind === "imported_mesh" ? (
+        <div className="fd-mesh-mode-toggle">
+          <label>
+            <input
+              type="checkbox"
+              checked={!!selectedFeature.suppressed}
+              onChange={() => store.toggleFeatureSuppressed(selectedFeature.id)}
+            />
+            Reference only (transparent overlay)
+          </label>
+        </div>
+      ) : null}
       <div className="header features-header accordion-header" onClick={() => toggleSection("features")} data-testid="features-header">
         <span className="accordion-chevron">{collapsed.has("features") ? "▸" : "▾"}</span>
         <span>Features</span>

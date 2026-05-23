@@ -1072,9 +1072,7 @@ function WorldGrid() {
   return <primitive object={grid} />;
 }
 
-function ReferenceMesh() {
-  const { state } = useKernelStore();
-  const ref = useRef<THREE.Mesh>(null);
+function MeshOverlayEntry({ data }: { data: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } }) {
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
 
   useEffect(() => {
@@ -1082,23 +1080,15 @@ function ReferenceMesh() {
   }, [geometry]);
 
   useEffect(() => {
-    const mesh = state?.referenceMesh;
-    if (!mesh || mesh.positions.length === 0) {
-      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
-      geometry.setIndex(null);
-      return;
-    }
-    geometry.setAttribute("position", new THREE.BufferAttribute(mesh.positions, 3));
-    geometry.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
-    geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+    geometry.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
+    geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
-  }, [geometry, state?.referenceMesh]);
-
-  if (!state?.referenceMesh) return null;
+  }, [geometry, data]);
 
   return (
-    <mesh ref={ref} geometry={geometry}>
+    <mesh geometry={geometry}>
       <meshStandardMaterial
         color="#8888cc"
         transparent
@@ -1107,6 +1097,28 @@ function ReferenceMesh() {
         side={THREE.DoubleSide}
       />
     </mesh>
+  );
+}
+
+function ReferenceMesh() {
+  const { store, state } = useKernelStore();
+
+  const overlays = useMemo(() => {
+    if (!store || !state) return [];
+    return store.getMeshOverlayFeatures();
+  }, [store, state?.features]);
+
+  const legacyMesh = state?.referenceMesh;
+
+  if (overlays.length === 0 && !legacyMesh) return null;
+
+  return (
+    <>
+      {legacyMesh ? <MeshOverlayEntry data={legacyMesh} /> : null}
+      {overlays.map((o) => (
+        <MeshOverlayEntry key={o.id} data={o.data} />
+      ))}
+    </>
   );
 }
 

@@ -279,11 +279,19 @@ function formatKernelError(err: unknown, fallback: string): string {
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
+export type MeshOverlayData = {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+};
+
 export class KernelStore {
   readonly kernel: Kernel;
   private readonly autosave: AutoSaveHandle;
   private listeners = new Set<() => void>();
   private state: StoreState;
+
+  private meshDataCache = new Map<number, MeshOverlayData>();
   private worker: Worker | null = null;
   private workerRequestCounter = 0;
   /** Latest requestId handed to the worker. Responses with a lower
@@ -603,17 +611,14 @@ export class KernelStore {
 
   // ── K9.0: STL reference import ──────────────────────────────
 
-  /** K9.0: load a binary STL file as a visual reference mesh.
-   *  The mesh is ephemeral — it lives in React state only and
-   *  is lost on page reload. No SDF conversion, no Booleans. */
-  loadReferenceMesh(buffer: ArrayBuffer): boolean {
-    const t0 = performance.now();
-    console.log(`fielddraft: importing STL reference — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+  /** K9.0: parse a binary STL file into positions/normals/indices. */
+  private parseStl(buffer: ArrayBuffer): MeshOverlayData | null {
+    console.log(`fielddraft: importing STL — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
 
     const view = new DataView(buffer);
     if (buffer.byteLength < 84) {
       console.error("fielddraft: STL import failed — file too small (< 84 bytes), possibly not a valid STL");
-      return false;
+      return null;
     }
     const triCount = view.getUint32(80, true);
     const expected = 84 + triCount * 50;
@@ -621,7 +626,7 @@ export class KernelStore {
       console.error(
         `fielddraft: STL import failed — header says ${triCount} triangles (needs ${expected} bytes) but file is ${buffer.byteLength} bytes. Possibly ASCII STL (not supported) or corrupt file.`,
       );
-      return false;
+      return null;
     }
 
     console.log(`fielddraft: parsing ${triCount} triangles…`);
@@ -649,13 +654,20 @@ export class KernelStore {
       offset += 2;
     }
 
-    this.state = {
-      ...this.state,
-      referenceMesh: { positions, normals, indices },
-    };
-    this.notify();
-    console.log(`fielddraft: STL reference loaded — ${triCount} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
-    return true;
+    return { positions, normals, indices };
+  }
+
+  loadReferenceMesh(buffer: ArrayBuffer): boolean {
+    this.setLoading("Parsing STL…");
+    const mesh = this.parseStl(buffer);
+    if (!mesh) {
+      this.setLoading(null);
+      return false;
+    }
+    this.setLoading("Building SDF from mesh…");
+    const id = this.importMeshAsFeature(mesh.positions, mesh.normals, mesh.indices);
+    this.setLoading(null);
+    return id !== null;
   }
 
   /** K9.2: load a GLB/glTF file as a visual reference mesh.
@@ -727,14 +739,11 @@ export class KernelStore {
         iOff += idx.length;
       }
 
-      this.state = {
-        ...this.state,
-        referenceMesh: { positions, normals, indices },
-        loading: null,
-      };
-      this.notify();
-      console.log(`fielddraft: GLB reference loaded — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`);
-      return true;
+      console.log(`fielddraft: GLB parsed — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`);
+      this.setLoading("Building SDF from mesh…");
+      const id = this.importMeshAsFeature(positions, normals, indices);
+      this.setLoading(null);
+      return id !== null;
     } catch (err) {
       this.setLoading(null);
       console.error("fielddraft: GLB import failed", err);
@@ -811,13 +820,11 @@ export class KernelStore {
       Array.from({ length: positions.length / 3 }, (_, i) => i),
     );
 
-    this.state = {
-      ...this.state,
-      referenceMesh: { positions: posArr, normals: normArr, indices: idxArr },
-    };
-    this.notify();
-    console.log(`fielddraft: OBJ reference loaded — ${positions.length / 9} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
-    return true;
+    console.log(`fielddraft: OBJ parsed — ${positions.length / 9} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
+    this.setLoading("Building SDF from mesh…");
+    const id = this.importMeshAsFeature(posArr, normArr, idxArr);
+    this.setLoading(null);
+    return id !== null;
   }
 
   /** K13.1: convert the current reference mesh into a CSG solid
@@ -849,6 +856,42 @@ export class KernelStore {
   clearReferenceMesh(): void {
     this.state = { ...this.state, referenceMesh: null };
     this.notify();
+  }
+
+  importMeshAsFeature(
+    positions: Float32Array,
+    normals: Float32Array,
+    indices: Uint32Array,
+  ): number | null {
+    const t0 = performance.now();
+    const triCount = indices.length / 3;
+    console.log(`fielddraft: importing mesh as SDF feature — ${triCount} triangles, building BVH…`);
+    let id: number;
+    try {
+      id = this.kernel.addImportedMesh(positions, indices, BoolOpTag.Union);
+    } catch (err) {
+      console.error("fielddraft: importMeshAsFeature failed", err);
+      return null;
+    }
+    this.meshDataCache.set(id, { positions, normals, indices });
+    this.commit(new Set([id]), id);
+    console.log(`fielddraft: mesh imported as feature #${id} (solid) in ${(performance.now() - t0).toFixed(0)} ms`);
+    return id;
+  }
+
+  getMeshOverlayData(id: number): MeshOverlayData | undefined {
+    return this.meshDataCache.get(id);
+  }
+
+  getMeshOverlayFeatures(): { id: number; data: MeshOverlayData }[] {
+    const result: { id: number; data: MeshOverlayData }[] = [];
+    for (const f of this.state.features) {
+      if (f.kind === "imported_mesh" && f.suppressed) {
+        const data = this.meshDataCache.get(f.id);
+        if (data) result.push({ id: f.id, data });
+      }
+    }
+    return result;
   }
 
   // ── K8.10: document-level variables ──────────────────────────
@@ -1000,7 +1043,10 @@ export class KernelStore {
     if (this.state.selection.size === 0) return false;
     let removed = false;
     for (const id of this.state.selection) {
-      if (this.kernel.removeFeature(id)) removed = true;
+      if (this.kernel.removeFeature(id)) {
+        this.meshDataCache.delete(id);
+        removed = true;
+      }
     }
     if (removed) this.commit(new Set(), null);
     return removed;
@@ -1008,6 +1054,7 @@ export class KernelStore {
 
   removeFeature(id: number): boolean {
     if (!this.kernel.removeFeature(id)) return false;
+    this.meshDataCache.delete(id);
     const next = new Set(this.state.selection);
     next.delete(id);
     const nextAnchor = this.state.selectionAnchor === id ? null : this.state.selectionAnchor;
