@@ -1,8 +1,18 @@
 import { expect, test } from "@playwright/test";
 
-const RENDER_MODES = ["dc", "sdf", "sdf-vm", "sdf-baked", "sdf-batch"] as const;
+const RENDER_MODES = ["sdf-vm", "sdf-deferred"] as const;
 const WARMUP_MS = 3000;
 const MEASURE_MS = 5000;
+
+async function waitForShaderCompile(page: import("@playwright/test").Page) {
+  await page.waitForFunction(
+    () => {
+      const el = document.getElementById("fd-shader-compiling");
+      return !el || el.style.display === "none";
+    },
+    { timeout: 25_000 },
+  );
+}
 
 interface ModeResult {
   mode: string;
@@ -60,6 +70,8 @@ test.describe("SDF Rendering Performance Benchmark", () => {
         store.setNextOp(1);
         store.addPrimitive("box");
       });
+
+      await waitForShaderCompile(page);
 
       // Start continuous invalidation to force frame rendering
       await page.evaluate(() => {
