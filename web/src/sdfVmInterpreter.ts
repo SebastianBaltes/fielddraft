@@ -75,7 +75,7 @@ export function buildVmSdfEvalFn(
   const useBaseOffset = options?.withBaseOffset ?? false;
   const volTextures = options?.volumeTextures ?? [];
   const useVolumeBaseIdx = options?.withVolumeBaseIdx ?? false;
-  return Fn(({ p: pIn, baseOffset }: any) => {
+  return Fn(({ p: pIn, baseOffset, volumeBaseIdx }: any) => {
     const pc = useBaseOffset ? int(baseOffset).toVar() : int(0).toVar();
 
     const vs0 = float(0).toVar(), vs1 = float(0).toVar();
