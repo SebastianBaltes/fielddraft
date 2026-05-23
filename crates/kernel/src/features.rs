@@ -1363,6 +1363,10 @@ impl FeatureKind for FilletEdgeFeature {
 pub struct ImportedMeshDef {
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
+    #[param(name = "Scale", default = 1.0)]
+    pub uniform_scale: f32,
+    #[param(name = "Z-up", default = false)]
+    pub swap_yz: bool,
     #[param(default = ::fielddraft_protocol::BoolOp::Union)]
     pub op: BoolOp,
 }
@@ -1423,8 +1427,16 @@ impl FeatureKind for ImportedMeshFeature {
         };
 
         let name = optional_display_name(def, || format!("Imported mesh {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
+        let base_rotation = optional_rotation(def);
+        let scale = if d.uniform_scale > 0.0 { d.uniform_scale } else { 1.0 };
+
+        let rotation = if d.swap_yz {
+            // -90° around X to convert Z-up → Y-up
+            let swap: [f32; 4] = [-std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+            crate::quat_multiply(swap, base_rotation)
+        } else {
+            base_rotation
+        };
 
         ctx.document.features.push(SpineFeature {
             id: id.clone(),
