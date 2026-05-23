@@ -1480,6 +1480,8 @@ impl FeatureKind for ImportedMeshFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "gyroid")]
 pub struct GyroidDef {
+    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""))]
+    pub targets: ::fielddraft_protocol::MultiQuery,
     /// Distance between repeating cells in mm.
     pub cell_size: ::fielddraft_protocol::Length,
     /// Wall half-thickness in mm. Larger = thicker walls.

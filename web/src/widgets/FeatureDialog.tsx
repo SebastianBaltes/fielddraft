@@ -48,6 +48,7 @@ import {
   GroupHeader,
   LengthWidget,
   NumberWidget,
+  MultiQueryWidget,
   QueryWidget,
   SliderWidget,
   StringWidget,
@@ -428,6 +429,16 @@ function WidgetFor({
     case "query":
       return (
         <QueryWidget
+          label={param.label}
+          value={value as string}
+          required={param.required}
+          error={error}
+          onChange={emit}
+        />
+      );
+    case "multi_query":
+      return (
+        <MultiQueryWidget
           label={param.label}
           value={value as string}
           required={param.required}

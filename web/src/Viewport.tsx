@@ -1382,13 +1382,21 @@ export function Viewport({ renderMode }: { renderMode: string }) {
     }
 
     if (!click || !click.hit) {
-      store.clearSelection();
+      if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        store.clearSelection();
+      }
       setMeasurePoints(null);
       return;
     }
     const featureId = click.contributors[0];
     if (featureId !== undefined && featureId > 0) {
-      store.selectOnly(featureId);
+      if (event.shiftKey) {
+        store.selectRangeTo(featureId);
+      } else if (event.ctrlKey || event.metaKey) {
+        store.toggleSelect(featureId);
+      } else {
+        store.selectOnly(featureId);
+      }
     }
   };
 
@@ -1543,21 +1551,6 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Click a surface to place a mate connector
         </div>
-      )}
-      {pickResult?.hit && pickResult.element === "face" && pickResult.contributors.length === 1 && state?.selection.size === 1 && !state?.filletMode && !state?.mateMode && !state?.measureMode && !state?.sketchSession.active && (
-        <button
-          type="button"
-          className="extrude-face-btn"
-          data-testid="extrude-face-btn"
-          onClick={() => {
-            store?.extrudeFace(
-              pickResult.point as [number, number, number],
-              pickResult.normal as [number, number, number],
-            );
-          }}
-        >
-          ↥ Extrude Face
-        </button>
       )}
       {state?.ikMode && (
         <div className="face-pick-hud" data-testid="ik-mode-hud">

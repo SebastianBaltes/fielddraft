@@ -12,6 +12,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KernelStore, StoreState } from "./store";
+import { BoolOpTag, type BoolOpTagValue } from "./kernel";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
 import { requestView } from "./viewCommands";
@@ -295,6 +296,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   };
 
+  const handleOpToggle = (op: BoolOpTagValue) => {
+    for (const id of state.selection) {
+      store.setFeatureOp(id, op);
+    }
+    store.setNextOp(op);
+  };
+
   const handleAddThread = (preset?: ThreadPreset) => {
     const p = preset ?? THREAD_PRESETS.find((t) => t.key === "M6")!;
     store.addThreadPreset(p.radius, p.pitch, p.depth);
@@ -438,6 +446,37 @@ export function Toolbar({ store, state }: ToolbarProps) {
         {visible.some((i) => i.id === "thread") && (
           <ThreadSplitButton onAdd={handleAddThread} />
         )}
+      </div>
+
+      {/* Boolean op toggles */}
+      <div className="group">
+        <button
+          type="button"
+          className={"op-toggle" + (state.nextOp === BoolOpTag.Union ? " is-active" : "")}
+          title="Union (+)"
+          data-testid="op-union"
+          onClick={() => handleOpToggle(BoolOpTag.Union)}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className={"op-toggle" + (state.nextOp === BoolOpTag.Difference ? " is-active" : "")}
+          title="Difference (−)"
+          data-testid="op-difference"
+          onClick={() => handleOpToggle(BoolOpTag.Difference)}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className={"op-toggle" + (state.nextOp === BoolOpTag.Intersect ? " is-active" : "")}
+          title="Intersect (∩)"
+          data-testid="op-intersect"
+          onClick={() => handleOpToggle(BoolOpTag.Intersect)}
+        >
+          ∩
+        </button>
       </div>
 
       {/* Remaining groups render only when they have visible items */}

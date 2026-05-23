@@ -25,7 +25,7 @@
  *   in one place.
  */
 
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   register as registerQueryPicker,
   isActive as isQueryPickerActive,
@@ -718,6 +718,124 @@ export function QueryWidget({
             }
           }}
         />
+      </div>
+    </Field>
+  );
+}
+
+// ─── multi-query (set of query expressions) ───────────────────
+
+function parseMultiQuery(raw: string): string[] {
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function serializeMultiQuery(items: string[]): string {
+  return items.join(",");
+}
+
+export function MultiQueryWidget({
+  label,
+  value,
+  onChange,
+  error,
+  required,
+}: WidgetProps<string>) {
+  const id = useId();
+  const itemsRef = useRef<string[]>(parseMultiQuery(value));
+
+  useEffect(() => {
+    itemsRef.current = parseMultiQuery(value);
+  }, [value]);
+
+  const active = useSyncExternalStore(
+    subscribeQueryPicker,
+    () => isQueryPickerActive(id),
+    () => false,
+  );
+
+  const onPickRef = useRef<(query: string) => boolean>(() => false);
+  onPickRef.current = (query: string) => {
+    const items = itemsRef.current;
+    if (items.includes(query)) return true;
+    const next = [...items, query];
+    itemsRef.current = next;
+    onChange(serializeMultiQuery(next));
+    return true;
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    return registerQueryPicker({
+      ownerId: id,
+      onPick: (q: string) => onPickRef.current(q),
+    });
+  }, [active, id]);
+
+  const [autoArmed, setAutoArmed] = useState<boolean>(
+    Boolean(required) && value === "",
+  );
+  useEffect(() => {
+    if (autoArmed && value === "" && !active) {
+      setAutoArmed(false);
+      registerQueryPicker({
+        ownerId: id,
+        onPick: (q: string) => onPickRef.current(q),
+      });
+    }
+  }, [autoArmed, value, active, id]);
+
+  const activate = () => {
+    registerQueryPicker({
+      ownerId: id,
+      onPick: (q: string) => onPickRef.current(q),
+    });
+  };
+
+  const removeItem = (query: string) => {
+    const next = itemsRef.current.filter((q) => q !== query);
+    itemsRef.current = next;
+    onChange(serializeMultiQuery(next));
+  };
+
+  const items = parseMultiQuery(value);
+
+  return (
+    <Field label={label} htmlFor={id} error={error} required={required}>
+      <div className={"query-picker multi" + (active ? " is-active" : "")}>
+        <button
+          type="button"
+          className="query-focus-toggle"
+          aria-pressed={active}
+          title={
+            active
+              ? "Picking — click objects in viewport, or click here to stop"
+              : "Click to start picking objects in viewport"
+          }
+          onClick={activate}
+        >
+          {active ? "◎" : "⊕"}
+        </button>
+        <div className="query-chips">
+          {items.length === 0 && (
+            <span className="query-chips-empty">
+              {active ? "Click objects in viewport…" : "None selected"}
+            </span>
+          )}
+          {items.map((q) => (
+            <span key={q} className="query-chip">
+              {formatQueryDisplay(q)}
+              <button
+                type="button"
+                className="chip-remove"
+                title={`Remove ${formatQueryDisplay(q)}`}
+                onClick={() => removeItem(q)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
       </div>
     </Field>
   );

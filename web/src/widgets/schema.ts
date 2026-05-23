@@ -90,6 +90,7 @@ export type WidgetKind =
   | "length"
   | "angle"
   | "query"
+  | "multi_query"
   | "slider"
   | "flip"
   | "group"
@@ -434,6 +435,8 @@ export function widgetKindFor(
       return "angle";
     case "query":
       return "query";
+    case "multi_query":
+      return "multi_query";
     default:
       return "unknown";
   }
@@ -490,6 +493,7 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
     case "angle":
       return { value: 0, unit: "deg" };
     case "query":
+    case "multi_query":
       return "";
     case "slider":
       return p.min ?? 0;
@@ -603,6 +607,7 @@ export function validateParamValue(
       return typeof value === "boolean" ? null : `${param.label} must be a boolean`;
     case "string":
     case "query":
+    case "multi_query":
       return typeof value === "string" ? null : `${param.label} must be a string`;
     case "enum": {
       if (typeof value !== "string") {

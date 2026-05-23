@@ -202,6 +202,8 @@ enum ParamType {
     Angle,
     /// K4.5.4f: `fielddraft_protocol::Query`.
     Query,
+    /// Comma-separated list of query expressions (set semantics).
+    MultiQuery,
     /// K4.5.4f: fallback for any other type. The derive emits a
     /// generic `serde_json::from_value::<T>(...)` parse call using
     /// the field's declared type verbatim, which lets user-defined
@@ -229,6 +231,7 @@ impl ParamType {
             ParamType::Length => "length",
             ParamType::Angle => "angle",
             ParamType::Query => "query",
+            ParamType::MultiQuery => "multi_query",
             ParamType::Generic(_) => "generic",
         }
     }
@@ -419,6 +422,7 @@ impl ParamType {
             ParamType::Length => quote! { ::fielddraft_protocol::Length },
             ParamType::Angle => quote! { ::fielddraft_protocol::Angle },
             ParamType::Query => quote! { ::fielddraft_protocol::Query },
+            ParamType::MultiQuery => quote! { ::fielddraft_protocol::MultiQuery },
             ParamType::Generic(ty) => quote! { #ty },
         }
     }
@@ -598,6 +602,20 @@ impl ParamType {
                     }
                 })?
             }},
+            ParamType::MultiQuery => quote! {{
+                ::serde_json::from_value::<::fielddraft_protocol::MultiQuery>(
+                    slot.clone(),
+                )
+                .map_err(|e| {
+                    crate::features::FeatureError::InvalidParameter {
+                        feature: Self::TYPE_NAME,
+                        name: #key,
+                        message: ::std::format!(
+                            "expected a MultiQuery string: {e}"
+                        ),
+                    }
+                })?
+            }},
             ParamType::Generic(ty) => quote! {{
                 ::serde_json::from_value::<#ty>(slot.clone()).map_err(|e| {
                     crate::features::FeatureError::InvalidParameter {
@@ -631,6 +649,7 @@ impl ParamType {
                     "Length" => return Ok(ParamType::Length),
                     "Angle" => return Ok(ParamType::Angle),
                     "Query" => return Ok(ParamType::Query),
+                    "MultiQuery" => return Ok(ParamType::MultiQuery),
                     _ => {}
                 }
             }

@@ -230,6 +230,55 @@
       box-shadow: 0 0 0 2px
         color-mix(in srgb, var(--color-accent) 25%, transparent);
     }
+
+    &.multi {
+      flex-wrap: wrap;
+      min-height: 2rem;
+      padding: var(--space-1);
+      gap: var(--space-1);
+    }
+
+    & .query-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-1);
+      align-items: center;
+      flex: 1;
+      min-height: 1.5rem;
+    }
+
+    & .query-chips-empty {
+      color: var(--color-text-muted);
+      font-size: var(--fs-base);
+      padding: 0 var(--space-1);
+    }
+
+    & .query-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px var(--space-2);
+      background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+      border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+      border-radius: var(--radius-pill, 999px);
+      font-size: var(--fs-base);
+      color: var(--color-text);
+      line-height: 1.4;
+    }
+
+    & .chip-remove {
+      border: none;
+      background: transparent;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: var(--fs-base);
+      line-height: 1;
+
+      &:hover {
+        color: var(--color-error);
+      }
+    }
   }
 
   & .error {

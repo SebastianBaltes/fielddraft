@@ -535,6 +535,34 @@ impl Query {
     }
 }
 
+/// A multi-query: comma-separated list of query expressions.
+///
+/// Wire form is `"qCreatedBy(box_1),qCreatedBy(sphere_2)"`.
+/// Set semantics — no duplicates expected at the UI layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MultiQuery {
+    pub expr: String,
+}
+
+impl MultiQuery {
+    pub fn new(expr: impl Into<String>) -> Self {
+        Self { expr: expr.into() }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.expr
+    }
+
+    pub fn queries(&self) -> Vec<&str> {
+        if self.expr.is_empty() {
+            Vec::new()
+        } else {
+            self.expr.split(',').map(|s| s.trim()).collect()
+        }
+    }
+}
+
 /// Affine placement of a feature in world space.
 ///
 /// Stored as **translate + unit-quaternion rotation + uniform scale**.
