@@ -1,7 +1,7 @@
 //! K13.0: Mesh-to-SDF — evaluate the signed distance from a
 //! point to an imported triangle mesh. Uses a BVH (bounding
 //! volume hierarchy) for O(log N) nearest-triangle queries,
-//! and a ray-parity sign test for inside/outside classification.
+//! and the closest-triangle face-normal for sign determination.
 //!
 //! This module is intentionally self-contained: no dependency
 //! on the rest of the kernel's CSG/BVH infrastructure (those
@@ -100,6 +100,8 @@ pub struct MeshSdf {
     bvh_nodes: Vec<BvhNode>,
     /// Permuted triangle indices for BVH leaf traversal order.
     tri_order: Vec<u32>,
+    /// True when face normals point inward (CW winding).
+    sign_flip: bool,
 }
 
 // ─── Custom Serialize/Deserialize ────────────────────────────
@@ -129,6 +131,7 @@ impl<'de> Deserialize<'de> for MeshSdf {
         let raw = Raw::deserialize(d)?;
         let tri_count = raw.tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&raw.tris, &raw.bboxes, tri_count);
+        let sign_flip = compute_sign_flip(&raw.tris);
         Ok(Self {
             tris: raw.tris,
             bboxes: raw.bboxes,
@@ -136,6 +139,7 @@ impl<'de> Deserialize<'de> for MeshSdf {
             aabb_max: raw.aabb_max,
             bvh_nodes,
             tri_order,
+            sign_flip,
         })
     }
 }
@@ -263,6 +267,7 @@ impl MeshSdf {
 
         let actual_tri_count = tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&tris, &bboxes, actual_tri_count);
+        let sign_flip = compute_sign_flip(&tris);
 
         Self {
             tris,
@@ -271,6 +276,7 @@ impl MeshSdf {
             aabb_max,
             bvh_nodes,
             tri_order,
+            sign_flip,
         }
     }
 
@@ -522,20 +528,34 @@ impl MeshSdf {
             return f32::INFINITY;
         }
 
-        let best_dist_sq = if self.bvh_nodes.is_empty() {
+        let (best_dist_sq, closest_tri) = if self.bvh_nodes.is_empty() {
             self.sdf_brute_force_dist_sq(p)
         } else {
             self.sdf_bvh_dist_sq(p)
         };
 
         let dist = best_dist_sq.sqrt();
-        let sign = if self.ray_parity(p) { -1.0 } else { 1.0 };
+
+        let base = closest_tri * 9;
+        let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
+        let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
+        let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
+        let e1 = sub3(v1, v0);
+        let e2 = sub3(v2, v0);
+        let normal = cross3(e1, e2);
+        let d = sub3(p, v0);
+        let mut sign = if dot3(d, normal) < 0.0 { -1.0 } else { 1.0 };
+        if self.sign_flip {
+            sign = -sign;
+        }
+
         sign * dist
     }
 
-    fn sdf_brute_force_dist_sq(&self, p: [f32; 3]) -> f32 {
+    fn sdf_brute_force_dist_sq(&self, p: [f32; 3]) -> (f32, usize) {
         let tri_count = self.tris.len() / 9;
         let mut best_dist_sq = f32::INFINITY;
+        let mut best_tri = 0usize;
         for t in 0..tri_count {
             let base = t * 9;
             let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
@@ -544,13 +564,15 @@ impl MeshSdf {
             let dist_sq = point_triangle_dist_sq(p, v0, v1, v2);
             if dist_sq < best_dist_sq {
                 best_dist_sq = dist_sq;
+                best_tri = t;
             }
         }
-        best_dist_sq
+        (best_dist_sq, best_tri)
     }
 
-    fn sdf_bvh_dist_sq(&self, p: [f32; 3]) -> f32 {
+    fn sdf_bvh_dist_sq(&self, p: [f32; 3]) -> (f32, usize) {
         let mut best_dist_sq = f32::INFINITY;
+        let mut best_tri = 0usize;
         let mut stack: Vec<u32> = Vec::with_capacity(64);
         stack.push(0);
 
@@ -563,7 +585,6 @@ impl MeshSdf {
             }
 
             if node.count > 0 {
-                // Leaf: test all triangles
                 for i in 0..node.count {
                     let t = self.tri_order[(node.offset + i) as usize] as usize;
                     let base = t * 9;
@@ -573,10 +594,10 @@ impl MeshSdf {
                     let dist_sq = point_triangle_dist_sq(p, v0, v1, v2);
                     if dist_sq < best_dist_sq {
                         best_dist_sq = dist_sq;
+                        best_tri = t;
                     }
                 }
             } else {
-                // Interior: push children (nearer child last so it's popped first)
                 let left = node.offset;
                 let right = node.offset + 1;
                 let left_dist = aabb_point_dist_sq(p, self.bvh_nodes[left as usize].aabb_min, self.bvh_nodes[left as usize].aabb_max);
@@ -591,94 +612,9 @@ impl MeshSdf {
             }
         }
 
-        best_dist_sq
+        (best_dist_sq, best_tri)
     }
 
-    /// Ray-parity inside test: cast a ray along +Y and count
-    /// intersections. Odd = inside.
-    fn ray_parity(&self, p: [f32; 3]) -> bool {
-        let p = [p[0] + 1.37e-5, p[1], p[2] + 2.19e-5];
-
-        if self.bvh_nodes.is_empty() {
-            return self.ray_parity_brute_force(p);
-        }
-
-        let mut crossings = 0u32;
-        let mut stack: Vec<u32> = Vec::with_capacity(64);
-        stack.push(0);
-
-        while let Some(node_idx) = stack.pop() {
-            let node = &self.bvh_nodes[node_idx as usize];
-
-            // Ray along +Y: origin = p, direction = (0, 1, 0).
-            // The ray hits the AABB if p.xz is inside the AABB's xz extent
-            // AND the AABB's max.y >= p.y (ray goes upward).
-            if p[0] < node.aabb_min[0] || p[0] > node.aabb_max[0]
-                || p[2] < node.aabb_min[2] || p[2] > node.aabb_max[2]
-                || node.aabb_max[1] < p[1]
-            {
-                continue;
-            }
-
-            if node.count > 0 {
-                for i in 0..node.count {
-                    let t = self.tri_order[(node.offset + i) as usize] as usize;
-                    if self.ray_hits_triangle(p, t) {
-                        crossings += 1;
-                    }
-                }
-            } else {
-                stack.push(node.offset);
-                stack.push(node.offset + 1);
-            }
-        }
-
-        crossings % 2 == 1
-    }
-
-    fn ray_parity_brute_force(&self, p: [f32; 3]) -> bool {
-        let tri_count = self.tris.len() / 9;
-        let mut crossings = 0u32;
-        for t in 0..tri_count {
-            if self.ray_hits_triangle(p, t) {
-                crossings += 1;
-            }
-        }
-        crossings % 2 == 1
-    }
-
-    /// Test if a +Y ray from `p` intersects triangle `t`.
-    #[inline]
-    fn ray_hits_triangle(&self, p: [f32; 3], t: usize) -> bool {
-        let base = t * 9;
-        let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
-        let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
-        let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-
-        let (ax, az) = (v0[0] - p[0], v0[2] - p[2]);
-        let (bx, bz) = (v1[0] - p[0], v1[2] - p[2]);
-        let (cx, cz) = (v2[0] - p[0], v2[2] - p[2]);
-
-        let d0 = ax * bz - az * bx;
-        let d1 = bx * cz - bz * cx;
-        let d2 = cx * az - cz * ax;
-
-        let all_pos = d0 > 0.0 && d1 > 0.0 && d2 > 0.0;
-        let all_neg = d0 < 0.0 && d1 < 0.0 && d2 < 0.0;
-        if !all_pos && !all_neg {
-            return false;
-        }
-
-        let denom = d0 + d1 + d2;
-        if denom.abs() < 1e-12 {
-            return false;
-        }
-        let u = d1 / denom;
-        let v = d2 / denom;
-        let w = 1.0 - u - v;
-        let y_hit = w * v0[1] + u * v1[1] + v * v2[1];
-        y_hit > p[1]
-    }
 }
 
 // ─── BVH construction ────────────────────────────────────────
@@ -903,6 +839,32 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+#[inline]
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Detect whether face normals point inward (CW winding) by
+/// computing the signed volume of the mesh. Negative → CW.
+fn compute_sign_flip(tris: &[f32]) -> bool {
+    let tri_count = tris.len() / 9;
+    let mut vol = 0.0f64;
+    for t in 0..tri_count {
+        let b = t * 9;
+        let (x0, y0, z0) = (tris[b] as f64, tris[b + 1] as f64, tris[b + 2] as f64);
+        let (x1, y1, z1) = (tris[b + 3] as f64, tris[b + 4] as f64, tris[b + 5] as f64);
+        let (x2, y2, z2) = (tris[b + 6] as f64, tris[b + 7] as f64, tris[b + 8] as f64);
+        vol += x0 * (y1 * z2 - y2 * z1)
+             - y0 * (x1 * z2 - x2 * z1)
+             + z0 * (x1 * y2 - x2 * y1);
+    }
+    vol < 0.0
+}
+
 
 // ─── Tests ───────────────────────────────────────────────────
 
@@ -1061,12 +1023,12 @@ mod tests {
             [-2.0, -2.0, -2.0],
         ];
         for p in &points {
-            let bvh_result = m.sdf_bvh_dist_sq(*p);
-            let brute_result = m.sdf_brute_force_dist_sq(*p);
+            let (bvh_dist, _) = m.sdf_bvh_dist_sq(*p);
+            let (brute_dist, _) = m.sdf_brute_force_dist_sq(*p);
             assert!(
-                (bvh_result - brute_result).abs() < 1e-6,
+                (bvh_dist - brute_dist).abs() < 1e-6,
                 "BVH vs brute mismatch at {:?}: {} vs {}",
-                p, bvh_result, brute_result,
+                p, bvh_dist, brute_dist,
             );
         }
     }
