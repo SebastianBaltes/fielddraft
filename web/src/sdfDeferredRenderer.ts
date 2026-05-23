@@ -783,9 +783,8 @@ export function resizeDeferredPipeline(
   if (state.width === width && state.height === height) return;
   for (const rt of [state.opaqueRT, state.transparentRT]) {
     if (rt.depthTexture) {
-      rt.depthTexture.image.width = width;
-      rt.depthTexture.image.height = height;
-      rt.depthTexture.needsUpdate = true;
+      rt.depthTexture.dispose();
+      rt.depthTexture = new THREE.DepthTexture(width, height, THREE.FloatType);
     }
     rt.setSize(width, height);
   }
