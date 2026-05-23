@@ -44,7 +44,7 @@ import {
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
-import { consumeViewCommand, peekViewCommand, registerInvalidate, VIEW_PRESETS } from "./viewCommands";
+import { consumeViewCommand, peekViewCommand, registerInvalidate, requestView, VIEW_PRESETS } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import {
   publishPickCamera,
@@ -1157,6 +1157,68 @@ function ViewCommandConsumer() {
   return null;
 }
 
+const cameraQuatState = { x: 0, y: 0, z: 0, w: 1, listeners: new Set<() => void>() };
+
+function subscribeCameraQuat(cb: () => void) {
+  cameraQuatState.listeners.add(cb);
+  return () => { cameraQuatState.listeners.delete(cb); };
+}
+
+function CameraQuaternionBridge() {
+  useFrame(({ camera }) => {
+    const q = camera.quaternion;
+    if (
+      Math.abs(q.x - cameraQuatState.x) > 1e-4 ||
+      Math.abs(q.y - cameraQuatState.y) > 1e-4 ||
+      Math.abs(q.z - cameraQuatState.z) > 1e-4 ||
+      Math.abs(q.w - cameraQuatState.w) > 1e-4
+    ) {
+      cameraQuatState.x = q.x;
+      cameraQuatState.y = q.y;
+      cameraQuatState.z = q.z;
+      cameraQuatState.w = q.w;
+      for (const cb of cameraQuatState.listeners) cb();
+    }
+  });
+  return null;
+}
+
+function ViewCube() {
+  const cubeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    return subscribeCameraQuat(() => {
+      if (!cubeRef.current) return;
+      const { x, y, z, w } = cameraQuatState;
+      cubeRef.current.style.transform =
+        `matrix3d(${1-2*(y*y+z*z)},${2*(x*y+z*w)},${2*(x*z-y*w)},0,` +
+        `${2*(x*y-z*w)},${1-2*(x*x+z*z)},${2*(y*z+x*w)},0,` +
+        `${2*(x*z+y*w)},${2*(y*z-x*w)},${1-2*(x*x+y*y)},0,` +
+        `0,0,0,1)`;
+    });
+  }, []);
+
+  const faceClick = (e: React.MouseEvent, preset: "front" | "top" | "right" | "iso") => {
+    e.stopPropagation();
+    requestView(preset);
+  };
+
+  return (
+    <div className="viewcube-wrapper" onClick={(e) => e.stopPropagation()}>
+      <div className="viewcube-scene">
+        <div ref={cubeRef} className="viewcube">
+          <div className="viewcube-face front" onClick={(e) => faceClick(e, "front")}>Front</div>
+          <div className="viewcube-face back" onClick={(e) => faceClick(e, "front")}>Back</div>
+          <div className="viewcube-face top" onClick={(e) => faceClick(e, "top")}>Top</div>
+          <div className="viewcube-face bottom" onClick={(e) => faceClick(e, "top")}>Bottom</div>
+          <div className="viewcube-face right" onClick={(e) => faceClick(e, "right")}>Right</div>
+          <div className="viewcube-face left" onClick={(e) => faceClick(e, "right")}>Left</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CameraRig() {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
@@ -1511,8 +1573,10 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           <WorldGrid />
           <CameraRig />
           <ViewCommandConsumer />
+          <CameraQuaternionBridge />
         </Canvas>
       </CanvasErrorBoundary>
+      {!state?.sketchSession.active && <ViewCube />}
       {state?.sketchSession.active ? (
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}

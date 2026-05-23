@@ -4,18 +4,15 @@
  * an alternate sketch-mode row shown while a sketch session is
  * active.
  *
- * K7.21b: ResizeObserver-based overflow. When the toolbar is narrower
- * than its content, low-priority buttons collapse into a "··· More"
- * dropdown. Priority 0 items (Primitive split-button, Sketch, Extrude)
- * are always visible.
+ * The toolbar uses flex-wrap so items flow to a second row when the
+ * window is narrow — no overflow dropdown needed.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { BoolOpTag, type BoolOpTagValue } from "./kernel";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
-import { requestView } from "./viewCommands";
 
 /* ------------------------------------------------------------------ */
 /*  Primitive split-button constants                                   */
@@ -132,128 +129,6 @@ function sketchDragProps() {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/*  K7.21b: Overflow toolbar system                                    */
-/* ------------------------------------------------------------------ */
-
-interface ToolItem {
-  id: string;
-  priority: number;
-  glyph: string;
-  label: string;
-  title: string;
-  testId: string;
-  disabled: boolean;
-  active: boolean;
-  onClick: () => void;
-  drag?: Record<string, unknown>;
-  group: number;
-  variant?: "op-toggle";
-}
-
-const ALWAYS_VISIBLE_PRIORITY = 0;
-
-function ToolButton({ item }: { item: ToolItem }) {
-  if (item.variant === "op-toggle") {
-    return (
-      <button
-        type="button"
-        className={"op-toggle" + (item.active ? " is-active" : "")}
-        title={item.title}
-        data-testid={item.testId}
-        onClick={item.onClick}
-      >
-        {item.glyph}
-      </button>
-    );
-  }
-  return (
-    <button
-      type="button"
-      className={"tool" + (item.active ? " is-active" : "")}
-      title={item.title}
-      data-testid={item.testId}
-      disabled={item.disabled}
-      onClick={item.onClick}
-      {...(item.drag ?? {})}
-    >
-      {item.glyph && <span className="glyph" aria-hidden="true">{item.glyph}</span>}
-      <span className="tool-label">{item.label}</span>
-    </button>
-  );
-}
-
-function MoreDropdown({ items }: { items: ToolItem[] }) {
-  const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (!t?.closest(".more-dropdown-wrapper")) setOpen(false);
-    };
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !btnRef.current) return;
-    const rect = btnRef.current.getBoundingClientRect();
-    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
-  }, [open]);
-
-  if (items.length === 0) return null;
-
-  return (
-    <div className="more-dropdown-wrapper">
-      <button
-        ref={btnRef}
-        type="button"
-        className="more-chevron"
-        title="More tools"
-        data-testid="toolbar-more"
-        aria-expanded={open}
-        aria-haspopup="menu"
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
-      >
-        ▾
-      </button>
-      {open && pos && (
-        <div
-          className="more-dropdown"
-          role="menu"
-          style={{ top: pos.top, right: pos.right }}
-        >
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              className={"more-row" + (item.active ? " is-active" : "")}
-              title={item.title}
-              data-testid={item.testId}
-              disabled={item.disabled}
-              onClick={() => {
-                item.onClick();
-                setOpen(false);
-              }}
-            >
-              <span className="glyph" aria-hidden="true">
-                {item.glyph}
-              </span>
-              <span className="label">{item.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Main toolbar                                                       */
@@ -267,9 +142,6 @@ interface ToolbarProps {
 export function Toolbar({ store, state }: ToolbarProps) {
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
   const sketchSession = state.sketchSession;
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const [hideCount, setHideCount] = useState(0);
-  const prevWidth = useRef(0);
 
   const [sketchToolTypes, setSketchToolTypes] = useState<readonly string[]>([]);
   useEffect(() => {
@@ -279,28 +151,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
       setSketchToolTypes([]);
     }
   }, [fd]);
-
-  useEffect(() => {
-    const el = toolbarRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      const w = entry.contentRect.width;
-      if (w > prevWidth.current) {
-        setHideCount(0);
-      }
-      prevWidth.current = w;
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  useLayoutEffect(() => {
-    const el = toolbarRef.current;
-    if (!el) return;
-    if (el.scrollWidth > el.clientWidth + 1) {
-      setHideCount((c) => c + 1);
-    }
-  });
 
   const handleSketchEnter = () => {
     if (state.features.length > 0) {
@@ -331,52 +181,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   };
 
-  /* ---------- Items + overflow (must be before early returns to keep hook order) ---------- */
-
   const hasSketch = state.features.some((f) => f.kind === "sketch");
   const hasFeatures = state.features.length > 0;
-
-  const items: ToolItem[] = [
-    // Group 0: Modeling
-    { id: "thread", priority: 2, group: 0, glyph: "⏍", label: "Thread", title: "Add Thread (M6 default)", testId: "add-thread", disabled: false, active: false, onClick: () => handleAddThread() },
-    { id: "hole", priority: 2, group: 0, glyph: "⊖", label: "Hole", title: "Add Hole (Ø6 × 40 mm, subtract)", testId: "add-hole", disabled: false, active: false, onClick: () => store.addHole(), drag: dragProps("hole") },
-    { id: "gyroid", priority: 3, group: 0, glyph: "🕸", label: "Gyroid", title: "Add Gyroid infill (10 mm cells, 1 mm walls, intersect)", testId: "add-gyroid", disabled: !hasFeatures, active: false, onClick: () => store.addGyroid(), drag: dragProps("gyroid") },
-    { id: "sketch", priority: 0, group: 0, glyph: "✎", label: "Sketch", title: "Sketch on XY plane (plane editable via feature dialog)", testId: "enter-sketch", disabled: false, active: false, onClick: handleSketchEnter, drag: sketchDragProps() },
-    { id: "extrude", priority: 0, group: 0, glyph: "↥", label: "Extrude", title: "Extrude the most recent sketch (20 mm depth)", testId: "extrude-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addExtrudeFromLatestSketch(20) },
-    { id: "revolve", priority: 2, group: 0, glyph: "↻", label: "Revolve", title: "Revolve the most recent sketch around the world Y axis", testId: "revolve-latest-sketch", disabled: !hasSketch, active: false, onClick: () => store.addRevolveFromLatestSketch() },
-    { id: "linear-pattern", priority: 3, group: 0, glyph: "⎡⎡⎡", label: "Pattern", title: "Linear pattern the latest feature (+X, 3×, 60 mm)", testId: "linear-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addLinearPatternOfLatest() },
-    { id: "circular-pattern", priority: 3, group: 0, glyph: "↻", label: "Circ", title: "Circular pattern the latest feature around Y axis (6×, 360°)", testId: "circular-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addCircularPatternOfLatest() },
-    { id: "mirror", priority: 3, group: 0, glyph: "◫", label: "Mirror", title: "Mirror the latest feature through the world YZ plane", testId: "mirror-latest", disabled: !hasFeatures, active: false, onClick: () => store.addMirrorOfLatest() },
-    // Boolean op toggles
-    { id: "op-union", priority: 1, group: 0, glyph: "+", label: "Union", title: "Union (+)", testId: "op-union", disabled: false, active: state.nextOp === BoolOpTag.Union, onClick: () => handleOpToggle(BoolOpTag.Union), variant: "op-toggle" },
-    { id: "op-difference", priority: 1, group: 0, glyph: "−", label: "Difference", title: "Difference (−)", testId: "op-difference", disabled: false, active: state.nextOp === BoolOpTag.Difference, onClick: () => handleOpToggle(BoolOpTag.Difference), variant: "op-toggle" },
-    { id: "op-intersect", priority: 1, group: 0, glyph: "∩", label: "Intersect", title: "Intersect (∩)", testId: "op-intersect", disabled: false, active: state.nextOp === BoolOpTag.Intersect, onClick: () => handleOpToggle(BoolOpTag.Intersect), variant: "op-toggle" },
-    // Group 1: Tools
-    { id: "delete", priority: 1, group: 1, glyph: "", label: "Delete", title: "Delete selection (Del)", testId: "delete-selection", disabled: state.selection.size === 0, active: false, onClick: () => store.removeSelected() },
-    { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
-    { id: "fillet", priority: 2, group: 1, glyph: "◠", label: "Fillet", title: "Click an edge to fillet it", testId: "fillet-toggle", disabled: false, active: state.filletMode, onClick: () => store.toggleFilletMode() },
-    { id: "measure", priority: 3, group: 1, glyph: "📏", label: "Measure", title: "Measure distance (click two points)", testId: "measure-toggle", disabled: false, active: state.measureMode, onClick: () => store.toggleMeasureMode() },
-    { id: "convert-solid", priority: 5, group: 1, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
-    // Group 2: View
-    { id: "view-front", priority: 5, group: 2, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
-    { id: "view-top", priority: 5, group: 2, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
-    { id: "view-right", priority: 5, group: 2, glyph: "◲", label: "Right", title: "Right view", testId: "view-right", disabled: false, active: false, onClick: () => requestView("right") },
-    { id: "view-iso", priority: 5, group: 2, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
-  ];
-
-  const hiddenIds = useMemo(() => {
-    const collapsible = items
-      .filter((i) => i.priority > ALWAYS_VISIBLE_PRIORITY)
-      .sort((a, b) => b.priority - a.priority || items.indexOf(b) - items.indexOf(a));
-    const ids = new Set<string>();
-    for (let i = 0; i < hideCount && i < collapsible.length; i++) {
-      ids.add(collapsible[i].id);
-    }
-    return ids;
-  }, [items, hideCount]);
-
-  const visible = items.filter((i) => !hiddenIds.has(i.id));
-  const overflow = items.filter((i) => hiddenIds.has(i.id));
 
   /* ---------- Sketch mode toolbar ---------- */
 
@@ -447,42 +253,79 @@ export function Toolbar({ store, state }: ToolbarProps) {
     );
   }
 
-  /* ---------- Main toolbar with overflow ---------- */
-
-  const groups = [0, 1, 2] as const;
+  /* ---------- Main toolbar (flex-wrap, no overflow dropdown) ---------- */
 
   return (
-    <div className="fd-toolbar" data-testid="fielddraft-toolbar" ref={toolbarRef}>
-      {/* Group 0 always starts with PrimitiveSplitButton */}
+    <div className="fd-toolbar" data-testid="fielddraft-toolbar">
+      {/* Modeling */}
       <div className="group">
         <PrimitiveSplitButton store={store} />
-        {visible
-          .filter((i) => i.group === 0 && i.id !== "thread")
-          .map((item) => (
-            <ToolButton key={item.id} item={item} />
-          ))}
-        {visible.some((i) => i.id === "thread") && (
-          <ThreadSplitButton onAdd={handleAddThread} />
-        )}
+        <button type="button" className="tool" title="Add Hole (Ø6 × 40 mm, subtract)" data-testid="add-hole" onClick={() => store.addHole()} {...dragProps("hole")}>
+          <span className="glyph" aria-hidden="true">⊖</span>
+          <span className="tool-label">Hole</span>
+        </button>
+        <ThreadSplitButton onAdd={handleAddThread} />
+        <button type="button" className="tool" title="Sketch on XY plane" data-testid="enter-sketch" onClick={handleSketchEnter} {...sketchDragProps()}>
+          <span className="glyph" aria-hidden="true">✎</span>
+          <span className="tool-label">Sketch</span>
+        </button>
+        <button type="button" className="tool" title="Extrude the most recent sketch (20 mm depth)" data-testid="extrude-latest-sketch" disabled={!hasSketch} onClick={() => store.addExtrudeFromLatestSketch(20)}>
+          <span className="glyph" aria-hidden="true">↥</span>
+          <span className="tool-label">Extrude</span>
+        </button>
+        <button type="button" className="tool" title="Revolve the most recent sketch around the world Y axis" data-testid="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()}>
+          <span className="glyph" aria-hidden="true">↻</span>
+          <span className="tool-label">Revolve</span>
+        </button>
+        <button type="button" className="tool" title="Add Gyroid infill" data-testid="add-gyroid" disabled={!hasFeatures} onClick={() => store.addGyroid()} {...dragProps("gyroid")}>
+          <span className="glyph" aria-hidden="true">🕸</span>
+          <span className="tool-label">Gyroid</span>
+        </button>
+        <button type="button" className="tool" title="Linear pattern (+X, 3×, 60 mm)" data-testid="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()}>
+          <span className="glyph" aria-hidden="true">⎡⎡⎡</span>
+          <span className="tool-label">Pattern</span>
+        </button>
+        <button type="button" className="tool" title="Circular pattern around Y axis (6×, 360°)" data-testid="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()}>
+          <span className="glyph" aria-hidden="true">↻</span>
+          <span className="tool-label">Circ</span>
+        </button>
+        <button type="button" className="tool" title="Mirror through the world YZ plane" data-testid="mirror-latest" disabled={!hasFeatures} onClick={() => store.addMirrorOfLatest()}>
+          <span className="glyph" aria-hidden="true">◫</span>
+          <span className="tool-label">Mirror</span>
+        </button>
       </div>
 
-      {/* Remaining groups render only when they have visible items */}
-      {groups.slice(1).map((g) => {
-        const groupVisible = visible.filter((i) => i.group === g);
-        if (groupVisible.length === 0) return null;
-        return (
-          <div className="group" key={g}>
-            {g === 2 && <span className="label">View:</span>}
-            {groupVisible.map((item) => (
-              <ToolButton key={item.id} item={item} />
-            ))}
-          </div>
-        );
-      })}
+      {/* Boolean op toggles */}
+      <div className="group">
+        <button type="button" className={"op-toggle" + (state.nextOp === BoolOpTag.Union ? " is-active" : "")} title="Union (+)" data-testid="op-union" onClick={() => handleOpToggle(BoolOpTag.Union)}>+</button>
+        <button type="button" className={"op-toggle" + (state.nextOp === BoolOpTag.Difference ? " is-active" : "")} title="Difference (−)" data-testid="op-difference" onClick={() => handleOpToggle(BoolOpTag.Difference)}>−</button>
+        <button type="button" className={"op-toggle" + (state.nextOp === BoolOpTag.Intersect ? " is-active" : "")} title="Intersect (∩)" data-testid="op-intersect" onClick={() => handleOpToggle(BoolOpTag.Intersect)}>∩</button>
+      </div>
 
-      {/* More dropdown for overflow items */}
-      {overflow.length > 0 && <MoreDropdown items={overflow} />}
-
+      {/* Tools */}
+      <div className="group">
+        <button type="button" className="tool" title="Delete selection (Del)" data-testid="delete-selection" disabled={state.selection.size === 0} onClick={() => store.removeSelected()}>
+          <span className="tool-label">Delete</span>
+        </button>
+        <button type="button" className={"tool" + (state.filletMode ? " is-active" : "")} title="Click an edge to fillet it" data-testid="fillet-toggle" onClick={() => store.toggleFilletMode()}>
+          <span className="glyph" aria-hidden="true">◠</span>
+          <span className="tool-label">Fillet</span>
+        </button>
+        <button type="button" className={"tool" + (state.mateMode ? " is-active" : "")} title="Click a surface to place a mate connector" data-testid="add-mate-connector" disabled={!hasFeatures} onClick={() => store.toggleMateMode()}>
+          <span className="glyph" aria-hidden="true">⊕</span>
+          <span className="tool-label">Mate</span>
+        </button>
+        <button type="button" className={"tool" + (state.measureMode ? " is-active" : "")} title="Measure distance (click two points)" data-testid="measure-toggle" onClick={() => store.toggleMeasureMode()}>
+          <span className="glyph" aria-hidden="true">📏</span>
+          <span className="tool-label">Measure</span>
+        </button>
+        {state.referenceMesh && (
+          <button type="button" className="tool" title="Convert reference mesh to a CSG solid" data-testid="convert-to-solid" onClick={() => store.convertReferenceToSolid()}>
+            <span className="glyph" aria-hidden="true">⊕</span>
+            <span className="tool-label">Solid</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

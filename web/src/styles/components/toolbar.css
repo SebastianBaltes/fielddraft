@@ -5,9 +5,8 @@
   padding: 0 var(--space-4);
   background: var(--color-bg-elevated);
   border-bottom: 1px solid var(--color-border);
-  height: var(--toolbar-height);
-  flex: 0 0 var(--toolbar-height);
-  overflow: hidden;
+  min-height: var(--toolbar-height);
+  flex-wrap: wrap;
 
   & .hidden-file-input {
     display: none;
@@ -33,80 +32,6 @@
     padding: var(--space-1);
     background: var(--color-surface-strong, #eee);
     border-radius: var(--radius-sm);
-  }
-
-  /* K7.21b: More dropdown for overflow items */
-  & .more-dropdown-wrapper {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    margin-left: auto;
-    flex-shrink: 0;
-
-    & > .more-chevron {
-      background: transparent;
-      border: none;
-      color: var(--color-text-muted);
-      font-size: var(--fs-lg, 1.25rem);
-      cursor: pointer;
-      padding: var(--space-1) var(--space-2);
-      line-height: 1;
-
-      &:hover {
-        color: var(--color-text);
-      }
-    }
-
-    & > .more-dropdown {
-      position: fixed;
-      z-index: 20;
-      display: flex;
-      flex-direction: column;
-      min-width: 12rem;
-      max-height: 70vh;
-      overflow-y: auto;
-      background: var(--color-bg-elevated);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.12));
-      padding: var(--space-1) 0;
-
-      & .more-row {
-        background: transparent;
-        border: none;
-        text-align: left;
-        padding: var(--space-2) var(--space-3);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: var(--space-3);
-        font-size: var(--fs-base);
-        color: var(--color-text);
-        font-family: inherit;
-
-        & .glyph {
-          width: 1.25rem;
-          display: inline-flex;
-          justify-content: center;
-          color: var(--color-text-muted);
-        }
-
-        &:hover:not(:disabled) {
-          background: var(--color-bg-hover);
-        }
-        &:disabled {
-          opacity: 0.45;
-          cursor: not-allowed;
-        }
-        &.is-active {
-          background: var(--color-accent-soft);
-          color: var(--color-text);
-          & .glyph {
-            color: var(--color-accent);
-          }
-        }
-      }
-    }
   }
 
   /* K7.22 (8): split-button pattern for grouped primitives.
