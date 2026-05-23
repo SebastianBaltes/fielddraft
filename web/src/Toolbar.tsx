@@ -148,11 +148,25 @@ interface ToolItem {
   onClick: () => void;
   drag?: Record<string, unknown>;
   group: number;
+  variant?: "op-toggle";
 }
 
 const ALWAYS_VISIBLE_PRIORITY = 0;
 
 function ToolButton({ item }: { item: ToolItem }) {
+  if (item.variant === "op-toggle") {
+    return (
+      <button
+        type="button"
+        className={"op-toggle" + (item.active ? " is-active" : "")}
+        title={item.title}
+        data-testid={item.testId}
+        onClick={item.onClick}
+      >
+        {item.glyph}
+      </button>
+    );
+  }
   return (
     <button
       type="button"
@@ -197,7 +211,7 @@ function MoreDropdown({ items }: { items: ToolItem[] }) {
       <button
         ref={btnRef}
         type="button"
-        className="tool"
+        className="more-chevron"
         title="More tools"
         data-testid="toolbar-more"
         aria-expanded={open}
@@ -207,7 +221,7 @@ function MoreDropdown({ items }: { items: ToolItem[] }) {
           setOpen((v) => !v);
         }}
       >
-        ··· More
+        ▾
       </button>
       {open && pos && (
         <div
@@ -333,6 +347,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "linear-pattern", priority: 3, group: 0, glyph: "⎡⎡⎡", label: "Pattern", title: "Linear pattern the latest feature (+X, 3×, 60 mm)", testId: "linear-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addLinearPatternOfLatest() },
     { id: "circular-pattern", priority: 3, group: 0, glyph: "↻", label: "Circ", title: "Circular pattern the latest feature around Y axis (6×, 360°)", testId: "circular-pattern-latest", disabled: !hasFeatures, active: false, onClick: () => store.addCircularPatternOfLatest() },
     { id: "mirror", priority: 3, group: 0, glyph: "◫", label: "Mirror", title: "Mirror the latest feature through the world YZ plane", testId: "mirror-latest", disabled: !hasFeatures, active: false, onClick: () => store.addMirrorOfLatest() },
+    // Boolean op toggles
+    { id: "op-union", priority: 1, group: 0, glyph: "+", label: "Union", title: "Union (+)", testId: "op-union", disabled: false, active: state.nextOp === BoolOpTag.Union, onClick: () => handleOpToggle(BoolOpTag.Union), variant: "op-toggle" },
+    { id: "op-difference", priority: 1, group: 0, glyph: "−", label: "Difference", title: "Difference (−)", testId: "op-difference", disabled: false, active: state.nextOp === BoolOpTag.Difference, onClick: () => handleOpToggle(BoolOpTag.Difference), variant: "op-toggle" },
+    { id: "op-intersect", priority: 1, group: 0, glyph: "∩", label: "Intersect", title: "Intersect (∩)", testId: "op-intersect", disabled: false, active: state.nextOp === BoolOpTag.Intersect, onClick: () => handleOpToggle(BoolOpTag.Intersect), variant: "op-toggle" },
     // Group 1: Tools
     { id: "delete", priority: 1, group: 1, glyph: "", label: "Delete", title: "Delete selection (Del)", testId: "delete-selection", disabled: state.selection.size === 0, active: false, onClick: () => store.removeSelected() },
     { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
@@ -448,37 +466,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
         )}
       </div>
 
-      {/* Boolean op toggles */}
-      <div className="group">
-        <button
-          type="button"
-          className={"op-toggle" + (state.nextOp === BoolOpTag.Union ? " is-active" : "")}
-          title="Union (+)"
-          data-testid="op-union"
-          onClick={() => handleOpToggle(BoolOpTag.Union)}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          className={"op-toggle" + (state.nextOp === BoolOpTag.Difference ? " is-active" : "")}
-          title="Difference (−)"
-          data-testid="op-difference"
-          onClick={() => handleOpToggle(BoolOpTag.Difference)}
-        >
-          −
-        </button>
-        <button
-          type="button"
-          className={"op-toggle" + (state.nextOp === BoolOpTag.Intersect ? " is-active" : "")}
-          title="Intersect (∩)"
-          data-testid="op-intersect"
-          onClick={() => handleOpToggle(BoolOpTag.Intersect)}
-        >
-          ∩
-        </button>
-      </div>
-
       {/* Remaining groups render only when they have visible items */}
       {groups.slice(1).map((g) => {
         const groupVisible = visible.filter((i) => i.group === g);
@@ -494,11 +481,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
       })}
 
       {/* More dropdown for overflow items */}
-      {overflow.length > 0 && (
-        <div className="group">
-          <MoreDropdown items={overflow} />
-        </div>
-      )}
+      {overflow.length > 0 && <MoreDropdown items={overflow} />}
 
     </div>
   );

@@ -39,7 +39,23 @@
   & .more-dropdown-wrapper {
     position: relative;
     display: inline-flex;
-    align-items: stretch;
+    align-items: center;
+    margin-left: auto;
+    flex-shrink: 0;
+
+    & > .more-chevron {
+      background: transparent;
+      border: none;
+      color: var(--color-text-muted);
+      font-size: var(--fs-lg, 1.25rem);
+      cursor: pointer;
+      padding: var(--space-1) var(--space-2);
+      line-height: 1;
+
+      &:hover {
+        color: var(--color-text);
+      }
+    }
 
     & > .more-dropdown {
       position: fixed;
