@@ -20,7 +20,7 @@ import {
   min,
   sqrt,
   step,
-  texture,
+  texture3D,
   vec2,
   vec3,
   vec4,
@@ -226,7 +226,7 @@ export function buildVmSdfEvalFn(
             : texIdx;
           for (let i = 0; i < volTextures.length; i++) {
             If(lookupIdx.equal(int(i)), () => {
-              dist.assign(texture(volTextures[i], uvw).x);
+              dist.assign(texture3D(volTextures[i], uvw).x);
             });
           }
         }
