@@ -1,0 +1,7 @@
+{
+  "webapp": {
+    "port": 5173,
+    "start_cmd": "just build-wasm && cd web && npm run dev -- --host 0.0.0.0",
+    "path": "/"
+  }
+}
