@@ -1,17 +1,5 @@
-/**
- * K7.21a: Burger-Menu + Settings-Panel.
- *
- * Hamburger icon in the topbar opens a popover with:
- * - Compact-Mode toggle (migrated from the old inline toggle)
- * - Workspace-Units slot (mm/inch, placeholder for future)
- * - Keyboard-Shortcuts overview
- * - Theme slot (light/dark, placeholder for future)
- *
- * All settings persist to localStorage under the `fielddraft.*` namespace.
- * The popover closes on click-outside or Escape.
- */
-
 import { useEffect, useRef, useState, useCallback } from "react";
+import type { KernelStore, StoreState } from "./store";
 
 /* ── localStorage keys ──────────────────────────────────────── */
 const LS_COMPACT = "fielddraft.compact";
@@ -48,12 +36,11 @@ export function loadSettings(): SettingsState {
     if (rawMode && VALID_RENDER_MODES.includes(rawMode as RenderMode))
       renderMode = rawMode as RenderMode;
   } catch {
-    // localStorage may be unavailable (private browsing, etc.)
+    // localStorage may be unavailable
   }
   return { compact, units, theme, renderMode };
 }
 
-/** Persist a single setting to localStorage. */
 function saveSetting(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
@@ -62,7 +49,7 @@ function saveSetting(key: string, value: string): void {
   }
 }
 
-/* ── Keyboard shortcuts table data ──────────────────────────── */
+/* ── Keyboard shortcuts table ──────────────────────────────── */
 const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "B", action: "Add Box" },
   { keys: "S", action: "Add Sphere" },
@@ -85,20 +72,25 @@ const SHORTCUTS: { keys: string; action: string }[] = [
 /* ── Component ──────────────────────────────────────────────── */
 
 interface SettingsMenuProps {
+  store: KernelStore | null;
+  state: StoreState | null;
   settings: SettingsState;
   onSettingsChange: (next: SettingsState) => void;
-  onNewProject?: () => void;
 }
 
-export function SettingsMenu({ settings, onSettingsChange, onNewProject }: SettingsMenuProps) {
+export function SettingsMenu({
+  store,
+  state,
+  settings,
+  onSettingsChange,
+}: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
-  const [shortcutsExpanded, setShortcutsExpanded] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const close = useCallback(() => setOpen(false), []);
 
-  // Close on click outside
   useEffect(() => {
     if (!open) return;
     const handleClick = (e: MouseEvent) => {
@@ -112,8 +104,6 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
         close();
       }
     };
-    // Use setTimeout to avoid the same click that opened the menu
-    // from immediately closing it.
     const timer = setTimeout(() => {
       window.addEventListener("click", handleClick);
     }, 0);
@@ -123,7 +113,6 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
     };
   }, [open, close]);
 
-  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
@@ -135,6 +124,352 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
     window.addEventListener("keydown", handleKey, true);
     return () => window.removeEventListener("keydown", handleKey, true);
   }, [open, close]);
+
+  const hasFeatures = (state?.features.length ?? 0) > 0;
+
+  const menuAction = (fn: () => void) => {
+    fn();
+    close();
+  };
+
+  return (
+    <div className="fd-settings-menu" data-testid="settings-menu">
+      <button
+        ref={buttonRef}
+        type="button"
+        className="burger"
+        title="Menu"
+        data-testid="settings-menu-trigger"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((v) => !v)}
+      >
+        &#9776;
+      </button>
+
+      {open && (
+        <div
+          ref={popoverRef}
+          className="popover"
+          role="menu"
+          aria-label="Application menu"
+          data-testid="settings-menu-popover"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-new-project"
+            onClick={() =>
+              menuAction(() => {
+                if (
+                  !state ||
+                  state.features.length === 0 ||
+                  confirm("Discard current project?")
+                ) {
+                  store?.newProject();
+                }
+              })
+            }
+          >
+            New
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-open"
+            onClick={() =>
+              menuAction(() =>
+                document
+                  .querySelector<HTMLInputElement>(
+                    '[data-testid="load-project-input"]',
+                  )
+                  ?.click(),
+              )
+            }
+          >
+            Open…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-save"
+            onClick={() => menuAction(() => store?.saveProjectToFile())}
+          >
+            <span>Save</span>
+            <span className="menu-shortcut">Ctrl+S</span>
+          </button>
+
+          <div className="menu-separator" role="separator" />
+
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-import"
+            onClick={() =>
+              menuAction(() =>
+                document
+                  .querySelector<HTMLInputElement>(
+                    '[data-testid="import-stl-input"]',
+                  )
+                  ?.click(),
+              )
+            }
+          >
+            Import…
+          </button>
+
+          <ExportSubmenu
+            store={store}
+            state={state}
+            disabled={!hasFeatures}
+            onClose={close}
+          />
+
+          <div className="menu-separator" role="separator" />
+
+          <button
+            type="button"
+            role="menuitem"
+            className={"menu-item" + (state?.assembly.active ? " is-active" : "")}
+            data-testid="menu-assembly"
+            onClick={() =>
+              menuAction(() => {
+                if (state?.assembly.active) store?.exitAssembly();
+                else store?.enterAssembly();
+              })
+            }
+          >
+            Assembly
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-share"
+            disabled={!hasFeatures || !state?.projectId}
+            onClick={() => menuAction(() => store?.publishProject())}
+          >
+            Share
+          </button>
+
+          <div className="menu-separator" role="separator" />
+
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-undo"
+            disabled={!state?.canUndo}
+            onClick={() => menuAction(() => { store?.undo(); })}
+          >
+            <span>
+              Undo
+              {(state?.undoDepth ?? 0) > 0 ? ` (${state!.undoDepth})` : ""}
+            </span>
+            <span className="menu-shortcut">Ctrl+Z</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-redo"
+            disabled={!state?.canRedo}
+            onClick={() => menuAction(() => { store?.redo(); })}
+          >
+            <span>
+              Redo
+              {(state?.redoDepth ?? 0) > 0 ? ` (${state!.redoDepth})` : ""}
+            </span>
+            <span className="menu-shortcut">Ctrl+Shift+Z</span>
+          </button>
+
+          <div className="menu-separator" role="separator" />
+
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-settings"
+            onClick={() => menuAction(() => setSettingsDialogOpen(true))}
+          >
+            Settings…
+          </button>
+        </div>
+      )}
+
+      {/* Hidden file inputs (always in DOM) */}
+      <input
+        type="file"
+        accept=".fdraft,.json"
+        className="hidden-file-input"
+        data-testid="load-project-input"
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          if (!file) return;
+          file.text().then((json) => store?.loadProjectFromJson(json));
+          e.currentTarget.value = "";
+        }}
+      />
+      <input
+        type="file"
+        accept=".stl,.glb,.gltf,.obj,.step,.stp,.3mf"
+        className="hidden-file-input"
+        data-testid="import-stl-input"
+        onChange={(e) => {
+          const file = e.currentTarget.files?.[0];
+          if (!file || !store) return;
+          const name = file.name.toLowerCase();
+          if (name.endsWith(".3mf")) {
+            file.arrayBuffer().then((buf) => store.import3mfFile(buf));
+          } else if (name.endsWith(".step") || name.endsWith(".stp")) {
+            file.arrayBuffer().then((buf) => store.importStepFile(buf));
+          } else if (name.endsWith(".glb") || name.endsWith(".gltf")) {
+            file.arrayBuffer().then((buf) => store.loadReferenceGlb(buf));
+          } else if (name.endsWith(".obj")) {
+            file.text().then((text) => store.loadReferenceObj(text));
+          } else {
+            file.arrayBuffer().then((buf) => store.loadReferenceMesh(buf));
+          }
+          e.currentTarget.value = "";
+        }}
+      />
+
+      {settingsDialogOpen && (
+        <SettingsDialog
+          settings={settings}
+          onSettingsChange={onSettingsChange}
+          onClose={() => setSettingsDialogOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Export submenu ─────────────────────────────────────────── */
+
+function ExportSubmenu({
+  store,
+  state,
+  disabled,
+  onClose,
+}: {
+  store: KernelStore | null;
+  state: StoreState | null;
+  disabled: boolean;
+  onClose: () => void;
+}) {
+  const action = (fn: () => void) => {
+    fn();
+    onClose();
+  };
+
+  const r3fDisabled =
+    !state?.assembly.active ||
+    state.assembly.document.parts.length === 0;
+
+  return (
+    <div className="submenu-wrapper">
+      <button
+        type="button"
+        role="menuitem"
+        className="menu-item submenu-trigger"
+        disabled={disabled}
+        aria-haspopup="menu"
+        data-testid="menu-export"
+      >
+        <span>Export</span>
+        <span className="menu-chevron">&#9656;</span>
+      </button>
+      <div className="submenu" role="menu">
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-stl"
+          onClick={() => action(() => store?.downloadStl())}
+        >
+          STL
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-glb"
+          onClick={() => action(() => store?.downloadGlb())}
+        >
+          GLB
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-obj"
+          onClick={() => action(() => store?.downloadObj())}
+        >
+          OBJ
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-3mf"
+          onClick={() => action(() => store?.download3mfRoundtrip())}
+        >
+          3MF
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-step"
+          onClick={() => action(() => store?.downloadStep())}
+        >
+          STEP
+        </button>
+        <div className="menu-separator" role="separator" />
+        <button
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          data-testid="menu-export-r3f"
+          disabled={r3fDisabled}
+          onClick={() => action(() => store?.exportR3F())}
+        >
+          R3F
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Settings dialog ───────────────────────────────────────── */
+
+function SettingsDialog({
+  settings,
+  onSettingsChange,
+  onClose,
+}: {
+  settings: SettingsState;
+  onSettingsChange: (next: SettingsState) => void;
+  onClose: () => void;
+}) {
+  const [shortcutsExpanded, setShortcutsExpanded] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", handleKey, true);
+    return () => window.removeEventListener("keydown", handleKey, true);
+  }, [onClose]);
 
   const toggleCompact = () => {
     const next = { ...settings, compact: !settings.compact };
@@ -161,48 +496,33 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
   };
 
   return (
-    <div className="fd-settings-menu" data-testid="settings-menu">
-      <button
-        ref={buttonRef}
-        type="button"
-        className="burger"
-        title="Settings"
-        data-testid="settings-menu-trigger"
-        aria-expanded={open}
-        aria-haspopup="true"
-        onClick={() => setOpen((v) => !v)}
+    <div
+      className="fd-settings-overlay"
+      data-testid="settings-dialog-overlay"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="fd-settings-dialog"
+        role="dialog"
+        aria-label="Settings"
+        data-testid="settings-dialog"
       >
-        &#9776;
-      </button>
+        <div className="dialog-header">
+          <h3 className="dialog-title">Settings</h3>
+          <button
+            type="button"
+            className="dialog-close"
+            data-testid="settings-dialog-close"
+            onClick={onClose}
+          >
+            &times;
+          </button>
+        </div>
 
-      {open && (
-        <div
-          ref={popoverRef}
-          className="popover"
-          role="dialog"
-          aria-label="Settings"
-          data-testid="settings-menu-popover"
-        >
-          <h3 className="popover-title">Settings</h3>
-
-          {/* ── New Project ──────────────────────────────── */}
-          {onNewProject && (
-            <div className="setting-row">
-              <button
-                type="button"
-                className="action-btn"
-                data-testid="menu-new-project"
-                onClick={() => {
-                  onNewProject();
-                  close();
-                }}
-              >
-                New Project
-              </button>
-            </div>
-          )}
-
-          {/* ── Compact Mode ──────────────────────────────── */}
+        <div className="dialog-body">
           <div className="setting-row" data-testid="setting-compact">
             <span className="setting-label">Compact toolbar</span>
             <button
@@ -217,7 +537,6 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
             </button>
           </div>
 
-          {/* ── Workspace Units ───────────────────────────── */}
           <div className="setting-row" data-testid="setting-units">
             <span className="setting-label">Units</span>
             <div className="segmented">
@@ -240,7 +559,6 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
             </div>
           </div>
 
-          {/* ── Theme ─────────────────────────────────────── */}
           <div className="setting-row" data-testid="setting-theme">
             <span className="setting-label">Theme</span>
             <div className="segmented">
@@ -263,23 +581,19 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
             </div>
           </div>
 
-          {/* ── Render Mode ─────────────────────────────── */}
           <div className="setting-row" data-testid="setting-render-mode">
             <span className="setting-label">Render</span>
             <select
               className="mode-select"
               value={settings.renderMode}
               data-testid="setting-render-mode-select"
-              onChange={(e) =>
-                setRenderMode(e.target.value as RenderMode)
-              }
+              onChange={(e) => setRenderMode(e.target.value as RenderMode)}
             >
               <option value="sdf-vm">SDF VM</option>
               <option value="sdf-deferred">Deferred</option>
             </select>
           </div>
 
-          {/* ── Keyboard Shortcuts ────────────────────────── */}
           <div className="setting-section" data-testid="setting-shortcuts">
             <button
               type="button"
@@ -288,11 +602,16 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
               aria-expanded={shortcutsExpanded}
               onClick={() => setShortcutsExpanded((v) => !v)}
             >
-              <span className="chevron">{shortcutsExpanded ? "▾" : "▸"}</span>
+              <span className="chevron">
+                {shortcutsExpanded ? "▾" : "▸"}
+              </span>
               Keyboard Shortcuts
             </button>
             {shortcutsExpanded && (
-              <table className="shortcuts-table" data-testid="shortcuts-table">
+              <table
+                className="shortcuts-table"
+                data-testid="shortcuts-table"
+              >
                 <tbody>
                   {SHORTCUTS.map((s) => (
                     <tr key={s.keys}>
@@ -312,7 +631,7 @@ export function SettingsMenu({ settings, onSettingsChange, onNewProject }: Setti
             )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

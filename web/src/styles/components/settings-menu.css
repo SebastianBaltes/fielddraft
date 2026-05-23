@@ -1,4 +1,4 @@
-/* K7.21a: Burger-Menu + Settings-Panel.
+/* App menu (hamburger) + Settings dialog.
  *
  * Top-level class: .fd-settings-menu
  * Lives in the topbar, right-aligned next to the title. */
@@ -30,24 +30,163 @@
     top: calc(100% + var(--space-2));
     left: 0;
     z-index: 100;
-    min-width: 18rem;
+    min-width: 14rem;
     background: var(--color-bg-elevated);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg);
-    padding: var(--space-4);
+    padding: var(--space-1);
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
   }
 
-  & .popover-title {
+  /* ── Menu items ──────────────────────────── */
+
+  & .menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-base);
+    color: var(--color-text);
+    text-align: left;
+    border-radius: var(--radius-sm);
+    transition: background var(--motion-fast);
+
+    &:hover {
+      background: var(--color-bg-hover);
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    &:disabled:hover {
+      background: none;
+    }
+
+    &.is-active {
+      color: var(--color-accent);
+      font-weight: var(--fw-medium);
+    }
+  }
+
+  & .menu-shortcut {
+    margin-left: auto;
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+  }
+
+  & .menu-separator {
+    height: 1px;
+    background: var(--color-divider);
+    margin: var(--space-1) 0;
+  }
+
+  /* ── Export submenu ──────────────────────── */
+
+  & .submenu-wrapper {
+    position: relative;
+
+    & .submenu-trigger {
+      & .menu-chevron {
+        margin-left: auto;
+        color: var(--color-text-muted);
+      }
+    }
+
+    & .submenu {
+      display: none;
+      position: absolute;
+      left: 100%;
+      top: 0;
+      min-width: 8rem;
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-lg);
+      padding: var(--space-1);
+      flex-direction: column;
+    }
+
+    &:hover > .submenu,
+    &:focus-within > .submenu {
+      display: flex;
+    }
+
+    /* Don't show submenu when trigger is disabled */
+    &:has(.submenu-trigger:disabled) > .submenu {
+      display: none;
+    }
+  }
+
+  /* ── Hidden file input ──────────────────── */
+
+  & .hidden-file-input {
+    display: none;
+  }
+}
+
+/* ── Settings dialog overlay ─────────────────────────────────── */
+
+.fd-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fd-settings-dialog {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  min-width: 22rem;
+  max-width: 90vw;
+
+  & .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-4) var(--space-2);
+  }
+
+  & .dialog-title {
     margin: 0;
     font-size: var(--fs-md);
     font-weight: var(--fw-semibold);
     color: var(--color-text);
-    padding-bottom: var(--space-2);
-    border-bottom: 1px solid var(--color-divider);
+  }
+
+  & .dialog-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-lg);
+    color: var(--color-text-muted);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    line-height: 1;
+
+    &:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  & .dialog-body {
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
   }
 
   & .setting-row {
@@ -62,7 +201,6 @@
     color: var(--color-text);
   }
 
-  /* Toggle button (on/off switch style) */
   & .toggle {
     background: var(--color-bg-sunken);
     border: 1px solid var(--color-border);
@@ -86,7 +224,6 @@
     }
   }
 
-  /* Segmented control (mm/inch, light/dark) */
   & .segmented {
     display: inline-flex;
     border: 1px solid var(--color-border);
@@ -117,7 +254,6 @@
     }
   }
 
-  /* Dropdown select (render mode) */
   & .mode-select {
     background: var(--color-bg);
     border: 1px solid var(--color-border);
@@ -137,26 +273,6 @@
     }
   }
 
-  /* Full-width action button (New Project, etc.) */
-  & .action-btn {
-    width: 100%;
-    background: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--fs-base);
-    color: var(--color-text);
-    cursor: pointer;
-    text-align: center;
-    transition: background var(--motion-fast), border-color var(--motion-fast);
-
-    &:hover {
-      background: var(--color-bg-hover);
-      border-color: var(--color-border-strong);
-    }
-  }
-
-  /* Collapsible section (shortcuts) */
   & .setting-section {
     display: flex;
     flex-direction: column;
@@ -211,7 +327,7 @@
     }
 
     & kbd {
-      background: var(--color-surface-strong, #eee);
+      background: var(--color-bg-sunken);
       border: 1px solid var(--color-border);
       border-radius: var(--radius-sm);
       padding: 1px var(--space-2);

@@ -330,27 +330,12 @@ export function Toolbar({ store, state }: ToolbarProps) {
     { id: "mate", priority: 3, group: 1, glyph: "⊕", label: "Mate", title: "Click a surface to place a mate connector", testId: "add-mate-connector", disabled: !hasFeatures, active: state.mateMode, onClick: () => store.toggleMateMode() },
     { id: "fillet", priority: 2, group: 1, glyph: "◠", label: "Fillet", title: "Click an edge to fillet it", testId: "fillet-toggle", disabled: false, active: state.filletMode, onClick: () => store.toggleFilletMode() },
     { id: "measure", priority: 3, group: 1, glyph: "📏", label: "Measure", title: "Measure distance (click two points)", testId: "measure-toggle", disabled: false, active: state.measureMode, onClick: () => store.toggleMeasureMode() },
-    { id: "undo", priority: 1, group: 1, glyph: "⟲", label: `Undo${state.undoDepth > 0 ? ` (${state.undoDepth})` : ""}`, title: "Undo (Ctrl+Z)", testId: "undo", disabled: !state.canUndo, active: false, onClick: () => store.undo() },
-    { id: "redo", priority: 1, group: 1, glyph: "⟳", label: `Redo${state.redoDepth > 0 ? ` (${state.redoDepth})` : ""}`, title: "Redo (Ctrl+Shift+Z)", testId: "redo", disabled: !state.canRedo, active: false, onClick: () => store.redo() },
-    { id: "export-stl", priority: 4, group: 1, glyph: "⇩", label: "STL", title: "Export as binary STL", testId: "export-stl", disabled: !hasFeatures, active: false, onClick: () => store.downloadStl() },
-    { id: "export-glb", priority: 4, group: 1, glyph: "⇩", label: "GLB", title: "Export as binary GLB (glTF 2.0)", testId: "export-glb", disabled: !hasFeatures, active: false, onClick: () => store.downloadGlb() },
-    { id: "export-obj", priority: 4, group: 1, glyph: "⇩", label: "OBJ", title: "Export as Wavefront OBJ", testId: "export-obj", disabled: !hasFeatures, active: false, onClick: () => store.downloadObj() },
-    { id: "export-3mf", priority: 4, group: 1, glyph: "⇩", label: "3MF", title: "Export as 3MF (3D Manufacturing Format, preserves slicer settings if imported)", testId: "export-3mf", disabled: !hasFeatures, active: false, onClick: () => store.download3mfRoundtrip() },
-    { id: "export-step", priority: 5, group: 1, glyph: "⇩", label: "STEP", title: "Export mechanical core as STEP (via OpenCASCADE)", testId: "export-step", disabled: !hasFeatures, active: false, onClick: () => store.downloadStep() },
-    // Group 2: File
-    { id: "save", priority: 4, group: 2, glyph: "💾", label: "Save", title: "Save project as .fdraft file", testId: "save-project", disabled: false, active: false, onClick: () => store.saveProjectToFile() },
-    { id: "open", priority: 4, group: 2, glyph: "📂", label: "Open", title: "Open a .fdraft project file", testId: "load-project", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="load-project-input"]')?.click() },
-    { id: "new", priority: 4, group: 2, glyph: "📄", label: "New", title: "New empty project", testId: "new-project", disabled: false, active: false, onClick: () => { if (state.features.length === 0 || confirm("Discard current project?")) store.newProject(); } },
-    { id: "import", priority: 3, group: 2, glyph: "📁", label: "Import", title: "Import STL/OBJ/GLB/STEP file", testId: "import-stl", disabled: false, active: false, onClick: () => document.querySelector<HTMLInputElement>('[data-testid="import-stl-input"]')?.click() },
-    { id: "convert-solid", priority: 5, group: 2, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
-    { id: "assembly", priority: 4, group: 2, glyph: "🔗", label: "Assembly", title: "Enter assembly mode (multi-part scene)", testId: "enter-assembly", disabled: false, active: state.assembly.active, onClick: () => { if (state.assembly.active) store.exitAssembly(); else store.enterAssembly(); } },
-    { id: "share", priority: 4, group: 2, glyph: "🔗", label: "Share", title: "Publish and get a shareable link", testId: "share-project", disabled: !hasFeatures || !state.projectId, active: false, onClick: () => store.publishProject() },
-    { id: "export-r3f", priority: 5, group: 2, glyph: "⚛", label: "R3F", title: "Export assembly as React Three Fiber component", testId: "export-r3f", disabled: !state.assembly.active || state.assembly.document.parts.length === 0, active: false, onClick: () => store.exportR3F() },
-    // Group 3: View
-    { id: "view-front", priority: 5, group: 3, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
-    { id: "view-top", priority: 5, group: 3, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
-    { id: "view-right", priority: 5, group: 3, glyph: "◲", label: "Right", title: "Right view", testId: "view-right", disabled: false, active: false, onClick: () => requestView("right") },
-    { id: "view-iso", priority: 5, group: 3, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
+    { id: "convert-solid", priority: 5, group: 1, glyph: "⊕", label: "Solid", title: "Convert reference mesh to a CSG solid", testId: "convert-to-solid", disabled: !state.referenceMesh, active: false, onClick: () => store.convertReferenceToSolid() },
+    // Group 2: View
+    { id: "view-front", priority: 5, group: 2, glyph: "◱", label: "Front", title: "Front view", testId: "view-front", disabled: false, active: false, onClick: () => requestView("front") },
+    { id: "view-top", priority: 5, group: 2, glyph: "◳", label: "Top", title: "Top view", testId: "view-top", disabled: false, active: false, onClick: () => requestView("top") },
+    { id: "view-right", priority: 5, group: 2, glyph: "◲", label: "Right", title: "Right view", testId: "view-right", disabled: false, active: false, onClick: () => requestView("right") },
+    { id: "view-iso", priority: 5, group: 2, glyph: "◰", label: "Iso", title: "Isometric view", testId: "view-iso", disabled: false, active: false, onClick: () => requestView("iso") },
   ];
 
   const hiddenIds = useMemo(() => {
@@ -438,7 +423,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
   /* ---------- Main toolbar with overflow ---------- */
 
-  const groups = [0, 1, 2, 3] as const;
+  const groups = [0, 1, 2] as const;
 
   return (
     <div className="fd-toolbar" data-testid="fielddraft-toolbar" ref={toolbarRef}>
@@ -461,7 +446,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         if (groupVisible.length === 0) return null;
         return (
           <div className="group" key={g}>
-            {g === 3 && <span className="label">View:</span>}
+            {g === 2 && <span className="label">View:</span>}
             {groupVisible.map((item) => (
               <ToolButton key={item.id} item={item} />
             ))}
@@ -476,54 +461,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </div>
       )}
 
-      {/* Hidden file inputs (always in DOM for querySelector refs) */}
-      <input
-        type="file"
-        accept=".fdraft,.json"
-        className="hidden-file-input"
-        data-testid="load-project-input"
-        onChange={(e) => {
-          const file = e.currentTarget.files?.[0];
-          if (!file) return;
-          file.text().then((json) => {
-            store.loadProjectFromJson(json);
-          });
-          e.currentTarget.value = "";
-        }}
-      />
-      <input
-        type="file"
-        accept=".stl,.glb,.gltf,.obj,.step,.stp,.3mf"
-        className="hidden-file-input"
-        data-testid="import-stl-input"
-        onChange={(e) => {
-          const file = e.currentTarget.files?.[0];
-          if (!file) return;
-          const name = file.name.toLowerCase();
-          if (name.endsWith(".3mf")) {
-            file.arrayBuffer().then((buf) => {
-              store.import3mfFile(buf);
-            });
-          } else if (name.endsWith(".step") || name.endsWith(".stp")) {
-            file.arrayBuffer().then((buf) => {
-              store.importStepFile(buf);
-            });
-          } else if (name.endsWith(".glb") || name.endsWith(".gltf")) {
-            file.arrayBuffer().then((buf) => {
-              store.loadReferenceGlb(buf);
-            });
-          } else if (name.endsWith(".obj")) {
-            file.text().then((text) => {
-              store.loadReferenceObj(text);
-            });
-          } else {
-            file.arrayBuffer().then((buf) => {
-              store.loadReferenceMesh(buf);
-            });
-          }
-          e.currentTarget.value = "";
-        }}
-      />
     </div>
   );
 }

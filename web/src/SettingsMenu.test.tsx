@@ -1,19 +1,6 @@
-/**
- * K7.21a: SettingsMenu unit tests.
- *
- * Tests cover:
- * - Popover opens/closes on burger click
- * - Compact toggle persists to localStorage
- * - Units segmented control persists
- * - Theme segmented control persists
- * - Shortcuts section expand/collapse
- * - Close on Escape
- * - loadSettings reads from localStorage correctly
- */
-
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import { SettingsMenu, loadSettings } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 
@@ -29,22 +16,31 @@ function setup() {
     compact: false,
     units: "mm",
     theme: "light",
-    renderMode: "dc",
+    renderMode: "sdf-deferred",
   };
 
   const onChange = vi.fn((next: SettingsState) => {
     currentSettings = next;
-    // Re-render with new settings
     act(() => {
       root.render(
-        <SettingsMenu settings={currentSettings} onSettingsChange={onChange} />,
+        <SettingsMenu
+          store={null}
+          state={null}
+          settings={currentSettings}
+          onSettingsChange={onChange}
+        />,
       );
     });
   });
 
   act(() => {
     root.render(
-      <SettingsMenu settings={currentSettings} onSettingsChange={onChange} />,
+      <SettingsMenu
+        store={null}
+        state={null}
+        settings={currentSettings}
+        onSettingsChange={onChange}
+      />,
     );
   });
 
@@ -68,6 +64,11 @@ function click(el: Element) {
   });
 }
 
+function openSettingsDialog(container: HTMLElement) {
+  click(container.querySelector('[data-testid="settings-menu-trigger"]')!);
+  click(container.querySelector('[data-testid="menu-settings"]')!);
+}
+
 describe("SettingsMenu", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -75,76 +76,110 @@ describe("SettingsMenu", () => {
 
   it("renders the burger button", () => {
     const t = setup();
-    const trigger = t.container.querySelector('[data-testid="settings-menu-trigger"]');
+    const trigger = t.container.querySelector(
+      '[data-testid="settings-menu-trigger"]',
+    );
     expect(trigger).toBeTruthy();
-    expect(trigger!.textContent).toContain("\u2630"); // hamburger char
+    expect(trigger!.textContent).toContain("☰");
     t.cleanup();
   });
 
   it("opens popover on click and closes on second click", () => {
     const t = setup();
-    const trigger = t.container.querySelector('[data-testid="settings-menu-trigger"]')!;
+    const trigger = t.container.querySelector(
+      '[data-testid="settings-menu-trigger"]',
+    )!;
 
-    // Initially closed
-    expect(t.container.querySelector('[data-testid="settings-menu-popover"]')).toBeNull();
+    expect(
+      t.container.querySelector('[data-testid="settings-menu-popover"]'),
+    ).toBeNull();
 
-    // Open
     click(trigger);
-    expect(t.container.querySelector('[data-testid="settings-menu-popover"]')).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="settings-menu-popover"]'),
+    ).toBeTruthy();
 
-    // Close
     click(trigger);
-    expect(t.container.querySelector('[data-testid="settings-menu-popover"]')).toBeNull();
+    expect(
+      t.container.querySelector('[data-testid="settings-menu-popover"]'),
+    ).toBeNull();
     t.cleanup();
   });
 
-  it("toggles compact mode and persists to localStorage", () => {
+  it("has menu items for New, Open, Save, Import, Export", () => {
     const t = setup();
-    const trigger = t.container.querySelector('[data-testid="settings-menu-trigger"]')!;
-    click(trigger);
+    click(t.container.querySelector('[data-testid="settings-menu-trigger"]')!);
 
-    const toggle = t.container.querySelector('[data-testid="setting-compact-toggle"]')!;
+    expect(
+      t.container.querySelector('[data-testid="menu-new-project"]'),
+    ).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="menu-open"]'),
+    ).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="menu-save"]'),
+    ).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="menu-import"]'),
+    ).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="menu-export"]'),
+    ).toBeTruthy();
+    t.cleanup();
+  });
+
+  it("opens settings dialog from menu", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    expect(
+      t.container.querySelector('[data-testid="settings-dialog"]'),
+    ).toBeTruthy();
+    t.cleanup();
+  });
+
+  it("toggles compact mode in settings dialog", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    const toggle = t.container.querySelector(
+      '[data-testid="setting-compact-toggle"]',
+    )!;
     expect(toggle.textContent).toBe("Off");
 
-    // Turn on
     click(toggle);
     expect(t.onChange).toHaveBeenCalledWith(
       expect.objectContaining({ compact: true }),
     );
     expect(localStorage.getItem("fielddraft.compact")).toBe("true");
 
-    // The re-render shows "On"
-    const toggleAfter = t.container.querySelector('[data-testid="setting-compact-toggle"]')!;
+    const toggleAfter = t.container.querySelector(
+      '[data-testid="setting-compact-toggle"]',
+    )!;
     expect(toggleAfter.textContent).toBe("On");
     t.cleanup();
   });
 
-  it("switches units and persists to localStorage", () => {
+  it("switches units in settings dialog", () => {
     const t = setup();
-    click(t.container.querySelector('[data-testid="settings-menu-trigger"]')!);
+    openSettingsDialog(t.container);
 
-    const inchBtn = t.container.querySelector('[data-testid="setting-units-inch"]')!;
-    click(inchBtn);
-
+    click(t.container.querySelector('[data-testid="setting-units-inch"]')!);
     expect(t.onChange).toHaveBeenCalledWith(
       expect.objectContaining({ units: "inch" }),
     );
     expect(localStorage.getItem("fielddraft.units")).toBe("inch");
 
-    // Switch back to mm
-    const mmBtn = t.container.querySelector('[data-testid="setting-units-mm"]')!;
-    click(mmBtn);
+    click(t.container.querySelector('[data-testid="setting-units-mm"]')!);
     expect(localStorage.getItem("fielddraft.units")).toBe("mm");
     t.cleanup();
   });
 
-  it("switches theme and persists to localStorage", () => {
+  it("switches theme in settings dialog", () => {
     const t = setup();
-    click(t.container.querySelector('[data-testid="settings-menu-trigger"]')!);
+    openSettingsDialog(t.container);
 
-    const darkBtn = t.container.querySelector('[data-testid="setting-theme-dark"]')!;
-    click(darkBtn);
-
+    click(t.container.querySelector('[data-testid="setting-theme-dark"]')!);
     expect(t.onChange).toHaveBeenCalledWith(
       expect.objectContaining({ theme: "dark" }),
     );
@@ -152,27 +187,36 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
-  it("expands and collapses the shortcuts section", () => {
+  it("expands and collapses shortcuts in settings dialog", () => {
     const t = setup();
-    click(t.container.querySelector('[data-testid="settings-menu-trigger"]')!);
+    openSettingsDialog(t.container);
 
-    // Shortcuts collapsed by default
-    expect(t.container.querySelector('[data-testid="shortcuts-table"]')).toBeNull();
+    expect(
+      t.container.querySelector('[data-testid="shortcuts-table"]'),
+    ).toBeNull();
 
-    // Expand
-    click(t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!);
-    expect(t.container.querySelector('[data-testid="shortcuts-table"]')).toBeTruthy();
+    click(
+      t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!,
+    );
+    expect(
+      t.container.querySelector('[data-testid="shortcuts-table"]'),
+    ).toBeTruthy();
 
-    // Collapse
-    click(t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!);
-    expect(t.container.querySelector('[data-testid="shortcuts-table"]')).toBeNull();
+    click(
+      t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!,
+    );
+    expect(
+      t.container.querySelector('[data-testid="shortcuts-table"]'),
+    ).toBeNull();
     t.cleanup();
   });
 
-  it("closes on Escape keydown", () => {
+  it("closes menu on Escape", () => {
     const t = setup();
     click(t.container.querySelector('[data-testid="settings-menu-trigger"]')!);
-    expect(t.container.querySelector('[data-testid="settings-menu-popover"]')).toBeTruthy();
+    expect(
+      t.container.querySelector('[data-testid="settings-menu-popover"]'),
+    ).toBeTruthy();
 
     act(() => {
       window.dispatchEvent(
@@ -180,7 +224,27 @@ describe("SettingsMenu", () => {
       );
     });
 
-    expect(t.container.querySelector('[data-testid="settings-menu-popover"]')).toBeNull();
+    expect(
+      t.container.querySelector('[data-testid="settings-menu-popover"]'),
+    ).toBeNull();
+    t.cleanup();
+  });
+
+  it("closes settings dialog via close button", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    expect(
+      t.container.querySelector('[data-testid="settings-dialog"]'),
+    ).toBeTruthy();
+
+    click(
+      t.container.querySelector('[data-testid="settings-dialog-close"]')!,
+    );
+
+    expect(
+      t.container.querySelector('[data-testid="settings-dialog"]'),
+    ).toBeNull();
     t.cleanup();
   });
 });
@@ -192,7 +256,12 @@ describe("loadSettings", () => {
 
   it("returns defaults when localStorage is empty", () => {
     const s = loadSettings();
-    expect(s).toEqual({ compact: false, units: "mm", theme: "light", renderMode: "dc" });
+    expect(s).toEqual({
+      compact: false,
+      units: "mm",
+      theme: "light",
+      renderMode: "sdf-deferred",
+    });
   });
 
   it("reads stored values", () => {
@@ -201,7 +270,12 @@ describe("loadSettings", () => {
     localStorage.setItem("fielddraft.theme", "dark");
 
     const s = loadSettings();
-    expect(s).toEqual({ compact: true, units: "inch", theme: "dark", renderMode: "dc" });
+    expect(s).toEqual({
+      compact: true,
+      units: "inch",
+      theme: "dark",
+      renderMode: "sdf-deferred",
+    });
   });
 
   it("ignores invalid values and falls back to defaults", () => {

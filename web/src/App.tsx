@@ -176,13 +176,10 @@ export function App() {
         <div className="title">
           FieldDraft
           <SettingsMenu
+            store={store}
+            state={state}
             settings={settings}
             onSettingsChange={setSettings}
-            onNewProject={() => {
-              if (state && (state.features.length === 0 || confirm("Discard current project?"))) {
-                store.newProject();
-              }
-            }}
           />
         </div>
         <div className="meta">
