@@ -174,6 +174,9 @@ export interface StoreState {
   gizmoMode: "translate" | "rotate" | "scale";
   /** 3MF roundtrip: stashed slicer metadata from import, used on re-export. */
   threemfStash: ThreeMfStash | null;
+  /** Loading overlay: non-null while an import or heavy operation is
+   *  in progress. The `phase` string is shown to the user. */
+  loading: { phase: string } | null;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -332,6 +335,7 @@ export class KernelStore {
       ikMode: false,
       gizmoMode: "translate" as const,
       threemfStash: null,
+      loading: null,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -412,6 +416,7 @@ export class KernelStore {
       ikMode: false,
       gizmoMode: this.state.gizmoMode,
       threemfStash: this.state.threemfStash,
+      loading: this.state.loading,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -602,12 +607,24 @@ export class KernelStore {
    *  The mesh is ephemeral — it lives in React state only and
    *  is lost on page reload. No SDF conversion, no Booleans. */
   loadReferenceMesh(buffer: ArrayBuffer): boolean {
+    const t0 = performance.now();
+    console.log(`fielddraft: importing STL reference — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+
     const view = new DataView(buffer);
-    if (buffer.byteLength < 84) return false;
+    if (buffer.byteLength < 84) {
+      console.error("fielddraft: STL import failed — file too small (< 84 bytes), possibly not a valid STL");
+      return false;
+    }
     const triCount = view.getUint32(80, true);
     const expected = 84 + triCount * 50;
-    if (buffer.byteLength < expected) return false;
+    if (buffer.byteLength < expected) {
+      console.error(
+        `fielddraft: STL import failed — header says ${triCount} triangles (needs ${expected} bytes) but file is ${buffer.byteLength} bytes. Possibly ASCII STL (not supported) or corrupt file.`,
+      );
+      return false;
+    }
 
+    console.log(`fielddraft: parsing ${triCount} triangles…`);
     const positions = new Float32Array(triCount * 9);
     const normals = new Float32Array(triCount * 9);
     const indices = new Uint32Array(triCount * 3);
@@ -637,6 +654,7 @@ export class KernelStore {
       referenceMesh: { positions, normals, indices },
     };
     this.notify();
+    console.log(`fielddraft: STL reference loaded — ${triCount} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
     return true;
   }
 
@@ -644,6 +662,9 @@ export class KernelStore {
    *  Uses Three.js GLTFLoader to parse, merges all mesh
    *  geometries into one combined referenceMesh. */
   async loadReferenceGlb(buffer: ArrayBuffer): Promise<boolean> {
+    const t0 = performance.now();
+    console.log(`fielddraft: importing GLB reference — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    this.setLoading("Loading GLB file…");
     try {
       const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
       const loader = new GLTFLoader();
@@ -709,12 +730,14 @@ export class KernelStore {
       this.state = {
         ...this.state,
         referenceMesh: { positions, normals, indices },
+        loading: null,
       };
       this.notify();
+      console.log(`fielddraft: GLB reference loaded — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`);
       return true;
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("fielddraft: loadReferenceGlb failed", err);
+      this.setLoading(null);
+      console.error("fielddraft: GLB import failed", err);
       return false;
     }
   }
@@ -722,6 +745,8 @@ export class KernelStore {
   /** K9.3: load a Wavefront OBJ file as visual reference mesh.
    *  Parses the text directly — no external loader needed. */
   loadReferenceObj(text: string): boolean {
+    const t0 = performance.now();
+    console.log(`fielddraft: importing OBJ reference — ${(text.length / 1024).toFixed(0)} KB`);
     const verts: number[] = [];
     const positions: number[] = [];
     const normals: number[] = [];
@@ -752,8 +777,12 @@ export class KernelStore {
       }
     }
 
-    if (positions.length === 0) return false;
+    if (positions.length === 0) {
+      console.error("fielddraft: OBJ import failed — no geometry found");
+      return false;
+    }
 
+    console.log(`fielddraft: OBJ parsed — ${verts.length / 3} vertices, ${positions.length / 9} triangles`);
     // Compute flat normals per triangle.
     for (let i = 0; i < positions.length; i += 9) {
       const ax = positions[i + 3] - positions[i];
@@ -787,6 +816,7 @@ export class KernelStore {
       referenceMesh: { positions: posArr, normals: normArr, indices: idxArr },
     };
     this.notify();
+    console.log(`fielddraft: OBJ reference loaded — ${positions.length / 9} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
     return true;
   }
 
@@ -796,6 +826,9 @@ export class KernelStore {
   convertReferenceToSolid(): number | null {
     const ref_ = this.state.referenceMesh;
     if (!ref_ || ref_.positions.length === 0) return null;
+    const t0 = performance.now();
+    const triCount = ref_.indices.length / 3;
+    console.log(`fielddraft: converting reference mesh to solid — ${triCount} triangles, building BVH…`);
     let id: number;
     try {
       id = this.kernel.addImportedMesh(
@@ -804,12 +837,12 @@ export class KernelStore {
         BoolOpTag.Union,
       );
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error("fielddraft: convertReferenceToSolid failed", err);
       return null;
     }
     this.state = { ...this.state, referenceMesh: null };
     this.commit(new Set([id]), id);
+    console.log(`fielddraft: reference → solid complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`);
     return id;
   }
 
@@ -1580,6 +1613,11 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
+  setLoading(phase: string | null): void {
+    this.state = { ...this.state, loading: phase ? { phase } : null };
+    this.notify();
+  }
+
   /**
    * Enter sketch mode against a given plane query. K6b.2 accepts
    * a plane query as a plain string (placeholder until K6b.3
@@ -2235,23 +2273,38 @@ export class KernelStore {
   /** Import a .3mf file: extract meshes as CSG solids, stash
    *  slicer metadata for roundtrip re-export. */
   import3mfFile(buffer: ArrayBuffer): number[] {
-    const result = import3mf(buffer);
-    const ids: number[] = [];
-    for (const mesh of result.meshes) {
-      const id = this.kernel.addImportedMesh(
-        mesh.positions,
-        mesh.indices,
-        BoolOpTag.Union,
-      );
-      ids.push(id);
+    const t0 = performance.now();
+    console.log(`fielddraft: importing 3MF — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    this.setLoading("Extracting 3MF archive…");
+    try {
+      const result = import3mf(buffer);
+      console.log(`fielddraft: 3MF extracted — ${result.meshes.length} mesh(es)`);
+      const ids: number[] = [];
+      for (let i = 0; i < result.meshes.length; i++) {
+        const mesh = result.meshes[i];
+        this.setLoading(`Building SDF ${i + 1}/${result.meshes.length}…`);
+        console.log(`fielddraft: 3MF mesh ${i + 1} — ${mesh.indices.length / 3} triangles, building BVH…`);
+        const id = this.kernel.addImportedMesh(
+          mesh.positions,
+          mesh.indices,
+          BoolOpTag.Union,
+        );
+        ids.push(id);
+      }
+      this.state = { ...this.state, threemfStash: result.stash, loading: null };
+      if (ids.length > 0) {
+        this.commit(new Set(ids), ids[0]);
+      } else {
+        this.notify();
+      }
+      console.log(`fielddraft: 3MF import complete — ${ids.length} body(ies) in ${(performance.now() - t0).toFixed(0)} ms`);
+      return ids;
+    } catch (e) {
+      this.setLoading(null);
+      console.error("fielddraft: 3MF import failed", e);
+      alert(`3MF import failed: ${e instanceof Error ? e.message : e}`);
+      return [];
     }
-    this.state = { ...this.state, threemfStash: result.stash };
-    if (ids.length > 0) {
-      this.commit(new Set(ids), ids[0]);
-    } else {
-      this.notify();
-    }
-    return ids;
   }
 
   /** Re-export as 3MF, preserving stashed slicer metadata from the
@@ -2366,23 +2419,34 @@ export class KernelStore {
    *  the B-Rep geometry and adds it as an ImportedMesh feature. */
   async importStepFile(buffer: ArrayBuffer): Promise<number | null> {
     if (typeof window === "undefined") return null;
+    const t0 = performance.now();
+    console.log(`fielddraft: importing STEP — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    this.setLoading("Loading STEP importer…");
     try {
       const { importStep } = await import("./stepImport");
       const fileBytes = new Uint8Array(buffer);
-      const { positions, indices } = await importStep(fileBytes);
+      const { positions, indices } = await importStep(fileBytes, (phase) => {
+        console.log(`fielddraft: STEP phase — ${phase}`);
+        this.setLoading(phase);
+      });
 
       const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
       const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
 
+      console.log(`fielddraft: STEP tessellated — ${idxU32.length / 3} triangles, building BVH…`);
+      this.setLoading("Building SDF from mesh…");
       const id = this.kernel.addImportedMesh(
         posF32,
         idxU32,
         BoolOpTag.Union,
       );
+      this.setLoading(null);
       this.commit(new Set([id]), id);
+      console.log(`fielddraft: STEP import complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`);
       return id;
     } catch (e) {
-      console.error("STEP import failed:", e);
+      this.setLoading(null);
+      console.error("fielddraft: STEP import failed", e);
       alert(`STEP import failed: ${e instanceof Error ? e.message : e}`);
       return null;
     }

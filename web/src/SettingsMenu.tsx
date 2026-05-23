@@ -323,6 +323,8 @@ export function SettingsMenu({
           const file = e.currentTarget.files?.[0];
           if (!file || !store) return;
           const name = file.name.toLowerCase();
+          const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+          console.log(`fielddraft: file selected — "${file.name}" (${sizeMB} MB)`);
           if (name.endsWith(".3mf")) {
             file.arrayBuffer().then((buf) => store.import3mfFile(buf));
           } else if (name.endsWith(".step") || name.endsWith(".stp")) {
@@ -330,9 +332,17 @@ export function SettingsMenu({
           } else if (name.endsWith(".glb") || name.endsWith(".gltf")) {
             file.arrayBuffer().then((buf) => store.loadReferenceGlb(buf));
           } else if (name.endsWith(".obj")) {
-            file.text().then((text) => store.loadReferenceObj(text));
+            file.text().then((text) => {
+              if (!store.loadReferenceObj(text)) {
+                alert("OBJ import failed — no geometry found in file.");
+              }
+            });
           } else {
-            file.arrayBuffer().then((buf) => store.loadReferenceMesh(buf));
+            file.arrayBuffer().then((buf) => {
+              if (!store.loadReferenceMesh(buf)) {
+                alert("STL import failed — file may be ASCII STL (only binary STL is supported) or corrupt.");
+              }
+            });
           }
           e.currentTarget.value = "";
         }}

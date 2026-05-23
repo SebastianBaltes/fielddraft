@@ -215,6 +215,14 @@ export function App() {
         <Viewport renderMode={settings.renderMode} />
         {store && state ? <Outliner store={store} state={state} /> : null}
       </main>
+      {state?.loading ? (
+        <div className="fd-loading-overlay">
+          <div className="fd-loading-dialog">
+            <div className="spinner" />
+            <span className="phase">{state.loading.phase}</span>
+          </div>
+        </div>
+      ) : null}
       {showHelp ? (
         <div
           className="fd-help-overlay"
