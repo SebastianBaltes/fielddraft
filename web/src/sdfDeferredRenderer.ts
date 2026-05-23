@@ -60,6 +60,7 @@ const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
 const HULL_INFLATE = 1.01;
+const MAX_BITMASK_PIXELS = 4096 * 2160;
 
 // ── Body colors ────────────────────────────────────────────────────
 
@@ -182,6 +183,7 @@ export interface DeferredPipelineState {
   volumeBaseBuf: ReturnType<typeof uniformArray>;
   volumeBaseData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
+  widthU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
@@ -215,15 +217,14 @@ function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
 function createTransparentGBufferMaterial(
   bodyIndex: number,
   bitmaskBuf: any,
-  width: number,
-  height: number,
+  widthU: ReturnType<typeof uniform>,
 ): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
     const px = int(screenCoordinate.x);
     const py = int(screenCoordinate.y);
-    const pixelIdx = py.mul(int(width)).add(px);
+    const pixelIdx = py.mul(int(widthU)).add(px);
     const bit = shiftLeft(uint(1), uint(bodyIndex));
     atomicOr(bitmaskBuf.element(pixelIdx), bit);
     return vec4(worldPos, float(bodyIndex + 1));
@@ -269,8 +270,7 @@ function createShadeMaterial(
   colorBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
-  width: number,
-  height: number,
+  widthU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
   const sdfEval = buildVmSdfEvalFn(opcodeBuf, {
@@ -290,7 +290,7 @@ function createShadeMaterial(
 
     const px = int(screenCoordinate.x);
     const py = int(screenCoordinate.y);
-    const pixelIdx = py.mul(int(width)).add(px);
+    const pixelIdx = py.mul(int(widthU)).add(px);
     const mask = atomicLoad(bitmaskBuf.element(pixelIdx)).toVar();
     const hasTrans = mask.greaterThan(uint(0));
 
@@ -470,10 +470,11 @@ export function initDeferredPipeline(
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
+  const widthU = uniform(width);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
-  const bitmaskAttr = new StorageBufferAttribute(width * height, 1, Uint32Array);
-  const bitmaskBuf = storage(bitmaskAttr, 'uint', width * height).toAtomic();
+  const bitmaskAttr = new StorageBufferAttribute(MAX_BITMASK_PIXELS, 1, Uint32Array);
+  const bitmaskBuf = storage(bitmaskAttr, 'uint', MAX_BITMASK_PIXELS).toAtomic();
   const clearNode = Fn(() => {
     atomicStore(bitmaskBuf.element(instanceIndex), uint(0));
   })().compute(width * height);
@@ -488,8 +489,7 @@ export function initDeferredPipeline(
     colorBuf,
     volumeBaseBuf,
     camPosUniform,
-    width,
-    height,
+    widthU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -525,6 +525,7 @@ export function initDeferredPipeline(
     volumeBaseBuf,
     volumeBaseData,
     camPosUniform,
+    widthU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -597,7 +598,7 @@ export function rebuildDeferredBodies(
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
     const transMat = createTransparentGBufferMaterial(
-      bodyIndex, state.bitmaskBuf, state.width, state.height,
+      bodyIndex, state.bitmaskBuf, state.widthU,
     );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
@@ -760,8 +761,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.colorBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
-    state.width,
-    state.height,
+    state.widthU,
     state.volumeTextures,
   );
 
@@ -774,6 +774,27 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
 }
 
 // ── Render frame ────────────────────────────────────────────────────
+
+export function resizeDeferredPipeline(
+  state: DeferredPipelineState,
+  width: number,
+  height: number,
+): void {
+  if (state.width === width && state.height === height) return;
+  for (const rt of [state.opaqueRT, state.transparentRT]) {
+    if (rt.depthTexture) {
+      rt.depthTexture.image.width = width;
+      rt.depthTexture.image.height = height;
+      rt.depthTexture.needsUpdate = true;
+    }
+    rt.setSize(width, height);
+  }
+  state.transparentBackRT.setSize(width, height);
+  state.widthU.value = width;
+  state.clearNode.count = width * height;
+  state.width = width;
+  state.height = height;
+}
 
 const _camWorldPos = new THREE.Vector3();
 

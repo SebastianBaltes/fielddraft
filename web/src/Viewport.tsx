@@ -33,6 +33,7 @@ import {
 } from "./sdfVmRenderer";
 import {
   initDeferredPipeline,
+  resizeDeferredPipeline,
   rebuildDeferredBodies,
   rebuildShadeMaterialIfNeeded,
   renderDeferredFrame,
@@ -238,12 +239,7 @@ function SdfDeferredOverlay() {
   const readyRef = useRef(false);
 
   useEffect(() => {
-    if (pipelineRef.current) {
-      disposeDeferredPipeline(pipelineRef.current);
-    }
-    const w = Math.max(size.width, 1);
-    const h = Math.max(size.height, 1);
-    pipelineRef.current = initDeferredPipeline(w, h);
+    pipelineRef.current = initDeferredPipeline(1, 1);
     sdfFingerprintRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
@@ -253,13 +249,20 @@ function SdfDeferredOverlay() {
     if (overlay) overlay.style.display = "flex";
     if (label) label.textContent = "Initializing…";
 
-    invalidate();
     return () => {
       if (pipelineRef.current) {
         disposeDeferredPipeline(pipelineRef.current);
         pipelineRef.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (!pipelineRef.current) return;
+    const w = Math.max(size.width, 1);
+    const h = Math.max(size.height, 1);
+    resizeDeferredPipeline(pipelineRef.current, w, h);
+    invalidate();
   }, [size.width, size.height]);
 
   useFrame(({ gl: renderer, camera }) => {
