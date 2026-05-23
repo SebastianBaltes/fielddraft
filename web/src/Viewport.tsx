@@ -1542,6 +1542,9 @@ export function Viewport({ renderMode }: { renderMode: string }) {
                 forceWebGL: true,
               });
               await fallback.init();
+              const fb = fallback as any;
+              if (!fb.capabilities) fb.capabilities = {};
+              if (!fb.capabilities.getMaxAnisotropy) fb.capabilities.getMaxAnisotropy = () => 1;
               console.log("fielddraft: WebGL fallback active.");
               return fallback;
             }
@@ -1552,7 +1555,10 @@ export function Viewport({ renderMode }: { renderMode: string }) {
                 renderer.setSize(rect.width, rect.height, false);
               }
             }
-            const gpuBackend = (renderer as any).backend?.isWebGPUBackend === true;
+            const r = renderer as any;
+            if (!r.capabilities) r.capabilities = {};
+            if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
+            const gpuBackend = r.backend?.isWebGPUBackend === true;
             console.log(
               gpuBackend
                 ? "fielddraft: WebGPU backend active."
