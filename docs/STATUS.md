@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-05-22
+**Stand:** 2026-05-23
 **Branch:** `main`
 
 ---
@@ -160,6 +160,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K13.2 | K13 | Sweep Feature | ✅ | Profil entlang Pfad mit Twist, Mesh-to-SDF-Konvertierung der Sweep-Hülle |
 | K13.3 | K13 | Manifold Check (Import) | ✅ | Wasserdichtigkeits-Check für importierte Meshes vor SDF-Konvertierung |
 | K13.4 | K13 | Manifold Repair | ✅ | Auto-Repair via repair() bei Import, Boundary-Loop + Centroid-Fan |
+| K13.5 | K13 | Mesh Import 3D SDF Volume Textures | ✅ | `BakedVolume` bakt MeshSdf in 64³-Grid, `OP_PRIM_TEX3D`-Opcode (0x0C) mit `CompileCtx`-Refactor, Zero-Copy WASM-Bridge, `Data3DTexture` mit Hardware-Trilinear-Interpolation. Unterstützt in sdf-vm (per-body) und sdf-deferred (globaler Volume-Index mit per-body Base-Offset). Commit `3cb23e3`. |
 | K14 | K14 | Drag-and-Drop Primitives | ✅ | Toolbar → Viewport DnD |
 | K14.1 | K14 | Drag-and-Drop Sketches | ✅ | handleDrop prüft fielddraft/sketch, Face-Normal → Sketch-Ebene |
 
@@ -190,10 +191,10 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | Ref | Feature | Status | Beschreibung |
 |-----|---------|--------|--------------|
 | K-Exp1 | Analytischer Preview-Pfad | open | Skelett-First-Rendering, 3-Stufen-Orchestrierung |
-| K-Exp2 | SDF Raymarching Performance (60fps@4K) | ✅ | 4 Rendering-Modi (sdf/sdf-vm/sdf-baked/sdf-batch), renderMode-Toggle in Settings, PerfMonitor+HUD (F2), GPU Bytecode VM (uniformArray, keine Recompilation), Baked 3D Distance Field (Storage3DTexture, progressive 64→128→256), Batchmarching Compute Wavefront (INIT→MARCH→SHADE Dispatches), Shared VM-Interpreter (`sdfVmInterpreter.ts`), Benchmark-Infrastruktur mit CSV-Export. Commits `5ec29e1`–`324e928`. |
-| K-Exp3 | Hybrid Mesh+SDF Renderer | ✅ | Phase 1 (Union-only mesh rendering), Phase 2 (SDF overlays in overlap regions), Phase 3 (Fillets + Domain Warps), Phase 4 (Extrude/Revolve native mesh via Marching Squares contours), Phase 4b (sdf-hybrid-vm), Phase 5 (sdf-hybrid-compute), sdf-deferred mode. 10 Render-Modi total (dc/sdf/sdf-vm/sdf-baked/sdf-batch/sdf-hybrid/sdf-hybrid-vm/sdf-hybrid-compute/sdf-deferred). |
+| K-Exp2 | SDF Raymarching Performance | ✅ | **Zwei aktive Render-Modi: `sdf-vm` und `sdf-deferred`.** Legacy-Modi (dc/sdf/sdf-baked/sdf-batch/sdf-hybrid*) entfernt. PerfMonitor+HUD (F2), Shared VM-Interpreter (`sdfVmInterpreter.ts`), Benchmark-Infrastruktur (Playwright `benchmark.spec.ts` + standalone `perf-test.mjs`). 8 Playwright-Tests (7 Renderer + 1 Benchmark). |
+| K-Exp3 | SDF VM (Forward Per-Body Raymarcher) | ✅ | Komplett neu geschrieben (`8070ae7`): Jeder Body bekommt ein eigenes AABB-Box-Mesh (BackSide), Fragment-Shader sphere-traced von Kamera bis Box-Exit, Hardware-Depth-Buffer für Inter-Body-Komposition. 512 Steps, SURFACE_EPS=0.002, 3-Licht-Rig. |
 | K-Exp3.4 | Extrude/Revolve Contour Meshes | ✅ | Marching Squares Kontur-Extraktion aus Sketch-SDF, EdgeKey-Segment-Chaining, Douglas-Peucker-Simplifizierung, Area-basierte Contour-Klassifikation (outer/hole), Three.js ExtrudeGeometry/LatheGeometry. 5 neue Tests in sketch2d.rs. Commit `fb0177c`. |
-| K-Exp3.5 | Deferred Renderer Sphere-Tracing | ✅ | 4-Pass Dual-Mesh Pipeline mit Fragment-Shader Atomics: Clear Bitmask → Opaque RT → Transparent Collect (atomicOr uint32 bitmask) → Unified Shade (multi-body sphere-trace loop). Multi-Body-Transparenz: überlappende transparente Hulls werden korrekt erfasst (z.B. Union Sphere+Cylinder). THREE.js r183 Patches via patch-package für Storage-Buffer read_write in Fragment-Shadern. Commits `e3a1169`, `39b2be7`. |
+| K-Exp3.5 | Deferred Renderer Sphere-Tracing | ✅ | 5-Pass Pipeline: Clear Bitmask → Opaque RT → Transparent Front → **Back-Face RT (MAX-blended scalar Kamera-Distanz für tMax)** → Unified Shade. Multi-Body-Transparenz via atomicOr uint32 bitmask. Back-Face RT eliminiert Ghost-Surface-Artefakte bei Domain-Repetition (Thread/Helix). HULL_INFLATE=1.01 gegen Polygon-Facettierung. Commits `e3a1169`→`e269680`. |
 
 ---
 
@@ -226,7 +227,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | T0 | Architektur-Validierung (inkl. K3.5) | 13 | 13 | **100 %** |
 | T1 | Shippable Alpha (inkl. K7.21g-j) | ~55 | 55 | **100 %** |
 | T2 | SDF-Superkräfte | 6 | 6 | **100 %** |
-| T3 | Feature-Complete | ~11 | 11 | **100 %** |
+| T3 | Feature-Complete | ~12 | 12 | **100 %** |
 | M11–M13 | Backend | ~12 | 12 | **100 %** |
 | Phase 3 | P1–P3 + P2.5/P2.8 | 5 | 5 | **100 %** |
 
