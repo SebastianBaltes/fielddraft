@@ -332,14 +332,14 @@ export function SettingsMenu({
           } else if (name.endsWith(".glb") || name.endsWith(".gltf")) {
             file.arrayBuffer().then((buf) => store.loadReferenceGlb(buf));
           } else if (name.endsWith(".obj")) {
-            file.text().then((text) => {
-              if (!store.loadReferenceObj(text)) {
+            file.text().then(async (text) => {
+              if (!(await store.loadReferenceObj(text))) {
                 alert("OBJ import failed — no geometry found in file or SDF conversion failed.");
               }
             });
           } else {
-            file.arrayBuffer().then((buf) => {
-              if (!store.loadReferenceMesh(buf)) {
+            file.arrayBuffer().then(async (buf) => {
+              if (!(await store.loadReferenceMesh(buf))) {
                 alert("STL import failed — file may be ASCII STL (only binary STL is supported), corrupt, or SDF conversion failed.");
               }
             });

@@ -657,14 +657,16 @@ export class KernelStore {
     return { positions, normals, indices };
   }
 
-  loadReferenceMesh(buffer: ArrayBuffer): boolean {
+  async loadReferenceMesh(buffer: ArrayBuffer): Promise<boolean> {
     this.setLoading("Parsing STL…");
+    await new Promise((r) => setTimeout(r, 0));
     const mesh = this.parseStl(buffer);
     if (!mesh) {
       this.setLoading(null);
       return false;
     }
     this.setLoading("Building SDF from mesh…");
+    await new Promise((r) => setTimeout(r, 0));
     const id = this.importMeshAsFeature(mesh.positions, mesh.normals, mesh.indices);
     this.setLoading(null);
     return id !== null;
@@ -741,6 +743,7 @@ export class KernelStore {
 
       console.log(`fielddraft: GLB parsed — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`);
       this.setLoading("Building SDF from mesh…");
+      await new Promise((r) => setTimeout(r, 0));
       const id = this.importMeshAsFeature(positions, normals, indices);
       this.setLoading(null);
       return id !== null;
@@ -753,7 +756,7 @@ export class KernelStore {
 
   /** K9.3: load a Wavefront OBJ file as visual reference mesh.
    *  Parses the text directly — no external loader needed. */
-  loadReferenceObj(text: string): boolean {
+  async loadReferenceObj(text: string): Promise<boolean> {
     const t0 = performance.now();
     console.log(`fielddraft: importing OBJ reference — ${(text.length / 1024).toFixed(0)} KB`);
     const verts: number[] = [];
@@ -822,6 +825,7 @@ export class KernelStore {
 
     console.log(`fielddraft: OBJ parsed — ${positions.length / 9} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
     this.setLoading("Building SDF from mesh…");
+    await new Promise((r) => setTimeout(r, 0));
     const id = this.importMeshAsFeature(posArr, normArr, idxArr);
     this.setLoading(null);
     return id !== null;
