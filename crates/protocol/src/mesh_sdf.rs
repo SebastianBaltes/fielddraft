@@ -1,7 +1,7 @@
 //! K13.0: Mesh-to-SDF — evaluate the signed distance from a
 //! point to an imported triangle mesh. Uses a BVH (bounding
 //! volume hierarchy) for O(log N) nearest-triangle queries,
-//! and the closest-triangle face-normal for sign determination.
+//! and angle-weighted pseudo-normals for sign determination.
 //!
 //! This module is intentionally self-contained: no dependency
 //! on the rest of the kernel's CSG/BVH infrastructure (those
@@ -102,6 +102,12 @@ pub struct MeshSdf {
     tri_order: Vec<u32>,
     /// True when face normals point inward (CW winding).
     sign_flip: bool,
+    /// Per-triangle vertex indices into vert_pseudonormals.
+    tri_verts: Vec<[u32; 3]>,
+    /// Per-vertex angle-weighted pseudo-normals (Bærentzen & Aanæs).
+    vert_pseudonormals: Vec<[f32; 3]>,
+    /// Per-triangle edge pseudo-normals: [edge v0-v1, edge v0-v2, edge v1-v2].
+    tri_edge_pn: Vec<[[f32; 3]; 3]>,
 }
 
 // ─── Custom Serialize/Deserialize ────────────────────────────
@@ -132,6 +138,8 @@ impl<'de> Deserialize<'de> for MeshSdf {
         let tri_count = raw.tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&raw.tris, &raw.bboxes, tri_count);
         let sign_flip = compute_sign_flip(&raw.tris);
+        let (tri_verts, vert_pseudonormals, tri_edge_pn) =
+            build_pseudonormals(&raw.tris, tri_count);
         Ok(Self {
             tris: raw.tris,
             bboxes: raw.bboxes,
@@ -140,6 +148,9 @@ impl<'de> Deserialize<'de> for MeshSdf {
             bvh_nodes,
             tri_order,
             sign_flip,
+            tri_verts,
+            vert_pseudonormals,
+            tri_edge_pn,
         })
     }
 }
@@ -268,6 +279,8 @@ impl MeshSdf {
         let actual_tri_count = tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&tris, &bboxes, actual_tri_count);
         let sign_flip = compute_sign_flip(&tris);
+        let (tri_verts, vert_pseudonormals, tri_edge_pn) =
+            build_pseudonormals(&tris, actual_tri_count);
 
         Self {
             tris,
@@ -277,6 +290,9 @@ impl MeshSdf {
             bvh_nodes,
             tri_order,
             sign_flip,
+            tri_verts,
+            vert_pseudonormals,
+            tri_edge_pn,
         }
     }
 
@@ -528,7 +544,7 @@ impl MeshSdf {
             return f32::INFINITY;
         }
 
-        let (best_dist_sq, closest_tri) = if self.bvh_nodes.is_empty() {
+        let (best_dist_sq, best_tri, best_s, best_t) = if self.bvh_nodes.is_empty() {
             self.sdf_brute_force_dist_sq(p)
         } else {
             self.sdf_bvh_dist_sq(p)
@@ -536,15 +552,18 @@ impl MeshSdf {
 
         let dist = best_dist_sq.sqrt();
 
-        let base = closest_tri * 9;
-        let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
-        let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
-        let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-        let e1 = sub3(v1, v0);
-        let e2 = sub3(v2, v0);
-        let normal = cross3(e1, e2);
-        let d = sub3(p, v0);
-        let mut sign = if dot3(d, normal) < 0.0 { -1.0 } else { 1.0 };
+        let diag = [
+            self.aabb_max[0] - self.aabb_min[0],
+            self.aabb_max[1] - self.aabb_min[1],
+            self.aabb_max[2] - self.aabb_min[2],
+        ];
+        let threshold = (diag[0] * diag[0] + diag[1] * diag[1] + diag[2] * diag[2]).sqrt() * 0.05;
+
+        let mut sign = if dist < threshold {
+            self.winding_sign(p)
+        } else {
+            self.pseudonormal_sign(p, best_tri, best_s, best_t)
+        };
         if self.sign_flip {
             sign = -sign;
         }
@@ -552,27 +571,118 @@ impl MeshSdf {
         sign * dist
     }
 
-    fn sdf_brute_force_dist_sq(&self, p: [f32; 3]) -> (f32, usize) {
+    /// Sign via generalized winding number (Van Oosterom & Strackee).
+    /// Returns -1.0 inside, 1.0 outside.
+    fn winding_sign(&self, p: [f32; 3]) -> f32 {
+        let tri_count = self.tris.len() / 9;
+        let mut omega = 0.0f64;
+
+        for t in 0..tri_count {
+            let base = t * 9;
+            let a = [
+                (self.tris[base] - p[0]) as f64,
+                (self.tris[base + 1] - p[1]) as f64,
+                (self.tris[base + 2] - p[2]) as f64,
+            ];
+            let b = [
+                (self.tris[base + 3] - p[0]) as f64,
+                (self.tris[base + 4] - p[1]) as f64,
+                (self.tris[base + 5] - p[2]) as f64,
+            ];
+            let c = [
+                (self.tris[base + 6] - p[0]) as f64,
+                (self.tris[base + 7] - p[1]) as f64,
+                (self.tris[base + 8] - p[2]) as f64,
+            ];
+
+            let la = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+            let lb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+            let lc = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+
+            if la < 1e-10 || lb < 1e-10 || lc < 1e-10 {
+                return -1.0;
+            }
+
+            let num = a[0] * (b[1] * c[2] - b[2] * c[1])
+                - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+
+            let ab = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let ac = a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+            let bc = b[0] * c[0] + b[1] * c[1] + b[2] * c[2];
+
+            let den = la * lb * lc + ab * lc + ac * lb + bc * la;
+            omega += num.atan2(den);
+        }
+
+        if omega > std::f64::consts::PI {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
+    fn pseudonormal_sign(&self, p: [f32; 3], tri_idx: usize, s: f32, t: f32) -> f32 {
+        let eps = 1e-4;
+        let base = tri_idx * 9;
+        let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
+        let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
+        let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
+        let e0 = sub3(v1, v0);
+        let e1 = sub3(v2, v0);
+        let closest = [
+            v0[0] + s * e0[0] + t * e1[0],
+            v0[1] + s * e0[1] + t * e1[1],
+            v0[2] + s * e0[2] + t * e1[2],
+        ];
+        let dir = sub3(p, closest);
+
+        let pn = if s < eps && t < eps {
+            self.vert_pseudonormals[self.tri_verts[tri_idx][0] as usize]
+        } else if s > 1.0 - eps && t < eps {
+            self.vert_pseudonormals[self.tri_verts[tri_idx][1] as usize]
+        } else if s < eps && t > 1.0 - eps {
+            self.vert_pseudonormals[self.tri_verts[tri_idx][2] as usize]
+        } else if t < eps {
+            self.tri_edge_pn[tri_idx][0]
+        } else if s < eps {
+            self.tri_edge_pn[tri_idx][1]
+        } else if (s + t) > 1.0 - eps {
+            self.tri_edge_pn[tri_idx][2]
+        } else {
+            cross3(e0, e1)
+        };
+
+        if dot3(dir, pn) < 0.0 { -1.0 } else { 1.0 }
+    }
+
+    fn sdf_brute_force_dist_sq(&self, p: [f32; 3]) -> (f32, usize, f32, f32) {
         let tri_count = self.tris.len() / 9;
         let mut best_dist_sq = f32::INFINITY;
         let mut best_tri = 0usize;
+        let mut best_s = 0.0f32;
+        let mut best_t = 0.0f32;
         for t in 0..tri_count {
             let base = t * 9;
             let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
             let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
             let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-            let dist_sq = point_triangle_dist_sq(p, v0, v1, v2);
+            let (dist_sq, s, t_bary) = point_triangle_dist_sq(p, v0, v1, v2);
             if dist_sq < best_dist_sq {
                 best_dist_sq = dist_sq;
                 best_tri = t;
+                best_s = s;
+                best_t = t_bary;
             }
         }
-        (best_dist_sq, best_tri)
+        (best_dist_sq, best_tri, best_s, best_t)
     }
 
-    fn sdf_bvh_dist_sq(&self, p: [f32; 3]) -> (f32, usize) {
+    fn sdf_bvh_dist_sq(&self, p: [f32; 3]) -> (f32, usize, f32, f32) {
         let mut best_dist_sq = f32::INFINITY;
         let mut best_tri = 0usize;
+        let mut best_s = 0.0f32;
+        let mut best_t = 0.0f32;
         let mut stack: Vec<u32> = Vec::with_capacity(64);
         stack.push(0);
 
@@ -586,15 +696,17 @@ impl MeshSdf {
 
             if node.count > 0 {
                 for i in 0..node.count {
-                    let t = self.tri_order[(node.offset + i) as usize] as usize;
-                    let base = t * 9;
+                    let tri_idx = self.tri_order[(node.offset + i) as usize] as usize;
+                    let base = tri_idx * 9;
                     let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
                     let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
                     let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-                    let dist_sq = point_triangle_dist_sq(p, v0, v1, v2);
+                    let (dist_sq, s, t_bary) = point_triangle_dist_sq(p, v0, v1, v2);
                     if dist_sq < best_dist_sq {
                         best_dist_sq = dist_sq;
-                        best_tri = t;
+                        best_tri = tri_idx;
+                        best_s = s;
+                        best_t = t_bary;
                     }
                 }
             } else {
@@ -612,7 +724,7 @@ impl MeshSdf {
             }
         }
 
-        (best_dist_sq, best_tri)
+        (best_dist_sq, best_tri, best_s, best_t)
     }
 
 }
@@ -717,6 +829,115 @@ fn build_bvh(tris: &[f32], bboxes: &[f32], tri_count: usize) -> (Vec<BvhNode>, V
     (nodes, tri_order)
 }
 
+// ─── Pseudo-normal construction ──────────────────────────────
+
+fn build_pseudonormals(
+    tris: &[f32],
+    tri_count: usize,
+) -> (Vec<[u32; 3]>, Vec<[f32; 3]>, Vec<[[f32; 3]; 3]>) {
+    use std::collections::HashMap;
+
+    if tri_count == 0 {
+        return (vec![], vec![], vec![]);
+    }
+
+    let quantize = |v: f32| -> i64 { (v * 100000.0).round() as i64 };
+    let mut vert_map: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let mut tri_verts: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
+
+    for t in 0..tri_count {
+        let base = t * 9;
+        let mut vids = [0u32; 3];
+        for v in 0..3 {
+            let vb = base + v * 3;
+            let key = (
+                quantize(tris[vb]),
+                quantize(tris[vb + 1]),
+                quantize(tris[vb + 2]),
+            );
+            let next_id = vert_map.len() as u32;
+            vids[v] = *vert_map.entry(key).or_insert(next_id);
+        }
+        tri_verts.push(vids);
+    }
+
+    let unique_vert_count = vert_map.len();
+
+    let mut face_normals: Vec<[f32; 3]> = Vec::with_capacity(tri_count);
+    let mut vert_pn: Vec<[f64; 3]> = vec![[0.0; 3]; unique_vert_count];
+
+    for t in 0..tri_count {
+        let base = t * 9;
+        let v0 = [tris[base], tris[base + 1], tris[base + 2]];
+        let v1 = [tris[base + 3], tris[base + 4], tris[base + 5]];
+        let v2 = [tris[base + 6], tris[base + 7], tris[base + 8]];
+        let e1 = sub3(v1, v0);
+        let e2 = sub3(v2, v0);
+        let n = cross3(e1, e2);
+        face_normals.push(n);
+
+        let edges_at_vert = [
+            (sub3(v1, v0), sub3(v2, v0)),
+            (sub3(v0, v1), sub3(v2, v1)),
+            (sub3(v0, v2), sub3(v1, v2)),
+        ];
+        let vids = tri_verts[t];
+        for (i, (ea, eb)) in edges_at_vert.iter().enumerate() {
+            let len_a = dot3(*ea, *ea).sqrt();
+            let len_b = dot3(*eb, *eb).sqrt();
+            if len_a < 1e-10 || len_b < 1e-10 {
+                continue;
+            }
+            let cos_angle = (dot3(*ea, *eb) / (len_a * len_b)).clamp(-1.0, 1.0);
+            let angle = (cos_angle as f64).acos();
+            let vid = vids[i] as usize;
+            vert_pn[vid][0] += n[0] as f64 * angle;
+            vert_pn[vid][1] += n[1] as f64 * angle;
+            vert_pn[vid][2] += n[2] as f64 * angle;
+        }
+    }
+
+    let vert_pseudonormals: Vec<[f32; 3]> = vert_pn
+        .iter()
+        .map(|pn| [pn[0] as f32, pn[1] as f32, pn[2] as f32])
+        .collect();
+
+    let mut edge_pn: HashMap<(u32, u32), [f64; 3]> = HashMap::new();
+    for t in 0..tri_count {
+        let vids = tri_verts[t];
+        let n = face_normals[t];
+        for &(a, b) in &[(vids[0], vids[1]), (vids[0], vids[2]), (vids[1], vids[2])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            let entry = edge_pn.entry(key).or_insert([0.0; 3]);
+            entry[0] += n[0] as f64;
+            entry[1] += n[1] as f64;
+            entry[2] += n[2] as f64;
+        }
+    }
+
+    let mut tri_edge_pn: Vec<[[f32; 3]; 3]> = Vec::with_capacity(tri_count);
+    for t in 0..tri_count {
+        let vids = tri_verts[t];
+        let edges = [
+            (vids[0], vids[1]),
+            (vids[0], vids[2]),
+            (vids[1], vids[2]),
+        ];
+        let mut epn = [[0.0f32; 3]; 3];
+        for (i, &(a, b)) in edges.iter().enumerate() {
+            let key = if a < b { (a, b) } else { (b, a) };
+            if let Some(pn) = edge_pn.get(&key) {
+                epn[i] = [pn[0] as f32, pn[1] as f32, pn[2] as f32];
+            } else {
+                epn[i] = face_normals[t];
+            }
+        }
+        tri_edge_pn.push(epn);
+    }
+
+    (tri_verts, vert_pseudonormals, tri_edge_pn)
+}
+
 // ─── Geometry helpers ────────────────────────────────────────
 
 /// Squared distance from point to AABB (0 if inside).
@@ -735,14 +956,14 @@ fn aabb_point_dist_sq(p: [f32; 3], aabb_min: [f32; 3], aabb_max: [f32; 3]) -> f3
     dist_sq
 }
 
-/// Squared distance from point `p` to triangle `(v0, v1, v2)`.
-/// Eberly's Voronoi-region algorithm for exact closest-point.
+/// Squared distance from point `p` to triangle `(v0, v1, v2)`,
+/// plus barycentric (s, t): closest = v0 + s*(v1-v0) + t*(v2-v0).
 fn point_triangle_dist_sq(
     p: [f32; 3],
     v0: [f32; 3],
     v1: [f32; 3],
     v2: [f32; 3],
-) -> f32 {
+) -> (f32, f32, f32) {
     let e0 = sub3(v1, v0);
     let e1 = sub3(v2, v0);
     let v = sub3(p, v0);
@@ -826,7 +1047,7 @@ fn point_triangle_dist_sq(
         v0[2] + s * e0[2] + t * e1[2],
     ];
     let diff = sub3(p, closest);
-    dot3(diff, diff)
+    (dot3(diff, diff), s, t)
 }
 
 #[inline]
@@ -1023,8 +1244,8 @@ mod tests {
             [-2.0, -2.0, -2.0],
         ];
         for p in &points {
-            let (bvh_dist, _) = m.sdf_bvh_dist_sq(*p);
-            let (brute_dist, _) = m.sdf_brute_force_dist_sq(*p);
+            let (bvh_dist, _, _, _) = m.sdf_bvh_dist_sq(*p);
+            let (brute_dist, _, _, _) = m.sdf_brute_force_dist_sq(*p);
             assert!(
                 (bvh_dist - brute_dist).abs() < 1e-6,
                 "BVH vs brute mismatch at {:?}: {} vs {}",
