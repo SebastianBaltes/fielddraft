@@ -552,18 +552,7 @@ impl MeshSdf {
 
         let dist = best_dist_sq.sqrt();
 
-        let diag = [
-            self.aabb_max[0] - self.aabb_min[0],
-            self.aabb_max[1] - self.aabb_min[1],
-            self.aabb_max[2] - self.aabb_min[2],
-        ];
-        let threshold = (diag[0] * diag[0] + diag[1] * diag[1] + diag[2] * diag[2]).sqrt() * 0.05;
-
-        let mut sign = if dist < threshold {
-            self.winding_sign(p)
-        } else {
-            self.pseudonormal_sign(p, best_tri, best_s, best_t)
-        };
+        let mut sign = self.pseudonormal_sign(p, best_tri, best_s, best_t);
         if self.sign_flip {
             sign = -sign;
         }
