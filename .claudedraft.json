@@ -1,7 +1,7 @@
 {
   "webapp": {
     "port": 5173,
-    "start_cmd": "just build-wasm && cd web && npm run dev -- --host 0.0.0.0",
+    "start_cmd": "export NVM_DIR=\"$HOME/.nvm\" && . \"$NVM_DIR/nvm.sh\" && nvm use node && source ~/.cargo/env && just build-wasm && cd web && npm run dev -- --host 0.0.0.0",
     "path": "/"
   }
 }
