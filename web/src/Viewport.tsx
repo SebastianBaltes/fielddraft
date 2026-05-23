@@ -34,6 +34,7 @@ import {
 import {
   initDeferredPipeline,
   rebuildDeferredBodies,
+  rebuildShadeMaterialIfNeeded,
   renderDeferredFrame,
   compileDeferredPipeline,
   disposeDeferredPipeline,
@@ -169,8 +170,23 @@ function SdfVmOverlay() {
       const opcodes = opcodesView.slice();
       const aabb = k.bodySdfAabb(i);
 
-      if (!existing) {
-        const handle = createSdfVmBody(opcodes, aabb, i);
+      const volCount = k.bodyVolumeCount(i);
+      let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
+      if (volCount > 0) {
+        volumes = [];
+        for (let v = 0; v < volCount; v++) {
+          volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
+        }
+      }
+
+      const volChanged = existing && existing.volumeTextures.length !== (volCount || 0);
+
+      if (!existing || volChanged) {
+        if (existing) {
+          groupRef.current.remove(existing.mesh);
+          disposeSdfVmBody(existing);
+        }
+        const handle = createSdfVmBody(opcodes, aabb, i, volumes);
         groupRef.current.add(handle.mesh);
         handlesRef.current.set(bodyId, { ...handle, version });
         changed = true;
@@ -254,7 +270,7 @@ function SdfDeferredOverlay() {
 
     const fpParts: (string | number)[] = [count];
     for (let i = 0; i < count; i++) {
-      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length);
+      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
     }
     const fp = fpParts.join(",");
     const needsRebuild = fp !== sdfFingerprintRef.current;
@@ -272,9 +288,20 @@ function SdfDeferredOverlay() {
         const opcodesView = k.bodySdfOpcodesView(i);
         const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
         const aabb = k.bodySdfAabb(i);
-        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb });
+
+        const volCount = k.bodyVolumeCount(i);
+        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
+        if (volCount > 0) {
+          volumes = [];
+          for (let v = 0; v < volCount; v++) {
+            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
+          }
+        }
+
+        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb, volumes });
       }
       rebuildDeferredBodies(pipeline, bodies);
+      rebuildShadeMaterialIfNeeded(pipeline);
       sdfFingerprintRef.current = fp;
 
       if (label) label.textContent = "Compiling shader…";

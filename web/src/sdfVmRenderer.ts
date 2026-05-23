@@ -54,6 +54,7 @@ export interface SdfVmBodyHandle {
   opcodeBuf: ReturnType<typeof uniformArray>;
   opcodeData: Float32Array;
   opcodeLen: number;
+  volumeTextures: THREE.Data3DTexture[];
 }
 
 // ── Body management ─────────────────────────────────────────────────
@@ -62,13 +63,35 @@ export function createSdfVmBody(
   opcodes: Float32Array,
   aabb: Float32Array,
   bodyIndex: number = 0,
+  volumes?: { data: Float32Array; dims: [number, number, number] }[],
 ): SdfVmBodyHandle {
   const opcodeData = new Float32Array(VM_MAX_OPCODES);
   opcodeData.set(opcodes.subarray(0, Math.min(opcodes.length, VM_MAX_OPCODES)));
   const opcodeLen = Math.min(opcodes.length, VM_MAX_OPCODES);
 
+  const volumeTextures: THREE.Data3DTexture[] = [];
+  if (volumes) {
+    for (const vol of volumes) {
+      const tex = new THREE.Data3DTexture(
+        new Float32Array(vol.data),
+        vol.dims[0], vol.dims[1], vol.dims[2],
+      );
+      tex.format = THREE.RedFormat;
+      tex.type = THREE.FloatType;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.wrapR = THREE.ClampToEdgeWrapping;
+      tex.needsUpdate = true;
+      volumeTextures.push(tex);
+    }
+  }
+
   const opcodeBuf = uniformArray(opcodeData, "float");
-  const sceneSdf = buildVmSdfEvalFn(opcodeBuf);
+  const sceneSdf = buildVmSdfEvalFn(opcodeBuf, {
+    volumeTextures: volumeTextures.length > 0 ? volumeTextures : undefined,
+  });
 
   const [cr, cg, cb] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
   const bodyColorU = uniform(new THREE.Vector3(cr, cg, cb));
@@ -153,7 +176,7 @@ export function createSdfVmBody(
   mesh.position.set(cx, cy, cz);
   mesh.frustumCulled = false;
 
-  return { mesh, material, opcodeBuf, opcodeData, opcodeLen };
+  return { mesh, material, opcodeBuf, opcodeData, opcodeLen, volumeTextures };
 }
 
 export function updateSdfVmBody(
@@ -195,4 +218,5 @@ export function updateSdfVmBody(
 export function disposeSdfVmBody(handle: SdfVmBodyHandle): void {
   handle.mesh.geometry.dispose();
   handle.material.dispose();
+  for (const tex of handle.volumeTextures) tex.dispose();
 }

@@ -175,6 +175,10 @@ export class Kernel {
      */
     bodyVersion(i: number): number;
     bodyVertexCount(i: number): number;
+    bodyVolumeCount(i: number): number;
+    bodyVolumeDataLen(i: number, vol_idx: number): number;
+    bodyVolumeDataPtr(i: number, vol_idx: number): number;
+    bodyVolumeDims(i: number, vol_idx: number): Uint32Array;
     canRedo(): boolean;
     canUndo(): boolean;
     classifyForStep(): string;
@@ -513,6 +517,10 @@ export interface InitOutput {
     readonly kernel_bodyTriangleCount: (a: number, b: number) => number;
     readonly kernel_bodyVersion: (a: number, b: number) => number;
     readonly kernel_bodyVertexCount: (a: number, b: number) => number;
+    readonly kernel_bodyVolumeCount: (a: number, b: number) => number;
+    readonly kernel_bodyVolumeDataLen: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyVolumeDataPtr: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyVolumeDims: (a: number, b: number, c: number) => [number, number];
     readonly kernel_canRedo: (a: number) => number;
     readonly kernel_canUndo: (a: number) => number;
     readonly kernel_classifyForStep: (a: number) => [number, number];

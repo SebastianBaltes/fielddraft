@@ -179,6 +179,8 @@ export interface DeferredPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  volumeBaseBuf: ReturnType<typeof uniformArray>;
+  volumeBaseData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
@@ -189,6 +191,8 @@ export interface DeferredPipelineState {
   clearNode: any;
   width: number;
   height: number;
+  volumeTextures: THREE.Data3DTexture[];
+  needsShadeRebuild: boolean;
 }
 
 // ── G-Buffer material ───────────────────────────────────────────────
@@ -263,11 +267,17 @@ function createShadeMaterial(
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
+  volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   width: number,
   height: number,
+  volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
-  const sdfEval = buildVmSdfEvalFn(opcodeBuf, { withBaseOffset: true });
+  const sdfEval = buildVmSdfEvalFn(opcodeBuf, {
+    withBaseOffset: true,
+    volumeTextures,
+    withVolumeBaseIdx: volumeTextures.length > 0,
+  });
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
@@ -325,7 +335,8 @@ function createShadeMaterial(
           const bit = shiftLeft(uint(1), uint(bodyIdx));
           If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
             const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-            const d = sdfEval({ p, baseOffset: baseOff });
+            const volBase = int(volumeBaseBuf.element(bodyIdx));
+            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
             If(d.lessThan(minD), () => {
               minD.assign(d);
               closestBody.assign(bodyIdx);
@@ -367,18 +378,19 @@ function createShadeMaterial(
 
     // Normal via central differences at shade point
     const baseOff = int(offsetBuf.element(shadeBodyIdx.mul(2)));
+    const volBase = int(volumeBaseBuf.element(shadeBodyIdx));
     const p = shadePos;
     const eps = float(NORMAL_EPS);
     const ex = vec3(eps, 0, 0);
     const ey = vec3(0, eps, 0);
     const ez = vec3(0, 0, eps);
     const n = normalize(vec3(
-      sdfEval({ p: p.add(ex), baseOffset: baseOff })
-        .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff })),
-      sdfEval({ p: p.add(ey), baseOffset: baseOff })
-        .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff })),
-      sdfEval({ p: p.add(ez), baseOffset: baseOff })
-        .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff })),
+      sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
     ));
 
     // Lighting
@@ -454,6 +466,9 @@ export function initDeferredPipeline(
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const volumeBaseData = new Float32Array(MAX_BODIES);
+  const volumeBaseBuf = uniformArray(volumeBaseData, "float");
+
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
@@ -471,6 +486,7 @@ export function initDeferredPipeline(
     opcodeBuf,
     offsetBuf,
     colorBuf,
+    volumeBaseBuf,
     camPosUniform,
     width,
     height,
@@ -506,6 +522,8 @@ export function initDeferredPipeline(
     offsetData,
     colorBuf,
     colorData,
+    volumeBaseBuf,
+    volumeBaseData,
     camPosUniform,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
@@ -516,6 +534,8 @@ export function initDeferredPipeline(
     clearNode,
     width,
     height,
+    volumeTextures: [],
+    needsShadeRebuild: false,
   };
 }
 
@@ -528,6 +548,7 @@ export function rebuildDeferredBodies(
     hybridInfo: HybridInfo;
     opcodes: Float32Array;
     aabb?: Float32Array;
+    volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
   for (const meshes of state.bodyOpaqueMeshes.values()) {
@@ -647,6 +668,36 @@ export function rebuildDeferredBodies(
     state.bodyTransparentMeshes.set(bodyIndex, transMeshes);
     state.bodyBackMeshes.set(bodyIndex, backMeshes);
   }
+
+  // Volume textures: collect from all bodies, build global index
+  const prevVolCount = state.volumeTextures.length;
+  for (const tex of state.volumeTextures) tex.dispose();
+
+  const newVolumes: THREE.Data3DTexture[] = [];
+  state.volumeBaseData.fill(0);
+
+  for (const { bodyIndex, volumes } of bodies) {
+    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
+    state.volumeBaseData[bodyIndex] = newVolumes.length;
+    for (const vol of volumes) {
+      const tex = new THREE.Data3DTexture(
+        new Float32Array(vol.data),
+        vol.dims[0], vol.dims[1], vol.dims[2],
+      );
+      tex.format = THREE.RedFormat;
+      tex.type = THREE.FloatType;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.wrapR = THREE.ClampToEdgeWrapping;
+      tex.needsUpdate = true;
+      newVolumes.push(tex);
+    }
+  }
+
+  state.volumeTextures = newVolumes;
+  state.needsShadeRebuild = newVolumes.length !== prevVolCount;
 }
 
 function addAabbBox(
@@ -687,6 +738,39 @@ function computeLeafAABB(
     if (a[5] > maxZ) maxZ = a[5];
   }
   return [minX, minY, minZ, maxX, maxY, maxZ];
+}
+
+// ── Shade material rebuild (when volume texture count changes) ──────
+
+export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void {
+  if (!state.needsShadeRebuild) return;
+  state.needsShadeRebuild = false;
+
+  state.shadeMaterial.dispose();
+  const oldMesh = state.shadeScene.children[0];
+  if (oldMesh) state.shadeScene.remove(oldMesh);
+
+  state.shadeMaterial = createShadeMaterial(
+    state.opaqueRT.texture,
+    state.transparentRT.texture,
+    state.transparentBackRT.texture,
+    state.bitmaskBuf,
+    state.opcodeBuf,
+    state.offsetBuf,
+    state.colorBuf,
+    state.volumeBaseBuf,
+    state.camPosUniform,
+    state.width,
+    state.height,
+    state.volumeTextures,
+  );
+
+  const shadeMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    state.shadeMaterial,
+  );
+  shadeMesh.frustumCulled = false;
+  state.shadeScene.add(shadeMesh);
 }
 
 // ── Render frame ────────────────────────────────────────────────────
@@ -774,6 +858,8 @@ export function disposeDeferredPipeline(state: DeferredPipelineState): void {
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
   state.bodyBackMeshes.clear();
+  for (const tex of state.volumeTextures) tex.dispose();
+  state.volumeTextures = [];
   state.opaqueRT.dispose();
   state.transparentRT.dispose();
   state.transparentBackRT.dispose();

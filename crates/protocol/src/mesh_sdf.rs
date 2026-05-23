@@ -35,6 +35,54 @@ struct BvhNode {
     count: u32,
 }
 
+/// Precomputed 3D SDF volume for GPU texture upload.
+#[derive(Debug, Clone)]
+pub struct BakedVolume {
+    pub data: Vec<f32>,
+    pub dims: [u32; 3],
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+}
+
+impl BakedVolume {
+    pub fn sample_trilinear(&self, p: [f32; 3]) -> f32 {
+        let [nx, ny, nz] = self.dims;
+        let uvw = [
+            (p[0] - self.aabb_min[0]) / (self.aabb_max[0] - self.aabb_min[0]),
+            (p[1] - self.aabb_min[1]) / (self.aabb_max[1] - self.aabb_min[1]),
+            (p[2] - self.aabb_min[2]) / (self.aabb_max[2] - self.aabb_min[2]),
+        ];
+        let fx = uvw[0] * nx as f32 - 0.5;
+        let fy = uvw[1] * ny as f32 - 0.5;
+        let fz = uvw[2] * nz as f32 - 0.5;
+        let x0 = (fx.floor() as i32).clamp(0, nx as i32 - 1) as usize;
+        let y0 = (fy.floor() as i32).clamp(0, ny as i32 - 1) as usize;
+        let z0 = (fz.floor() as i32).clamp(0, nz as i32 - 1) as usize;
+        let x1 = (x0 + 1).min(nx as usize - 1);
+        let y1 = (y0 + 1).min(ny as usize - 1);
+        let z1 = (z0 + 1).min(nz as usize - 1);
+        let tx = fx - fx.floor();
+        let ty = fy - fy.floor();
+        let tz = fz - fz.floor();
+        let idx = |x: usize, y: usize, z: usize| z * (nx as usize * ny as usize) + y * nx as usize + x;
+        let c000 = self.data[idx(x0, y0, z0)];
+        let c100 = self.data[idx(x1, y0, z0)];
+        let c010 = self.data[idx(x0, y1, z0)];
+        let c110 = self.data[idx(x1, y1, z0)];
+        let c001 = self.data[idx(x0, y0, z1)];
+        let c101 = self.data[idx(x1, y0, z1)];
+        let c011 = self.data[idx(x0, y1, z1)];
+        let c111 = self.data[idx(x1, y1, z1)];
+        let c00 = c000 * (1.0 - tx) + c100 * tx;
+        let c10 = c010 * (1.0 - tx) + c110 * tx;
+        let c01 = c001 * (1.0 - tx) + c101 * tx;
+        let c11 = c011 * (1.0 - tx) + c111 * tx;
+        let c0 = c00 * (1.0 - ty) + c10 * ty;
+        let c1 = c01 * (1.0 - ty) + c11 * ty;
+        c0 * (1.0 - tz) + c1 * tz
+    }
+}
+
 /// A triangle mesh converted to a queryable signed distance
 /// field. Immutable after construction — parameter edits
 /// require rebuilding from the source triangles.
@@ -416,6 +464,54 @@ impl MeshSdf {
         }
 
         Self::from_buffers(&all_positions, &all_indices)
+    }
+
+    /// Bake the mesh SDF into a 3D volume grid for GPU texture upload.
+    /// Resolution is per-axis (e.g. 64 → 64³ = 262k evaluations).
+    pub fn bake_volume(&self, resolution: u32) -> BakedVolume {
+        let pad_frac = 0.05;
+        let extent = [
+            self.aabb_max[0] - self.aabb_min[0],
+            self.aabb_max[1] - self.aabb_min[1],
+            self.aabb_max[2] - self.aabb_min[2],
+        ];
+        let max_ext = extent[0].max(extent[1]).max(extent[2]).max(1e-6);
+        let padding = max_ext * pad_frac;
+        let aabb_min = [
+            self.aabb_min[0] - padding,
+            self.aabb_min[1] - padding,
+            self.aabb_min[2] - padding,
+        ];
+        let aabb_max = [
+            self.aabb_max[0] + padding,
+            self.aabb_max[1] + padding,
+            self.aabb_max[2] + padding,
+        ];
+        let res = resolution as usize;
+        let mut data = vec![0.0f32; res * res * res];
+        let step = [
+            (aabb_max[0] - aabb_min[0]) / resolution as f32,
+            (aabb_max[1] - aabb_min[1]) / resolution as f32,
+            (aabb_max[2] - aabb_min[2]) / resolution as f32,
+        ];
+        for z in 0..res {
+            for y in 0..res {
+                for x in 0..res {
+                    let p = [
+                        aabb_min[0] + (x as f32 + 0.5) * step[0],
+                        aabb_min[1] + (y as f32 + 0.5) * step[1],
+                        aabb_min[2] + (z as f32 + 0.5) * step[2],
+                    ];
+                    data[z * res * res + y * res + x] = self.sdf(p);
+                }
+            }
+        }
+        BakedVolume {
+            data,
+            dims: [resolution, resolution, resolution],
+            aabb_min,
+            aabb_max,
+        }
     }
 
     /// Signed distance from `p` to the mesh surface.
@@ -925,6 +1021,33 @@ mod tests {
         let m = unit_cube_mesh();
         assert!(!m.bvh_nodes.is_empty());
         assert_eq!(m.tri_order.len(), 12);
+    }
+
+    #[test]
+    fn bake_volume_captures_inside_outside() {
+        let m = unit_cube_mesh();
+        let vol = m.bake_volume(16);
+        assert_eq!(vol.dims, [16, 16, 16]);
+        assert_eq!(vol.data.len(), 16 * 16 * 16);
+        let center_val = vol.sample_trilinear([0.0, 0.0, 0.0]);
+        assert!(center_val < 0.0, "center should be inside: {center_val}");
+        let outside_val = vol.sample_trilinear([3.0, 0.0, 0.0]);
+        assert!(outside_val > 0.0, "outside should be positive: {outside_val}");
+    }
+
+    #[test]
+    fn bake_volume_trilinear_matches_sdf() {
+        let m = unit_cube_mesh();
+        let vol = m.bake_volume(32);
+        let points = [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.8, 0.0, 0.0]];
+        for p in &points {
+            let exact = m.sdf(*p);
+            let approx = vol.sample_trilinear(*p);
+            assert!(
+                (exact - approx).abs() < 0.3,
+                "trilinear mismatch at {p:?}: exact={exact}, approx={approx}",
+            );
+        }
     }
 
     #[test]

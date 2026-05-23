@@ -2646,6 +2646,41 @@ impl Kernel {
             })
     }
 
+    #[wasm_bindgen(js_name = bodyVolumeCount)]
+    pub fn body_volume_count(&self, i: usize) -> usize {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .map_or(0, |s| s.volumes.len())
+    }
+
+    #[wasm_bindgen(js_name = bodyVolumeDataPtr)]
+    pub fn body_volume_data_ptr(&self, i: usize, vol_idx: usize) -> *const f32 {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .and_then(|s| s.volumes.get(vol_idx))
+            .map_or(std::ptr::null(), |v| v.data.as_ptr())
+    }
+
+    #[wasm_bindgen(js_name = bodyVolumeDataLen)]
+    pub fn body_volume_data_len(&self, i: usize, vol_idx: usize) -> usize {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .and_then(|s| s.volumes.get(vol_idx))
+            .map_or(0, |v| v.data.len())
+    }
+
+    #[wasm_bindgen(js_name = bodyVolumeDims)]
+    pub fn body_volume_dims(&self, i: usize, vol_idx: usize) -> Vec<u32> {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .and_then(|s| s.volumes.get(vol_idx))
+            .map_or(vec![0, 0, 0], |v| v.dims.to_vec())
+    }
+
     #[wasm_bindgen(js_name = bodyHybridInfoJson)]
     pub fn body_hybrid_info_json(&self, i: usize) -> String {
         let bounded = body::build_bounded_for_body(

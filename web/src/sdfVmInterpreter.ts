@@ -20,6 +20,7 @@ import {
   min,
   sqrt,
   step,
+  texture,
   vec2,
   vec3,
   vec4,
@@ -27,10 +28,12 @@ import {
   uniformArray,
 } from "three/tsl";
 
+import * as THREE from "three";
+
 import {
   OP_PRIM_BOX, OP_PRIM_SPHERE, OP_PRIM_CYLINDER, OP_PRIM_TORUS,
   OP_PRIM_CONE, OP_PRIM_CAPSULE, OP_PRIM_HEX_PRISM, OP_PRIM_ELLIPSOID,
-  OP_PRIM_CONST, OP_PRIM_GYROID, OP_PRIM_THREAD,
+  OP_PRIM_CONST, OP_PRIM_GYROID, OP_PRIM_THREAD, OP_PRIM_TEX3D,
   OP_PRIM2D_CIRCLE, OP_PRIM2D_RECT, OP_PRIM2D_POLY, OP_PRIM2D_SECTOR,
   OP_UNION, OP_DIFFERENCE, OP_INTERSECT, OP_SMOOTH_UNION, OP_SMOOTH_DIFF,
   OP_SHELL, OP_MORPH, OP_DISPLACE_VAL, OP_EXTRUDE, OP_REVOLVE_SCALE,
@@ -44,6 +47,8 @@ import {
   blendMinFn, sdfCapsule3dFn, sdfExtrudeFn,
   sdfRect2dFn, sdfCircle2dFn, sdfSector2dFn,
 } from "./sdfRenderer";
+
+export const MAX_VOLUME_TEXTURES = 4;
 
 export const VM_MAX_OPCODES = 2048;
 
@@ -61,9 +66,15 @@ export const floatToIntFn = wgslFn(`
 
 export function buildVmSdfEvalFn(
   opBuf: ReturnType<typeof uniformArray>,
-  options?: { withBaseOffset?: boolean },
+  options?: {
+    withBaseOffset?: boolean;
+    volumeTextures?: THREE.Data3DTexture[];
+    withVolumeBaseIdx?: boolean;
+  },
 ) {
   const useBaseOffset = options?.withBaseOffset ?? false;
+  const volTextures = options?.volumeTextures ?? [];
+  const useVolumeBaseIdx = options?.withVolumeBaseIdx ?? false;
   return Fn(({ p: pIn, baseOffset }: any) => {
     const pc = useBaseOffset ? int(baseOffset).toVar() : int(0).toVar();
 
@@ -199,6 +210,27 @@ export function buildVmSdfEvalFn(
         const { local, scale: s } = emitTransformAndLocal();
         const nom_r = rd(), pitch = rd(), depth = rd(), hh = rd();
         pushV(sdfThreadFn({ p: local, nom_r, pitch, depth, hh }).mul(s));
+
+      }).ElseIf(tag.equal(int(OP_PRIM_TEX3D)), () => {
+        const texIdxRaw = rd();
+        const { local, scale: s } = emitTransformAndLocal();
+        const aminx = rd(), aminy = rd(), aminz = rd();
+        const amaxx = rd(), amaxy = rd(), amaxz = rd();
+        const uvw = local.sub(vec3(aminx, aminy, aminz))
+          .div(vec3(amaxx, amaxy, amaxz).sub(vec3(aminx, aminy, aminz)));
+        const dist = float(1e10).toVar();
+        if (volTextures.length > 0) {
+          const texIdx = floatToIntFn({ v: texIdxRaw });
+          const lookupIdx = useVolumeBaseIdx
+            ? texIdx.add(int(volumeBaseIdx))
+            : texIdx;
+          for (let i = 0; i < volTextures.length; i++) {
+            If(lookupIdx.equal(int(i)), () => {
+              dist.assign(texture(volTextures[i], uvw).x);
+            });
+          }
+        }
+        pushV(dist.mul(s));
 
       }).ElseIf(tag.equal(int(OP_PRIM2D_CIRCLE)), () => {
         const cx = rd(), cy = rd(), r = rd();

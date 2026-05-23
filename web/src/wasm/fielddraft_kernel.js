@@ -474,6 +474,43 @@ export class Kernel {
         return ret >>> 0;
     }
     /**
+     * @param {number} i
+     * @returns {number}
+     */
+    bodyVolumeCount(i) {
+        const ret = wasm.kernel_bodyVolumeCount(this.__wbg_ptr, i);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @param {number} vol_idx
+     * @returns {number}
+     */
+    bodyVolumeDataLen(i, vol_idx) {
+        const ret = wasm.kernel_bodyVolumeDataLen(this.__wbg_ptr, i, vol_idx);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @param {number} vol_idx
+     * @returns {number}
+     */
+    bodyVolumeDataPtr(i, vol_idx) {
+        const ret = wasm.kernel_bodyVolumeDataPtr(this.__wbg_ptr, i, vol_idx);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @param {number} vol_idx
+     * @returns {Uint32Array}
+     */
+    bodyVolumeDims(i, vol_idx) {
+        const ret = wasm.kernel_bodyVolumeDims(this.__wbg_ptr, i, vol_idx);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * @returns {boolean}
      */
     canRedo() {
@@ -1392,6 +1429,11 @@ const KernelFinalization = (typeof FinalizationRegistry === 'undefined')
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayU8FromWasm0(ptr, len) {

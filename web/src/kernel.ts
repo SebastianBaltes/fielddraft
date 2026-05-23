@@ -306,6 +306,22 @@ export class Kernel {
     return new Float32Array(this.inner.bodySdfAabb(i));
   }
 
+  bodyVolumeCount(i: number): number {
+    return this.inner.bodyVolumeCount(i);
+  }
+
+  bodyVolumeDataView(i: number, volIdx: number): Float32Array {
+    const ptr = this.inner.bodyVolumeDataPtr(i, volIdx);
+    const len = this.inner.bodyVolumeDataLen(i, volIdx);
+    if (!ptr || len === 0) return new Float32Array(0);
+    return new Float32Array(this.memory.buffer, ptr, len);
+  }
+
+  bodyVolumeDims(i: number, volIdx: number): [number, number, number] {
+    const dims = this.inner.bodyVolumeDims(i, volIdx);
+    return [dims[0], dims[1], dims[2]];
+  }
+
   bodyHybridInfo(i: number): HybridInfo {
     return JSON.parse(this.inner.bodyHybridInfoJson(i));
   }

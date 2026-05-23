@@ -10,7 +10,7 @@
 //! A CPU interpreter ([`eval_opcodes`]) mirrors the GPU logic 1:1 so
 //! that every opcode path can be tested without a GPU.
 
-use fielddraft_protocol::{Primitive, Transform};
+use fielddraft_protocol::{BakedVolume, Primitive, Transform};
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, BlendMode};
@@ -35,6 +35,7 @@ pub const OP_PRIM_ELLIPSOID: u32 = 0x08; // +11: transform(8) + radii(3)
 pub const OP_PRIM_CONST: u32     = 0x09; // +1:  constant distance
 pub const OP_PRIM_GYROID: u32    = 0x0A; // +10: transform(8) + cell_size(1) + thickness(1)
 pub const OP_PRIM_THREAD: u32    = 0x0B; // +12: transform(8) + nom_r + pitch + depth + half_h
+pub const OP_PRIM_TEX3D: u32     = 0x0C; // +15: tex_idx(1) + transform(8) + aabb_min(3) + aabb_max(3)
 
 // 2D primitives — evaluate at (point.x, point.y), push onto stack.
 pub const OP_PRIM2D_CIRCLE: u32  = 0x10; // +3: center(2) + radius(1)
@@ -77,6 +78,7 @@ pub const OP_END: u32            = 0xFF;
 pub struct CompiledSdf {
     pub opcodes: Vec<f32>,
     pub aabb: Aabb,
+    pub volumes: Vec<BakedVolume>,
 }
 
 impl CompiledSdf {
@@ -87,14 +89,25 @@ impl CompiledSdf {
 
 // ── Compiler ───────────────────────────────────────────────────────
 
+struct CompileCtx {
+    opcodes: Vec<f32>,
+    volumes: Vec<BakedVolume>,
+}
+
+const MESH_VOLUME_RESOLUTION: u32 = 64;
+
 /// Compile a body's `BoundedCsg` tree into a flat opcode buffer.
 pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
-    let mut opcodes = Vec::with_capacity(256);
-    emit_node(node, &mut opcodes);
-    opcodes.push(f32::from_bits(OP_END));
+    let mut ctx = CompileCtx {
+        opcodes: Vec::with_capacity(256),
+        volumes: Vec::new(),
+    };
+    emit_node(node, &mut ctx);
+    ctx.opcodes.push(f32::from_bits(OP_END));
     CompiledSdf {
-        opcodes,
+        opcodes: ctx.opcodes,
         aabb: node.aabb(),
+        volumes: ctx.volumes,
     }
 }
 
@@ -109,7 +122,8 @@ fn blend_mode_f32(m: BlendMode) -> f32 {
     }
 }
 
-fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
+fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
+    let out = &mut ctx.opcodes;
     match node {
         BoundedCsg::Empty => {
             out.push(op(OP_PRIM_CONST));
@@ -120,22 +134,26 @@ fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
             world_transform,
             ..
         } => {
-            emit_leaf_primitive(primitive, world_transform, out);
+            emit_leaf_primitive(primitive, world_transform, ctx);
+            return;
         }
         BoundedCsg::Union { left, right, .. } => {
-            emit_node(left, out);
-            emit_node(right, out);
-            out.push(op(OP_UNION));
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            ctx.opcodes.push(op(OP_UNION));
+            return;
         }
         BoundedCsg::Difference { left, right, .. } => {
-            emit_node(left, out);
-            emit_node(right, out);
-            out.push(op(OP_DIFFERENCE));
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            ctx.opcodes.push(op(OP_DIFFERENCE));
+            return;
         }
         BoundedCsg::Intersection { left, right, .. } => {
-            emit_node(left, out);
-            emit_node(right, out);
-            out.push(op(OP_INTERSECT));
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            ctx.opcodes.push(op(OP_INTERSECT));
+            return;
         }
         BoundedCsg::SmoothUnion {
             left,
@@ -144,11 +162,13 @@ fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
             mode,
             ..
         } => {
-            emit_node(left, out);
-            emit_node(right, out);
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_SMOOTH_UNION));
             out.push(*radius);
             out.push(blend_mode_f32(*mode));
+            return;
         }
         BoundedCsg::SmoothDifference {
             left,
@@ -157,48 +177,58 @@ fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
             mode,
             ..
         } => {
-            emit_node(left, out);
-            emit_node(right, out);
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_SMOOTH_DIFF));
             out.push(*radius);
             out.push(blend_mode_f32(*mode));
+            return;
         }
         BoundedCsg::Twist { inner, rate, .. } => {
             out.push(op(OP_WARP_PUSH));
             out.push(op(OP_WARP_TWIST));
             out.push(*rate);
-            emit_node(inner, out);
-            out.push(op(OP_WARP_POP));
+            emit_node(inner, ctx);
+            ctx.opcodes.push(op(OP_WARP_POP));
+            return;
         }
         BoundedCsg::Bend { inner, rate, .. } => {
             out.push(op(OP_WARP_PUSH));
             out.push(op(OP_WARP_BEND));
             out.push(*rate);
-            emit_node(inner, out);
-            out.push(op(OP_WARP_POP));
+            emit_node(inner, ctx);
+            ctx.opcodes.push(op(OP_WARP_POP));
+            return;
         }
         BoundedCsg::Displace {
             inner, depth, freq, ..
         } => {
-            emit_node(inner, out);
+            emit_node(inner, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_DISPLACE_VAL));
             out.push(*depth);
             out.push(*freq);
+            return;
         }
         BoundedCsg::Shell {
             inner, thickness, ..
         } => {
-            emit_node(inner, out);
+            emit_node(inner, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_SHELL));
             out.push(*thickness);
+            return;
         }
         BoundedCsg::Morph {
             left, right, t, ..
         } => {
-            emit_node(left, out);
-            emit_node(right, out);
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_MORPH));
             out.push(*t);
+            return;
         }
         BoundedCsg::MaskedBlend {
             left,
@@ -211,8 +241,9 @@ fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
             is_difference,
             ..
         } => {
-            emit_node(left, out);
-            emit_node(right, out);
+            emit_node(left, ctx);
+            emit_node(right, ctx);
+            let out = &mut ctx.opcodes;
             out.push(op(OP_MASKED_BLEND));
             out.extend_from_slice(mask_p0);
             out.extend_from_slice(mask_p1);
@@ -220,6 +251,7 @@ fn emit_node(node: &BoundedCsg, out: &mut Vec<f32>) {
             out.push(*blend_radius);
             out.push(blend_mode_f32(*blend_mode));
             out.push(if *is_difference { 1.0 } else { 0.0 });
+            return;
         }
         BoundedCsg::Extrude {
             sketch,
@@ -285,7 +317,8 @@ fn emit_transform(t: &Transform, out: &mut Vec<f32>) {
 
 // ── Leaf primitives ────────────────────────────────────────────────
 
-fn emit_leaf_primitive(prim: &Primitive, t: &Transform, out: &mut Vec<f32>) {
+fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
+    let out = &mut ctx.opcodes;
     match prim {
         Primitive::Box {
             center,
@@ -376,17 +409,19 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, out: &mut Vec<f32>) {
             out.push(*depth);
             out.push(*half_height);
         }
-        // Extrude/Revolve are handled at the BoundedCsg level —
-        // they never appear as Leaf primitives in a correctly-built
-        // BoundedCsg tree.
         Primitive::Extrude { .. } | Primitive::Revolve { .. } => {
             out.push(op(OP_PRIM_CONST));
             out.push(0.0);
         }
-        // Imported meshes stay on the rasterisation pipeline.
-        Primitive::ImportedMesh { .. } => {
-            out.push(op(OP_PRIM_CONST));
-            out.push(f32::MAX);
+        Primitive::ImportedMesh { mesh } => {
+            let tex_idx = ctx.volumes.len() as f32;
+            let volume = mesh.bake_volume(MESH_VOLUME_RESOLUTION);
+            out.push(op(OP_PRIM_TEX3D));
+            out.push(tex_idx);
+            emit_transform(t, out);
+            out.extend_from_slice(&volume.aabb_min);
+            out.extend_from_slice(&volume.aabb_max);
+            ctx.volumes.push(volume);
         }
     }
 }
@@ -473,6 +508,14 @@ const PSTACK_SIZE: usize = 4;
 /// This is a 1:1 mirror of the WGSL stack machine and exists
 /// solely so that every opcode path can be tested without a GPU.
 pub fn eval_opcodes(opcodes: &[f32], world_point: [f32; 3]) -> f32 {
+    eval_opcodes_with_volumes(opcodes, world_point, &[])
+}
+
+pub fn eval_opcodes_with_volumes(
+    opcodes: &[f32],
+    world_point: [f32; 3],
+    volumes: &[BakedVolume],
+) -> f32 {
     let mut vs = [0.0f32; VSTACK_SIZE];
     let mut vsp: usize = 0;
     let mut ps = [[0.0f32; 3]; PSTACK_SIZE];
@@ -751,6 +794,19 @@ pub fn eval_opcodes(opcodes: &[f32], world_point: [f32; 3]) -> f32 {
                     da.min(db)
                 };
                 push_v!(result);
+            }
+
+            OP_PRIM_TEX3D => {
+                let tex_idx = rd!() as usize;
+                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let aabb_min = rd3!();
+                let aabb_max = rd3!();
+                if let Some(vol) = volumes.get(tex_idx) {
+                    push_v!(vol.sample_trilinear(local) * scale);
+                } else {
+                    push_v!(f32::MAX);
+                }
+                let _ = (aabb_min, aabb_max);
             }
 
             OP_END => break,
