@@ -178,6 +178,11 @@ export function App() {
           <SettingsMenu
             settings={settings}
             onSettingsChange={setSettings}
+            onNewProject={() => {
+              if (state && (state.features.length === 0 || confirm("Discard current project?"))) {
+                store.newProject();
+              }
+            }}
           />
         </div>
         <div className="meta">

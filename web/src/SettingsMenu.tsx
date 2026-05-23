@@ -87,9 +87,10 @@ const SHORTCUTS: { keys: string; action: string }[] = [
 interface SettingsMenuProps {
   settings: SettingsState;
   onSettingsChange: (next: SettingsState) => void;
+  onNewProject?: () => void;
 }
 
-export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) {
+export function SettingsMenu({ settings, onSettingsChange, onNewProject }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [shortcutsExpanded, setShortcutsExpanded] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -183,6 +184,23 @@ export function SettingsMenu({ settings, onSettingsChange }: SettingsMenuProps) 
           data-testid="settings-menu-popover"
         >
           <h3 className="popover-title">Settings</h3>
+
+          {/* ── New Project ──────────────────────────────── */}
+          {onNewProject && (
+            <div className="setting-row">
+              <button
+                type="button"
+                className="action-btn"
+                data-testid="menu-new-project"
+                onClick={() => {
+                  onNewProject();
+                  close();
+                }}
+              >
+                New Project
+              </button>
+            </div>
+          )}
 
           {/* ── Compact Mode ──────────────────────────────── */}
           <div className="setting-row" data-testid="setting-compact">
