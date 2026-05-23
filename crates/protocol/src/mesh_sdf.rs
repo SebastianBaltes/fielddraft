@@ -35,6 +35,17 @@ struct BvhNode {
     count: u32,
 }
 
+/// Fast Winding Number data per BVH node (Barill et al. 2018, order-0 dipole).
+#[derive(Debug, Clone, PartialEq)]
+struct FwnNode {
+    /// Area-weighted center of mass.
+    center: [f64; 3],
+    /// Sum of area-weighted normals (0.5 * cross(e1, e2) for each triangle).
+    area_normal: [f64; 3],
+    /// Max squared distance from center to any vertex in this subtree.
+    radius_sq: f64,
+}
+
 /// Precomputed 3D SDF volume for GPU texture upload.
 #[derive(Debug, Clone)]
 pub struct BakedVolume {
@@ -102,12 +113,8 @@ pub struct MeshSdf {
     tri_order: Vec<u32>,
     /// True when face normals point inward (CW winding).
     sign_flip: bool,
-    /// Per-triangle vertex indices into vert_pseudonormals.
-    tri_verts: Vec<[u32; 3]>,
-    /// Per-vertex angle-weighted pseudo-normals (Bærentzen & Aanæs).
-    vert_pseudonormals: Vec<[f32; 3]>,
-    /// Per-triangle edge pseudo-normals: [edge v0-v1, edge v0-v2, edge v1-v2].
-    tri_edge_pn: Vec<[[f32; 3]; 3]>,
+    /// Fast Winding Number data per BVH node (Barill et al. 2018).
+    fwn_nodes: Vec<FwnNode>,
 }
 
 // ─── Custom Serialize/Deserialize ────────────────────────────
@@ -138,8 +145,7 @@ impl<'de> Deserialize<'de> for MeshSdf {
         let tri_count = raw.tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&raw.tris, &raw.bboxes, tri_count);
         let sign_flip = compute_sign_flip(&raw.tris);
-        let (tri_verts, vert_pseudonormals, tri_edge_pn) =
-            build_pseudonormals(&raw.tris, tri_count);
+        let fwn_nodes = build_fwn_data(&raw.tris, &bvh_nodes, &tri_order);
         Ok(Self {
             tris: raw.tris,
             bboxes: raw.bboxes,
@@ -148,9 +154,7 @@ impl<'de> Deserialize<'de> for MeshSdf {
             bvh_nodes,
             tri_order,
             sign_flip,
-            tri_verts,
-            vert_pseudonormals,
-            tri_edge_pn,
+            fwn_nodes,
         })
     }
 }
@@ -279,8 +283,7 @@ impl MeshSdf {
         let actual_tri_count = tris.len() / 9;
         let (bvh_nodes, tri_order) = build_bvh(&tris, &bboxes, actual_tri_count);
         let sign_flip = compute_sign_flip(&tris);
-        let (tri_verts, vert_pseudonormals, tri_edge_pn) =
-            build_pseudonormals(&tris, actual_tri_count);
+        let fwn_nodes = build_fwn_data(&tris, &bvh_nodes, &tri_order);
 
         Self {
             tris,
@@ -290,9 +293,7 @@ impl MeshSdf {
             bvh_nodes,
             tri_order,
             sign_flip,
-            tri_verts,
-            vert_pseudonormals,
-            tri_edge_pn,
+            fwn_nodes,
         }
     }
 
@@ -552,7 +553,7 @@ impl MeshSdf {
 
         let dist = best_dist_sq.sqrt();
 
-        let mut sign = self.pseudonormal_sign(p, best_tri, best_s, best_t);
+        let mut sign = self.fast_winding_sign(p);
         if self.sign_flip {
             sign = -sign;
         }
@@ -560,89 +561,99 @@ impl MeshSdf {
         sign * dist
     }
 
-    /// Sign via generalized winding number (Van Oosterom & Strackee).
-    /// Returns -1.0 inside, 1.0 outside.
-    fn winding_sign(&self, p: [f32; 3]) -> f32 {
-        let tri_count = self.tris.len() / 9;
-        let mut omega = 0.0f64;
-
-        for t in 0..tri_count {
-            let base = t * 9;
-            let a = [
-                (self.tris[base] - p[0]) as f64,
-                (self.tris[base + 1] - p[1]) as f64,
-                (self.tris[base + 2] - p[2]) as f64,
-            ];
-            let b = [
-                (self.tris[base + 3] - p[0]) as f64,
-                (self.tris[base + 4] - p[1]) as f64,
-                (self.tris[base + 5] - p[2]) as f64,
-            ];
-            let c = [
-                (self.tris[base + 6] - p[0]) as f64,
-                (self.tris[base + 7] - p[1]) as f64,
-                (self.tris[base + 8] - p[2]) as f64,
-            ];
-
-            let la = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-            let lb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
-            let lc = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
-
-            if la < 1e-10 || lb < 1e-10 || lc < 1e-10 {
-                return -1.0;
-            }
-
-            let num = a[0] * (b[1] * c[2] - b[2] * c[1])
-                - a[1] * (b[0] * c[2] - b[2] * c[0])
-                + a[2] * (b[0] * c[1] - b[1] * c[0]);
-
-            let ab = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-            let ac = a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
-            let bc = b[0] * c[0] + b[1] * c[1] + b[2] * c[2];
-
-            let den = la * lb * lc + ab * lc + ac * lb + bc * la;
-            omega += num.atan2(den);
-        }
-
-        if omega > std::f64::consts::PI {
-            -1.0
+    /// Sign via Fast Winding Numbers (Barill et al. 2018).
+    /// Uses BVH with order-0 dipole approximation for O(log n) evaluation.
+    fn fast_winding_sign(&self, p: [f32; 3]) -> f32 {
+        let pd = [p[0] as f64, p[1] as f64, p[2] as f64];
+        let omega = if self.bvh_nodes.is_empty() {
+            self.brute_force_winding(pd)
         } else {
-            1.0
-        }
+            self.fwn_query(pd, 0)
+        };
+        let w = omega / (4.0 * std::f64::consts::PI);
+        if w > 0.5 { -1.0 } else { 1.0 }
     }
 
-    fn pseudonormal_sign(&self, p: [f32; 3], tri_idx: usize, s: f32, t: f32) -> f32 {
-        let eps = 1e-4;
-        let base = tri_idx * 9;
-        let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
-        let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
-        let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-        let e0 = sub3(v1, v0);
-        let e1 = sub3(v2, v0);
-        let closest = [
-            v0[0] + s * e0[0] + t * e1[0],
-            v0[1] + s * e0[1] + t * e1[1],
-            v0[2] + s * e0[2] + t * e1[2],
+    fn brute_force_winding(&self, p: [f64; 3]) -> f64 {
+        let tri_count = self.tris.len() / 9;
+        let mut omega = 0.0f64;
+        for t in 0..tri_count {
+            omega += self.tri_solid_angle(p, t);
+        }
+        omega
+    }
+
+    fn fwn_query(&self, p: [f64; 3], node_idx: usize) -> f64 {
+        let node = &self.bvh_nodes[node_idx];
+        let fwn = &self.fwn_nodes[node_idx];
+
+        if node.count > 0 {
+            let mut omega = 0.0f64;
+            for i in 0..node.count {
+                let tri_idx = self.tri_order[(node.offset + i) as usize] as usize;
+                omega += self.tri_solid_angle(p, tri_idx);
+            }
+            return omega;
+        }
+
+        let q = [
+            fwn.center[0] - p[0],
+            fwn.center[1] - p[1],
+            fwn.center[2] - p[2],
         ];
-        let dir = sub3(p, closest);
+        let dist_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
 
-        let pn = if s < eps && t < eps {
-            self.vert_pseudonormals[self.tri_verts[tri_idx][0] as usize]
-        } else if s > 1.0 - eps && t < eps {
-            self.vert_pseudonormals[self.tri_verts[tri_idx][1] as usize]
-        } else if s < eps && t > 1.0 - eps {
-            self.vert_pseudonormals[self.tri_verts[tri_idx][2] as usize]
-        } else if t < eps {
-            self.tri_edge_pn[tri_idx][0]
-        } else if s < eps {
-            self.tri_edge_pn[tri_idx][1]
-        } else if (s + t) > 1.0 - eps {
-            self.tri_edge_pn[tri_idx][2]
-        } else {
-            cross3(e0, e1)
-        };
+        // beta=2.0: use dipole when distance > 2x cluster radius
+        if dist_sq > 4.0 * fwn.radius_sq {
+            let dist = dist_sq.sqrt();
+            let inv_dist3 = 1.0 / (dist * dist_sq);
+            let dot = q[0] * fwn.area_normal[0]
+                + q[1] * fwn.area_normal[1]
+                + q[2] * fwn.area_normal[2];
+            return -dot * inv_dist3;
+        }
 
-        if dot3(dir, pn) < 0.0 { -1.0 } else { 1.0 }
+        let left = node.offset as usize;
+        self.fwn_query(p, left) + self.fwn_query(p, left + 1)
+    }
+
+    #[inline]
+    fn tri_solid_angle(&self, p: [f64; 3], tri_idx: usize) -> f64 {
+        let base = tri_idx * 9;
+        let a = [
+            self.tris[base] as f64 - p[0],
+            self.tris[base + 1] as f64 - p[1],
+            self.tris[base + 2] as f64 - p[2],
+        ];
+        let b = [
+            self.tris[base + 3] as f64 - p[0],
+            self.tris[base + 4] as f64 - p[1],
+            self.tris[base + 5] as f64 - p[2],
+        ];
+        let c = [
+            self.tris[base + 6] as f64 - p[0],
+            self.tris[base + 7] as f64 - p[1],
+            self.tris[base + 8] as f64 - p[2],
+        ];
+
+        let la = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        let lb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+        let lc = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+
+        if la < 1e-10 || lb < 1e-10 || lc < 1e-10 {
+            return 2.0 * std::f64::consts::PI;
+        }
+
+        let num = a[0] * (b[1] * c[2] - b[2] * c[1])
+            - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]);
+
+        let ab = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let ac = a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+        let bc = b[0] * c[0] + b[1] * c[1] + b[2] * c[2];
+
+        let den = la * lb * lc + ab * lc + ac * lb + bc * la;
+        2.0 * num.atan2(den)
     }
 
     fn sdf_brute_force_dist_sq(&self, p: [f32; 3]) -> (f32, usize, f32, f32) {
@@ -818,113 +829,157 @@ fn build_bvh(tris: &[f32], bboxes: &[f32], tri_count: usize) -> (Vec<BvhNode>, V
     (nodes, tri_order)
 }
 
-// ─── Pseudo-normal construction ──────────────────────────────
+// ─── Fast Winding Number construction (Barill et al. 2018) ───
 
-fn build_pseudonormals(
+fn build_fwn_data(
     tris: &[f32],
-    tri_count: usize,
-) -> (Vec<[u32; 3]>, Vec<[f32; 3]>, Vec<[[f32; 3]; 3]>) {
-    use std::collections::HashMap;
-
-    if tri_count == 0 {
-        return (vec![], vec![], vec![]);
+    bvh_nodes: &[BvhNode],
+    tri_order: &[u32],
+) -> Vec<FwnNode> {
+    if bvh_nodes.is_empty() {
+        return vec![];
     }
 
-    let quantize = |v: f32| -> i64 { (v * 100000.0).round() as i64 };
-    let mut vert_map: HashMap<(i64, i64, i64), u32> = HashMap::new();
-    let mut tri_verts: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
+    let mut fwn: Vec<FwnNode> = vec![
+        FwnNode {
+            center: [0.0; 3],
+            area_normal: [0.0; 3],
+            radius_sq: 0.0,
+        };
+        bvh_nodes.len()
+    ];
 
-    for t in 0..tri_count {
-        let base = t * 9;
-        let mut vids = [0u32; 3];
-        for v in 0..3 {
-            let vb = base + v * 3;
-            let key = (
-                quantize(tris[vb]),
-                quantize(tris[vb + 1]),
-                quantize(tris[vb + 2]),
-            );
-            let next_id = vert_map.len() as u32;
-            vids[v] = *vert_map.entry(key).or_insert(next_id);
-        }
-        tri_verts.push(vids);
-    }
+    // Bottom-up: process in reverse order (children before parents).
+    for ni in (0..bvh_nodes.len()).rev() {
+        let node = &bvh_nodes[ni];
 
-    let unique_vert_count = vert_map.len();
+        if node.count > 0 {
+            // Leaf: accumulate from triangles directly.
+            let mut total_area = 0.0f64;
+            let mut center = [0.0f64; 3];
+            let mut area_normal = [0.0f64; 3];
 
-    let mut face_normals: Vec<[f32; 3]> = Vec::with_capacity(tri_count);
-    let mut vert_pn: Vec<[f64; 3]> = vec![[0.0; 3]; unique_vert_count];
+            for i in 0..node.count {
+                let tri_idx = tri_order[(node.offset + i) as usize] as usize;
+                let base = tri_idx * 9;
+                let v0 = [tris[base] as f64, tris[base + 1] as f64, tris[base + 2] as f64];
+                let v1 = [tris[base + 3] as f64, tris[base + 4] as f64, tris[base + 5] as f64];
+                let v2 = [tris[base + 6] as f64, tris[base + 7] as f64, tris[base + 8] as f64];
 
-    for t in 0..tri_count {
-        let base = t * 9;
-        let v0 = [tris[base], tris[base + 1], tris[base + 2]];
-        let v1 = [tris[base + 3], tris[base + 4], tris[base + 5]];
-        let v2 = [tris[base + 6], tris[base + 7], tris[base + 8]];
-        let e1 = sub3(v1, v0);
-        let e2 = sub3(v2, v0);
-        let n = cross3(e1, e2);
-        face_normals.push(n);
+                let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+                // area_normal = 0.5 * cross(e1, e2)
+                let an = [
+                    0.5 * (e1[1] * e2[2] - e1[2] * e2[1]),
+                    0.5 * (e1[2] * e2[0] - e1[0] * e2[2]),
+                    0.5 * (e1[0] * e2[1] - e1[1] * e2[0]),
+                ];
+                let area = (an[0] * an[0] + an[1] * an[1] + an[2] * an[2]).sqrt();
 
-        let edges_at_vert = [
-            (sub3(v1, v0), sub3(v2, v0)),
-            (sub3(v0, v1), sub3(v2, v1)),
-            (sub3(v0, v2), sub3(v1, v2)),
-        ];
-        let vids = tri_verts[t];
-        for (i, (ea, eb)) in edges_at_vert.iter().enumerate() {
-            let len_a = dot3(*ea, *ea).sqrt();
-            let len_b = dot3(*eb, *eb).sqrt();
-            if len_a < 1e-10 || len_b < 1e-10 {
-                continue;
+                let centroid = [
+                    (v0[0] + v1[0] + v2[0]) / 3.0,
+                    (v0[1] + v1[1] + v2[1]) / 3.0,
+                    (v0[2] + v1[2] + v2[2]) / 3.0,
+                ];
+
+                center[0] += area * centroid[0];
+                center[1] += area * centroid[1];
+                center[2] += area * centroid[2];
+                area_normal[0] += an[0];
+                area_normal[1] += an[1];
+                area_normal[2] += an[2];
+                total_area += area;
             }
-            let cos_angle = (dot3(*ea, *eb) / (len_a * len_b)).clamp(-1.0, 1.0);
-            let angle = (cos_angle as f64).acos();
-            let vid = vids[i] as usize;
-            vert_pn[vid][0] += n[0] as f64 * angle;
-            vert_pn[vid][1] += n[1] as f64 * angle;
-            vert_pn[vid][2] += n[2] as f64 * angle;
-        }
-    }
 
-    let vert_pseudonormals: Vec<[f32; 3]> = vert_pn
-        .iter()
-        .map(|pn| [pn[0] as f32, pn[1] as f32, pn[2] as f32])
-        .collect();
+            if total_area > 1e-20 {
+                center[0] /= total_area;
+                center[1] /= total_area;
+                center[2] /= total_area;
+            }
 
-    let mut edge_pn: HashMap<(u32, u32), [f64; 3]> = HashMap::new();
-    for t in 0..tri_count {
-        let vids = tri_verts[t];
-        let n = face_normals[t];
-        for &(a, b) in &[(vids[0], vids[1]), (vids[0], vids[2]), (vids[1], vids[2])] {
-            let key = if a < b { (a, b) } else { (b, a) };
-            let entry = edge_pn.entry(key).or_insert([0.0; 3]);
-            entry[0] += n[0] as f64;
-            entry[1] += n[1] as f64;
-            entry[2] += n[2] as f64;
-        }
-    }
+            // radius_sq: max squared distance from center to any vertex
+            let mut max_r2 = 0.0f64;
+            for i in 0..node.count {
+                let tri_idx = tri_order[(node.offset + i) as usize] as usize;
+                let base = tri_idx * 9;
+                for v in 0..3 {
+                    let vb = base + v * 3;
+                    let dx = tris[vb] as f64 - center[0];
+                    let dy = tris[vb + 1] as f64 - center[1];
+                    let dz = tris[vb + 2] as f64 - center[2];
+                    let r2 = dx * dx + dy * dy + dz * dz;
+                    if r2 > max_r2 {
+                        max_r2 = r2;
+                    }
+                }
+            }
 
-    let mut tri_edge_pn: Vec<[[f32; 3]; 3]> = Vec::with_capacity(tri_count);
-    for t in 0..tri_count {
-        let vids = tri_verts[t];
-        let edges = [
-            (vids[0], vids[1]),
-            (vids[0], vids[2]),
-            (vids[1], vids[2]),
-        ];
-        let mut epn = [[0.0f32; 3]; 3];
-        for (i, &(a, b)) in edges.iter().enumerate() {
-            let key = if a < b { (a, b) } else { (b, a) };
-            if let Some(pn) = edge_pn.get(&key) {
-                epn[i] = [pn[0] as f32, pn[1] as f32, pn[2] as f32];
+            fwn[ni] = FwnNode {
+                center,
+                area_normal,
+                radius_sq: max_r2,
+            };
+        } else {
+            // Interior: merge children.
+            let left = node.offset as usize;
+            let right = left + 1;
+            let fl = &fwn[left];
+            let fr = &fwn[right];
+
+            let area_normal = [
+                fl.area_normal[0] + fr.area_normal[0],
+                fl.area_normal[1] + fr.area_normal[1],
+                fl.area_normal[2] + fr.area_normal[2],
+            ];
+
+            // Area-weighted center: weight by |area_normal| of each child
+            let wl = (fl.area_normal[0] * fl.area_normal[0]
+                + fl.area_normal[1] * fl.area_normal[1]
+                + fl.area_normal[2] * fl.area_normal[2])
+            .sqrt();
+            let wr = (fr.area_normal[0] * fr.area_normal[0]
+                + fr.area_normal[1] * fr.area_normal[1]
+                + fr.area_normal[2] * fr.area_normal[2])
+            .sqrt();
+            let wt = wl + wr;
+            let center = if wt > 1e-20 {
+                [
+                    (wl * fl.center[0] + wr * fr.center[0]) / wt,
+                    (wl * fl.center[1] + wr * fr.center[1]) / wt,
+                    (wl * fl.center[2] + wr * fr.center[2]) / wt,
+                ]
             } else {
-                epn[i] = face_normals[t];
-            }
+                [
+                    (fl.center[0] + fr.center[0]) * 0.5,
+                    (fl.center[1] + fr.center[1]) * 0.5,
+                    (fl.center[2] + fr.center[2]) * 0.5,
+                ]
+            };
+
+            // radius_sq: max of (child_center_to_new_center + child_radius)²
+            let dl = {
+                let dx = fl.center[0] - center[0];
+                let dy = fl.center[1] - center[1];
+                let dz = fl.center[2] - center[2];
+                (dx * dx + dy * dy + dz * dz).sqrt() + fl.radius_sq.sqrt()
+            };
+            let dr = {
+                let dx = fr.center[0] - center[0];
+                let dy = fr.center[1] - center[1];
+                let dz = fr.center[2] - center[2];
+                (dx * dx + dy * dy + dz * dz).sqrt() + fr.radius_sq.sqrt()
+            };
+            let radius = if dl > dr { dl } else { dr };
+
+            fwn[ni] = FwnNode {
+                center,
+                area_normal,
+                radius_sq: radius * radius,
+            };
         }
-        tri_edge_pn.push(epn);
     }
 
-    (tri_verts, vert_pseudonormals, tri_edge_pn)
+    fwn
 }
 
 // ─── Geometry helpers ────────────────────────────────────────
