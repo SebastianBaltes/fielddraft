@@ -169,7 +169,7 @@
   }
   & > .viewcube-wrapper {
     position: absolute;
-    bottom: var(--space-4);
+    top: var(--space-4);
     right: var(--space-4);
     width: 80px;
     height: 80px;
