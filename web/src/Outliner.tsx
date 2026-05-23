@@ -350,6 +350,23 @@ export function Outliner({ store, state }: OutlinerProps) {
   const [newVarName, setNewVarName] = useState<string>("");
   const [newVarValue, setNewVarValue] = useState<string>("");
 
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("fielddraft.outliner.collapsed");
+      if (raw) return new Set(JSON.parse(raw));
+    } catch { /* ignore */ }
+    return new Set<string>();
+  });
+  const toggleSection = (id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try { localStorage.setItem("fielddraft.outliner.collapsed", JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
   // K7.22 UX-fix (4): right-click context menu state.
   // `null` when the menu is closed; an object with the click
   // coordinates + target feature id when open. Dismissed on
@@ -630,7 +647,11 @@ export function Outliner({ store, state }: OutlinerProps) {
           className="variables-panel"
           data-testid="variables-panel"
         >
-          <div className="header">Variables</div>
+          <div className="header accordion-header" onClick={() => toggleSection("variables")} data-testid="variables-header">
+            <span className="accordion-chevron">{collapsed.has("variables") ? "▸" : "▾"}</span>
+            <span>Variables</span>
+          </div>
+          {!collapsed.has("variables") && (<>
           {state.variables.length === 0 ? (
             <div
               className="empty"
@@ -717,11 +738,13 @@ export function Outliner({ store, state }: OutlinerProps) {
               +
             </button>
           </div>
+          </>)}
         </section>
       ) : null}
       {!sketchSession.active && state.assembly.active && (
         <section className="assembly-panel" data-testid="assembly-panel">
-          <div className="header">
+          <div className="header accordion-header" onClick={() => toggleSection("assembly")} data-testid="assembly-header">
+            <span className="accordion-chevron">{collapsed.has("assembly") ? "▸" : "▾"}</span>
             <span>Assembly</span>
             <button
               type="button"
@@ -733,6 +756,7 @@ export function Outliner({ store, state }: OutlinerProps) {
               ✗
             </button>
           </div>
+          {!collapsed.has("assembly") && (<>
           {state.assembly.document.parts.length === 0 ? (
             <div className="empty">No parts. Import a .fdraft file.</div>
           ) : (
@@ -836,6 +860,7 @@ export function Outliner({ store, state }: OutlinerProps) {
           {state.assembly.document.parts.length >= 2 && (
             <MateCreator parts={state.assembly.document.parts} store={store} />
           )}
+          </>)}
         </section>
       )}
       {!sketchSession.active && selectedSchema ? (
@@ -845,7 +870,8 @@ export function Outliner({ store, state }: OutlinerProps) {
           onChange={handleDialogChange}
         />
       ) : null}
-      <div className="header features-header">
+      <div className="header features-header accordion-header" onClick={() => toggleSection("features")} data-testid="features-header">
+        <span className="accordion-chevron">{collapsed.has("features") ? "▸" : "▾"}</span>
         <span>Features</span>
         <button
           type="button"
@@ -858,7 +884,7 @@ export function Outliner({ store, state }: OutlinerProps) {
           <span className="plus-glyph" aria-hidden="true">+</span>
         </button>
       </div>
-      {state.features.length === 0 && state.folders.length === 0 ? (
+      {!collapsed.has("features") && (state.features.length === 0 && state.folders.length === 0 ? (
         <div className="empty">No features yet.</div>
       ) : (
         <ul className="list">
@@ -1006,7 +1032,7 @@ export function Outliner({ store, state }: OutlinerProps) {
             );
           })()}
         </ul>
-      )}
+      ))}
       {contextMenu ? (
         <FeatureContextMenu
           x={contextMenu.x}
@@ -1021,7 +1047,7 @@ export function Outliner({ store, state }: OutlinerProps) {
           }}
         />
       ) : null}
-      <PartTree store={store} state={state} />
+      <PartTree store={store} state={state} collapsed={collapsed.has("parts")} onToggle={() => toggleSection("parts")} />
     </aside>
   );
 }
@@ -1037,7 +1063,7 @@ export function Outliner({ store, state }: OutlinerProps) {
  * editing a multi-body scene, where "which body does this feature
  * belong to" is otherwise invisible.
  */
-function PartTree({ store, state }: { store: KernelStore; state: StoreState }) {
+function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; state: StoreState; collapsed: boolean; onToggle: () => void }) {
   const bodies = state.meshedBodies;
   if (bodies.length === 0) return null;
 
@@ -1045,10 +1071,11 @@ function PartTree({ store, state }: { store: KernelStore; state: StoreState }) {
 
   return (
     <section className="part-tree" data-testid="part-tree">
-      <div className="header">
+      <div className="header accordion-header" onClick={onToggle} data-testid="parts-header">
+        <span className="accordion-chevron">{collapsed ? "▸" : "▾"}</span>
         Parts ({bodies.length})
       </div>
-      <ul className="list">
+      {!collapsed && <ul className="list">
         {bodies.map((body, index) => {
           const seedFeature = state.features.find((f) => f.id === body.seedId);
           const name = seedFeature?.name ?? `Body ${index + 1}`;
@@ -1077,7 +1104,7 @@ function PartTree({ store, state }: { store: KernelStore; state: StoreState }) {
             </li>
           );
         })}
-      </ul>
+      </ul>}
     </section>
   );
 }
