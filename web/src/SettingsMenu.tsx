@@ -590,7 +590,7 @@ function SettingsDialog({
               onChange={(e) => setRenderMode(e.target.value as RenderMode)}
             >
               <option value="sdf-vm">SDF VM</option>
-              <option value="sdf-deferred">Deferred</option>
+              <option value="sdf-deferred">SDF Deferred</option>
             </select>
           </div>
 
