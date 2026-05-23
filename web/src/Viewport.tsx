@@ -1445,6 +1445,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
+            const canvas = (props as any).canvas as HTMLCanvasElement;
             const renderer = new WebGPURenderer({
               ...(props as object),
               antialias: true,
@@ -1461,6 +1462,13 @@ export function Viewport({ renderMode }: { renderMode: string }) {
               await fallback.init();
               console.log("fielddraft: WebGL fallback active.");
               return fallback;
+            }
+            const parent = canvas.parentElement;
+            if (parent) {
+              const rect = parent.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                renderer.setSize(rect.width, rect.height, false);
+              }
             }
             const gpuBackend = (renderer as any).backend?.isWebGPUBackend === true;
             console.log(
