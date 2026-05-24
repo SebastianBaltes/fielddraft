@@ -1521,27 +1521,18 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
-            const canvas = (props as any).canvas as HTMLCanvasElement;
             const renderer = new WebGPURenderer({
               ...(props as object),
               antialias: true,
             });
-            try {
-              await renderer.init();
-            } catch (e) {
-              console.warn("fielddraft: WebGPU init failed, retrying with WebGL fallback:", e);
-              const fallback = new WebGPURenderer({
-                ...(props as object),
-                antialias: true,
-                forceWebGL: true,
-              });
-              await fallback.init();
-              const fb = fallback as any;
-              if (!fb.capabilities) fb.capabilities = {};
-              if (!fb.capabilities.getMaxAnisotropy) fb.capabilities.getMaxAnisotropy = () => 1;
-              console.log("fielddraft: WebGL fallback active.");
-              return fallback;
+            await renderer.init();
+            const r = renderer as any;
+            if (!r.capabilities) r.capabilities = {};
+            if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
+            if (r.backend?.isWebGPUBackend !== true) {
+              throw new Error("WebGPU is not available.");
             }
+            const canvas = (props as any).canvas as HTMLCanvasElement;
             const parent = canvas.parentElement;
             if (parent) {
               const rect = parent.getBoundingClientRect();
@@ -1549,15 +1540,6 @@ export function Viewport({ renderMode }: { renderMode: string }) {
                 renderer.setSize(rect.width, rect.height, false);
               }
             }
-            const r = renderer as any;
-            if (!r.capabilities) r.capabilities = {};
-            if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
-            const gpuBackend = r.backend?.isWebGPUBackend === true;
-            console.log(
-              gpuBackend
-                ? "fielddraft: WebGPU backend active."
-                : "fielddraft: WebGPURenderer fell back to WebGL backend.",
-            );
             return renderer;
           }}
           onCreated={(rootState) => {
