@@ -1524,36 +1524,15 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
 
-            const adapter = await navigator.gpu?.requestAdapter();
-            if (!adapter) {
+            if (!navigator.gpu) {
               setWebgpuError(true);
-              const fallback = new WebGPURenderer({
-                ...(props as object),
-                antialias: true,
-                forceWebGL: true,
-              });
-              await fallback.init();
-              return fallback;
             }
 
-            const device = await adapter.requestDevice();
             const renderer = new WebGPURenderer({
               ...(props as object),
               antialias: true,
-              device,
             });
             await renderer.init();
-            const r = renderer as any;
-            if (!r.capabilities) r.capabilities = {};
-            if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
-            const canvas = (props as any).canvas as HTMLCanvasElement;
-            const parent = canvas.parentElement;
-            if (parent) {
-              const rect = parent.getBoundingClientRect();
-              if (rect.width > 0 && rect.height > 0) {
-                renderer.setSize(rect.width, rect.height, false);
-              }
-            }
             return renderer;
           }}
           onCreated={(rootState) => {
