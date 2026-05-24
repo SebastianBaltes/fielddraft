@@ -1533,6 +1533,15 @@ export function Viewport({ renderMode }: { renderMode: string }) {
               antialias: true,
             });
             await renderer.init();
+
+            const canvas = (props as any).canvas as HTMLCanvasElement;
+            const parent = canvas.parentElement;
+            if (parent) {
+              const { width, height } = parent.getBoundingClientRect();
+              if (width > 0 && height > 0) {
+                renderer.setSize(width, height, false);
+              }
+            }
             return renderer;
           }}
           onCreated={(rootState) => {
