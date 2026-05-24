@@ -174,7 +174,7 @@ export function App() {
     <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
       <header className="topbar">
         <div className="title">
-          FieldDraft
+          FieldDraft <span className="version">v{__APP_VERSION__}</span>
           <SettingsMenu
             store={store}
             state={state}

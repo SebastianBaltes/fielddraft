@@ -30,7 +30,11 @@
       align-items: center;
       gap: var(--space-2);
 
-      /* K7.21a: compact-toggle migrated into SettingsMenu. */
+      & .version {
+        font-size: var(--fs-sm);
+        font-weight: var(--fw-normal, 400);
+        color: var(--color-text-muted);
+      }
     }
 
     & .meta {
