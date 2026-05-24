@@ -1286,8 +1286,6 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
 }
 
 export function Viewport({ renderMode }: { renderMode: string }) {
-  const webgpuAvailable = typeof navigator !== "undefined" && "gpu" in navigator;
-
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [ndc, setNdc] = useState<{ x: number; y: number; active: boolean }>({
@@ -1504,16 +1502,6 @@ export function Viewport({ renderMode }: { renderMode: string }) {
       store.enterSketch(plane);
     }
   };
-
-  if (!webgpuAvailable) {
-    return (
-      <div className="fd-viewport" data-testid="fielddraft-canvas">
-        <div className="error">
-          WebGPU is not available.
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div
