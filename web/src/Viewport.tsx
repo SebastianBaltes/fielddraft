@@ -1509,9 +1509,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
     return (
       <div className="fd-viewport" data-testid="fielddraft-canvas">
         <div className="error">
-          WebGPU is not available in this browser.
-          <br />
-          Please use Chrome or Edge 113+ with WebGPU enabled.
+          WebGPU is not available.
         </div>
       </div>
     );
