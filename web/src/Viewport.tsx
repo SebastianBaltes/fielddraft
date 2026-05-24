@@ -1523,18 +1523,39 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
+
+            // Create adapter + device ourselves to bypass Three.js r183's
+            // hardcoded featureLevel:'compatibility' which fails on some
+            // Chrome builds even though WebGPU core works fine.
+            const adapter = await navigator.gpu?.requestAdapter();
+            if (!adapter) {
+              setWebgpuError(true);
+              const fallback = new WebGPURenderer({
+                ...(props as object),
+                antialias: true,
+                forceWebGL: true,
+              });
+              await fallback.init();
+              return fallback;
+            }
+
+            const supportedFeatures: GPUFeatureName[] = [];
+            for (const f of adapter.features) {
+              supportedFeatures.push(f as GPUFeatureName);
+            }
+            const device = await adapter.requestDevice({
+              requiredFeatures: supportedFeatures,
+            });
+
             const renderer = new WebGPURenderer({
               ...(props as object),
               antialias: true,
+              device,
             });
             await renderer.init();
             const r = renderer as any;
             if (!r.capabilities) r.capabilities = {};
             if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
-            if (r.backend?.isWebGPUBackend !== true) {
-              setWebgpuError(true);
-              return renderer;
-            }
             const canvas = (props as any).canvas as HTMLCanvasElement;
             const parent = canvas.parentElement;
             if (parent) {
