@@ -26,10 +26,12 @@ import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickResult } from "./kernel";
 import {
-  createSdfVmBody,
-  updateSdfVmBody,
-  disposeSdfVmBody,
-  type SdfVmBodyHandle,
+  initVmPipeline,
+  rebuildVmBodies,
+  compileVmPipeline,
+  renderVmFrame,
+  disposeVmPipeline,
+  type VmPipelineState,
 } from "./sdfVmRenderer";
 import {
   initDeferredPipeline,
@@ -145,86 +147,118 @@ function HitMarker({ result }: { result: PickResult | null }) {
 
 function SdfVmOverlay() {
   const { store } = useKernelStore();
-  const groupRef = useRef<THREE.Group>(null);
-  const handlesRef = useRef<
-    Map<number, SdfVmBodyHandle & { version: number }>
-  >(new Map());
+  const scene = useThree((s) => s.scene);
   const invalidate = useThree((s) => s.invalidate);
 
-  useFrame(() => {
-    if (!store || !groupRef.current) return;
-    const k = store.kernel;
-    const count = k.bodyCount();
-    const seen = new Set<number>();
-    let changed = false;
-
-    for (let i = 0; i < count; i++) {
-      const bodyId = k.bodyId(i);
-      const version = k.bodyVersion(i);
-      seen.add(bodyId);
-
-      const existing = handlesRef.current.get(bodyId);
-      if (existing && existing.version === version) continue;
-
-      const opcodesView = k.bodySdfOpcodesView(i);
-      if (opcodesView.length === 0) continue;
-      const opcodes = opcodesView.slice();
-      const aabb = k.bodySdfAabb(i);
-
-      const volCount = k.bodyVolumeCount(i);
-      let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
-      if (volCount > 0) {
-        volumes = [];
-        for (let v = 0; v < volCount; v++) {
-          volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
-        }
-      }
-
-      const volChanged = existing && existing.volumeTextures.length !== (volCount || 0);
-
-      if (!existing || volChanged) {
-        if (existing) {
-          groupRef.current.remove(existing.mesh);
-          disposeSdfVmBody(existing);
-        }
-        const handle = createSdfVmBody(opcodes, aabb, i, volumes);
-        groupRef.current.add(handle.mesh);
-        handlesRef.current.set(bodyId, { ...handle, version });
-        changed = true;
-      } else {
-        const oldMesh = existing.mesh;
-        const updated = updateSdfVmBody(existing, opcodes, aabb);
-        if (updated.mesh !== oldMesh) {
-          groupRef.current.remove(oldMesh);
-          groupRef.current.add(updated.mesh);
-        }
-        handlesRef.current.set(bodyId, { ...updated, version });
-        changed = true;
-      }
-    }
-
-    for (const [id, handle] of handlesRef.current) {
-      if (!seen.has(id)) {
-        groupRef.current.remove(handle.mesh);
-        disposeSdfVmBody(handle);
-        handlesRef.current.delete(id);
-        changed = true;
-      }
-    }
-
-    if (changed) invalidate();
-  });
+  const pipelineRef = useRef<VmPipelineState | null>(null);
+  const sdfFingerprintRef = useRef("");
+  const compilingRef = useRef(false);
+  const readyRef = useRef(false);
 
   useEffect(() => {
+    pipelineRef.current = initVmPipeline();
+    sdfFingerprintRef.current = "";
+    compilingRef.current = false;
+    readyRef.current = false;
+
+    const overlay = document.getElementById("fd-shader-compiling");
+    const label = document.getElementById("fd-shader-compiling-label");
+    if (overlay) overlay.style.display = "flex";
+    if (label) label.textContent = "Initializing…";
+
     return () => {
-      for (const handle of handlesRef.current.values()) {
-        disposeSdfVmBody(handle);
+      if (pipelineRef.current) {
+        disposeVmPipeline(pipelineRef.current);
+        pipelineRef.current = null;
       }
-      handlesRef.current.clear();
     };
   }, []);
 
-  return <group ref={groupRef} />;
+  useFrame(({ gl: renderer, camera }) => {
+    if (!store || !pipelineRef.current) return;
+    const pipeline = pipelineRef.current;
+    const k = store.kernel;
+    const count = k.bodyCount();
+
+    const fpParts: (string | number)[] = [count];
+    for (let i = 0; i < count; i++) {
+      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+    }
+    const fp = fpParts.join(",");
+    const needsRebuild = fp !== sdfFingerprintRef.current;
+
+    if (needsRebuild && !compilingRef.current) {
+      const overlay = document.getElementById("fd-shader-compiling");
+      const label = document.getElementById("fd-shader-compiling-label");
+      if (overlay) overlay.style.display = "flex";
+      if (label) label.textContent = "Building SDF…";
+
+      const bodies = [];
+      for (let i = 0; i < count; i++) {
+        const opcodesView = k.bodySdfOpcodesView(i);
+        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
+        const volCount = k.bodyVolumeCount(i);
+        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
+        if (volCount > 0) {
+          volumes = [];
+          for (let v = 0; v < volCount; v++) {
+            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
+          }
+        }
+        bodies.push({ bodyIndex: i, opcodes, volumes });
+      }
+      rebuildVmBodies(pipeline, bodies);
+      sdfFingerprintRef.current = fp;
+
+      if (label) label.textContent = "Compiling shader…";
+      compilingRef.current = true;
+      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      compileVmPipeline(pipeline, wgpu, camera)
+        .then(() => {
+          compilingRef.current = false;
+          readyRef.current = true;
+          if (overlay) overlay.style.display = "none";
+          invalidate();
+        })
+        .catch((err) => {
+          compilingRef.current = false;
+          const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
+          if (spinnerEl) spinnerEl.style.display = "none";
+          if (label) label.textContent = `GPU error: ${err.message}`;
+          if (overlay) {
+            overlay.style.opacity = "1";
+            overlay.style.color = "var(--color-error, #c00)";
+          }
+        });
+    }
+
+    if (!readyRef.current || compilingRef.current) return;
+
+    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    try {
+      wgpuRenderer.render(scene, camera);
+      const prevAutoClear = (wgpuRenderer as any).autoClear;
+      (wgpuRenderer as any).autoClear = false;
+      renderVmFrame(pipeline, wgpuRenderer, camera);
+      (wgpuRenderer as any).autoClear = prevAutoClear;
+    } catch (err) {
+      readyRef.current = false;
+      const overlay = document.getElementById("fd-shader-compiling");
+      const label = document.getElementById("fd-shader-compiling-label");
+      const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
+      if (spinnerEl) spinnerEl.style.display = "none";
+      if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
+      if (overlay) {
+        overlay.style.display = "flex";
+        overlay.style.opacity = "1";
+        overlay.style.color = "var(--color-error, #c00)";
+      }
+    }
+
+    invalidate();
+  }, 1);
+
+  return null;
 }
 
 function SdfDeferredOverlay() {

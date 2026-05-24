@@ -1,13 +1,9 @@
 /**
- * Per-body forward SDF renderer using the GPU bytecode VM.
+ * Fullscreen single-pass SDF renderer using the GPU bytecode VM.
  *
- * Each body gets its own AABB box mesh (BackSide). The fragment shader
- * evaluates the VM opcode buffer and sphere-traces from the camera to
- * the box exit point. Depth is written per-hit so THREE.js composites
- * bodies via the hardware depth buffer.
- *
- * Zero multi-pass overhead — serves as a performance baseline against
- * the deferred pipeline.
+ * Renders ALL bodies in one fullscreen quad with true multi-body
+ * raymarching.  Serves as a simple baseline to compare against the
+ * deferred pipeline.
  */
 
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
@@ -19,16 +15,14 @@ import {
   Fn,
   If,
   Loop,
-  cameraPosition,
   cameraProjectionMatrix,
   cameraViewMatrix,
   float,
   int,
   max,
+  min,
   normalize,
-  modelWorldMatrix,
   positionGeometry,
-  property,
   uniform,
   vec3,
   vec4,
@@ -40,37 +34,113 @@ import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 
-// ── Constants ───────────────────────────────────────────────────────
-
+const MAX_BODIES = 32;
+const GLOBAL_MAX_OPCODES = MAX_BODIES * VM_MAX_OPCODES;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
-const AABB_PAD = 0.5;
+const MAX_MARCH_DIST = 3000;
 
 // ── Types ───────────────────────────────────────────────────────────
 
-export interface SdfVmBodyHandle {
-  mesh: THREE.Mesh;
-  material: MeshBasicNodeMaterial;
+export interface VmPipelineState {
+  scene: THREE.Scene;
+  camera: THREE.OrthographicCamera;
+  material: MeshBasicNodeMaterial | null;
+  mesh: THREE.Mesh | null;
   opcodeBuf: ReturnType<typeof uniformArray>;
   opcodeData: Float32Array;
-  opcodeLen: number;
+  offsetBuf: ReturnType<typeof uniformArray>;
+  offsetData: Float32Array;
+  colorBuf: ReturnType<typeof uniformArray>;
+  colorData: Float32Array;
+  bodyCountU: ReturnType<typeof uniform>;
+  camPosU: ReturnType<typeof uniform>;
+  invProjU: ReturnType<typeof uniform>;
+  invViewU: ReturnType<typeof uniform>;
   volumeTextures: THREE.Data3DTexture[];
+  volumeBaseData: Float32Array;
+  volumeBaseBuf: ReturnType<typeof uniformArray>;
 }
 
-// ── Body management ─────────────────────────────────────────────────
+// ── Init ────────────────────────────────────────────────────────────
 
-export function createSdfVmBody(
-  opcodes: Float32Array,
-  aabb: Float32Array,
-  bodyIndex: number = 0,
-  volumes?: { data: Float32Array; dims: [number, number, number] }[],
-): SdfVmBodyHandle {
-  const opcodeData = new Float32Array(VM_MAX_OPCODES);
-  opcodeData.set(opcodes.subarray(0, Math.min(opcodes.length, VM_MAX_OPCODES)));
-  const opcodeLen = Math.min(opcodes.length, VM_MAX_OPCODES);
+export function initVmPipeline(): VmPipelineState {
+  const opcodeData = new Float32Array(GLOBAL_MAX_OPCODES);
+  const opcodeBuf = uniformArray(opcodeData, "float");
 
-  const volumeTextures: THREE.Data3DTexture[] = [];
-  if (volumes) {
+  const offsetData = new Float32Array(MAX_BODIES * 2);
+  const offsetBuf = uniformArray(offsetData, "float");
+
+  const colorData = new Float32Array(MAX_BODIES * 3);
+  for (let i = 0; i < MAX_BODIES; i++) {
+    const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
+    colorData[i * 3] = r;
+    colorData[i * 3 + 1] = g;
+    colorData[i * 3 + 2] = b;
+  }
+  const colorBuf = uniformArray(colorData, "float");
+
+  const volumeBaseData = new Float32Array(MAX_BODIES);
+  const volumeBaseBuf = uniformArray(volumeBaseData, "float");
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2);
+  camera.position.set(0, 0, 1);
+  camera.updateProjectionMatrix();
+
+  return {
+    scene,
+    camera,
+    material: null,
+    mesh: null,
+    opcodeBuf,
+    opcodeData,
+    offsetBuf,
+    offsetData,
+    colorBuf,
+    colorData,
+    bodyCountU: uniform(0),
+    camPosU: uniform(new THREE.Vector3()),
+    invProjU: uniform(new THREE.Matrix4()),
+    invViewU: uniform(new THREE.Matrix4()),
+    volumeTextures: [],
+    volumeBaseData,
+    volumeBaseBuf,
+  };
+}
+
+// ── Rebuild bodies ──────────────────────────────────────────────────
+
+export function rebuildVmBodies(
+  state: VmPipelineState,
+  bodies: {
+    bodyIndex: number;
+    opcodes: Float32Array;
+    volumes?: { data: Float32Array; dims: [number, number, number] }[];
+  }[],
+): void {
+  state.opcodeData.fill(0);
+  state.offsetData.fill(0);
+
+  let cursor = 0;
+  for (const { bodyIndex, opcodes } of bodies) {
+    if (bodyIndex >= MAX_BODIES) continue;
+    const len = Math.min(opcodes.length, GLOBAL_MAX_OPCODES - cursor);
+    if (len <= 0) continue;
+    state.opcodeData.set(opcodes.subarray(0, len), cursor);
+    state.offsetData[bodyIndex * 2] = cursor;
+    state.offsetData[bodyIndex * 2 + 1] = len;
+    cursor += len;
+  }
+
+  // Volume textures
+  for (const tex of state.volumeTextures) tex.dispose();
+  state.volumeTextures = [];
+  state.volumeBaseData.fill(0);
+  let volIdx = 0;
+  for (const { bodyIndex, volumes } of bodies) {
+    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
+    state.volumeBaseData[bodyIndex] = volIdx;
     for (const vol of volumes) {
       const tex = new THREE.Data3DTexture(
         new Float32Array(vol.data),
@@ -84,139 +154,158 @@ export function createSdfVmBody(
       tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.wrapR = THREE.ClampToEdgeWrapping;
       tex.needsUpdate = true;
-      volumeTextures.push(tex);
+      state.volumeTextures.push(tex);
+      volIdx++;
     }
   }
 
-  const opcodeBuf = uniformArray(opcodeData, "float");
-  const sceneSdf = buildVmSdfEvalFn(opcodeBuf, {
-    volumeTextures: volumeTextures.length > 0 ? volumeTextures : undefined,
-  });
+  state.bodyCountU.value = bodies.length;
 
-  const [cr, cg, cb] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
-  const bodyColorU = uniform(new THREE.Vector3(cr, cg, cb));
+  // Rebuild material (volume texture count is baked into TSL tree)
+  if (state.material) state.material.dispose();
+  if (state.mesh) state.scene.remove(state.mesh);
 
-  const hitDepthProp = property("float", "hitDepth");
+  state.material = createVmMaterial(state);
+  state.mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), state.material);
+  state.mesh.frustumCulled = false;
+  state.scene.add(state.mesh);
+}
 
-  const colorNode = Fn(() => {
-    const worldPos = modelWorldMatrix.mul(vec4(positionGeometry, 1)).xyz;
-    const ro = cameraPosition;
-    const rd = normalize(worldPos.sub(ro));
-    const tMax = worldPos.sub(ro).length();
+// ── Material ────────────────────────────────────────────────────────
 
-    const t = float(0).toVar();
-    const hit = float(0).toVar();
-    const hitPos = vec3(0).toVar();
-
-    Loop(int(MARCH_STEPS), () => {
-      const p = ro.add(rd.mul(t));
-      const d = sceneSdf({ p });
-      If(d.lessThan(float(SURFACE_EPS)), () => {
-        hit.assign(1);
-        hitPos.assign(p);
-        Break();
-      });
-      t.addAssign(max(d, float(SURFACE_EPS)));
-      If(t.greaterThan(tMax), () => {
-        Break();
-      });
-    });
-
-    const finalColor = vec3(0).toVar();
-    If(hit.greaterThan(float(0.5)), () => {
-      const eps = float(NORMAL_EPS);
-      const ex = vec3(eps, 0, 0);
-      const ey = vec3(0, eps, 0);
-      const ez = vec3(0, 0, eps);
-      const n = normalize(
-        vec3(
-          sceneSdf({ p: hitPos.add(ex) }).sub(sceneSdf({ p: hitPos.sub(ex) })),
-          sceneSdf({ p: hitPos.add(ey) }).sub(sceneSdf({ p: hitPos.sub(ey) })),
-          sceneSdf({ p: hitPos.add(ez) }).sub(sceneSdf({ p: hitPos.sub(ez) })),
-        ),
-      );
-
-      const keyDir = normalize(vec3(0.4, 1, 0.5));
-      const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
-      const rimDir = normalize(vec3(0.0, -0.3, -1.0));
-      const dKey = max(n.dot(keyDir), float(0));
-      const dFill = max(n.dot(fillDir), float(0));
-      const dRim = max(n.dot(rimDir), float(0));
-      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
-      finalColor.assign(bodyColorU.mul(light));
-
-      const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
-      hitDepthProp.assign(clipPos.z.div(clipPos.w));
-    }).Else(() => {
-      Discard();
-    });
-
-    return vec4(finalColor, 1);
+function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
+  const sdfEval = buildVmSdfEvalFn(state.opcodeBuf, {
+    withBaseOffset: true,
+    volumeTextures: state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
+    withVolumeBaseIdx: state.volumeTextures.length > 0,
   });
 
   const material = new MeshBasicNodeMaterial();
-  material.outputNode = colorNode();
-  material.depthNode = hitDepthProp;
-  material.side = THREE.BackSide;
-  material.depthWrite = true;
-  material.depthTest = true;
+  material.outputNode = Fn(() => {
+    // Reconstruct world-space ray from fullscreen UV
+    const ndc = positionGeometry.xy;
+    const clipPos = vec4(ndc, float(-1), float(1));
+    const eyeDir4 = state.invProjU.mul(clipPos);
+    const eyeDir = eyeDir4.xyz.div(eyeDir4.w);
+    const rd = normalize(state.invViewU.mul(vec4(eyeDir, 0)).xyz);
+    const ro = state.camPosU.toVar();
+
+    const bodyCount = int(state.bodyCountU);
+    const t = float(0).toVar();
+    const hit = float(0).toVar();
+    const hitPos = vec3(0).toVar();
+    const hitBody = int(0).toVar();
+
+    Loop(int(MARCH_STEPS), () => {
+      const p = ro.add(rd.mul(t));
+      const minD = float(1e30).toVar();
+      const closestBody = int(0).toVar();
+
+      Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+        If(bodyIdx.lessThan(bodyCount), () => {
+          const offLen = state.offsetBuf.element(bodyIdx.mul(2).add(1));
+          If(int(offLen).greaterThan(int(0)), () => {
+            const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
+            const volBase = int(state.volumeBaseBuf.element(bodyIdx));
+            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
+            If(d.lessThan(minD), () => {
+              minD.assign(d);
+              closestBody.assign(bodyIdx);
+            });
+          });
+        });
+      });
+
+      If(minD.lessThan(float(SURFACE_EPS)), () => {
+        hit.assign(1);
+        hitPos.assign(p);
+        hitBody.assign(closestBody);
+        Break();
+      });
+      t.addAssign(max(minD, float(SURFACE_EPS)));
+      If(t.greaterThan(float(MAX_MARCH_DIST)), () => { Break(); });
+    });
+
+    If(hit.lessThan(float(0.5)), () => { Discard(); });
+
+    // Normal via central differences
+    const eps = float(NORMAL_EPS);
+    const ex = vec3(eps, 0, 0);
+    const ey = vec3(0, eps, 0);
+    const ez = vec3(0, 0, eps);
+    const baseOff = int(state.offsetBuf.element(hitBody.mul(2)));
+    const volBase = int(state.volumeBaseBuf.element(hitBody));
+    const n = normalize(vec3(
+      sdfEval({ p: hitPos.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: hitPos.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      sdfEval({ p: hitPos.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: hitPos.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      sdfEval({ p: hitPos.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
+        .sub(sdfEval({ p: hitPos.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
+    ));
+
+    // 3-light model
+    const keyDir = normalize(vec3(0.4, 1, 0.5));
+    const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
+    const rimDir = normalize(vec3(0.0, -0.3, -1.0));
+    const dKey = max(n.dot(keyDir), float(0));
+    const dFill = max(n.dot(fillDir), float(0));
+    const dRim = max(n.dot(rimDir), float(0));
+    const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
+
+    const cr = state.colorBuf.element(hitBody.mul(3));
+    const cg = state.colorBuf.element(hitBody.mul(3).add(1));
+    const cb = state.colorBuf.element(hitBody.mul(3).add(2));
+    const bodyColor = vec3(cr, cg, cb);
+
+    return vec4(bodyColor.mul(light), 1);
+  })();
+
+  material.side = THREE.DoubleSide;
+  material.depthWrite = false;
+  material.depthTest = false;
   material.toneMapped = false;
 
-  const minX = aabb[0], minY = aabb[1], minZ = aabb[2];
-  const maxX = aabb[3], maxY = aabb[4], maxZ = aabb[5];
-  const sx = maxX - minX + AABB_PAD * 2;
-  const sy = maxY - minY + AABB_PAD * 2;
-  const sz = maxZ - minZ + AABB_PAD * 2;
-  const cx = (minX + maxX) * 0.5;
-  const cy = (minY + maxY) * 0.5;
-  const cz = (minZ + maxZ) * 0.5;
-
-  const geometry = new THREE.BoxGeometry(sx, sy, sz);
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(cx, cy, cz);
-  mesh.frustumCulled = false;
-
-  return { mesh, material, opcodeBuf, opcodeData, opcodeLen, volumeTextures };
+  return material;
 }
 
-export function updateSdfVmBody(
-  handle: SdfVmBodyHandle,
-  opcodes: Float32Array,
-  aabb: Float32Array,
-): SdfVmBodyHandle {
-  const newLen = Math.min(opcodes.length, VM_MAX_OPCODES);
+// ── Compile ─────────────────────────────────────────────────────────
 
-  handle.opcodeData.fill(0);
-  handle.opcodeData.set(opcodes.subarray(0, newLen));
-  handle.opcodeLen = newLen;
-
-  const minX = aabb[0], minY = aabb[1], minZ = aabb[2];
-  const maxX = aabb[3], maxY = aabb[4], maxZ = aabb[5];
-  handle.mesh.position.set(
-    (minX + maxX) * 0.5,
-    (minY + maxY) * 0.5,
-    (minZ + maxZ) * 0.5,
-  );
-
-  const sx = maxX - minX + AABB_PAD * 2;
-  const sy = maxY - minY + AABB_PAD * 2;
-  const sz = maxZ - minZ + AABB_PAD * 2;
-  const geom = handle.mesh.geometry as THREE.BoxGeometry;
-  const gp = geom.parameters;
-  if (
-    Math.abs(gp.width - sx) > 0.01 ||
-    Math.abs(gp.height - sy) > 0.01 ||
-    Math.abs(gp.depth - sz) > 0.01
-  ) {
-    geom.dispose();
-    handle.mesh.geometry = new THREE.BoxGeometry(sx, sy, sz);
-  }
-
-  return handle;
+export async function compileVmPipeline(
+  state: VmPipelineState,
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+): Promise<void> {
+  if (!state.material) return;
+  updateCameraUniforms(state, camera);
+  await renderer.compileAsync(state.scene, state.camera);
 }
 
-export function disposeSdfVmBody(handle: SdfVmBodyHandle): void {
-  handle.mesh.geometry.dispose();
-  handle.material.dispose();
-  for (const tex of handle.volumeTextures) tex.dispose();
+// ── Render ──────────────────────────────────────────────────────────
+
+export function renderVmFrame(
+  state: VmPipelineState,
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.Camera,
+): void {
+  if (!state.material) return;
+  updateCameraUniforms(state, camera);
+  renderer.render(state.scene, state.camera);
+}
+
+function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): void {
+  const cam = camera as THREE.PerspectiveCamera;
+  state.camPosU.value.copy(cam.position);
+  if (cam.parent) cam.updateMatrixWorld();
+  state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
+  state.invProjU.value.copy(cam.projectionMatrixInverse);
+  state.invViewU.value.copy(cam.matrixWorldInverse).invert();
+}
+
+// ── Dispose ─────────────────────────────────────────────────────────
+
+export function disposeVmPipeline(state: VmPipelineState): void {
+  if (state.material) state.material.dispose();
+  if (state.mesh) state.mesh.geometry.dispose();
+  for (const tex of state.volumeTextures) tex.dispose();
 }
