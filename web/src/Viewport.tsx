@@ -1504,25 +1504,18 @@ export function Viewport({ renderMode }: { renderMode: string }) {
     }
   };
 
-  if (webgpuError) {
-    return (
-      <div className="fd-viewport" data-testid="fielddraft-canvas">
-        <div className="error">WebGPU is not available.</div>
-      </div>
-    );
-  }
-
   return (
     <div
       ref={hostRef}
       className="fd-viewport"
       data-testid="fielddraft-canvas"
-      onPointerMove={handlePointerMove}
-      onPointerLeave={handlePointerLeave}
-      onClick={handleClick}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
+      onPointerMove={webgpuError ? undefined : handlePointerMove}
+      onPointerLeave={webgpuError ? undefined : handlePointerLeave}
+      onClick={webgpuError ? undefined : handleClick}
+      onDragOver={webgpuError ? undefined : handleDragOver}
+      onDrop={webgpuError ? undefined : handleDrop}
     >
+      {webgpuError && <div className="error">WebGPU is not available.</div>}
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
