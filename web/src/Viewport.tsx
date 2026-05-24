@@ -1286,11 +1286,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
 }
 
 export function Viewport({ renderMode }: { renderMode: string }) {
-  if (typeof navigator !== "undefined" && !("gpu" in navigator)) {
-    console.warn(
-      "fielddraft: navigator.gpu not available. WebGPU is a hard requirement — the viewport will fail to initialize on this browser.",
-    );
-  }
+  const webgpuAvailable = typeof navigator !== "undefined" && "gpu" in navigator;
 
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1508,6 +1504,18 @@ export function Viewport({ renderMode }: { renderMode: string }) {
       store.enterSketch(plane);
     }
   };
+
+  if (!webgpuAvailable) {
+    return (
+      <div className="fd-viewport" data-testid="fielddraft-canvas">
+        <div className="error">
+          WebGPU is not available in this browser.
+          <br />
+          Please use Chrome or Edge 113+ with WebGPU enabled.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
