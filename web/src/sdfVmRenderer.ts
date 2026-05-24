@@ -34,8 +34,8 @@ import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 
-const MAX_BODIES = 32;
-const GLOBAL_MAX_OPCODES = MAX_BODIES * VM_MAX_OPCODES;
+const MAX_BODIES = 8;
+const GLOBAL_MAX_OPCODES = 4096;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
