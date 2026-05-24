@@ -1515,7 +1515,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
       onDragOver={webgpuError ? undefined : handleDragOver}
       onDrop={webgpuError ? undefined : handleDrop}
     >
-      {webgpuError && <div className="error">WebGPU is not available.</div>}
+      {webgpuError && <div className="error">WebGPU is not available. A secure context (HTTPS or localhost) is required.</div>}
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
@@ -1524,9 +1524,6 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
 
-            // Create adapter + device ourselves to bypass Three.js r183's
-            // hardcoded featureLevel:'compatibility' which fails on some
-            // Chrome builds even though WebGPU core works fine.
             const adapter = await navigator.gpu?.requestAdapter();
             if (!adapter) {
               setWebgpuError(true);
@@ -1539,14 +1536,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
               return fallback;
             }
 
-            const supportedFeatures: GPUFeatureName[] = [];
-            for (const f of adapter.features) {
-              supportedFeatures.push(f as GPUFeatureName);
-            }
-            const device = await adapter.requestDevice({
-              requiredFeatures: supportedFeatures,
-            });
-
+            const device = await adapter.requestDevice();
             const renderer = new WebGPURenderer({
               ...(props as object),
               antialias: true,
