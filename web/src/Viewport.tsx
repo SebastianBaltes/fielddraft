@@ -1288,6 +1288,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
 export function Viewport({ renderMode }: { renderMode: string }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const [webgpuError, setWebgpuError] = useState(false);
   const [ndc, setNdc] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
     y: 0,
@@ -1503,6 +1504,14 @@ export function Viewport({ renderMode }: { renderMode: string }) {
     }
   };
 
+  if (webgpuError) {
+    return (
+      <div className="fd-viewport" data-testid="fielddraft-canvas">
+        <div className="error">WebGPU is not available.</div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={hostRef}
@@ -1530,7 +1539,8 @@ export function Viewport({ renderMode }: { renderMode: string }) {
             if (!r.capabilities) r.capabilities = {};
             if (!r.capabilities.getMaxAnisotropy) r.capabilities.getMaxAnisotropy = () => 1;
             if (r.backend?.isWebGPUBackend !== true) {
-              throw new Error("WebGPU is not available.");
+              setWebgpuError(true);
+              return renderer;
             }
             const canvas = (props as any).canvas as HTMLCanvasElement;
             const parent = canvas.parentElement;
