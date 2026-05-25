@@ -815,7 +815,14 @@ function SelectionTransformGizmo() {
       {meshRef.current ? (
         <TransformControls
           ref={(tc: any) => {
-            if (tc) tc.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
+            if (tc) tc.traverse((child: THREE.Object3D) => {
+              child.layers.enable(OVERLAY_LAYER);
+              const mat = (child as any).material;
+              if (mat?.highlight) {
+                mat._opacity = 1;
+                mat.opacity = 1;
+              }
+            });
           }}
           object={meshRef.current}
           mode={gizmoMode}
