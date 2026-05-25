@@ -59,6 +59,8 @@ import {
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
 const BUILD_VOLUME_SIZE = 600;
 
+const OVERLAY_LAYER = 1;
+
 /**
  * Hover-picking probe.
  *
@@ -140,9 +142,12 @@ function HitMarker({ result }: { result: PickResult | null }) {
       ? "#d23a3a"
       : "#2b6cb0";
   return (
-    <mesh position={[result.point[0], result.point[1], result.point[2]]}>
+    <mesh
+      ref={(m) => { if (m) m.layers.enable(OVERLAY_LAYER); }}
+      position={[result.point[0], result.point[1], result.point[2]]}
+    >
       <sphereGeometry args={[2.5, 16, 12]} />
-      <meshBasicMaterial color={color} />
+      <meshBasicMaterial color={color} depthTest={false} />
     </mesh>
   );
 }
@@ -268,6 +273,12 @@ function SdfVmOverlay() {
       const prevAutoClear = (wgpuRenderer as any).autoClear;
       (wgpuRenderer as any).autoClear = false;
       renderVmFrame(pipeline, wgpuRenderer, camera);
+
+      const savedMask = camera.layers.mask;
+      camera.layers.set(OVERLAY_LAYER);
+      wgpuRenderer.render(scene, camera);
+      camera.layers.mask = savedMask;
+
       (wgpuRenderer as any).autoClear = prevAutoClear;
     } catch (err) {
       readyRef.current = false;
@@ -431,6 +442,12 @@ function SdfDeferredOverlay() {
       const prevAutoClear = (wgpuRenderer as any).autoClear;
       (wgpuRenderer as any).autoClear = false;
       renderDeferredFrame(pipeline, wgpuRenderer, camera);
+
+      const savedMask = camera.layers.mask;
+      camera.layers.set(OVERLAY_LAYER);
+      wgpuRenderer.render(scene, camera);
+      camera.layers.mask = savedMask;
+
       (wgpuRenderer as any).autoClear = prevAutoClear;
     } catch (err) {
       readyRef.current = false;
@@ -715,10 +732,7 @@ function collectSketchLineSegments(
 function SelectionTransformGizmo() {
   const { store, state } = useKernelStore();
   const meshRef = useRef<THREE.Mesh>(null);
-  // The latest *committed* translate for the selected feature.
-  // We only re-sync the placeholder mesh's position when this
-  // tuple changes — synchronising on every store state update
-  // would race with the TransformControls' own writes mid-drag.
+  const tcRef = useRef<THREE.Object3D>(null);
   const syncedTranslateRef = useRef<[number, number, number] | null>(null);
 
   // Resolve the single selected feature. The gizmo only shows
@@ -757,6 +771,14 @@ function SelectionTransformGizmo() {
       mesh.position.set(tx, ty, tz);
       syncedTranslateRef.current = [tx, ty, tz];
     }
+  }, [selectedFeature]);
+
+  useEffect(() => {
+    const tc = tcRef.current;
+    if (!tc) return;
+    tc.traverse((child: THREE.Object3D) => {
+      child.layers.enable(OVERLAY_LAYER);
+    });
   }, [selectedFeature]);
 
   const gizmoThrottleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -807,6 +829,7 @@ function SelectionTransformGizmo() {
       </mesh>
       {meshRef.current ? (
         <TransformControls
+          ref={tcRef as any}
           object={meshRef.current}
           mode={gizmoMode}
           size={0.75}
