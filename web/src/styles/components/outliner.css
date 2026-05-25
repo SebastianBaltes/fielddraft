@@ -299,6 +299,35 @@
     pointer-events: auto;
   }
 
+  & .datum-row {
+    cursor: default;
+
+    & .kind {
+      color: var(--color-text-muted);
+    }
+  }
+
+  & .row-datum-visible,
+  & .row-sketch-visible {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-subtle);
+    font-size: var(--fs-base);
+    padding: 0 var(--space-1);
+    margin-left: auto;
+    line-height: 1;
+    transition: color var(--motion-fast);
+
+    &.is-visible {
+      color: var(--color-accent);
+    }
+
+    &:hover {
+      color: var(--color-text);
+    }
+  }
+
   /* K7.22 (2): features header now carries a "new folder" button
    *            on the right edge. Header stays flex so the button
    *            floats opposite the label. */

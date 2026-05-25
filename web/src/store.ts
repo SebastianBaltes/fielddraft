@@ -177,6 +177,10 @@ export interface StoreState {
   /** Loading overlay: non-null while an import or heavy operation is
    *  in progress. The `phase` string is shown to the user. */
   loading: { phase: string } | null;
+  /** Default datum geometry hidden set. Stores ids of datums the user
+   *  has toggled off ("origin", "top", "front", "right"). Datums not
+   *  in this set are visible. Persisted to localStorage. */
+  hiddenDatums: ReadonlySet<string>;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -244,6 +248,28 @@ function loadVisibleSketchesFromStorage(): number[] {
 function persistVisibleSketchesToStorage(ids: readonly number[]): void {
   try {
     localStorage.setItem(VISIBLE_SKETCHES_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
+const HIDDEN_DATUMS_STORAGE_KEY = "fielddraft.hiddenDatums";
+
+function loadHiddenDatumsFromStorage(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_DATUMS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((s): s is string => typeof s === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistHiddenDatumsToStorage(ids: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(HIDDEN_DATUMS_STORAGE_KEY, JSON.stringify([...ids]));
   } catch {
     // ignore
   }
@@ -344,6 +370,7 @@ export class KernelStore {
       gizmoMode: "translate" as const,
       threemfStash: null,
       loading: null,
+      hiddenDatums: loadHiddenDatumsFromStorage(),
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -425,6 +452,7 @@ export class KernelStore {
       gizmoMode: this.state.gizmoMode,
       threemfStash: this.state.threemfStash,
       loading: this.state.loading,
+      hiddenDatums: this.state.hiddenDatums,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1996,6 +2024,15 @@ export class KernelStore {
       : [...current, sketchId];
     this.state = { ...this.state, visibleSketches: next };
     persistVisibleSketchesToStorage(next);
+    for (const listener of this.listeners) listener();
+  }
+
+  toggleDatumVisible(datumId: string): void {
+    const next = new Set(this.state.hiddenDatums);
+    if (next.has(datumId)) next.delete(datumId);
+    else next.add(datumId);
+    this.state = { ...this.state, hiddenDatums: next };
+    persistHiddenDatumsToStorage(next);
     for (const listener of this.listeners) listener();
   }
 

@@ -882,6 +882,39 @@ export function Outliner({ store, state }: OutlinerProps) {
           </label>
         </div>
       ) : null}
+      <div className="header accordion-header" onClick={() => toggleSection("datums")} data-testid="datums-header">
+        <span className="accordion-chevron">{collapsed.has("datums") ? "▸" : "▾"}</span>
+        <span>Default geometry</span>
+      </div>
+      {!collapsed.has("datums") && (
+        <ul className="list datum-list">
+          {([
+            { id: "origin", glyph: "⊙", label: "Origin" },
+            { id: "top",    glyph: "┼", label: "Top" },
+            { id: "front",  glyph: "┼", label: "Front" },
+            { id: "right",  glyph: "┼", label: "Right" },
+          ] as const).map((datum) => {
+            const visible = !state.hiddenDatums.has(datum.id);
+            return (
+              <li key={datum.id} className="row datum-row" data-testid={`datum-${datum.id}`}>
+                <span className="kind">{datum.glyph}</span>
+                <span className="feature-name">{datum.label}</span>
+                <button
+                  type="button"
+                  className={"row-datum-visible" + (visible ? " is-visible" : "")}
+                  title={visible ? "Hide" : "Show"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    store.toggleDatumVisible(datum.id);
+                  }}
+                >
+                  {visible ? "◉" : "◎"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <div className="header features-header accordion-header" onClick={() => toggleSection("features")} data-testid="features-header">
         <span className="accordion-chevron">{collapsed.has("features") ? "▸" : "▾"}</span>
         <span>Features</span>

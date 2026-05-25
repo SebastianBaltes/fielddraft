@@ -495,6 +495,7 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       <HitMarker result={pickResult} />
       <SelectionTransformGizmo />
       <SketchOverlay3D />
+      <DatumOverlay />
       <Invalidator ndc={ndc} />
       <PerfProbe renderMode={renderMode} />
       <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
@@ -1175,6 +1176,64 @@ function ClearColorSync() {
   }, [gl, invalidate]);
 
   return null;
+}
+
+const DATUM_PLANE_SIZE = 200;
+const DATUM_PLANE_OPACITY = 0.08;
+const DATUM_EDGE_OPACITY = 0.35;
+const DATUM_COLOR = 0x3b82f6;
+
+const DATUM_PLANES: {
+  id: string;
+  rotation: [number, number, number];
+  label: string;
+  labelPos: [number, number, number];
+}[] = [
+  { id: "front", rotation: [0, 0, 0],                     label: "Front", labelPos: [-DATUM_PLANE_SIZE / 2 + 5, DATUM_PLANE_SIZE / 2 - 5, 0] },
+  { id: "top",   rotation: [-Math.PI / 2, 0, 0],          label: "Top",   labelPos: [-DATUM_PLANE_SIZE / 2 + 5, 0, -DATUM_PLANE_SIZE / 2 + 5] },
+  { id: "right", rotation: [0, Math.PI / 2, 0],           label: "Right", labelPos: [0, DATUM_PLANE_SIZE / 2 - 5, -DATUM_PLANE_SIZE / 2 + 5] },
+];
+
+function DatumOverlay() {
+  const { state } = useKernelStore();
+  const hidden = state?.hiddenDatums ?? new Set<string>();
+  const invalidate = useThree((s) => s.invalidate);
+
+  const originVisible = !hidden.has("origin");
+  const visiblePlanes = DATUM_PLANES.filter((p) => !hidden.has(p.id));
+
+  useEffect(() => { invalidate(); }, [hidden, invalidate]);
+
+  if (!originVisible && visiblePlanes.length === 0) return null;
+
+  return (
+    <group>
+      {originVisible && (
+        <mesh>
+          <sphereGeometry args={[1.5, 16, 16]} />
+          <meshBasicMaterial color={DATUM_COLOR} transparent opacity={0.6} depthTest={false} />
+        </mesh>
+      )}
+      {visiblePlanes.map((plane) => (
+        <group key={plane.id} rotation={plane.rotation}>
+          <mesh>
+            <planeGeometry args={[DATUM_PLANE_SIZE, DATUM_PLANE_SIZE]} />
+            <meshBasicMaterial
+              color={DATUM_COLOR}
+              transparent
+              opacity={DATUM_PLANE_OPACITY}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+            />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE)]} />
+            <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
+          </lineSegments>
+        </group>
+      ))}
+    </group>
+  );
 }
 
 function WorldGrid() {
