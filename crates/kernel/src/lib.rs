@@ -636,6 +636,8 @@ impl Kernel {
                         prev.geometry_hash = geometry_hash;
                         prev.transform_hash = transform_hash;
                         prev.transform_delta = Some(cumulative);
+                        prev.last_mesh_transforms = new_transforms;
+                        prev.compiled_sdf = Some(self.compile_sdf_for(&prev.feature_indices));
                         prev.version = prev.version.wrapping_add(1);
                         new_bodies.push(prev);
                         continue;

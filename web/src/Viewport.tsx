@@ -1194,6 +1194,10 @@ const DATUM_PLANES: {
   { id: "right", rotation: [0, Math.PI / 2, 0],           label: "Right", labelPos: [0, DATUM_PLANE_SIZE / 2 - 5, -DATUM_PLANE_SIZE / 2 + 5] },
 ];
 
+const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE);
+const datumEdgesGeometry = new THREE.EdgesGeometry(datumEdgesSource);
+datumEdgesSource.dispose();
+
 function DatumOverlay() {
   const { state } = useKernelStore();
   const hidden = state?.hiddenDatums ?? new Set<string>();
@@ -1226,8 +1230,7 @@ function DatumOverlay() {
               depthWrite={false}
             />
           </mesh>
-          <lineSegments>
-            <edgesGeometry args={[new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE)]} />
+          <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
         </group>

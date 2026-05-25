@@ -890,6 +890,7 @@ export function resizeDeferredPipeline(
 }
 
 const _camWorldPos = new THREE.Vector3();
+const _savedClearColor = new THREE.Color();
 
 export function renderDeferredFrame(
   state: DeferredPipelineState,
@@ -898,6 +899,9 @@ export function renderDeferredFrame(
 ): void {
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
+
+  renderer.getClearColor(_savedClearColor);
+  const savedClearAlpha = renderer.getClearAlpha();
 
   // Pass 0: clear bitmask buffer
   renderer.compute(state.clearNode);
@@ -910,19 +914,19 @@ export function renderDeferredFrame(
 
   // Pass 2: transparent G-buffer (front faces)
   renderer.setRenderTarget(state.transparentRT);
-  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
   renderer.clear(true, true, false);
   renderer.render(state.transparentScene, camera);
 
   // Pass 2b: back-face distances (MAX-blended scalar, no depth buffer)
   renderer.setRenderTarget(state.transparentBackRT);
-  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
   renderer.clear(true, false, false);
   renderer.render(state.transparentBackScene, camera);
 
   // Pass 3: shade (reads all RTs, composites to screen)
   renderer.setRenderTarget(null);
   renderer.render(state.shadeScene, state.shadeCamera);
+
+  renderer.setClearColor(_savedClearColor, savedClearAlpha);
 }
 
 // ── Async pipeline compilation ─────────────────────────────────────
