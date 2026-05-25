@@ -818,7 +818,7 @@ function SelectionTransformGizmo() {
             if (tc) tc.traverse((child: THREE.Object3D) => {
               child.layers.enable(OVERLAY_LAYER);
               const mat = (child as any).material;
-              if (mat?.highlight) {
+              if (mat?.transparent) {
                 mat._opacity = 1;
                 mat.opacity = 1;
               }
