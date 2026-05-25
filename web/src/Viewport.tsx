@@ -274,10 +274,14 @@ function SdfVmOverlay() {
       (wgpuRenderer as any).autoClear = false;
       renderVmFrame(pipeline, wgpuRenderer, camera);
 
+      const savedBg = scene.background;
+      scene.background = null;
       const savedMask = camera.layers.mask;
       camera.layers.set(OVERLAY_LAYER);
+      wgpuRenderer.clearDepth();
       wgpuRenderer.render(scene, camera);
       camera.layers.mask = savedMask;
+      scene.background = savedBg;
 
       (wgpuRenderer as any).autoClear = prevAutoClear;
     } catch (err) {
@@ -443,10 +447,14 @@ function SdfDeferredOverlay() {
       (wgpuRenderer as any).autoClear = false;
       renderDeferredFrame(pipeline, wgpuRenderer, camera);
 
+      const savedBg = scene.background;
+      scene.background = null;
       const savedMask = camera.layers.mask;
       camera.layers.set(OVERLAY_LAYER);
+      wgpuRenderer.clearDepth();
       wgpuRenderer.render(scene, camera);
       camera.layers.mask = savedMask;
+      scene.background = savedBg;
 
       (wgpuRenderer as any).autoClear = prevAutoClear;
     } catch (err) {
@@ -732,7 +740,6 @@ function collectSketchLineSegments(
 function SelectionTransformGizmo() {
   const { store, state } = useKernelStore();
   const meshRef = useRef<THREE.Mesh>(null);
-  const tcRef = useRef<THREE.Object3D>(null);
   const syncedTranslateRef = useRef<[number, number, number] | null>(null);
 
   // Resolve the single selected feature. The gizmo only shows
@@ -771,14 +778,6 @@ function SelectionTransformGizmo() {
       mesh.position.set(tx, ty, tz);
       syncedTranslateRef.current = [tx, ty, tz];
     }
-  }, [selectedFeature]);
-
-  useEffect(() => {
-    const tc = tcRef.current;
-    if (!tc) return;
-    tc.traverse((child: THREE.Object3D) => {
-      child.layers.enable(OVERLAY_LAYER);
-    });
   }, [selectedFeature]);
 
   const gizmoThrottleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -829,7 +828,9 @@ function SelectionTransformGizmo() {
       </mesh>
       {meshRef.current ? (
         <TransformControls
-          ref={tcRef as any}
+          ref={(tc: any) => {
+            if (tc) tc.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
+          }}
           object={meshRef.current}
           mode={gizmoMode}
           size={0.75}
