@@ -39,6 +39,7 @@ import {
   resizeDeferredPipeline,
   rebuildDeferredBodies,
   updateDeferredData,
+  updateDeferredSelection,
   rebuildShadeMaterialIfNeeded,
   renderDeferredFrame,
   compileDeferredPipeline,
@@ -128,29 +129,6 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
   return null;
 }
 
-/**
- * Small translucent sphere rendered at the current pick hit point.
- * `null` result hides it; any hit shows it with a colour keyed to the
- * proxy element (face → blue, edge → orange, vertex → red).
- */
-function HitMarker({ result }: { result: PickResult | null }) {
-  if (!result || !result.hit) return null;
-  const color =
-    result.element === "edge"
-      ? "#e88a28"
-      : result.element === "vertex"
-      ? "#d23a3a"
-      : "#2b6cb0";
-  return (
-    <mesh
-      ref={(m) => { if (m) m.layers.enable(OVERLAY_LAYER); }}
-      position={[result.point[0], result.point[1], result.point[2]]}
-    >
-      <sphereGeometry args={[2.5, 16, 12]} />
-      <meshBasicMaterial color={color} depthTest={false} />
-    </mesh>
-  );
-}
 
 function SdfVmOverlay() {
   const { store } = useKernelStore();
@@ -436,6 +414,13 @@ function SdfDeferredOverlay() {
       dataFpRef.current = dataFp;
     }
 
+    const selection = store.getState().selection;
+    const selectedBodies = new Set<number>();
+    for (let i = 0; i < count; i++) {
+      if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+    }
+    updateDeferredSelection(pipeline, selectedBodies);
+
     if (!readyRef.current || compilingRef.current) {
         return;
     }
@@ -482,10 +467,9 @@ function SdfDeferredOverlay() {
 interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
-  pickResult: PickResult | null;
   renderMode: string;
 }
-function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
+function Scene({ ndc, onPick, renderMode }: SceneProps) {
   const { store } = useKernelStore();
   if (!store) return null;
   return (
@@ -494,7 +478,6 @@ function Scene({ ndc, onPick, pickResult, renderMode }: SceneProps) {
       {renderMode === "sdf-deferred" && <SdfDeferredOverlay />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
-      <HitMarker result={pickResult} />
       <SelectionTransformGizmo />
       <SketchOverlay3D />
       <DatumOverlay />
@@ -1731,7 +1714,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           }}
         >
           <ClearColorSync />
-          <Scene ndc={ndc} onPick={setPickResult} pickResult={pickResult} renderMode={renderMode} />
+          <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} />
           <ReferenceMesh />
           <EdgeOverlay />
           <MateConnectorOverlay />

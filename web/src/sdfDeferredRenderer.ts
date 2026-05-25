@@ -30,6 +30,7 @@ import {
   int,
   max,
   min,
+  mix,
   normalize,
   screenCoordinate,
   shiftLeft,
@@ -180,6 +181,8 @@ export interface DeferredPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  selectionBuf: ReturnType<typeof uniformArray>;
+  selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
   volumeBaseData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
@@ -268,6 +271,7 @@ function createShadeMaterial(
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
+  selectionBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
@@ -408,7 +412,12 @@ function createShadeMaterial(
       const cr = colorBuf.element(shadeBodyIdx.mul(3));
       const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
       const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
-      const color = vec3(cr, cg, cb).mul(light);
+      const color = vec3(cr, cg, cb).mul(light).toVar();
+
+      const sel = selectionBuf.element(shadeBodyIdx);
+      If(sel.greaterThan(float(0.5)), () => {
+        color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
+      });
 
       result.assign(vec4(color, 1));
     });
@@ -472,6 +481,9 @@ export function initDeferredPipeline(
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const selectionData = new Float32Array(MAX_BODIES);
+  const selectionBuf = uniformArray(selectionData, "float");
+
   const volumeBaseData = new Float32Array(MAX_BODIES);
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
@@ -493,6 +505,7 @@ export function initDeferredPipeline(
     opcodeBuf,
     offsetBuf,
     colorBuf,
+    selectionBuf,
     volumeBaseBuf,
     camPosUniform,
     widthU,
@@ -528,6 +541,8 @@ export function initDeferredPipeline(
     offsetData,
     colorBuf,
     colorData,
+    selectionBuf,
+    selectionData,
     volumeBaseBuf,
     volumeBaseData,
     camPosUniform,
@@ -625,6 +640,16 @@ export function updateDeferredData(
     }
   }
 
+}
+
+export function updateDeferredSelection(
+  state: DeferredPipelineState,
+  selectedBodies: Set<number>,
+): void {
+  state.selectionData.fill(0);
+  for (const idx of selectedBodies) {
+    if (idx < MAX_BODIES) state.selectionData[idx] = 1;
+  }
 }
 
 // ── Body management (full rebuild — new meshes + shader compile) ────
@@ -854,6 +879,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.opcodeBuf,
     state.offsetBuf,
     state.colorBuf,
+    state.selectionBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
     state.widthU,
