@@ -354,15 +354,19 @@ function createShadeMaterial(
         If(t.greaterThan(tMax), () => { Break(); });
       });
 
+      const opaqueBodyBit2 = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
+      const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit2).greaterThan(uint(0));
+      const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
+
       If(hit.greaterThan(float(0.5)), () => {
-        shadePos.assign(hitPos);
-        shadeBodyIdx.assign(hitBody);
+        If(hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)), () => {
+          shadePos.assign(opaqueGbuf.xyz);
+          shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+        }).Else(() => {
+          shadePos.assign(hitPos);
+          shadeBodyIdx.assign(hitBody);
+        });
       }).Else(() => {
-        // Only fall back to opaque if it's a DIFFERENT body —
-        // same body means the ray passed through a groove/gap and
-        // should show the background, not the opaque hull surface.
-        const opaqueBodyBit2 = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
-        const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit2).greaterThan(uint(0));
         If(hasOpaque.and(opaqueIsAlsoTrans.not()), () => {
           shadePos.assign(opaqueGbuf.xyz);
           shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));

@@ -182,7 +182,7 @@ function SdfVmOverlay() {
 
     const fpParts: (string | number)[] = [count];
     for (let i = 0; i < count; i++) {
-      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      fpParts.push(k.bodyId(i), k.bodyVersion(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
     }
     const fp = fpParts.join(",");
     const needsRebuild = fp !== sdfFingerprintRef.current;
@@ -307,7 +307,7 @@ function SdfDeferredOverlay() {
 
     const fpParts: (string | number)[] = [count];
     for (let i = 0; i < count; i++) {
-      fpParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      fpParts.push(k.bodyId(i), k.bodyVersion(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
     }
     const fp = fpParts.join(",");
     const needsRebuild = fp !== sdfFingerprintRef.current;
