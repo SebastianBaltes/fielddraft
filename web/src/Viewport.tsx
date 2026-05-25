@@ -1305,7 +1305,8 @@ function ViewCube() {
   useEffect(() => {
     return subscribeCameraQuat(() => {
       if (!cubeRef.current) return;
-      const { x, y, z, w } = cameraQuatState;
+      const { x, z, w } = cameraQuatState;
+      const y = -cameraQuatState.y;
       cubeRef.current.style.transform =
         `matrix3d(${1-2*(y*y+z*z)},${2*(x*y+z*w)},${2*(x*z-y*w)},0,` +
         `${2*(x*y-z*w)},${1-2*(x*x+z*z)},${2*(y*z+x*w)},0,` +
