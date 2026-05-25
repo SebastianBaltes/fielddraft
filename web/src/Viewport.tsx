@@ -28,6 +28,7 @@ import type { PickResult } from "./kernel";
 import {
   initVmPipeline,
   rebuildVmBodies,
+  updateVmData,
   compileVmPipeline,
   renderVmFrame,
   disposeVmPipeline,
@@ -37,6 +38,7 @@ import {
   initDeferredPipeline,
   resizeDeferredPipeline,
   rebuildDeferredBodies,
+  updateDeferredData,
   rebuildShadeMaterialIfNeeded,
   renderDeferredFrame,
   compileDeferredPipeline,
@@ -151,13 +153,15 @@ function SdfVmOverlay() {
   const invalidate = useThree((s) => s.invalidate);
 
   const pipelineRef = useRef<VmPipelineState | null>(null);
-  const sdfFingerprintRef = useRef("");
+  const structFpRef = useRef("");
+  const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
 
   useEffect(() => {
     pipelineRef.current = initVmPipeline();
-    sdfFingerprintRef.current = "";
+    structFpRef.current = "";
+    dataFpRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
 
@@ -180,14 +184,18 @@ function SdfVmOverlay() {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const fpParts: (string | number)[] = [count];
+    const structParts: (string | number)[] = [count];
+    const dataParts: number[] = [];
     for (let i = 0; i < count; i++) {
-      fpParts.push(k.bodyId(i), k.bodyVersion(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      dataParts.push(k.bodyVersion(i));
     }
-    const fp = fpParts.join(",");
-    const needsRebuild = fp !== sdfFingerprintRef.current;
+    const structFp = structParts.join(",");
+    const dataFp = dataParts.join(",");
+    const needsCompile = structFp !== structFpRef.current;
+    const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
 
-    if (needsRebuild && !compilingRef.current) {
+    if (needsCompile && !compilingRef.current) {
       const overlay = document.getElementById("fd-shader-compiling");
       const label = document.getElementById("fd-shader-compiling-label");
       if (overlay) overlay.style.display = "flex";
@@ -208,7 +216,8 @@ function SdfVmOverlay() {
         bodies.push({ bodyIndex: i, opcodes, volumes });
       }
       rebuildVmBodies(pipeline, bodies);
-      sdfFingerprintRef.current = fp;
+      structFpRef.current = structFp;
+      dataFpRef.current = dataFp;
 
       if (label) label.textContent = "Compiling shader…";
       compilingRef.current = true;
@@ -230,6 +239,25 @@ function SdfVmOverlay() {
             overlay.style.color = "var(--color-error, #c00)";
           }
         });
+    }
+
+    if (needsDataUpdate && readyRef.current && !compilingRef.current) {
+      const bodies = [];
+      for (let i = 0; i < count; i++) {
+        const opcodesView = k.bodySdfOpcodesView(i);
+        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
+        const volCount = k.bodyVolumeCount(i);
+        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
+        if (volCount > 0) {
+          volumes = [];
+          for (let v = 0; v < volCount; v++) {
+            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
+          }
+        }
+        bodies.push({ bodyIndex: i, opcodes, volumes });
+      }
+      updateVmData(pipeline, bodies);
+      dataFpRef.current = dataFp;
     }
 
     if (!readyRef.current || compilingRef.current) return;
@@ -268,13 +296,15 @@ function SdfDeferredOverlay() {
   const invalidate = useThree((s) => s.invalidate);
 
   const pipelineRef = useRef<DeferredPipelineState | null>(null);
-  const sdfFingerprintRef = useRef("");
+  const structFpRef = useRef("");
+  const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
 
   useEffect(() => {
     pipelineRef.current = initDeferredPipeline(1, 1);
-    sdfFingerprintRef.current = "";
+    structFpRef.current = "";
+    dataFpRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
 
@@ -305,14 +335,18 @@ function SdfDeferredOverlay() {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const fpParts: (string | number)[] = [count];
+    const structParts: (string | number)[] = [count];
+    const dataParts: number[] = [];
     for (let i = 0; i < count; i++) {
-      fpParts.push(k.bodyId(i), k.bodyVersion(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+      dataParts.push(k.bodyVersion(i));
     }
-    const fp = fpParts.join(",");
-    const needsRebuild = fp !== sdfFingerprintRef.current;
+    const structFp = structParts.join(",");
+    const dataFp = dataParts.join(",");
+    const needsCompile = structFp !== structFpRef.current;
+    const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
 
-    if (needsRebuild && !compilingRef.current) {
+    if (needsCompile && !compilingRef.current) {
       const overlay = document.getElementById("fd-shader-compiling");
       const label = document.getElementById("fd-shader-compiling-label");
 
@@ -339,7 +373,8 @@ function SdfDeferredOverlay() {
       }
       rebuildDeferredBodies(pipeline, bodies);
       rebuildShadeMaterialIfNeeded(pipeline);
-      sdfFingerprintRef.current = fp;
+      structFpRef.current = structFp;
+      dataFpRef.current = dataFp;
 
       if (label) label.textContent = "Compiling shader…";
       compilingRef.current = true;
@@ -361,6 +396,29 @@ function SdfDeferredOverlay() {
             overlay.style.color = "var(--color-error, #c00)";
           }
         });
+    }
+
+    if (needsDataUpdate && readyRef.current && !compilingRef.current) {
+      const bodies = [];
+      for (let i = 0; i < count; i++) {
+        const hybridInfo = k.bodyHybridInfo(i);
+        const opcodesView = k.bodySdfOpcodesView(i);
+        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
+        const aabb = k.bodySdfAabb(i);
+
+        const volCount = k.bodyVolumeCount(i);
+        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
+        if (volCount > 0) {
+          volumes = [];
+          for (let v = 0; v < volCount; v++) {
+            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
+          }
+        }
+
+        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb, volumes });
+      }
+      updateDeferredData(pipeline, bodies);
+      dataFpRef.current = dataFp;
     }
 
     if (!readyRef.current || compilingRef.current) return;

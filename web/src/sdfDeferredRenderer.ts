@@ -544,7 +544,88 @@ export function initDeferredPipeline(
   };
 }
 
-// ── Body management ─────────────────────────────────────────────────
+// ── Update data only (no shader recompile) ─────────────────────────
+
+export function updateDeferredData(
+  state: DeferredPipelineState,
+  bodies: {
+    bodyIndex: number;
+    hybridInfo: HybridInfo;
+    opcodes: Float32Array;
+    aabb?: Float32Array;
+    volumes?: { data: Float32Array; dims: [number, number, number] }[];
+  }[],
+): void {
+  state.opcodeData.fill(0);
+  state.offsetData.fill(0);
+
+  let cursor = 0;
+  for (const { bodyIndex, opcodes } of bodies) {
+    if (bodyIndex >= MAX_BODIES) continue;
+    const len = Math.min(opcodes.length, DEFERRED_MAX_OPCODES - cursor);
+    if (len <= 0) continue;
+    state.opcodeData.set(opcodes.subarray(0, len), cursor);
+    state.offsetData[bodyIndex * 2] = cursor;
+    state.offsetData[bodyIndex * 2 + 1] = len;
+    state.bodyOpcodeRanges.set(bodyIndex, { start: cursor, length: len });
+    cursor += len;
+  }
+
+  for (const { bodyIndex, hybridInfo, aabb } of bodies) {
+    const opaqueMeshes = state.bodyOpaqueMeshes.get(bodyIndex);
+    const transMeshes = state.bodyTransparentMeshes.get(bodyIndex);
+    const backMeshes = state.bodyBackMeshes.get(bodyIndex);
+    if (!opaqueMeshes && !transMeshes && !backMeshes) continue;
+
+    const updateMeshList = (meshes: THREE.Mesh[] | undefined) => {
+      if (!meshes) return;
+      for (const m of meshes) {
+        if (m.userData.isAabb) {
+          const bodyAABB = aabb
+            ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+            : computeLeafAABB(hybridInfo.leaves);
+          if (bodyAABB) {
+            const pad = 0.5;
+            m.geometry.dispose();
+            m.geometry = new THREE.BoxGeometry(
+              (bodyAABB[3] - bodyAABB[0]) + pad * 2,
+              (bodyAABB[4] - bodyAABB[1]) + pad * 2,
+              (bodyAABB[5] - bodyAABB[2]) + pad * 2,
+            );
+            m.position.set(
+              (bodyAABB[0] + bodyAABB[3]) * 0.5,
+              (bodyAABB[1] + bodyAABB[4]) * 0.5,
+              (bodyAABB[2] + bodyAABB[5]) * 0.5,
+            );
+          }
+        } else if (m.userData.leafIdx !== undefined) {
+          applyLeafTransform(m, hybridInfo.leaves[m.userData.leafIdx]);
+        }
+      }
+    };
+    updateMeshList(opaqueMeshes);
+    updateMeshList(transMeshes);
+    updateMeshList(backMeshes);
+  }
+
+  state.volumeBaseData.fill(0);
+  let volIdx = 0;
+  for (const { bodyIndex, volumes } of bodies) {
+    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
+    state.volumeBaseData[bodyIndex] = volIdx;
+    for (let v = 0; v < volumes.length; v++) {
+      const tex = state.volumeTextures[volIdx];
+      if (tex) {
+        (tex.image as any).data.set(volumes[v].data);
+        tex.needsUpdate = true;
+      }
+      volIdx++;
+    }
+  }
+
+}
+
+// ── Body management (full rebuild — new meshes + shader compile) ────
 
 export function rebuildDeferredBodies(
   state: DeferredPipelineState,
@@ -614,10 +695,13 @@ export function rebuildDeferredBodies(
         : computeLeafAABB(hybridInfo.leaves);
       if (bodyAABB) {
         addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+        transMeshes[transMeshes.length - 1].userData.isAabb = true;
         addAabbBox(bodyAABB, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+        backMeshes[backMeshes.length - 1].userData.isAabb = true;
       }
     } else {
-      for (const leaf of hybridInfo.leaves) {
+      for (let leafIdx = 0; leafIdx < hybridInfo.leaves.length; leafIdx++) {
+        const leaf = hybridInfo.leaves[leafIdx];
         if (leaf.role === "skip") continue;
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
@@ -626,12 +710,14 @@ export function rebuildDeferredBodies(
           const mesh = new THREE.Mesh(geo, gbufMaterial);
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
+          mesh.userData.leafIdx = leafIdx;
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
         } else {
           const mesh = new THREE.Mesh(geo, gbufMaterial);
           applyLeafTransform(mesh, leaf);
           mesh.frustumCulled = false;
+          mesh.userData.leafIdx = leafIdx;
           state.opaqueScene.add(mesh);
           opaqueMeshes.push(mesh);
 
@@ -641,17 +727,18 @@ export function rebuildDeferredBodies(
             const tMesh = new THREE.Mesh(tGeo, transMat);
             applyLeafTransform(tMesh, leaf);
             tMesh.frustumCulled = false;
+            tMesh.userData.leafIdx = leafIdx;
             state.transparentScene.add(tMesh);
             transMeshes.push(tMesh);
           }
 
-          // Back-face mesh (same inflated geometry, shared back-face material)
           const bGeo = createPrimitiveGeometry(leaf);
           if (bGeo) {
             bGeo.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
             const bMesh = new THREE.Mesh(bGeo, state.backFaceMaterial);
             applyLeafTransform(bMesh, leaf);
             bMesh.frustumCulled = false;
+            bMesh.userData.leafIdx = leafIdx;
             state.transparentBackScene.add(bMesh);
             backMeshes.push(bMesh);
           }
@@ -664,7 +751,9 @@ export function rebuildDeferredBodies(
           : computeLeafAABB(hybridInfo.leaves);
         if (bodyAABB) {
           addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
+          transMeshes[transMeshes.length - 1].userData.isAabb = true;
           addAabbBox(bodyAABB, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+          backMeshes[backMeshes.length - 1].userData.isAabb = true;
         }
       }
     }

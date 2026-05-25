@@ -109,7 +109,49 @@ export function initVmPipeline(): VmPipelineState {
   };
 }
 
-// ── Rebuild bodies ──────────────────────────────────────────────────
+// ── Update opcode data only (no shader recompile) ──────────────────
+
+export function updateVmData(
+  state: VmPipelineState,
+  bodies: {
+    bodyIndex: number;
+    opcodes: Float32Array;
+    volumes?: { data: Float32Array; dims: [number, number, number] }[];
+  }[],
+): void {
+  state.opcodeData.fill(0);
+  state.offsetData.fill(0);
+
+  let cursor = 0;
+  for (const { bodyIndex, opcodes } of bodies) {
+    if (bodyIndex >= MAX_BODIES) continue;
+    const len = Math.min(opcodes.length, GLOBAL_MAX_OPCODES - cursor);
+    if (len <= 0) continue;
+    state.opcodeData.set(opcodes.subarray(0, len), cursor);
+    state.offsetData[bodyIndex * 2] = cursor;
+    state.offsetData[bodyIndex * 2 + 1] = len;
+    cursor += len;
+  }
+
+  state.volumeBaseData.fill(0);
+  let volIdx = 0;
+  for (const { bodyIndex, volumes } of bodies) {
+    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
+    state.volumeBaseData[bodyIndex] = volIdx;
+    for (let v = 0; v < volumes.length; v++) {
+      const tex = state.volumeTextures[volIdx];
+      if (tex) {
+        (tex.image as any).data.set(volumes[v].data);
+        tex.needsUpdate = true;
+      }
+      volIdx++;
+    }
+  }
+
+  state.bodyCountU.value = bodies.length;
+}
+
+// ── Rebuild bodies (full — new material + shader compile needed) ────
 
 export function rebuildVmBodies(
   state: VmPipelineState,
@@ -161,7 +203,6 @@ export function rebuildVmBodies(
 
   state.bodyCountU.value = bodies.length;
 
-  // Rebuild material (volume texture count is baked into TSL tree)
   if (state.material) state.material.dispose();
   if (state.mesh) state.scene.remove(state.mesh);
 
