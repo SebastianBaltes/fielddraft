@@ -49,7 +49,7 @@ import {
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
-import { consumeViewCommand, peekViewCommand, registerInvalidate, requestView, VIEW_PRESETS } from "./viewCommands";
+import { consumeViewCommand, invalidateCanvas, peekViewCommand, registerInvalidate, requestView, VIEW_PRESETS } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import {
   publishPickCamera,
@@ -1607,6 +1607,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         store.clearSelection();
       }
       setMeasurePoints(null);
+      invalidateCanvas();
       return;
     }
     const featureId = click.contributors[0];
@@ -1619,6 +1620,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         store.selectOnly(featureId);
       }
     }
+    invalidateCanvas();
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {

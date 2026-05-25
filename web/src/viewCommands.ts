@@ -16,6 +16,10 @@ export function registerInvalidate(fn: () => void): void {
   state.invalidate = fn;
 }
 
+export function invalidateCanvas(): void {
+  state.invalidate?.();
+}
+
 export function requestView(preset: ViewPreset): void {
   state.pending = preset;
   state.invalidate?.();
