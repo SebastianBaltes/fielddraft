@@ -436,8 +436,9 @@ function SdfDeferredOverlay() {
       dataFpRef.current = dataFp;
     }
 
-    if (!readyRef.current || compilingRef.current) return;
-
+    if (!readyRef.current || compilingRef.current) {
+        return;
+    }
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
 
     try {
@@ -458,6 +459,7 @@ function SdfDeferredOverlay() {
 
       (wgpuRenderer as any).autoClear = prevAutoClear;
     } catch (err) {
+      console.error("SDF render error:", err);
       readyRef.current = false;
       const overlay = document.getElementById("fd-shader-compiling");
       const label = document.getElementById("fd-shader-compiling-label");
@@ -1709,9 +1711,10 @@ export function Viewport({ renderMode }: { renderMode: string }) {
 
             const renderer = new WebGPURenderer({
               ...(props as object),
-              antialias: true,
+              antialias: false,
             });
             await renderer.init();
+            (window as any).__threeRenderer = renderer;
 
             const canvas = (props as any).canvas as HTMLCanvasElement;
             const parent = canvas.parentElement;

@@ -18,7 +18,6 @@
 import * as THREE from "three";
 import {
   Break,
-  Discard,
   Fn,
   If,
   Loop,
@@ -295,124 +294,126 @@ function createShadeMaterial(
     const mask = atomicLoad(bitmaskBuf.element(pixelIdx)).toVar();
     const hasTrans = mask.greaterThan(uint(0));
 
-    // Fall C: no geometry at this pixel
-    If(hasOpaque.not().and(hasTrans.not()), () => { Discard(); });
-
-    // Determine shade target (worldPos + bodyIdx) via Fall A/B logic
     const shadePos = vec3(0, 0, 0).toVar();
     const shadeBodyIdx = int(0).toVar();
+    const hasHit = int(0).toVar();
 
-    If(hasTrans, () => {
-      // Fall B: transparent hull(s) -> multi-body sphere-trace
-      const transWorldPos = transGbuf.xyz;
-      const rd = normalize(transWorldPos.sub(camPosU));
+    If(hasOpaque.or(hasTrans), () => {
+      If(hasTrans, () => {
+        // Fall B: transparent hull(s) -> multi-body sphere-trace
+        const transWorldPos = transGbuf.xyz;
+        const rd = normalize(transWorldPos.sub(camPosU));
 
-      // tMax: farthest back-face distance (MAX-blended scalar from Pass 2b)
-      const backDist = texture(transBackTex, texUv).x;
-      const frontDist = transWorldPos.sub(camPosU).length();
-      const tMax = backDist.sub(frontDist).toVar();
+        const backDist = texture(transBackTex, texUv).x;
+        const frontDist = transWorldPos.sub(camPosU).length();
+        const tMax = backDist.sub(frontDist).toVar();
 
-      // Opaque behind (different body) tightens the bound
-      If(hasOpaque, () => {
-        const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
-        const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
-        const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit).greaterThan(uint(0));
-        If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
-          tMax.assign(min(tMax, opaqueDist));
-        });
-      });
-
-      const t = float(0).toVar();
-      const hitPos = vec3(0, 0, 0).toVar();
-      const hit = float(0).toVar();
-      const hitBody = int(0).toVar();
-
-      Loop(int(DEFERRED_MARCH_STEPS), () => {
-        const p = transWorldPos.add(rd.mul(t));
-        const minD = float(1e30).toVar();
-        const closestBody = int(0).toVar();
-
-        Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
-          const bit = shiftLeft(uint(1), uint(bodyIdx));
-          If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
-            const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-            const volBase = int(volumeBaseBuf.element(bodyIdx));
-            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
-            If(d.lessThan(minD), () => {
-              minD.assign(d);
-              closestBody.assign(bodyIdx);
-            });
+        If(hasOpaque, () => {
+          const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
+          const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
+          const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit).greaterThan(uint(0));
+          If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
+            tMax.assign(min(tMax, opaqueDist));
           });
         });
 
-        If(minD.lessThan(float(SURFACE_EPS)), () => {
-          hit.assign(1);
-          hitPos.assign(p);
-          hitBody.assign(closestBody);
-          Break();
+        const t = float(0).toVar();
+        const hitPos = vec3(0, 0, 0).toVar();
+        const hit = float(0).toVar();
+        const hitBody = int(0).toVar();
+
+        Loop(int(DEFERRED_MARCH_STEPS), () => {
+          const p = transWorldPos.add(rd.mul(t));
+          const minD = float(1e30).toVar();
+          const closestBody = int(0).toVar();
+
+          Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
+            const bit = shiftLeft(uint(1), uint(bodyIdx));
+            If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
+              const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+              const volBase = int(volumeBaseBuf.element(bodyIdx));
+              const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
+              If(d.lessThan(minD), () => {
+                minD.assign(d);
+                closestBody.assign(bodyIdx);
+              });
+            });
+          });
+
+          If(minD.lessThan(float(SURFACE_EPS)), () => {
+            hit.assign(1);
+            hitPos.assign(p);
+            hitBody.assign(closestBody);
+            Break();
+          });
+          t.addAssign(max(minD, float(SURFACE_EPS)));
+          If(t.greaterThan(tMax), () => { Break(); });
         });
-        t.addAssign(max(minD, float(SURFACE_EPS)));
-        If(t.greaterThan(tMax), () => { Break(); });
-      });
 
-      const opaqueBodyBit2 = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
-      const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit2).greaterThan(uint(0));
-      const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
+        const opaqueBodyBit2 = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
+        const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit2).greaterThan(uint(0));
+        const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
 
-      If(hit.greaterThan(float(0.5)), () => {
-        If(hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)), () => {
-          shadePos.assign(opaqueGbuf.xyz);
-          shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+        If(hit.greaterThan(float(0.5)), () => {
+          If(hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)), () => {
+            shadePos.assign(opaqueGbuf.xyz);
+            shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+          }).Else(() => {
+            shadePos.assign(hitPos);
+            shadeBodyIdx.assign(hitBody);
+          });
+          hasHit.assign(int(1));
         }).Else(() => {
-          shadePos.assign(hitPos);
-          shadeBodyIdx.assign(hitBody);
+          If(hasOpaque.and(opaqueIsAlsoTrans.not()), () => {
+            shadePos.assign(opaqueGbuf.xyz);
+            shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+            hasHit.assign(int(1));
+          });
         });
       }).Else(() => {
-        If(hasOpaque.and(opaqueIsAlsoTrans.not()), () => {
-          shadePos.assign(opaqueGbuf.xyz);
-          shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
-        }).Else(() => {
-          Discard();
-        });
+        // Fall A: opaque only -- shade at mesh surface (no march needed)
+        shadePos.assign(opaqueGbuf.xyz);
+        shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+        hasHit.assign(int(1));
       });
-    }).Else(() => {
-      // Fall A: opaque only -- shade at mesh surface (no march needed)
-      shadePos.assign(opaqueGbuf.xyz);
-      shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
     });
 
-    // Normal via central differences at shade point
-    const baseOff = int(offsetBuf.element(shadeBodyIdx.mul(2)));
-    const volBase = int(volumeBaseBuf.element(shadeBodyIdx));
-    const p = shadePos;
-    const eps = float(NORMAL_EPS);
-    const ex = vec3(eps, 0, 0);
-    const ey = vec3(0, eps, 0);
-    const ez = vec3(0, 0, eps);
-    const n = normalize(vec3(
-      sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
-      sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
-      sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
-    ));
+    const result = vec4(0, 0, 0, 0).toVar();
 
-    // Lighting
-    const keyDir = normalize(vec3(0.4, 1, 0.5));
-    const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
-    const rimDir = normalize(vec3(0.0, -0.3, -1.0));
-    const dKey = max(n.dot(keyDir), float(0));
-    const dFill = max(n.dot(fillDir), float(0));
-    const dRim = max(n.dot(rimDir), float(0));
-    const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
+    If(hasHit.greaterThan(int(0)), () => {
+      const baseOff = int(offsetBuf.element(shadeBodyIdx.mul(2)));
+      const volBase = int(volumeBaseBuf.element(shadeBodyIdx));
+      const p = shadePos;
+      const eps = float(NORMAL_EPS);
+      const ex = vec3(eps, 0, 0);
+      const ey = vec3(0, eps, 0);
+      const ez = vec3(0, 0, eps);
+      const n = normalize(vec3(
+        sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
+          .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
+        sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
+          .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
+        sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
+          .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      ));
 
-    const cr = colorBuf.element(shadeBodyIdx.mul(3));
-    const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
-    const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
-    const color = vec3(cr, cg, cb).mul(light);
+      const keyDir = normalize(vec3(0.4, 1, 0.5));
+      const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
+      const rimDir = normalize(vec3(0.0, -0.3, -1.0));
+      const dKey = max(n.dot(keyDir), float(0));
+      const dFill = max(n.dot(fillDir), float(0));
+      const dRim = max(n.dot(rimDir), float(0));
+      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
 
-    return vec4(color, 1);
+      const cr = colorBuf.element(shadeBodyIdx.mul(3));
+      const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
+      const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
+      const color = vec3(cr, cg, cb).mul(light);
+
+      result.assign(vec4(color, 1));
+    });
+
+    return result;
   })();
 
   material.depthWrite = false;
