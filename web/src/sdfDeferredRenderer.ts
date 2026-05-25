@@ -148,6 +148,7 @@ export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void
   }
   mesh.matrixAutoUpdate = false;
   mesh.matrix.compose(translate, quat, new THREE.Vector3(scale, scale, scale));
+  mesh.matrixWorldNeedsUpdate = true;
 }
 
 function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
