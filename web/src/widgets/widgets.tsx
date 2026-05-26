@@ -135,7 +135,60 @@ function BufferedNumberInput({
   );
 }
 
-// ─── unit suffix helper ────────────────────────────────────────
+// ─── unit conversion helpers ──────────────────────────────────
+
+const LENGTH_TO_M: Record<string, number> = {
+  mm: 0.001,
+  cm: 0.01,
+  m: 1,
+  in: 0.0254,
+  ft: 0.3048,
+};
+
+const ANGLE_TO_DEG: Record<string, number> = {
+  deg: 1,
+  "°": 1,
+  rad: 180 / Math.PI,
+};
+
+function convertUnit(value: number, from: string, to: string): number | null {
+  const f = from.toLowerCase();
+  const t = to.toLowerCase();
+  if (f === t) return value;
+  const fl = LENGTH_TO_M[f];
+  const tl = LENGTH_TO_M[t];
+  if (fl !== undefined && tl !== undefined) return (value * fl) / tl;
+  const fa = ANGLE_TO_DEG[f];
+  const ta = ANGLE_TO_DEG[t];
+  if (fa !== undefined && ta !== undefined) return (value * fa) / ta;
+  return null;
+}
+
+function parseValueWithUnit(
+  text: string,
+  defaultUnit: string,
+): { value: number; unit: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/,/g, ".");
+  const match = normalized.match(/^([+-]?\d*\.?\d+)\s*(.*)$/);
+  if (!match) return null;
+  const value = parseFloat(match[1]);
+  if (!Number.isFinite(value)) return null;
+  const unitText = match[2].trim();
+  return { value, unit: unitText || defaultUnit };
+}
+
+function formatNumber(n: number): string {
+  return parseFloat(n.toPrecision(10)).toString();
+}
+
+function unitDisplayLabel(unit: string): string {
+  if (unit === "deg") return "°";
+  return unit;
+}
+
+// ─── unit-aware input ─────────────────────────────────────────
 
 function UnitInput({
   value,
@@ -150,11 +203,64 @@ function UnitInput({
   if (!unit) {
     return <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />;
   }
+
+  const display = Number.isFinite(value) ? value : 0;
+  const label = unitDisplayLabel(unit);
+  const formatted = `${formatNumber(display)} ${label}`;
+  const [raw, setRaw] = useState(formatted);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setRaw(formatted);
+  }, [formatted, editing]);
+
+  const tryCommit = (text: string) => {
+    const parsed = parseValueWithUnit(text, unit);
+    if (parsed) {
+      const converted = convertUnit(parsed.value, parsed.unit, unit);
+      if (converted !== null && Number.isFinite(converted)) {
+        onCommit(converted);
+      }
+    }
+  };
+
   return (
-    <span className="input-with-unit">
-      <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />
-      <span className="unit-suffix">{unit}</span>
-    </span>
+    <input
+      {...rest}
+      type="text"
+      value={raw}
+      onChange={(e) => {
+        const text = e.currentTarget.value;
+        setRaw(text);
+        tryCommit(text);
+      }}
+      onFocus={(e) => {
+        setEditing(true);
+        rest.onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setEditing(false);
+        const parsed = parseValueWithUnit(raw, unit);
+        if (parsed) {
+          const converted = convertUnit(parsed.value, parsed.unit, unit);
+          if (converted !== null && Number.isFinite(converted)) {
+            onCommit(converted);
+            setRaw(`${formatNumber(converted)} ${label}`);
+          } else {
+            setRaw(formatted);
+          }
+        } else {
+          setRaw(formatted);
+        }
+        rest.onBlur?.(e);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          (e.currentTarget as HTMLInputElement).blur();
+        }
+        rest.onKeyDown?.(e);
+      }}
+    />
   );
 }
 

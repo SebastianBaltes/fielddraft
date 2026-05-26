@@ -202,7 +202,7 @@ describe("buildDefaultDefinition", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     const def = buildDefaultDefinition(schema);
     expect(def.profiles).toBe("");
-    expect(def.depth).toEqual({ value: 10, unit: "mm" });
+    expect(def.depth).toEqual({ value: 1, unit: "m" });
     expect(def.profile_half_x).toBe(0);
     expect(def.profile_half_y).toBe(0);
     // Enum default is the first variant.
@@ -253,10 +253,10 @@ describe("defaultForParam", () => {
   it("returns a zero vec2 for vec2 widgets", () => {
     expect(defaultForParam(p({ widget: "vec2" }))).toEqual([0, 0]);
   });
-  it("returns 10mm for length widgets", () => {
+  it("returns 1m for length widgets", () => {
     expect(defaultForParam(p({ widget: "length" }))).toEqual({
-      value: 10,
-      unit: "mm",
+      value: 1,
+      unit: "m",
     });
   });
   it("returns 0deg for angle widgets", () => {
@@ -311,7 +311,7 @@ describe("updateParam + readParam", () => {
   it("readParam falls back to the widget default when the key is missing", () => {
     const schema = parseFeatureSchema(extrudeRaw);
     const depthParam = schema.params.find((p) => p.key === "depth")!;
-    expect(readParam({}, depthParam)).toEqual({ value: 10, unit: "mm" });
+    expect(readParam({}, depthParam)).toEqual({ value: 1, unit: "m" });
   });
 });
 
