@@ -333,6 +333,47 @@ impl FeatureRegistry {
 // the top of each execute function is the only hand-written
 // parameter logic that remains in these three built-ins.
 
+/// Shared fields for domain-warp / material modifiers that every primitive carries.
+struct PrimitiveModifiers {
+    blend_radius: f32,
+    chamfer_size: f32,
+    twist_rate: f32,
+    bend_rate: f32,
+    displace_depth: f32,
+    displace_freq: f32,
+    shell_thickness: f32,
+}
+
+fn push_primitive(
+    ctx: &mut Context<'_>,
+    id: &FeatureId,
+    def: &Value,
+    type_label: &str,
+    op: BoolOp,
+    primitive: Primitive,
+    translate: [f32; 3],
+    mods: PrimitiveModifiers,
+) {
+    let name = optional_display_name(def, || format!("{type_label} {id}"));
+    let rotation = optional_rotation(def);
+    let scale = optional_scale(def);
+    ctx.document.features.push(SpineFeature {
+        id: id.clone(),
+        name,
+        op,
+        primitive,
+        transform: Transform { translate, rotation, scale },
+        blend_radius: mods.blend_radius,
+        chamfer_size: mods.chamfer_size,
+        twist_rate: mods.twist_rate,
+        bend_rate: mods.bend_rate,
+        displace_depth: mods.displace_depth,
+        displace_freq: mods.displace_freq,
+        shell_thickness: mods.shell_thickness,
+        target_ids: vec![],
+    });
+}
+
 /// `box` — K1 axis-aligned box primitive.
 #[derive(FeatureSchema)]
 #[schema(type = "box")]
@@ -379,31 +420,16 @@ impl FeatureKind for BoxPrimitive {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = BoxDef::parse(def)?;
-        let name = optional_display_name(def, || format!("Box {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Box {
-                center: d.center,
-                half_extents: d.half_extents,
+        push_primitive(ctx, id, def, "Box", d.op,
+            Primitive::Box { center: d.center, half_extents: d.half_extents },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -455,31 +481,16 @@ impl FeatureKind for SpherePrimitive {
     ) -> Result<(), FeatureError> {
         let d = SphereDef::parse(def)?;
         positive_f32(d.radius, SphereDef::TYPE_NAME, "radius")?;
-        let name = optional_display_name(def, || format!("Sphere {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Sphere {
-                center: d.center,
-                radius: d.radius,
+        push_primitive(ctx, id, def, "Sphere", d.op,
+            Primitive::Sphere { center: d.center, radius: d.radius },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -534,32 +545,16 @@ impl FeatureKind for CylinderPrimitive {
         let d = CylinderDef::parse(def)?;
         positive_f32(d.radius, CylinderDef::TYPE_NAME, "radius")?;
         positive_f32(d.half_height, CylinderDef::TYPE_NAME, "half_height")?;
-        let name = optional_display_name(def, || format!("Cylinder {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Cylinder {
-                center: d.center,
-                radius: d.radius,
-                half_height: d.half_height,
+        push_primitive(ctx, id, def, "Cylinder", d.op,
+            Primitive::Cylinder { center: d.center, radius: d.radius, half_height: d.half_height },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -613,32 +608,16 @@ impl FeatureKind for ConePrimitive {
     ) -> Result<(), FeatureError> {
         let d = ConeDef::parse(def)?;
         positive_f32(d.half_height, ConeDef::TYPE_NAME, "half_height")?;
-        let name = optional_display_name(def, || format!("Cone {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Cone {
-                r_bottom: d.r_bottom,
-                r_top: d.r_top,
-                half_height: d.half_height,
+        push_primitive(ctx, id, def, "Cone", d.op,
+            Primitive::Cone { r_bottom: d.r_bottom, r_top: d.r_top, half_height: d.half_height },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -693,33 +672,19 @@ impl FeatureKind for ThreadFeature {
         positive_f32(d.pitch, ThreadDef::TYPE_NAME, "pitch")?;
         positive_f32(d.depth, ThreadDef::TYPE_NAME, "depth")?;
         positive_f32(d.half_height, ThreadDef::TYPE_NAME, "half_height")?;
-        let name = optional_display_name(def, || format!("Thread {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Thread {
-                nominal_radius: d.nominal_radius,
-                pitch: d.pitch,
-                depth: d.depth,
-                half_height: d.half_height,
+        push_primitive(ctx, id, def, "Thread", d.op,
+            Primitive::Thread {
+                nominal_radius: d.nominal_radius, pitch: d.pitch,
+                depth: d.depth, half_height: d.half_height,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: 0.0, bend_rate: 0.0,
+                displace_depth: 0.0, displace_freq: 0.0,
+                shell_thickness: 0.0,
             },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -778,32 +743,16 @@ impl FeatureKind for TorusPrimitive {
         let d = TorusDef::parse(def)?;
         positive_f32(d.major_radius, TorusDef::TYPE_NAME, "major_radius")?;
         positive_f32(d.minor_radius, TorusDef::TYPE_NAME, "minor_radius")?;
-        let name = optional_display_name(def, || format!("Torus {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Torus {
-                center: d.center,
-                major_radius: d.major_radius,
-                minor_radius: d.minor_radius,
+        push_primitive(ctx, id, def, "Torus", d.op,
+            Primitive::Torus { center: d.center, major_radius: d.major_radius, minor_radius: d.minor_radius },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -860,31 +809,16 @@ impl FeatureKind for CapsulePrimitive {
         let d = CapsuleDef::parse(def)?;
         positive_f32(d.radius, CapsuleDef::TYPE_NAME, "radius")?;
         positive_f32(d.half_height, CapsuleDef::TYPE_NAME, "half_height")?;
-        let name = optional_display_name(def, || format!("Capsule {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Capsule {
-                radius: d.radius,
-                half_height: d.half_height,
+        push_primitive(ctx, id, def, "Capsule", d.op,
+            Primitive::Capsule { radius: d.radius, half_height: d.half_height },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -940,30 +874,16 @@ impl FeatureKind for EllipsoidPrimitive {
         positive_f32(d.radii[0], EllipsoidDef::TYPE_NAME, "radii[0]")?;
         positive_f32(d.radii[1], EllipsoidDef::TYPE_NAME, "radii[1]")?;
         positive_f32(d.radii[2], EllipsoidDef::TYPE_NAME, "radii[2]")?;
-        let name = optional_display_name(def, || format!("Ellipsoid {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::Ellipsoid {
-                radii: d.radii,
+        push_primitive(ctx, id, def, "Ellipsoid", d.op,
+            Primitive::Ellipsoid { radii: d.radii },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
@@ -1019,31 +939,16 @@ impl FeatureKind for HexPrismPrimitive {
         let d = HexPrismDef::parse(def)?;
         positive_f32(d.apothem, HexPrismDef::TYPE_NAME, "apothem")?;
         positive_f32(d.half_height, HexPrismDef::TYPE_NAME, "half_height")?;
-        let name = optional_display_name(def, || format!("HexPrism {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-        ctx.document.features.push(SpineFeature {
-            id: id.clone(),
-            name,
-            op: d.op,
-            primitive: Primitive::HexPrism {
-                apothem: d.apothem,
-                half_height: d.half_height,
+        push_primitive(ctx, id, def, "HexPrism", d.op,
+            Primitive::HexPrism { apothem: d.apothem, half_height: d.half_height },
+            d.translate,
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius, chamfer_size: d.chamfer_size,
+                twist_rate: d.twist_rate, bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth, displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness,
             },
-            transform: Transform {
-                translate: d.translate,
-                rotation,
-                scale,
-            },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
-            target_ids: vec![],
-        });
+        );
         Ok(())
     }
 }
