@@ -322,6 +322,10 @@ export class KernelStore {
   private listeners = new Set<() => void>();
   private state: StoreState;
 
+  private patch(partial: Partial<StoreState>): void {
+    this.state = { ...this.state, ...partial };
+  }
+
   private meshDataCache = new Map<number, MeshOverlayData>();
   private worker: Worker | null = null;
   private workerRequestCounter = 0;
@@ -474,7 +478,7 @@ export class KernelStore {
         if (live.has(id)) filtered.add(id);
       }
       if (filtered.size !== this.state.selection.size) {
-        this.state = { ...this.state, selection: filtered };
+        this.patch({ selection: filtered });
       }
     }
     // Anchor must point at a still-living feature, or be cleared.
@@ -482,7 +486,7 @@ export class KernelStore {
       this.state.selectionAnchor !== null &&
       !this.state.features.some((f) => f.id === this.state.selectionAnchor)
     ) {
-      this.state = { ...this.state, selectionAnchor: null };
+      this.patch({ selectionAnchor: null });
     }
     this.syncActiveBody();
     this.autosave.schedule(this.kernel.toJson());
@@ -645,7 +649,7 @@ export class KernelStore {
 
   setNextOp(op: BoolOpTagValue): void {
     if (this.state.nextOp === op) return;
-    this.state = { ...this.state, nextOp: op };
+    this.patch({ nextOp: op });
     for (const listener of this.listeners) listener();
   }
 
@@ -891,14 +895,14 @@ export class KernelStore {
       console.error("fielddraft: convertReferenceToSolid failed", err);
       return null;
     }
-    this.state = { ...this.state, referenceMesh: null };
+    this.patch({ referenceMesh: null });
     this.commit(new Set([id]), id);
     console.log(`fielddraft: reference → solid complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`);
     return id;
   }
 
   clearReferenceMesh(): void {
-    this.state = { ...this.state, referenceMesh: null };
+    this.patch({ referenceMesh: null });
     this.notify();
   }
 
@@ -1213,7 +1217,7 @@ export class KernelStore {
   }
 
   highlightBody(index: number | null): void {
-    this.state = { ...this.state, highlightedBodyIndex: index };
+    this.patch({ highlightedBodyIndex: index });
     for (const listener of this.listeners) listener();
   }
 
@@ -1262,7 +1266,7 @@ export class KernelStore {
     if (!this.state.projectId || this.state.syncState === "offline") {
       return false;
     }
-    this.state = { ...this.state, syncState: "syncing" };
+    this.patch({ syncState: "syncing" });
     for (const listener of this.listeners) listener();
     try {
       const res = await fetch(
@@ -1277,13 +1281,13 @@ export class KernelStore {
         },
       );
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);
-      this.state = { ...this.state, syncState: "clean" };
+      this.patch({ syncState: "clean" });
       for (const listener of this.listeners) listener();
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: sync failed", err);
-      this.state = { ...this.state, syncState: "error" };
+      this.patch({ syncState: "error" });
       for (const listener of this.listeners) listener();
       return false;
     }
@@ -1375,17 +1379,17 @@ export class KernelStore {
   }
 
   toggleMeasureMode(): void {
-    this.state = { ...this.state, measureMode: !this.state.measureMode, filletMode: false, mateMode: false };
+    this.patch({ measureMode: !this.state.measureMode, filletMode: false, mateMode: false });
     for (const listener of this.listeners) listener();
   }
 
   toggleFilletMode(): void {
-    this.state = { ...this.state, filletMode: !this.state.filletMode, measureMode: false, mateMode: false };
+    this.patch({ filletMode: !this.state.filletMode, measureMode: false, mateMode: false });
     for (const listener of this.listeners) listener();
   }
 
   toggleMateMode(): void {
-    this.state = { ...this.state, mateMode: !this.state.mateMode, filletMode: false, measureMode: false };
+    this.patch({ mateMode: !this.state.mateMode, filletMode: false, measureMode: false });
     for (const listener of this.listeners) listener();
   }
 
@@ -1404,7 +1408,7 @@ export class KernelStore {
   }
 
   exitAssembly(): void {
-    this.state = { ...this.state, assembly: INACTIVE_ASSEMBLY };
+    this.patch({ assembly: INACTIVE_ASSEMBLY });
     this.notify();
   }
 
@@ -1664,7 +1668,7 @@ export class KernelStore {
   }
 
   toggleIKMode(): void {
-    this.state = { ...this.state, ikMode: !this.state.ikMode };
+    this.patch({ ikMode: !this.state.ikMode });
     this.notify();
   }
 
@@ -1717,13 +1721,13 @@ export class KernelStore {
 
   selectAll(): void {
     const all = new Set(this.state.features.map((f) => f.id));
-    this.state = { ...this.state, selection: all, selectionAnchor: null };
+    this.patch({ selection: all, selectionAnchor: null });
     for (const listener of this.listeners) listener();
   }
 
   clearSelection(): void {
     if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
-    this.state = { ...this.state, selection: new Set(), selectionAnchor: null };
+    this.patch({ selection: new Set(), selectionAnchor: null });
     this.syncActiveBody();
     this.refreshMeshCache();
     for (const listener of this.listeners) listener();
@@ -1736,7 +1740,7 @@ export class KernelStore {
   }
 
   setLoading(phase: string | null): void {
-    this.state = { ...this.state, loading: phase ? { phase } : null };
+    this.patch({ loading: phase ? { phase } : null });
     this.notify();
   }
 
@@ -1751,22 +1755,22 @@ export class KernelStore {
     next: SketchSessionState,
   ): void {
     if (next === this.state.sketchSession) return;
-    this.state = { ...this.state, sketchSession: next };
+    this.patch({ sketchSession: next });
     this.notify();
   }
 
   enterFacePickMode(): void {
-    this.state = { ...this.state, facePickMode: true };
+    this.patch({ facePickMode: true });
     this.notify();
   }
 
   cancelFacePickMode(): void {
-    this.state = { ...this.state, facePickMode: false };
+    this.patch({ facePickMode: false });
     this.notify();
   }
 
   enterSketchFromFacePick(normal: [number, number, number]): void {
-    this.state = { ...this.state, facePickMode: false };
+    this.patch({ facePickMode: false });
     const planeQuery = normalToPlaneQuery(normal);
     this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
   }
@@ -2027,7 +2031,7 @@ export class KernelStore {
   }
 
   setGizmoMode(mode: "translate" | "rotate" | "scale"): void {
-    this.state = { ...this.state, gizmoMode: mode };
+    this.patch({ gizmoMode: mode });
     this.notify();
   }
 
@@ -2076,7 +2080,7 @@ export class KernelStore {
     const next = current.includes(sketchId)
       ? current.filter((id) => id !== sketchId)
       : [...current, sketchId];
-    this.state = { ...this.state, visibleSketches: next };
+    this.patch({ visibleSketches: next });
     persistVisibleSketchesToStorage(next);
     for (const listener of this.listeners) listener();
   }
@@ -2085,7 +2089,7 @@ export class KernelStore {
     const next = new Set(this.state.hiddenDatums);
     if (next.has(datumId)) next.delete(datumId);
     else next.add(datumId);
-    this.state = { ...this.state, hiddenDatums: next };
+    this.patch({ hiddenDatums: next });
     persistHiddenDatumsToStorage(next);
     for (const listener of this.listeners) listener();
   }
@@ -2095,7 +2099,7 @@ export class KernelStore {
   /** Update the `folders` slice of state, persist to localStorage,
    *  notify React subscribers. Kernel is not touched. */
   private setFolders(next: readonly FeatureFolder[]): void {
-    this.state = { ...this.state, folders: next };
+    this.patch({ folders: next });
     persistFoldersToStorage(next);
     for (const listener of this.listeners) listener();
   }
@@ -2346,11 +2350,11 @@ export class KernelStore {
 
   private setTransientError(message: string): void {
     if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer);
-    this.state = { ...this.state, transientError: message };
+    this.patch({ transientError: message });
     for (const listener of this.listeners) listener();
     this.transientErrorTimer = setTimeout(() => {
       this.transientErrorTimer = null;
-      this.state = { ...this.state, transientError: null };
+      this.patch({ transientError: null });
       for (const listener of this.listeners) listener();
     }, 5000);
   }
@@ -2446,7 +2450,7 @@ export class KernelStore {
         );
         ids.push(id);
       }
-      this.state = { ...this.state, threemfStash: result.stash, loading: null };
+      this.patch({ threemfStash: result.stash, loading: null });
       if (ids.length > 0) {
         this.commit(new Set(ids), ids[0]);
       } else {
