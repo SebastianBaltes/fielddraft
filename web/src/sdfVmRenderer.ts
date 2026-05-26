@@ -15,13 +15,16 @@ import {
   Fn,
   If,
   Loop,
+  abs,
   cameraProjectionMatrix,
   float,
+  fract,
   int,
   max,
   min,
   normalize,
   positionGeometry,
+  smoothstep,
   uniform,
   vec3,
   vec4,
@@ -59,6 +62,10 @@ export interface VmPipelineState {
   metalnessBuf: ReturnType<typeof uniformArray>;
   emissiveData: Float32Array;
   emissiveBuf: ReturnType<typeof uniformArray>;
+  opacityData: Float32Array;
+  opacityBuf: ReturnType<typeof uniformArray>;
+  wireframeData: Float32Array;
+  wireframeBuf: ReturnType<typeof uniformArray>;
   bodyCountU: ReturnType<typeof uniform>;
   camPosU: ReturnType<typeof uniform>;
   invProjU: ReturnType<typeof uniform>;
@@ -97,6 +104,13 @@ export function initVmPipeline(): VmPipelineState {
   const emissiveData = new Float32Array(MAX_BODIES * 3);
   const emissiveBuf = uniformArray(emissiveData, "float");
 
+  const opacityData = new Float32Array(MAX_BODIES);
+  opacityData.fill(1);
+  const opacityBuf = uniformArray(opacityData, "float");
+
+  const wireframeData = new Float32Array(MAX_BODIES);
+  const wireframeBuf = uniformArray(wireframeData, "float");
+
   const volumeBaseData = new Float32Array(MAX_BODIES);
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
@@ -122,6 +136,10 @@ export function initVmPipeline(): VmPipelineState {
     metalnessBuf,
     emissiveData,
     emissiveBuf,
+    opacityData,
+    opacityBuf,
+    wireframeData,
+    wireframeBuf,
     bodyCountU: uniform(0),
     camPosU: uniform(new THREE.Vector3()),
     invProjU: uniform(new THREE.Matrix4()),
@@ -322,14 +340,32 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const eg = state.emissiveBuf.element(hitBody.mul(3).add(1));
     const eb = state.emissiveBuf.element(hitBody.mul(3).add(2));
     const emissive = vec3(er, eg, eb);
+    const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive });
 
-    return vec4(pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }), 1);
+    const bodyOpacity = state.opacityBuf.element(hitBody);
+    const wf = state.wireframeBuf.element(hitBody);
+    const alpha = bodyOpacity.toVar();
+    If(wf.greaterThan(float(0.5)), () => {
+      const viewDirWorld = rd.negate();
+      const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
+      const edgeFactor = smoothstep(float(0.65), float(0.85), fresnel);
+      const gridSize = float(10);
+      const gx = min(fract(hitPos.x.div(gridSize)), float(1).sub(fract(hitPos.x.div(gridSize))));
+      const gy = min(fract(hitPos.y.div(gridSize)), float(1).sub(fract(hitPos.y.div(gridSize))));
+      const gz = min(fract(hitPos.z.div(gridSize)), float(1).sub(fract(hitPos.z.div(gridSize))));
+      const minGrid = min(gx, min(gy, gz));
+      const gridAlpha = float(1).sub(smoothstep(float(0), float(0.03), minGrid));
+      alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
+    });
+
+    return vec4(color, alpha);
   })();
 
   material.side = THREE.DoubleSide;
   material.depthWrite = false;
   material.depthTest = false;
   material.toneMapped = false;
+  material.transparent = true;
 
   return material;
 }

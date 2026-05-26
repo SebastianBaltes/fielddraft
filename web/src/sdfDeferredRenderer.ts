@@ -21,11 +21,13 @@ import {
   Fn,
   If,
   Loop,
+  abs,
   atomicLoad,
   atomicOr,
   atomicStore,
   bitAnd,
   float,
+  fract,
   instanceIndex,
   int,
   max,
@@ -34,6 +36,7 @@ import {
   normalize,
   screenCoordinate,
   shiftLeft,
+  smoothstep,
   storage,
   texture,
   uint,
@@ -188,6 +191,10 @@ export interface DeferredPipelineState {
   metalnessBuf: ReturnType<typeof uniformArray>;
   emissiveData: Float32Array;
   emissiveBuf: ReturnType<typeof uniformArray>;
+  opacityData: Float32Array;
+  opacityBuf: ReturnType<typeof uniformArray>;
+  wireframeData: Float32Array;
+  wireframeBuf: ReturnType<typeof uniformArray>;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
@@ -283,6 +290,8 @@ function createShadeMaterial(
   metalnessBuf: ReturnType<typeof uniformArray>,
   emissiveBuf: ReturnType<typeof uniformArray>,
   selectionBuf: ReturnType<typeof uniformArray>,
+  opacityBuf: ReturnType<typeof uniformArray>,
+  wireframeBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
@@ -434,7 +443,22 @@ function createShadeMaterial(
         color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
       });
 
-      result.assign(vec4(color, 1));
+      const bodyOpacity = opacityBuf.element(shadeBodyIdx);
+      const wf = wireframeBuf.element(shadeBodyIdx);
+      const alpha = bodyOpacity.toVar();
+      If(wf.greaterThan(float(0.5)), () => {
+        const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
+        const edgeFactor = smoothstep(float(0.65), float(0.85), fresnel);
+        const gridSize = float(10);
+        const gx = min(fract(p.x.div(gridSize)), float(1).sub(fract(p.x.div(gridSize))));
+        const gy = min(fract(p.y.div(gridSize)), float(1).sub(fract(p.y.div(gridSize))));
+        const gz = min(fract(p.z.div(gridSize)), float(1).sub(fract(p.z.div(gridSize))));
+        const minGrid = min(gx, min(gy, gz));
+        const gridAlpha = float(1).sub(smoothstep(float(0), float(0.03), minGrid));
+        alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
+      });
+
+      result.assign(vec4(color, alpha));
     });
 
     return result;
@@ -506,6 +530,13 @@ export function initDeferredPipeline(
   const emissiveData = new Float32Array(MAX_BODIES * 3);
   const emissiveBuf = uniformArray(emissiveData, "float");
 
+  const opacityData = new Float32Array(MAX_BODIES);
+  opacityData.fill(1);
+  const opacityBuf = uniformArray(opacityData, "float");
+
+  const wireframeData = new Float32Array(MAX_BODIES);
+  const wireframeBuf = uniformArray(wireframeData, "float");
+
   const selectionData = new Float32Array(MAX_BODIES);
   const selectionBuf = uniformArray(selectionData, "float");
 
@@ -535,6 +566,8 @@ export function initDeferredPipeline(
     metalnessBuf,
     emissiveBuf,
     selectionBuf,
+    opacityBuf,
+    wireframeBuf,
     volumeBaseBuf,
     camPosUniform,
     viewMatU,
@@ -577,6 +610,10 @@ export function initDeferredPipeline(
     metalnessBuf,
     emissiveData,
     emissiveBuf,
+    opacityData,
+    opacityBuf,
+    wireframeData,
+    wireframeBuf,
     selectionBuf,
     selectionData,
     volumeBaseBuf,
@@ -920,6 +957,8 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.metalnessBuf,
     state.emissiveBuf,
     state.selectionBuf,
+    state.opacityBuf,
+    state.wireframeBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
     state.viewMatU,
