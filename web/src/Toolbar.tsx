@@ -12,20 +12,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
+import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 
 /* ------------------------------------------------------------------ */
 /*  Primitive split-button constants                                   */
 /* ------------------------------------------------------------------ */
 
+function meta(kind: string) {
+  return FEATURE_TYPE_META[kind] ?? { label: kind, glyph: "?" };
+}
+
 const PRIMITIVE_TOOLS: { kind: PrimitiveToolKind; glyph: string; label: string; title: string }[] = [
-  { kind: "box", glyph: "▣", label: "Box", title: "Add Box" },
-  { kind: "sphere", glyph: "●", label: "Sphere", title: "Add Sphere" },
-  { kind: "cylinder", glyph: "⬢", label: "Cylinder", title: "Add Cylinder" },
-  { kind: "hex_prism", glyph: "⬡", label: "Hex Prism", title: "Add Hex Prism (apothem 25 mm)" },
-  { kind: "ellipsoid", glyph: "⬬", label: "Ellipsoid", title: "Add Ellipsoid (40×25×30 mm)" },
-  { kind: "capsule", glyph: "⬭", label: "Capsule", title: "Add Capsule (R20 × H80 mm)" },
-  { kind: "cone", glyph: "△", label: "Cone", title: "Add Cone (frustum R40/10 × H120 mm)" },
-  { kind: "torus", glyph: "◎", label: "Torus", title: "Add Torus (R30 × r10 mm)" },
+  { kind: "box",       ...meta("box"),       title: "Add Box" },
+  { kind: "sphere",    ...meta("sphere"),    title: "Add Sphere" },
+  { kind: "cylinder",  ...meta("cylinder"),  title: "Add Cylinder" },
+  { kind: "hex_prism", ...meta("hex_prism"), title: "Add Hex Prism (apothem 25 mm)" },
+  { kind: "ellipsoid", ...meta("ellipsoid"), title: "Add Ellipsoid (40×25×30 mm)" },
+  { kind: "capsule",   ...meta("capsule"),   title: "Add Capsule (R20 × H80 mm)" },
+  { kind: "cone",      ...meta("cone"),      title: "Add Cone (frustum R40/10 × H120 mm)" },
+  { kind: "torus",     ...meta("torus"),     title: "Add Torus (R30 × r10 mm)" },
 ];
 
 type PrimitiveToolKind =
@@ -97,21 +102,21 @@ const THREAD_LAST_USED_KEY = "fielddraft.lastUsedThread";
 type GizmoMode = "translate" | "rotate" | "scale";
 
 const TRANSFORM_TOOLS: { mode: GizmoMode; glyph: string; label: string; title: string }[] = [
-  { mode: "translate", glyph: "↔", label: "Move", title: "Move (G)" },
-  { mode: "rotate", glyph: "⟳", label: "Rotate", title: "Rotate (R)" },
-  { mode: "scale", glyph: "⤡", label: "Scale", title: "Scale" },
+  { mode: "translate", ...meta("translate"), title: "Move (G)" },
+  { mode: "rotate",    ...meta("rotate"),    title: "Rotate (R)" },
+  { mode: "scale",     ...meta("scale"),     title: "Scale" },
 ];
 
 const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
-  sketch_point: { label: "Point", glyph: "•" },
-  sketch_line: { label: "Line", glyph: "╱" },
-  sketch_rectangle: { label: "Rectangle", glyph: "▭" },
-  sketch_circle: { label: "Circle", glyph: "○" },
-  sketch_polygon: { label: "Polygon", glyph: "⬠" },
-  sketch_arc: { label: "Arc", glyph: "◠" },
-  sketch_trim: { label: "Trim", glyph: "✂" },
-  sketch_mirror: { label: "Mirror", glyph: "◧" },
-  sketch_offset: { label: "Offset", glyph: "⇔" },
+  sketch_point:     meta("sketch_point"),
+  sketch_line:      meta("sketch_line"),
+  sketch_rectangle: meta("sketch_rectangle"),
+  sketch_circle:    meta("sketch_circle"),
+  sketch_polygon:   meta("sketch_polygon"),
+  sketch_arc:       meta("sketch_arc"),
+  sketch_trim:      meta("sketch_trim"),
+  sketch_mirror:    meta("sketch_mirror"),
+  sketch_offset:    meta("sketch_offset"),
 };
 
 const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [];
@@ -265,44 +270,44 @@ export function Toolbar({ store, state }: ToolbarProps) {
       <div className="group">
         <PrimitiveSplitButton store={store} />
         <button type="button" className="tool" title="Add Hole (Ø6 × 40 mm, subtract)" data-testid="add-hole" onClick={() => store.addHole()} {...dragProps("hole")}>
-          <span className="glyph" aria-hidden="true">⊖</span>
+          <span className="glyph" aria-hidden="true">{meta("hole").glyph}</span>
           <span className="tool-label">Hole</span>
         </button>
         <ThreadSplitButton onAdd={handleAddThread} />
         <button type="button" className="tool" title="Sketch on XY plane" data-testid="enter-sketch" onClick={handleSketchEnter} {...sketchDragProps()}>
-          <span className="glyph" aria-hidden="true">✎</span>
+          <span className="glyph" aria-hidden="true">{meta("sketch").glyph}</span>
           <span className="tool-label">Sketch</span>
         </button>
         <button type="button" className="tool" title="Extrude the most recent sketch (20 mm depth)" data-testid="extrude-latest-sketch" disabled={!hasSketch} onClick={() => store.addExtrudeFromLatestSketch(20)}>
-          <span className="glyph" aria-hidden="true">↥</span>
+          <span className="glyph" aria-hidden="true">{meta("extrude").glyph}</span>
           <span className="tool-label">Extrude</span>
         </button>
         <button type="button" className="tool" title="Revolve the most recent sketch around the world Y axis" data-testid="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()}>
-          <span className="glyph" aria-hidden="true">↻</span>
+          <span className="glyph" aria-hidden="true">{meta("revolve").glyph}</span>
           <span className="tool-label">Revolve</span>
         </button>
         <button type="button" className="tool" title="Add Gyroid infill" data-testid="add-gyroid" disabled={!hasFeatures} onClick={() => store.addGyroid()} {...dragProps("gyroid")}>
-          <span className="glyph" aria-hidden="true">🕸</span>
+          <span className="glyph" aria-hidden="true">{meta("gyroid").glyph}</span>
           <span className="tool-label">Gyroid</span>
         </button>
         <button type="button" className="tool" title="Linear pattern (+X, 3×, 60 mm)" data-testid="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()}>
-          <span className="glyph" aria-hidden="true">⎡</span>
+          <span className="glyph" aria-hidden="true">{meta("linear_pattern").glyph}</span>
           <span className="tool-label">Pattern</span>
         </button>
         <button type="button" className="tool" title="Circular pattern around Y axis (6×, 360°)" data-testid="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()}>
-          <span className="glyph" aria-hidden="true">↻</span>
+          <span className="glyph" aria-hidden="true">{meta("circular_pattern").glyph}</span>
           <span className="tool-label">Circ</span>
         </button>
         <button type="button" className="tool" title="Mirror through the world YZ plane" data-testid="mirror-latest" disabled={!hasFeatures} onClick={() => store.addMirrorOfLatest()}>
-          <span className="glyph" aria-hidden="true">◫</span>
+          <span className="glyph" aria-hidden="true">{meta("mirror").glyph}</span>
           <span className="tool-label">Mirror</span>
         </button>
         <button type="button" className="tool" title="Boolean (Union / Subtract / Intersect)" data-testid="add-boolean" disabled={!hasFeatures} onClick={() => store.addBoolean()}>
-          <span className="glyph" aria-hidden="true">⊕</span>
+          <span className="glyph" aria-hidden="true">{meta("boolean").glyph}</span>
           <span className="tool-label">Boolean</span>
         </button>
         <button type="button" className="tool" title="Assign material (color, roughness, metalness)" data-testid="add-material" disabled={!hasFeatures} onClick={() => store.addMaterial()}>
-          <span className="glyph" aria-hidden="true">🎨</span>
+          <span className="glyph" aria-hidden="true">{meta("material").glyph}</span>
           <span className="tool-label">Material</span>
         </button>
       </div>
@@ -319,11 +324,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="tool-label">Delete</span>
         </button>
         <button type="button" className={"tool" + (state.filletMode ? " is-active" : "")} title="Click an edge to fillet it" data-testid="fillet-toggle" onClick={() => store.toggleFilletMode()}>
-          <span className="glyph" aria-hidden="true">◠</span>
+          <span className="glyph" aria-hidden="true">{meta("fillet_edge").glyph}</span>
           <span className="tool-label">Fillet</span>
         </button>
         <button type="button" className={"tool" + (state.mateMode ? " is-active" : "")} title="Click a surface to place a mate connector" data-testid="add-mate-connector" disabled={!hasFeatures} onClick={() => store.toggleMateMode()}>
-          <span className="glyph" aria-hidden="true">⊕</span>
+          <span className="glyph" aria-hidden="true">{meta("mate_connector").glyph}</span>
           <span className="tool-label">Mate</span>
         </button>
         <button type="button" className={"tool" + (state.measureMode ? " is-active" : "")} title="Measure distance (click two points)" data-testid="measure-toggle" onClick={() => store.toggleMeasureMode()}>
@@ -332,7 +337,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
         {state.referenceMesh && (
           <button type="button" className="tool" title="Convert reference mesh to a CSG solid" data-testid="convert-to-solid" onClick={() => store.convertReferenceToSolid()}>
-            <span className="glyph" aria-hidden="true">⊕</span>
+            <span className="glyph" aria-hidden="true">{meta("imported_mesh").glyph}</span>
             <span className="tool-label">Solid</span>
           </button>
         )}
@@ -489,7 +494,7 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
         data-testid="add-thread"
         onClick={() => invoke(current)}
       >
-        <span className="glyph" aria-hidden="true">⏍</span>
+        <span className="glyph" aria-hidden="true">{meta("thread").glyph}</span>
         <span className="tool-label">{current.label}</span>
       </button>
       <button
@@ -523,7 +528,7 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
                   setOpen(false);
                 }}
               >
-                <span className="glyph" aria-hidden="true">⏍</span>
+                <span className="glyph" aria-hidden="true">{meta("thread").glyph}</span>
                 <span className="label">{preset.label}</span>
               </button>
             );

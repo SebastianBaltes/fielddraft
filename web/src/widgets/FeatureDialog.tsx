@@ -78,41 +78,59 @@ export interface FeatureDialogProps {
   footer?: React.ReactNode;
 }
 
-export const FEATURE_TYPE_LABELS: Record<string, string> = {
-  box: "Box",
-  sphere: "Sphere",
-  cylinder: "Cylinder",
-  hex_prism: "Hex Prism",
-  ellipsoid: "Ellipsoid",
-  capsule: "Capsule",
-  cone: "Cone",
-  torus: "Torus",
-  sketch: "Sketch",
-  extrude: "Extrude",
-  revolve: "Revolve",
-  hole: "Hole",
-  thread: "Thread",
-  gyroid: "Gyroid",
-  linear_pattern: "Linear Pattern",
-  circular_pattern: "Circular Pattern",
-  mirror: "Mirror",
-  mate_connector: "Mate Connector",
-  fillet_edge: "Fillet Edge",
-  sweep: "Sweep",
-  boolean: "Boolean",
-  material: "Material",
-  transform: "Transform",
-  imported_mesh: "Imported Mesh",
-  sketch_line: "Line",
-  sketch_rectangle: "Rectangle",
-  sketch_circle: "Circle",
-  sketch_polygon: "Polygon",
-  sketch_arc: "Arc",
-  sketch_point: "Point",
-  sketch_mirror: "Mirror",
-  sketch_trim: "Trim",
-  sketch_offset: "Offset",
+export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }> = {
+  box:                { label: "Box",              glyph: "▣" },
+  sphere:             { label: "Sphere",           glyph: "●" },
+  cylinder:           { label: "Cylinder",         glyph: "⬢" },
+  hex_prism:          { label: "Hex Prism",        glyph: "⬡" },
+  ellipsoid:          { label: "Ellipsoid",        glyph: "⬬" },
+  capsule:            { label: "Capsule",          glyph: "⬭" },
+  cone:               { label: "Cone",             glyph: "△" },
+  torus:              { label: "Torus",            glyph: "◎" },
+  sketch:             { label: "Sketch",           glyph: "✎" },
+  extrude:            { label: "Extrude",          glyph: "↥" },
+  revolve:            { label: "Revolve",          glyph: "↻" },
+  hole:               { label: "Hole",             glyph: "⊖" },
+  thread:             { label: "Thread",           glyph: "⏍" },
+  gyroid:             { label: "Gyroid",           glyph: "🕸" },
+  linear_pattern:     { label: "Linear Pattern",   glyph: "⎡" },
+  circular_pattern:   { label: "Circular Pattern", glyph: "↻" },
+  mirror:             { label: "Mirror",           glyph: "◫" },
+  mate_connector:     { label: "Mate Connector",   glyph: "⊕" },
+  fillet_edge:        { label: "Fillet Edge",      glyph: "◠" },
+  sweep:              { label: "Sweep",            glyph: "↝" },
+  boolean:            { label: "Boolean",          glyph: "⊕" },
+  material:           { label: "Material",         glyph: "🎨" },
+  transform:          { label: "Transform",        glyph: "↔" },
+  imported_mesh:      { label: "Imported Mesh",    glyph: "📦" },
+  translate:          { label: "Move",             glyph: "↔" },
+  rotate:             { label: "Rotate",           glyph: "⟳" },
+  scale:              { label: "Scale",            glyph: "⤡" },
+  sketch_point:       { label: "Point",            glyph: "•" },
+  sketch_line:        { label: "Line",             glyph: "╱" },
+  sketch_rectangle:   { label: "Rectangle",        glyph: "▭" },
+  sketch_circle:      { label: "Circle",           glyph: "○" },
+  sketch_polygon:     { label: "Polygon",          glyph: "⬠" },
+  sketch_arc:         { label: "Arc",              glyph: "◠" },
+  sketch_mirror:      { label: "Mirror",           glyph: "◧" },
+  sketch_trim:        { label: "Trim",             glyph: "✂" },
+  sketch_offset:      { label: "Offset",           glyph: "⇔" },
+  sketch_constraint_horizontal:    { label: "Horizontal",    glyph: "—" },
+  sketch_constraint_vertical:      { label: "Vertical",      glyph: "|" },
+  sketch_constraint_coincident:    { label: "Coincident",    glyph: "⊙" },
+  sketch_constraint_distance:      { label: "Distance",      glyph: "↔" },
+  sketch_constraint_angle:         { label: "Angle",         glyph: "∠" },
+  sketch_constraint_equal:         { label: "Equal",         glyph: "=" },
+  sketch_constraint_parallel:      { label: "Parallel",      glyph: "∥" },
+  sketch_constraint_perpendicular: { label: "Perpendicular", glyph: "⊥" },
+  sketch_constraint_tangent:       { label: "Tangent",       glyph: "⌒" },
+  sketch_constraint_midpoint:      { label: "Midpoint",      glyph: "◆" },
+  sketch_constraint_symmetric:     { label: "Symmetric",     glyph: "⇿" },
 };
+
+export const FEATURE_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(FEATURE_TYPE_META).map(([k, v]) => [k, v.label]),
+);
 
 export function FeatureDialog({
   schema,
@@ -128,7 +146,12 @@ export function FeatureDialog({
   return (
     <div className="fd-feature-dialog" data-feature-type={schema.type}>
       <div className="header">
-        <div className="title">{FEATURE_TYPE_LABELS[schema.type] ?? schema.type}</div>
+        <div className="title">
+          {FEATURE_TYPE_META[schema.type]?.glyph ? (
+            <span className="glyph" aria-hidden="true">{FEATURE_TYPE_META[schema.type].glyph}</span>
+          ) : null}
+          {FEATURE_TYPE_META[schema.type]?.label ?? schema.type}
+        </div>
         {onCommit || onCancel ? (
           <div className="header-actions">
             {onCommit ? (

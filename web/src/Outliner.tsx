@@ -16,7 +16,7 @@ import {
 import { type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
-import { FeatureDialog, FEATURE_TYPE_LABELS } from "./widgets/FeatureDialog";
+import { FeatureDialog, FEATURE_TYPE_LABELS, FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import {
   buildDefaultDefinition,
   type FeatureSchema,
@@ -24,56 +24,10 @@ import {
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import { buildDraftSketchState } from "./sketchSession";
 
-const KIND_GLYPH: Record<string, string> = {
-  box: "▣",
-  sphere: "●",
-  cylinder: "⬢",
-  sketch: "✎",
-  extrude: "↥",
-  revolve: "↻",
-  hex_prism: "⬡",
-  ellipsoid: "⬬",
-  capsule: "⬭",
-  cone: "△",
-  torus: "◎",
-  thread: "⏍",
-  mate_connector: "⊕",
-  hole: "⊖",
-  gyroid: "🕸",
-  linear_pattern: "⎡",
-  circular_pattern: "↻",
-  mirror: "◫",
-  boolean: "⊕",
-  fillet_edge: "◠",
-  sweep: "↝",
-  imported_mesh: "📦",
-  translate: "↔",
-  rotate: "⟳",
-  scale: "⤡",
-};
+function kindGlyph(kind: string): string {
+  return FEATURE_TYPE_META[kind]?.glyph ?? "?";
+}
 
-const SKETCH_SUB_GLYPH: Record<string, string> = {
-  sketch_point: "•",
-  sketch_line: "╱",
-  sketch_rectangle: "▭",
-  sketch_circle: "○",
-  sketch_polygon: "⬠",
-  sketch_arc: "◠",
-  sketch_mirror: "◧",
-  sketch_trim: "✂",
-  sketch_offset: "⇔",
-  sketch_constraint_horizontal: "—",
-  sketch_constraint_vertical: "|",
-  sketch_constraint_coincident: "⊙",
-  sketch_constraint_distance: "↔",
-  sketch_constraint_angle: "∠",
-  sketch_constraint_equal: "=",
-  sketch_constraint_parallel: "∥",
-  sketch_constraint_perpendicular: "⊥",
-  sketch_constraint_tangent: "⌒",
-  sketch_constraint_midpoint: "◆",
-  sketch_constraint_symmetric: "⇿",
-};
 
 const PLANE_QUERY_LABELS: Record<string, string> = {
   "qCreatedBy(origin_plane_xy)": "XY Plane",
@@ -434,6 +388,39 @@ export function Outliner({ store, state }: OutlinerProps) {
     setDropIndex(null);
   };
 
+  // ── rollback bar drag ──────────────────────────────────────
+  const [draggingRollback, setDraggingRollback] = useState(false);
+  const [rollbackDropIndex, setRollbackDropIndex] = useState<number | null>(null);
+
+  const handleRollbackDragStart = (e: React.DragEvent) => {
+    setDraggingRollback(true);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("fielddraft/rollback-bar", "1");
+  };
+  const handleRollbackDragOverRow = (
+    e: React.DragEvent,
+    targetIndex: number,
+  ) => {
+    if (!draggingRollback) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    setRollbackDropIndex(e.clientY < midY ? targetIndex : targetIndex + 1);
+  };
+  const handleRollbackDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (rollbackDropIndex !== null) {
+      store.setRollbackIndex(rollbackDropIndex);
+    }
+    setDraggingRollback(false);
+    setRollbackDropIndex(null);
+  };
+  const handleRollbackDragEnd = () => {
+    setDraggingRollback(false);
+    setRollbackDropIndex(null);
+  };
+
   const openContextMenu = (e: React.MouseEvent, featureId: number) => {
     e.preventDefault();
     e.stopPropagation();
@@ -600,7 +587,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                 return (
                   <li key={i} className={"row" + (isConstraint ? " is-constraint" : "")}>
                     <span className="kind">
-                      {SKETCH_SUB_GLYPH[call.type] ?? "?"}{" "}
+                      {kindGlyph(call.type)}{" "}
                       {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
                     </span>
                     <button
@@ -894,7 +881,15 @@ export function Outliner({ store, state }: OutlinerProps) {
       {!collapsed.has("features") && (state.features.length === 0 && state.folders.length === 0 ? (
         <div className="empty">No features yet.</div>
       ) : (
-        <ul className="list">
+        <ul
+          className="list"
+          onDragOver={draggingRollback ? (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setRollbackDropIndex(state.features.length);
+          } : undefined}
+          onDrop={draggingRollback ? handleRollbackDrop : undefined}
+        >
           {(() => {
             // Set of feature ids that live in some folder — used to
             // filter the ungrouped list at the bottom.
@@ -914,6 +909,8 @@ export function Outliner({ store, state }: OutlinerProps) {
             ) => {
               const selected = state.selection.has(feature.id);
               const isDragged = draggingId === feature.id;
+              const isRolledBack = !!feature.rolled_back;
+              const showRbDrop = draggingRollback && rollbackDropIndex === index;
               return (
                 <li
                   key={feature.id}
@@ -921,29 +918,34 @@ export function Outliner({ store, state }: OutlinerProps) {
                     "row" +
                     (selected ? " is-selected" : "") +
                     (feature.suppressed ? " is-suppressed" : "") +
+                    (isRolledBack ? " is-rolled-back" : "") +
                     (isDragged ? " is-dragging" : "") +
                     (dropIndex === index ? " drop-above" : "") +
                     (dropIndex === index + 1 &&
                     index === state.features.length - 1
                       ? " drop-below"
-                      : "")
+                      : "") +
+                    (showRbDrop ? " rollback-drop-above" : "")
                   }
                   data-testid={`feature-row-${feature.id}`}
                   data-feature-id={feature.id}
                   data-feature-kind={feature.kind}
                   data-feature-suppressed={feature.suppressed ? "true" : "false"}
-                  draggable
-                  onDragStart={(e) => handleFeatureDragStart(e, feature.id)}
-                  onDragOver={(e) => handleFeatureDragOver(e, index)}
-                  onDragLeave={handleFeatureDragLeave}
-                  onDrop={handleFeatureDrop}
-                  onDragEnd={handleFeatureDragEnd}
-                  onClick={(e) => handleRowClick(e, feature.id)}
-                  onDoubleClick={() => handleRowDoubleClick(feature)}
-                  onContextMenu={(e) => openContextMenu(e, feature.id)}
+                  draggable={!isRolledBack}
+                  onDragStart={isRolledBack ? undefined : (e) => handleFeatureDragStart(e, feature.id)}
+                  onDragOver={(e) => {
+                    if (draggingRollback) handleRollbackDragOverRow(e, index);
+                    else handleFeatureDragOver(e, index);
+                  }}
+                  onDragLeave={draggingRollback ? undefined : handleFeatureDragLeave}
+                  onDrop={draggingRollback ? handleRollbackDrop : handleFeatureDrop}
+                  onDragEnd={draggingRollback ? handleRollbackDragEnd : handleFeatureDragEnd}
+                  onClick={isRolledBack ? undefined : (e) => handleRowClick(e, feature.id)}
+                  onDoubleClick={isRolledBack ? undefined : () => handleRowDoubleClick(feature)}
+                  onContextMenu={isRolledBack ? undefined : (e) => openContextMenu(e, feature.id)}
                 >
                   <span className="kind">
-                    {KIND_GLYPH[feature.kind] ?? "?"}
+                    {kindGlyph(feature.kind)}
                   </span>
                   {renamingId === feature.id ? (
                     <input
@@ -1010,6 +1012,25 @@ export function Outliner({ store, state }: OutlinerProps) {
               );
             };
 
+            const rbIdx = state.rollbackIndex;
+            const ungrouped = state.features
+              .map((feature, index) => ({ feature, index }))
+              .filter(({ feature }) => !grouped.has(feature.id));
+
+            const rollbackBar = (
+              <li
+                key="__rollback__"
+                className={
+                  "rollback-bar" +
+                  (draggingRollback ? " is-dragging" : "")
+                }
+                draggable
+                onDragStart={handleRollbackDragStart}
+                onDragEnd={handleRollbackDragEnd}
+                title="Rollback bar"
+              />
+            );
+
             return (
               <>
                 {state.folders.map((folder) => (
@@ -1021,10 +1042,13 @@ export function Outliner({ store, state }: OutlinerProps) {
                     store={store}
                   />
                 ))}
-                {state.features
-                  .map((feature, index) => ({ feature, index }))
-                  .filter(({ feature }) => !grouped.has(feature.id))
-                  .map(({ feature, index }) => renderFeatureRow(feature, index))}
+                {rbIdx === 0 && rollbackBar}
+                {ungrouped.flatMap(({ feature, index }) => {
+                  const row = renderFeatureRow(feature, index);
+                  if (index + 1 === rbIdx && rbIdx > 0) return [row, rollbackBar];
+                  return [row];
+                })}
+                {rbIdx >= state.features.length && rollbackBar}
               </>
             );
           })()}
@@ -1128,7 +1152,7 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
                 data-body-index={index}
                 aria-hidden="true"
               />
-              <span className="kind">{KIND_GLYPH[kind] ?? "▣"}</span>
+              <span className="kind">{kindGlyph(kind)}</span>
               <span className="name">{name}</span>
               <span className="triangle-count">
                 {Math.round(body.indices.length / 3)}
@@ -1579,7 +1603,7 @@ function ConstraintManagerPanel({
               }}
             >
               <span className="glyph">
-                {SKETCH_SUB_GLYPH[call.type] ?? "?"}
+                {kindGlyph(call.type)}
               </span>
               <span className="name">
                 {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_constraint_", "")}
