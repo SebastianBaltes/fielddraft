@@ -415,7 +415,15 @@ export function ColorWidget({
           value={hex}
           onChange={(e) => onChange(hexToFloat(e.currentTarget.value))}
         />
-        <span className="color-hex">{hex}</span>
+        <input
+          type="text"
+          className="color-hex"
+          value={hex}
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            if (/^#[0-9a-fA-F]{6}$/.test(v)) onChange(hexToFloat(v));
+          }}
+        />
       </div>
     </Field>
   );
@@ -482,6 +490,69 @@ function isFormula(v: number | string): v is string {
   return typeof v === "string" && v.startsWith("=");
 }
 
+function LengthInlineInput({
+  storedValue,
+  storedUnit,
+  onCommit,
+  ...rest
+}: {
+  storedValue: number;
+  storedUnit: string;
+  onCommit: (value: number, unit: string) => void;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+  const ws = useWorkspaceUnits();
+  const displayUnit = isLengthUnit(storedUnit) ? storedUnit : ws.lengthUnit;
+  const decimals = decimalPlaces(ws.lengthDecimals);
+  const unitLabel = unitDisplayLabel(displayUnit);
+
+  const formatted = `${storedValue.toFixed(decimals)} ${unitLabel}`;
+  const [raw, setRaw] = useState(formatted);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setRaw(formatted);
+  }, [formatted, editing]);
+
+  const tryCommit = (text: string) => {
+    const parsed = parseValueWithUnit(text, displayUnit);
+    if (parsed && Number.isFinite(parsed.value) && isLengthUnit(parsed.unit)) {
+      onCommit(parsed.value, parsed.unit);
+    }
+  };
+
+  return (
+    <input
+      {...rest}
+      type="text"
+      value={raw}
+      onChange={(e) => {
+        setRaw(e.currentTarget.value);
+        tryCommit(e.currentTarget.value);
+      }}
+      onFocus={(e) => {
+        setEditing(true);
+        rest.onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setEditing(false);
+        const parsed = parseValueWithUnit(raw, displayUnit);
+        if (parsed && Number.isFinite(parsed.value) && isLengthUnit(parsed.unit)) {
+          onCommit(parsed.value, parsed.unit);
+          setRaw(`${parsed.value.toFixed(decimals)} ${unitDisplayLabel(parsed.unit)}`);
+        } else {
+          setRaw(formatted);
+        }
+        rest.onBlur?.(e);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          (e.currentTarget as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
 export function LengthWidget({
   label,
   value,
@@ -506,12 +577,12 @@ export function LengthWidget({
             }
           />
         ) : (
-          <UnitInput
+          <LengthInlineInput
             id={`${id}-value`}
             className="input"
-            value={Number.isFinite(value.value as number) ? (value.value as number) : 0}
-            onCommit={(n) => onChange({ value: n, unit: value.unit })}
-            unit={value.unit}
+            storedValue={Number.isFinite(value.value as number) ? (value.value as number) : 0}
+            storedUnit={value.unit}
+            onCommit={(v, u) => onChange({ value: v, unit: u as LengthUnit })}
           />
         )}
         <button
@@ -528,24 +599,6 @@ export function LengthWidget({
         >
           ƒx
         </button>
-        <select
-          id={`${id}-unit`}
-          className="select"
-          aria-label={`${label} unit`}
-          value={value.unit}
-          onChange={(e) =>
-            onChange({
-              value: value.value,
-              unit: e.currentTarget.value as LengthUnit,
-            })
-          }
-        >
-          {LENGTH_UNITS.map((u) => (
-            <option key={u} value={u}>
-              {u}
-            </option>
-          ))}
-        </select>
       </div>
     </Field>
   );

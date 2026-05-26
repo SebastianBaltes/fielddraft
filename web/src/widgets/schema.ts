@@ -557,6 +557,12 @@ export function readParam(
   if (value === undefined || value === null) {
     return defaultForParam(param);
   }
+  if (param.widget === "length" && typeof value === "number") {
+    return { value, unit: "mm" };
+  }
+  if (param.widget === "angle" && typeof value === "number") {
+    return { value, unit: "deg" };
+  }
   return value;
 }
 

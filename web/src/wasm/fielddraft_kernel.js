@@ -202,6 +202,16 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * @returns {number}
+     */
+    addMaterial() {
+        const ret = wasm.kernel_addMaterial(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * K8.2: append a `mirror` feature call that reflects the
      * source feature through a plane defined by a point and a
      * normal. Returns the new mirror feature id.

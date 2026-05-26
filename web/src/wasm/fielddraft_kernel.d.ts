@@ -75,6 +75,7 @@ export class Kernel {
      * K9.6: add a mate connector at a surface point.
      */
     addMateConnector(ox: number, oy: number, oz: number, nx: number, ny: number, nz: number): number;
+    addMaterial(): number;
     /**
      * K8.2: append a `mirror` feature call that reflects the
      * source feature through a plane defined by a point and a
@@ -495,6 +496,7 @@ export interface InitOutput {
     readonly kernel_addImportedMesh: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addLinearPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly kernel_addMateConnector: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly kernel_addMaterial: (a: number) => [number, number, number];
     readonly kernel_addMirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];

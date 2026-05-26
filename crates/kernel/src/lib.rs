@@ -1476,6 +1476,10 @@ impl Kernel {
             "cell_size": { "value": cell_size_mm, "unit": "mm" },
             "thickness": { "value": thickness_mm, "unit": "mm" },
             "op": op_wire,
+            "blend_radius": { "value": 0.0, "unit": "mm" },
+            "chamfer_size": { "value": 0.0, "unit": "mm" },
+            "displace_depth": { "value": 0.0, "unit": "mm" },
+            "shell_thickness": { "value": 0.0, "unit": "mm" },
         });
         let call = fielddraft_protocol::FeatureCall::new("gyroid", id, params);
         self.document.feature_calls.push(call);

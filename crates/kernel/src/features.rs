@@ -1584,20 +1584,20 @@ pub struct GyroidDef {
     pub translate: [f32; 3],
     #[param(default = ::fielddraft_protocol::BoolOp::Intersect)]
     pub op: BoolOp,
-    #[param(name = "Blend radius", default = 0.0)]
-    pub blend_radius: f32,
-    #[param(name = "Chamfer size", default = 0.0)]
-    pub chamfer_size: f32,
+    #[param(name = "Blend radius", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub blend_radius: ::fielddraft_protocol::Length,
+    #[param(name = "Chamfer size", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub chamfer_size: ::fielddraft_protocol::Length,
     #[param(name = "Twist rate", default = 0.0)]
     pub twist_rate: f32,
     #[param(name = "Bend rate", default = 0.0)]
     pub bend_rate: f32,
-    #[param(name = "Displace depth", default = 0.0)]
-    pub displace_depth: f32,
+    #[param(name = "Displace depth", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub displace_depth: ::fielddraft_protocol::Length,
     #[param(name = "Displace freq", default = 0.0)]
     pub displace_freq: f32,
-    #[param(name = "Shell thickness", default = 0.0)]
-    pub shell_thickness: f32,
+    #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub shell_thickness: ::fielddraft_protocol::Length,
 }
 
 pub struct GyroidFeature;
@@ -1668,13 +1668,13 @@ impl FeatureKind for GyroidFeature {
                 rotation,
                 scale,
             },
-            blend_radius: d.blend_radius,
-            chamfer_size: d.chamfer_size,
+            blend_radius: d.blend_radius.to_mm(),
+            chamfer_size: d.chamfer_size.to_mm(),
             twist_rate: d.twist_rate,
             bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth,
+            displace_depth: d.displace_depth.to_mm(),
             displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness,
+            shell_thickness: d.shell_thickness.to_mm(),
             target_ids,
         });
         Ok(())

@@ -12,6 +12,7 @@ export const kernel_addHole: (a: number, b: number, c: number, d: number, e: num
 export const kernel_addImportedMesh: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const kernel_addLinearPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const kernel_addMateConnector: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const kernel_addMaterial: (a: number) => [number, number, number];
 export const kernel_addMirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
