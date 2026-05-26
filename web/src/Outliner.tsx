@@ -23,6 +23,7 @@ import {
 } from "./widgets/schema";
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import { buildDraftSketchState } from "./sketchSession";
+import { getActive as getActivePicker } from "./queryPickerBridge";
 
 function kindGlyph(kind: string): string {
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
@@ -1135,7 +1136,18 @@ export function Outliner({ store, state }: OutlinerProps) {
  */
 function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; state: StoreState; collapsed: boolean; onToggle: () => void }) {
   const bodies = state.meshedBodies;
-  const selection = state.selection;
+  const highlighted = state.highlightedBodyIndex;
+
+  const handlePartClick = (e: React.MouseEvent, index: number, seedFeature: FeatureSummary | undefined) => {
+    e.stopPropagation();
+    if (!seedFeature) return;
+    const picker = getActivePicker();
+    if (picker) {
+      picker.onPick(`qCreatedBy(${seedFeature.id})`);
+      return;
+    }
+    store.highlightBody(highlighted === index ? null : index);
+  };
 
   return (
     <section className="part-tree" data-testid="part-tree">
@@ -1150,14 +1162,14 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
           const seedFeature = state.features.find((f) => f.id === body.seedId);
           const name = seedFeature?.name ?? `Body ${index + 1}`;
           const kind = seedFeature?.kind ?? "body";
-          const selected = seedFeature ? selection.has(seedFeature.id) : false;
+          const selected = highlighted === index;
           return (
             <li
               key={`${body.id}-${index}`}
               className={"row" + (selected ? " is-selected" : "")}
               data-testid={`part-row-${body.id}`}
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={(e) => handlePartClick(e, index, seedFeature)}
+              onDoubleClick={() => {
                 if (seedFeature) store.selectOnly(seedFeature.id);
               }}
             >

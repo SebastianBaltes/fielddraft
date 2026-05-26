@@ -174,6 +174,10 @@ export interface StoreState {
   gizmoMode: "translate" | "rotate" | "scale";
   /** 3MF roundtrip: stashed slicer metadata from import, used on re-export. */
   threemfStash: ThreeMfStash | null;
+  /** Rollback bar position: features at index >= this value are
+   *  skipped during regeneration. Equals features.length when the
+   *  bar sits at the bottom (all features active). */
+  rollbackIndex: number;
   /** Loading overlay: non-null while an import or heavy operation is
    *  in progress. The `phase` string is shown to the user. */
   loading: { phase: string } | null;
@@ -181,6 +185,7 @@ export interface StoreState {
    *  has toggled off ("origin", "top", "front", "right"). Datums not
    *  in this set are visible. Persisted to localStorage. */
   hiddenDatums: ReadonlySet<string>;
+  highlightedBodyIndex: number | null;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -342,8 +347,9 @@ export class KernelStore {
   constructor(kernel: Kernel, autosave: AutoSaveHandle) {
     this.kernel = kernel;
     this.autosave = autosave;
+    const initFeatures = kernel.listFeatures();
     this.state = {
-      features: kernel.listFeatures(),
+      features: initFeatures,
       selection: new Set(),
       selectionAnchor: null,
       canUndo: kernel.canUndo(),
@@ -371,6 +377,8 @@ export class KernelStore {
       threemfStash: null,
       loading: null,
       hiddenDatums: loadHiddenDatumsFromStorage(),
+      highlightedBodyIndex: null,
+      rollbackIndex: initFeatures.length,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -424,8 +432,10 @@ export class KernelStore {
   }
 
   private commit(nextSelection?: ReadonlySet<number>, nextAnchor?: number | null): void {
+    const features = this.kernel.listFeatures();
+    const rbRaw = this.kernel.getRollbackIndex();
     this.state = {
-      features: this.kernel.listFeatures(),
+      features,
       selection: nextSelection ?? this.state.selection,
       selectionAnchor: nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
       canUndo: this.kernel.canUndo(),
@@ -453,6 +463,8 @@ export class KernelStore {
       threemfStash: this.state.threemfStash,
       loading: this.state.loading,
       hiddenDatums: this.state.hiddenDatums,
+      highlightedBodyIndex: this.state.highlightedBodyIndex,
+      rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -1197,6 +1209,11 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
+    for (const listener of this.listeners) listener();
+  }
+
+  highlightBody(index: number | null): void {
+    this.state = { ...this.state, highlightedBodyIndex: index };
     for (const listener of this.listeners) listener();
   }
 
@@ -1946,6 +1963,12 @@ export class KernelStore {
     }
     this.commit();
     return true;
+  }
+
+  setRollbackIndex(index: number): void {
+    const n = this.state.features.length;
+    this.kernel.setRollbackIndex(index >= n ? -1 : index);
+    this.commit();
   }
 
   /** K8.6: move a feature one slot up in the outliner. No-op
