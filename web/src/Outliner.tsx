@@ -1067,8 +1067,6 @@ export function Outliner({ store, state }: OutlinerProps) {
  */
 function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; state: StoreState; collapsed: boolean; onToggle: () => void }) {
   const bodies = state.meshedBodies;
-  if (bodies.length === 0) return null;
-
   const selection = state.selection;
 
   return (
@@ -1077,7 +1075,9 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
         <span className="accordion-chevron">{collapsed ? "▸" : "▾"}</span>
         Parts ({bodies.length})
       </div>
-      {!collapsed && <ul className="list">
+      {!collapsed && (bodies.length === 0 ? (
+        <div className="empty">No parts yet.</div>
+      ) : <ul className="list">
         {bodies.map((body, index) => {
           const seedFeature = state.features.find((f) => f.id === body.seedId);
           const name = seedFeature?.name ?? `Body ${index + 1}`;
@@ -1106,7 +1106,7 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
             </li>
           );
         })}
-      </ul>}
+      </ul>)}
     </section>
   );
 }
