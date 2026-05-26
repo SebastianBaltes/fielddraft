@@ -274,7 +274,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="tool-label">Gyroid</span>
         </button>
         <button type="button" className="tool" title="Linear pattern (+X, 3×, 60 mm)" data-testid="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()}>
-          <span className="glyph" aria-hidden="true">⎡⎡⎡</span>
+          <span className="glyph" aria-hidden="true">⎡</span>
           <span className="tool-label">Pattern</span>
         </button>
         <button type="button" className="tool" title="Circular pattern around Y axis (6×, 360°)" data-testid="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()}>
