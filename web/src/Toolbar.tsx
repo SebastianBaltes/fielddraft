@@ -90,6 +90,18 @@ const THREAD_PRESETS: ThreadPreset[] = [
 
 const THREAD_LAST_USED_KEY = "fielddraft.lastUsedThread";
 
+/* ------------------------------------------------------------------ */
+/*  Transform split-button constants                                   */
+/* ------------------------------------------------------------------ */
+
+type GizmoMode = "translate" | "rotate" | "scale";
+
+const TRANSFORM_TOOLS: { mode: GizmoMode; glyph: string; label: string; title: string }[] = [
+  { mode: "translate", glyph: "↔", label: "Move", title: "Move (G)" },
+  { mode: "rotate", glyph: "⟳", label: "Rotate", title: "Rotate (R)" },
+  { mode: "scale", glyph: "⤡", label: "Scale", title: "Scale" },
+];
+
 const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
   sketch_point: { label: "Point", glyph: "•" },
   sketch_line: { label: "Line", glyph: "╱" },
@@ -295,16 +307,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </button>
       </div>
 
-      {/* Gizmo mode toggles */}
+      {/* Transform */}
       <div className="group">
-        <button type="button" className={"op-toggle" + (state.gizmoMode === "translate" ? " is-active" : "")} title="Move (G)" data-testid="gizmo-translate" onClick={() => store.setGizmoMode("translate")}>↔</button>
-        <button type="button" className={"op-toggle" + (state.gizmoMode === "rotate" ? " is-active" : "")} title="Rotate (R)" data-testid="gizmo-rotate" onClick={() => store.setGizmoMode("rotate")}>⟳</button>
-        <button type="button" className={"op-toggle" + (state.gizmoMode === "scale" ? " is-active" : "")} title="Scale (S)" data-testid="gizmo-scale" onClick={() => store.setGizmoMode("scale")}>⤡</button>
+        <TransformSplitButton store={store} gizmoMode={state.gizmoMode} />
       </div>
 
       {/* Tools */}
       <div className="group">
         <button type="button" className="tool" title="Delete selection (Del)" data-testid="delete-selection" disabled={state.selection.size === 0} onClick={() => store.removeSelected()}>
+          <span className="glyph" aria-hidden="true">🗑</span>
           <span className="tool-label">Delete</span>
         </button>
         <button type="button" className={"tool" + (state.filletMode ? " is-active" : "")} title="Click an edge to fillet it" data-testid="fillet-toggle" onClick={() => store.toggleFilletMode()}>
@@ -514,6 +525,87 @@ function ThreadSplitButton({ onAdd }: { onAdd: (preset: ThreadPreset) => void })
               >
                 <span className="glyph" aria-hidden="true">⏍</span>
                 <span className="label">{preset.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Transform split-button (Move / Rotate / Scale)                     */
+/* ------------------------------------------------------------------ */
+
+function TransformSplitButton({ store, gizmoMode }: { store: KernelStore; gizmoMode: GizmoMode }) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest(".transform-split-button")) setOpen(false);
+    };
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !wrapperRef.current) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    setPos({ top: rect.bottom + 4, left: rect.left });
+  }, [open]);
+
+  const current = TRANSFORM_TOOLS.find((t) => t.mode === gizmoMode) ?? TRANSFORM_TOOLS[0];
+
+  return (
+    <div className="transform-split-button" data-testid="transform-split-button" ref={wrapperRef}>
+      <button
+        type="button"
+        className="tool primary is-active"
+        title={current.title}
+        data-testid={`gizmo-${current.mode}`}
+        onClick={() => store.setGizmoMode(current.mode)}
+      >
+        <span className="glyph" aria-hidden="true">{current.glyph}</span>
+        <span className="tool-label">{current.label}</span>
+      </button>
+      <button
+        type="button"
+        className="tool chevron"
+        title="Transform modes"
+        data-testid="transform-split-button-chevron"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        ▾
+      </button>
+      {open && pos ? (
+        <div className="transform-dropdown" role="menu" style={{ top: pos.top, left: pos.left }}>
+          {TRANSFORM_TOOLS.map((tool) => {
+            const active = tool.mode === gizmoMode;
+            return (
+              <button
+                key={tool.mode}
+                type="button"
+                role="menuitem"
+                className={"primitive-row" + (active ? " is-active" : "")}
+                title={tool.title}
+                data-testid={`transform-dropdown-${tool.mode}`}
+                onClick={() => {
+                  store.setGizmoMode(tool.mode);
+                  setOpen(false);
+                }}
+              >
+                <span className="glyph" aria-hidden="true">{tool.glyph}</span>
+                <span className="label">{tool.label}</span>
               </button>
             );
           })}

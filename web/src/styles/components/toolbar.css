@@ -40,7 +40,8 @@
    *          one control; the dropdown anchors to the combo and
    *          lists every primitive with a drag-start handle. */
   & .primitive-split-button,
-  & .thread-split-button {
+  & .thread-split-button,
+  & .transform-split-button {
     position: relative;
     display: inline-flex;
     align-items: stretch;
@@ -60,7 +61,8 @@
     }
 
     & > .primitive-dropdown,
-    & > .thread-dropdown {
+    & > .thread-dropdown,
+    & > .transform-dropdown {
       position: fixed;
       z-index: 20;
       display: flex;
@@ -164,30 +166,6 @@
     &:disabled {
       opacity: 0.45;
       cursor: not-allowed;
-    }
-  }
-
-  & .op-toggle {
-    background: var(--color-bg);
-    color: var(--color-text);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    width: 2rem;
-    height: 2rem;
-    font-size: var(--fs-md);
-    font-weight: var(--fw-semibold);
-    cursor: pointer;
-    transition: background var(--motion-fast), border-color var(--motion-fast),
-      color var(--motion-fast);
-
-    &:hover {
-      background: var(--color-bg-hover);
-      border-color: var(--color-border-strong);
-    }
-    &.is-active {
-      background: var(--color-accent);
-      border-color: var(--color-accent);
-      color: var(--color-text-on-accent);
     }
   }
 
