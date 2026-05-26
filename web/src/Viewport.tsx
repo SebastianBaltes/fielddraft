@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera } from "@react-three/drei";
+import { OrbitControls, OrthographicCamera, Text } from "@react-three/drei";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
@@ -1195,11 +1195,16 @@ const DATUM_PLANES: {
   id: string;
   rotation: [number, number, number];
   label: string;
-  labelPos: [number, number, number];
 }[] = [
-  { id: "front", rotation: [0, 0, 0],                     label: "Front", labelPos: [-DATUM_PLANE_SIZE / 2 + 5, DATUM_PLANE_SIZE / 2 - 5, 0] },
-  { id: "top",   rotation: [-Math.PI / 2, 0, 0],          label: "Top",   labelPos: [-DATUM_PLANE_SIZE / 2 + 5, 0, -DATUM_PLANE_SIZE / 2 + 5] },
-  { id: "right", rotation: [0, Math.PI / 2, 0],           label: "Right", labelPos: [0, DATUM_PLANE_SIZE / 2 - 5, -DATUM_PLANE_SIZE / 2 + 5] },
+  { id: "front", rotation: [0, 0, 0],                     label: "Front" },
+  { id: "top",   rotation: [-Math.PI / 2, 0, 0],          label: "Top" },
+  { id: "right", rotation: [0, Math.PI / 2, 0],           label: "Right" },
+];
+
+const DATUM_LABEL_POS: [number, number, number] = [
+  -DATUM_PLANE_SIZE / 2 + 6,
+  DATUM_PLANE_SIZE / 2 - 6,
+  0.5,
 ];
 
 const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE);
@@ -1241,6 +1246,19 @@ function DatumOverlay() {
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
+          <Text
+            position={DATUM_LABEL_POS}
+            fontSize={7}
+            color={"#3b82f6"}
+            anchorX="left"
+            anchorY="top"
+            material-transparent
+            material-opacity={0.45}
+            material-depthWrite={false}
+            material-depthTest={false}
+          >
+            {plane.label}
+          </Text>
         </group>
       ))}
     </group>
