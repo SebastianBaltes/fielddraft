@@ -5070,4 +5070,36 @@ mod tests {
         k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
         assert_eq!(k.document.features[1].op, BoolOp::Intersect, "box2 is Intersect");
     }
+
+    #[test]
+    fn boolean_subtract_sdf_is_geometrically_correct() {
+        let mut k = Kernel::new();
+        let box1 = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            0.0, 0.0, 0.0, 50.0, 50.0, 50.0,
+        ).unwrap();
+        let sph = k.add_primitive(
+            Primitive::KIND_SPHERE, BoolOp::TAG_UNION,
+            30.0, 0.0, 0.0, 40.0, 0.0, 0.0,
+        ).unwrap();
+
+        let bool_id = k.add_boolean().unwrap();
+        let params = serde_json::json!({
+            "operation": "Subtract",
+            "tools": format!("qCreatedBy({})", sph),
+            "targets": format!("qCreatedBy({})", box1),
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+
+        assert_eq!(k.document.features[1].op, BoolOp::Difference);
+        assert_eq!(k.body_count(), 1, "box and sphere-diff share one body");
+
+        let sdf = |p: [f32; 3]| sdf_features(&k.document.features, p);
+        // sphere center [30,0,0] radius 40 → extends x=-10..70
+        assert!(sdf([-40.0, 0.0, 0.0]) < 0.0, "inside box, outside sphere: stays solid");
+        assert!(sdf([0.0, 0.0, 0.0]) > 0.0, "box center inside sphere: carved out");
+        assert!(sdf([35.0, 0.0, 0.0]) > 0.0, "deep in sphere overlap: carved out");
+        assert!(sdf([80.0, 0.0, 0.0]) > 0.0, "outside both: exterior");
+    }
 }

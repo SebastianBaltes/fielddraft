@@ -720,6 +720,10 @@ function collectSketchLineSegments(
  * dragged, drei disables the default OrbitControls instance so
  * the camera doesn't move with the drag.
  */
+const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([
+  "boolean", "sketch", "fillet_edge",
+]);
+
 function SelectionTransformGizmo() {
   const { store, state } = useKernelStore();
   const meshRef = useRef<THREE.Mesh>(null);
@@ -841,7 +845,7 @@ function SelectionTransformGizmo() {
 
   useEffect(() => () => clearTimeout(gizmoThrottleRef.current), []);
 
-  if (!selectedFeature || !store) return null;
+  if (!selectedFeature || !store || NO_GIZMO_KINDS.has(selectedFeature.kind)) return null;
 
   return (
     <mesh ref={meshRef} visible={false}>
