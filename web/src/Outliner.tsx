@@ -403,6 +403,7 @@ export function Outliner({ store, state }: OutlinerProps) {
   ) => {
     if (!draggingRollback) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -410,6 +411,7 @@ export function Outliner({ store, state }: OutlinerProps) {
   };
   const handleRollbackDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     if (!e.dataTransfer.types.includes("fielddraft/rollback-bar")) return;
     if (rollbackDropIndex !== null) {
       store.setRollbackIndex(rollbackDropIndex);
@@ -1046,7 +1048,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                     store={store}
                   />
                 ))}
-                {rbIdx === 0 && rollbackBar}
+                {rbIdx === 0 && state.features.length > 0 && rollbackBar}
                 {ungrouped.flatMap(({ feature, index }) => {
                   const row = renderFeatureRow(feature, index);
                   if (index + 1 === rbIdx && rbIdx > 0 && rbIdx < state.features.length) return [row, rollbackBar];
