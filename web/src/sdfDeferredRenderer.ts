@@ -195,6 +195,10 @@ export interface DeferredPipelineState {
   opacityBuf: ReturnType<typeof uniformArray>;
   wireframeData: Float32Array;
   wireframeBuf: ReturnType<typeof uniformArray>;
+  displaceDepthData: Float32Array;
+  displaceDepthBuf: ReturnType<typeof uniformArray>;
+  displaceFreqData: Float32Array;
+  displaceFreqBuf: ReturnType<typeof uniformArray>;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
@@ -292,17 +296,30 @@ function createShadeMaterial(
   selectionBuf: ReturnType<typeof uniformArray>,
   opacityBuf: ReturnType<typeof uniformArray>,
   wireframeBuf: ReturnType<typeof uniformArray>,
+  displaceDepthBuf: ReturnType<typeof uniformArray>,
+  displaceFreqBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
-  const sdfEval = buildVmSdfEvalFn(opcodeBuf, {
+  const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
     withBaseOffset: true,
     volumeTextures,
     withVolumeBaseIdx: volumeTextures.length > 0,
   });
+
+  const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
+    const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
+    if (!args.bodyIdx) return d;
+    const depth = displaceDepthBuf.element(args.bodyIdx);
+    const freq = displaceFreqBuf.element(args.bodyIdx);
+    const disp = args.p.x.mul(freq).sin()
+      .mul(args.p.y.mul(freq).mul(1.3).sin())
+      .mul(args.p.z.mul(freq).mul(0.7).sin());
+    return d.sub(depth.mul(disp));
+  };
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
@@ -357,7 +374,7 @@ function createShadeMaterial(
             If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
               const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
               const volBase = int(volumeBaseBuf.element(bodyIdx));
-              const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
+              const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
               If(d.lessThan(minD), () => {
                 minD.assign(d);
                 closestBody.assign(bodyIdx);
@@ -413,13 +430,14 @@ function createShadeMaterial(
       const ex = vec3(eps, 0, 0);
       const ey = vec3(0, eps, 0);
       const ez = vec3(0, 0, eps);
+      const bi = shadeBodyIdx;
       const n = normalize(vec3(
-        sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
-          .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
-        sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
-          .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
-        sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
-          .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
+        sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+          .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+        sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+          .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+        sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+          .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
       ));
 
       const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
@@ -537,6 +555,12 @@ export function initDeferredPipeline(
   const wireframeData = new Float32Array(MAX_BODIES);
   const wireframeBuf = uniformArray(wireframeData, "float");
 
+  const displaceDepthData = new Float32Array(MAX_BODIES);
+  const displaceDepthBuf = uniformArray(displaceDepthData, "float");
+
+  const displaceFreqData = new Float32Array(MAX_BODIES);
+  const displaceFreqBuf = uniformArray(displaceFreqData, "float");
+
   const selectionData = new Float32Array(MAX_BODIES);
   const selectionBuf = uniformArray(selectionData, "float");
 
@@ -568,6 +592,8 @@ export function initDeferredPipeline(
     selectionBuf,
     opacityBuf,
     wireframeBuf,
+    displaceDepthBuf,
+    displaceFreqBuf,
     volumeBaseBuf,
     camPosUniform,
     viewMatU,
@@ -614,6 +640,10 @@ export function initDeferredPipeline(
     opacityBuf,
     wireframeData,
     wireframeBuf,
+    displaceDepthData,
+    displaceDepthBuf,
+    displaceFreqData,
+    displaceFreqBuf,
     selectionBuf,
     selectionData,
     volumeBaseBuf,
@@ -959,6 +989,8 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.selectionBuf,
     state.opacityBuf,
     state.wireframeBuf,
+    state.displaceDepthBuf,
+    state.displaceFreqBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
     state.viewMatU,

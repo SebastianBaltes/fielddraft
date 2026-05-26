@@ -282,6 +282,7 @@ impl FeatureRegistry {
         &self,
         ctx: &mut Context<'_>,
         calls: &[FeatureCall],
+        rollback_after: Option<usize>,
     ) -> Result<(), FeatureError> {
         // K8.11: snapshot the variables table once per
         // regenerate — execute paths don't mutate it, and
@@ -289,11 +290,8 @@ impl FeatureRegistry {
         // without tangling with the `ctx.document` mutable
         // borrow.
         let variables = ctx.document.variables.clone();
-        for call in calls {
-            // K8.7: suppressed calls drop out of the tree —
-            // their `execute` never runs, so no spine/body
-            // contribution and no sketch/cache side effects.
-            if call.suppressed {
+        for (i, call) in calls.iter().enumerate() {
+            if call.suppressed || rollback_after.is_some_and(|ra| i >= ra) {
                 continue;
             }
             let feature = self
@@ -2709,6 +2707,10 @@ pub struct MaterialDef {
     pub opacity: f32,
     #[param(name = "Wireframe", default = false)]
     pub wireframe: bool,
+    #[param(name = "Displace depth", default = 0.0)]
+    pub displace_depth: f32,
+    #[param(name = "Displace freq", default = 0.0)]
+    pub displace_freq: f32,
 
     // ── Engineering ──────────────────────────────────────────
     #[param(name = "Density (kg/m³)", default = 0.0)]
@@ -2879,7 +2881,7 @@ mod tests {
             id(1),
             json!({ "half_extents": [1, 1, 1] }),
         );
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         match err {
             FeatureError::InvalidParameter { name: "stub", .. } => {}
             other => panic!("expected stub error, got {other:?}"),
@@ -2901,7 +2903,7 @@ mod tests {
                 "op": "union"
             }),
         );
-        registry.regenerate(&mut ctx, &[call]).unwrap();
+        registry.regenerate(&mut ctx, &[call], None).unwrap();
 
         assert_eq!(doc.features.len(), 1);
         let f = &doc.features[0];
@@ -2938,7 +2940,7 @@ mod tests {
                 }),
             ),
         ];
-        registry.regenerate(&mut ctx, &calls).unwrap();
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
 
         assert_eq!(doc.features.len(), 2);
         assert!(matches!(
@@ -2962,7 +2964,7 @@ mod tests {
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
         let call = FeatureCall::new("not_a_feature", id(1), json!({}));
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         assert_eq!(
             err,
             FeatureError::UnknownFeatureType("not_a_feature".into())
@@ -2977,7 +2979,7 @@ mod tests {
         let mut ctx = Context::new(&mut doc);
         // Box without `half_extents`.
         let call = FeatureCall::new("box", id(1), json!({}));
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         assert_eq!(
             err,
             FeatureError::MissingParameter {
@@ -2998,7 +3000,7 @@ mod tests {
             id(1),
             json!({ "half_extents": [1.0, 2.0] }),
         );
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         match err {
             FeatureError::InvalidParameter {
                 feature: "box",
@@ -3016,7 +3018,7 @@ mod tests {
         let mut ctx = Context::new(&mut doc);
         let call =
             FeatureCall::new("sphere", id(1), json!({ "radius": -3.0 }));
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         match err {
             FeatureError::InvalidParameter {
                 feature: "sphere",
@@ -3044,7 +3046,7 @@ mod tests {
                 json!({ "half_extents": [1.0, 1.0, 1.0] }),
             ),
         ];
-        let err = registry.regenerate(&mut ctx, &calls).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &calls, None).unwrap_err();
         assert!(matches!(
             err,
             FeatureError::MissingParameter {
@@ -3480,7 +3482,7 @@ mod tests {
                 }),
             ),
         ];
-        registry.regenerate(&mut ctx, &calls).unwrap();
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
 
         // The `next_feature_id` counter differs (the registry path
         // never called `allocate_id`), so compare the feature lists
@@ -3841,7 +3843,7 @@ mod tests {
             id(1),
             extrude_def("qCreatedBy(sketch_1)", 12.0, 3.0, 4.0),
         )];
-        registry.regenerate(&mut ctx, &calls).unwrap();
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
         assert_eq!(doc.features.len(), 1);
         match &doc.features[0].primitive {
             Primitive::Box { half_extents, .. } => {
@@ -3888,7 +3890,7 @@ mod tests {
             })
             .collect();
 
-        registry.regenerate(&mut ctx, &calls).unwrap();
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
 
         assert_eq!(doc.features.len(), COUNT as usize);
         for (i, f) in doc.features.iter().enumerate() {
@@ -3960,7 +3962,7 @@ mod tests {
             }),
         );
         registry
-            .regenerate(&mut ctx, &[box_call, pattern_call])
+            .regenerate(&mut ctx, &[box_call, pattern_call], None)
             .unwrap();
 
         // Source (1) + three clones = four spine entries.
@@ -4022,6 +4024,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         // Just the source box — no clones added.
@@ -4059,6 +4062,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         let clone = &doc.features[1];
@@ -4087,6 +4091,7 @@ mod tests {
                         "spacing": { "value": 20.0, "unit": "mm" }
                     }),
                 )],
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -4131,7 +4136,7 @@ mod tests {
             }),
         );
         registry
-            .regenerate(&mut ctx, &[box_call, pattern_call])
+            .regenerate(&mut ctx, &[box_call, pattern_call], None)
             .unwrap();
 
         // 1 source + 3 clones.
@@ -4187,6 +4192,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         // No clones — just the source.
@@ -4226,6 +4232,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         // 180° step = 90° per instance. At i=1 the clone sits
@@ -4263,6 +4270,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -4294,7 +4302,7 @@ mod tests {
                 "translate": [0.0, 0.0, 0.0],
             }),
         );
-        registry.regenerate(&mut ctx, &[call]).unwrap();
+        registry.regenerate(&mut ctx, &[call], None).unwrap();
         assert_eq!(doc.features.len(), 1);
         let f = &doc.features[0];
         match &f.primitive {
@@ -4319,7 +4327,7 @@ mod tests {
                 "depth": { "value": 40.0, "unit": "mm" },
             }),
         );
-        let err = registry.regenerate(&mut ctx, &[call]).unwrap_err();
+        let err = registry.regenerate(&mut ctx, &[call], None).unwrap_err();
         match err {
             FeatureError::InvalidParameter { feature, message, .. } => {
                 assert_eq!(feature, "<formula>");
@@ -4345,7 +4353,7 @@ mod tests {
                 "translate": [10.0, 0.0, 0.0],
             }),
         );
-        registry.regenerate(&mut ctx, &[call]).unwrap();
+        registry.regenerate(&mut ctx, &[call], None).unwrap();
         assert_eq!(doc.features.len(), 1);
         let f = &doc.features[0];
         // Spine entry uses the hierarchical child id `1/0` so
@@ -4384,6 +4392,7 @@ mod tests {
                         "depth": { "value": 10.0, "unit": "mm" },
                     }),
                 )],
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -4415,7 +4424,7 @@ mod tests {
         );
         box_call.suppressed = true;
         registry
-            .regenerate(&mut ctx, &[box_call, sphere_call])
+            .regenerate(&mut ctx, &[box_call, sphere_call], None)
             .unwrap();
         // Only the sphere made it onto the spine.
         assert_eq!(doc.features.len(), 1);
@@ -4451,6 +4460,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         // Source + one mirrored clone.
@@ -4487,6 +4497,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         // Reflected through x=5: 20 → -10.
@@ -4524,6 +4535,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         let t = doc.features[1].transform.translate;
@@ -4553,6 +4565,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -4611,7 +4624,7 @@ mod tests {
             }),
         );
         registry
-            .regenerate(&mut ctx, &[sketch_call, extrude_call])
+            .regenerate(&mut ctx, &[sketch_call, extrude_call], None)
             .unwrap();
 
         let extrude_feature = doc
@@ -4672,7 +4685,7 @@ mod tests {
             }),
         );
         registry
-            .regenerate(&mut ctx, &[sketch_call, extrude_call])
+            .regenerate(&mut ctx, &[sketch_call, extrude_call], None)
             .unwrap();
 
         let extrude_feature = doc
@@ -4738,7 +4751,7 @@ mod tests {
             }),
         );
         registry
-            .regenerate(&mut ctx, &[sketch_call, revolve_call])
+            .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
             .unwrap();
 
         let revolve_feature = doc
@@ -4774,6 +4787,7 @@ mod tests {
                         "profiles": "qCreatedBy(sketch_999)",
                     }),
                 )],
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -4855,6 +4869,7 @@ mod tests {
                     }),
                 ),
             ],
+            None,
         );
         let err = result.err().expect("extrude must fail on empty sketch with zero fallback");
         match err {
@@ -4911,6 +4926,7 @@ mod tests {
                         }),
                     ),
                 ],
+                None,
             )
             .unwrap();
         let extrude_feature = doc

@@ -129,6 +129,7 @@ export interface FeatureSummary {
    *  `skip_serializing_if` guard, so the TS layer has to
    *  treat the absence as `false`. */
   suppressed?: boolean;
+  rolled_back?: boolean;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;
@@ -916,6 +917,14 @@ export class Kernel {
   /** K8.7: toggle the suppressed flag of a feature call. */
   setFeatureSuppressed(id: number, suppressed: boolean): void {
     this.inner.setFeatureSuppressed(id, suppressed);
+  }
+
+  setRollbackIndex(index: number): void {
+    this.inner.setRollbackIndex(index);
+  }
+
+  getRollbackIndex(): number {
+    return this.inner.getRollbackIndex();
   }
 
   /** K8.10: upsert a document-level variable. */

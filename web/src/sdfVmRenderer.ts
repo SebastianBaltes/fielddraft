@@ -66,6 +66,10 @@ export interface VmPipelineState {
   opacityBuf: ReturnType<typeof uniformArray>;
   wireframeData: Float32Array;
   wireframeBuf: ReturnType<typeof uniformArray>;
+  displaceDepthData: Float32Array;
+  displaceDepthBuf: ReturnType<typeof uniformArray>;
+  displaceFreqData: Float32Array;
+  displaceFreqBuf: ReturnType<typeof uniformArray>;
   bodyCountU: ReturnType<typeof uniform>;
   camPosU: ReturnType<typeof uniform>;
   invProjU: ReturnType<typeof uniform>;
@@ -111,6 +115,12 @@ export function initVmPipeline(): VmPipelineState {
   const wireframeData = new Float32Array(MAX_BODIES);
   const wireframeBuf = uniformArray(wireframeData, "float");
 
+  const displaceDepthData = new Float32Array(MAX_BODIES);
+  const displaceDepthBuf = uniformArray(displaceDepthData, "float");
+
+  const displaceFreqData = new Float32Array(MAX_BODIES);
+  const displaceFreqBuf = uniformArray(displaceFreqData, "float");
+
   const volumeBaseData = new Float32Array(MAX_BODIES);
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
@@ -140,6 +150,10 @@ export function initVmPipeline(): VmPipelineState {
     opacityBuf,
     wireframeData,
     wireframeBuf,
+    displaceDepthData,
+    displaceDepthBuf,
+    displaceFreqData,
+    displaceFreqBuf,
     bodyCountU: uniform(0),
     camPosU: uniform(new THREE.Vector3()),
     invProjU: uniform(new THREE.Matrix4()),
@@ -257,11 +271,22 @@ export function rebuildVmBodies(
 // ── Material ────────────────────────────────────────────────────────
 
 function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
-  const sdfEval = buildVmSdfEvalFn(state.opcodeBuf, {
+  const sdfEvalRaw = buildVmSdfEvalFn(state.opcodeBuf, {
     withBaseOffset: true,
     volumeTextures: state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
     withVolumeBaseIdx: state.volumeTextures.length > 0,
   });
+
+  const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
+    const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
+    if (!args.bodyIdx) return d;
+    const depth = state.displaceDepthBuf.element(args.bodyIdx);
+    const freq = state.displaceFreqBuf.element(args.bodyIdx);
+    const disp = args.p.x.mul(freq).sin()
+      .mul(args.p.y.mul(freq).mul(1.3).sin())
+      .mul(args.p.z.mul(freq).mul(0.7).sin());
+    return d.sub(depth.mul(disp));
+  };
 
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
@@ -290,7 +315,7 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
           If(int(offLen).greaterThan(int(0)), () => {
             const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
             const volBase = int(state.volumeBaseBuf.element(bodyIdx));
-            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase });
+            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
             If(d.lessThan(minD), () => {
               minD.assign(d);
               closestBody.assign(bodyIdx);
@@ -318,13 +343,14 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const ez = vec3(0, 0, eps);
     const baseOff = int(state.offsetBuf.element(hitBody.mul(2)));
     const volBase = int(state.volumeBaseBuf.element(hitBody));
+    const bi = hitBody;
     const n = normalize(vec3(
-      sdfEval({ p: hitPos.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: hitPos.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase })),
-      sdfEval({ p: hitPos.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: hitPos.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase })),
-      sdfEval({ p: hitPos.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase })
-        .sub(sdfEval({ p: hitPos.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
+      sdfEval({ p: hitPos.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+        .sub(sdfEval({ p: hitPos.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+      sdfEval({ p: hitPos.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+        .sub(sdfEval({ p: hitPos.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+      sdfEval({ p: hitPos.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+        .sub(sdfEval({ p: hitPos.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
     ));
 
     const nView = normalize(state.viewMatU.mul(vec4(n, 0.0)).xyz);

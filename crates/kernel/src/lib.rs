@@ -486,6 +486,8 @@ struct FeatureSummary {
     /// grey out the row when the feature is skipped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     suppressed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    rolled_back: bool,
 }
 
 /// Owned by the JS side. Holds the canonical document, the packed
@@ -540,6 +542,9 @@ pub struct Kernel {
     /// during the last regenerate pass. Applied as a post-processing
     /// step on the CsgNode tree before meshing.
     edge_fillets: Vec<csg::EdgeFillet>,
+    /// Rollback bar position: if set, features at index >= this value
+    /// are skipped during regeneration (but stay in the document).
+    rollback_after: Option<usize>,
 }
 
 impl Kernel {
@@ -920,6 +925,7 @@ impl Kernel {
             sync_meshing: true,
             mesh_version: 0,
             edge_fillets: Vec::new(),
+            rollback_after: None,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
         // still want the version counter and buffers initialised).
@@ -980,9 +986,10 @@ impl Kernel {
         let registry = features::FeatureRegistry::with_builtins();
         let calls = std::mem::take(&mut self.document.feature_calls);
         self.document.features.clear();
+        let rollback = self.rollback_after;
         let result = {
             let mut ctx = features::Context::new(&mut self.document);
-            let r = registry.regenerate(&mut ctx, &calls);
+            let r = registry.regenerate(&mut ctx, &calls, rollback);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = ctx.edge_fillets;
             r
@@ -1094,7 +1101,8 @@ impl Kernel {
         let mut summaries: Vec<FeatureSummary> = Vec::with_capacity(
             self.document.feature_calls.len(),
         );
-        for call in &self.document.feature_calls {
+        for (idx, call) in self.document.feature_calls.iter().enumerate() {
+            let rb = self.rollback_after.is_some_and(|ra| idx >= ra);
             if let Some(spine) = self
                 .document
                 .features
@@ -1110,6 +1118,7 @@ impl Kernel {
                     rotation: spine.transform.rotation,
                     scale: spine.transform.scale,
                     suppressed: call.suppressed,
+                    rolled_back: rb,
                 });
             } else {
                 // K8.9: hole pushes its spine entry under a
@@ -1172,6 +1181,7 @@ impl Kernel {
                     rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: [1.0, 1.0, 1.0],
                     suppressed: call.suppressed,
+                    rolled_back: rb,
                 });
             }
         }
@@ -2106,6 +2116,27 @@ impl Kernel {
         }
         self.rebuild_packed();
         Ok(())
+    }
+
+    #[wasm_bindgen(js_name = setRollbackIndex)]
+    pub fn set_rollback_index(&mut self, index: i32) {
+        let n = self.document.feature_calls.len();
+        self.rollback_after = if index < 0 || index as usize >= n {
+            None
+        } else {
+            Some(index as usize)
+        };
+        self.document.features.clear();
+        let _ = self.bootstrap_features_from_calls();
+        self.rebuild_packed();
+    }
+
+    #[wasm_bindgen(js_name = getRollbackIndex)]
+    pub fn get_rollback_index(&self) -> i32 {
+        match self.rollback_after {
+            Some(idx) => idx as i32,
+            None => -1,
+        }
     }
 
     /// K6b.3a: fetch the sub-spine sub_calls for a sketch by

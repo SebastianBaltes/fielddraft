@@ -11,6 +11,8 @@ export interface MaterialProps {
   emissive: [number, number, number];
   opacity: number;
   wireframe: boolean;
+  displaceDepth: number;
+  displaceFreq: number;
 }
 
 const DEFAULTS: MaterialProps = {
@@ -20,6 +22,8 @@ const DEFAULTS: MaterialProps = {
   emissive: [0, 0, 0],
   opacity: 1,
   wireframe: false,
+  displaceDepth: 0,
+  displaceFreq: 0,
 };
 
 export function resolveMaterials(
@@ -70,6 +74,8 @@ export function resolveMaterials(
     const emissive = (params.emissive ?? params.Emissive) as [number, number, number] | undefined;
     const opacity = (params.opacity ?? params.Opacity) as number | undefined;
     const wireframe = (params.wireframe ?? params.Wireframe) as boolean | undefined;
+    const displaceDepth = (params.displace_depth ?? params["Displace depth"]) as number | undefined;
+    const displaceFreq = (params.displace_freq ?? params["Displace freq"]) as number | undefined;
 
     const mat: MaterialProps = {
       color: color ?? DEFAULTS.color,
@@ -78,6 +84,8 @@ export function resolveMaterials(
       emissive: emissive ?? DEFAULTS.emissive,
       opacity: opacity ?? DEFAULTS.opacity,
       wireframe: wireframe ?? DEFAULTS.wireframe,
+      displaceDepth: displaceDepth ?? DEFAULTS.displaceDepth,
+      displaceFreq: displaceFreq ?? DEFAULTS.displaceFreq,
     };
 
     for (const bi of targetBodyIndices) {
@@ -106,6 +114,8 @@ export function applyMaterialsToDeferred(
       pipeline.emissiveData[i * 3 + 2] = mat.emissive[2];
       pipeline.opacityData[i] = mat.opacity;
       pipeline.wireframeData[i] = mat.wireframe ? 1 : 0;
+      pipeline.displaceDepthData[i] = mat.displaceDepth;
+      pipeline.displaceFreqData[i] = mat.displaceFreq;
     } else {
       const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
       pipeline.colorData[i * 3] = r;
@@ -118,6 +128,8 @@ export function applyMaterialsToDeferred(
       pipeline.emissiveData[i * 3 + 2] = 0;
       pipeline.opacityData[i] = 1;
       pipeline.wireframeData[i] = 0;
+      pipeline.displaceDepthData[i] = 0;
+      pipeline.displaceFreqData[i] = 0;
     }
   }
 }
@@ -140,6 +152,8 @@ export function applyMaterialsToVm(
       state.emissiveData[i * 3 + 2] = mat.emissive[2];
       state.opacityData[i] = mat.opacity;
       state.wireframeData[i] = mat.wireframe ? 1 : 0;
+      state.displaceDepthData[i] = mat.displaceDepth;
+      state.displaceFreqData[i] = mat.displaceFreq;
     } else {
       const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
       state.colorData[i * 3] = r;
@@ -152,6 +166,8 @@ export function applyMaterialsToVm(
       state.emissiveData[i * 3 + 2] = 0;
       state.opacityData[i] = 1;
       state.wireframeData[i] = 0;
+      state.displaceDepthData[i] = 0;
+      state.displaceFreqData[i] = 0;
     }
   }
 }

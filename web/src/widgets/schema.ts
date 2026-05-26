@@ -231,6 +231,7 @@ export function parseFeatureSchema(value: unknown): FeatureSchema {
 
 const VISUAL_MATERIAL_KEYS = new Set([
   "color", "roughness", "metalness", "emissive", "opacity", "wireframe",
+  "displace_depth", "displace_freq",
 ]);
 const TECHNICAL_MATERIAL_KEYS = new Set([
   "density", "youngs_modulus", "poissons_ratio",

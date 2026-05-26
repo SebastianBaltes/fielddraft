@@ -752,6 +752,13 @@ export class Kernel {
         }
     }
     /**
+     * @returns {number}
+     */
+    getRollbackIndex() {
+        const ret = wasm.kernel_getRollbackIndex(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * K6b.3a: fetch the sub-spine sub_calls for a sketch by
      * feature id, so the UI can reload an existing sketch when
      * the user re-enters it. Returns the JSON array string of
@@ -1331,6 +1338,12 @@ export class Kernel {
     setMeshResolution(resolution) {
         const ret = wasm.kernel_setMeshResolution(this.__wbg_ptr, resolution);
         return ret !== 0;
+    }
+    /**
+     * @param {number} index
+     */
+    setRollbackIndex(index) {
+        wasm.kernel_setRollbackIndex(this.__wbg_ptr, index);
     }
     /**
      * Enable or disable the synchronous DC pass. Toggling forces a

@@ -1300,7 +1300,7 @@ mod tests {
 
         let mut doc = Document::default();
         let mut ctx = Context::new(&mut doc);
-        registry.regenerate(&mut ctx, std::slice::from_ref(&call)).unwrap();
+        registry.regenerate(&mut ctx, std::slice::from_ref(&call), None).unwrap();
 
         let data = ctx
             .sketches
@@ -1332,7 +1332,7 @@ mod tests {
         let mut doc = Document::default();
         let mut ctx = Context::new(&mut doc);
         let err = registry
-            .regenerate(&mut ctx, std::slice::from_ref(&call))
+            .regenerate(&mut ctx, std::slice::from_ref(&call), None)
             .unwrap_err();
         assert_eq!(err, FeatureError::UnknownFeatureType("not_a_tool".to_string()));
     }
@@ -1346,7 +1346,7 @@ mod tests {
         let mut doc = Document::default();
         let mut ctx = Context::new(&mut doc);
         let err = registry
-            .regenerate(&mut ctx, std::slice::from_ref(&call))
+            .regenerate(&mut ctx, std::slice::from_ref(&call), None)
             .unwrap_err();
         assert!(matches!(
             err,

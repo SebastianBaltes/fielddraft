@@ -243,6 +243,7 @@ export class Kernel {
      * blob.
      */
     getFeatureCallParams(id: number): string;
+    getRollbackIndex(): number;
     /**
      * K6b.3a: fetch the sub-spine sub_calls for a sketch by
      * feature id, so the UI can reload an existing sketch when
@@ -434,8 +435,6 @@ export class Kernel {
      * broken).
      */
     setFeatureSuppressed(id: number, suppressed: boolean): void;
-    setRollbackIndex(index: number): void;
-    getRollbackIndex(): number;
     /**
      * Replace the full transform (translate, quaternion, scale).
      */
@@ -451,6 +450,7 @@ export class Kernel {
      * `setMeshResolution` for backward compatibility.
      */
     setMeshResolution(resolution: number): boolean;
+    setRollbackIndex(index: number): void;
     /**
      * Enable or disable the synchronous DC pass. Toggling forces a
      * rebuild so the body list's mesh buffers match the new
@@ -542,6 +542,7 @@ export interface InitOutput {
     readonly kernel_featureCount: (a: number) => number;
     readonly kernel_featureStride: () => number;
     readonly kernel_getFeatureCallParams: (a: number, b: number) => [number, number, number, number];
+    readonly kernel_getRollbackIndex: (a: number) => number;
     readonly kernel_getSketchSubCalls: (a: number, b: number) => [number, number, number, number];
     readonly kernel_listFeatureTypes: (a: number) => [number, number, number, number];
     readonly kernel_listFeatures: (a: number) => [number, number, number, number];
@@ -579,6 +580,7 @@ export interface InitOutput {
     readonly kernel_setFeatureTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
     readonly kernel_setFeatureTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_setMeshResolution: (a: number, b: number) => number;
+    readonly kernel_setRollbackIndex: (a: number, b: number) => void;
     readonly kernel_setSyncMeshing: (a: number, b: number) => number;
     readonly kernel_setVariable: (a: number, b: number, c: number, d: number) => [number, number];
     readonly kernel_stepCommands: (a: number) => [number, number];
