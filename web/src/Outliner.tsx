@@ -824,25 +824,6 @@ export function Outliner({ store, state }: OutlinerProps) {
           </>)}
         </section>
       )}
-      {!sketchSession.active && selectedSchema ? (
-        <FeatureDialog
-          schema={selectedSchema}
-          definition={dialogDraft}
-          onChange={handleDialogChange}
-        />
-      ) : null}
-      {!sketchSession.active && selectedFeature?.kind === "imported_mesh" ? (
-        <div className="fd-mesh-mode-toggle">
-          <label>
-            <input
-              type="checkbox"
-              checked={!!selectedFeature.suppressed}
-              onChange={() => store.toggleFeatureSuppressed(selectedFeature.id)}
-            />
-            Reference only (transparent overlay)
-          </label>
-        </div>
-      ) : null}
       <div className="header accordion-header" onClick={() => toggleSection("datums")} data-testid="datums-header">
         <span className="accordion-chevron">{collapsed.has("datums") ? "▸" : "▾"}</span>
         <span>Default geometry</span>
@@ -1029,6 +1010,25 @@ export function Outliner({ store, state }: OutlinerProps) {
           })()}
         </ul>
       ))}
+      {!sketchSession.active && selectedSchema ? (
+        <FeatureDialog
+          schema={selectedSchema}
+          definition={dialogDraft}
+          onChange={handleDialogChange}
+        />
+      ) : null}
+      {!sketchSession.active && selectedFeature?.kind === "imported_mesh" ? (
+        <div className="fd-mesh-mode-toggle">
+          <label>
+            <input
+              type="checkbox"
+              checked={!!selectedFeature.suppressed}
+              onChange={() => store.toggleFeatureSuppressed(selectedFeature.id)}
+            />
+            Reference only (transparent overlay)
+          </label>
+        </div>
+      ) : null}
       {contextMenu ? (
         <FeatureContextMenu
           x={contextMenu.x}
