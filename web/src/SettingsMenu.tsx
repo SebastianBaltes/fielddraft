@@ -48,7 +48,7 @@ export const DECIMAL_OPTIONS: { key: DecimalFormat; label: string }[] = [
 ];
 
 export function decimalPlaces(fmt: DecimalFormat): number {
-  if (fmt === "1") return 0;
+  if (!fmt || fmt === "1") return 0;
   return fmt.length - 2;
 }
 
