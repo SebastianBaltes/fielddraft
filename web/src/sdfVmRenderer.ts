@@ -28,6 +28,7 @@ import {
   uniformArray,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
+import { pbrShade } from "./pbrShading";
 
 import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
@@ -286,22 +287,15 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
         .sub(sdfEval({ p: hitPos.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
     ));
 
-    // 3-light model (view-space — camera-fixed)
     const nView = normalize(state.viewMatU.mul(vec4(n, 0.0)).xyz);
-    const keyDir = normalize(vec3(0.2, 0.3, 1.0));
-    const fillDir = normalize(vec3(-0.5, 0.1, 0.6));
-    const rimDir = normalize(vec3(0.0, -0.2, -1.0));
-    const dKey = max(nView.dot(keyDir), float(0));
-    const dFill = max(nView.dot(fillDir), float(0));
-    const dRim = max(nView.dot(rimDir), float(0));
-    const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
+    const viewDir = normalize(state.viewMatU.mul(vec4(rd.negate(), 0.0)).xyz);
 
     const cr = state.colorBuf.element(hitBody.mul(3));
     const cg = state.colorBuf.element(hitBody.mul(3).add(1));
     const cb = state.colorBuf.element(hitBody.mul(3).add(2));
-    const bodyColor = vec3(cr, cg, cb);
+    const baseColor = vec3(cr, cg, cb);
 
-    return vec4(bodyColor.mul(light), 1);
+    return vec4(pbrShade({ nView, viewDir, baseColor }), 1);
   })();
 
   material.side = THREE.DoubleSide;

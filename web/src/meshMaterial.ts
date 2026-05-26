@@ -16,14 +16,14 @@
 import * as THREE from "three";
 import {
   Fn,
-  float,
-  max,
   normalView,
   normalize,
+  positionView,
   vec3,
   vec4,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
+import { pbrShade } from "./pbrShading";
 
 /** Per-body colour palette. The hue cycles so each body
  *  in a multi-body document is visually distinct. The first
@@ -50,17 +50,11 @@ export function createKernelMeshMaterial(
   const [r, g, b] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
 
   const colorNode = Fn(() => {
-    const n = normalize(normalView);
-    const key = normalize(vec3(0.2, 0.3, 1.0));
-    const fill = normalize(vec3(-0.5, 0.1, 0.6));
-    const rim = normalize(vec3(0.0, -0.2, -1.0));
-    const dKey = max(n.dot(key), float(0));
-    const dFill = max(n.dot(fill), float(0));
-    const dRim = max(n.dot(rim), float(0));
-    const ambient = float(0.3);
-    const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
-    const base = vec3(r, g, b);
-    return vec4(base.mul(light), 1);
+    const nView = normalize(normalView);
+    const viewDir = normalize(positionView.negate());
+    const baseColor = vec3(r, g, b);
+    const lit = pbrShade({ nView, viewDir, baseColor });
+    return vec4(lit, 1);
   });
 
   material.colorNode = colorNode();

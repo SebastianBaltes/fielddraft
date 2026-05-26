@@ -47,6 +47,7 @@ import {
   vec4,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
+import { pbrShade } from "./pbrShading";
 import { FEATURE_STRIDE } from "./kernel";
 
 export const MAX_RAYMARCH_FEATURES = 32;
@@ -248,18 +249,10 @@ export function createRaymarchMaterial(): RaymarchHandle {
     const finalColor = bg.toVar();
     If(hit.greaterThan(0.5), () => {
       const nWorld = sceneNormal({ p: hitPos });
-      const n = normalize(cameraViewMatrix.mul(vec4(nWorld, 0.0)).xyz);
-      const key = normalize(vec3(0.2, 0.3, 1.0));
-      const fill = normalize(vec3(-0.5, 0.1, 0.6));
-      const rim = normalize(vec3(0.0, -0.2, -1.0));
-      const dKey = max(n.dot(key), float(0));
-      const dFill = max(n.dot(fill), float(0));
-      const dRim = max(n.dot(rim), float(0));
-      const ambient = float(0.3);
-      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(ambient);
+      const nView = normalize(cameraViewMatrix.mul(vec4(nWorld, 0.0)).xyz);
+      const viewDir = normalize(cameraViewMatrix.mul(vec4(rd.negate(), 0.0)).xyz);
       const baseColor = vec3(0.55, 0.65, 0.85);
-      const lit = baseColor.mul(light);
-      finalColor.assign(lit);
+      finalColor.assign(pbrShade({ nView, viewDir, baseColor }));
     });
 
     return vec4(finalColor, 1);

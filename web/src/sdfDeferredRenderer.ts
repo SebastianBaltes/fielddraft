@@ -50,6 +50,7 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
+import { pbrShade } from "./pbrShading";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -404,18 +405,14 @@ function createShadeMaterial(
       ));
 
       const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
-      const keyDir = normalize(vec3(0.2, 0.3, 1.0));
-      const fillDir = normalize(vec3(-0.5, 0.1, 0.6));
-      const rimDir = normalize(vec3(0.0, -0.2, -1.0));
-      const dKey = max(nView.dot(keyDir), float(0));
-      const dFill = max(nView.dot(fillDir), float(0));
-      const dRim = max(nView.dot(rimDir), float(0));
-      const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
+      const viewDirWorld = normalize(camPosU.sub(p));
+      const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
 
       const cr = colorBuf.element(shadeBodyIdx.mul(3));
       const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
       const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
-      const color = vec3(cr, cg, cb).mul(light).toVar();
+      const baseColor = vec3(cr, cg, cb);
+      const color = pbrShade({ nView, viewDir, baseColor }).toVar();
 
       const sel = selectionBuf.element(shadeBodyIdx);
       If(sel.greaterThan(float(0.5)), () => {
