@@ -226,7 +226,9 @@ impl FeatureRegistry {
         r.register(Box::new(CircularPatternFeature));
         r.register(Box::new(MirrorFeature));
         r.register(Box::new(crate::sketch_features::SketchFeature::new()));
-        r.register(Box::new(TransformFeature));
+        r.register(Box::new(TranslateFeature));
+        r.register(Box::new(RotateFeature));
+        r.register(Box::new(ScaleFeature));
         r.register(Box::new(BooleanFeature));
         r
     }
@@ -1189,124 +1191,83 @@ impl FeatureKind for MateConnectorFeature {
     }
 }
 
-// ─── K7.21j: Transform Feature ──────────────────────────────────
+// ─── Translate / Rotate / Scale Features ───────────────────────
 //
-// Gizmo-driven parametric transform. Stores absolute world-space
-// values and REPLACES the target's transform during regeneration.
-// Consecutive transforms on the same target are merged by the
-// kernel's `apply_gizmo_transform` method so the feature tree
-// shows at most one Transform per uninterrupted editing sequence.
+// Three separate gizmo-driven features that each modify one
+// component of a target feature's transform. Consecutive gizmo
+// drags of the same type on the same target are merged by the
+// kernel's `apply_gizmo_*` methods.
 
-#[derive(Debug)]
-pub(crate) struct TransformDef {
-    target_id: u32,
-    translate: [f32; 3],
-    rotation: [f32; 4],
-    scale: [f32; 3],
-}
-
-impl Default for TransformDef {
-    fn default() -> Self {
-        Self {
-            target_id: 0,
-            translate: [0.0; 3],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        }
+fn read_vec3(params: &Value, key: &str, default: [f32; 3]) -> [f32; 3] {
+    if let Some(arr) = params.get(key).and_then(|v| v.as_array()) {
+        let c = |i: usize| arr.get(i).and_then(|v| v.as_f64()).unwrap_or(default[i] as f64) as f32;
+        [c(0), c(1), c(2)]
+    } else {
+        default
     }
 }
 
-impl TransformDef {
-    const TYPE_NAME: &'static str = "transform";
+fn read_target_id(params: &Value) -> u32 {
+    params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32
+}
 
-    fn schema_json() -> Value {
+fn find_target<'a>(
+    ctx: &'a mut Context<'_>,
+    target_id: u32,
+    feature: &'static str,
+) -> Result<usize, FeatureError> {
+    let target = FeatureId::from_u32(target_id);
+    ctx.document.features.iter().position(|f| f.id == target)
+        .ok_or_else(|| FeatureError::InvalidParameter {
+            feature,
+            name: "target_id",
+            message: format!("target feature {} not found", target_id),
+        })
+}
+
+pub(crate) fn euler_xyz_to_quat(rx_deg: f32, ry_deg: f32, rz_deg: f32) -> [f32; 4] {
+    let (s1, c1) = (rx_deg.to_radians() * 0.5).sin_cos();
+    let (s2, c2) = (ry_deg.to_radians() * 0.5).sin_cos();
+    let (s3, c3) = (rz_deg.to_radians() * 0.5).sin_cos();
+    [
+        s1 * c2 * c3 + c1 * s2 * s3,
+        c1 * s2 * c3 - s1 * c2 * s3,
+        c1 * c2 * s3 + s1 * s2 * c3,
+        c1 * c2 * c3 - s1 * s2 * s3,
+    ]
+}
+
+pub(crate) fn quat_to_euler_xyz(qx: f32, qy: f32, qz: f32, qw: f32) -> [f32; 3] {
+    let m11 = 1.0 - 2.0 * (qy * qy + qz * qz);
+    let m12 = 2.0 * (qx * qy - qw * qz);
+    let m13 = 2.0 * (qx * qz + qw * qy);
+    let m23 = 2.0 * (qy * qz - qw * qx);
+    let m33 = 1.0 - 2.0 * (qx * qx + qy * qy);
+
+    let ry = m13.clamp(-1.0, 1.0).asin();
+    let (rx, rz) = if m13.abs() < 0.9999999 {
+        ((-m23).atan2(m33), (-m12).atan2(m11))
+    } else {
+        let m32 = 2.0 * (qy * qz + qw * qx);
+        let m22 = 1.0 - 2.0 * (qx * qx + qz * qz);
+        (m32.atan2(m22), 0.0)
+    };
+    [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
+}
+
+// ── Translate ──────────────────────────────────────────────────
+
+pub struct TranslateFeature;
+
+impl FeatureKind for TranslateFeature {
+    fn type_name(&self) -> &'static str { "translate" }
+    fn schema_json(&self) -> Value {
         serde_json::json!({
-            "type": Self::TYPE_NAME,
+            "type": "translate",
             "params": [
-                {"key": "translate", "name": "Translation", "type": "vec3", "required": false},
-                {"key": "rotation",  "name": "Rotation",    "type": "vec3", "required": false},
-                {"key": "scale",     "name": "Scale",       "type": "vec3", "required": false,
-                 "default": [1.0, 1.0, 1.0]},
+                {"key": "translate", "name": "Translation", "type": "vec3", "required": false}
             ]
         })
-    }
-
-    fn read_vec3(params: &Value, key: &str, default: [f32; 3]) -> [f32; 3] {
-        if let Some(arr) = params.get(key).and_then(|v| v.as_array()) {
-            let c = |i: usize| arr.get(i).and_then(|v| v.as_f64()).unwrap_or(default[i] as f64) as f32;
-            [c(0), c(1), c(2)]
-        } else {
-            default
-        }
-    }
-
-    fn euler_xyz_to_quat(rx_deg: f32, ry_deg: f32, rz_deg: f32) -> [f32; 4] {
-        let (s1, c1) = (rx_deg.to_radians() * 0.5).sin_cos();
-        let (s2, c2) = (ry_deg.to_radians() * 0.5).sin_cos();
-        let (s3, c3) = (rz_deg.to_radians() * 0.5).sin_cos();
-        [
-            s1 * c2 * c3 + c1 * s2 * s3,
-            c1 * s2 * c3 - s1 * c2 * s3,
-            c1 * c2 * s3 + s1 * s2 * c3,
-            c1 * c2 * c3 - s1 * s2 * s3,
-        ]
-    }
-
-    pub(crate) fn quat_to_euler_xyz(qx: f32, qy: f32, qz: f32, qw: f32) -> [f32; 3] {
-        let m11 = 1.0 - 2.0 * (qy * qy + qz * qz);
-        let m12 = 2.0 * (qx * qy - qw * qz);
-        let m13 = 2.0 * (qx * qz + qw * qy);
-        let m23 = 2.0 * (qy * qz - qw * qx);
-        let m33 = 1.0 - 2.0 * (qx * qx + qy * qy);
-
-        let ry = m13.clamp(-1.0, 1.0).asin();
-        let (rx, rz) = if m13.abs() < 0.9999999 {
-            ((-m23).atan2(m33), (-m12).atan2(m11))
-        } else {
-            let m32 = 2.0 * (qy * qz + qw * qx);
-            let m22 = 1.0 - 2.0 * (qx * qx + qz * qz);
-            (m32.atan2(m22), 0.0)
-        };
-        [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
-    }
-
-    fn from_params(params: &Value) -> Self {
-        let target_id = params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let f = |key: &str, default: f64| -> f32 {
-            params.get(key).and_then(|v| v.as_f64()).unwrap_or(default) as f32
-        };
-
-        let translate = if params.get("translate").and_then(|v| v.as_array()).is_some() {
-            Self::read_vec3(params, "translate", [0.0, 0.0, 0.0])
-        } else {
-            [f("translate_x", 0.0), f("translate_y", 0.0), f("translate_z", 0.0)]
-        };
-
-        let rotation = if params.get("rotation").and_then(|v| v.as_array()).is_some() {
-            let euler = Self::read_vec3(params, "rotation", [0.0, 0.0, 0.0]);
-            Self::euler_xyz_to_quat(euler[0], euler[1], euler[2])
-        } else {
-            [f("rotation_x", 0.0), f("rotation_y", 0.0), f("rotation_z", 0.0), f("rotation_w", 1.0)]
-        };
-
-        let scale = if params.get("scale").and_then(|v| v.as_array()).is_some() {
-            Self::read_vec3(params, "scale", [1.0, 1.0, 1.0])
-        } else {
-            [f("scale_x", 1.0), f("scale_y", 1.0), f("scale_z", 1.0)]
-        };
-
-        Self { target_id, translate, rotation, scale }
-    }
-}
-
-pub struct TransformFeature;
-
-impl FeatureKind for TransformFeature {
-    fn type_name(&self) -> &'static str {
-        TransformDef::TYPE_NAME
-    }
-    fn schema_json(&self) -> Value {
-        TransformDef::schema_json()
     }
     fn execute(
         &self,
@@ -1314,18 +1275,65 @@ impl FeatureKind for TransformFeature {
         _id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
-        let td = TransformDef::from_params(def);
-        let target = FeatureId::from_u32(td.target_id);
-        let pos = ctx.document.features.iter().position(|f| f.id == target);
-        let idx = pos.ok_or_else(|| FeatureError::InvalidParameter {
-            feature: "transform",
-            name: "target_id",
-            message: format!("target feature {} not found", td.target_id),
-        })?;
-        let t = &mut ctx.document.features[idx].transform;
-        t.translate = td.translate;
-        t.rotation = td.rotation;
-        t.scale = td.scale;
+        let idx = find_target(ctx, read_target_id(def), "translate")?;
+        ctx.document.features[idx].transform.translate =
+            read_vec3(def, "translate", [0.0, 0.0, 0.0]);
+        Ok(())
+    }
+}
+
+// ── Rotate ─────────────────────────────────────────────────────
+
+pub struct RotateFeature;
+
+impl FeatureKind for RotateFeature {
+    fn type_name(&self) -> &'static str { "rotate" }
+    fn schema_json(&self) -> Value {
+        serde_json::json!({
+            "type": "rotate",
+            "params": [
+                {"key": "rotation", "name": "Rotation", "type": "vec3", "required": false}
+            ]
+        })
+    }
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let euler = read_vec3(def, "rotation", [0.0, 0.0, 0.0]);
+        let idx = find_target(ctx, read_target_id(def), "rotate")?;
+        ctx.document.features[idx].transform.rotation =
+            euler_xyz_to_quat(euler[0], euler[1], euler[2]);
+        Ok(())
+    }
+}
+
+// ── Scale ──────────────────────────────────────────────────────
+
+pub struct ScaleFeature;
+
+impl FeatureKind for ScaleFeature {
+    fn type_name(&self) -> &'static str { "scale" }
+    fn schema_json(&self) -> Value {
+        serde_json::json!({
+            "type": "scale",
+            "params": [
+                {"key": "scale", "name": "Scale", "type": "vec3", "required": false,
+                 "default": [1.0, 1.0, 1.0]}
+            ]
+        })
+    }
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let idx = find_target(ctx, read_target_id(def), "scale")?;
+        ctx.document.features[idx].transform.scale =
+            read_vec3(def, "scale", [1.0, 1.0, 1.0]);
         Ok(())
     }
 }
@@ -2631,7 +2639,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 23);
+        assert_eq!(registry.len(), 25);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2699,12 +2707,14 @@ mod tests {
                 "mate_connector",
                 "mirror",
                 "revolve",
+                "rotate",
+                "scale",
                 "sketch",
                 "sphere",
                 "sweep",
                 "thread",
                 "torus",
-                "transform"
+                "translate",
             ]
         );
     }

@@ -43,7 +43,9 @@ const KIND_GLYPH: Record<string, string> = {
   linear_pattern: "⎡",
   circular_pattern: "↻",
   mirror: "◫",
-  transform: "⤡",
+  translate: "↔",
+  rotate: "⟳",
+  scale: "⤡",
 };
 
 const SKETCH_SUB_GLYPH: Record<string, string> = {

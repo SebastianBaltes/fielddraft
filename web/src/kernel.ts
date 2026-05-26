@@ -83,7 +83,9 @@ export type FeatureKindName =
   | "fillet_edge"
   | "sweep"
   | "imported_mesh"
-  | "transform"
+  | "translate"
+  | "rotate"
+  | "scale"
   | "boolean"
   | "unknown";
 
@@ -955,14 +957,19 @@ export class Kernel {
     return (this.inner as any).setFeatureScale(id, sx, sy, sz);
   }
 
-  applyGizmoTransform(
-    id: number,
-    tx: number, ty: number, tz: number,
-    rx: number, ry: number, rz: number, rw: number,
-    sx: number, sy: number, sz: number,
-  ): boolean {
+  applyGizmoTranslate(id: number, tx: number, ty: number, tz: number): boolean {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).applyGizmoTransform(id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz);
+    return (this.inner as any).applyGizmoTranslate(id, tx, ty, tz);
+  }
+
+  applyGizmoRotate(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.inner as any).applyGizmoRotate(id, rx, ry, rz, rw);
+  }
+
+  applyGizmoScale(id: number, sx: number, sy: number, sz: number): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.inner as any).applyGizmoScale(id, sx, sy, sz);
   }
 
   nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {

@@ -38,7 +38,7 @@ use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
 use raycast::{raycast, RaycastParams};
-use features::TransformDef;
+use features::quat_to_euler_xyz;
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
 
@@ -843,7 +843,9 @@ impl Kernel {
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
             "boolean" => "boolean",
-            "transform" => "transform",
+            "translate" => "translate",
+            "rotate" => "rotate",
+            "scale" => "scale",
             _ => "unknown",
         }
     }
@@ -877,7 +879,9 @@ impl Kernel {
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
             "boolean" => "Boolean",
-            "transform" => "Transform",
+            "translate" => "Translate",
+            "rotate" => "Rotate",
+            "scale" => "Scale",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -1135,7 +1139,7 @@ impl Kernel {
                         Some(out)
                     })
                     .unwrap_or([0.0, 0.0, 0.0]);
-                let name = if call.type_name == "transform" {
+                let name = if matches!(call.type_name.as_str(), "translate" | "rotate" | "scale") {
                     let target_id = call.params.get("target_id")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as u32;
@@ -1143,11 +1147,17 @@ impl Kernel {
                         .find(|f| f.id.as_u32_if_flat() == Some(target_id))
                         .map(|f| f.name.as_str())
                         .unwrap_or("?");
+                    let label = match call.type_name.as_str() {
+                        "translate" => "Translate",
+                        "rotate" => "Rotate",
+                        "scale" => "Scale",
+                        _ => unreachable!(),
+                    };
                     if let Some(user_name) = call.params.get("name").and_then(|v| v.as_str()) {
                         if !user_name.is_empty() { user_name.to_string() }
-                        else { format!("Transform {target_name}") }
+                        else { format!("{label} {target_name}") }
                     } else {
-                        format!("Transform {target_name}")
+                        format!("{label} {target_name}")
                     }
                 } else {
                     Self::synth_name_for_call(call)
@@ -2251,34 +2261,19 @@ impl Kernel {
         true
     }
 
-    /// Create or merge a `transform` FeatureCall driven by the gizmo.
-    /// Stores absolute world-space values. If the last FeatureCall is
-    /// already a `transform` targeting the same feature, its params
-    /// are updated in-place (merge); otherwise a new one is appended.
-    /// Returns `false` if the target feature doesn't exist.
-    #[wasm_bindgen(js_name = applyGizmoTransform)]
-    pub fn apply_gizmo_transform(
+    fn apply_gizmo_feature(
         &mut self,
+        type_name: &str,
         target_id: u32,
-        tx: f32, ty: f32, tz: f32,
-        rx: f32, ry: f32, rz: f32, rw: f32,
-        sx: f32, sy: f32, sz: f32,
+        params: serde_json::Value,
     ) -> bool {
         let target = FeatureId::from_u32(target_id);
         if !self.document.features.iter().any(|f| f.id == target) {
             return false;
         }
 
-        let euler = TransformDef::quat_to_euler_xyz(rx, ry, rz, rw);
-        let params = serde_json::json!({
-            "target_id": target_id,
-            "translate": [tx, ty, tz],
-            "rotation": [euler[0], euler[1], euler[2]],
-            "scale": [sx, sy, sz],
-        });
-
         let should_merge = self.document.feature_calls.last().map_or(false, |c| {
-            c.type_name == "transform"
+            c.type_name == type_name
                 && !c.suppressed
                 && c.params.get("target_id")
                     .and_then(|v| v.as_u64())
@@ -2294,7 +2289,7 @@ impl Kernel {
             self.document.feature_calls.push(
                 fielddraft_protocol::FeatureCall {
                     id,
-                    type_name: "transform".to_string(),
+                    type_name: type_name.to_string(),
                     params,
                     suppressed: false,
                 },
@@ -2304,6 +2299,46 @@ impl Kernel {
         let _ = self.bootstrap_features_from_calls();
         self.rebuild_packed();
         true
+    }
+
+    #[wasm_bindgen(js_name = applyGizmoTranslate)]
+    pub fn apply_gizmo_translate(
+        &mut self,
+        target_id: u32,
+        tx: f32, ty: f32, tz: f32,
+    ) -> bool {
+        let params = serde_json::json!({
+            "target_id": target_id,
+            "translate": [tx, ty, tz],
+        });
+        self.apply_gizmo_feature("translate", target_id, params)
+    }
+
+    #[wasm_bindgen(js_name = applyGizmoRotate)]
+    pub fn apply_gizmo_rotate(
+        &mut self,
+        target_id: u32,
+        rx: f32, ry: f32, rz: f32, rw: f32,
+    ) -> bool {
+        let euler = quat_to_euler_xyz(rx, ry, rz, rw);
+        let params = serde_json::json!({
+            "target_id": target_id,
+            "rotation": [euler[0], euler[1], euler[2]],
+        });
+        self.apply_gizmo_feature("rotate", target_id, params)
+    }
+
+    #[wasm_bindgen(js_name = applyGizmoScale)]
+    pub fn apply_gizmo_scale(
+        &mut self,
+        target_id: u32,
+        sx: f32, sy: f32, sz: f32,
+    ) -> bool {
+        let params = serde_json::json!({
+            "target_id": target_id,
+            "scale": [sx, sy, sz],
+        });
+        self.apply_gizmo_feature("scale", target_id, params)
     }
 
     /// Add `(dx, dy, dz)` to a feature's translate. Convenience for

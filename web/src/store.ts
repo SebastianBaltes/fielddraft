@@ -2013,13 +2013,20 @@ export class KernelStore {
     return true;
   }
 
-  applyGizmoTransform(
-    id: number,
-    tx: number, ty: number, tz: number,
-    rx: number, ry: number, rz: number, rw: number,
-    sx: number, sy: number, sz: number,
-  ): boolean {
-    if (!this.kernel.applyGizmoTransform(id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz)) return false;
+  applyGizmoTranslate(id: number, tx: number, ty: number, tz: number): boolean {
+    if (!this.kernel.applyGizmoTranslate(id, tx, ty, tz)) return false;
+    this.commit();
+    return true;
+  }
+
+  applyGizmoRotate(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+    if (!this.kernel.applyGizmoRotate(id, rx, ry, rz, rw)) return false;
+    this.commit();
+    return true;
+  }
+
+  applyGizmoScale(id: number, sx: number, sy: number, sz: number): boolean {
+    if (!this.kernel.applyGizmoScale(id, sx, sy, sz)) return false;
     this.commit();
     return true;
   }
@@ -2186,7 +2193,7 @@ export class KernelStore {
 
   private static NON_SPINE_KINDS = new Set([
     "sketch", "linear_pattern", "circular_pattern", "mirror",
-    "mate_connector", "transform", "hole", "fillet_edge",
+    "mate_connector", "translate", "rotate", "scale", "hole", "fillet_edge",
   ]);
 
   private latestSpineFeature(): FeatureSummary | null {
