@@ -16,7 +16,6 @@ import {
   If,
   Loop,
   abs,
-  cameraProjectionMatrix,
   float,
   fract,
   int,
@@ -35,7 +34,20 @@ import { pbrShade } from "./pbrShading";
 
 import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
+import {
+  createMaterialBuffers,
+  createOpcodeBuffers,
+  packOpcodes,
+  updateVolumeData,
+  rebuildVolumeTextures,
+  createVolumeTexture,
+  WIREFRAME_GRID_SIZE,
+  WIREFRAME_GRID_THRESHOLD,
+  FRESNEL_EDGE_MIN,
+  FRESNEL_EDGE_MAX,
+  DISPLACE_FREQ_Y,
+  DISPLACE_FREQ_Z,
+} from "./sdfPipelineCommon";
 
 const MAX_BODIES = 8;
 const GLOBAL_MAX_OPCODES = 4096;
@@ -83,46 +95,8 @@ export interface VmPipelineState {
 // ── Init ────────────────────────────────────────────────────────────
 
 export function initVmPipeline(): VmPipelineState {
-  const opcodeData = new Float32Array(GLOBAL_MAX_OPCODES);
-  const opcodeBuf = uniformArray(opcodeData, "float");
-
-  const offsetData = new Float32Array(MAX_BODIES * 2);
-  const offsetBuf = uniformArray(offsetData, "float");
-
-  const colorData = new Float32Array(MAX_BODIES * 3);
-  for (let i = 0; i < MAX_BODIES; i++) {
-    const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
-    colorData[i * 3] = r;
-    colorData[i * 3 + 1] = g;
-    colorData[i * 3 + 2] = b;
-  }
-  const colorBuf = uniformArray(colorData, "float");
-
-  const roughnessData = new Float32Array(MAX_BODIES);
-  roughnessData.fill(0.35);
-  const roughnessBuf = uniformArray(roughnessData, "float");
-
-  const metalnessData = new Float32Array(MAX_BODIES);
-  const metalnessBuf = uniformArray(metalnessData, "float");
-
-  const emissiveData = new Float32Array(MAX_BODIES * 3);
-  const emissiveBuf = uniformArray(emissiveData, "float");
-
-  const opacityData = new Float32Array(MAX_BODIES);
-  opacityData.fill(1);
-  const opacityBuf = uniformArray(opacityData, "float");
-
-  const wireframeData = new Float32Array(MAX_BODIES);
-  const wireframeBuf = uniformArray(wireframeData, "float");
-
-  const displaceDepthData = new Float32Array(MAX_BODIES);
-  const displaceDepthBuf = uniformArray(displaceDepthData, "float");
-
-  const displaceFreqData = new Float32Array(MAX_BODIES);
-  const displaceFreqBuf = uniformArray(displaceFreqData, "float");
-
-  const volumeBaseData = new Float32Array(MAX_BODIES);
-  const volumeBaseBuf = uniformArray(volumeBaseData, "float");
+  const matBufs = createMaterialBuffers(MAX_BODIES);
+  const opBufs = createOpcodeBuffers(GLOBAL_MAX_OPCODES, MAX_BODIES);
 
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2);
@@ -134,33 +108,12 @@ export function initVmPipeline(): VmPipelineState {
     camera,
     material: null,
     mesh: null,
-    opcodeBuf,
-    opcodeData,
-    offsetBuf,
-    offsetData,
-    colorBuf,
-    colorData,
-    roughnessData,
-    roughnessBuf,
-    metalnessData,
-    metalnessBuf,
-    emissiveData,
-    emissiveBuf,
-    opacityData,
-    opacityBuf,
-    wireframeData,
-    wireframeBuf,
-    displaceDepthData,
-    displaceDepthBuf,
-    displaceFreqData,
-    displaceFreqBuf,
+    ...opBufs,
+    ...matBufs,
     bodyCountU: uniform(0),
     camPosU: uniform(new THREE.Vector3()),
     invProjU: uniform(new THREE.Matrix4()),
     invViewU: uniform(new THREE.Matrix4()),
-    volumeTextures: [],
-    volumeBaseData,
-    volumeBaseBuf,
     viewMatU: uniform(new THREE.Matrix4()),
   };
 }
@@ -175,35 +128,8 @@ export function updateVmData(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
-  state.opcodeData.fill(0);
-  state.offsetData.fill(0);
-
-  let cursor = 0;
-  for (const { bodyIndex, opcodes } of bodies) {
-    if (bodyIndex >= MAX_BODIES) continue;
-    const len = Math.min(opcodes.length, GLOBAL_MAX_OPCODES - cursor);
-    if (len <= 0) continue;
-    state.opcodeData.set(opcodes.subarray(0, len), cursor);
-    state.offsetData[bodyIndex * 2] = cursor;
-    state.offsetData[bodyIndex * 2 + 1] = len;
-    cursor += len;
-  }
-
-  state.volumeBaseData.fill(0);
-  let volIdx = 0;
-  for (const { bodyIndex, volumes } of bodies) {
-    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
-    state.volumeBaseData[bodyIndex] = volIdx;
-    for (let v = 0; v < volumes.length; v++) {
-      const tex = state.volumeTextures[volIdx];
-      if (tex) {
-        (tex.image as any).data.set(volumes[v].data);
-        tex.needsUpdate = true;
-      }
-      volIdx++;
-    }
-  }
-
+  packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  updateVolumeData(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
   state.bodyCountU.value = bodies.length;
 }
 
@@ -217,46 +143,9 @@ export function rebuildVmBodies(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
-  state.opcodeData.fill(0);
-  state.offsetData.fill(0);
-
-  let cursor = 0;
-  for (const { bodyIndex, opcodes } of bodies) {
-    if (bodyIndex >= MAX_BODIES) continue;
-    const len = Math.min(opcodes.length, GLOBAL_MAX_OPCODES - cursor);
-    if (len <= 0) continue;
-    state.opcodeData.set(opcodes.subarray(0, len), cursor);
-    state.offsetData[bodyIndex * 2] = cursor;
-    state.offsetData[bodyIndex * 2 + 1] = len;
-    cursor += len;
-  }
-
-  // Volume textures
-  for (const tex of state.volumeTextures) tex.dispose();
-  state.volumeTextures = [];
-  state.volumeBaseData.fill(0);
-  let volIdx = 0;
-  for (const { bodyIndex, volumes } of bodies) {
-    if (bodyIndex >= MAX_BODIES || !volumes || volumes.length === 0) continue;
-    state.volumeBaseData[bodyIndex] = volIdx;
-    for (const vol of volumes) {
-      const tex = new THREE.Data3DTexture(
-        new Float32Array(vol.data),
-        vol.dims[0], vol.dims[1], vol.dims[2],
-      );
-      tex.format = THREE.RedFormat;
-      tex.type = THREE.FloatType;
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.wrapR = THREE.ClampToEdgeWrapping;
-      tex.needsUpdate = true;
-      state.volumeTextures.push(tex);
-      volIdx++;
-    }
-  }
-
+  packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  const { textures } = rebuildVolumeTextures(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+  state.volumeTextures = textures;
   state.bodyCountU.value = bodies.length;
 
   if (state.material) state.material.dispose();
@@ -283,8 +172,8 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const depth = state.displaceDepthBuf.element(args.bodyIdx);
     const freq = state.displaceFreqBuf.element(args.bodyIdx);
     const disp = args.p.x.mul(freq).sin()
-      .mul(args.p.y.mul(freq).mul(1.3).sin())
-      .mul(args.p.z.mul(freq).mul(0.7).sin());
+      .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
+      .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
     return d.sub(depth.mul(disp));
   };
 
@@ -374,13 +263,13 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     If(wf.greaterThan(float(0.5)), () => {
       const viewDirWorld = rd.negate();
       const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
-      const edgeFactor = smoothstep(float(0.65), float(0.85), fresnel);
-      const gridSize = float(10);
+      const edgeFactor = smoothstep(float(FRESNEL_EDGE_MIN), float(FRESNEL_EDGE_MAX), fresnel);
+      const gridSize = float(WIREFRAME_GRID_SIZE);
       const gx = min(fract(hitPos.x.div(gridSize)), float(1).sub(fract(hitPos.x.div(gridSize))));
       const gy = min(fract(hitPos.y.div(gridSize)), float(1).sub(fract(hitPos.y.div(gridSize))));
       const gz = min(fract(hitPos.z.div(gridSize)), float(1).sub(fract(hitPos.z.div(gridSize))));
       const minGrid = min(gx, min(gy, gz));
-      const gridAlpha = float(1).sub(smoothstep(float(0), float(0.03), minGrid));
+      const gridAlpha = float(1).sub(smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid));
       alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
     });
 

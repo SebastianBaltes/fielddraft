@@ -1,6 +1,4 @@
 import type { Kernel, FeatureSummary } from "./kernel";
-import type { DeferredPipelineState } from "./sdfDeferredRenderer";
-import type { VmPipelineState } from "./sdfVmRenderer";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS, DEFAULT_BASE_COLOR } from "./pbrShading";
 
@@ -96,78 +94,51 @@ export function resolveMaterials(
   return result;
 }
 
-export function applyMaterialsToDeferred(
-  pipeline: DeferredPipelineState,
-  materials: Map<number, MaterialProps>,
-  bodyCount: number,
-): void {
-  for (let i = 0; i < bodyCount; i++) {
-    const mat = materials.get(i);
-    if (mat) {
-      pipeline.colorData[i * 3] = mat.color[0];
-      pipeline.colorData[i * 3 + 1] = mat.color[1];
-      pipeline.colorData[i * 3 + 2] = mat.color[2];
-      pipeline.roughnessData[i] = mat.roughness;
-      pipeline.metalnessData[i] = mat.metalness;
-      pipeline.emissiveData[i * 3] = mat.emissive[0];
-      pipeline.emissiveData[i * 3 + 1] = mat.emissive[1];
-      pipeline.emissiveData[i * 3 + 2] = mat.emissive[2];
-      pipeline.opacityData[i] = mat.opacity;
-      pipeline.wireframeData[i] = mat.wireframe ? 1 : 0;
-      pipeline.displaceDepthData[i] = mat.displaceDepth;
-      pipeline.displaceFreqData[i] = mat.displaceFreq;
-    } else {
-      const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
-      pipeline.colorData[i * 3] = r;
-      pipeline.colorData[i * 3 + 1] = g;
-      pipeline.colorData[i * 3 + 2] = b;
-      pipeline.roughnessData[i] = DEFAULTS.roughness;
-      pipeline.metalnessData[i] = DEFAULTS.metalness;
-      pipeline.emissiveData[i * 3] = 0;
-      pipeline.emissiveData[i * 3 + 1] = 0;
-      pipeline.emissiveData[i * 3 + 2] = 0;
-      pipeline.opacityData[i] = 1;
-      pipeline.wireframeData[i] = 0;
-      pipeline.displaceDepthData[i] = 0;
-      pipeline.displaceFreqData[i] = 0;
-    }
-  }
+export interface MaterialBufferTarget {
+  colorData: Float32Array;
+  roughnessData: Float32Array;
+  metalnessData: Float32Array;
+  emissiveData: Float32Array;
+  opacityData: Float32Array;
+  wireframeData: Float32Array;
+  displaceDepthData: Float32Array;
+  displaceFreqData: Float32Array;
 }
 
-export function applyMaterialsToVm(
-  state: VmPipelineState,
+export function applyMaterials(
+  target: MaterialBufferTarget,
   materials: Map<number, MaterialProps>,
   bodyCount: number,
 ): void {
   for (let i = 0; i < bodyCount; i++) {
     const mat = materials.get(i);
     if (mat) {
-      state.colorData[i * 3] = mat.color[0];
-      state.colorData[i * 3 + 1] = mat.color[1];
-      state.colorData[i * 3 + 2] = mat.color[2];
-      state.roughnessData[i] = mat.roughness;
-      state.metalnessData[i] = mat.metalness;
-      state.emissiveData[i * 3] = mat.emissive[0];
-      state.emissiveData[i * 3 + 1] = mat.emissive[1];
-      state.emissiveData[i * 3 + 2] = mat.emissive[2];
-      state.opacityData[i] = mat.opacity;
-      state.wireframeData[i] = mat.wireframe ? 1 : 0;
-      state.displaceDepthData[i] = mat.displaceDepth;
-      state.displaceFreqData[i] = mat.displaceFreq;
+      target.colorData[i * 3] = mat.color[0];
+      target.colorData[i * 3 + 1] = mat.color[1];
+      target.colorData[i * 3 + 2] = mat.color[2];
+      target.roughnessData[i] = mat.roughness;
+      target.metalnessData[i] = mat.metalness;
+      target.emissiveData[i * 3] = mat.emissive[0];
+      target.emissiveData[i * 3 + 1] = mat.emissive[1];
+      target.emissiveData[i * 3 + 2] = mat.emissive[2];
+      target.opacityData[i] = mat.opacity;
+      target.wireframeData[i] = mat.wireframe ? 1 : 0;
+      target.displaceDepthData[i] = mat.displaceDepth;
+      target.displaceFreqData[i] = mat.displaceFreq;
     } else {
       const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
-      state.colorData[i * 3] = r;
-      state.colorData[i * 3 + 1] = g;
-      state.colorData[i * 3 + 2] = b;
-      state.roughnessData[i] = DEFAULTS.roughness;
-      state.metalnessData[i] = DEFAULTS.metalness;
-      state.emissiveData[i * 3] = 0;
-      state.emissiveData[i * 3 + 1] = 0;
-      state.emissiveData[i * 3 + 2] = 0;
-      state.opacityData[i] = 1;
-      state.wireframeData[i] = 0;
-      state.displaceDepthData[i] = 0;
-      state.displaceFreqData[i] = 0;
+      target.colorData[i * 3] = r;
+      target.colorData[i * 3 + 1] = g;
+      target.colorData[i * 3 + 2] = b;
+      target.roughnessData[i] = DEFAULTS.roughness;
+      target.metalnessData[i] = DEFAULTS.metalness;
+      target.emissiveData[i * 3] = 0;
+      target.emissiveData[i * 3 + 1] = 0;
+      target.emissiveData[i * 3 + 2] = 0;
+      target.opacityData[i] = 1;
+      target.wireframeData[i] = 0;
+      target.displaceDepthData[i] = 0;
+      target.displaceFreqData[i] = 0;
     }
   }
 }

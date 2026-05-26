@@ -43,7 +43,7 @@ import {
   disposeDeferredPipeline,
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
-import { resolveMaterials, applyMaterialsToDeferred, applyMaterialsToVm } from "./materialBridge";
+import { resolveMaterials, applyMaterials } from "./materialBridge";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -242,7 +242,7 @@ function SdfVmOverlay() {
     }
 
     const vmMaterials = resolveMaterials(k, store.getState().features);
-    applyMaterialsToVm(pipeline, vmMaterials, count);
+    applyMaterials(pipeline, vmMaterials, count);
 
     if (!readyRef.current || compilingRef.current) return;
 
@@ -417,7 +417,7 @@ function SdfDeferredOverlay() {
 
     const storeState = store.getState();
     const materials = resolveMaterials(k, storeState.features);
-    applyMaterialsToDeferred(pipeline, materials, count);
+    applyMaterials(pipeline, materials, count);
 
     const selection = storeState.selection;
     const selectedBodies = new Set<number>();
