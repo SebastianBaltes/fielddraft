@@ -622,6 +622,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         }
     }
 

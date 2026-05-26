@@ -1352,6 +1352,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         }];
         let csg = CsgNode::from_features(&features);
         // Inside at the origin.
@@ -1386,6 +1387,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         }
     }
 
@@ -1432,6 +1434,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
             },
         ];
         let tree = CsgNode::from_features(&features);
@@ -1496,6 +1499,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         }
     }
 
@@ -1513,6 +1517,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         }
     }
 
@@ -1804,6 +1809,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
             },
         ];
         let bb = CsgNode::from_features(&features).aabb();

@@ -403,6 +403,7 @@ impl FeatureKind for BoxPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -478,6 +479,7 @@ impl FeatureKind for SpherePrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -557,6 +559,7 @@ impl FeatureKind for CylinderPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -635,6 +638,7 @@ impl FeatureKind for ConePrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -715,6 +719,7 @@ impl FeatureKind for ThreadFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -798,6 +803,7 @@ impl FeatureKind for TorusPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -878,6 +884,7 @@ impl FeatureKind for CapsulePrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -956,6 +963,7 @@ impl FeatureKind for EllipsoidPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -1035,6 +1043,7 @@ impl FeatureKind for HexPrismPrimitive {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -1162,6 +1171,7 @@ impl FeatureKind for SweepFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -1539,6 +1549,7 @@ impl FeatureKind for ImportedMeshFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -1614,6 +1625,17 @@ impl FeatureKind for GyroidFeature {
         let name = optional_display_name(def, || format!("Gyroid {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
+
+        let target_ids: Vec<_> = d
+            .targets
+            .queries()
+            .iter()
+            .filter_map(|q| {
+                let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
+                inner.parse::<FeatureId>().ok()
+            })
+            .collect();
+
         ctx.document.features.push(SpineFeature {
             id: id.child("0"),
             name,
@@ -1634,6 +1656,7 @@ impl FeatureKind for GyroidFeature {
             displace_depth: d.displace_depth,
             displace_freq: d.displace_freq,
             shell_thickness: d.shell_thickness,
+            target_ids,
         });
         Ok(())
     }
@@ -1723,6 +1746,7 @@ impl FeatureKind for HoleFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -1963,6 +1987,7 @@ impl FeatureKind for ExtrudeFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -2065,6 +2090,7 @@ impl FeatureKind for RevolveFeature {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         Ok(())
     }
@@ -3342,6 +3368,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
             });
             let _ = kind;
         }

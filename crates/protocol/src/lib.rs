@@ -107,6 +107,15 @@ impl FeatureId {
         }
         self.local.parse::<u32>().ok()
     }
+
+    /// Walk up the parent chain and return the root-most ancestor.
+    pub fn root_ancestor(&self) -> &FeatureId {
+        let mut cur = self;
+        while let Some(p) = &cur.parent {
+            cur = p;
+        }
+        cur
+    }
 }
 
 impl fmt::Display for FeatureId {
@@ -668,6 +677,12 @@ pub struct Feature {
     /// wall of this thickness.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub shell_thickness: f32,
+    /// Explicit body-targeting: when non-empty, the partitioner
+    /// attaches this feature only to bodies that contain one of
+    /// these feature IDs, instead of using AABB overlap.
+    /// Used by Gyroid (infinite AABB) and future lattice prims.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_ids: Vec<FeatureId>,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -1178,6 +1193,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         doc.features.push(Feature {
             id: id2.clone(),
@@ -1195,6 +1211,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
 
         doc.sync_feature_calls();
@@ -1230,6 +1247,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         doc.feature_calls.push(FeatureCall::new(
             "sketch",
@@ -1271,6 +1289,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         };
         let call = FeatureCall::from_spine_feature(&feature);
         assert_eq!(call.type_name, "box");
@@ -1307,6 +1326,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         };
         let call = FeatureCall::from_spine_feature(&sphere);
         assert_eq!(call.type_name, "sphere");
@@ -1330,6 +1350,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         };
         let call = FeatureCall::from_spine_feature(&cylinder);
         assert_eq!(call.type_name, "cylinder");
@@ -1356,6 +1377,7 @@ mod tests {
             displace_depth: 2.0,
             displace_freq: 0.5,
             shell_thickness: 1.0,
+            target_ids: vec![],
         };
         let call = FeatureCall::from_spine_feature(&feature);
         assert!((call.params["blend_radius"].as_f64().unwrap() - 3.5).abs() < 1e-5);
@@ -1393,6 +1415,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         doc.sync_feature_calls();
 
@@ -1430,6 +1453,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         doc.sync_feature_calls();
 
@@ -1501,6 +1525,7 @@ mod tests {
             displace_depth: 0.0,
             displace_freq: 0.0,
             shell_thickness: 0.0,
+            target_ids: vec![],
         });
         doc.sync_feature_calls();
 
