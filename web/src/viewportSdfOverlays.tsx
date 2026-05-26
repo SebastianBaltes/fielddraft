@@ -27,6 +27,91 @@ import { resolveMaterials, applyMaterials } from "./materialBridge";
 
 export const OVERLAY_LAYER = 1;
 
+type BodyVolumes = { data: Float32Array; dims: [number, number, number] }[];
+
+interface KernelLike {
+  bodyCount(): number;
+  bodyId(i: number): number;
+  bodyVersion(i: number): number;
+  bodySdfOpcodesView(i: number): Float32Array;
+  bodyVolumeCount(i: number): number;
+  bodyVolumeDataView(i: number, v: number): Float32Array;
+  bodyVolumeDims(i: number, v: number): [number, number, number];
+}
+
+function collectBodyVolumes(k: KernelLike, bodyIndex: number): BodyVolumes | undefined {
+  const volCount = k.bodyVolumeCount(bodyIndex);
+  if (volCount === 0) return undefined;
+  const volumes: BodyVolumes = [];
+  for (let v = 0; v < volCount; v++) {
+    volumes.push({ data: k.bodyVolumeDataView(bodyIndex, v), dims: k.bodyVolumeDims(bodyIndex, v) });
+  }
+  return volumes;
+}
+
+function computeFingerprints(k: KernelLike, count: number): { structFp: string; dataFp: string } {
+  const structParts: (string | number)[] = [count];
+  const dataParts: number[] = [];
+  for (let i = 0; i < count; i++) {
+    structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+    dataParts.push(k.bodyVersion(i));
+  }
+  return { structFp: structParts.join(","), dataFp: dataParts.join(",") };
+}
+
+function showCompilationStatus(text: string): void {
+  const overlay = document.getElementById("fd-shader-compiling");
+  const label = document.getElementById("fd-shader-compiling-label");
+  if (overlay) overlay.style.display = "flex";
+  if (label) label.textContent = text;
+}
+
+function hideCompilationOverlay(): void {
+  const overlay = document.getElementById("fd-shader-compiling");
+  if (overlay) overlay.style.display = "none";
+}
+
+function showGpuError(err: unknown): void {
+  const overlay = document.getElementById("fd-shader-compiling");
+  const label = document.getElementById("fd-shader-compiling-label");
+  const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
+  if (spinnerEl) spinnerEl.style.display = "none";
+  if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
+  if (overlay) {
+    overlay.style.display = "flex";
+    overlay.style.opacity = "1";
+    overlay.style.color = "var(--color-error, #c00)";
+  }
+}
+
+function renderOverlayLayer(
+  wgpuRenderer: THREE.WebGPURenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  renderSdf: () => void,
+): void {
+  wgpuRenderer.render(scene, camera);
+  const prevAutoClear = (wgpuRenderer as any).autoClear;
+  (wgpuRenderer as any).autoClear = false;
+  renderSdf();
+
+  const savedBg = scene.background;
+  scene.background = null;
+  const savedMask = camera.layers.mask;
+  camera.layers.set(OVERLAY_LAYER);
+  wgpuRenderer.clearDepth();
+  wgpuRenderer.render(scene, camera);
+  camera.layers.mask = savedMask;
+  scene.background = savedBg;
+
+  (wgpuRenderer as any).autoClear = prevAutoClear;
+}
+
+function copyOpcodes(k: KernelLike, bodyIndex: number): Float32Array {
+  const view = k.bodySdfOpcodesView(bodyIndex);
+  return view.length > 0 ? view.slice() : new Float32Array(0);
+}
+
 export function SdfVmOverlay() {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
@@ -44,11 +129,7 @@ export function SdfVmOverlay() {
     dataFpRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
-
-    const overlay = document.getElementById("fd-shader-compiling");
-    const label = document.getElementById("fd-shader-compiling-label");
-    if (overlay) overlay.style.display = "flex";
-    if (label) label.textContent = "Initializing…";
+    showCompilationStatus("Initializing…");
 
     return () => {
       if (pipelineRef.current) {
@@ -64,77 +145,41 @@ export function SdfVmOverlay() {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const structParts: (string | number)[] = [count];
-    const dataParts: number[] = [];
-    for (let i = 0; i < count; i++) {
-      structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
-      dataParts.push(k.bodyVersion(i));
-    }
-    const structFp = structParts.join(",");
-    const dataFp = dataParts.join(",");
+    const { structFp, dataFp } = computeFingerprints(k, count);
     const needsCompile = structFp !== structFpRef.current;
     const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
 
     if (needsCompile && !compilingRef.current) {
-      const overlay = document.getElementById("fd-shader-compiling");
-      const label = document.getElementById("fd-shader-compiling-label");
-      if (overlay) overlay.style.display = "flex";
-      if (label) label.textContent = "Building SDF…";
+      showCompilationStatus("Building SDF…");
 
       const bodies = [];
       for (let i = 0; i < count; i++) {
-        const opcodesView = k.bodySdfOpcodesView(i);
-        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
-        const volCount = k.bodyVolumeCount(i);
-        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
-        if (volCount > 0) {
-          volumes = [];
-          for (let v = 0; v < volCount; v++) {
-            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
-          }
-        }
-        bodies.push({ bodyIndex: i, opcodes, volumes });
+        bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
       }
       rebuildVmBodies(pipeline, bodies);
       structFpRef.current = structFp;
       dataFpRef.current = dataFp;
 
-      if (label) label.textContent = "Compiling shader…";
+      showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileVmPipeline(pipeline, wgpu, camera)
         .then(() => {
           compilingRef.current = false;
           readyRef.current = true;
-          if (overlay) overlay.style.display = "none";
+          hideCompilationOverlay();
           invalidate();
         })
         .catch((err) => {
           compilingRef.current = false;
-          const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
-          if (spinnerEl) spinnerEl.style.display = "none";
-          if (label) label.textContent = `GPU error: ${err.message}`;
-          if (overlay) {
-            overlay.style.opacity = "1";
-            overlay.style.color = "var(--color-error, #c00)";
-          }
+          showGpuError(err);
         });
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
       const bodies = [];
       for (let i = 0; i < count; i++) {
-        const opcodesView = k.bodySdfOpcodesView(i);
-        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
-        const volCount = k.bodyVolumeCount(i);
-        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
-        if (volCount > 0) {
-          volumes = [];
-          for (let v = 0; v < volCount; v++) {
-            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
-          }
-        }
-        bodies.push({ bodyIndex: i, opcodes, volumes });
+        bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
       }
       updateVmData(pipeline, bodies);
       dataFpRef.current = dataFp;
@@ -147,33 +192,12 @@ export function SdfVmOverlay() {
 
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
     try {
-      wgpuRenderer.render(scene, camera);
-      const prevAutoClear = (wgpuRenderer as any).autoClear;
-      (wgpuRenderer as any).autoClear = false;
-      renderVmFrame(pipeline, wgpuRenderer, camera);
-
-      const savedBg = scene.background;
-      scene.background = null;
-      const savedMask = camera.layers.mask;
-      camera.layers.set(OVERLAY_LAYER);
-      wgpuRenderer.clearDepth();
-      wgpuRenderer.render(scene, camera);
-      camera.layers.mask = savedMask;
-      scene.background = savedBg;
-
-      (wgpuRenderer as any).autoClear = prevAutoClear;
+      renderOverlayLayer(wgpuRenderer, scene, camera, () =>
+        renderVmFrame(pipeline, wgpuRenderer, camera),
+      );
     } catch (err) {
       readyRef.current = false;
-      const overlay = document.getElementById("fd-shader-compiling");
-      const label = document.getElementById("fd-shader-compiling-label");
-      const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
-      if (spinnerEl) spinnerEl.style.display = "none";
-      if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
-      if (overlay) {
-        overlay.style.display = "flex";
-        overlay.style.opacity = "1";
-        overlay.style.color = "var(--color-error, #c00)";
-      }
+      showGpuError(err);
     }
 
     invalidate();
@@ -200,11 +224,7 @@ export function SdfDeferredOverlay() {
     dataFpRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
-
-    const overlay = document.getElementById("fd-shader-compiling");
-    const label = document.getElementById("fd-shader-compiling-label");
-    if (overlay) overlay.style.display = "flex";
-    if (label) label.textContent = "Initializing…";
+    showCompilationStatus("Initializing…");
 
     return () => {
       if (pipelineRef.current) {
@@ -228,89 +248,50 @@ export function SdfDeferredOverlay() {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const structParts: (string | number)[] = [count];
-    const dataParts: number[] = [];
-    for (let i = 0; i < count; i++) {
-      structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
-      dataParts.push(k.bodyVersion(i));
-    }
-    const structFp = structParts.join(",");
-    const dataFp = dataParts.join(",");
+    const { structFp, dataFp } = computeFingerprints(k, count);
     const needsCompile = structFp !== structFpRef.current;
     const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
 
-    if (needsCompile && !compilingRef.current) {
-      const overlay = document.getElementById("fd-shader-compiling");
-      const label = document.getElementById("fd-shader-compiling-label");
-
-      if (overlay) overlay.style.display = "flex";
-      if (label) label.textContent = "Building SDF…";
-
+    const collectDeferredBodies = () => {
       const bodies = [];
       for (let i = 0; i < count; i++) {
-        const hybridInfo = k.bodyHybridInfo(i);
-        const opcodesView = k.bodySdfOpcodesView(i);
-        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
-        const aabb = k.bodySdfAabb(i);
-
-        const volCount = k.bodyVolumeCount(i);
-        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
-        if (volCount > 0) {
-          volumes = [];
-          for (let v = 0; v < volCount; v++) {
-            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
-          }
-        }
-
-        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb, volumes });
+        bodies.push({
+          bodyIndex: i,
+          hybridInfo: k.bodyHybridInfo(i),
+          opcodes: copyOpcodes(k, i),
+          aabb: k.bodySdfAabb(i),
+          volumes: collectBodyVolumes(k, i),
+        });
       }
-      rebuildDeferredBodies(pipeline, bodies);
+      return bodies;
+    };
+
+    if (needsCompile && !compilingRef.current) {
+      showCompilationStatus("Building SDF…");
+
+      rebuildDeferredBodies(pipeline, collectDeferredBodies());
       rebuildShadeMaterialIfNeeded(pipeline);
       structFpRef.current = structFp;
       dataFpRef.current = dataFp;
 
-      if (label) label.textContent = "Compiling shader…";
+      showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera)
         .then(() => {
           compilingRef.current = false;
           readyRef.current = true;
-          if (overlay) overlay.style.display = "none";
+          hideCompilationOverlay();
           invalidate();
         })
         .catch((err) => {
           compilingRef.current = false;
-          const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
-          if (spinnerEl) spinnerEl.style.display = "none";
-          if (label) label.textContent = `GPU error: ${err.message}`;
-          if (overlay) {
-            overlay.style.opacity = "1";
-            overlay.style.color = "var(--color-error, #c00)";
-          }
+          showGpuError(err);
         });
     }
 
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
-      const bodies = [];
-      for (let i = 0; i < count; i++) {
-        const hybridInfo = k.bodyHybridInfo(i);
-        const opcodesView = k.bodySdfOpcodesView(i);
-        const opcodes = opcodesView.length > 0 ? opcodesView.slice() : new Float32Array(0);
-        const aabb = k.bodySdfAabb(i);
-
-        const volCount = k.bodyVolumeCount(i);
-        let volumes: { data: Float32Array; dims: [number, number, number] }[] | undefined;
-        if (volCount > 0) {
-          volumes = [];
-          for (let v = 0; v < volCount; v++) {
-            volumes.push({ data: k.bodyVolumeDataView(i, v), dims: k.bodyVolumeDims(i, v) });
-          }
-        }
-
-        bodies.push({ bodyIndex: i, hybridInfo, opcodes, aabb, volumes });
-      }
-      updateDeferredData(pipeline, bodies);
+      updateDeferredData(pipeline, collectDeferredBodies());
       dataFpRef.current = dataFp;
     }
 
@@ -325,41 +306,17 @@ export function SdfDeferredOverlay() {
     }
     updateDeferredSelection(pipeline, selectedBodies);
 
-    if (!readyRef.current || compilingRef.current) {
-        return;
-    }
+    if (!readyRef.current || compilingRef.current) return;
+
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
-
     try {
-      wgpuRenderer.render(scene, camera);
-
-      const prevAutoClear = (wgpuRenderer as any).autoClear;
-      (wgpuRenderer as any).autoClear = false;
-      renderDeferredFrame(pipeline, wgpuRenderer, camera);
-
-      const savedBg = scene.background;
-      scene.background = null;
-      const savedMask = camera.layers.mask;
-      camera.layers.set(OVERLAY_LAYER);
-      wgpuRenderer.clearDepth();
-      wgpuRenderer.render(scene, camera);
-      camera.layers.mask = savedMask;
-      scene.background = savedBg;
-
-      (wgpuRenderer as any).autoClear = prevAutoClear;
+      renderOverlayLayer(wgpuRenderer, scene, camera, () =>
+        renderDeferredFrame(pipeline, wgpuRenderer, camera),
+      );
     } catch (err) {
       console.error("SDF render error:", err);
       readyRef.current = false;
-      const overlay = document.getElementById("fd-shader-compiling");
-      const label = document.getElementById("fd-shader-compiling-label");
-      const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
-      if (spinnerEl) spinnerEl.style.display = "none";
-      if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
-      if (overlay) {
-        overlay.style.display = "flex";
-        overlay.style.opacity = "1";
-        overlay.style.color = "var(--color-error, #c00)";
-      }
+      showGpuError(err);
     }
 
     invalidate();

@@ -3,6 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
+import { findSingleSelectedFeature } from "./viewportOverlays";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import {
   consumeViewCommand,
@@ -45,12 +46,10 @@ export function CameraRig() {
   const sketchActive = state?.sketchSession.active ?? false;
   const controlsRef = useRef<any>(null);
 
-  const selectedFeature = useMemo(() => {
-    if (!state || state.selection.size !== 1) return undefined;
-    const first = state.selection.values().next().value;
-    if (first === undefined) return undefined;
-    return state.features.find((f) => f.id === first);
-  }, [state?.selection, state?.features]);
+  const selectedFeature = useMemo(
+    () => findSingleSelectedFeature(state),
+    [state?.selection, state?.features],
+  );
 
   useEffect(() => {
     const c = controlsRef.current;

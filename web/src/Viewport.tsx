@@ -17,7 +17,7 @@ import {
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
-import type { PickResult } from "./kernel";
+import type { PickHit, PickResult } from "./kernel";
 import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
@@ -129,6 +129,131 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
   }
 }
 
+function pickAtMouse(
+  event: React.MouseEvent<HTMLDivElement>,
+  host: HTMLDivElement | null,
+  store: { kernel: { pick(origin: number[], dir: number[]): PickResult } },
+): PickResult | null {
+  const camera = getPublishedPickCamera();
+  if (!host || !camera) return null;
+  const rect = host.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const cx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
+  const o = raycaster.ray.origin;
+  const d = raycaster.ray.direction;
+  return store.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
+}
+
+function tryQueryPick(click: PickResult | null): boolean {
+  const picker = getActiveQueryPicker();
+  if (!picker || !click?.hit || click.contributors.length === 0) return false;
+  const contributor = click.contributors[0];
+  if (contributor <= 0) return false;
+  return picker.onPick(`qCreatedBy(${contributor})`);
+}
+
+function handleFacePickClick(
+  store: { enterSketchFromFacePick(n: [number, number, number]): void; cancelFacePickMode(): void; enterSketch(q: string): void },
+  click: PickResult | null,
+): void {
+  if (click?.hit && click.contributors.length > 0) {
+    store.enterSketchFromFacePick(click.normal as [number, number, number]);
+  } else {
+    store.cancelFacePickMode();
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+  }
+}
+
+function handleIkClick(
+  store: { runIK(opts: { position: [number, number, number]; endEffectorPartId: string; endEffectorConnectorId: number }): void },
+  state: { assembly: { document: { mates: { type: string }[]; parts: { id: string; mateConnectors: { featureId: number }[] }[] } } },
+  click: PickHit,
+): void {
+  const revMates = state.assembly.document.mates.filter((m) => m.type === "revolute");
+  if (revMates.length === 0) return;
+  const lastPart = state.assembly.document.parts[state.assembly.document.parts.length - 1];
+  if (!lastPart || lastPart.mateConnectors.length === 0) return;
+  store.runIK({
+    position: click.point,
+    endEffectorPartId: lastPart.id,
+    endEffectorConnectorId: lastPart.mateConnectors[0].featureId,
+  });
+}
+
+function handleMateClick(
+  store: { addMateConnectorAtPick(p: [number, number, number], n: [number, number, number]): void },
+  click: PickHit,
+): void {
+  store.addMateConnectorAtPick(click.point, click.normal);
+}
+
+function handleFilletClick(
+  store: { addFilletAtEdge(a: number, b: number, min: number[], max: number[], r: number): void; showTransientError(msg: string): void },
+  click: PickResult | null,
+): void {
+  if (!click?.hit) return;
+  if (click.contributors.length < 2) {
+    store.showTransientError("Fillet requires an edge between two features — click where two bodies meet.");
+    return;
+  }
+  const a = click.contributors[0];
+  const b = click.contributors[1];
+  if (a > 0 && b > 0) {
+    const pt = click.point;
+    store.addFilletAtEdge(
+      a, b,
+      [pt[0] - 20, pt[1] - 20, pt[2] - 20],
+      [pt[0] + 20, pt[1] + 20, pt[2] + 20],
+      3,
+    );
+  }
+}
+
+type MeasurePoints = { a: [number, number, number]; b?: [number, number, number] } | null;
+
+function handleMeasureClick(
+  click: PickHit,
+  measurePoints: MeasurePoints,
+  setMeasurePoints: (pts: MeasurePoints) => void,
+): void {
+  const pt: [number, number, number] = [click.point[0], click.point[1], click.point[2]];
+  if (!measurePoints || measurePoints.b) {
+    setMeasurePoints({ a: pt });
+  } else {
+    setMeasurePoints({ ...measurePoints, b: pt });
+  }
+}
+
+function handleSelectionClick(
+  store: { clearSelection(): void; selectRangeTo(id: number): void; toggleSelect(id: number): void; selectOnly(id: number): void },
+  click: PickResult | null,
+  event: React.MouseEvent,
+  setMeasurePoints: (pts: MeasurePoints) => void,
+): void {
+  if (!click || !click.hit) {
+    if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      store.clearSelection();
+    }
+    setMeasurePoints(null);
+    invalidateCanvas();
+    return;
+  }
+  const featureId = click.contributors[0];
+  if (featureId !== undefined && featureId > 0) {
+    if (event.shiftKey) {
+      store.selectRangeTo(featureId);
+    } else if (event.ctrlKey || event.metaKey) {
+      store.toggleSelect(featureId);
+    } else {
+      store.selectOnly(featureId);
+    }
+  }
+  invalidateCanvas();
+}
+
 export function Viewport({ renderMode }: { renderMode: string }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -139,9 +264,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
     active: false,
   });
   const [pickResult, setPickResult] = useState<PickResult | null>(null);
-  const [measurePoints, setMeasurePoints] = useState<
-    { a: [number, number, number]; b?: [number, number, number] } | null
-  >(null);
+  const [measurePoints, setMeasurePoints] = useState<MeasurePoints>(null);
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const host = hostRef.current;
@@ -161,123 +284,20 @@ export function Viewport({ renderMode }: { renderMode: string }) {
   const handleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     if (!store) return;
 
-    const host = hostRef.current;
-    const camera = getPublishedPickCamera();
-    let click: PickResult | null = null;
-    if (host && camera) {
-      const rect = host.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        const cx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-        const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
-        const raycaster = new THREE.Raycaster();
-        raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
-        const o = raycaster.ray.origin;
-        const d = raycaster.ray.direction;
-        click = store.kernel.pick(
-          [o.x, o.y, o.z],
-          [d.x, d.y, d.z],
-        );
-        setPickResult(click);
-      }
-    }
+    const click = pickAtMouse(event, hostRef.current, store);
+    setPickResult(click);
 
-    const picker = getActiveQueryPicker();
-    if (picker && click?.hit && click.contributors.length > 0) {
-      const contributor = click.contributors[0];
-      if (contributor > 0) {
-        const query = `qCreatedBy(${contributor})`;
-        const consumed = picker.onPick(query);
-        if (consumed) return;
-      }
-    }
-
-    if (state?.facePickMode) {
-      if (click?.hit && click.contributors.length > 0) {
-        store.enterSketchFromFacePick(click.normal as [number, number, number]);
-      } else {
-        store.cancelFacePickMode();
-        store.enterSketch("qCreatedBy(origin_plane_xy)");
-      }
-      return;
-    }
-
-    if (state?.ikMode && state?.assembly.active && click?.hit) {
-      const revMates = state.assembly.document.mates.filter((m: { type: string }) => m.type === "revolute");
-      if (revMates.length > 0) {
-        const lastPart = state.assembly.document.parts[state.assembly.document.parts.length - 1];
-        if (lastPart && lastPart.mateConnectors.length > 0) {
-          store.runIK({
-            position: click.point as [number, number, number],
-            endEffectorPartId: lastPart.id,
-            endEffectorConnectorId: lastPart.mateConnectors[0].featureId,
-          });
-        }
-      }
-      return;
-    }
-
-    if (state?.mateMode && click?.hit) {
-      store.addMateConnectorAtPick(
-        click.point as [number, number, number],
-        click.normal as [number, number, number],
-      );
-      return;
-    }
-
-    if (state?.filletMode) {
-      if (!click?.hit) return;
-      if (click.contributors.length < 2) {
-        store.showTransientError("Fillet requires an edge between two features — click where two bodies meet.");
-        return;
-      }
-      const a = click.contributors[0];
-      const b = click.contributors[1];
-      if (a > 0 && b > 0) {
-        const pt = click.point;
-        store.addFilletAtEdge(
-          a,
-          b,
-          [pt[0] - 20, pt[1] - 20, pt[2] - 20],
-          [pt[0] + 20, pt[1] + 20, pt[2] + 20],
-          3,
-        );
-      }
-      return;
-    }
-
+    if (tryQueryPick(click)) return;
+    if (state?.facePickMode) { handleFacePickClick(store, click); return; }
+    if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
+    if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
+    if (state?.filletMode) { handleFilletClick(store, click); return; }
     if (state?.measureMode && click?.hit) {
-      const pt: [number, number, number] = [
-        click.point[0],
-        click.point[1],
-        click.point[2],
-      ];
-      if (!measurePoints || measurePoints.b) {
-        setMeasurePoints({ a: pt });
-      } else {
-        setMeasurePoints({ ...measurePoints, b: pt });
-      }
+      handleMeasureClick(click, measurePoints, setMeasurePoints);
       return;
     }
 
-    if (!click || !click.hit) {
-      if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
-        store.clearSelection();
-      }
-      setMeasurePoints(null);
-      invalidateCanvas();
-      return;
-    }
-    const featureId = click.contributors[0];
-    if (featureId !== undefined && featureId > 0) {
-      if (event.shiftKey) {
-        store.selectRangeTo(featureId);
-      } else if (event.ctrlKey || event.metaKey) {
-        store.toggleSelect(featureId);
-      } else {
-        store.selectOnly(featureId);
-      }
-    }
-    invalidateCanvas();
+    handleSelectionClick(store, click, event, setMeasurePoints);
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>): void => {

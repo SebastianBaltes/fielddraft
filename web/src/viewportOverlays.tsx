@@ -3,10 +3,17 @@ import { useThree } from "@react-three/fiber";
 import { Text } from "@react-three/drei";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
-import { useKernelStore } from "./store";
-import type { PickResult } from "./kernel";
+import { useKernelStore, type StoreState } from "./store";
+import type { FeatureSummary, PickResult } from "./kernel";
 import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+
+export function findSingleSelectedFeature(state: StoreState | null | undefined): FeatureSummary | undefined {
+  if (!state || state.selection.size !== 1) return undefined;
+  const first = state.selection.values().next().value;
+  if (first === undefined) return undefined;
+  return state.features.find((f) => f.id === first);
+}
 
 type SketchPlane = {
   u: [number, number, number];
@@ -208,12 +215,7 @@ export function SelectionTransformGizmo() {
   const defaultControls = useThree((s) => s.controls);
   const invalidate = useThree((s) => s.invalidate);
 
-  const selectedFeature = useMemo(() => {
-    if (!state || state.selection.size !== 1) return undefined;
-    const first = state.selection.values().next().value;
-    if (first === undefined) return undefined;
-    return state.features.find((f) => f.id === first);
-  }, [state]);
+  const selectedFeature = useMemo(() => findSingleSelectedFeature(state), [state]);
 
   const gizmoMode = state?.gizmoMode ?? "translate";
 
