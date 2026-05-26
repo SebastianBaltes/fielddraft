@@ -44,8 +44,12 @@ export function resolveMaterials(
       continue;
     }
 
-    const targets = params.Bodies as string | string[] | undefined;
-    const queries = Array.isArray(targets) ? targets : targets ? [targets] : [];
+    const raw = params.targets as string | string[] | undefined;
+    const queries: string[] = Array.isArray(raw)
+      ? raw
+      : typeof raw === "string" && raw.length > 0
+        ? raw.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
 
     const targetBodyIndices: number[] = [];
     for (const q of queries) {

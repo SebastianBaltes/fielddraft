@@ -405,6 +405,7 @@ export function ColorWidget({
 }: WidgetProps<[number, number, number]>) {
   const id = useId();
   const hex = floatToHex(value);
+  const [draft, setDraft] = useState<string | null>(null);
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
       <div className="color-row">
@@ -418,10 +419,18 @@ export function ColorWidget({
         <input
           type="text"
           className="color-hex"
-          value={hex}
+          value={draft ?? hex}
           onChange={(e) => {
             const v = e.currentTarget.value;
+            setDraft(v);
             if (/^#[0-9a-fA-F]{6}$/.test(v)) onChange(hexToFloat(v));
+          }}
+          onBlur={() => setDraft(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              setDraft(null);
+              e.currentTarget.blur();
+            }
           }}
         />
       </div>
