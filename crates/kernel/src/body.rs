@@ -235,7 +235,9 @@ pub fn hash_body_payload_split(
         for v in f.transform.rotation {
             v.to_bits().hash(&mut xform);
         }
-        f.transform.scale.to_bits().hash(&mut xform);
+        f.transform.scale[0].to_bits().hash(&mut xform);
+        f.transform.scale[1].to_bits().hash(&mut xform);
+        f.transform.scale[2].to_bits().hash(&mut xform);
     }
     (geo.finish(), xform.finish())
 }
@@ -723,8 +725,8 @@ mod tests {
     #[test]
     fn detect_uniform_translation_pure_shift() {
         use fielddraft_protocol::Transform;
-        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
-        let new = vec![Transform { translate: [5.0, 3.0, -1.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] }];
+        let new = vec![Transform { translate: [5.0, 3.0, -1.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] }];
         assert_eq!(
             detect_uniform_translation(&old, &new),
             Some([5.0, 3.0, -1.0])
@@ -734,8 +736,8 @@ mod tests {
     #[test]
     fn detect_uniform_translation_rejects_rotation_change() {
         use fielddraft_protocol::Transform;
-        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
-        let new = vec![Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.707, 0.0, 0.707], scale: 1.0 }];
+        let old = vec![Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] }];
+        let new = vec![Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.707, 0.0, 0.707], scale: [1.0, 1.0, 1.0] }];
         assert_eq!(detect_uniform_translation(&old, &new), None);
     }
 
@@ -743,12 +745,12 @@ mod tests {
     fn detect_uniform_translation_rejects_mixed_deltas() {
         use fielddraft_protocol::Transform;
         let old = vec![
-            Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
-            Transform { translate: [10.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+            Transform { translate: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] },
+            Transform { translate: [10.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] },
         ];
         let new = vec![
-            Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
-            Transform { translate: [12.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 },
+            Transform { translate: [5.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] },
+            Transform { translate: [12.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] },
         ];
         assert_eq!(detect_uniform_translation(&old, &new), None);
     }
@@ -756,7 +758,7 @@ mod tests {
     #[test]
     fn detect_uniform_translation_returns_none_on_zero_delta() {
         use fielddraft_protocol::Transform;
-        let t = vec![Transform { translate: [1.0, 2.0, 3.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0 }];
+        let t = vec![Transform { translate: [1.0, 2.0, 3.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0, 1.0, 1.0] }];
         assert_eq!(detect_uniform_translation(&t, &t), None);
     }
 

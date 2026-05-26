@@ -153,14 +153,14 @@ export function buildVmSdfEvalFn(
     const emitTransformAndLocal = () => {
       const tx = rd(), ty = rd(), tz = rd();
       const qx = rd(), qy = rd(), qz = rd(), qw = rd();
-      const scaleVal = rd();
+      const sx = rd(), sy = rd(), sz = rd();
       const local = worldToLocalFn({
         p: vec3(ptx, pty, ptz),
         translate: vec3(tx, ty, tz),
         quat: vec4(qx, qy, qz, qw),
-        scale: scaleVal,
+        scale: vec3(sx, sy, sz),
       }).toVar();
-      return { local, scale: scaleVal };
+      return { local, scale: min(sx, min(sy, sz)) };
     };
 
     Loop(int(VM_MAX_OPCODES), () => {
@@ -345,12 +345,12 @@ export function buildVmSdfEvalFn(
       }).ElseIf(tag.equal(int(OP_WARP_TRANSFORM)), () => {
         const tx = rd(), ty = rd(), tz = rd();
         const qx = rd(), qy = rd(), qz = rd(), qw = rd();
-        const s = rd();
+        const sx = rd(), sy = rd(), sz = rd();
         const local = worldToLocalFn({
           p: vec3(ptx, pty, ptz),
           translate: vec3(tx, ty, tz),
           quat: vec4(qx, qy, qz, qw),
-          scale: s,
+          scale: vec3(sx, sy, sz),
         }).toVar();
         ptx.assign(local.x);
         pty.assign(local.y);

@@ -1134,7 +1134,7 @@ impl FeatureKind for SweepFeature {
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
-                scale: 1.0,
+                scale: [1.0, 1.0, 1.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -1269,7 +1269,9 @@ impl FeatureKind for TransformFeature {
             t.rotation = td.rotation;
         }
         if (td.scale - 1.0).abs() > 1e-7 {
-            t.scale *= td.scale;
+            t.scale[0] *= td.scale;
+            t.scale[1] *= td.scale;
+            t.scale[2] *= td.scale;
         }
         Ok(())
     }
@@ -1429,7 +1431,8 @@ impl FeatureKind for ImportedMeshFeature {
 
         let name = optional_display_name(def, || format!("Imported mesh {id}"));
         let base_rotation = optional_rotation(def);
-        let scale = if d.uniform_scale > 0.0 { d.uniform_scale } else { 1.0 };
+        let s = if d.uniform_scale > 0.0 { d.uniform_scale } else { 1.0 };
+        let scale = [s, s, s];
 
         let rotation = if d.swap_yz {
             // -90° around X to convert Z-up → Y-up
@@ -2395,11 +2398,20 @@ fn optional_rotation(def: &Value) -> [f32; 4] {
 /// falling back to the identity scale (`1.0`) when missing or
 /// malformed. Mirrors [`optional_rotation`] — both close the
 /// lossy-round-trip gap in the K4.5.4d bootstrap path.
-fn optional_scale(def: &Value) -> f32 {
-    def.get("scale")
-        .and_then(|v| v.as_f64())
-        .map(|v| v as f32)
-        .unwrap_or(1.0)
+fn optional_scale(def: &Value) -> [f32; 3] {
+    match def.get("scale") {
+        Some(Value::Number(n)) => {
+            let s = n.as_f64().unwrap_or(1.0) as f32;
+            [s, s, s]
+        }
+        Some(Value::Array(arr)) if arr.len() == 3 => {
+            let x = arr[0].as_f64().unwrap_or(1.0) as f32;
+            let y = arr[1].as_f64().unwrap_or(1.0) as f32;
+            let z = arr[2].as_f64().unwrap_or(1.0) as f32;
+            [x, y, z]
+        }
+        _ => [1.0, 1.0, 1.0],
+    }
 }
 
 /// Post-parse guard for numeric fields that must be strictly
@@ -3216,7 +3228,7 @@ mod tests {
                 transform: Transform {
                     translate,
                     rotation: [0.0, 0.0, 0.0, 1.0],
-                    scale: 1.0,
+                    scale: [1.0, 1.0, 1.0],
                 },
                 blend_radius: 0.0,
             chamfer_size: 0.0,

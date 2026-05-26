@@ -565,28 +565,50 @@ impl MultiQuery {
 
 /// Affine placement of a feature in world space.
 ///
-/// Stored as **translate + unit-quaternion rotation + uniform scale**.
-/// Per-axis scale would break the SDF distance property (the field
-/// stops being a true Euclidean distance), so we keep scale uniform.
+/// Stored as **translate + unit-quaternion rotation + per-axis scale**.
+/// Non-uniform scale requires a conservative distance correction in
+/// the SDF evaluator: multiply by `min(sx, sy, sz)`.
 /// Quaternion order is `(x, y, z, w)`; identity is `(0, 0, 0, 1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     pub translate: [f32; 3],
     pub rotation: [f32; 4],
-    pub scale: f32,
+    #[serde(deserialize_with = "deserialize_scale")]
+    pub scale: [f32; 3],
+}
+
+fn deserialize_scale<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 3], D::Error> {
+    let v: serde_json::Value = serde::Deserialize::deserialize(d)?;
+    match v {
+        serde_json::Value::Number(n) => {
+            let s = n.as_f64().unwrap_or(1.0) as f32;
+            Ok([s, s, s])
+        }
+        serde_json::Value::Array(arr) if arr.len() == 3 => {
+            let x = arr[0].as_f64().unwrap_or(1.0) as f32;
+            let y = arr[1].as_f64().unwrap_or(1.0) as f32;
+            let z = arr[2].as_f64().unwrap_or(1.0) as f32;
+            Ok([x, y, z])
+        }
+        _ => Ok([1.0, 1.0, 1.0]),
+    }
 }
 
 impl Transform {
     pub const IDENTITY: Self = Self {
         translate: [0.0, 0.0, 0.0],
         rotation: [0.0, 0.0, 0.0, 1.0],
-        scale: 1.0,
+        scale: [1.0, 1.0, 1.0],
     };
 
     pub fn is_identity(&self) -> bool {
         self.translate == [0.0, 0.0, 0.0]
             && self.rotation == [0.0, 0.0, 0.0, 1.0]
-            && self.scale == 1.0
+            && self.scale == [1.0, 1.0, 1.0]
+    }
+
+    pub fn min_scale(&self) -> f32 {
+        self.scale[0].min(self.scale[1]).min(self.scale[2])
     }
 }
 
@@ -1216,7 +1238,7 @@ mod tests {
             transform: Transform {
                 translate: [10.0, 20.0, 30.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 2.0,
+                scale: [2.0, 2.0, 2.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -1236,7 +1258,7 @@ mod tests {
                 "center": [1.0, 2.0, 3.0],
                 "translate": [10.0, 20.0, 30.0],
                 "rotation": [0.0, 0.0, 0.0, 1.0],
-                "scale": 2.0,
+                "scale": [2.0, 2.0, 2.0],
                 "op": "union",
                 "name": "Corner"
             })
@@ -1473,7 +1495,7 @@ mod tests {
         assert!(t.is_identity());
         assert_eq!(t.translate, [0.0, 0.0, 0.0]);
         assert_eq!(t.rotation, [0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(t.scale, 1.0);
+        assert_eq!(t.scale, [1.0, 1.0, 1.0]);
     }
 
     #[test]

@@ -95,7 +95,7 @@ export const OP_END            = 0xFF;
 // ── WGSL helper functions ───────────────────────────────────────────
 
 export const worldToLocalFn = wgslFn(`
-  fn fd_world_to_local(p: vec3f, translate: vec3f, quat: vec4f, scale: f32) -> vec3f {
+  fn fd_world_to_local(p: vec3f, translate: vec3f, quat: vec4f, scale: vec3f) -> vec3f {
     let c = p - translate;
     let qx = -quat.x;
     let qy = -quat.y;
@@ -341,18 +341,18 @@ export function transpileOpcodes(opcodes: Float32Array): string {
   function popV(): string {
     return vstack.pop()!;
   }
-  function emitTransformAndLocal(): string {
+  function emitTransformAndLocal(): { localVar: string; minScale: number } {
     const [tx, ty, tz] = rd3();
     const [qx, qy, qz] = [rd(), rd(), rd()];
     const qw = rd();
-    const scale = rd();
+    const sx = rd(), sy = rd(), sz = rd();
     const localVar = nextPt();
     lines.push(
       `  let ${localVar} = fd_world_to_local(${point}, ` +
       `vec3f(${f(tx)}, ${f(ty)}, ${f(tz)}), ` +
-      `vec4f(${f(qx)}, ${f(qy)}, ${f(qz)}, ${f(qw)}), ${f(scale)});`
+      `vec4f(${f(qx)}, ${f(qy)}, ${f(qz)}, ${f(qw)}), vec3f(${f(sx)}, ${f(sy)}, ${f(sz)}));`
     );
-    return localVar;
+    return { localVar, minScale: Math.min(sx, sy, sz) };
   }
 
   while (pc < opcodes.length) {
@@ -362,8 +362,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
     switch (tag) {
       // ── 3D primitives ─────────────────────────────────────
       case OP_PRIM_BOX: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1]; // last read by emitTransformAndLocal
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const [hx, hy, hz] = rd3();
         const v = nextVar();
         lines.push(
@@ -373,8 +372,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_SPHERE: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const r = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_sphere(${local}, ${f(r)}) * ${f(scale)};`);
@@ -382,8 +380,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_CYLINDER: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const r = rd();
         const hh = rd();
         const v = nextVar();
@@ -392,8 +389,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_TORUS: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const major = rd();
         const minor = rd();
         const v = nextVar();
@@ -402,8 +398,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_CONE: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const rb = rd(), rt = rd(), hh = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_cone(${local}, ${f(rb)}, ${f(rt)}, ${f(hh)}) * ${f(scale)};`);
@@ -411,8 +406,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_CAPSULE: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const r = rd(), hh = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_capsule(${local}, ${f(r)}, ${f(hh)}) * ${f(scale)};`);
@@ -420,8 +414,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_HEX_PRISM: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const ap = rd(), hh = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_hex_prism(${local}, ${f(ap)}, ${f(hh)}) * ${f(scale)};`);
@@ -429,8 +422,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_ELLIPSOID: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const [rx, ry, rz] = rd3();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_ellipsoid(${local}, vec3f(${f(rx)}, ${f(ry)}, ${f(rz)})) * ${f(scale)};`);
@@ -445,8 +437,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_GYROID: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const cs = rd(), th = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_gyroid(${local}, ${f(cs)}, ${f(th)}) * ${f(scale)};`);
@@ -454,8 +445,7 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         break;
       }
       case OP_PRIM_THREAD: {
-        const local = emitTransformAndLocal();
-        const scale = opcodes[pc - 1];
+        const { localVar: local, minScale: scale } = emitTransformAndLocal();
         const nr = rd(), pitch = rd(), depth = rd(), hh = rd();
         const v = nextVar();
         lines.push(`  let ${v} = fd_sdf_thread(${local}, ${f(nr)}, ${f(pitch)}, ${f(depth)}, ${f(hh)}) * ${f(scale)};`);
@@ -691,12 +681,12 @@ export function transpileOpcodes(opcodes: Float32Array): string {
         const [tx, ty, tz] = rd3();
         const [qx, qy, qz] = [rd(), rd(), rd()];
         const qw = rd();
-        const scale = rd();
+        const sx = rd(), sy = rd(), sz = rd();
         const pt = nextPt();
         lines.push(
           `  let ${pt} = fd_world_to_local(${point}, ` +
           `vec3f(${f(tx)}, ${f(ty)}, ${f(tz)}), ` +
-          `vec4f(${f(qx)}, ${f(qy)}, ${f(qz)}, ${f(qw)}), ${f(scale)});`
+          `vec4f(${f(qx)}, ${f(qy)}, ${f(qz)}, ${f(qw)}), vec3f(${f(sx)}, ${f(sy)}, ${f(sz)}));`
         );
         point = pt;
         break;
@@ -867,14 +857,14 @@ export function buildSdfEvalFn(
     const emitTransformAndLocal = () => {
       const tx = rdP(), ty = rdP(), tz = rdP();
       const qx = rdP(), qy = rdP(), qz = rdP(), qw = rdP();
-      const scaleVal = rdP();
+      const sx = rdP(), sy = rdP(), sz = rdP();
       const local = worldToLocalFn({
         p: point,
         translate: vec3(tx, ty, tz),
         quat: vec4(qx, qy, qz, qw),
-        scale: scaleVal,
+        scale: vec3(sx, sy, sz),
       });
-      return { local, scale: scaleVal };
+      return { local, scale: min(sx, min(sy, sz)) };
     };
 
     while (pc < opcodes.length) {

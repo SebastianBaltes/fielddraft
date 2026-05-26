@@ -125,9 +125,9 @@ pub fn quat_multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 /// into each leaf's accumulated world transform.
 pub fn compose_transforms(parent: &Transform, child: &Transform) -> Transform {
     let scaled_child_t = [
-        child.translate[0] * parent.scale,
-        child.translate[1] * parent.scale,
-        child.translate[2] * parent.scale,
+        child.translate[0] * parent.scale[0],
+        child.translate[1] * parent.scale[1],
+        child.translate[2] * parent.scale[2],
     ];
     let rotated = quat_rotate(parent.rotation, scaled_child_t);
     Transform {
@@ -137,7 +137,11 @@ pub fn compose_transforms(parent: &Transform, child: &Transform) -> Transform {
             parent.translate[2] + rotated[2],
         ],
         rotation: quat_multiply(parent.rotation, child.rotation),
-        scale: parent.scale * child.scale,
+        scale: [
+            parent.scale[0] * child.scale[0],
+            parent.scale[1] * child.scale[1],
+            parent.scale[2] * child.scale[2],
+        ],
     }
 }
 
@@ -171,8 +175,7 @@ pub fn world_to_local(t: &Transform, p_world: [f32; 3]) -> [f32; 3] {
         p_world[2] - t.translate[2],
     ];
     let p = quat_inverse_rotate(t.rotation, p);
-    let inv = 1.0 / t.scale;
-    [p[0] * inv, p[1] * inv, p[2] * inv]
+    [p[0] / t.scale[0], p[1] / t.scale[1], p[2] / t.scale[2]]
 }
 
 /// SDF of a single primitive at world point `p`.
@@ -318,10 +321,7 @@ pub fn apply_op(acc: f32, di: f32, op: BoolOp) -> f32 {
 /// SDF of one transformed feature at a world-space point.
 pub fn sdf_feature(feature: &Feature, p_world: [f32; 3]) -> f32 {
     let p_local = world_to_local(&feature.transform, p_world);
-    // Multiplying by the uniform scale restores the world-space distance
-    // metric — without it the SDF would report distances in the
-    // primitive's pre-scale frame.
-    sdf_primitive(&feature.primitive, p_local) * feature.transform.scale
+    sdf_primitive(&feature.primitive, p_local) * feature.transform.min_scale()
 }
 
 /// Composite SDF of an entire feature spine.
@@ -435,7 +435,7 @@ pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
 
     let t = &feature.transform;
     out[8..11].copy_from_slice(&t.translate);
-    out[11] = t.scale;
+    out[11] = t.min_scale();
     out[12..16].copy_from_slice(&t.rotation);
 }
 
@@ -479,7 +479,7 @@ struct FeatureSummary {
     kind: &'static str,
     translate: [f32; 3],
     rotation: [f32; 4],
-    scale: f32,
+    scale: [f32; 3],
     /// K8.7: mirrors `FeatureCall.suppressed`. The outliner
     /// reads this to render the eye-icon affordance and to
     /// grey out the row when the feature is skipped.
@@ -1139,7 +1139,7 @@ impl Kernel {
                     kind: Self::static_kind_name(&call.type_name),
                     translate,
                     rotation: [0.0, 0.0, 0.0, 1.0],
-                    scale: 1.0,
+                    scale: [1.0, 1.0, 1.0],
                     suppressed: call.suppressed,
                 });
             }
@@ -2140,7 +2140,7 @@ impl Kernel {
         let transform = Transform {
             translate: [tx, ty, tz],
             rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: 1.0,
+            scale: [1.0, 1.0, 1.0],
         };
         // K4.5.1 still issues flat-numeric FeatureIds, so the shim
         // call at the bottom is guaranteed to succeed. When the
@@ -2213,17 +2213,20 @@ impl Kernel {
         true
     }
 
-    /// K7.21h: replace the uniform scale of a feature's transform.
     #[wasm_bindgen(js_name = setFeatureScale)]
-    pub fn set_feature_scale(&mut self, id: u32, scale: f32) -> bool {
+    pub fn set_feature_scale(&mut self, id: u32, sx: f32, sy: f32, sz: f32) -> bool {
         let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
         let Some(idx) = pos else { return false };
-        if (self.document.features[idx].transform.scale - scale).abs() < 1e-7 {
+        let cur = self.document.features[idx].transform.scale;
+        if (cur[0] - sx).abs() < 1e-7
+            && (cur[1] - sy).abs() < 1e-7
+            && (cur[2] - sz).abs() < 1e-7
+        {
             return false;
         }
         self.snapshot();
-        self.document.features[idx].transform.scale = scale;
+        self.document.features[idx].transform.scale = [sx, sy, sz];
         self.rebuild_packed();
         true
     }
@@ -2259,7 +2262,9 @@ impl Kernel {
         qy: f32,
         qz: f32,
         qw: f32,
-        scale: f32,
+        sx: f32,
+        sy: f32,
+        sz: f32,
     ) -> bool {
         let id = FeatureId::from_u32(id);
         let pos = self.document.features.iter().position(|f| f.id == id);
@@ -2267,7 +2272,7 @@ impl Kernel {
         let new = Transform {
             translate: [tx, ty, tz],
             rotation: [qx, qy, qz, qw],
-            scale,
+            scale: [sx, sy, sz],
         };
         if self.document.features[idx].transform == new {
             return false;
@@ -2986,7 +2991,7 @@ mod tests {
             transform: Transform {
                 translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                scale: [1.0, 1.0, 1.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -3132,7 +3137,7 @@ mod tests {
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 4.0,
+                scale: [4.0, 4.0, 4.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -3169,7 +3174,7 @@ mod tests {
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation: [0.0, 0.0, s, c],
-                scale: 1.0,
+                scale: [1.0, 1.0, 1.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -4487,7 +4492,7 @@ mod tests {
 
         // Mutation 6: full transform write on the sphere.
         assert!(k.set_feature_transform(
-            id_sphere, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0, 2.0
+            id_sphere, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0
         ));
         assert_feature_calls_match_spine(&k);
     }
@@ -4664,7 +4669,7 @@ mod tests {
         let s = (std::f32::consts::FRAC_PI_4 / 2.0).sin();
         let c = (std::f32::consts::FRAC_PI_4 / 2.0).cos();
         assert!(k1.set_feature_transform(
-            id, 100.0, 200.0, 300.0, 0.0, 0.0, s, c, 2.5,
+            id, 100.0, 200.0, 300.0, 0.0, 0.0, s, c, 2.5, 2.5, 2.5,
         ));
 
         // Capture the JSON, zero out `features` to simulate a
@@ -4684,7 +4689,9 @@ mod tests {
         assert!((loaded.transform.rotation[1]).abs() < 1e-6);
         assert!((loaded.transform.rotation[2] - s).abs() < 1e-6);
         assert!((loaded.transform.rotation[3] - c).abs() < 1e-6);
-        assert!((loaded.transform.scale - 2.5).abs() < 1e-6);
+        assert!((loaded.transform.scale[0] - 2.5).abs() < 1e-6);
+        assert!((loaded.transform.scale[1] - 2.5).abs() < 1e-6);
+        assert!((loaded.transform.scale[2] - 2.5).abs() < 1e-6);
         assert_eq!(loaded.op, BoolOp::Union);
     }
 
@@ -4849,7 +4856,7 @@ mod tests {
         let s = (std::f32::consts::FRAC_PI_4 / 2.0).sin();
         let c = (std::f32::consts::FRAC_PI_4 / 2.0).cos();
         assert!(k1.set_feature_transform(
-            box_id, 1.0, 2.0, 3.0, 0.0, 0.0, s, c, 1.75,
+            box_id, 1.0, 2.0, 3.0, 0.0, 0.0, s, c, 1.75, 1.75, 1.75,
         ));
         let original_features = k1.document.features.clone();
 

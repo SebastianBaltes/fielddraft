@@ -23,7 +23,7 @@ use crate::quat_rotate;
 // reads the f32, does `bitcast<u32>`, and dispatches on the tag.
 
 // 3D primitives — push SDF(point) onto value stack.
-// Transform (translate 3 + quat 4 + scale 1 = 8 floats) is embedded.
+// Transform (translate 3 + quat 4 + scale 3 = 10 floats) is embedded.
 pub const OP_PRIM_BOX: u32       = 0x01; // +11: transform(8) + half_extents(3)
 pub const OP_PRIM_SPHERE: u32    = 0x02; // +9:  transform(8) + radius(1)
 pub const OP_PRIM_CYLINDER: u32  = 0x03; // +10: transform(8) + radius(1) + half_h(1)
@@ -63,7 +63,7 @@ pub const OP_WARP_PUSH: u32      = 0x30; // +0: save point to point stack
 pub const OP_WARP_POP: u32       = 0x31; // +0: restore point from point stack
 pub const OP_WARP_TWIST: u32     = 0x32; // +1: rate — rotate XZ by rate*y
 pub const OP_WARP_BEND: u32      = 0x33; // +1: rate — rotate XY by rate*x
-pub const OP_WARP_TRANSFORM: u32 = 0x34; // +8: translate(3) + quat(4) + scale(1)
+pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(3)
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
@@ -264,7 +264,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             emit_sketch(sketch, out);
             out.push(op(OP_EXTRUDE));
             out.push(*half_height);
-            out.push(world_transform.scale);
+            out.push(world_transform.min_scale());
             out.push(op(OP_WARP_POP));
         }
         BoundedCsg::Revolve {
@@ -277,7 +277,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(op(OP_WARP_REVOLVE));
             emit_sketch(sketch, out);
             out.push(op(OP_REVOLVE_SCALE));
-            out.push(world_transform.scale);
+            out.push(world_transform.min_scale());
             out.push(op(OP_WARP_POP));
         }
     }
@@ -289,30 +289,27 @@ fn emit_warp_transform(t: &Transform, out: &mut Vec<f32>) {
     out.push(op(OP_WARP_TRANSFORM));
     out.extend_from_slice(&t.translate);
     out.extend_from_slice(&t.rotation);
-    out.push(t.scale);
+    out.extend_from_slice(&t.scale);
 }
 
-/// Emit the 8-float transform block, folding the primitive's local
-/// `center` into the world-space `translate` so the shader always
-/// evaluates the primitive at the origin of local space.
 fn emit_transform_with_center(t: &Transform, center: &[f32; 3], out: &mut Vec<f32>) {
     let center_scaled = [
-        center[0] * t.scale,
-        center[1] * t.scale,
-        center[2] * t.scale,
+        center[0] * t.scale[0],
+        center[1] * t.scale[1],
+        center[2] * t.scale[2],
     ];
     let center_world = quat_rotate(t.rotation, center_scaled);
     out.push(t.translate[0] + center_world[0]);
     out.push(t.translate[1] + center_world[1]);
     out.push(t.translate[2] + center_world[2]);
     out.extend_from_slice(&t.rotation);
-    out.push(t.scale);
+    out.extend_from_slice(&t.scale);
 }
 
 fn emit_transform(t: &Transform, out: &mut Vec<f32>) {
     out.extend_from_slice(&t.translate);
     out.extend_from_slice(&t.rotation);
-    out.push(t.scale);
+    out.extend_from_slice(&t.scale);
 }
 
 // ── Leaf primitives ────────────────────────────────────────────────
@@ -763,7 +760,7 @@ pub fn eval_opcodes_with_volumes(
             OP_WARP_TRANSFORM => {
                 let translate = rd3!();
                 let quat = [rd!(), rd!(), rd!(), rd!()];
-                let scale = rd!();
+                let scale = [rd!(), rd!(), rd!()];
                 pt = world_to_local_inline(pt, translate, quat, scale);
             }
             OP_WARP_REVOLVE => {
@@ -830,17 +827,18 @@ fn read_transform_and_localise(
 ) -> ([f32; 3], f32) {
     let translate = [buf[*pc], buf[*pc + 1], buf[*pc + 2]];
     let quat = [buf[*pc + 3], buf[*pc + 4], buf[*pc + 5], buf[*pc + 6]];
-    let scale = buf[*pc + 7];
-    *pc += 8;
+    let scale = [buf[*pc + 7], buf[*pc + 8], buf[*pc + 9]];
+    *pc += 10;
     let local = world_to_local_inline(pt, translate, quat, scale);
-    (local, scale)
+    let min_s = scale[0].min(scale[1]).min(scale[2]);
+    (local, min_s)
 }
 
 fn world_to_local_inline(
     p: [f32; 3],
     translate: [f32; 3],
     quat: [f32; 4],
-    scale: f32,
+    scale: [f32; 3],
 ) -> [f32; 3] {
     let centered = [
         p[0] - translate[0],
@@ -861,8 +859,7 @@ fn world_to_local_inline(
         centered[1] + qw * t[1] + qz * t[0] - qx * t[2],
         centered[2] + qw * t[2] + qx * t[1] - qy * t[0],
     ];
-    let inv = 1.0 / scale;
-    [rotated[0] * inv, rotated[1] * inv, rotated[2] * inv]
+    [rotated[0] / scale[0], rotated[1] / scale[1], rotated[2] / scale[2]]
 }
 
 fn sdf_box_local(p: [f32; 3], half: [f32; 3]) -> f32 {
@@ -1113,7 +1110,7 @@ mod tests {
             transform: Transform {
                 translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                scale: [1.0, 1.0, 1.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,
@@ -1434,11 +1431,11 @@ mod tests {
         ];
         let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
         let compiled = compile_body(&bvh);
-        // box: 1 tag + 11 payload = 12
-        // sphere: 1 tag + 9 payload = 10
+        // box: 1 tag + 13 payload = 14 (scale 1→3: +2)
+        // sphere: 1 tag + 11 payload = 12 (scale 1→3: +2)
         // union: 1
         // end: 1
-        // total = 24
-        assert_eq!(compiled.opcode_count(), 24);
+        // total = 28
+        assert_eq!(compiled.opcode_count(), 28);
     }
 }

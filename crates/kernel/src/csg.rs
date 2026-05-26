@@ -406,7 +406,7 @@ impl Aabb {
         ];
         let mut out = Self::EMPTY;
         for c in corners {
-            let scaled = [c[0] * t.scale, c[1] * t.scale, c[2] * t.scale];
+            let scaled = [c[0] * t.scale[0], c[1] * t.scale[1], c[2] * t.scale[2]];
             let rotated = quat_rotate(t.rotation, scaled);
             let world = [
                 rotated[0] + t.translate[0],
@@ -581,7 +581,7 @@ impl CsgNode {
                             Transform {
                                 translate: *center,
                                 rotation: [0.0, 0.0, 0.0, 1.0],
-                                scale: 1.0,
+                                scale: [1.0, 1.0, 1.0],
                             },
                             Box::new(centered),
                         )
@@ -602,7 +602,7 @@ impl CsgNode {
                             Transform {
                                 translate: *center,
                                 rotation: [0.0, 0.0, 0.0, 1.0],
-                                scale: 1.0,
+                                scale: [1.0, 1.0, 1.0],
                             },
                             Box::new(centered),
                         )
@@ -800,7 +800,7 @@ impl CsgNode {
             CsgNode::Leaf { primitive, .. } => sdf_primitive(primitive, p),
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
-                inner.sdf(local, mode) * t.scale
+                inner.sdf(local, mode) * t.min_scale()
             }
             CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
             CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
@@ -925,7 +925,7 @@ impl CsgNode {
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
                 let (d, c) = inner.evaluate(local, eps, mode);
-                (d * t.scale, c)
+                (d * t.min_scale(), c)
             }
             CsgNode::Union(a, b) => {
                 let (da, ca) = a.evaluate(p, eps, mode);

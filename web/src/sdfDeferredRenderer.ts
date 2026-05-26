@@ -135,19 +135,19 @@ export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void
   const t = leaf.transform;
   const translate = new THREE.Vector3(t[0], t[1], t[2]);
   const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);
-  const scale = t[7];
+  const scaleX = t[7], scaleY = t[8], scaleZ = t[9];
   const centerOffset = getCenterOffset(leaf);
   if (centerOffset) {
     const localOffset = new THREE.Vector3(
-      centerOffset[0] * scale,
-      centerOffset[1] * scale,
-      centerOffset[2] * scale,
+      centerOffset[0] * scaleX,
+      centerOffset[1] * scaleY,
+      centerOffset[2] * scaleZ,
     );
     localOffset.applyQuaternion(quat);
     translate.add(localOffset);
   }
   mesh.matrixAutoUpdate = false;
-  mesh.matrix.compose(translate, quat, new THREE.Vector3(scale, scale, scale));
+  mesh.matrix.compose(translate, quat, new THREE.Vector3(scaleX, scaleY, scaleZ));
   mesh.matrixWorldNeedsUpdate = true;
 }
 

@@ -2013,8 +2013,8 @@ export class KernelStore {
     return true;
   }
 
-  setFeatureScale(id: number, scale: number): boolean {
-    if (!this.kernel.setFeatureScale(id, scale)) return false;
+  setFeatureScale(id: number, sx: number, sy: number, sz: number): boolean {
+    if (!this.kernel.setFeatureScale(id, sx, sy, sz)) return false;
     this.commit();
     return true;
   }

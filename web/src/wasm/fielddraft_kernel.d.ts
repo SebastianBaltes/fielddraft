@@ -418,10 +418,7 @@ export class Kernel {
      * Quaternion order: (x, y, z, w).
      */
     setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean;
-    /**
-     * K7.21h: replace the uniform scale of a feature's transform.
-     */
-    setFeatureScale(id: number, scale: number): boolean;
+    setFeatureScale(id: number, sx: number, sy: number, sz: number): boolean;
     /**
      * K8.7: toggle a feature call's suppressed flag and
      * regenerate. A suppressed call is skipped by the
@@ -436,7 +433,7 @@ export class Kernel {
     /**
      * Replace the full transform (translate, quaternion, scale).
      */
-    setFeatureTransform(id: number, tx: number, ty: number, tz: number, qx: number, qy: number, qz: number, qw: number, scale: number): boolean;
+    setFeatureTransform(id: number, tx: number, ty: number, tz: number, qx: number, qy: number, qz: number, qw: number, sx: number, sy: number, sz: number): boolean;
     /**
      * Replace the translate component of a feature's transform.
      */
@@ -567,9 +564,9 @@ export interface InitOutput {
     readonly kernel_setContextMeshResolution: (a: number, b: number) => number;
     readonly kernel_setFeatureOp: (a: number, b: number, c: number) => [number, number, number];
     readonly kernel_setFeatureRotation: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
-    readonly kernel_setFeatureScale: (a: number, b: number, c: number) => number;
+    readonly kernel_setFeatureScale: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_setFeatureSuppressed: (a: number, b: number, c: number) => [number, number];
-    readonly kernel_setFeatureTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
+    readonly kernel_setFeatureTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
     readonly kernel_setFeatureTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_setMeshResolution: (a: number, b: number) => number;
     readonly kernel_setSyncMeshing: (a: number, b: number) => number;

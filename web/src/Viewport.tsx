@@ -759,7 +759,8 @@ function SelectionTransformGizmo() {
     }
     const [rx, ry, rz, rw] = selectedFeature.rotation;
     mesh.quaternion.set(rx, ry, rz, rw);
-    mesh.scale.setScalar(selectedFeature.scale);
+    const [scx, scy, scz] = selectedFeature.scale;
+    mesh.scale.set(scx, scy, scz);
   }, [selectedFeature]);
 
   const commitRef = useRef<() => void>(() => {});
@@ -779,9 +780,7 @@ function SelectionTransformGizmo() {
       const q = mesh.quaternion;
       store.setFeatureRotation(selectedFeature.id, q.x, q.y, q.z, q.w);
     } else if (gizmoMode === "scale") {
-      const s = Math.max(mesh.scale.x, mesh.scale.y, mesh.scale.z);
-      mesh.scale.setScalar(s);
-      store.setFeatureScale(selectedFeature.id, s);
+      store.setFeatureScale(selectedFeature.id, mesh.scale.x, mesh.scale.y, mesh.scale.z);
     }
   };
 

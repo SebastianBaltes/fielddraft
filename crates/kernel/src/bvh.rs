@@ -38,7 +38,7 @@ use crate::{compose_transforms, sdf_primitive, world_to_local};
 pub struct HybridLeafInfo {
     pub kind: String,
     pub aabb: [f32; 6],
-    pub transform: [f32; 8],
+    pub transform: [f32; 10],
     pub params: Vec<f32>,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,7 +270,7 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                sdf_primitive(primitive, local) * world_transform.scale
+                sdf_primitive(primitive, local) * world_transform.min_scale()
             }
             BoundedCsg::Union { left, right, .. } => {
                 // Visit the AABB-closer child first — it's more
@@ -409,7 +409,7 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let d2 = sketch.sdf([local[0], local[1]]);
-                sdf_extrude(d2, local[2], *half_height) * world_transform.scale
+                sdf_extrude(d2, local[2], *half_height) * world_transform.min_scale()
             }
             BoundedCsg::Revolve {
                 sketch,
@@ -418,7 +418,7 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                sketch.sdf([r, local[1]]) * world_transform.scale
+                sketch.sdf([r, local[1]]) * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let da = left.sdf(p, mode);
@@ -451,7 +451,7 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let d = sdf_primitive(primitive, local) * world_transform.scale;
+                let d = sdf_primitive(primitive, local) * world_transform.min_scale();
                 (d, Contributors::single(id.clone()))
             }
             BoundedCsg::Union { left, right, .. } => {
@@ -583,7 +583,7 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let d2 = sketch.sdf([local[0], local[1]]);
-                let d = sdf_extrude(d2, local[2], *half_height) * world_transform.scale;
+                let d = sdf_extrude(d2, local[2], *half_height) * world_transform.min_scale();
                 (d, Contributors::single(id.clone()))
             }
             BoundedCsg::Revolve {
@@ -594,7 +594,7 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                let d = sketch.sdf([r, local[1]]) * world_transform.scale;
+                let d = sketch.sdf([r, local[1]]) * world_transform.min_scale();
                 (d, Contributors::single(id.clone()))
             }
             BoundedCsg::Morph { left, right, t, .. } => {
@@ -996,7 +996,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     world_transform.translate[2],
                     world_transform.rotation[0], world_transform.rotation[1],
                     world_transform.rotation[2], world_transform.rotation[3],
-                    world_transform.scale,
+                    world_transform.scale[0], world_transform.scale[1],
+                    world_transform.scale[2],
                 ];
                 let flat_aabb = aabb_to_flat(*aabb);
                 for contour in contours {
@@ -1024,7 +1025,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     world_transform.translate[2],
                     world_transform.rotation[0], world_transform.rotation[1],
                     world_transform.rotation[2], world_transform.rotation[3],
-                    world_transform.scale,
+                    world_transform.scale[0], world_transform.scale[1],
+                    world_transform.scale[2],
                 ];
                 let flat_aabb = aabb_to_flat(*aabb);
                 for contour in contours {
@@ -1050,7 +1052,7 @@ fn primitive_to_leaf_info(
     let tf = [
         wt.translate[0], wt.translate[1], wt.translate[2],
         wt.rotation[0], wt.rotation[1], wt.rotation[2], wt.rotation[3],
-        wt.scale,
+        wt.scale[0], wt.scale[1], wt.scale[2],
     ];
     let flat_aabb = aabb_to_flat(*aabb);
 
@@ -1148,7 +1150,7 @@ mod tests {
             transform: Transform {
                 translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: 1.0,
+                scale: [1.0, 1.0, 1.0],
             },
             blend_radius: 0.0,
             chamfer_size: 0.0,

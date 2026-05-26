@@ -1314,7 +1314,7 @@ fn simplify_developable_faces(
         };
 
         let xf = transforms.get(&contrib).copied().unwrap_or(Transform::IDENTITY);
-        let normal_xf = Transform { translate: [0.0, 0.0, 0.0], rotation: xf.rotation, scale: 1.0 };
+        let normal_xf = Transform { translate: [0.0, 0.0, 0.0], rotation: xf.rotation, scale: [1.0, 1.0, 1.0] };
 
         // Split by normal bin to separate top/bottom caps from lateral surface.
         // Lateral surface normals are radial (perpendicular to Y axis in

@@ -95,7 +95,7 @@ export interface ContourData {
 export interface HybridLeafInfo {
   kind: string;
   aabb: [number, number, number, number, number, number];
-  transform: [number, number, number, number, number, number, number, number];
+  transform: [number, number, number, number, number, number, number, number, number, number];
   params: number[];
   role: "mesh" | "skip";
   contour?: ContourData;
@@ -119,7 +119,7 @@ export interface FeatureSummary {
   kind: FeatureKindName;
   translate: [number, number, number];
   rotation: [number, number, number, number];
-  scale: number;
+  scale: [number, number, number];
   /** K8.7: mirrors the kernel's `FeatureCall.suppressed`
    *  flag. Undefined in JSON when false — upstream
    *  `listFeatures` omits the field via a
@@ -950,9 +950,9 @@ export class Kernel {
     return (this.inner as any).setFeatureRotation(id, rx, ry, rz, rw);
   }
 
-  setFeatureScale(id: number, scale: number): boolean {
+  setFeatureScale(id: number, sx: number, sy: number, sz: number): boolean {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).setFeatureScale(id, scale);
+    return (this.inner as any).setFeatureScale(id, sx, sy, sz);
   }
 
   nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {

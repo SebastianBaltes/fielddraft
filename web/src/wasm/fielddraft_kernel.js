@@ -1217,13 +1217,14 @@ export class Kernel {
         return ret !== 0;
     }
     /**
-     * K7.21h: replace the uniform scale of a feature's transform.
      * @param {number} id
-     * @param {number} scale
+     * @param {number} sx
+     * @param {number} sy
+     * @param {number} sz
      * @returns {boolean}
      */
-    setFeatureScale(id, scale) {
-        const ret = wasm.kernel_setFeatureScale(this.__wbg_ptr, id, scale);
+    setFeatureScale(id, sx, sy, sz) {
+        const ret = wasm.kernel_setFeatureScale(this.__wbg_ptr, id, sx, sy, sz);
         return ret !== 0;
     }
     /**
@@ -1254,11 +1255,13 @@ export class Kernel {
      * @param {number} qy
      * @param {number} qz
      * @param {number} qw
-     * @param {number} scale
+     * @param {number} sx
+     * @param {number} sy
+     * @param {number} sz
      * @returns {boolean}
      */
-    setFeatureTransform(id, tx, ty, tz, qx, qy, qz, qw, scale) {
-        const ret = wasm.kernel_setFeatureTransform(this.__wbg_ptr, id, tx, ty, tz, qx, qy, qz, qw, scale);
+    setFeatureTransform(id, tx, ty, tz, qx, qy, qz, qw, sx, sy, sz) {
+        const ret = wasm.kernel_setFeatureTransform(this.__wbg_ptr, id, tx, ty, tz, qx, qy, qz, qw, sx, sy, sz);
         return ret !== 0;
     }
     /**
