@@ -59,6 +59,11 @@ import {
   type AngleValue,
   type LengthValue,
 } from "./widgets";
+import {
+  MATERIAL_PRESETS,
+  PRESET_CATEGORIES,
+  applyPreset,
+} from "./materialPresets";
 
 export interface FeatureDialogProps {
   /** The parsed schema for the feature type being edited. */
@@ -141,6 +146,10 @@ export function FeatureDialog({
   footer,
 }: FeatureDialogProps) {
   const handleParamChange = (key: string, next: unknown) => {
+    if (key === "_material_preset") {
+      onChange(next as Record<string, unknown>);
+      return;
+    }
     onChange(updateParam(definition, key, next));
   };
   return (
@@ -489,6 +498,13 @@ function WidgetFor({
       // Group nodes are handled by the caller — this arm is
       // unreachable but keeps the switch exhaustive for TS.
       return null;
+    case "material_preset":
+      return (
+        <MaterialPresetSelect
+          definition={definition}
+          onApply={(merged) => onParamChange("_material_preset", merged)}
+        />
+      );
     case "unknown":
       return (
         <UnknownWidget
@@ -500,4 +516,35 @@ function WidgetFor({
         />
       );
   }
+}
+
+function MaterialPresetSelect({
+  definition,
+  onApply,
+}: {
+  definition: Record<string, unknown>;
+  onApply: (merged: Record<string, unknown>) => void;
+}) {
+  return (
+    <div className="field" data-field-key="_material_preset">
+      <label className="label">Preset</label>
+      <select
+        className="select"
+        value=""
+        onChange={(e) => {
+          const preset = MATERIAL_PRESETS.find((p) => p.name === e.target.value);
+          if (preset) onApply(applyPreset(definition, preset));
+        }}
+      >
+        <option value="" disabled>Select material...</option>
+        {PRESET_CATEGORIES.map((cat) => (
+          <optgroup key={cat} label={cat}>
+            {MATERIAL_PRESETS.filter((p) => p.category === cat).map((p) => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
 }

@@ -250,6 +250,14 @@ function wrapMaterialTabs(params: FeatureParamDescriptor[]): FeatureParamDescrip
 
   if (visual.length === 0 && technical.length === 0) return params;
 
+  const presetParam: FeatureParamDescriptor = {
+    key: "_material_preset",
+    label: "Preset",
+    widget: "material_preset",
+    required: false,
+    rawType: "material_preset",
+  };
+
   top.push({
     key: "_material_tab",
     label: "",
@@ -258,7 +266,7 @@ function wrapMaterialTabs(params: FeatureParamDescriptor[]): FeatureParamDescrip
     rawType: "tabs",
     tabs: [
       { label: "Visual", children: visual },
-      { label: "Technical", children: technical },
+      { label: "Technical", children: [presetParam, ...technical] },
     ],
   });
 
