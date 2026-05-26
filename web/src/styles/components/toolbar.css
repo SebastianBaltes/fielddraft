@@ -1,9 +1,9 @@
 .fd-toolbar {
   display: flex;
   align-items: center;
-  column-gap: var(--space-5);
-  row-gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
   background: var(--color-bg-elevated);
   border-bottom: 1px solid var(--color-border);
   min-height: var(--toolbar-height);
@@ -56,7 +56,7 @@
       border-top-left-radius: 0;
       border-bottom-left-radius: 0;
       border-left: 1px solid var(--color-border);
-      font-size: var(--fs-sm, 0.85rem);
+      font-size: var(--fs-base);
     }
 
     & > .primitive-dropdown,
@@ -110,8 +110,8 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: var(--space-2);
-    padding-right: var(--space-5);
+    gap: var(--space-1);
+    padding-right: var(--space-3);
     border-right: 1px solid var(--color-divider);
 
     &:last-child {
@@ -134,7 +134,7 @@
     color: var(--color-text);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    padding: var(--space-1) var(--space-3);
+    padding: var(--space-1) var(--space-2);
     font-size: var(--fs-base);
     line-height: 1;
     max-height: calc(var(--toolbar-height) - var(--space-2));
@@ -172,8 +172,8 @@
     color: var(--color-text);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    width: 2.25rem;
-    height: 2.25rem;
+    width: 2rem;
+    height: 2rem;
     font-size: var(--fs-md);
     font-weight: var(--fw-semibold);
     cursor: pointer;
