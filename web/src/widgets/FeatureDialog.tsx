@@ -330,6 +330,7 @@ function WidgetFor({
           required={param.required}
           error={error}
           onChange={emit}
+          unit={param.unit}
         />
       );
     case "vec2":
@@ -340,6 +341,7 @@ function WidgetFor({
           required={param.required}
           error={error}
           onChange={emit}
+          unit={param.unit}
         />
       );
     case "vec3":
@@ -350,6 +352,7 @@ function WidgetFor({
           required={param.required}
           error={error}
           onChange={emit}
+          unit={param.unit}
         />
       );
     case "bool":

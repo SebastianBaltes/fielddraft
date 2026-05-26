@@ -135,6 +135,29 @@ function BufferedNumberInput({
   );
 }
 
+// ─── unit suffix helper ────────────────────────────────────────
+
+function UnitInput({
+  value,
+  onCommit,
+  unit,
+  ...rest
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+  unit?: string;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+  if (!unit) {
+    return <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />;
+  }
+  return (
+    <span className="input-with-unit">
+      <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />
+      <span className="unit-suffix">{unit}</span>
+    </span>
+  );
+}
+
 // ─── number ─────────────────────────────────────────────────────
 
 export function NumberWidget({
@@ -143,15 +166,17 @@ export function NumberWidget({
   onChange,
   error,
   required,
-}: WidgetProps<number>) {
+  unit,
+}: WidgetProps<number> & { unit?: string }) {
   const id = useId();
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
-      <BufferedNumberInput
+      <UnitInput
         id={id}
         className="input"
         value={Number.isFinite(value) ? value : 0}
         onCommit={onChange}
+        unit={unit}
       />
     </Field>
   );
@@ -165,7 +190,8 @@ export function Vec2Widget({
   onChange,
   error,
   required,
-}: WidgetProps<[number, number]>) {
+  unit,
+}: WidgetProps<[number, number]> & { unit?: string }) {
   const id = useId();
   const updateIndex = (index: 0 | 1, next: number) => {
     const copy: [number, number] = [value[0], value[1]];
@@ -178,12 +204,13 @@ export function Vec2Widget({
         {(["x", "y"] as const).map((axis, i) => (
           <div key={axis} className="vec-cell">
             <span className="axis-tag">{axis.toUpperCase()}</span>
-            <BufferedNumberInput
+            <UnitInput
               id={`${id}-${axis}`}
               className="input"
               aria-label={`${label} ${axis}`}
               value={Number.isFinite(value[i]) ? value[i] : 0}
               onCommit={(n) => updateIndex(i as 0 | 1, n)}
+              unit={unit}
             />
           </div>
         ))}
@@ -200,7 +227,8 @@ export function Vec3Widget({
   onChange,
   error,
   required,
-}: WidgetProps<[number, number, number]>) {
+  unit,
+}: WidgetProps<[number, number, number]> & { unit?: string }) {
   const id = useId();
   const updateIndex = (index: 0 | 1 | 2, next: number) => {
     const copy: [number, number, number] = [value[0], value[1], value[2]];
@@ -213,12 +241,13 @@ export function Vec3Widget({
         {(["x", "y", "z"] as const).map((axis, i) => (
           <div key={axis} className="vec-cell">
             <span className="axis-tag">{axis.toUpperCase()}</span>
-            <BufferedNumberInput
+            <UnitInput
               id={`${id}-${axis}`}
               className="input"
               aria-label={`${label} ${axis}`}
               value={Number.isFinite(value[i]) ? value[i] : 0}
               onCommit={(n) => updateIndex(i as 0 | 1 | 2, n)}
+              unit={unit}
             />
           </div>
         ))}
@@ -307,11 +336,12 @@ export function LengthWidget({
             }
           />
         ) : (
-          <BufferedNumberInput
+          <UnitInput
             id={`${id}-value`}
             className="input"
             value={Number.isFinite(value.value as number) ? (value.value as number) : 0}
             onCommit={(n) => onChange({ value: n, unit: value.unit })}
+            unit={value.unit}
           />
         )}
         <button
@@ -366,14 +396,16 @@ export function AngleWidget({
   required,
 }: WidgetProps<AngleValue>) {
   const id = useId();
+  const unitLabel = value.unit === "deg" ? "°" : "rad";
   return (
     <Field label={label} htmlFor={`${id}-value`} error={error} required={required}>
       <div className="unit-row">
-        <BufferedNumberInput
+        <UnitInput
           id={`${id}-value`}
           className="input"
           value={Number.isFinite(value.value) ? value.value : 0}
           onCommit={(n) => onChange({ value: n, unit: value.unit })}
+          unit={unitLabel}
         />
         <select
           id={`${id}-unit`}

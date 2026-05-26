@@ -280,6 +280,10 @@ struct ParamInfo {
     /// FeatureDialog can dispatch the right widget without the
     /// Rust side knowing about React.
     ui_hint: Option<String>,
+    /// Optional `#[param(unit = "mm")]` display-unit string,
+    /// forwarded into the schema JSON so the TS widgets can
+    /// show a suffix inside the input field.
+    unit: Option<String>,
 }
 
 impl ParamInfo {
@@ -292,6 +296,7 @@ impl ParamInfo {
         let mut display_name = prettify_identifier(&key);
         let mut default: Option<Expr> = None;
         let mut ui_hint: Option<String> = None;
+        let mut unit: Option<String> = None;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("param") {
@@ -313,10 +318,15 @@ impl ParamInfo {
                     let lit: syn::LitStr = value.parse()?;
                     ui_hint = Some(lit.value());
                     Ok(())
+                } else if meta.path.is_ident("unit") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    unit = Some(lit.value());
+                    Ok(())
                 } else {
                     Err(meta.error(
                         "unknown #[param(...)] key \
-                         (supported: name, default, ui_hint)",
+                         (supported: name, default, ui_hint, unit)",
                     ))
                 }
             })?;
@@ -330,6 +340,7 @@ impl ParamInfo {
             ty,
             default,
             ui_hint,
+            unit,
         })
     }
 
@@ -361,6 +372,11 @@ impl ParamInfo {
             None => quote! {},
         };
 
+        let unit_entry = match &self.unit {
+            Some(u) => quote! { "unit": #u, },
+            None => quote! {},
+        };
+
         quote! {
             ::serde_json::json!({
                 "key": #key,
@@ -369,6 +385,7 @@ impl ParamInfo {
                 "required": #required,
                 #hint_entry
                 #variants_entry
+                #unit_entry
             })
         }
     }

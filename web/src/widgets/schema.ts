@@ -61,6 +61,7 @@ export interface RawFeatureParam {
   type: string;
   required?: boolean;
   ui_hint?: string;
+  unit?: string;
   variants?: RawEnumVariant[];
   visible_when?: { param: string; equals: unknown };
   min?: number;
@@ -123,6 +124,8 @@ export interface FeatureParamDescriptor {
   min?: number;
   max?: number;
   step?: number;
+  /** Display-unit suffix shown inside input fields (e.g. "mm", "°"). */
+  unit?: string;
   /** K6b query picker metadata. Populated when `widget === "query"`. */
   entityFilter?: string;
   maxPicks?: number;
@@ -333,6 +336,10 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
         1,
       );
     }
+  }
+
+  if (typeof p.unit === "string") {
+    descriptor.unit = p.unit;
   }
 
   if (p.visible_when !== undefined) {

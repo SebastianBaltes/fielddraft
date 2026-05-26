@@ -145,6 +145,28 @@
     line-height: 1;
   }
 
+  & .input-with-unit {
+    display: flex;
+    position: relative;
+    min-width: 0;
+
+    & > .input {
+      width: 100%;
+      padding-right: 2.2em;
+    }
+
+    & .unit-suffix {
+      position: absolute;
+      right: var(--space-2);
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--color-text-muted);
+      pointer-events: none;
+      font-size: var(--fs-base);
+      line-height: 1;
+    }
+  }
+
   & .unit-row {
     display: grid;
     grid-template-columns: 1fr auto auto;
