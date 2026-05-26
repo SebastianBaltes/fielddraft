@@ -1198,7 +1198,7 @@ impl FeatureKind for MateConnectorFeature {
 // shows at most one Transform per uninterrupted editing sequence.
 
 #[derive(Debug)]
-struct TransformDef {
+pub(crate) struct TransformDef {
     target_id: u32,
     translate: [f32; 3],
     rotation: [f32; 4],
@@ -1222,32 +1222,80 @@ impl TransformDef {
     fn schema_json() -> Value {
         serde_json::json!({
             "type": Self::TYPE_NAME,
-            "inputs": [
-                {"name": "target_id", "type": "Integer", "default": 0},
-                {"name": "translate_x", "type": "Length", "default": 0.0},
-                {"name": "translate_y", "type": "Length", "default": 0.0},
-                {"name": "translate_z", "type": "Length", "default": 0.0},
-                {"name": "rotation_x", "type": "Length", "default": 0.0},
-                {"name": "rotation_y", "type": "Length", "default": 0.0},
-                {"name": "rotation_z", "type": "Length", "default": 0.0},
-                {"name": "rotation_w", "type": "Length", "default": 1.0},
-                {"name": "scale_x", "type": "Length", "default": 1.0},
-                {"name": "scale_y", "type": "Length", "default": 1.0},
-                {"name": "scale_z", "type": "Length", "default": 1.0},
+            "params": [
+                {"key": "translate", "name": "Translation", "type": "vec3", "required": false},
+                {"key": "rotation",  "name": "Rotation",    "type": "vec3", "required": false},
+                {"key": "scale",     "name": "Scale",       "type": "vec3", "required": false,
+                 "default": [1.0, 1.0, 1.0]},
             ]
         })
     }
 
+    fn read_vec3(params: &Value, key: &str, default: [f32; 3]) -> [f32; 3] {
+        if let Some(arr) = params.get(key).and_then(|v| v.as_array()) {
+            let c = |i: usize| arr.get(i).and_then(|v| v.as_f64()).unwrap_or(default[i] as f64) as f32;
+            [c(0), c(1), c(2)]
+        } else {
+            default
+        }
+    }
+
+    fn euler_xyz_to_quat(rx_deg: f32, ry_deg: f32, rz_deg: f32) -> [f32; 4] {
+        let (s1, c1) = (rx_deg.to_radians() * 0.5).sin_cos();
+        let (s2, c2) = (ry_deg.to_radians() * 0.5).sin_cos();
+        let (s3, c3) = (rz_deg.to_radians() * 0.5).sin_cos();
+        [
+            s1 * c2 * c3 + c1 * s2 * s3,
+            c1 * s2 * c3 - s1 * c2 * s3,
+            c1 * c2 * s3 + s1 * s2 * c3,
+            c1 * c2 * c3 - s1 * s2 * s3,
+        ]
+    }
+
+    pub(crate) fn quat_to_euler_xyz(qx: f32, qy: f32, qz: f32, qw: f32) -> [f32; 3] {
+        let m11 = 1.0 - 2.0 * (qy * qy + qz * qz);
+        let m12 = 2.0 * (qx * qy - qw * qz);
+        let m13 = 2.0 * (qx * qz + qw * qy);
+        let m23 = 2.0 * (qy * qz - qw * qx);
+        let m33 = 1.0 - 2.0 * (qx * qx + qy * qy);
+
+        let ry = m13.clamp(-1.0, 1.0).asin();
+        let (rx, rz) = if m13.abs() < 0.9999999 {
+            ((-m23).atan2(m33), (-m12).atan2(m11))
+        } else {
+            let m32 = 2.0 * (qy * qz + qw * qx);
+            let m22 = 1.0 - 2.0 * (qx * qx + qz * qz);
+            (m32.atan2(m22), 0.0)
+        };
+        [rx.to_degrees(), ry.to_degrees(), rz.to_degrees()]
+    }
+
     fn from_params(params: &Value) -> Self {
+        let target_id = params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let f = |key: &str, default: f64| -> f32 {
             params.get(key).and_then(|v| v.as_f64()).unwrap_or(default) as f32
         };
-        Self {
-            target_id: params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            translate: [f("translate_x", 0.0), f("translate_y", 0.0), f("translate_z", 0.0)],
-            rotation: [f("rotation_x", 0.0), f("rotation_y", 0.0), f("rotation_z", 0.0), f("rotation_w", 1.0)],
-            scale: [f("scale_x", 1.0), f("scale_y", 1.0), f("scale_z", 1.0)],
-        }
+
+        let translate = if params.get("translate").and_then(|v| v.as_array()).is_some() {
+            Self::read_vec3(params, "translate", [0.0, 0.0, 0.0])
+        } else {
+            [f("translate_x", 0.0), f("translate_y", 0.0), f("translate_z", 0.0)]
+        };
+
+        let rotation = if params.get("rotation").and_then(|v| v.as_array()).is_some() {
+            let euler = Self::read_vec3(params, "rotation", [0.0, 0.0, 0.0]);
+            Self::euler_xyz_to_quat(euler[0], euler[1], euler[2])
+        } else {
+            [f("rotation_x", 0.0), f("rotation_y", 0.0), f("rotation_z", 0.0), f("rotation_w", 1.0)]
+        };
+
+        let scale = if params.get("scale").and_then(|v| v.as_array()).is_some() {
+            Self::read_vec3(params, "scale", [1.0, 1.0, 1.0])
+        } else {
+            [f("scale_x", 1.0), f("scale_y", 1.0), f("scale_z", 1.0)]
+        };
+
+        Self { target_id, translate, rotation, scale }
     }
 }
 

@@ -138,6 +138,7 @@ export interface FeatureParamDescriptor {
   /** K7.21g: tab definitions for `widget === "tabs"`. Each tab has
    *  a label and a list of child param descriptors. */
   tabs?: { label: string; children: FeatureParamDescriptor[] }[];
+  defaultValue?: unknown;
 }
 
 export interface FeatureSchema {
@@ -246,6 +247,10 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
     rawType,
     uiHint,
   };
+
+  if (p.default !== undefined) {
+    descriptor.defaultValue = p.default;
+  }
 
   if (widget === "group" || widget === "expandable") {
     const rawChildren = p.children;
@@ -481,6 +486,7 @@ function applyDefaults(
 /** Default value for a single parameter, taking variants and
  *  slider bounds into account. */
 export function defaultForParam(p: FeatureParamDescriptor): unknown {
+  if (p.defaultValue !== undefined) return p.defaultValue;
   switch (p.widget) {
     case "number":
       return 0;

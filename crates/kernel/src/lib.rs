@@ -38,6 +38,7 @@ use bvh::BoundedCsg;
 use csg::CsgNode;
 use dc::{dual_contour, Mesh};
 use raycast::{raycast, RaycastParams};
+use features::TransformDef;
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
 
@@ -2268,11 +2269,12 @@ impl Kernel {
             return false;
         }
 
+        let euler = TransformDef::quat_to_euler_xyz(rx, ry, rz, rw);
         let params = serde_json::json!({
             "target_id": target_id,
-            "translate_x": tx, "translate_y": ty, "translate_z": tz,
-            "rotation_x": rx, "rotation_y": ry, "rotation_z": rz, "rotation_w": rw,
-            "scale_x": sx, "scale_y": sy, "scale_z": sz,
+            "translate": [tx, ty, tz],
+            "rotation": [euler[0], euler[1], euler[2]],
+            "scale": [sx, sy, sz],
         });
 
         let should_merge = self.document.feature_calls.last().map_or(false, |c| {
