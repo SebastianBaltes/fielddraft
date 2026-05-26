@@ -46,7 +46,7 @@ import {
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
-import { consumeViewCommand, invalidateCanvas, peekViewCommand, registerInvalidate, requestView, VIEW_PRESETS } from "./viewCommands";
+import { consumeViewCommand, invalidateCanvas, peekViewCommand, registerInvalidate, requestView, VIEW_PRESETS, type ViewPreset } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import {
   publishPickCamera,
@@ -1387,7 +1387,7 @@ function ViewCube() {
     });
   }, []);
 
-  const faceClick = (e: React.MouseEvent, preset: "front" | "top" | "right" | "iso") => {
+  const faceClick = (e: React.MouseEvent, preset: Exclude<ViewPreset, null>) => {
     e.stopPropagation();
     requestView(preset);
   };
@@ -1397,11 +1397,11 @@ function ViewCube() {
       <div className="viewcube-scene">
         <div ref={cubeRef} className="viewcube">
           <div className="viewcube-face front" onClick={(e) => faceClick(e, "front")}>Front</div>
-          <div className="viewcube-face back" onClick={(e) => faceClick(e, "front")}>Back</div>
+          <div className="viewcube-face back" onClick={(e) => faceClick(e, "back")}>Back</div>
           <div className="viewcube-face top" onClick={(e) => faceClick(e, "top")}>Top</div>
-          <div className="viewcube-face bottom" onClick={(e) => faceClick(e, "top")}>Bottom</div>
+          <div className="viewcube-face bottom" onClick={(e) => faceClick(e, "bottom")}>Bottom</div>
           <div className="viewcube-face right" onClick={(e) => faceClick(e, "right")}>Right</div>
-          <div className="viewcube-face left" onClick={(e) => faceClick(e, "right")}>Left</div>
+          <div className="viewcube-face left" onClick={(e) => faceClick(e, "left")}>Left</div>
         </div>
       </div>
     </div>

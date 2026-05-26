@@ -5,7 +5,7 @@
  * reads it per frame, snaps the camera, and clears the signal.
  */
 
-export type ViewPreset = "front" | "top" | "right" | "iso" | null;
+export type ViewPreset = "front" | "back" | "top" | "bottom" | "right" | "left" | "iso" | null;
 
 const state: { pending: ViewPreset; invalidate: (() => void) | null } = {
   pending: null,
@@ -43,8 +43,11 @@ export const VIEW_PRESETS: Record<
   Exclude<ViewPreset, null>,
   { position: [number, number, number]; up: [number, number, number] }
 > = {
-  front: { position: [0, 0, 500], up: [0, 1, 0] },
-  top: { position: [0, 500, 0], up: [0, 0, -1] },
-  right: { position: [500, 0, 0], up: [0, 1, 0] },
-  iso: { position: [350, 280, 350], up: [0, 1, 0] },
+  front:  { position: [0, 0, 500],     up: [0, 1, 0] },
+  back:   { position: [0, 0, -500],    up: [0, 1, 0] },
+  top:    { position: [0, 500, 0],     up: [0, 0, -1] },
+  bottom: { position: [0, -500, 0],    up: [0, 0, 1] },
+  right:  { position: [500, 0, 0],     up: [0, 1, 0] },
+  left:   { position: [-500, 0, 0],    up: [0, 1, 0] },
+  iso:    { position: [350, 280, 350], up: [0, 1, 0] },
 };
