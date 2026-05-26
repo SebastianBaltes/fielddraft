@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera, Text } from "@react-three/drei";
+import { Html, OrbitControls, OrthographicCamera } from "@react-three/drei";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
@@ -879,6 +879,7 @@ function Invalidator({ ndc }: { ndc: { x: number; y: number; active: boolean } }
   const meshedBodies = state?.meshedBodies;
   const sketchActive = state?.sketchSession.active ?? false;
   const selection = state?.selection;
+  const features = state?.features;
   // K7.22 follow-up: toggling the sketch overlay must redraw the
   // canvas on a demand-frameloop. Without this dep, the scene
   // graph was updated correctly (SketchOverlay3D removed its
@@ -894,6 +895,7 @@ function Invalidator({ ndc }: { ndc: { x: number; y: number; active: boolean } }
     meshedBodies,
     sketchActive,
     selection,
+    features,
     visibleSketches,
     ndc.x,
     ndc.y,
@@ -1258,19 +1260,21 @@ function DatumOverlay() {
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
-          <Text
+          <Html
             position={DATUM_LABEL_POS}
-            fontSize={7}
-            color={"#3b82f6"}
-            anchorX="left"
-            anchorY="top"
-            material-transparent
-            material-opacity={0.45}
-            material-depthWrite={false}
-            material-depthTest={false}
+            style={{
+              color: "#3b82f6",
+              opacity: 0.45,
+              fontSize: "1rem",
+              fontWeight: 500,
+              pointerEvents: "none",
+              userSelect: "none",
+              whiteSpace: "nowrap",
+            }}
+            zIndexRange={[0, 0]}
           >
             {plane.label}
-          </Text>
+          </Html>
         </group>
       ))}
     </group>
@@ -1439,6 +1443,26 @@ function ViewCube() {
 function CameraRig() {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
+  const controlsRef = useRef<any>(null);
+
+  const selectedFeature = useMemo(() => {
+    if (!state || state.selection.size !== 1) return undefined;
+    const first = state.selection.values().next().value;
+    if (first === undefined) return undefined;
+    return state.features.find((f) => f.id === first);
+  }, [state?.selection, state?.features]);
+
+  useEffect(() => {
+    const c = controlsRef.current;
+    if (!c || sketchActive) return;
+    if (selectedFeature) {
+      const [x, y, z] = selectedFeature.translate;
+      c.target.set(x, y, z);
+    } else {
+      c.target.set(0, 0, 0);
+    }
+    c.update();
+  }, [selectedFeature, sketchActive]);
 
   if (sketchActive) {
     return (
@@ -1467,6 +1491,7 @@ function CameraRig() {
 
   return (
     <OrbitControls
+      ref={controlsRef}
       makeDefault
       enableDamping={false}
       rotateSpeed={1.4}

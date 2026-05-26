@@ -410,6 +410,7 @@ export function Outliner({ store, state }: OutlinerProps) {
   };
   const handleRollbackDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    if (!e.dataTransfer.types.includes("fielddraft/rollback-bar")) return;
     if (rollbackDropIndex !== null) {
       store.setRollbackIndex(rollbackDropIndex);
     }
@@ -938,7 +939,10 @@ export function Outliner({ store, state }: OutlinerProps) {
                     else handleFeatureDragOver(e, index);
                   }}
                   onDragLeave={draggingRollback ? undefined : handleFeatureDragLeave}
-                  onDrop={draggingRollback ? handleRollbackDrop : handleFeatureDrop}
+                  onDrop={(e) => {
+                    if (e.dataTransfer.types.includes("fielddraft/rollback-bar")) handleRollbackDrop(e);
+                    else handleFeatureDrop(e);
+                  }}
                   onDragEnd={draggingRollback ? handleRollbackDragEnd : handleFeatureDragEnd}
                   onClick={isRolledBack ? undefined : (e) => handleRowClick(e, feature.id)}
                   onDoubleClick={isRolledBack ? undefined : () => handleRowDoubleClick(feature)}
@@ -1045,7 +1049,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                 {rbIdx === 0 && rollbackBar}
                 {ungrouped.flatMap(({ feature, index }) => {
                   const row = renderFeatureRow(feature, index);
-                  if (index + 1 === rbIdx && rbIdx > 0) return [row, rollbackBar];
+                  if (index + 1 === rbIdx && rbIdx > 0 && rbIdx < state.features.length) return [row, rollbackBar];
                   return [row];
                 })}
                 {rbIdx >= state.features.length && rollbackBar}

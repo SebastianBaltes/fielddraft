@@ -415,10 +415,19 @@
 
   & .color-hex {
     font-variant-numeric: tabular-nums;
-    font-size: var(--fs-sm);
-    color: var(--color-text-muted);
+    font-size: var(--fs-base);
+    color: var(--color-text);
     width: 7.5em;
-    font-family: inherit;
+    font-family: var(--font-family-mono);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+
+    &:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 1px;
+    }
   }
 
   /* ── K6a.1: collapsible group ──────────────────────────── */

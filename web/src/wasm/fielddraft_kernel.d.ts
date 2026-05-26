@@ -434,6 +434,8 @@ export class Kernel {
      * broken).
      */
     setFeatureSuppressed(id: number, suppressed: boolean): void;
+    setRollbackIndex(index: number): void;
+    getRollbackIndex(): number;
     /**
      * Replace the full transform (translate, quaternion, scale).
      */
