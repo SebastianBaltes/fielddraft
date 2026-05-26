@@ -87,6 +87,7 @@ export type FeatureKindName =
   | "rotate"
   | "scale"
   | "boolean"
+  | "material"
   | "unknown";
 
 export interface ContourData {

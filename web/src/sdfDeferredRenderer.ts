@@ -182,6 +182,12 @@ export interface DeferredPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  roughnessData: Float32Array;
+  roughnessBuf: ReturnType<typeof uniformArray>;
+  metalnessData: Float32Array;
+  metalnessBuf: ReturnType<typeof uniformArray>;
+  emissiveData: Float32Array;
+  emissiveBuf: ReturnType<typeof uniformArray>;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
@@ -273,6 +279,9 @@ function createShadeMaterial(
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   colorBuf: ReturnType<typeof uniformArray>,
+  roughnessBuf: ReturnType<typeof uniformArray>,
+  metalnessBuf: ReturnType<typeof uniformArray>,
+  emissiveBuf: ReturnType<typeof uniformArray>,
   selectionBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
@@ -412,7 +421,13 @@ function createShadeMaterial(
       const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
       const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
       const baseColor = vec3(cr, cg, cb);
-      const color = pbrShade({ nView, viewDir, baseColor }).toVar();
+      const roughness = roughnessBuf.element(shadeBodyIdx);
+      const metalness = metalnessBuf.element(shadeBodyIdx);
+      const er = emissiveBuf.element(shadeBodyIdx.mul(3));
+      const eg = emissiveBuf.element(shadeBodyIdx.mul(3).add(1));
+      const eb = emissiveBuf.element(shadeBodyIdx.mul(3).add(2));
+      const emissive = vec3(er, eg, eb);
+      const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
       const sel = selectionBuf.element(shadeBodyIdx);
       If(sel.greaterThan(float(0.5)), () => {
@@ -481,6 +496,16 @@ export function initDeferredPipeline(
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const roughnessData = new Float32Array(MAX_BODIES);
+  roughnessData.fill(0.35);
+  const roughnessBuf = uniformArray(roughnessData, "float");
+
+  const metalnessData = new Float32Array(MAX_BODIES);
+  const metalnessBuf = uniformArray(metalnessData, "float");
+
+  const emissiveData = new Float32Array(MAX_BODIES * 3);
+  const emissiveBuf = uniformArray(emissiveData, "float");
+
   const selectionData = new Float32Array(MAX_BODIES);
   const selectionBuf = uniformArray(selectionData, "float");
 
@@ -506,6 +531,9 @@ export function initDeferredPipeline(
     opcodeBuf,
     offsetBuf,
     colorBuf,
+    roughnessBuf,
+    metalnessBuf,
+    emissiveBuf,
     selectionBuf,
     volumeBaseBuf,
     camPosUniform,
@@ -543,6 +571,12 @@ export function initDeferredPipeline(
     offsetData,
     colorBuf,
     colorData,
+    roughnessData,
+    roughnessBuf,
+    metalnessData,
+    metalnessBuf,
+    emissiveData,
+    emissiveBuf,
     selectionBuf,
     selectionData,
     volumeBaseBuf,
@@ -882,6 +916,9 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.opcodeBuf,
     state.offsetBuf,
     state.colorBuf,
+    state.roughnessBuf,
+    state.metalnessBuf,
+    state.emissiveBuf,
     state.selectionBuf,
     state.volumeBaseBuf,
     state.camPosUniform,

@@ -53,6 +53,12 @@ export interface VmPipelineState {
   offsetData: Float32Array;
   colorBuf: ReturnType<typeof uniformArray>;
   colorData: Float32Array;
+  roughnessData: Float32Array;
+  roughnessBuf: ReturnType<typeof uniformArray>;
+  metalnessData: Float32Array;
+  metalnessBuf: ReturnType<typeof uniformArray>;
+  emissiveData: Float32Array;
+  emissiveBuf: ReturnType<typeof uniformArray>;
   bodyCountU: ReturnType<typeof uniform>;
   camPosU: ReturnType<typeof uniform>;
   invProjU: ReturnType<typeof uniform>;
@@ -81,6 +87,16 @@ export function initVmPipeline(): VmPipelineState {
   }
   const colorBuf = uniformArray(colorData, "float");
 
+  const roughnessData = new Float32Array(MAX_BODIES);
+  roughnessData.fill(0.35);
+  const roughnessBuf = uniformArray(roughnessData, "float");
+
+  const metalnessData = new Float32Array(MAX_BODIES);
+  const metalnessBuf = uniformArray(metalnessData, "float");
+
+  const emissiveData = new Float32Array(MAX_BODIES * 3);
+  const emissiveBuf = uniformArray(emissiveData, "float");
+
   const volumeBaseData = new Float32Array(MAX_BODIES);
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
@@ -100,6 +116,12 @@ export function initVmPipeline(): VmPipelineState {
     offsetData,
     colorBuf,
     colorData,
+    roughnessData,
+    roughnessBuf,
+    metalnessData,
+    metalnessBuf,
+    emissiveData,
+    emissiveBuf,
     bodyCountU: uniform(0),
     camPosU: uniform(new THREE.Vector3()),
     invProjU: uniform(new THREE.Matrix4()),
@@ -294,8 +316,14 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const cg = state.colorBuf.element(hitBody.mul(3).add(1));
     const cb = state.colorBuf.element(hitBody.mul(3).add(2));
     const baseColor = vec3(cr, cg, cb);
+    const roughness = state.roughnessBuf.element(hitBody);
+    const metalness = state.metalnessBuf.element(hitBody);
+    const er = state.emissiveBuf.element(hitBody.mul(3));
+    const eg = state.emissiveBuf.element(hitBody.mul(3).add(1));
+    const eb = state.emissiveBuf.element(hitBody.mul(3).add(2));
+    const emissive = vec3(er, eg, eb);
 
-    return vec4(pbrShade({ nView, viewDir, baseColor }), 1);
+    return vec4(pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }), 1);
   })();
 
   material.side = THREE.DoubleSide;

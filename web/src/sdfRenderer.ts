@@ -1199,6 +1199,10 @@ export interface SdfBodyHandle {
   paramBuf: ReturnType<typeof uniformArray>;
   paramData: Float32Array;
   paramCount: number;
+  colorU: { value: THREE.Color };
+  roughnessU: { value: number };
+  metalnessU: { value: number };
+  emissiveU: { value: THREE.Color };
 }
 
 export function createSdfBody(
@@ -1232,6 +1236,11 @@ export function createSdfBody(
     );
   });
 
+  const colorU = uniform(new THREE.Color(0.55, 0.65, 0.85));
+  const roughnessU = uniform(0.35);
+  const metalnessU = uniform(0.0);
+  const emissiveU = uniform(new THREE.Color(0, 0, 0));
+
   const hitDepthProp = property('float', 'hitDepth');
 
   const colorNode = Fn(() => {
@@ -1261,8 +1270,9 @@ export function createSdfBody(
       const nWorld = sceneNormal({ p: hitPos });
       const nView = normalize(cameraViewMatrix.mul(vec4(nWorld, 0.0)).xyz);
       const viewDir = normalize(cameraViewMatrix.mul(vec4(rd.negate(), 0.0)).xyz);
-      const baseColor = vec3(0.55, 0.65, 0.85);
-      finalColor.assign(pbrShade({ nView, viewDir, baseColor }));
+      const baseColor = vec3(colorU);
+      const emissive = vec3(emissiveU);
+      finalColor.assign(pbrShade({ nView, viewDir, baseColor, roughness: roughnessU, metalness: metalnessU, emissive }));
       const clipPos = cameraProjectionMatrix.mul(cameraViewMatrix).mul(vec4(hitPos, 1));
       hitDepthProp.assign(clipPos.z.div(clipPos.w));
     }).Else(() => {
@@ -1295,7 +1305,7 @@ export function createSdfBody(
   mesh.position.set(cx, cy, cz);
   mesh.frustumCulled = false;
 
-  return { mesh, material, topologyKey, paramBuf, paramData, paramCount };
+  return { mesh, material, topologyKey, paramBuf, paramData, paramCount, colorU, roughnessU, metalnessU, emissiveU };
 }
 
 export function updateSdfBody(

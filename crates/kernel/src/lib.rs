@@ -846,6 +846,7 @@ impl Kernel {
             "translate" => "translate",
             "rotate" => "rotate",
             "scale" => "scale",
+            "material" => "material",
             _ => "unknown",
         }
     }

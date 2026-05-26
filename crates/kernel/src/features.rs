@@ -230,6 +230,7 @@ impl FeatureRegistry {
         r.register(Box::new(RotateFeature));
         r.register(Box::new(ScaleFeature));
         r.register(Box::new(BooleanFeature));
+        r.register(Box::new(MaterialFeature));
         r
     }
 
@@ -2664,6 +2665,69 @@ impl FeatureKind for BooleanFeature {
     }
 }
 
+// ─── Material ────────────────────────────────────────────────────
+//
+// Non-geometric feature that assigns PBR + engineering material
+// properties to one or more target bodies.  The kernel stores it
+// as a FeatureCall (no spine entry); the frontend reads the params
+// to drive shader uniforms.
+
+#[derive(FeatureSchema)]
+#[schema(type = "material")]
+pub struct MaterialDef {
+    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""))]
+    pub targets: ::fielddraft_protocol::MultiQuery,
+
+    // ── PBR optical ──────────────────────────────────────────
+    #[param(name = "Color", default = [0.55, 0.65, 0.85])]
+    pub color: [f32; 3],
+    #[param(name = "Roughness", default = 0.35)]
+    pub roughness: f32,
+    #[param(name = "Metalness", default = 0.0)]
+    pub metalness: f32,
+    #[param(name = "Emissive", default = [0.0, 0.0, 0.0])]
+    pub emissive: [f32; 3],
+    #[param(name = "Opacity", default = 1.0)]
+    pub opacity: f32,
+    #[param(name = "Wireframe", default = false)]
+    pub wireframe: bool,
+
+    // ── Engineering ──────────────────────────────────────────
+    #[param(name = "Density (kg/m³)", default = 0.0)]
+    pub density: f32,
+    #[param(name = "Young's modulus (GPa)", default = 0.0)]
+    pub youngs_modulus: f32,
+    #[param(name = "Poisson's ratio", default = 0.0)]
+    pub poissons_ratio: f32,
+    #[param(name = "Yield tensile (MPa)", default = 0.0)]
+    pub yield_tensile: f32,
+    #[param(name = "Ultimate tensile (MPa)", default = 0.0)]
+    pub ultimate_tensile: f32,
+    #[param(name = "Yield compressive (MPa)", default = 0.0)]
+    pub yield_compressive: f32,
+}
+
+pub struct MaterialFeature;
+
+impl FeatureKind for MaterialFeature {
+    fn type_name(&self) -> &'static str {
+        MaterialDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        MaterialDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        _ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        _def: &Value,
+    ) -> Result<(), FeatureError> {
+        Ok(())
+    }
+}
+
 // ─── tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2682,7 +2746,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 25);
+        assert_eq!(registry.len(), 26);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -2748,6 +2812,7 @@ mod tests {
                 "imported_mesh",
                 "linear_pattern",
                 "mate_connector",
+                "material",
                 "mirror",
                 "revolve",
                 "rotate",

@@ -43,6 +43,7 @@ import {
   disposeDeferredPipeline,
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
+import { resolveMaterials, applyMaterialsToDeferred, applyMaterialsToVm } from "./materialBridge";
 import { PerfProbe, PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { publishSketchCamera } from "./sketchCameraBridge";
@@ -240,6 +241,9 @@ function SdfVmOverlay() {
       dataFpRef.current = dataFp;
     }
 
+    const vmMaterials = resolveMaterials(k, store.getState().features);
+    applyMaterialsToVm(pipeline, vmMaterials, count);
+
     if (!readyRef.current || compilingRef.current) return;
 
     const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
@@ -411,7 +415,11 @@ function SdfDeferredOverlay() {
       dataFpRef.current = dataFp;
     }
 
-    const selection = store.getState().selection;
+    const storeState = store.getState();
+    const materials = resolveMaterials(k, storeState.features);
+    applyMaterialsToDeferred(pipeline, materials, count);
+
+    const selection = storeState.selection;
     const selectedBodies = new Set<number>();
     for (let i = 0; i < count; i++) {
       if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
