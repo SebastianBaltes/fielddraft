@@ -223,7 +223,46 @@ export function parseFeatureSchema(value: unknown): FeatureSchema {
       (p) => p.widget === "group" || !HIDDEN_PRIMITIVE_PARAM_KEYS.has(p.key),
     );
   }
+  if (typeField === "material") {
+    params = wrapMaterialTabs(params);
+  }
   return { type: typeField, params };
+}
+
+const VISUAL_MATERIAL_KEYS = new Set([
+  "color", "roughness", "metalness", "emissive", "opacity", "wireframe",
+]);
+const TECHNICAL_MATERIAL_KEYS = new Set([
+  "density", "youngs_modulus", "poissons_ratio",
+  "yield_tensile", "ultimate_tensile", "yield_compressive",
+]);
+
+function wrapMaterialTabs(params: FeatureParamDescriptor[]): FeatureParamDescriptor[] {
+  const top: FeatureParamDescriptor[] = [];
+  const visual: FeatureParamDescriptor[] = [];
+  const technical: FeatureParamDescriptor[] = [];
+
+  for (const p of params) {
+    if (VISUAL_MATERIAL_KEYS.has(p.key)) visual.push(p);
+    else if (TECHNICAL_MATERIAL_KEYS.has(p.key)) technical.push(p);
+    else top.push(p);
+  }
+
+  if (visual.length === 0 && technical.length === 0) return params;
+
+  top.push({
+    key: "_material_tab",
+    label: "",
+    widget: "tabs",
+    required: false,
+    rawType: "tabs",
+    tabs: [
+      { label: "Visual", children: visual },
+      { label: "Technical", children: technical },
+    ],
+  });
+
+  return top;
 }
 
 function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
