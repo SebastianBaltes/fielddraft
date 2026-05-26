@@ -1608,7 +1608,20 @@ impl FeatureKind for GyroidFeature {
     }
 
     fn schema_json(&self) -> Value {
-        GyroidDef::schema_json()
+        let mut schema = GyroidDef::schema_json();
+        if let Some(params) = schema.get_mut("params").and_then(|p| p.as_array_mut()) {
+            for param in params.iter_mut() {
+                if param.get("key").and_then(|k| k.as_str()) == Some("op") {
+                    if let Some(variants) =
+                        param.get_mut("variants").and_then(|v| v.as_array_mut())
+                    {
+                        variants
+                            .retain(|v| v.get("key").and_then(|k| k.as_str()) != Some("union"));
+                    }
+                }
+            }
+        }
+        schema
     }
 
     fn execute(
@@ -1622,6 +1635,11 @@ impl FeatureKind for GyroidFeature {
         let thick_mm = d.thickness.to_mm();
         positive_f32(cell_mm, GyroidDef::TYPE_NAME, "cell_size")?;
         positive_f32(thick_mm, GyroidDef::TYPE_NAME, "thickness")?;
+
+        let op = match d.op {
+            BoolOp::Union => BoolOp::Intersect,
+            other => other,
+        };
 
         let name = optional_display_name(def, || format!("Gyroid {id}"));
         let rotation = optional_rotation(def);
@@ -1640,7 +1658,7 @@ impl FeatureKind for GyroidFeature {
         ctx.document.features.push(SpineFeature {
             id: id.child("0"),
             name,
-            op: d.op,
+            op,
             primitive: Primitive::Gyroid {
                 cell_size: cell_mm,
                 thickness: thick_mm,
