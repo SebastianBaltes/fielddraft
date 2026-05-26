@@ -47,6 +47,14 @@ import {
 } from "./assembly";
 import { executeScript } from "./fieldscript";
 import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
+import {
+  type MeshOverlayData,
+  canTriggerDownload,
+  triggerDownload,
+  parseStlBinary,
+  parseObjText,
+  buildObjExportText,
+} from "./meshIO";
 
 /**
  * One mesh-ready body as cached by the store after a worker response.
@@ -310,11 +318,7 @@ function formatKernelError(err: unknown, fallback: string): string {
 
 const INACTIVE_SKETCH_SESSION: SketchSessionState = _INACTIVE;
 
-export type MeshOverlayData = {
-  positions: Float32Array;
-  normals: Float32Array;
-  indices: Uint32Array;
-};
+export type { MeshOverlayData } from "./meshIO";
 
 export class KernelStore {
   readonly kernel: Kernel;
@@ -655,56 +659,10 @@ export class KernelStore {
 
   // ── K9.0: STL reference import ──────────────────────────────
 
-  /** K9.0: parse a binary STL file into positions/normals/indices. */
-  private parseStl(buffer: ArrayBuffer): MeshOverlayData | null {
-    console.log(`fielddraft: importing STL — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
-
-    const view = new DataView(buffer);
-    if (buffer.byteLength < 84) {
-      console.error("fielddraft: STL import failed — file too small (< 84 bytes), possibly not a valid STL");
-      return null;
-    }
-    const triCount = view.getUint32(80, true);
-    const expected = 84 + triCount * 50;
-    if (buffer.byteLength < expected) {
-      console.error(
-        `fielddraft: STL import failed — header says ${triCount} triangles (needs ${expected} bytes) but file is ${buffer.byteLength} bytes. Possibly ASCII STL (not supported) or corrupt file.`,
-      );
-      return null;
-    }
-
-    console.log(`fielddraft: parsing ${triCount} triangles…`);
-    const positions = new Float32Array(triCount * 9);
-    const normals = new Float32Array(triCount * 9);
-    const indices = new Uint32Array(triCount * 3);
-
-    let offset = 84;
-    for (let t = 0; t < triCount; t++) {
-      const nx = view.getFloat32(offset, true);
-      const ny = view.getFloat32(offset + 4, true);
-      const nz = view.getFloat32(offset + 8, true);
-      offset += 12;
-      for (let v = 0; v < 3; v++) {
-        const base = t * 9 + v * 3;
-        positions[base] = view.getFloat32(offset, true);
-        positions[base + 1] = view.getFloat32(offset + 4, true);
-        positions[base + 2] = view.getFloat32(offset + 8, true);
-        normals[base] = nx;
-        normals[base + 1] = ny;
-        normals[base + 2] = nz;
-        indices[t * 3 + v] = t * 3 + v;
-        offset += 12;
-      }
-      offset += 2;
-    }
-
-    return { positions, normals, indices };
-  }
-
   async loadReferenceMesh(buffer: ArrayBuffer): Promise<boolean> {
     this.setLoading("Parsing STL…");
     await new Promise((r) => setTimeout(r, 0));
-    const mesh = this.parseStl(buffer);
+    const mesh = parseStlBinary(buffer);
     if (!mesh) {
       this.setLoading(null);
       return false;
@@ -798,79 +756,12 @@ export class KernelStore {
     }
   }
 
-  /** K9.3: load a Wavefront OBJ file as visual reference mesh.
-   *  Parses the text directly — no external loader needed. */
   async loadReferenceObj(text: string): Promise<boolean> {
-    const t0 = performance.now();
-    console.log(`fielddraft: importing OBJ reference — ${(text.length / 1024).toFixed(0)} KB`);
-    const verts: number[] = [];
-    const positions: number[] = [];
-    const normals: number[] = [];
-
-    for (const raw of text.split("\n")) {
-      const line = raw.trim();
-      if (line.startsWith("v ")) {
-        const parts = line.split(/\s+/);
-        verts.push(
-          parseFloat(parts[1]),
-          parseFloat(parts[2]),
-          parseFloat(parts[3]),
-        );
-      } else if (line.startsWith("f ")) {
-        const parts = line.split(/\s+/).slice(1);
-        // Triangulate fan-style for quads/n-gons.
-        const idxs = parts.map((p) => parseInt(p.split("/")[0], 10) - 1);
-        for (let i = 1; i < idxs.length - 1; i++) {
-          for (const idx of [idxs[0], idxs[i], idxs[i + 1]]) {
-            positions.push(
-              verts[idx * 3] ?? 0,
-              verts[idx * 3 + 1] ?? 0,
-              verts[idx * 3 + 2] ?? 0,
-            );
-            normals.push(0, 0, 0);
-          }
-        }
-      }
-    }
-
-    if (positions.length === 0) {
-      console.error("fielddraft: OBJ import failed — no geometry found");
-      return false;
-    }
-
-    console.log(`fielddraft: OBJ parsed — ${verts.length / 3} vertices, ${positions.length / 9} triangles`);
-    // Compute flat normals per triangle.
-    for (let i = 0; i < positions.length; i += 9) {
-      const ax = positions[i + 3] - positions[i];
-      const ay = positions[i + 4] - positions[i + 1];
-      const az = positions[i + 5] - positions[i + 2];
-      const bx = positions[i + 6] - positions[i];
-      const by = positions[i + 7] - positions[i + 1];
-      const bz = positions[i + 8] - positions[i + 2];
-      let nx = ay * bz - az * by;
-      let ny = az * bx - ax * bz;
-      let nz = ax * by - ay * bx;
-      const len = Math.hypot(nx, ny, nz) || 1;
-      nx /= len;
-      ny /= len;
-      nz /= len;
-      for (let v = 0; v < 3; v++) {
-        normals[i + v * 3] = nx;
-        normals[i + v * 3 + 1] = ny;
-        normals[i + v * 3 + 2] = nz;
-      }
-    }
-
-    const posArr = new Float32Array(positions);
-    const normArr = new Float32Array(normals);
-    const idxArr = new Uint32Array(
-      Array.from({ length: positions.length / 3 }, (_, i) => i),
-    );
-
-    console.log(`fielddraft: OBJ parsed — ${positions.length / 9} triangles in ${(performance.now() - t0).toFixed(0)} ms`);
+    const mesh = parseObjText(text);
+    if (!mesh) return false;
     this.setLoading("Building SDF from mesh…");
     await new Promise((r) => setTimeout(r, 0));
-    const id = this.importMeshAsFeature(posArr, normArr, idxArr);
+    const id = this.importMeshAsFeature(mesh.positions, mesh.normals, mesh.indices);
     this.setLoading(null);
     return id !== null;
   }
@@ -2377,56 +2268,21 @@ export class KernelStore {
    *  STL file. No-op outside the browser (the store is also
    *  used in Vitest where `document`/`URL` may not exist). */
   downloadStl(filename = "fielddraft.stl"): void {
-    if (
-      typeof window === "undefined" ||
-      typeof document === "undefined" ||
-      typeof URL === "undefined" ||
-      typeof URL.createObjectURL !== "function"
-    ) {
-      return;
-    }
+    if (!canTriggerDownload()) return;
     const bytes = this.kernel.exportStlBinary();
-    // Copy the view into a dedicated backing buffer so the
-    // Blob constructor sees a plain ArrayBuffer — passing a
-    // Uint8Array that aliases wasm memory can hand the Blob
-    // a buffer that gets invalidated by a subsequent kernel
-    // mutation.
     const copy = new Uint8Array(bytes.length);
     copy.set(bytes);
-    const blob = new Blob([copy], { type: "model/stl" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerDownload(copy, "model/stl", filename);
   }
 
   /** M14a: export the current scene as a 3MF archive with
    *  per-body colors. Same WASM→Blob→download pattern as STL. */
   download3mf(filename = "fielddraft.3mf"): void {
-    if (
-      typeof window === "undefined" ||
-      typeof document === "undefined" ||
-      typeof URL === "undefined" ||
-      typeof URL.createObjectURL !== "function"
-    ) {
-      return;
-    }
+    if (!canTriggerDownload()) return;
     const bytes = this.kernel.export3mf();
     const copy = new Uint8Array(bytes.length);
     copy.set(bytes);
-    const blob = new Blob([copy], { type: "application/vnd.ms-package.3dmanufacturing-3dmodel+xml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerDownload(copy, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml", filename);
   }
 
   /** Import a .3mf file: extract meshes as CSG solids, stash
@@ -2469,14 +2325,7 @@ export class KernelStore {
   /** Re-export as 3MF, preserving stashed slicer metadata from the
    *  last import. Falls back to normal 3MF export if no stash exists. */
   download3mfRoundtrip(filename = "fielddraft.3mf"): void {
-    if (
-      typeof window === "undefined" ||
-      typeof document === "undefined" ||
-      typeof URL === "undefined" ||
-      typeof URL.createObjectURL !== "function"
-    ) {
-      return;
-    }
+    if (!canTriggerDownload()) return;
     const stash = this.state.threemfStash;
     if (!stash) {
       this.download3mf(filename);
@@ -2489,17 +2338,7 @@ export class KernelStore {
     const bytes = export3mfRoundtrip(modelXmlOnly, stash);
     const blobData = new Uint8Array(bytes.length);
     blobData.set(bytes);
-    const blob = new Blob([blobData as unknown as BlobPart], {
-      type: "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerDownload(blobData, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml", filename);
   }
 
 
@@ -2507,7 +2346,7 @@ export class KernelStore {
    *  the OCCT Web Worker. Lazy-loads opencascade.js (~25 MB)
    *  on first call. */
   async downloadStep(filename = "fielddraft.step"): Promise<void> {
-    if (typeof window === "undefined" || typeof document === "undefined") return;
+    if (!canTriggerDownload()) return;
     try {
       const classJson = this.kernel.classifyForStep();
       const report = JSON.parse(classJson) as {
@@ -2559,15 +2398,7 @@ export class KernelStore {
       const stepBytes = await exportStep(commands);
       const copy = new Uint8Array(stepBytes.length);
       copy.set(stepBytes);
-      const blob = new Blob([copy], { type: "application/step" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      triggerDownload(copy, "application/step", filename);
     } catch (e) {
       console.error("STEP export failed:", e);
       alert(`STEP export failed: ${e instanceof Error ? e.message : e}`);
@@ -2615,9 +2446,7 @@ export class KernelStore {
    *  (glTF 2.0). Builds a temporary Three.js scene from the
    *  body mesh cache and runs the GLTFExporter. */
   async downloadGlb(filename = "fielddraft.glb"): Promise<void> {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      return;
-    }
+    if (!canTriggerDownload()) return;
     const THREE = await import("three");
     const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
 
@@ -2634,53 +2463,12 @@ export class KernelStore {
 
     const exporter = new GLTFExporter();
     const glb = await exporter.parseAsync(scene, { binary: true }) as ArrayBuffer;
-    const blob = new Blob([glb], { type: "model/gltf-binary" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerDownload(glb, "model/gltf-binary", filename);
   }
 
-  /** Export the current scene as a Wavefront OBJ text file. */
   downloadObj(filename = "fielddraft.obj"): void {
-    if (typeof document === "undefined") return;
-    const lines: string[] = ["# FieldDraft OBJ export"];
-    let vertexOffset = 0;
-    for (const body of this.state.meshedBodies) {
-      if (body.positions.length === 0) continue;
-      const vertCount = body.positions.length / 3;
-      for (let i = 0; i < body.positions.length; i += 3) {
-        lines.push(
-          `v ${body.positions[i].toFixed(6)} ${body.positions[i + 1].toFixed(6)} ${body.positions[i + 2].toFixed(6)}`,
-        );
-      }
-      for (let i = 0; i < body.normals.length; i += 3) {
-        lines.push(
-          `vn ${body.normals[i].toFixed(6)} ${body.normals[i + 1].toFixed(6)} ${body.normals[i + 2].toFixed(6)}`,
-        );
-      }
-      for (let i = 0; i < body.indices.length; i += 3) {
-        const a = body.indices[i] + 1 + vertexOffset;
-        const b = body.indices[i + 1] + 1 + vertexOffset;
-        const c = body.indices[i + 2] + 1 + vertexOffset;
-        lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
-      }
-      vertexOffset += vertCount;
-    }
-    const text = lines.join("\n") + "\n";
-    const blob = new Blob([text], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    if (!canTriggerDownload()) return;
+    triggerDownload(buildObjExportText(this.state.meshedBodies), "text/plain", filename);
   }
 
   commitSketch(): number | null {

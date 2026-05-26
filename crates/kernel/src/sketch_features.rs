@@ -558,308 +558,90 @@ impl SketchToolKind for SketchPolygonTool {
 // wrapper — the kernel just persists the constraint network so
 // it survives save / load / edit cycles.
 
-/// `sketch_constraint_horizontal` — locks a line to the
-/// sketch-plane X axis.
+macro_rules! constraint_tool {
+    ($def:ident, $tool:ident, |$st:ident, $d:ident| $body:expr) => {
+        pub struct $tool;
+        impl SketchToolKind for $tool {
+            fn type_name(&self) -> &'static str { $def::TYPE_NAME }
+            fn schema_json(&self) -> Value { $def::schema_json() }
+            fn apply(&self, $st: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
+                let $d = $def::parse(def)?;
+                $body;
+                Ok(())
+            }
+        }
+    };
+}
+
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_horizontal")]
-pub struct SketchHorizontalConstraintDef {
-    pub line: u32,
-}
+pub struct SketchHorizontalConstraintDef { pub line: u32 }
+constraint_tool!(SketchHorizontalConstraintDef, SketchHorizontalConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Horizontal { id: cid, line: EntityId(d.line) }));
 
-pub struct SketchHorizontalConstraintTool;
-
-impl SketchToolKind for SketchHorizontalConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchHorizontalConstraintDef::TYPE_NAME
-    }
-
-    fn schema_json(&self) -> Value {
-        SketchHorizontalConstraintDef::schema_json()
-    }
-
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchHorizontalConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Horizontal {
-            id: cid,
-            line: EntityId(d.line),
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_vertical` — locks a line to the sketch-plane
-/// Y axis.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_vertical")]
-pub struct SketchVerticalConstraintDef {
-    pub line: u32,
-}
+pub struct SketchVerticalConstraintDef { pub line: u32 }
+constraint_tool!(SketchVerticalConstraintDef, SketchVerticalConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Vertical { id: cid, line: EntityId(d.line) }));
 
-pub struct SketchVerticalConstraintTool;
-
-impl SketchToolKind for SketchVerticalConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchVerticalConstraintDef::TYPE_NAME
-    }
-
-    fn schema_json(&self) -> Value {
-        SketchVerticalConstraintDef::schema_json()
-    }
-
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchVerticalConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Vertical {
-            id: cid,
-            line: EntityId(d.line),
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_coincident` — forces two sketch points to
-/// coincide. Used by the K6b.3c endpoint snap when the user
-/// starts a new line on top of an existing point.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_coincident")]
-pub struct SketchCoincidentConstraintDef {
-    pub a: u32,
-    pub b: u32,
-}
+pub struct SketchCoincidentConstraintDef { pub a: u32, pub b: u32 }
+constraint_tool!(SketchCoincidentConstraintDef, SketchCoincidentConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Coincident { id: cid, a: EntityId(d.a), b: EntityId(d.b) }));
 
-pub struct SketchCoincidentConstraintTool;
-
-impl SketchToolKind for SketchCoincidentConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchCoincidentConstraintDef::TYPE_NAME
-    }
-
-    fn schema_json(&self) -> Value {
-        SketchCoincidentConstraintDef::schema_json()
-    }
-
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchCoincidentConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Coincident {
-            id: cid,
-            a: EntityId(d.a),
-            b: EntityId(d.b),
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_distance` — fixes the distance between
-/// two entities (point-to-point or point-to-line).
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_distance")]
-pub struct SketchDistanceConstraintDef {
-    pub entity_a: u32,
-    pub entity_b: u32,
-    pub value_mm: f32,
-}
+pub struct SketchDistanceConstraintDef { pub entity_a: u32, pub entity_b: u32, pub value_mm: f32 }
+constraint_tool!(SketchDistanceConstraintDef, SketchDistanceConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Distance {
+        id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), value_mm: d.value_mm as f64, driven: false,
+    }));
 
-pub struct SketchDistanceConstraintTool;
-
-impl SketchToolKind for SketchDistanceConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchDistanceConstraintDef::TYPE_NAME
-    }
-    fn schema_json(&self) -> Value {
-        SketchDistanceConstraintDef::schema_json()
-    }
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchDistanceConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Distance {
-            id: cid,
-            a: EntityId(d.entity_a),
-            b: EntityId(d.entity_b),
-            value_mm: d.value_mm as f64,
-            driven: false,
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_angle` — fixes the angle between two lines.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_angle")]
-pub struct SketchAngleConstraintDef {
-    pub line_a: u32,
-    pub line_b: u32,
-    pub value_deg: f32,
-}
+pub struct SketchAngleConstraintDef { pub line_a: u32, pub line_b: u32, pub value_deg: f32 }
+constraint_tool!(SketchAngleConstraintDef, SketchAngleConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Angle {
+        id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b), value_deg: d.value_deg as f64, driven: false,
+    }));
 
-pub struct SketchAngleConstraintTool;
-
-impl SketchToolKind for SketchAngleConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchAngleConstraintDef::TYPE_NAME
-    }
-    fn schema_json(&self) -> Value {
-        SketchAngleConstraintDef::schema_json()
-    }
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchAngleConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Angle {
-            id: cid,
-            a: EntityId(d.line_a),
-            b: EntityId(d.line_b),
-            value_deg: d.value_deg as f64,
-            driven: false,
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_equal` — forces two entities to have
-/// equal length/radius.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_equal")]
-pub struct SketchEqualConstraintDef {
-    pub entity_a: u32,
-    pub entity_b: u32,
-}
+pub struct SketchEqualConstraintDef { pub entity_a: u32, pub entity_b: u32 }
+constraint_tool!(SketchEqualConstraintDef, SketchEqualConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Equal { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b) }));
 
-pub struct SketchEqualConstraintTool;
-
-impl SketchToolKind for SketchEqualConstraintTool {
-    fn type_name(&self) -> &'static str {
-        SketchEqualConstraintDef::TYPE_NAME
-    }
-    fn schema_json(&self) -> Value {
-        SketchEqualConstraintDef::schema_json()
-    }
-    fn apply(
-        &self,
-        state: &mut SketchState,
-        _id: &FeatureId,
-        def: &Value,
-    ) -> Result<(), FeatureError> {
-        let d = SketchEqualConstraintDef::parse(def)?;
-        state.add_constraint(|cid: ConstraintId| Constraint::Equal {
-            id: cid,
-            a: EntityId(d.entity_a),
-            b: EntityId(d.entity_b),
-        });
-        Ok(())
-    }
-}
-
-/// `sketch_constraint_parallel` — forces two lines to be parallel.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_parallel")]
-pub struct SketchParallelConstraintDef {
-    pub line_a: u32,
-    pub line_b: u32,
-}
-pub struct SketchParallelConstraintTool;
-impl SketchToolKind for SketchParallelConstraintTool {
-    fn type_name(&self) -> &'static str { SketchParallelConstraintDef::TYPE_NAME }
-    fn schema_json(&self) -> Value { SketchParallelConstraintDef::schema_json() }
-    fn apply(&self, state: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
-        let d = SketchParallelConstraintDef::parse(def)?;
-        state.add_constraint(|cid| Constraint::Parallel { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) });
-        Ok(())
-    }
-}
+pub struct SketchParallelConstraintDef { pub line_a: u32, pub line_b: u32 }
+constraint_tool!(SketchParallelConstraintDef, SketchParallelConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Parallel { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) }));
 
-/// `sketch_constraint_perpendicular` — forces two lines to be perpendicular.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_perpendicular")]
-pub struct SketchPerpendicularConstraintDef {
-    pub line_a: u32,
-    pub line_b: u32,
-}
-pub struct SketchPerpendicularConstraintTool;
-impl SketchToolKind for SketchPerpendicularConstraintTool {
-    fn type_name(&self) -> &'static str { SketchPerpendicularConstraintDef::TYPE_NAME }
-    fn schema_json(&self) -> Value { SketchPerpendicularConstraintDef::schema_json() }
-    fn apply(&self, state: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
-        let d = SketchPerpendicularConstraintDef::parse(def)?;
-        state.add_constraint(|cid| Constraint::Perpendicular { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) });
-        Ok(())
-    }
-}
+pub struct SketchPerpendicularConstraintDef { pub line_a: u32, pub line_b: u32 }
+constraint_tool!(SketchPerpendicularConstraintDef, SketchPerpendicularConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Perpendicular { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) }));
 
-/// `sketch_constraint_tangent` — forces a line to be tangent to a curve.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_tangent")]
-pub struct SketchTangentConstraintDef {
-    pub line: u32,
-    pub curve: u32,
-}
-pub struct SketchTangentConstraintTool;
-impl SketchToolKind for SketchTangentConstraintTool {
-    fn type_name(&self) -> &'static str { SketchTangentConstraintDef::TYPE_NAME }
-    fn schema_json(&self) -> Value { SketchTangentConstraintDef::schema_json() }
-    fn apply(&self, state: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
-        let d = SketchTangentConstraintDef::parse(def)?;
-        state.add_constraint(|cid| Constraint::Tangent { id: cid, line: EntityId(d.line), curve: EntityId(d.curve) });
-        Ok(())
-    }
-}
+pub struct SketchTangentConstraintDef { pub line: u32, pub curve: u32 }
+constraint_tool!(SketchTangentConstraintDef, SketchTangentConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Tangent { id: cid, line: EntityId(d.line), curve: EntityId(d.curve) }));
 
-/// `sketch_constraint_midpoint` — forces a point to lie at the midpoint of a line.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_midpoint")]
-pub struct SketchMidpointConstraintDef {
-    pub point: u32,
-    pub line: u32,
-}
-pub struct SketchMidpointConstraintTool;
-impl SketchToolKind for SketchMidpointConstraintTool {
-    fn type_name(&self) -> &'static str { SketchMidpointConstraintDef::TYPE_NAME }
-    fn schema_json(&self) -> Value { SketchMidpointConstraintDef::schema_json() }
-    fn apply(&self, state: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
-        let d = SketchMidpointConstraintDef::parse(def)?;
-        state.add_constraint(|cid| Constraint::Midpoint { id: cid, point: EntityId(d.point), line: EntityId(d.line) });
-        Ok(())
-    }
-}
+pub struct SketchMidpointConstraintDef { pub point: u32, pub line: u32 }
+constraint_tool!(SketchMidpointConstraintDef, SketchMidpointConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Midpoint { id: cid, point: EntityId(d.point), line: EntityId(d.line) }));
 
-/// `sketch_constraint_symmetric` — forces two entities to be symmetric about an axis line.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_symmetric")]
-pub struct SketchSymmetricConstraintDef {
-    pub entity_a: u32,
-    pub entity_b: u32,
-    pub axis: u32,
-}
-pub struct SketchSymmetricConstraintTool;
-impl SketchToolKind for SketchSymmetricConstraintTool {
-    fn type_name(&self) -> &'static str { SketchSymmetricConstraintDef::TYPE_NAME }
-    fn schema_json(&self) -> Value { SketchSymmetricConstraintDef::schema_json() }
-    fn apply(&self, state: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
-        let d = SketchSymmetricConstraintDef::parse(def)?;
-        state.add_constraint(|cid| Constraint::Symmetric { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), axis: EntityId(d.axis) });
-        Ok(())
-    }
-}
+pub struct SketchSymmetricConstraintDef { pub entity_a: u32, pub entity_b: u32, pub axis: u32 }
+constraint_tool!(SketchSymmetricConstraintDef, SketchSymmetricConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Symmetric { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), axis: EntityId(d.axis) }));
 
 // ─── top-level `sketch` feature ─────────────────────────────────
 
