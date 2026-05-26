@@ -770,15 +770,20 @@ function SelectionTransformGizmo() {
     gizmoPendingRef.current = false;
     const p = mesh.position;
     const q = mesh.quaternion;
-    const s = mesh.scale;
+    let sx = mesh.scale.x, sy = mesh.scale.y, sz = mesh.scale.z;
     if (gizmoMode === "translate") {
       syncedTranslateRef.current = [p.x, p.y, p.z];
+    }
+    if (selectedFeature.kind === "sphere") {
+      const u = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
+      sx = u; sy = u; sz = u;
+      mesh.scale.set(u, u, u);
     }
     store.applyGizmoTransform(
       selectedFeature.id,
       p.x, p.y, p.z,
       q.x, q.y, q.z, q.w,
-      s.x, s.y, s.z,
+      sx, sy, sz,
     );
   };
 
