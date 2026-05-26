@@ -23,6 +23,7 @@ import {
   min,
   normalize,
   positionGeometry,
+  mix,
   smoothstep,
   uniform,
   vec3,
@@ -47,6 +48,10 @@ import {
   FRESNEL_EDGE_MAX,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
+  EDGE_EPS,
+  EDGE_THRESH_MIN,
+  EDGE_THRESH_MAX,
+  EDGE_COLOR,
 } from "./sdfPipelineCommon";
 
 const MAX_BODIES = 8;
@@ -78,10 +83,8 @@ export interface VmPipelineState {
   opacityBuf: ReturnType<typeof uniformArray>;
   wireframeData: Float32Array;
   wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceDepthData: Float32Array;
-  displaceDepthBuf: ReturnType<typeof uniformArray>;
-  displaceFreqData: Float32Array;
-  displaceFreqBuf: ReturnType<typeof uniformArray>;
+  displaceData: Float32Array;
+  displaceBuf: ReturnType<typeof uniformArray>;
   bodyCountU: ReturnType<typeof uniform>;
   camPosU: ReturnType<typeof uniform>;
   invProjU: ReturnType<typeof uniform>;
@@ -169,8 +172,8 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
   const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
     const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
     if (!args.bodyIdx) return d;
-    const depth = state.displaceDepthBuf.element(args.bodyIdx);
-    const freq = state.displaceFreqBuf.element(args.bodyIdx);
+    const depth = state.displaceBuf.element(args.bodyIdx.mul(2));
+    const freq = state.displaceBuf.element(args.bodyIdx.mul(2).add(1));
     const disp = args.p.x.mul(freq).sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
@@ -255,7 +258,22 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const eg = state.emissiveBuf.element(hitBody.mul(3).add(1));
     const eb = state.emissiveBuf.element(hitBody.mul(3).add(2));
     const emissive = vec3(er, eg, eb);
-    const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive });
+    const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
+
+    const edgeEps = float(EDGE_EPS);
+    const eex = vec3(edgeEps, 0, 0);
+    const eey = vec3(0, edgeEps, 0);
+    const eez = vec3(0, 0, edgeEps);
+    const edgeSum = abs(
+      sdfEval({ p: hitPos.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+        .add(sdfEval({ p: hitPos.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: hitPos.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: hitPos.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: hitPos.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: hitPos.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+    );
+    const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
+    color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
 
     const bodyOpacity = state.opacityBuf.element(hitBody);
     const wf = state.wireframeBuf.element(hitBody);

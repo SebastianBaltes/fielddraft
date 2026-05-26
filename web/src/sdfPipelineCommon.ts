@@ -20,10 +20,8 @@ export interface MaterialBufferSet {
   opacityBuf: ReturnType<typeof uniformArray>;
   wireframeData: Float32Array;
   wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceDepthData: Float32Array;
-  displaceDepthBuf: ReturnType<typeof uniformArray>;
-  displaceFreqData: Float32Array;
-  displaceFreqBuf: ReturnType<typeof uniformArray>;
+  displaceData: Float32Array;
+  displaceBuf: ReturnType<typeof uniformArray>;
 }
 
 export interface OpcodeBufferSet {
@@ -63,11 +61,8 @@ export function createMaterialBuffers(maxBodies: number): MaterialBufferSet {
   const wireframeData = new Float32Array(maxBodies);
   const wireframeBuf = uniformArray(wireframeData, "float");
 
-  const displaceDepthData = new Float32Array(maxBodies);
-  const displaceDepthBuf = uniformArray(displaceDepthData, "float");
-
-  const displaceFreqData = new Float32Array(maxBodies);
-  const displaceFreqBuf = uniformArray(displaceFreqData, "float");
+  const displaceData = new Float32Array(maxBodies * 2);
+  const displaceBuf = uniformArray(displaceData, "float");
 
   return {
     colorData, colorBuf,
@@ -76,8 +71,7 @@ export function createMaterialBuffers(maxBodies: number): MaterialBufferSet {
     emissiveData, emissiveBuf,
     opacityData, opacityBuf,
     wireframeData, wireframeBuf,
-    displaceDepthData, displaceDepthBuf,
-    displaceFreqData, displaceFreqBuf,
+    displaceData, displaceBuf,
   };
 }
 
@@ -194,3 +188,8 @@ export const FRESNEL_EDGE_MIN = 0.65;
 export const FRESNEL_EDGE_MAX = 0.85;
 export const DISPLACE_FREQ_Y = 1.3;
 export const DISPLACE_FREQ_Z = 0.7;
+
+export const EDGE_EPS = 0.5;
+export const EDGE_THRESH_MIN = 0.1;
+export const EDGE_THRESH_MAX = 0.5;
+export const EDGE_COLOR = 0.12;

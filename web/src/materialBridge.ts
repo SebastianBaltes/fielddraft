@@ -101,8 +101,7 @@ export interface MaterialBufferTarget {
   emissiveData: Float32Array;
   opacityData: Float32Array;
   wireframeData: Float32Array;
-  displaceDepthData: Float32Array;
-  displaceFreqData: Float32Array;
+  displaceData: Float32Array;
 }
 
 export function applyMaterials(
@@ -123,8 +122,8 @@ export function applyMaterials(
       target.emissiveData[i * 3 + 2] = mat.emissive[2];
       target.opacityData[i] = mat.opacity;
       target.wireframeData[i] = mat.wireframe ? 1 : 0;
-      target.displaceDepthData[i] = mat.displaceDepth;
-      target.displaceFreqData[i] = mat.displaceFreq;
+      target.displaceData[i * 2] = mat.displaceDepth;
+      target.displaceData[i * 2 + 1] = mat.displaceFreq;
     } else {
       const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
       target.colorData[i * 3] = r;
@@ -137,8 +136,8 @@ export function applyMaterials(
       target.emissiveData[i * 3 + 2] = 0;
       target.opacityData[i] = 1;
       target.wireframeData[i] = 0;
-      target.displaceDepthData[i] = 0;
-      target.displaceFreqData[i] = 0;
+      target.displaceData[i * 2] = 0;
+      target.displaceData[i * 2 + 1] = 0;
     }
   }
 }

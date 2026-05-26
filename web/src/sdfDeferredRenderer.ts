@@ -67,6 +67,10 @@ import {
   FRESNEL_EDGE_MAX,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
+  EDGE_EPS,
+  EDGE_THRESH_MIN,
+  EDGE_THRESH_MAX,
+  EDGE_COLOR,
 } from "./sdfPipelineCommon";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -208,10 +212,8 @@ export interface DeferredPipelineState {
   opacityBuf: ReturnType<typeof uniformArray>;
   wireframeData: Float32Array;
   wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceDepthData: Float32Array;
-  displaceDepthBuf: ReturnType<typeof uniformArray>;
-  displaceFreqData: Float32Array;
-  displaceFreqBuf: ReturnType<typeof uniformArray>;
+  displaceData: Float32Array;
+  displaceBuf: ReturnType<typeof uniformArray>;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
@@ -309,8 +311,7 @@ function createShadeMaterial(
   selectionBuf: ReturnType<typeof uniformArray>,
   opacityBuf: ReturnType<typeof uniformArray>,
   wireframeBuf: ReturnType<typeof uniformArray>,
-  displaceDepthBuf: ReturnType<typeof uniformArray>,
-  displaceFreqBuf: ReturnType<typeof uniformArray>,
+  displaceBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
@@ -326,8 +327,8 @@ function createShadeMaterial(
   const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
     const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
     if (!args.bodyIdx) return d;
-    const depth = displaceDepthBuf.element(args.bodyIdx);
-    const freq = displaceFreqBuf.element(args.bodyIdx);
+    const depth = displaceBuf.element(args.bodyIdx.mul(2));
+    const freq = displaceBuf.element(args.bodyIdx.mul(2).add(1));
     const disp = args.p.x.mul(freq).sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
@@ -469,6 +470,21 @@ function createShadeMaterial(
       const emissive = vec3(er, eg, eb);
       const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
+      const edgeEps = float(EDGE_EPS);
+      const eex = vec3(edgeEps, 0, 0);
+      const eey = vec3(0, edgeEps, 0);
+      const eez = vec3(0, 0, edgeEps);
+      const edgeSum = abs(
+        sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+          .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+      );
+      const edgeFactor = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
+      color.assign(mix(color, vec3(EDGE_COLOR), edgeFactor));
+
       const sel = selectionBuf.element(shadeBodyIdx);
       If(sel.greaterThan(float(0.5)), () => {
         color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
@@ -567,8 +583,7 @@ export function initDeferredPipeline(
     selectionBuf,
     matBufs.opacityBuf,
     matBufs.wireframeBuf,
-    matBufs.displaceDepthBuf,
-    matBufs.displaceFreqBuf,
+    matBufs.displaceBuf,
     opBufs.volumeBaseBuf,
     camPosUniform,
     viewMatU,
@@ -881,8 +896,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.selectionBuf,
     state.opacityBuf,
     state.wireframeBuf,
-    state.displaceDepthBuf,
-    state.displaceFreqBuf,
+    state.displaceBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
     state.viewMatU,
