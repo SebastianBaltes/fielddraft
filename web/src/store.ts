@@ -1995,6 +1995,12 @@ export class KernelStore {
     this.notify();
   }
 
+  cycleGizmoMode(): void {
+    const order: ("translate" | "rotate" | "scale")[] = ["translate", "rotate", "scale"];
+    const idx = order.indexOf(this.state.gizmoMode);
+    this.setGizmoMode(order[(idx + 1) % order.length]);
+  }
+
   setFeatureTranslate(id: number, x: number, y: number, z: number): boolean {
     if (!this.kernel.setFeatureTranslate(id, x, y, z)) return false;
     this.commit();

@@ -1634,6 +1634,13 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         store.selectRangeTo(featureId);
       } else if (event.ctrlKey || event.metaKey) {
         store.toggleSelect(featureId);
+      } else if (
+        state &&
+        state.selection.size === 1 &&
+        state.selection.has(featureId) &&
+        localStorage.getItem("fielddraft.clickCycleGizmo") !== "false"
+      ) {
+        store.cycleGizmoMode();
       } else {
         store.selectOnly(featureId);
       }

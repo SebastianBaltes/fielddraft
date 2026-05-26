@@ -17,6 +17,7 @@ function setup() {
     units: "mm",
     theme: "light",
     renderMode: "sdf-deferred",
+    clickCycleGizmo: true,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
