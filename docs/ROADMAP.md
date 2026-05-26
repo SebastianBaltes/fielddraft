@@ -11,7 +11,7 @@ Dieses Dokument beschreibt die FieldDraft‑**Vision**, nicht die erste shippabl
 - **T0 — Demonstrator / Architektur‑Validierung.** K1–K3, K3.5, K4, K4.5, K5a, K5b, K6a, K6a.1. „Läuft", aber nicht user‑facing. Ziel: die SDF‑Architektur und die Feature‑as‑Function‑Pipeline end‑to‑end zum Laufen bringen, inklusive Solver‑Integration und generischem Dialog‑Generator. **Status: abgeschlossen bis auf K3.5** (neuer Slice, Planungsdetails siehe unten). Ein externer User kann das Tool an dieser Stelle nicht sinnvoll bedienen — es fehlen die Zeichen‑Werkzeuge und das Tree‑UI.
 - **T1 — Shippable Alpha („Usable CAD").** K6b, K7, K8, K9, K10. **Cut‑Linie: der User kann einen Prototypen‑Gehäuse‑Entwurf mit verrundeten Kanten, Bohrungen, Patterns und Variablen aufbauen und als druckbares STL exportieren.** Ohne Fillets (K10) ist das Ergebnis für den Maker‑Einsatz nicht nutzbar — ein Gehäuse mit scharfen Kanten ist kein Gehäuse. Deshalb endet T1 explizit erst bei K10, nicht bei K9. Alles, was den SDF‑Hauptakku lädt (K11) oder Spezial‑Features sind (K12/K13), bleibt bewusst draußen. T1 ist der Punkt, an dem FieldDraft *ein* CAD ist — nicht *das* CAD.
 - **T2 — Differentiated v1 („Reason to Exist").** K11. Hier lädt FieldDraft seinen Hauptakku auf: Gyroid/TPMS‑Infill, Procedural Noise/Displacement, Domain Deformation, Morph. Das sind die Features, die Onshape, Fusion, SolidWorks nicht haben, weil ihre B‑Rep‑Kernel sie nicht tragen — und der einzige Grund, FieldDraft über etablierte Tools zu wählen. Vor T2 ist FieldDraft technisch interessant, aber nicht differenziert. T2 ist die erste Version, die eine eigenständige Positionierung rechtfertigt.
-- **T3 — Feature‑Complete Vision.** K12 (Analytisches Gewinde), K13 (Mesh‑to‑SDF für Sweep und Import), K14 (Drag'n'Drop), dann Phase 2 (Backend, Accounts, Assemblies) und Phase 3 (Kinematik, Physik, Code‑First‑Export). Mehrjahresperspektive.
+- **T3 — Feature‑Complete Vision.** K12 (Analytisches Gewinde), K13 (Mesh‑to‑SDF für Sweep und Import), K14 (Drag'n'Drop), K15 (Input Map Presets), dann Phase 2 (Backend, Accounts, Assemblies) und Phase 3 (Kinematik, Physik, Code‑First‑Export). Mehrjahresperspektive.
 - **T∞ — Forschung / experimentell.** K‑Exp1 (Skelett‑First‑Renderpfad) und weitere Parallel‑Slices. Kein Liefer‑Tier, sondern ein Ort, an dem Ideen reifen dürfen, ohne die Hauptlinie zu blockieren.
 
 **Realitätsbezogener Zeithorizont.** Bei einem Entwickler plus Pair‑Programming‑Agent ist T1 als *mehrmonatige* Arbeit realistisch, T2 als *weitere mehrmonatige* Iteration, T3 in der Größenordnung von **1–2 Jahren**. Das Dokument ist damit keine „Road to MVP in N Wochen"‑Roadmap, sondern die Gesamtvision eines Produkts, das über mehrere Shipping‑Linien hinweg wächst.
@@ -244,6 +244,47 @@ Dieser Slice zieht die beim UI‑Audit vom 2026‑04‑13 identifizierten kritis
 **Abnahme:** Alle sechs Sub‑Slices umgesetzt und getestet; ROADMAP‑ und STATUS‑Einträge wahrheitsgemäß aktualisiert; UI fühlt sich auf 1280×720, 900×600 und 600×800 (iPad‑artig) jeweils bedienbar an.
 
 **Nicht im Scope:** B‑Rep‑Face‑Snap **beim Zeichnen** innerhalb eines Sketches (Snap auf Kanten/Vertices des 3D‑Modells während Linien gezogen werden) — das ist eine eigene K6b‑Härtung und hängt am vollen K9‑Proxy. K7.21e deckt nur den Face‑Lock bei **Sketch‑Start** ab, nicht das Snapping während des Zeichnens.
+
+### T3 · K15 — Input Map Presets (konfigurierbare Maus‑/Tastatur‑Bedienung) *(offen)*
+
+CAD‑Programme verwenden unterschiedliche Maus‑Tastenbelegungen für Orbit, Pan, Zoom, Selektion und Kontextmenü. Umsteiger müssen sich nicht umgewöhnen, wenn FieldDraft die gewohnte Belegung als Preset anbietet. Dieser Slice abstrahiert die gesamte Pointer‑Interaktion (nicht nur OrbitControls) hinter einem `InputMap`‑Objekt, das per Setting‑Dropdown umgeschaltet werden kann.
+
+**Betroffene Interaktions‑Bereiche:**
+
+| Aktion | Variiert zwischen Presets | Beispiel |
+|---|---|---|
+| **Orbit** | LMB (Three.js) vs. RMB (Onshape/Tinkercad) vs. MMB (Blender) vs. Shift+MMB (Fusion 360) | |
+| **Pan** | RMB (Three.js) vs. MMB (Onshape/Fusion/Blender) vs. Shift+RMB (Tinkercad) | |
+| **Zoom** | Wheel überall; Ctrl+MMB vertikal (Blender) als Alternative | |
+| **Select** | LMB‑Klick überall, aber Drag‑Select‑Rechteck‑Trigger variiert | |
+| **Context Menu** | RMB (Fusion 360, Blender) vs. nicht belegt (Three.js, Onshape, Tinkercad) | |
+| **Gizmo‑Drag** | LMB überall, aber Modifier‑Konflikte mit Orbit bei LMB‑Orbit‑Presets | |
+
+**Presets:**
+
+- **Web / Three.js (Default):** Orbit=LMB, Zoom=Wheel/MMB, Pan=RMB oder LMB+Ctrl/Shift, Select=LMB‑Klick
+- **Onshape:** Orbit=RMB, Pan=MMB, Zoom=Wheel, Select=LMB‑Klick/Drag‑Rect, Context=nicht belegt
+- **Fusion 360:** Orbit=Shift+MMB, Pan=MMB, Zoom=Wheel, Select=LMB, Context=RMB
+- **Blender:** Orbit=MMB, Pan=Shift+MMB, Zoom=Wheel oder Ctrl+MMB, Select=LMB, Context=RMB
+- **Tinkercad:** Orbit=RMB, Pan=MMB oder Shift+RMB, Zoom=Wheel, Select=LMB
+
+**Implementierung:**
+
+1. **`InputMap`‑Typ** als zentrales Mapping‑Objekt: Für jede Aktion (Orbit, Pan, Zoom, Select, ContextMenu, GizmoDrag) definiert es Maus‑Button + Modifier‑Kombination + Touch‑Geste. Rein deklarativ, kein Event‑Handling.
+2. **`InputMapRegistry`** mit den fünf Presets. Eigene Presets als Stretch Goal.
+3. **OrbitControls‑Anbindung:** R3F‑OrbitControls haben `mouseButtons` (LEFT/MIDDLE/RIGHT → ROTATE/DOLLY/PAN) — der `InputMap` setzt diese Felder beim Mount/Wechsel.
+4. **Viewport‑Click‑Dispatcher:** Der bestehende `onPointerDown`/`onClick`‑Handler in `Viewport.tsx` prüft gegen die aktive `InputMap`, ob der Klick als Select, ContextMenu oder ignoriert (weil Orbit/Pan) interpretiert wird.
+5. **Gizmo‑Koordination:** TransformControls nutzen intern LMB für Drag. Bei Presets mit LMB=Orbit muss der Gizmo‑Hover‑State OrbitControls *vor* dem Drag deaktivieren (bereits implementiert via `dragging-changed`, muss aber mit dem neuen Dispatch zusammenspielen).
+6. **Context‑Menu‑Infrastruktur:** Für Presets mit RMB=ContextMenu wird ein generisches Kontextmenü‑System benötigt (Feature‑Aktionen: Edit, Delete, Rename, Move Up/Down). Für Presets ohne ContextMenu bleibt RMB bei der alternativen Aktion (Orbit/Pan). Das ContextMenu selbst ist ein eigener Implementierungs‑Block innerhalb dieses Slices.
+7. **Settings‑UI:** Dropdown im Settings‑Panel (K7.21a) unter „Navigation". Wert in `localStorage` persistiert. Default: „Web / Three.js" (Rückwärtskompatibilität).
+8. **Touch‑Gesten:** Analog zur Maus‑Belegung — 1‑Finger=Orbit vs. Select hängt vom Preset ab. Stretch Goal, kann als Phase 2 innerhalb des Slices kommen.
+
+**Abhängigkeiten:** K7.21a (Settings‑Panel für UI‑Integration). Kein Kernel‑Code betroffen.
+
+**Tests:**
+- Unit‑Tests für `InputMap`‑Auflösung: Gegeben Button+Modifier → erwartete Aktion.
+- Playwright‑Tests pro Preset: Orbit/Pan/Select‑Geste erzeugt das erwartete Kamera‑Verhalten.
+- Regressions‑Test: Default‑Preset verhält sich identisch zum bisherigen Verhalten.
 
 ---
 

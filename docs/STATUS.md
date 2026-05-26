@@ -7,7 +7,7 @@
 
 ## Kurzfassung
 
-FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, der sich an Onshape orientiert und auf den FDM/SLA-3D-Druck zielt. Das Projekt durchläuft eine Roadmap mit fünf Release-Tiers (T0–T3 + T∞) und gliedert sich in Kernel-Slices (K1–K14), Backend-Meilensteine (M11–M13) und eine langfristige Phase 3 (P1–P5).
+FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, der sich an Onshape orientiert und auf den FDM/SLA-3D-Druck zielt. Das Projekt durchläuft eine Roadmap mit fünf Release-Tiers (T0–T3 + T∞) und gliedert sich in Kernel-Slices (K1–K15), Backend-Meilensteine (M11–M13) und eine langfristige Phase 3 (P1–P5).
 
 **Aktueller Stand:** T0–T3 (100%), M11–M14i (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). **22 Feature-Kinds**, 590+ Tests grün. **M14 (STEP/3MF) vollständig.**
 
@@ -163,6 +163,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K13.5 | K13 | Mesh Import 3D SDF Volume Textures | ✅ | `BakedVolume` bakt MeshSdf in 64³-Grid, `OP_PRIM_TEX3D`-Opcode (0x0C) mit `CompileCtx`-Refactor, Zero-Copy WASM-Bridge, `Data3DTexture` mit Hardware-Trilinear-Interpolation. Unterstützt in sdf-vm (per-body) und sdf-deferred (globaler Volume-Index mit per-body Base-Offset). Commit `3cb23e3`. |
 | K14 | K14 | Drag-and-Drop Primitives | ✅ | Toolbar → Viewport DnD |
 | K14.1 | K14 | Drag-and-Drop Sketches | ✅ | handleDrop prüft fielddraft/sketch, Face-Normal → Sketch-Ebene |
+| K15 | K15 | Input Map Presets | open | Konfigurierbare Maus-/Tastatur-Belegung: Web/Three.js, Onshape, Fusion 360, Blender, Tinkercad. Betrifft Orbit/Pan/Zoom, Selektion, Context-Menu, Gizmo-Koordination. |
 
 ---
 
@@ -227,7 +228,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | T0 | Architektur-Validierung (inkl. K3.5) | 13 | 13 | **100 %** |
 | T1 | Shippable Alpha (inkl. K7.21g-j) | ~55 | 55 | **100 %** |
 | T2 | SDF-Superkräfte | 6 | 6 | **100 %** |
-| T3 | Feature-Complete | ~12 | 12 | **100 %** |
+| T3 | Feature-Complete | ~13 | 12 | **92 %** |
 | M11–M13 | Backend | ~12 | 12 | **100 %** |
 | Phase 3 | P1–P3 + P2.5/P2.8 | 5 | 5 | **100 %** |
 
