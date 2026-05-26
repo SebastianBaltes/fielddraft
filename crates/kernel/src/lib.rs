@@ -901,6 +901,36 @@ impl Kernel {
             other => Err(JsError::new(&format!("invalid op tag: {other}"))),
         }
     }
+
+    fn op_wire_name(tag: u32) -> Result<&'static str, JsError> {
+        match Self::parse_op(tag)? {
+            BoolOp::Union => Ok("union"),
+            BoolOp::Difference => Ok("difference"),
+            BoolOp::Intersect => Ok("intersect"),
+        }
+    }
+
+    fn push_feature_call(
+        &mut self,
+        type_name: &str,
+        params: serde_json::Value,
+    ) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let call = fielddraft_protocol::FeatureCall::new(type_name, id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "{type_name} regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
 }
 
 #[wasm_bindgen]
@@ -1328,42 +1358,15 @@ impl Kernel {
                 "feature {sketch_id} is not a sketch"
             )));
         }
-        let bool_op = Self::parse_op(op)?;
-        let op_wire = match bool_op {
-            BoolOp::Union => "union",
-            BoolOp::Difference => "difference",
-            BoolOp::Intersect => "intersect",
-        };
-
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-
-        let params = serde_json::json!({
+        let op_wire = Self::op_wire_name(op)?;
+        self.push_feature_call("extrude", serde_json::json!({
             "profiles": format!("qCreatedBy({sketch_feature_id})"),
             "depth": { "value": depth_mm, "unit": "mm" },
             "profile_half_x": 0.0,
             "profile_half_y": 0.0,
             "operation": op_wire,
             "center": [0.0, 0.0, tz],
-        });
-        let call = fielddraft_protocol::FeatureCall::new(
-            "extrude",
-            id.clone(),
-            params,
-        );
-        self.document.feature_calls.push(call);
-
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "extrude regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K8.4: append a `revolve` feature call that consumes the
@@ -1391,39 +1394,12 @@ impl Kernel {
                 "feature {sketch_id} is not a sketch"
             )));
         }
-        let bool_op = Self::parse_op(op)?;
-        let op_wire = match bool_op {
-            BoolOp::Union => "union",
-            BoolOp::Difference => "difference",
-            BoolOp::Intersect => "intersect",
-        };
-
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-
-        let params = serde_json::json!({
+        let op_wire = Self::op_wire_name(op)?;
+        self.push_feature_call("revolve", serde_json::json!({
             "profiles": format!("qCreatedBy({sketch_feature_id})"),
             "operation": op_wire,
             "center": [cx, cy, cz],
-        });
-        let call = fielddraft_protocol::FeatureCall::new(
-            "revolve",
-            id.clone(),
-            params,
-        );
-        self.document.feature_calls.push(call);
-
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "revolve regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K8.9: append a `hole` feature call. Thin convenience
@@ -1438,26 +1414,11 @@ impl Kernel {
         ty: f32,
         tz: f32,
     ) -> Result<u32, JsError> {
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("hole", serde_json::json!({
             "diameter": { "value": diameter_mm, "unit": "mm" },
             "depth": { "value": depth_mm, "unit": "mm" },
             "translate": [tx, ty, tz],
-        });
-        let call = fielddraft_protocol::FeatureCall::new("hole", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "hole regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K11.0: append a `gyroid` feature call. `cell_size_mm` is
@@ -1471,18 +1432,8 @@ impl Kernel {
         thickness_mm: f32,
         op: u32,
     ) -> Result<u32, JsError> {
-        let bool_op = Self::parse_op(op)?;
-        let op_wire = match bool_op {
-            BoolOp::Union => "union",
-            BoolOp::Difference => "difference",
-            BoolOp::Intersect => "intersect",
-        };
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        let op_wire = Self::op_wire_name(op)?;
+        self.push_feature_call("gyroid", serde_json::json!({
             "cell_size": { "value": cell_size_mm, "unit": "mm" },
             "thickness": { "value": thickness_mm, "unit": "mm" },
             "op": op_wire,
@@ -1490,52 +1441,22 @@ impl Kernel {
             "chamfer_size": { "value": 0.0, "unit": "mm" },
             "displace_depth": { "value": 0.0, "unit": "mm" },
             "shell_thickness": { "value": 0.0, "unit": "mm" },
-        });
-        let call = fielddraft_protocol::FeatureCall::new("gyroid", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "gyroid regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     #[wasm_bindgen(js_name = addBoolean)]
     pub fn add_boolean(&mut self) -> Result<u32, JsError> {
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("boolean", serde_json::json!({
             "operation": "Union",
             "tools": "",
             "targets": "",
             "keep_tools": false,
-        });
-        let call = fielddraft_protocol::FeatureCall::new("boolean", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "boolean regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     #[wasm_bindgen(js_name = addMaterial)]
     pub fn add_material(&mut self) -> Result<u32, JsError> {
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("material", serde_json::json!({
             "targets": "",
             "color": [0.55, 0.65, 0.85],
             "roughness": 0.35,
@@ -1549,17 +1470,7 @@ impl Kernel {
             "yield_tensile": 0.0,
             "ultimate_tensile": 0.0,
             "yield_compressive": 0.0,
-        });
-        let call = fielddraft_protocol::FeatureCall::new("material", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "material regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K9.6: add a mate connector at a surface point.
@@ -1569,24 +1480,10 @@ impl Kernel {
         ox: f32, oy: f32, oz: f32,
         nx: f32, ny: f32, nz: f32,
     ) -> Result<u32, JsError> {
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id.as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("mate_connector", serde_json::json!({
             "origin": [ox, oy, oz],
             "normal": [nx, ny, nz],
-        });
-        let call = fielddraft_protocol::FeatureCall::new("mate_connector", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "mate connector failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K10.6: add a fillet_edge feature from detected edge data.
@@ -1600,28 +1497,14 @@ impl Kernel {
         mask_radius: f32,
         blend_radius: f32,
     ) -> Result<u32, JsError> {
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id.as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("fillet_edge", serde_json::json!({
             "feature_a": feature_a as f32,
             "feature_b": feature_b as f32,
             "mask_p0": [p0x, p0y, p0z],
             "mask_p1": [p1x, p1y, p1z],
             "mask_radius": mask_radius,
             "blend_radius": blend_radius,
-        });
-        let call = fielddraft_protocol::FeatureCall::new("fillet_edge", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "fillet edge failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K10.6: detect B-Rep edges from the current mesh +
@@ -1688,36 +1571,15 @@ impl Kernel {
         indices: &[u32],
         op: u32,
     ) -> Result<u32, JsError> {
-        let bool_op = Self::parse_op(op)?;
-        let op_wire = match bool_op {
-            BoolOp::Union => "union",
-            BoolOp::Difference => "difference",
-            BoolOp::Intersect => "intersect",
-        };
-        let raw_mesh = fielddraft_protocol::MeshSdf::from_buffers(positions, indices);
-        let report = raw_mesh.check_manifold();
-
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let flat = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        let op_wire = Self::op_wire_name(op)?;
+        let report = fielddraft_protocol::MeshSdf::from_buffers(positions, indices)
+            .check_manifold();
+        self.push_feature_call("imported_mesh", serde_json::json!({
             "op": op_wire,
             "__positions": positions,
             "__indices": indices,
             "__watertight": report.is_watertight,
-        });
-        let call = fielddraft_protocol::FeatureCall::new("imported_mesh", id, params);
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "imported mesh regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// vector. `source_id` must point at an existing spine
@@ -1733,41 +1595,18 @@ impl Kernel {
         count: u32,
         spacing_mm: f32,
     ) -> Result<u32, JsError> {
-        // Sanity-check the source exists on the spine now,
-        // rather than at regen time — lets the UI surface a
-        // clean error before any snapshot.
         let source_fid = FeatureId::from_u32(source_id);
         if !self.document.features.iter().any(|f| f.id == source_fid) {
             return Err(JsError::new(&format!(
                 "source feature {source_id} not found on the spine"
             )));
         }
-
-        self.snapshot();
-        let pattern_id = self.document.allocate_id();
-        let flat = pattern_id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("linear_pattern", serde_json::json!({
             "source": source_id,
             "direction": [dx, dy, dz],
             "count": count as f32,
             "spacing": { "value": spacing_mm, "unit": "mm" },
-        });
-        let call = fielddraft_protocol::FeatureCall::new(
-            "linear_pattern",
-            pattern_id,
-            params,
-        );
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "linear pattern regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K8.1: append a `circular_pattern` feature call that
@@ -1793,33 +1632,13 @@ impl Kernel {
                 "source feature {source_id} not found on the spine"
             )));
         }
-
-        self.snapshot();
-        let pattern_id = self.document.allocate_id();
-        let flat = pattern_id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("circular_pattern", serde_json::json!({
             "source": source_id,
             "axis": [axis_x, axis_y, axis_z],
             "center": [center_x, center_y, center_z],
             "count": count as f32,
             "angle_deg": angle_deg,
-        });
-        let call = fielddraft_protocol::FeatureCall::new(
-            "circular_pattern",
-            pattern_id,
-            params,
-        );
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "circular pattern regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K8.2: append a `mirror` feature call that reflects the
@@ -1842,31 +1661,11 @@ impl Kernel {
                 "source feature {source_id} not found on the spine"
             )));
         }
-
-        self.snapshot();
-        let mirror_id = self.document.allocate_id();
-        let flat = mirror_id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        let params = serde_json::json!({
+        self.push_feature_call("mirror", serde_json::json!({
             "source": source_id,
             "plane_normal": [normal_x, normal_y, normal_z],
             "plane_point": [point_x, point_y, point_z],
-        });
-        let call = fielddraft_protocol::FeatureCall::new(
-            "mirror",
-            mirror_id,
-            params,
-        );
-        self.document.feature_calls.push(call);
-        if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
-            return Err(JsError::new(&format!(
-                "mirror regeneration failed: {err}"
-            )));
-        }
-        self.rebuild_packed();
-        Ok(flat)
+        }))
     }
 
     /// K7.5: return the current `params` JSON string for a
