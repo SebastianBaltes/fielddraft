@@ -42,6 +42,12 @@ import {
   updateVolumeData,
   rebuildVolumeTextures,
   createVolumeTexture,
+  MAT_STRIDE,
+  MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
+  MAT_ROUGHNESS, MAT_METALNESS,
+  MAT_EMISSIVE_R, MAT_EMISSIVE_G, MAT_EMISSIVE_B,
+  MAT_OPACITY, MAT_WIREFRAME,
+  MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
   WIREFRAME_GRID_SIZE,
   WIREFRAME_GRID_THRESHOLD,
   FRESNEL_EDGE_MIN,
@@ -71,20 +77,9 @@ export interface VmPipelineState {
   opcodeData: Float32Array;
   offsetBuf: ReturnType<typeof uniformArray>;
   offsetData: Float32Array;
-  colorBuf: ReturnType<typeof uniformArray>;
-  colorData: Float32Array;
-  roughnessData: Float32Array;
-  roughnessBuf: ReturnType<typeof uniformArray>;
-  metalnessData: Float32Array;
-  metalnessBuf: ReturnType<typeof uniformArray>;
-  emissiveData: Float32Array;
-  emissiveBuf: ReturnType<typeof uniformArray>;
-  opacityData: Float32Array;
-  opacityBuf: ReturnType<typeof uniformArray>;
-  wireframeData: Float32Array;
-  wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceData: Float32Array;
-  displaceBuf: ReturnType<typeof uniformArray>;
+  materialData: Float32Array;
+  materialAttr: any;
+  materialBuf: any;
   bodyCountU: ReturnType<typeof uniform>;
   camPosU: ReturnType<typeof uniform>;
   invProjU: ReturnType<typeof uniform>;
@@ -172,8 +167,9 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
   const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
     const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
     if (!args.bodyIdx) return d;
-    const depth = state.displaceBuf.element(args.bodyIdx.mul(2));
-    const freq = state.displaceBuf.element(args.bodyIdx.mul(2).add(1));
+    const matBase = args.bodyIdx.mul(MAT_STRIDE);
+    const depth = state.materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
+    const freq = state.materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
     const disp = args.p.x.mul(freq).sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
@@ -248,15 +244,16 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const nView = normalize(state.viewMatU.mul(vec4(n, 0.0)).xyz);
     const viewDir = normalize(state.viewMatU.mul(vec4(rd.negate(), 0.0)).xyz);
 
-    const cr = state.colorBuf.element(hitBody.mul(3));
-    const cg = state.colorBuf.element(hitBody.mul(3).add(1));
-    const cb = state.colorBuf.element(hitBody.mul(3).add(2));
+    const matBase = hitBody.mul(MAT_STRIDE);
+    const cr = state.materialBuf.element(matBase.add(MAT_COLOR_R));
+    const cg = state.materialBuf.element(matBase.add(MAT_COLOR_G));
+    const cb = state.materialBuf.element(matBase.add(MAT_COLOR_B));
     const baseColor = vec3(cr, cg, cb);
-    const roughness = state.roughnessBuf.element(hitBody);
-    const metalness = state.metalnessBuf.element(hitBody);
-    const er = state.emissiveBuf.element(hitBody.mul(3));
-    const eg = state.emissiveBuf.element(hitBody.mul(3).add(1));
-    const eb = state.emissiveBuf.element(hitBody.mul(3).add(2));
+    const roughness = state.materialBuf.element(matBase.add(MAT_ROUGHNESS));
+    const metalness = state.materialBuf.element(matBase.add(MAT_METALNESS));
+    const er = state.materialBuf.element(matBase.add(MAT_EMISSIVE_R));
+    const eg = state.materialBuf.element(matBase.add(MAT_EMISSIVE_G));
+    const eb = state.materialBuf.element(matBase.add(MAT_EMISSIVE_B));
     const emissive = vec3(er, eg, eb);
     const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
@@ -275,8 +272,8 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
     color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
 
-    const bodyOpacity = state.opacityBuf.element(hitBody);
-    const wf = state.wireframeBuf.element(hitBody);
+    const bodyOpacity = state.materialBuf.element(matBase.add(MAT_OPACITY));
+    const wf = state.materialBuf.element(matBase.add(MAT_WIREFRAME));
     const alpha = bodyOpacity.toVar();
     If(wf.greaterThan(float(0.5)), () => {
       const viewDirWorld = rd.negate();

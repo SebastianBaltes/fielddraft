@@ -61,6 +61,12 @@ import {
   packOpcodes,
   updateVolumeData,
   rebuildVolumeTextures,
+  MAT_STRIDE,
+  MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
+  MAT_ROUGHNESS, MAT_METALNESS,
+  MAT_EMISSIVE_R, MAT_EMISSIVE_G, MAT_EMISSIVE_B,
+  MAT_OPACITY, MAT_WIREFRAME,
+  MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
   WIREFRAME_GRID_SIZE,
   WIREFRAME_GRID_THRESHOLD,
   FRESNEL_EDGE_MIN,
@@ -200,20 +206,9 @@ export interface DeferredPipelineState {
   opcodeData: Float32Array;
   offsetBuf: ReturnType<typeof uniformArray>;
   offsetData: Float32Array;
-  colorBuf: ReturnType<typeof uniformArray>;
-  colorData: Float32Array;
-  roughnessData: Float32Array;
-  roughnessBuf: ReturnType<typeof uniformArray>;
-  metalnessData: Float32Array;
-  metalnessBuf: ReturnType<typeof uniformArray>;
-  emissiveData: Float32Array;
-  emissiveBuf: ReturnType<typeof uniformArray>;
-  opacityData: Float32Array;
-  opacityBuf: ReturnType<typeof uniformArray>;
-  wireframeData: Float32Array;
-  wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceData: Float32Array;
-  displaceBuf: ReturnType<typeof uniformArray>;
+  materialData: Float32Array;
+  materialAttr: any;
+  materialBuf: any;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
@@ -304,14 +299,8 @@ function createShadeMaterial(
   bitmaskBuf: any,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
-  colorBuf: ReturnType<typeof uniformArray>,
-  roughnessBuf: ReturnType<typeof uniformArray>,
-  metalnessBuf: ReturnType<typeof uniformArray>,
-  emissiveBuf: ReturnType<typeof uniformArray>,
+  materialBuf: any,
   selectionBuf: ReturnType<typeof uniformArray>,
-  opacityBuf: ReturnType<typeof uniformArray>,
-  wireframeBuf: ReturnType<typeof uniformArray>,
-  displaceBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
@@ -327,8 +316,9 @@ function createShadeMaterial(
   const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
     const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
     if (!args.bodyIdx) return d;
-    const depth = displaceBuf.element(args.bodyIdx.mul(2));
-    const freq = displaceBuf.element(args.bodyIdx.mul(2).add(1));
+    const matBase = args.bodyIdx.mul(MAT_STRIDE);
+    const depth = materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
+    const freq = materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
     const disp = args.p.x.mul(freq).sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
@@ -356,7 +346,6 @@ function createShadeMaterial(
 
     If(hasOpaque.or(hasTrans), () => {
       If(hasTrans, () => {
-        // Fall B: transparent hull(s) -> multi-body sphere-trace
         const transWorldPos = transGbuf.xyz;
         const rd = normalize(transWorldPos.sub(camPosU));
 
@@ -427,7 +416,6 @@ function createShadeMaterial(
           });
         });
       }).Else(() => {
-        // Fall A: opaque only -- shade at mesh surface (no march needed)
         shadePos.assign(opaqueGbuf.xyz);
         shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
         hasHit.assign(int(1));
@@ -458,15 +446,16 @@ function createShadeMaterial(
       const viewDirWorld = normalize(camPosU.sub(p));
       const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
 
-      const cr = colorBuf.element(shadeBodyIdx.mul(3));
-      const cg = colorBuf.element(shadeBodyIdx.mul(3).add(1));
-      const cb = colorBuf.element(shadeBodyIdx.mul(3).add(2));
+      const matBase = shadeBodyIdx.mul(MAT_STRIDE);
+      const cr = materialBuf.element(matBase.add(MAT_COLOR_R));
+      const cg = materialBuf.element(matBase.add(MAT_COLOR_G));
+      const cb = materialBuf.element(matBase.add(MAT_COLOR_B));
       const baseColor = vec3(cr, cg, cb);
-      const roughness = roughnessBuf.element(shadeBodyIdx);
-      const metalness = metalnessBuf.element(shadeBodyIdx);
-      const er = emissiveBuf.element(shadeBodyIdx.mul(3));
-      const eg = emissiveBuf.element(shadeBodyIdx.mul(3).add(1));
-      const eb = emissiveBuf.element(shadeBodyIdx.mul(3).add(2));
+      const roughness = materialBuf.element(matBase.add(MAT_ROUGHNESS));
+      const metalness = materialBuf.element(matBase.add(MAT_METALNESS));
+      const er = materialBuf.element(matBase.add(MAT_EMISSIVE_R));
+      const eg = materialBuf.element(matBase.add(MAT_EMISSIVE_G));
+      const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
       const emissive = vec3(er, eg, eb);
       const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
@@ -490,8 +479,8 @@ function createShadeMaterial(
         color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
       });
 
-      const bodyOpacity = opacityBuf.element(shadeBodyIdx);
-      const wf = wireframeBuf.element(shadeBodyIdx);
+      const bodyOpacity = materialBuf.element(matBase.add(MAT_OPACITY));
+      const wf = materialBuf.element(matBase.add(MAT_WIREFRAME));
       const alpha = bodyOpacity.toVar();
       If(wf.greaterThan(float(0.5)), () => {
         const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
@@ -576,14 +565,8 @@ export function initDeferredPipeline(
     bitmaskBuf,
     opBufs.opcodeBuf,
     opBufs.offsetBuf,
-    matBufs.colorBuf,
-    matBufs.roughnessBuf,
-    matBufs.metalnessBuf,
-    matBufs.emissiveBuf,
+    matBufs.materialBuf,
     selectionBuf,
-    matBufs.opacityBuf,
-    matBufs.wireframeBuf,
-    matBufs.displaceBuf,
     opBufs.volumeBaseBuf,
     camPosUniform,
     viewMatU,
@@ -889,14 +872,8 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.bitmaskBuf,
     state.opcodeBuf,
     state.offsetBuf,
-    state.colorBuf,
-    state.roughnessBuf,
-    state.metalnessBuf,
-    state.emissiveBuf,
+    state.materialBuf,
     state.selectionBuf,
-    state.opacityBuf,
-    state.wireframeBuf,
-    state.displaceBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
     state.viewMatU,

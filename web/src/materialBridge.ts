@@ -1,6 +1,14 @@
 import type { Kernel, FeatureSummary } from "./kernel";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS, DEFAULT_BASE_COLOR } from "./pbrShading";
+import {
+  MAT_STRIDE,
+  MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
+  MAT_ROUGHNESS, MAT_METALNESS,
+  MAT_EMISSIVE_R, MAT_EMISSIVE_G, MAT_EMISSIVE_B,
+  MAT_OPACITY, MAT_WIREFRAME,
+  MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
+} from "./sdfPipelineCommon";
 
 export interface MaterialProps {
   color: [number, number, number];
@@ -95,13 +103,8 @@ export function resolveMaterials(
 }
 
 export interface MaterialBufferTarget {
-  colorData: Float32Array;
-  roughnessData: Float32Array;
-  metalnessData: Float32Array;
-  emissiveData: Float32Array;
-  opacityData: Float32Array;
-  wireframeData: Float32Array;
-  displaceData: Float32Array;
+  materialData: Float32Array;
+  materialAttr: { needsUpdate: boolean };
 }
 
 export function applyMaterials(
@@ -109,35 +112,38 @@ export function applyMaterials(
   materials: Map<number, MaterialProps>,
   bodyCount: number,
 ): void {
+  const d = target.materialData;
   for (let i = 0; i < bodyCount; i++) {
+    const base = i * MAT_STRIDE;
     const mat = materials.get(i);
     if (mat) {
-      target.colorData[i * 3] = mat.color[0];
-      target.colorData[i * 3 + 1] = mat.color[1];
-      target.colorData[i * 3 + 2] = mat.color[2];
-      target.roughnessData[i] = mat.roughness;
-      target.metalnessData[i] = mat.metalness;
-      target.emissiveData[i * 3] = mat.emissive[0];
-      target.emissiveData[i * 3 + 1] = mat.emissive[1];
-      target.emissiveData[i * 3 + 2] = mat.emissive[2];
-      target.opacityData[i] = mat.opacity;
-      target.wireframeData[i] = mat.wireframe ? 1 : 0;
-      target.displaceData[i * 2] = mat.displaceDepth;
-      target.displaceData[i * 2 + 1] = mat.displaceFreq;
+      d[base + MAT_COLOR_R] = mat.color[0];
+      d[base + MAT_COLOR_G] = mat.color[1];
+      d[base + MAT_COLOR_B] = mat.color[2];
+      d[base + MAT_ROUGHNESS] = mat.roughness;
+      d[base + MAT_METALNESS] = mat.metalness;
+      d[base + MAT_EMISSIVE_R] = mat.emissive[0];
+      d[base + MAT_EMISSIVE_G] = mat.emissive[1];
+      d[base + MAT_EMISSIVE_B] = mat.emissive[2];
+      d[base + MAT_OPACITY] = mat.opacity;
+      d[base + MAT_WIREFRAME] = mat.wireframe ? 1 : 0;
+      d[base + MAT_DISPLACE_DEPTH] = mat.displaceDepth;
+      d[base + MAT_DISPLACE_FREQ] = mat.displaceFreq;
     } else {
       const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
-      target.colorData[i * 3] = r;
-      target.colorData[i * 3 + 1] = g;
-      target.colorData[i * 3 + 2] = b;
-      target.roughnessData[i] = DEFAULTS.roughness;
-      target.metalnessData[i] = DEFAULTS.metalness;
-      target.emissiveData[i * 3] = 0;
-      target.emissiveData[i * 3 + 1] = 0;
-      target.emissiveData[i * 3 + 2] = 0;
-      target.opacityData[i] = 1;
-      target.wireframeData[i] = 0;
-      target.displaceData[i * 2] = 0;
-      target.displaceData[i * 2 + 1] = 0;
+      d[base + MAT_COLOR_R] = r;
+      d[base + MAT_COLOR_G] = g;
+      d[base + MAT_COLOR_B] = b;
+      d[base + MAT_ROUGHNESS] = DEFAULTS.roughness;
+      d[base + MAT_METALNESS] = DEFAULTS.metalness;
+      d[base + MAT_EMISSIVE_R] = 0;
+      d[base + MAT_EMISSIVE_G] = 0;
+      d[base + MAT_EMISSIVE_B] = 0;
+      d[base + MAT_OPACITY] = 1;
+      d[base + MAT_WIREFRAME] = 0;
+      d[base + MAT_DISPLACE_DEPTH] = 0;
+      d[base + MAT_DISPLACE_FREQ] = 0;
     }
   }
+  target.materialAttr.needsUpdate = true;
 }

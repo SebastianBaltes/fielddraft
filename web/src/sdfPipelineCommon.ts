@@ -1,27 +1,33 @@
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
 
 import * as THREE from "three";
-import { uniformArray } from "three/tsl";
+import { storage, uniformArray } from "three/tsl";
+import { StorageBufferAttribute } from "three/webgpu";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 import { DEFAULT_ROUGHNESS } from "./pbrShading";
+
+// ── Per-body material struct layout (single storage buffer) ────────
+
+export const MAT_STRIDE = 12;
+export const MAT_COLOR_R = 0;
+export const MAT_COLOR_G = 1;
+export const MAT_COLOR_B = 2;
+export const MAT_ROUGHNESS = 3;
+export const MAT_METALNESS = 4;
+export const MAT_EMISSIVE_R = 5;
+export const MAT_EMISSIVE_G = 6;
+export const MAT_EMISSIVE_B = 7;
+export const MAT_OPACITY = 8;
+export const MAT_WIREFRAME = 9;
+export const MAT_DISPLACE_DEPTH = 10;
+export const MAT_DISPLACE_FREQ = 11;
 
 // ── Shared material buffer types ───────────────────────────────────
 
 export interface MaterialBufferSet {
-  colorData: Float32Array;
-  colorBuf: ReturnType<typeof uniformArray>;
-  roughnessData: Float32Array;
-  roughnessBuf: ReturnType<typeof uniformArray>;
-  metalnessData: Float32Array;
-  metalnessBuf: ReturnType<typeof uniformArray>;
-  emissiveData: Float32Array;
-  emissiveBuf: ReturnType<typeof uniformArray>;
-  opacityData: Float32Array;
-  opacityBuf: ReturnType<typeof uniformArray>;
-  wireframeData: Float32Array;
-  wireframeBuf: ReturnType<typeof uniformArray>;
-  displaceData: Float32Array;
-  displaceBuf: ReturnType<typeof uniformArray>;
+  materialData: Float32Array;
+  materialAttr: StorageBufferAttribute;
+  materialBuf: ReturnType<typeof storage>;
 }
 
 export interface OpcodeBufferSet {
@@ -35,44 +41,22 @@ export interface OpcodeBufferSet {
 }
 
 export function createMaterialBuffers(maxBodies: number): MaterialBufferSet {
-  const colorData = new Float32Array(maxBodies * 3);
+  const count = maxBodies * MAT_STRIDE;
+  const materialAttr = new StorageBufferAttribute(count, 1);
+  const materialData = materialAttr.array as Float32Array;
+
   for (let i = 0; i < maxBodies; i++) {
+    const base = i * MAT_STRIDE;
     const [r, g, b] = BODY_COLORS[i % BODY_COLORS.length];
-    colorData[i * 3] = r;
-    colorData[i * 3 + 1] = g;
-    colorData[i * 3 + 2] = b;
+    materialData[base + MAT_COLOR_R] = r;
+    materialData[base + MAT_COLOR_G] = g;
+    materialData[base + MAT_COLOR_B] = b;
+    materialData[base + MAT_ROUGHNESS] = DEFAULT_ROUGHNESS;
+    materialData[base + MAT_OPACITY] = 1;
   }
-  const colorBuf = uniformArray(colorData, "float");
 
-  const roughnessData = new Float32Array(maxBodies);
-  roughnessData.fill(DEFAULT_ROUGHNESS);
-  const roughnessBuf = uniformArray(roughnessData, "float");
-
-  const metalnessData = new Float32Array(maxBodies);
-  const metalnessBuf = uniformArray(metalnessData, "float");
-
-  const emissiveData = new Float32Array(maxBodies * 3);
-  const emissiveBuf = uniformArray(emissiveData, "float");
-
-  const opacityData = new Float32Array(maxBodies);
-  opacityData.fill(1);
-  const opacityBuf = uniformArray(opacityData, "float");
-
-  const wireframeData = new Float32Array(maxBodies);
-  const wireframeBuf = uniformArray(wireframeData, "float");
-
-  const displaceData = new Float32Array(maxBodies * 2);
-  const displaceBuf = uniformArray(displaceData, "float");
-
-  return {
-    colorData, colorBuf,
-    roughnessData, roughnessBuf,
-    metalnessData, metalnessBuf,
-    emissiveData, emissiveBuf,
-    opacityData, opacityBuf,
-    wireframeData, wireframeBuf,
-    displaceData, displaceBuf,
-  };
+  const materialBuf = storage(materialAttr, "float", count).toReadOnly();
+  return { materialData, materialAttr, materialBuf };
 }
 
 export function createOpcodeBuffers(maxOpcodes: number, maxBodies: number): OpcodeBufferSet {
