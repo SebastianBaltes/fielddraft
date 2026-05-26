@@ -31,6 +31,7 @@ import {
   Loop,
   abs,
   cameraPosition,
+  cameraViewMatrix,
   float,
   int,
   length,
@@ -246,10 +247,11 @@ export function createRaymarchMaterial(): RaymarchHandle {
 
     const finalColor = bg.toVar();
     If(hit.greaterThan(0.5), () => {
-      const n = sceneNormal({ p: hitPos });
-      const key = normalize(vec3(0.4, 1, 0.5));
-      const fill = normalize(vec3(-0.6, 0.2, 0.8));
-      const rim = normalize(vec3(0.0, -0.3, -1.0));
+      const nWorld = sceneNormal({ p: hitPos });
+      const n = normalize(cameraViewMatrix.mul(vec4(nWorld, 0.0)).xyz);
+      const key = normalize(vec3(0.2, 0.3, 1.0));
+      const fill = normalize(vec3(-0.5, 0.1, 0.6));
+      const rim = normalize(vec3(0.0, -0.2, -1.0));
       const dKey = max(n.dot(key), float(0));
       const dFill = max(n.dot(fill), float(0));
       const dRim = max(n.dot(rim), float(0));

@@ -18,7 +18,7 @@ import {
   Fn,
   float,
   max,
-  normalWorld,
+  normalView,
   normalize,
   vec3,
   vec4,
@@ -50,10 +50,10 @@ export function createKernelMeshMaterial(
   const [r, g, b] = BODY_COLORS[bodyIndex % BODY_COLORS.length];
 
   const colorNode = Fn(() => {
-    const n = normalize(normalWorld);
-    const key = normalize(vec3(0.4, 1, 0.5));
-    const fill = normalize(vec3(-0.6, 0.2, 0.8));
-    const rim = normalize(vec3(0.0, -0.3, -1.0));
+    const n = normalize(normalView);
+    const key = normalize(vec3(0.2, 0.3, 1.0));
+    const fill = normalize(vec3(-0.5, 0.1, 0.6));
+    const rim = normalize(vec3(0.0, -0.2, -1.0));
     const dKey = max(n.dot(key), float(0));
     const dFill = max(n.dot(fill), float(0));
     const dRim = max(n.dot(rim), float(0));

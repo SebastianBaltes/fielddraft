@@ -43,6 +43,7 @@ import {
   vec2,
   vec3,
   vec4,
+  cameraViewMatrix,
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
@@ -401,12 +402,13 @@ function createShadeMaterial(
           .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
       ));
 
-      const keyDir = normalize(vec3(0.4, 1, 0.5));
-      const fillDir = normalize(vec3(-0.6, 0.2, 0.8));
-      const rimDir = normalize(vec3(0.0, -0.3, -1.0));
-      const dKey = max(n.dot(keyDir), float(0));
-      const dFill = max(n.dot(fillDir), float(0));
-      const dRim = max(n.dot(rimDir), float(0));
+      const nView = normalize(cameraViewMatrix.mul(vec4(n, 0.0)).xyz);
+      const keyDir = normalize(vec3(0.2, 0.3, 1.0));
+      const fillDir = normalize(vec3(-0.5, 0.1, 0.6));
+      const rimDir = normalize(vec3(0.0, -0.2, -1.0));
+      const dKey = max(nView.dot(keyDir), float(0));
+      const dFill = max(nView.dot(fillDir), float(0));
+      const dRim = max(nView.dot(rimDir), float(0));
       const light = dKey.mul(0.45).add(dFill.mul(0.2)).add(dRim.mul(0.1)).add(0.3);
 
       const cr = colorBuf.element(shadeBodyIdx.mul(3));
