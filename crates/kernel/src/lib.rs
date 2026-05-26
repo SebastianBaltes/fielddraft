@@ -2415,6 +2415,12 @@ impl Kernel {
             }
             self.snapshot();
             self.document.features[idx].op = bool_op;
+            let wire = Self::op_label(bool_op);
+            if let Some(call) = self.document.feature_calls.iter_mut().find(|c| c.id == id) {
+                if let Some(obj) = call.params.as_object_mut() {
+                    obj.insert("op".to_string(), serde_json::json!(wire));
+                }
+            }
             self.rebuild_packed();
             Ok(true)
         } else {

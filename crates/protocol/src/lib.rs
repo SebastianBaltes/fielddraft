@@ -1066,6 +1066,21 @@ impl Document {
         // them verbatim regardless of type — without this gate a
         // suppressed box would vanish from the wire form on the
         // very next sync.
+
+        // Preserve the original `op` from feature_calls before
+        // drain. Boolean features modify spine ops at execute
+        // time; without this restore, those transient changes
+        // would persist into the FeatureCall params and survive
+        // Boolean suppression.
+        let original_ops: Vec<(FeatureId, serde_json::Value)> = self
+            .feature_calls
+            .iter()
+            .filter(|c| is_spine_type(&c.type_name) && !c.suppressed)
+            .filter_map(|c| {
+                c.params.get("op").cloned().map(|op| (c.id.clone(), op))
+            })
+            .collect();
+
         let surviving: Vec<FeatureCall> = self
             .feature_calls
             .drain(..)
@@ -1094,6 +1109,15 @@ impl Document {
                     && call.type_name != "__derived_imported_mesh_skip__"
             })
             .collect();
+
+        for call in &mut next {
+            if let Some((_, orig)) = original_ops.iter().find(|(id, _)| *id == call.id) {
+                if let Some(obj) = call.params.as_object_mut() {
+                    obj.insert("op".to_string(), orig.clone());
+                }
+            }
+        }
+
         next.extend(surviving);
         self.feature_calls = next;
     }
