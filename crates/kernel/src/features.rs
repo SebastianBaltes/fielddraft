@@ -2597,7 +2597,7 @@ impl FeatureKind for BooleanFeature {
                     feature.op = BoolOp::Union;
                 }
                 BoolOp::Intersect => {
-                    if Some(idx) == first_tool_pos {
+                    if tool_ids.len() > 1 && Some(idx) == first_tool_pos {
                         feature.op = BoolOp::Union;
                     } else {
                         feature.op = BoolOp::Intersect;

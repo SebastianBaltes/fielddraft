@@ -4995,4 +4995,51 @@ mod tests {
         let v1 = k.body_vertex_count(1);
         assert_eq!(v0, v1, "identical cylinders at different positions must mesh identically");
     }
+
+    #[test]
+    fn boolean_tab_switch_changes_tool_op() {
+        let mut k = Kernel::new();
+        let box1 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0,0.0,0.0, 20.0,20.0,20.0).unwrap();
+        let box2 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 10.0,0.0,0.0, 15.0,15.0,15.0).unwrap();
+        assert_eq!(k.document.features.len(), 2);
+        assert_eq!(k.document.features[0].op, BoolOp::Union);
+        assert_eq!(k.document.features[1].op, BoolOp::Union);
+
+        let bool_id = k.add_boolean().unwrap();
+        // Initially Union with empty tools — no spine change
+        assert_eq!(k.document.features[0].op, BoolOp::Union);
+        assert_eq!(k.document.features[1].op, BoolOp::Union);
+
+        // Set tools to box2 + operation to Subtract (simulates tab switch)
+        let params = serde_json::json!({
+            "operation": "Subtract",
+            "tools": format!("qCreatedBy({})", box2),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        // box2 should now be Difference
+        assert_eq!(k.document.features[0].op, BoolOp::Union, "box1 stays Union");
+        assert_eq!(k.document.features[1].op, BoolOp::Difference, "box2 is Difference after Subtract");
+
+        // Switch tab to Union
+        let params = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({})", box2),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        assert_eq!(k.document.features[1].op, BoolOp::Union, "box2 reverts to Union");
+
+        // Switch tab to Intersect
+        let params = serde_json::json!({
+            "operation": "Intersect",
+            "tools": format!("qCreatedBy({})", box2),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        assert_eq!(k.document.features[1].op, BoolOp::Intersect, "box2 is Intersect");
+    }
 }
