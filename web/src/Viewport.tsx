@@ -17,7 +17,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Html, OrbitControls, OrthographicCamera } from "@react-three/drei";
+import { OrbitControls, OrthographicCamera, Text } from "@react-three/drei";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
@@ -1260,21 +1260,16 @@ function DatumOverlay() {
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
-          <Html
+          <Text
             position={DATUM_LABEL_POS}
-            style={{
-              color: "#3b82f6",
-              opacity: 0.45,
-              fontSize: "1rem",
-              fontWeight: 500,
-              pointerEvents: "none",
-              userSelect: "none",
-              whiteSpace: "nowrap",
-            }}
-            zIndexRange={[0, 0]}
+            fontSize={8}
+            color="#3b82f6"
+            anchorX="left"
+            anchorY="top"
+            fillOpacity={0.5}
           >
             {plane.label}
-          </Html>
+          </Text>
         </group>
       ))}
     </group>
@@ -1455,12 +1450,14 @@ function CameraRig() {
   useEffect(() => {
     const c = controlsRef.current;
     if (!c || sketchActive) return;
+    const newTarget = new THREE.Vector3();
     if (selectedFeature) {
       const [x, y, z] = selectedFeature.translate;
-      c.target.set(x, y, z);
-    } else {
-      c.target.set(0, 0, 0);
+      newTarget.set(x, y, z);
     }
+    const delta = newTarget.clone().sub(c.target);
+    c.target.copy(newTarget);
+    c.object.position.add(delta);
     c.update();
   }, [selectedFeature, sketchActive]);
 
