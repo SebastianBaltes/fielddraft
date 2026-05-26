@@ -17,11 +17,8 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import {
-  OrbitControls,
-  OrthographicCamera,
-  TransformControls,
-} from "@react-three/drei";
+import { OrbitControls, OrthographicCamera } from "@react-three/drei";
+import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickResult } from "./kernel";
@@ -726,11 +723,17 @@ function collectSketchLineSegments(
 function SelectionTransformGizmo() {
   const { store, state } = useKernelStore();
   const meshRef = useRef<THREE.Mesh>(null);
+  const tcRef = useRef<ThreeTransformControls | null>(null);
   const syncedTranslateRef = useRef<[number, number, number] | null>(null);
+  const gizmoThrottleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const gizmoPendingRef = useRef(false);
 
-  // Resolve the single selected feature. The gizmo only shows
-  // for single-selection; multi-select and no-selection both
-  // hide it.
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const defaultControls = useThree((s) => s.controls);
+  const invalidate = useThree((s) => s.invalidate);
+
   const selectedFeature = useMemo(() => {
     if (!state || state.selection.size !== 1) return undefined;
     const first = state.selection.values().next().value;
@@ -738,15 +741,8 @@ function SelectionTransformGizmo() {
     return state.features.find((f) => f.id === first);
   }, [state]);
 
-  // Sync the placeholder mesh with the feature's translate when:
-  //   (a) a different feature is selected (id change)
-  //   (b) the translate changed externally — via undo/redo, an
-  //       arrow-key nudge, or the feature dialog — rather than
-  //       from the gizmo itself.
-  // We compare the incoming translate against `syncedTranslateRef`
-  // so the onChange path below (which writes the placeholder
-  // position and also commits to the kernel, resulting in a new
-  // store state) doesn't clobber its own work during a drag.
+  const gizmoMode = state?.gizmoMode ?? "translate";
+
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh || !selectedFeature) {
@@ -755,31 +751,16 @@ function SelectionTransformGizmo() {
     }
     const [tx, ty, tz] = selectedFeature.translate;
     const prev = syncedTranslateRef.current;
-    // Compare the committed translate against the last one we
-    // ourselves committed. If they match, the state change came
-    // *from* us (the gizmo) and we've already moved the mesh —
-    // no need to re-write it. If they differ, the source is
-    // external (undo, nudge, dialog) and we snap the placeholder.
     if (!prev || prev[0] !== tx || prev[1] !== ty || prev[2] !== tz) {
       mesh.position.set(tx, ty, tz);
       syncedTranslateRef.current = [tx, ty, tz];
     }
   }, [selectedFeature]);
 
-  const gizmoThrottleRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const gizmoPendingRef = useRef(false);
-
-  useEffect(() => {
-    return () => clearTimeout(gizmoThrottleRef.current);
-  }, []);
-
-  if (!selectedFeature || !store) return null;
-
-  const gizmoMode = state?.gizmoMode ?? "translate";
-
-  const commitGizmo = () => {
+  const commitRef = useRef<() => void>(() => {});
+  commitRef.current = () => {
     const mesh = meshRef.current;
-    if (!mesh) return;
+    if (!mesh || !store || !selectedFeature) return;
     gizmoPendingRef.current = false;
     if (gizmoMode === "translate") {
       const next: [number, number, number] = [
@@ -797,40 +778,67 @@ function SelectionTransformGizmo() {
     }
   };
 
-  const handleGizmoChange = () => {
-    gizmoPendingRef.current = true;
-    if (gizmoThrottleRef.current !== undefined) return;
-    commitGizmo();
-    gizmoThrottleRef.current = setTimeout(() => {
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh || !selectedFeature || !store) {
+      if (tcRef.current) {
+        tcRef.current.detach();
+        scene.remove(tcRef.current as unknown as THREE.Object3D);
+        tcRef.current.dispose();
+        tcRef.current = null;
+      }
+      return;
+    }
+
+    const tc = new ThreeTransformControls(camera, gl.domElement);
+    const tcObj = tc as unknown as THREE.Object3D;
+    tc.attach(mesh);
+    tc.setMode(gizmoMode);
+    tc.setSize(0.75);
+    tcObj.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
+
+    const onDragging = (e: { value: boolean }) => {
+      if (defaultControls) (defaultControls as any).enabled = !e.value;
+    };
+    const onChange = () => invalidate();
+    const onObjectChange = () => {
+      gizmoPendingRef.current = true;
+      if (gizmoThrottleRef.current !== undefined) return;
+      commitRef.current();
+      gizmoThrottleRef.current = setTimeout(() => {
+        gizmoThrottleRef.current = undefined;
+        if (gizmoPendingRef.current) commitRef.current();
+      }, 50);
+    };
+
+    tc.addEventListener("dragging-changed", onDragging as any);
+    tc.addEventListener("change", onChange);
+    tc.addEventListener("objectChange", onObjectChange);
+    scene.add(tcObj);
+    tcRef.current = tc;
+    invalidate();
+
+    return () => {
+      clearTimeout(gizmoThrottleRef.current);
       gizmoThrottleRef.current = undefined;
-      if (gizmoPendingRef.current) commitGizmo();
-    }, 50);
-  };
+      tc.removeEventListener("dragging-changed", onDragging as any);
+      tc.removeEventListener("change", onChange);
+      tc.removeEventListener("objectChange", onObjectChange);
+      tc.detach();
+      scene.remove(tcObj);
+      tc.dispose();
+      tcRef.current = null;
+    };
+  }, [selectedFeature?.id, gizmoMode, camera, gl, scene, defaultControls, invalidate, store]);
+
+  useEffect(() => () => clearTimeout(gizmoThrottleRef.current), []);
+
+  if (!selectedFeature || !store) return null;
 
   return (
-    <>
-      <mesh ref={meshRef} visible={false}>
-        <boxGeometry args={[1, 1, 1]} />
-      </mesh>
-      {meshRef.current ? (
-        <TransformControls
-          ref={(tc: any) => {
-            if (tc) tc.traverse((child: THREE.Object3D) => {
-              child.layers.enable(OVERLAY_LAYER);
-              const mat = (child as any).material;
-              if (mat?.transparent) {
-                mat._opacity = 1;
-                mat.opacity = 1;
-              }
-            });
-          }}
-          object={meshRef.current}
-          mode={gizmoMode}
-          size={0.75}
-          onObjectChange={handleGizmoChange}
-        />
-      ) : null}
-    </>
+    <mesh ref={meshRef} visible={false}>
+      <boxGeometry args={[1, 1, 1]} />
+    </mesh>
   );
 }
 
