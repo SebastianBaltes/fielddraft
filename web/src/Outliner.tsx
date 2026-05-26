@@ -55,6 +55,7 @@ const KIND_GLYPH: Record<string, string> = {
   linear_pattern: "⎡",
   circular_pattern: "↻",
   mirror: "◫",
+  transform: "⤡",
 };
 
 const SKETCH_SUB_GLYPH: Record<string, string> = {

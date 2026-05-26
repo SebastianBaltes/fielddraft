@@ -1190,13 +1190,30 @@ impl FeatureKind for MateConnectorFeature {
 }
 
 // ─── K7.21j: Transform Feature ──────────────────────────────────
+//
+// Gizmo-driven parametric transform. Stores absolute world-space
+// values and REPLACES the target's transform during regeneration.
+// Consecutive transforms on the same target are merged by the
+// kernel's `apply_gizmo_transform` method so the feature tree
+// shows at most one Transform per uninterrupted editing sequence.
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct TransformDef {
     target_id: u32,
     translate: [f32; 3],
     rotation: [f32; 4],
-    scale: f32,
+    scale: [f32; 3],
+}
+
+impl Default for TransformDef {
+    fn default() -> Self {
+        Self {
+            target_id: 0,
+            translate: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
 }
 
 impl TransformDef {
@@ -1214,26 +1231,22 @@ impl TransformDef {
                 {"name": "rotation_y", "type": "Length", "default": 0.0},
                 {"name": "rotation_z", "type": "Length", "default": 0.0},
                 {"name": "rotation_w", "type": "Length", "default": 1.0},
-                {"name": "scale", "type": "Length", "default": 1.0},
+                {"name": "scale_x", "type": "Length", "default": 1.0},
+                {"name": "scale_y", "type": "Length", "default": 1.0},
+                {"name": "scale_z", "type": "Length", "default": 1.0},
             ]
         })
     }
 
     fn from_params(params: &Value) -> Self {
+        let f = |key: &str, default: f64| -> f32 {
+            params.get(key).and_then(|v| v.as_f64()).unwrap_or(default) as f32
+        };
         Self {
             target_id: params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            translate: [
-                params.get("translate_x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                params.get("translate_y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                params.get("translate_z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            ],
-            rotation: [
-                params.get("rotation_x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                params.get("rotation_y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                params.get("rotation_z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                params.get("rotation_w").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-            ],
-            scale: params.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+            translate: [f("translate_x", 0.0), f("translate_y", 0.0), f("translate_z", 0.0)],
+            rotation: [f("rotation_x", 0.0), f("rotation_y", 0.0), f("rotation_z", 0.0), f("rotation_w", 1.0)],
+            scale: [f("scale_x", 1.0), f("scale_y", 1.0), f("scale_z", 1.0)],
         }
     }
 }
@@ -1262,17 +1275,9 @@ impl FeatureKind for TransformFeature {
             message: format!("target feature {} not found", td.target_id),
         })?;
         let t = &mut ctx.document.features[idx].transform;
-        t.translate[0] += td.translate[0];
-        t.translate[1] += td.translate[1];
-        t.translate[2] += td.translate[2];
-        if td.rotation != [0.0, 0.0, 0.0, 1.0] {
-            t.rotation = td.rotation;
-        }
-        if (td.scale - 1.0).abs() > 1e-7 {
-            t.scale[0] *= td.scale;
-            t.scale[1] *= td.scale;
-            t.scale[2] *= td.scale;
-        }
+        t.translate = td.translate;
+        t.rotation = td.rotation;
+        t.scale = td.scale;
         Ok(())
     }
 }

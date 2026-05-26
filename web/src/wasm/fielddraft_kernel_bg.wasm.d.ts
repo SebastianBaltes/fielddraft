@@ -16,6 +16,7 @@ export const kernel_addMirror: (a: number, b: number, c: number, d: number, e: n
 export const kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const kernel_applyGizmoTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
 export const kernel_bodyClassificationsPtr: (a: number, b: number) => number;
 export const kernel_bodyContributorsPtr: (a: number, b: number) => number;
 export const kernel_bodyCount: (a: number) => number;

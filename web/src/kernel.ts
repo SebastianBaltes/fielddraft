@@ -955,6 +955,16 @@ export class Kernel {
     return (this.inner as any).setFeatureScale(id, sx, sy, sz);
   }
 
+  applyGizmoTransform(
+    id: number,
+    tx: number, ty: number, tz: number,
+    rx: number, ry: number, rz: number, rw: number,
+    sx: number, sy: number, sz: number,
+  ): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.inner as any).applyGizmoTransform(id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz);
+  }
+
   nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {
     return this.inner.nudgeFeature(id, dx, dy, dz);
   }

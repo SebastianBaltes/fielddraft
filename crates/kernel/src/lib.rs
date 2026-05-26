@@ -842,6 +842,7 @@ impl Kernel {
             "circular_pattern" => "circular_pattern",
             "mirror" => "mirror",
             "boolean" => "boolean",
+            "transform" => "transform",
             _ => "unknown",
         }
     }
@@ -875,6 +876,7 @@ impl Kernel {
             "circular_pattern" => "Circular pattern",
             "mirror" => "Mirror",
             "boolean" => "Boolean",
+            "transform" => "Transform",
             other => other,
         };
         format!("{label} {}", call.id)
@@ -1132,9 +1134,26 @@ impl Kernel {
                         Some(out)
                     })
                     .unwrap_or([0.0, 0.0, 0.0]);
+                let name = if call.type_name == "transform" {
+                    let target_id = call.params.get("target_id")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    let target_name = self.document.features.iter()
+                        .find(|f| f.id.as_u32_if_flat() == Some(target_id))
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("?");
+                    if let Some(user_name) = call.params.get("name").and_then(|v| v.as_str()) {
+                        if !user_name.is_empty() { user_name.to_string() }
+                        else { format!("Transform {target_name}") }
+                    } else {
+                        format!("Transform {target_name}")
+                    }
+                } else {
+                    Self::synth_name_for_call(call)
+                };
                 summaries.push(FeatureSummary {
                     id: call.id.clone(),
-                    name: Self::synth_name_for_call(call),
+                    name,
                     op,
                     kind: Self::static_kind_name(&call.type_name),
                     translate,
@@ -2227,6 +2246,60 @@ impl Kernel {
         }
         self.snapshot();
         self.document.features[idx].transform.scale = [sx, sy, sz];
+        self.rebuild_packed();
+        true
+    }
+
+    /// Create or merge a `transform` FeatureCall driven by the gizmo.
+    /// Stores absolute world-space values. If the last FeatureCall is
+    /// already a `transform` targeting the same feature, its params
+    /// are updated in-place (merge); otherwise a new one is appended.
+    /// Returns `false` if the target feature doesn't exist.
+    #[wasm_bindgen(js_name = applyGizmoTransform)]
+    pub fn apply_gizmo_transform(
+        &mut self,
+        target_id: u32,
+        tx: f32, ty: f32, tz: f32,
+        rx: f32, ry: f32, rz: f32, rw: f32,
+        sx: f32, sy: f32, sz: f32,
+    ) -> bool {
+        let target = FeatureId::from_u32(target_id);
+        if !self.document.features.iter().any(|f| f.id == target) {
+            return false;
+        }
+
+        let params = serde_json::json!({
+            "target_id": target_id,
+            "translate_x": tx, "translate_y": ty, "translate_z": tz,
+            "rotation_x": rx, "rotation_y": ry, "rotation_z": rz, "rotation_w": rw,
+            "scale_x": sx, "scale_y": sy, "scale_z": sz,
+        });
+
+        let should_merge = self.document.feature_calls.last().map_or(false, |c| {
+            c.type_name == "transform"
+                && !c.suppressed
+                && c.params.get("target_id")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32 == target_id
+        });
+
+        if should_merge {
+            let idx = self.document.feature_calls.len() - 1;
+            self.document.feature_calls[idx].params = params;
+        } else {
+            self.snapshot();
+            let id = self.document.allocate_id();
+            self.document.feature_calls.push(
+                fielddraft_protocol::FeatureCall {
+                    id,
+                    type_name: "transform".to_string(),
+                    params,
+                    suppressed: false,
+                },
+            );
+        }
+
+        let _ = self.bootstrap_features_from_calls();
         self.rebuild_packed();
         true
     }

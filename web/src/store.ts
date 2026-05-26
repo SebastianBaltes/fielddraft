@@ -2019,6 +2019,17 @@ export class KernelStore {
     return true;
   }
 
+  applyGizmoTransform(
+    id: number,
+    tx: number, ty: number, tz: number,
+    rx: number, ry: number, rz: number, rw: number,
+    sx: number, sy: number, sz: number,
+  ): boolean {
+    if (!this.kernel.applyGizmoTransform(id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz)) return false;
+    this.commit();
+    return true;
+  }
+
   /** K7.22 UX-fix (5): flip a sketch's 3D-visible state. When on,
    *  the Viewport renders the sketch's geometry as line overlays
    *  on the sketch plane. Default off. Not a kernel mutation —

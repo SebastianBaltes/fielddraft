@@ -768,20 +768,18 @@ function SelectionTransformGizmo() {
     const mesh = meshRef.current;
     if (!mesh || !store || !selectedFeature) return;
     gizmoPendingRef.current = false;
+    const p = mesh.position;
+    const q = mesh.quaternion;
+    const s = mesh.scale;
     if (gizmoMode === "translate") {
-      const next: [number, number, number] = [
-        mesh.position.x,
-        mesh.position.y,
-        mesh.position.z,
-      ];
-      syncedTranslateRef.current = next;
-      store.setFeatureTranslate(selectedFeature.id, next[0], next[1], next[2]);
-    } else if (gizmoMode === "rotate") {
-      const q = mesh.quaternion;
-      store.setFeatureRotation(selectedFeature.id, q.x, q.y, q.z, q.w);
-    } else if (gizmoMode === "scale") {
-      store.setFeatureScale(selectedFeature.id, mesh.scale.x, mesh.scale.y, mesh.scale.z);
+      syncedTranslateRef.current = [p.x, p.y, p.z];
     }
+    store.applyGizmoTransform(
+      selectedFeature.id,
+      p.x, p.y, p.z,
+      q.x, q.y, q.z, q.w,
+      s.x, s.y, s.z,
+    );
   };
 
   useEffect(() => {

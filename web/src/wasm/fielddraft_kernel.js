@@ -306,6 +306,29 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * Create or merge a `transform` FeatureCall driven by the gizmo.
+     * Stores absolute world-space values. If the last FeatureCall is
+     * already a `transform` targeting the same feature, its params
+     * are updated in-place (merge); otherwise a new one is appended.
+     * Returns `false` if the target feature doesn't exist.
+     * @param {number} target_id
+     * @param {number} tx
+     * @param {number} ty
+     * @param {number} tz
+     * @param {number} rx
+     * @param {number} ry
+     * @param {number} rz
+     * @param {number} rw
+     * @param {number} sx
+     * @param {number} sy
+     * @param {number} sz
+     * @returns {boolean}
+     */
+    applyGizmoTransform(target_id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz) {
+        const ret = wasm.kernel_applyGizmoTransform(this.__wbg_ptr, target_id, tx, ty, tz, rx, ry, rz, rw, sx, sy, sz);
+        return ret !== 0;
+    }
+    /**
      * @param {number} i
      * @returns {number}
      */
