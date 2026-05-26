@@ -25,12 +25,13 @@
  *   in one place.
  */
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   register as registerQueryPicker,
   isActive as isQueryPickerActive,
   subscribe as subscribeQueryPicker,
 } from "../queryPickerBridge";
+import { useKernelStore } from "../store";
 import {
   ANGLE_UNITS,
   LENGTH_UNITS,
@@ -598,10 +599,21 @@ const QUERY_DISPLAY_LABELS: Record<string, string> = {
   "qCreatedBy(origin_plane_yz)": "YZ Plane",
 };
 
-function formatQueryDisplay(raw: string): string {
+function formatQueryDisplay(
+  raw: string,
+  featureNames?: Map<number, string>,
+): string {
   if (QUERY_DISPLAY_LABELS[raw]) return QUERY_DISPLAY_LABELS[raw];
   const match = raw.match(/^qCreatedBy\((.+)\)$/);
-  if (match) return match[1].replace(/_/g, " ");
+  if (match) {
+    const inner = match[1];
+    if (featureNames) {
+      const id = Number(inner);
+      if (!Number.isNaN(id) && featureNames.has(id))
+        return featureNames.get(id)!;
+    }
+    return inner.replace(/_/g, " ");
+  }
   return raw;
 }
 
@@ -742,6 +754,13 @@ export function MultiQueryWidget({
   required,
 }: WidgetProps<string>) {
   const id = useId();
+  const { state } = useKernelStore();
+  const featureNames = useMemo(() => {
+    if (!state) return undefined;
+    const m = new Map<number, string>();
+    for (const f of state.features) m.set(f.id, f.name);
+    return m;
+  }, [state]);
   const itemsRef = useRef<string[]>(parseMultiQuery(value));
 
   useEffect(() => {
@@ -824,11 +843,11 @@ export function MultiQueryWidget({
           )}
           {items.map((q) => (
             <span key={q} className="query-chip">
-              {formatQueryDisplay(q)}
+              {formatQueryDisplay(q, featureNames)}
               <button
                 type="button"
                 className="chip-remove"
-                title={`Remove ${formatQueryDisplay(q)}`}
+                title={`Remove ${formatQueryDisplay(q, featureNames)}`}
                 onClick={() => removeItem(q)}
               >
                 ×

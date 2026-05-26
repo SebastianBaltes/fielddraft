@@ -2487,11 +2487,38 @@ impl FeatureKind for BooleanFeature {
 
     fn execute(
         &self,
-        _ctx: &mut Context<'_>,
+        ctx: &mut Context<'_>,
         _id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
-        let _d = BooleanDef::parse(def)?;
+        let d = BooleanDef::parse(def)?;
+
+        let op = match d.operation.as_str() {
+            "Subtract" => BoolOp::Difference,
+            "Intersect" => BoolOp::Intersect,
+            _ => BoolOp::Union,
+        };
+
+        let tool_ids: Vec<FeatureId> = d
+            .tools
+            .queries()
+            .iter()
+            .filter_map(|q| {
+                let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
+                inner.parse::<FeatureId>().ok()
+            })
+            .collect();
+
+        if tool_ids.is_empty() {
+            return Ok(());
+        }
+
+        for feature in ctx.document.features.iter_mut() {
+            if tool_ids.contains(&feature.id) {
+                feature.op = op;
+            }
+        }
+
         Ok(())
     }
 }
