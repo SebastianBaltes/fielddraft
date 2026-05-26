@@ -18,10 +18,10 @@
 //! Partitioning rules (kept deliberately small for the MVP):
 //!
 //! * **Union** — compute the world AABB of the feature. Collect every
-//!   existing body whose AABB overlaps it. Zero hits start a new
-//!   body; one hit appends to that body; two or more hits *merge*
-//!   those bodies into the first one and absorb the new feature.
-//!   The per-body AABB grows to cover the new payload.
+//!   existing body whose AABB overlaps it. Zero hits → start a new
+//!   body. One hit → append to that body (grow its AABB). Two or
+//!   more hits → *merge* those bodies into the first one, absorb the
+//!   new feature, and sort the feature indices back to document order.
 //! * **Difference** / **Intersection** — look up overlapping bodies
 //!   the same way, attach the feature to the *first* overlapping
 //!   body (deterministic, stable under renames), and **drop** the
@@ -134,17 +134,6 @@ pub struct Body {
 
 /// Walk the feature spine once and return one [`BodyPartition`] per
 /// resulting body. See the module docs for the rules.
-///
-/// **K7.22 UX-fix (3):** Union features no longer implicitly merge
-/// with overlapping existing bodies. Every Union lands as its own
-/// independent body, so the user can move two boxes into each other
-/// without silently turning them into a single solid. Explicit
-/// Boolean operations (Add / Subtract / Intersect between two
-/// specific bodies) belong in a dedicated feature dialog and are
-/// tracked in ROADMAP.md K7.21i. Difference and Intersect features
-/// still attach to the first body whose AABB they overlap — that
-/// preserves the addHole / subtract-primitive flow, which in
-/// practice already targets a well-defined existing body.
 pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
     let mut groups: Vec<BodyPartition> = Vec::new();
     for (i, feature) in features.iter().enumerate() {
@@ -152,19 +141,38 @@ pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
 
         match feature.op {
             BoolOp::Union => {
-                // Always start a fresh body. No auto-merge on AABB
-                // overlap — that was an unwanted side effect of the
-                // old partition rules.
-                groups.push(BodyPartition {
-                    feature_indices: vec![i],
-                    aabb: feat_aabb,
-                });
+                let overlapping: Vec<usize> = groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| aabbs_overlap(g.aabb, feat_aabb))
+                    .map(|(idx, _)| idx)
+                    .collect();
+
+                if overlapping.is_empty() {
+                    groups.push(BodyPartition {
+                        feature_indices: vec![i],
+                        aabb: feat_aabb,
+                    });
+                } else {
+                    let target = overlapping[0];
+                    groups[target].feature_indices.push(i);
+                    groups[target].aabb = union_aabb(groups[target].aabb, feat_aabb);
+
+                    // Merge any additional overlapping bodies into
+                    // the first one (reverse order to keep indices
+                    // valid during removal).
+                    for &idx in overlapping[1..].iter().rev() {
+                        let merged = groups.remove(idx);
+                        groups[target]
+                            .feature_indices
+                            .extend(merged.feature_indices);
+                        groups[target].aabb =
+                            union_aabb(groups[target].aabb, merged.aabb);
+                    }
+                    groups[target].feature_indices.sort_unstable();
+                }
             }
             BoolOp::Difference | BoolOp::Intersect => {
-                // Find the first existing body whose AABB overlaps
-                // this feature, and append to it. If nothing
-                // overlaps, the feature is an orphan and is
-                // silently dropped (matches the old behaviour).
                 let target = groups
                     .iter()
                     .enumerate()
@@ -172,12 +180,26 @@ pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
                     .map(|(idx, _)| idx);
                 if let Some(idx) = target {
                     groups[idx].feature_indices.push(i);
-                    // Diff/Inter never grow the AABB; leave it alone.
                 }
             }
         }
     }
     groups
+}
+
+fn union_aabb(a: Aabb, b: Aabb) -> Aabb {
+    Aabb {
+        min: [
+            a.min[0].min(b.min[0]),
+            a.min[1].min(b.min[1]),
+            a.min[2].min(b.min[2]),
+        ],
+        max: [
+            a.max[0].max(b.max[0]),
+            a.max[1].max(b.max[1]),
+            a.max[2].max(b.max[2]),
+        ],
+    }
 }
 
 /// World-space AABB of a single feature's primitive, transformed by
@@ -571,22 +593,15 @@ mod tests {
         assert_eq!(bodies[1].feature_indices, vec![1]);
     }
 
-    /// K7.22 (3): overlapping unions stay separate bodies. Before
-    /// this change, two Union boxes with overlapping AABBs implicitly
-    /// merged into a single body — a side effect the UX testing in
-    /// 2026-04-13 identified as surprising ("Objekte, die ineinander
-    /// verschoben werden, sollen nicht automatisch ein Union machen").
-    /// Each Union feature now lands as its own independent body.
     #[test]
-    fn overlapping_unions_stay_as_separate_bodies() {
+    fn overlapping_unions_merge_into_one_body() {
         let features = vec![
             box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 2, "overlapping unions must not auto-merge");
-        assert_eq!(bodies[0].feature_indices, vec![0]);
-        assert_eq!(bodies[1].feature_indices, vec![1]);
+        assert_eq!(bodies.len(), 1, "overlapping unions must merge");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
     }
 
     #[test]
@@ -616,45 +631,36 @@ mod tests {
         );
     }
 
-    /// K7.22 (3): a bridge box that spans two previously-separate
-    /// Union bodies no longer merges them. The three boxes become
-    /// three bodies — the user is responsible for an explicit
-    /// Boolean feature if they really want one merged solid.
     #[test]
-    fn bridging_union_does_not_merge_existing_bodies() {
+    fn bridging_union_merges_existing_bodies() {
         let features = vec![
             box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(3, BoolOp::Union, [15.0, 0.0, 0.0], [20.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 3, "bridging union must not auto-merge");
-        assert_eq!(bodies[0].feature_indices, vec![0]);
-        assert_eq!(bodies[1].feature_indices, vec![1]);
-        assert_eq!(bodies[2].feature_indices, vec![2]);
+        assert_eq!(bodies.len(), 1, "bridging union must merge all three");
+        assert!(bodies[0].feature_indices.contains(&0));
+        assert!(bodies[0].feature_indices.contains(&1));
+        assert!(bodies[0].feature_indices.contains(&2));
     }
 
-    /// K7.22 (3): Difference/Intersect still attach to the first
-    /// overlapping Union body, so `addHole` / subtract-primitive
-    /// flows keep working. Union features stay independent.
     #[test]
-    fn difference_still_attaches_to_first_overlapping_union_body() {
+    fn difference_and_bridging_union_merge_everything() {
         let features = vec![
-            // Box A at origin, Difference carved into A, Box B far away,
-            // another Union box that overlaps A but is the third body now.
             box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             sphere_feat(2, BoolOp::Difference, [0.0, 0.0, 0.0], 2.0),
             box_feat(3, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(4, BoolOp::Union, [15.0, 0.0, 0.0], [20.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 3);
-        // Body 0 = box A + its difference sphere.
-        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
-        // Body 1 = box B.
-        assert_eq!(bodies[1].feature_indices, vec![2]);
-        // Body 2 = overlap box (independent).
-        assert_eq!(bodies[2].feature_indices, vec![3]);
+        // The bridge box (feat 4) overlaps both body A and body B,
+        // so all features end up in one body.
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].feature_indices.contains(&0));
+        assert!(bodies[0].feature_indices.contains(&1));
+        assert!(bodies[0].feature_indices.contains(&2));
+        assert!(bodies[0].feature_indices.contains(&3));
     }
 
     #[test]

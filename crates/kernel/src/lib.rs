@@ -4169,12 +4169,8 @@ mod tests {
         assert_eq!(k.body_id(1), id_b);
     }
 
-    /// K7.22 (3): after the partition-no-auto-merge rewrite, three
-    /// Union boxes — two separate plus a bridging one — land as
-    /// three independent bodies. The user explicitly asked that
-    /// primitives moved into each other stay as separate bodies.
     #[test]
-    fn bridging_union_keeps_bodies_separate() {
+    fn bridging_union_merges_into_one_body() {
         let mut k = Kernel::new();
         let _id_a = k
             .add_primitive(
@@ -4193,9 +4189,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(k.body_count(), 2);
-        // Add a bridge that overlaps both. Under the new partition
-        // rules, every Union lands as its own body, so we end up
-        // with three instead of one merged.
         let _id_bridge = k
             .add_primitive(
                 Primitive::KIND_BOX,
@@ -4204,7 +4197,7 @@ mod tests {
                 40.0, 10.0, 10.0,
             )
             .unwrap();
-        assert_eq!(k.body_count(), 3, "unions must not auto-merge on overlap");
+        assert_eq!(k.body_count(), 1, "bridging union must merge all three");
     }
 
     #[test]
