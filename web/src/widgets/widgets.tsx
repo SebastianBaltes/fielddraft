@@ -373,14 +373,19 @@ export function BoolWidget({
 }: WidgetProps<boolean>) {
   const id = useId();
   return (
-    <Field label={label} htmlFor={id} error={error} required={required}>
+    <div className="field field-inline">
       <input
         id={id}
         type="checkbox"
         checked={value}
         onChange={(e) => onChange(e.currentTarget.checked)}
       />
-    </Field>
+      <label className="label" htmlFor={id}>
+        {label}
+        {required ? <span className="required"> *</span> : null}
+      </label>
+      {error ? <div className="error">{error}</div> : null}
+    </div>
   );
 }
 
