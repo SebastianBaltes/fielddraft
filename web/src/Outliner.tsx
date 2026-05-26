@@ -965,7 +965,15 @@ export function Outliner({ store, state }: OutlinerProps) {
                       onBlur={commitRename}
                     />
                   ) : (
-                    <span className="feature-name">{prettifyFeatureName(feature.name, feature.kind)}</span>
+                    <span
+                      className={"feature-name" + (selected ? " is-editable" : "")}
+                      onClick={selected ? (e) => {
+                        e.stopPropagation();
+                        beginRename(feature);
+                      } : undefined}
+                    >
+                      {prettifyFeatureName(feature.name, feature.kind)}
+                    </span>
                   )}
                   {feature.kind === "sketch" ? (
                     <button
