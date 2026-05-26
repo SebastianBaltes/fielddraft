@@ -6,8 +6,6 @@ const LS_COMPACT = "fielddraft.compact";
 const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
-const LS_CLICK_CYCLE_GIZMO = "fielddraft.clickCycleGizmo";
-
 export type WorkspaceUnits = "mm" | "inch";
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred";
@@ -19,7 +17,6 @@ export interface SettingsState {
   units: WorkspaceUnits;
   theme: ThemeChoice;
   renderMode: RenderMode;
-  clickCycleGizmo: boolean;
 }
 
 /** Load all settings from localStorage with safe fallbacks. */
@@ -28,7 +25,6 @@ export function loadSettings(): SettingsState {
   let units: WorkspaceUnits = "mm";
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
-  let clickCycleGizmo = true;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     const rawUnits = localStorage.getItem(LS_UNITS);
@@ -38,12 +34,10 @@ export function loadSettings(): SettingsState {
     const rawMode = localStorage.getItem(LS_RENDER_MODE);
     if (rawMode && VALID_RENDER_MODES.includes(rawMode as RenderMode))
       renderMode = rawMode as RenderMode;
-    const rawCycle = localStorage.getItem(LS_CLICK_CYCLE_GIZMO);
-    if (rawCycle !== null) clickCycleGizmo = rawCycle !== "false";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, clickCycleGizmo };
+  return { compact, units, theme, renderMode };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -609,24 +603,6 @@ function SettingsDialog({
               <option value="sdf-vm">SDF VM</option>
               <option value="sdf-deferred">SDF Deferred</option>
             </select>
-          </div>
-
-          <div className="setting-row" data-testid="setting-click-cycle-gizmo">
-            <span className="setting-label">Click cycles gizmo</span>
-            <button
-              type="button"
-              className={"toggle" + (settings.clickCycleGizmo ? " is-on" : "")}
-              role="switch"
-              aria-checked={settings.clickCycleGizmo}
-              data-testid="setting-click-cycle-gizmo-toggle"
-              onClick={() => {
-                const next = { ...settings, clickCycleGizmo: !settings.clickCycleGizmo };
-                saveSetting(LS_CLICK_CYCLE_GIZMO, String(next.clickCycleGizmo));
-                onSettingsChange(next);
-              }}
-            >
-              {settings.clickCycleGizmo ? "On" : "Off"}
-            </button>
           </div>
 
           <div className="setting-section" data-testid="setting-shortcuts">

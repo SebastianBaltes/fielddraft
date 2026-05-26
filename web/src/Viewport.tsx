@@ -57,8 +57,6 @@ import {
  *  the Onshape-style 300 mm cube budget, doubled for breathing room. */
 const BUILD_VOLUME_SIZE = 600;
 
-let gizmoDragEndTime = 0;
-
 const OVERLAY_LAYER = 1;
 
 /**
@@ -808,7 +806,6 @@ function SelectionTransformGizmo() {
 
     const onDragging = (e: { value: boolean }) => {
       if (defaultControls) (defaultControls as any).enabled = !e.value;
-      if (!e.value) gizmoDragEndTime = performance.now();
     };
     const onChange = () => invalidate();
     const onObjectChange = () => {
@@ -1641,14 +1638,6 @@ export function Viewport({ renderMode }: { renderMode: string }) {
         store.selectRangeTo(featureId);
       } else if (event.ctrlKey || event.metaKey) {
         store.toggleSelect(featureId);
-      } else if (
-        state &&
-        state.selection.size === 1 &&
-        state.selection.has(featureId) &&
-        localStorage.getItem("fielddraft.clickCycleGizmo") !== "false" &&
-        performance.now() - gizmoDragEndTime > 200
-      ) {
-        store.cycleGizmoMode();
       } else {
         store.selectOnly(featureId);
       }
