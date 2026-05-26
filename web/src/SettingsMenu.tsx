@@ -8,21 +8,61 @@ const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
+export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
 export type AngleUnitKey = "deg" | "rad";
+export type AngularVelocityUnitKey = "deg/s" | "rad/s" | "rpm";
+export type MassUnitKey = "g" | "kg" | "lb" | "oz";
+export type DensityUnitKey = "g/cm3" | "kg/m3" | "lb/ft3" | "lb/in3";
+export type ForceUnitKey = "N" | "kN" | "MN" | "lbf" | "kgf";
+export type MomentUnitKey = "N*m" | "N*mm" | "kN*m" | "lbf*ft" | "lbf*in";
+export type PressureUnitKey = "Pa" | "kPa" | "MPa" | "GPa" | "psi" | "bar" | "atm";
+export type EnergyUnitKey = "J" | "kJ" | "cal" | "kcal" | "BTU" | "ft*lbf";
 export type DecimalFormat = "1" | "0.1" | "0.12" | "0.123" | "0.1234" | "0.12345";
 
 export interface WorkspaceUnits {
   lengthUnit: LengthUnitKey;
   lengthDecimals: DecimalFormat;
+  linearAccelerationUnit: LinearAccelerationUnitKey;
+  linearAccelerationDecimals: DecimalFormat;
   angleUnit: AngleUnitKey;
   angleDecimals: DecimalFormat;
+  angularVelocityUnit: AngularVelocityUnitKey;
+  angularVelocityDecimals: DecimalFormat;
+  massUnit: MassUnitKey;
+  massDecimals: DecimalFormat;
+  densityUnit: DensityUnitKey;
+  densityDecimals: DecimalFormat;
+  forceUnit: ForceUnitKey;
+  forceDecimals: DecimalFormat;
+  momentUnit: MomentUnitKey;
+  momentDecimals: DecimalFormat;
+  pressureUnit: PressureUnitKey;
+  pressureDecimals: DecimalFormat;
+  energyUnit: EnergyUnitKey;
+  energyDecimals: DecimalFormat;
 }
 
 const DEFAULT_UNITS: WorkspaceUnits = {
   lengthUnit: "m",
   lengthDecimals: "0.123",
+  linearAccelerationUnit: "m/s2",
+  linearAccelerationDecimals: "0.123",
   angleUnit: "deg",
   angleDecimals: "0.123",
+  angularVelocityUnit: "deg/s",
+  angularVelocityDecimals: "0.123",
+  massUnit: "g",
+  massDecimals: "0.123",
+  densityUnit: "g/cm3",
+  densityDecimals: "0.123",
+  forceUnit: "N",
+  forceDecimals: "0.123",
+  momentUnit: "N*m",
+  momentDecimals: "0.123",
+  pressureUnit: "Pa",
+  pressureDecimals: "0.123",
+  energyUnit: "J",
+  energyDecimals: "0.123",
 };
 
 export const LENGTH_UNIT_OPTIONS: { key: LengthUnitKey; label: string }[] = [
@@ -33,9 +73,71 @@ export const LENGTH_UNIT_OPTIONS: { key: LengthUnitKey; label: string }[] = [
   { key: "ft", label: "Foot" },
 ];
 
+export const LINEAR_ACCELERATION_UNIT_OPTIONS: { key: LinearAccelerationUnitKey; label: string }[] = [
+  { key: "m/s2", label: "Meter per second squared" },
+  { key: "mm/s2", label: "Millimeter per second squared" },
+  { key: "ft/s2", label: "Foot per second squared" },
+  { key: "in/s2", label: "Inch per second squared" },
+];
+
 export const ANGLE_UNIT_OPTIONS: { key: AngleUnitKey; label: string }[] = [
   { key: "deg", label: "Degree" },
   { key: "rad", label: "Radian" },
+];
+
+export const ANGULAR_VELOCITY_UNIT_OPTIONS: { key: AngularVelocityUnitKey; label: string }[] = [
+  { key: "deg/s", label: "Degree per second" },
+  { key: "rad/s", label: "Radian per second" },
+  { key: "rpm", label: "Revolution per minute" },
+];
+
+export const MASS_UNIT_OPTIONS: { key: MassUnitKey; label: string }[] = [
+  { key: "g", label: "Gram" },
+  { key: "kg", label: "Kilogram" },
+  { key: "lb", label: "Pound" },
+  { key: "oz", label: "Ounce" },
+];
+
+export const DENSITY_UNIT_OPTIONS: { key: DensityUnitKey; label: string }[] = [
+  { key: "g/cm3", label: "Gram per cubic centimeter" },
+  { key: "kg/m3", label: "Kilogram per cubic meter" },
+  { key: "lb/ft3", label: "Pound per cubic foot" },
+  { key: "lb/in3", label: "Pound per cubic inch" },
+];
+
+export const FORCE_UNIT_OPTIONS: { key: ForceUnitKey; label: string }[] = [
+  { key: "N", label: "Newton" },
+  { key: "kN", label: "Kilonewton" },
+  { key: "MN", label: "Meganewton" },
+  { key: "lbf", label: "Pound-force" },
+  { key: "kgf", label: "Kilogram-force" },
+];
+
+export const MOMENT_UNIT_OPTIONS: { key: MomentUnitKey; label: string }[] = [
+  { key: "N*m", label: "Newton-meter" },
+  { key: "N*mm", label: "Newton-millimeter" },
+  { key: "kN*m", label: "Kilonewton-meter" },
+  { key: "lbf*ft", label: "Pound-force foot" },
+  { key: "lbf*in", label: "Pound-force inch" },
+];
+
+export const PRESSURE_UNIT_OPTIONS: { key: PressureUnitKey; label: string }[] = [
+  { key: "Pa", label: "Pascal" },
+  { key: "kPa", label: "Kilopascal" },
+  { key: "MPa", label: "Megapascal" },
+  { key: "GPa", label: "Gigapascal" },
+  { key: "psi", label: "Pound per square inch" },
+  { key: "bar", label: "Bar" },
+  { key: "atm", label: "Atmosphere" },
+];
+
+export const ENERGY_UNIT_OPTIONS: { key: EnergyUnitKey; label: string }[] = [
+  { key: "J", label: "Joule" },
+  { key: "kJ", label: "Kilojoule" },
+  { key: "cal", label: "Calorie" },
+  { key: "kcal", label: "Kilocalorie" },
+  { key: "BTU", label: "British thermal unit" },
+  { key: "ft*lbf", label: "Foot-pound" },
 ];
 
 export const DECIMAL_OPTIONS: { key: DecimalFormat; label: string }[] = [
@@ -69,15 +171,38 @@ export interface SettingsState {
   renderMode: RenderMode;
 }
 
+function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
+  return opts.some((o) => o.key === val) ? (val as K) : fallback;
+}
+function validDec(val: unknown): DecimalFormat {
+  return DECIMAL_OPTIONS.some((o) => o.key === val) ? (val as DecimalFormat) : DEFAULT_UNITS.lengthDecimals;
+}
+
 function parseUnits(raw: string | null): WorkspaceUnits {
   if (!raw) return DEFAULT_UNITS;
   try {
-    const obj = JSON.parse(raw);
+    const o = JSON.parse(raw);
     return {
-      lengthUnit: LENGTH_UNIT_OPTIONS.some((o) => o.key === obj.lengthUnit) ? obj.lengthUnit : DEFAULT_UNITS.lengthUnit,
-      lengthDecimals: DECIMAL_OPTIONS.some((o) => o.key === obj.lengthDecimals) ? obj.lengthDecimals : DEFAULT_UNITS.lengthDecimals,
-      angleUnit: ANGLE_UNIT_OPTIONS.some((o) => o.key === obj.angleUnit) ? obj.angleUnit : DEFAULT_UNITS.angleUnit,
-      angleDecimals: DECIMAL_OPTIONS.some((o) => o.key === obj.angleDecimals) ? obj.angleDecimals : DEFAULT_UNITS.angleDecimals,
+      lengthUnit: validOr(LENGTH_UNIT_OPTIONS, o.lengthUnit, DEFAULT_UNITS.lengthUnit),
+      lengthDecimals: validDec(o.lengthDecimals),
+      linearAccelerationUnit: validOr(LINEAR_ACCELERATION_UNIT_OPTIONS, o.linearAccelerationUnit, DEFAULT_UNITS.linearAccelerationUnit),
+      linearAccelerationDecimals: validDec(o.linearAccelerationDecimals),
+      angleUnit: validOr(ANGLE_UNIT_OPTIONS, o.angleUnit, DEFAULT_UNITS.angleUnit),
+      angleDecimals: validDec(o.angleDecimals),
+      angularVelocityUnit: validOr(ANGULAR_VELOCITY_UNIT_OPTIONS, o.angularVelocityUnit, DEFAULT_UNITS.angularVelocityUnit),
+      angularVelocityDecimals: validDec(o.angularVelocityDecimals),
+      massUnit: validOr(MASS_UNIT_OPTIONS, o.massUnit, DEFAULT_UNITS.massUnit),
+      massDecimals: validDec(o.massDecimals),
+      densityUnit: validOr(DENSITY_UNIT_OPTIONS, o.densityUnit, DEFAULT_UNITS.densityUnit),
+      densityDecimals: validDec(o.densityDecimals),
+      forceUnit: validOr(FORCE_UNIT_OPTIONS, o.forceUnit, DEFAULT_UNITS.forceUnit),
+      forceDecimals: validDec(o.forceDecimals),
+      momentUnit: validOr(MOMENT_UNIT_OPTIONS, o.momentUnit, DEFAULT_UNITS.momentUnit),
+      momentDecimals: validDec(o.momentDecimals),
+      pressureUnit: validOr(PRESSURE_UNIT_OPTIONS, o.pressureUnit, DEFAULT_UNITS.pressureUnit),
+      pressureDecimals: validDec(o.pressureDecimals),
+      energyUnit: validOr(ENERGY_UNIT_OPTIONS, o.energyUnit, DEFAULT_UNITS.energyUnit),
+      energyDecimals: validDec(o.energyDecimals),
     };
   } catch {
     return DEFAULT_UNITS;
@@ -521,6 +646,51 @@ function ExportSubmenu({
   );
 }
 
+/* ── Unit row helper ───────────────────────────────────────── */
+
+function UnitRow<K extends string>({
+  label, value, options, decimals, onUnitChange, onDecimalsChange, testId,
+}: {
+  label: string;
+  value: K;
+  options: { key: K; label: string }[];
+  decimals: DecimalFormat;
+  onUnitChange: (v: K) => void;
+  onDecimalsChange: (v: DecimalFormat) => void;
+  testId: string;
+}) {
+  return (
+    <div className="unit-row">
+      <div className="unit-field">
+        <span className="unit-field-label">{label}</span>
+        <select
+          className="mode-select"
+          value={value}
+          data-testid={`setting-${testId}-unit`}
+          onChange={(e) => onUnitChange(e.target.value as K)}
+        >
+          {options.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+      <div className="unit-field">
+        <span className="unit-field-label">Display decimals</span>
+        <select
+          className="mode-select"
+          value={decimals}
+          data-testid={`setting-${testId}-decimals`}
+          onChange={(e) => onDecimalsChange(e.target.value as DecimalFormat)}
+        >
+          {DECIMAL_OPTIONS.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 /* ── Settings dialog ───────────────────────────────────────── */
 
 function SettingsDialog({
@@ -618,66 +788,24 @@ function SettingsDialog({
 
             <div className="unit-group">
               <div className="unit-group-title">Length</div>
-              <div className="unit-row">
-                <div className="unit-field">
-                  <span className="unit-field-label">Default unit</span>
-                  <select
-                    className="mode-select"
-                    value={settings.units.lengthUnit}
-                    data-testid="setting-length-unit"
-                    onChange={(e) => updateUnits({ lengthUnit: e.target.value as LengthUnitKey })}
-                  >
-                    {LENGTH_UNIT_OPTIONS.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="unit-field">
-                  <span className="unit-field-label">Display decimals</span>
-                  <select
-                    className="mode-select"
-                    value={settings.units.lengthDecimals}
-                    data-testid="setting-length-decimals"
-                    onChange={(e) => updateUnits({ lengthDecimals: e.target.value as DecimalFormat })}
-                  >
-                    {DECIMAL_OPTIONS.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <UnitRow label="Length default unit" value={settings.units.lengthUnit} options={LENGTH_UNIT_OPTIONS} decimals={settings.units.lengthDecimals} onUnitChange={(v) => updateUnits({ lengthUnit: v })} onDecimalsChange={(v) => updateUnits({ lengthDecimals: v })} testId="length" />
+              <UnitRow label="Linear acceleration default unit" value={settings.units.linearAccelerationUnit} options={LINEAR_ACCELERATION_UNIT_OPTIONS} decimals={settings.units.linearAccelerationDecimals} onUnitChange={(v) => updateUnits({ linearAccelerationUnit: v })} onDecimalsChange={(v) => updateUnits({ linearAccelerationDecimals: v })} testId="linear-acceleration" />
             </div>
 
             <div className="unit-group">
               <div className="unit-group-title">Angle</div>
-              <div className="unit-row">
-                <div className="unit-field">
-                  <span className="unit-field-label">Default unit</span>
-                  <select
-                    className="mode-select"
-                    value={settings.units.angleUnit}
-                    data-testid="setting-angle-unit"
-                    onChange={(e) => updateUnits({ angleUnit: e.target.value as AngleUnitKey })}
-                  >
-                    {ANGLE_UNIT_OPTIONS.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="unit-field">
-                  <span className="unit-field-label">Display decimals</span>
-                  <select
-                    className="mode-select"
-                    value={settings.units.angleDecimals}
-                    data-testid="setting-angle-decimals"
-                    onChange={(e) => updateUnits({ angleDecimals: e.target.value as DecimalFormat })}
-                  >
-                    {DECIMAL_OPTIONS.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <UnitRow label="Angle default unit" value={settings.units.angleUnit} options={ANGLE_UNIT_OPTIONS} decimals={settings.units.angleDecimals} onUnitChange={(v) => updateUnits({ angleUnit: v })} onDecimalsChange={(v) => updateUnits({ angleDecimals: v })} testId="angle" />
+              <UnitRow label="Angular velocity default unit" value={settings.units.angularVelocityUnit} options={ANGULAR_VELOCITY_UNIT_OPTIONS} decimals={settings.units.angularVelocityDecimals} onUnitChange={(v) => updateUnits({ angularVelocityUnit: v })} onDecimalsChange={(v) => updateUnits({ angularVelocityDecimals: v })} testId="angular-velocity" />
+            </div>
+
+            <div className="unit-group">
+              <div className="unit-group-title">Mechanical</div>
+              <UnitRow label="Mass default unit" value={settings.units.massUnit} options={MASS_UNIT_OPTIONS} decimals={settings.units.massDecimals} onUnitChange={(v) => updateUnits({ massUnit: v })} onDecimalsChange={(v) => updateUnits({ massDecimals: v })} testId="mass" />
+              <UnitRow label="Density default unit" value={settings.units.densityUnit} options={DENSITY_UNIT_OPTIONS} decimals={settings.units.densityDecimals} onUnitChange={(v) => updateUnits({ densityUnit: v })} onDecimalsChange={(v) => updateUnits({ densityDecimals: v })} testId="density" />
+              <UnitRow label="Force default unit" value={settings.units.forceUnit} options={FORCE_UNIT_OPTIONS} decimals={settings.units.forceDecimals} onUnitChange={(v) => updateUnits({ forceUnit: v })} onDecimalsChange={(v) => updateUnits({ forceDecimals: v })} testId="force" />
+              <UnitRow label="Moment default unit" value={settings.units.momentUnit} options={MOMENT_UNIT_OPTIONS} decimals={settings.units.momentDecimals} onUnitChange={(v) => updateUnits({ momentUnit: v })} onDecimalsChange={(v) => updateUnits({ momentDecimals: v })} testId="moment" />
+              <UnitRow label="Pressure default unit" value={settings.units.pressureUnit} options={PRESSURE_UNIT_OPTIONS} decimals={settings.units.pressureDecimals} onUnitChange={(v) => updateUnits({ pressureUnit: v })} onDecimalsChange={(v) => updateUnits({ pressureDecimals: v })} testId="pressure" />
+              <UnitRow label="Energy default unit" value={settings.units.energyUnit} options={ENERGY_UNIT_OPTIONS} decimals={settings.units.energyDecimals} onUnitChange={(v) => updateUnits({ energyUnit: v })} onDecimalsChange={(v) => updateUnits({ energyDecimals: v })} testId="energy" />
             </div>
           </div>
 

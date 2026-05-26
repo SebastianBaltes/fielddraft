@@ -10,8 +10,24 @@ import type { SettingsState, WorkspaceUnits } from "./SettingsMenu";
 const DEFAULT_UNITS: WorkspaceUnits = {
   lengthUnit: "m",
   lengthDecimals: "0.123",
+  linearAccelerationUnit: "m/s2",
+  linearAccelerationDecimals: "0.123",
   angleUnit: "deg",
   angleDecimals: "0.123",
+  angularVelocityUnit: "deg/s",
+  angularVelocityDecimals: "0.123",
+  massUnit: "g",
+  massDecimals: "0.123",
+  densityUnit: "g/cm3",
+  densityDecimals: "0.123",
+  forceUnit: "N",
+  forceDecimals: "0.123",
+  momentUnit: "N*m",
+  momentDecimals: "0.123",
+  pressureUnit: "Pa",
+  pressureDecimals: "0.123",
+  energyUnit: "J",
+  energyDecimals: "0.123",
 };
 
 function setup() {
