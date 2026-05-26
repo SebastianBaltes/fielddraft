@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
 
 /* ── localStorage keys ──────────────────────────────────────── */
@@ -6,7 +6,57 @@ const LS_COMPACT = "fielddraft.compact";
 const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
-export type WorkspaceUnits = "mm" | "inch";
+
+export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
+export type AngleUnitKey = "deg" | "rad";
+export type DecimalFormat = "1" | "0.1" | "0.12" | "0.123" | "0.1234" | "0.12345";
+
+export interface WorkspaceUnits {
+  lengthUnit: LengthUnitKey;
+  lengthDecimals: DecimalFormat;
+  angleUnit: AngleUnitKey;
+  angleDecimals: DecimalFormat;
+}
+
+const DEFAULT_UNITS: WorkspaceUnits = {
+  lengthUnit: "m",
+  lengthDecimals: "0.123",
+  angleUnit: "deg",
+  angleDecimals: "0.123",
+};
+
+export const LENGTH_UNIT_OPTIONS: { key: LengthUnitKey; label: string }[] = [
+  { key: "mm", label: "Millimeter" },
+  { key: "cm", label: "Centimeter" },
+  { key: "m", label: "Meter" },
+  { key: "in", label: "Inch" },
+  { key: "ft", label: "Foot" },
+];
+
+export const ANGLE_UNIT_OPTIONS: { key: AngleUnitKey; label: string }[] = [
+  { key: "deg", label: "Degree" },
+  { key: "rad", label: "Radian" },
+];
+
+export const DECIMAL_OPTIONS: { key: DecimalFormat; label: string }[] = [
+  { key: "1", label: "1" },
+  { key: "0.1", label: "0.1" },
+  { key: "0.12", label: "0.12" },
+  { key: "0.123", label: "0.123" },
+  { key: "0.1234", label: "0.1234" },
+  { key: "0.12345", label: "0.12345" },
+];
+
+export function decimalPlaces(fmt: DecimalFormat): number {
+  if (fmt === "1") return 0;
+  return fmt.length - 2;
+}
+
+export const WorkspaceUnitsContext = createContext<WorkspaceUnits>(DEFAULT_UNITS);
+export function useWorkspaceUnits(): WorkspaceUnits {
+  return useContext(WorkspaceUnitsContext);
+}
+
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred";
 
@@ -19,16 +69,30 @@ export interface SettingsState {
   renderMode: RenderMode;
 }
 
+function parseUnits(raw: string | null): WorkspaceUnits {
+  if (!raw) return DEFAULT_UNITS;
+  try {
+    const obj = JSON.parse(raw);
+    return {
+      lengthUnit: LENGTH_UNIT_OPTIONS.some((o) => o.key === obj.lengthUnit) ? obj.lengthUnit : DEFAULT_UNITS.lengthUnit,
+      lengthDecimals: DECIMAL_OPTIONS.some((o) => o.key === obj.lengthDecimals) ? obj.lengthDecimals : DEFAULT_UNITS.lengthDecimals,
+      angleUnit: ANGLE_UNIT_OPTIONS.some((o) => o.key === obj.angleUnit) ? obj.angleUnit : DEFAULT_UNITS.angleUnit,
+      angleDecimals: DECIMAL_OPTIONS.some((o) => o.key === obj.angleDecimals) ? obj.angleDecimals : DEFAULT_UNITS.angleDecimals,
+    };
+  } catch {
+    return DEFAULT_UNITS;
+  }
+}
+
 /** Load all settings from localStorage with safe fallbacks. */
 export function loadSettings(): SettingsState {
   let compact = false;
-  let units: WorkspaceUnits = "mm";
+  let units: WorkspaceUnits = DEFAULT_UNITS;
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
-    const rawUnits = localStorage.getItem(LS_UNITS);
-    if (rawUnits === "mm" || rawUnits === "inch") units = rawUnits;
+    units = parseUnits(localStorage.getItem(LS_UNITS));
     const rawTheme = localStorage.getItem(LS_THEME);
     if (rawTheme === "light" || rawTheme === "dark") theme = rawTheme;
     const rawMode = localStorage.getItem(LS_RENDER_MODE);
@@ -488,9 +552,10 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
-  const setUnits = (units: WorkspaceUnits) => {
+  const updateUnits = (patch: Partial<WorkspaceUnits>) => {
+    const units = { ...settings.units, ...patch };
     const next = { ...settings, units };
-    saveSetting(LS_UNITS, units);
+    saveSetting(LS_UNITS, JSON.stringify(units));
     onSettingsChange(next);
   };
 
@@ -548,25 +613,71 @@ function SettingsDialog({
             </button>
           </div>
 
-          <div className="setting-row" data-testid="setting-units">
-            <span className="setting-label">Units</span>
-            <div className="segmented">
-              <button
-                type="button"
-                className={"seg" + (settings.units === "mm" ? " is-active" : "")}
-                data-testid="setting-units-mm"
-                onClick={() => setUnits("mm")}
-              >
-                mm
-              </button>
-              <button
-                type="button"
-                className={"seg" + (settings.units === "inch" ? " is-active" : "")}
-                data-testid="setting-units-inch"
-                onClick={() => setUnits("inch")}
-              >
-                inch
-              </button>
+          <div className="setting-section" data-testid="setting-units">
+            <div className="section-title">Workspace units</div>
+
+            <div className="unit-group">
+              <div className="unit-group-title">Length</div>
+              <div className="unit-row">
+                <div className="unit-field">
+                  <span className="unit-field-label">Default unit</span>
+                  <select
+                    className="mode-select"
+                    value={settings.units.lengthUnit}
+                    data-testid="setting-length-unit"
+                    onChange={(e) => updateUnits({ lengthUnit: e.target.value as LengthUnitKey })}
+                  >
+                    {LENGTH_UNIT_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="unit-field">
+                  <span className="unit-field-label">Display decimals</span>
+                  <select
+                    className="mode-select"
+                    value={settings.units.lengthDecimals}
+                    data-testid="setting-length-decimals"
+                    onChange={(e) => updateUnits({ lengthDecimals: e.target.value as DecimalFormat })}
+                  >
+                    {DECIMAL_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="unit-group">
+              <div className="unit-group-title">Angle</div>
+              <div className="unit-row">
+                <div className="unit-field">
+                  <span className="unit-field-label">Default unit</span>
+                  <select
+                    className="mode-select"
+                    value={settings.units.angleUnit}
+                    data-testid="setting-angle-unit"
+                    onChange={(e) => updateUnits({ angleUnit: e.target.value as AngleUnitKey })}
+                  >
+                    {ANGLE_UNIT_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="unit-field">
+                  <span className="unit-field-label">Display decimals</span>
+                  <select
+                    className="mode-select"
+                    value={settings.units.angleDecimals}
+                    data-testid="setting-angle-decimals"
+                    onChange={(e) => updateUnits({ angleDecimals: e.target.value as DecimalFormat })}
+                  >
+                    {DECIMAL_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
 

@@ -2,10 +2,17 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { SettingsMenu, loadSettings } from "./SettingsMenu";
-import type { SettingsState } from "./SettingsMenu";
+import type { SettingsState, WorkspaceUnits } from "./SettingsMenu";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
+
+const DEFAULT_UNITS: WorkspaceUnits = {
+  lengthUnit: "m",
+  lengthDecimals: "0.123",
+  angleUnit: "deg",
+  angleDecimals: "0.123",
+};
 
 function setup() {
   const container = document.createElement("div");
@@ -14,7 +21,7 @@ function setup() {
 
   let currentSettings: SettingsState = {
     compact: false,
-    units: "mm",
+    units: { ...DEFAULT_UNITS },
     theme: "light",
     renderMode: "sdf-deferred",
   };
@@ -160,18 +167,24 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
-  it("switches units in settings dialog", () => {
+  it("switches length unit in settings dialog", () => {
     const t = setup();
     openSettingsDialog(t.container);
 
-    click(t.container.querySelector('[data-testid="setting-units-inch"]')!);
+    const select = t.container.querySelector<HTMLSelectElement>(
+      '[data-testid="setting-length-unit"]',
+    )!;
+    act(() => {
+      select.value = "mm";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     expect(t.onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ units: "inch" }),
+      expect.objectContaining({
+        units: expect.objectContaining({ lengthUnit: "mm" }),
+      }),
     );
-    expect(localStorage.getItem("fielddraft.units")).toBe("inch");
-
-    click(t.container.querySelector('[data-testid="setting-units-mm"]')!);
-    expect(localStorage.getItem("fielddraft.units")).toBe("mm");
+    const stored = JSON.parse(localStorage.getItem("fielddraft.units")!);
+    expect(stored.lengthUnit).toBe("mm");
     t.cleanup();
   });
 
@@ -258,7 +271,7 @@ describe("loadSettings", () => {
     const s = loadSettings();
     expect(s).toEqual({
       compact: false,
-      units: "mm",
+      units: DEFAULT_UNITS,
       theme: "light",
       renderMode: "sdf-deferred",
     });
@@ -266,13 +279,16 @@ describe("loadSettings", () => {
 
   it("reads stored values", () => {
     localStorage.setItem("fielddraft.compact", "true");
-    localStorage.setItem("fielddraft.units", "inch");
+    localStorage.setItem(
+      "fielddraft.units",
+      JSON.stringify({ lengthUnit: "mm", lengthDecimals: "0.12", angleUnit: "rad", angleDecimals: "0.1" }),
+    );
     localStorage.setItem("fielddraft.theme", "dark");
 
     const s = loadSettings();
     expect(s).toEqual({
       compact: true,
-      units: "inch",
+      units: { lengthUnit: "mm", lengthDecimals: "0.12", angleUnit: "rad", angleDecimals: "0.1" },
       theme: "dark",
       renderMode: "sdf-deferred",
     });
@@ -283,7 +299,7 @@ describe("loadSettings", () => {
     localStorage.setItem("fielddraft.theme", "neon");
 
     const s = loadSettings();
-    expect(s.units).toBe("mm");
+    expect(s.units).toEqual(DEFAULT_UNITS);
     expect(s.theme).toBe("light");
   });
 });

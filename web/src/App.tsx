@@ -4,7 +4,7 @@ import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
-import { SettingsMenu, loadSettings } from "./SettingsMenu";
+import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 
 export function App() {
@@ -171,6 +171,7 @@ export function App() {
   }, [store]);
 
   return (
+    <WorkspaceUnitsContext.Provider value={settings.units}>
     <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
       <header className="topbar">
         <div className="title">
@@ -258,5 +259,6 @@ export function App() {
         </div>
       ) : null}
     </div>
+    </WorkspaceUnitsContext.Provider>
   );
 }

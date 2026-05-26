@@ -31,6 +31,7 @@ import {
   isActive as isQueryPickerActive,
   subscribe as subscribeQueryPicker,
 } from "../queryPickerBridge";
+import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
 import {
   ANGLE_UNITS,
@@ -179,13 +180,17 @@ function parseValueWithUnit(
   return { value, unit: unitText || defaultUnit };
 }
 
-function formatNumber(n: number): string {
-  return parseFloat(n.toPrecision(10)).toString();
-}
-
 function unitDisplayLabel(unit: string): string {
   if (unit === "deg") return "°";
   return unit;
+}
+
+function isLengthUnit(unit: string): boolean {
+  return unit.toLowerCase() in LENGTH_TO_M;
+}
+
+function isAngleUnit(unit: string): boolean {
+  return unit.toLowerCase() in ANGLE_TO_DEG || unit === "°";
 }
 
 // ─── unit-aware input ─────────────────────────────────────────
@@ -200,13 +205,24 @@ function UnitInput({
   onCommit: (n: number) => void;
   unit?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+  const ws = useWorkspaceUnits();
+
   if (!unit) {
     return <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />;
   }
 
-  const display = Number.isFinite(value) ? value : 0;
-  const label = unitDisplayLabel(unit);
-  const formatted = `${formatNumber(display)} ${label}`;
+  const displayUnit = isLengthUnit(unit) ? ws.lengthUnit
+    : isAngleUnit(unit) ? ws.angleUnit
+    : unit;
+  const decimals = isLengthUnit(unit) ? decimalPlaces(ws.lengthDecimals)
+    : isAngleUnit(unit) ? decimalPlaces(ws.angleDecimals)
+    : 3;
+  const label = unitDisplayLabel(displayUnit);
+
+  const internalVal = Number.isFinite(value) ? value : 0;
+  const displayVal = convertUnit(internalVal, unit, displayUnit) ?? internalVal;
+  const formatted = `${displayVal.toFixed(decimals)} ${label}`;
+
   const [raw, setRaw] = useState(formatted);
   const [editing, setEditing] = useState(false);
 
@@ -215,7 +231,7 @@ function UnitInput({
   }, [formatted, editing]);
 
   const tryCommit = (text: string) => {
-    const parsed = parseValueWithUnit(text, unit);
+    const parsed = parseValueWithUnit(text, displayUnit);
     if (parsed) {
       const converted = convertUnit(parsed.value, parsed.unit, unit);
       if (converted !== null && Number.isFinite(converted)) {
@@ -240,12 +256,13 @@ function UnitInput({
       }}
       onBlur={(e) => {
         setEditing(false);
-        const parsed = parseValueWithUnit(raw, unit);
+        const parsed = parseValueWithUnit(raw, displayUnit);
         if (parsed) {
           const converted = convertUnit(parsed.value, parsed.unit, unit);
           if (converted !== null && Number.isFinite(converted)) {
             onCommit(converted);
-            setRaw(`${formatNumber(converted)} ${label}`);
+            const newDisplay = convertUnit(converted, unit, displayUnit) ?? converted;
+            setRaw(`${newDisplay.toFixed(decimals)} ${label}`);
           } else {
             setRaw(formatted);
           }

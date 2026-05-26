@@ -281,6 +281,41 @@
     padding-top: var(--space-3);
   }
 
+  & .section-title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text);
+  }
+
+  & .unit-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  & .unit-group-title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text-muted);
+  }
+
+  & .unit-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2);
+  }
+
+  & .unit-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  & .unit-field-label {
+    font-size: var(--fs-base);
+    color: var(--color-text-muted);
+  }
+
   & .section-toggle {
     background: none;
     border: none;
