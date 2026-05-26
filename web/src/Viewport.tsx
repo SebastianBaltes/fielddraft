@@ -783,7 +783,7 @@ function SelectionTransformGizmo() {
     if (!mesh || !selectedFeature || !store) {
       if (tcRef.current) {
         tcRef.current.detach();
-        scene.remove(tcRef.current as unknown as THREE.Object3D);
+        scene.remove(tcRef.current.getHelper() as THREE.Object3D);
         tcRef.current.dispose();
         tcRef.current = null;
       }
@@ -791,11 +791,11 @@ function SelectionTransformGizmo() {
     }
 
     const tc = new ThreeTransformControls(camera, gl.domElement);
-    const tcObj = tc as unknown as THREE.Object3D;
+    const helper = tc.getHelper() as THREE.Object3D;
     tc.attach(mesh);
     tc.setMode(gizmoMode);
     tc.setSize(0.75);
-    tcObj.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
+    helper.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
 
     const onDragging = (e: { value: boolean }) => {
       if (defaultControls) (defaultControls as any).enabled = !e.value;
@@ -814,7 +814,7 @@ function SelectionTransformGizmo() {
     tc.addEventListener("dragging-changed", onDragging as any);
     tc.addEventListener("change", onChange);
     tc.addEventListener("objectChange", onObjectChange);
-    scene.add(tcObj);
+    scene.add(helper);
     tcRef.current = tc;
     invalidate();
 
@@ -825,7 +825,7 @@ function SelectionTransformGizmo() {
       tc.removeEventListener("change", onChange);
       tc.removeEventListener("objectChange", onObjectChange);
       tc.detach();
-      scene.remove(tcObj);
+      scene.remove(helper);
       tc.dispose();
       tcRef.current = null;
     };
