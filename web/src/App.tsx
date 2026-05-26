@@ -122,6 +122,10 @@ export function App() {
             store.setGizmoMode("rotate");
             e.preventDefault();
             return;
+          case "s":
+            store.setGizmoMode("scale");
+            e.preventDefault();
+            return;
           case "1":
             requestView("front");
             e.preventDefault();

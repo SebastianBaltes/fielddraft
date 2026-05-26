@@ -306,6 +306,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <button type="button" className={"op-toggle" + (state.nextOp === BoolOpTag.Intersect ? " is-active" : "")} title="Intersect (∩)" data-testid="op-intersect" onClick={() => handleOpToggle(BoolOpTag.Intersect)}>∩</button>
       </div>
 
+      {/* Gizmo mode toggles */}
+      <div className="group">
+        <button type="button" className={"op-toggle" + (state.gizmoMode === "translate" ? " is-active" : "")} title="Move (G)" data-testid="gizmo-translate" onClick={() => store.setGizmoMode("translate")}>↔</button>
+        <button type="button" className={"op-toggle" + (state.gizmoMode === "rotate" ? " is-active" : "")} title="Rotate (R)" data-testid="gizmo-rotate" onClick={() => store.setGizmoMode("rotate")}>⟳</button>
+        <button type="button" className={"op-toggle" + (state.gizmoMode === "scale" ? " is-active" : "")} title="Scale (S)" data-testid="gizmo-scale" onClick={() => store.setGizmoMode("scale")}>⤡</button>
+      </div>
+
       {/* Tools */}
       <div className="group">
         <button type="button" className="tool" title="Delete selection (Del)" data-testid="delete-selection" disabled={state.selection.size === 0} onClick={() => store.removeSelected()}>

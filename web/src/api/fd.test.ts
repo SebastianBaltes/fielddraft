@@ -50,6 +50,7 @@ function fakeKernel(): Kernel {
       op: "union",
       kind: "box",
       translate: [0, 0, 0],
+      rotation: [0, 0, 0, 1],
       scale: 1,
     },
   ];

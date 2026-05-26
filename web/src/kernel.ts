@@ -118,6 +118,7 @@ export interface FeatureSummary {
   op: BoolOpName;
   kind: FeatureKindName;
   translate: [number, number, number];
+  rotation: [number, number, number, number];
   scale: number;
   /** K8.7: mirrors the kernel's `FeatureCall.suppressed`
    *  flag. Undefined in JSON when false — upstream

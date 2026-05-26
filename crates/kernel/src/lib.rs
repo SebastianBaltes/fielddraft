@@ -478,6 +478,7 @@ struct FeatureSummary {
     op: &'static str,
     kind: &'static str,
     translate: [f32; 3],
+    rotation: [f32; 4],
     scale: f32,
     /// K8.7: mirrors `FeatureCall.suppressed`. The outliner
     /// reads this to render the eye-icon affordance and to
@@ -1098,6 +1099,7 @@ impl Kernel {
                     op: Self::op_label(spine.op),
                     kind: Self::kind_label_for_call(&call.type_name, &spine.primitive),
                     translate: spine.transform.translate,
+                    rotation: spine.transform.rotation,
                     scale: spine.transform.scale,
                     suppressed: call.suppressed,
                 });
@@ -1136,6 +1138,7 @@ impl Kernel {
                     op,
                     kind: Self::static_kind_name(&call.type_name),
                     translate,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: 1.0,
                     suppressed: call.suppressed,
                 });

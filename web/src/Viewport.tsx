@@ -755,6 +755,9 @@ function SelectionTransformGizmo() {
       mesh.position.set(tx, ty, tz);
       syncedTranslateRef.current = [tx, ty, tz];
     }
+    const [rx, ry, rz, rw] = selectedFeature.rotation;
+    mesh.quaternion.set(rx, ry, rz, rw);
+    mesh.scale.setScalar(selectedFeature.scale);
   }, [selectedFeature]);
 
   const commitRef = useRef<() => void>(() => {});
