@@ -29,6 +29,7 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } fro
 import {
   register as registerQueryPicker,
   isActive as isQueryPickerActive,
+  getActive as getActiveQueryPicker,
   subscribe as subscribeQueryPicker,
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
@@ -826,9 +827,7 @@ export function QueryWidget({
     Boolean(required) && value === "",
   );
   useEffect(() => {
-    if (autoArmed && value === "" && !active) {
-      // Flip `autoArmed` off before registering to avoid re-arming
-      // after the first pick.
+    if (autoArmed && value === "" && !active && !getActiveQueryPicker()) {
       setAutoArmed(false);
       registerQueryPicker({
         ownerId: id,
@@ -955,7 +954,7 @@ export function MultiQueryWidget({
     Boolean(required) && value === "",
   );
   useEffect(() => {
-    if (autoArmed && value === "" && !active) {
+    if (autoArmed && value === "" && !active && !getActiveQueryPicker()) {
       setAutoArmed(false);
       registerQueryPicker({
         ownerId: id,
@@ -981,7 +980,14 @@ export function MultiQueryWidget({
 
   return (
     <Field label={label} htmlFor={id} error={error} required={required}>
-      <div className={"query-picker multi" + (active ? " is-active" : "")}>
+      <div
+        className={"query-picker multi" + (active ? " is-active" : "")}
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest(".chip-remove")) return;
+          activate();
+        }}
+        style={{ cursor: "pointer" }}
+      >
         <button
           type="button"
           className="query-focus-toggle"
