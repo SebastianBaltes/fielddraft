@@ -16,7 +16,6 @@ import {
   If,
   Loop,
   cameraProjectionMatrix,
-  cameraViewMatrix,
   float,
   int,
   max,
@@ -60,6 +59,7 @@ export interface VmPipelineState {
   volumeTextures: THREE.Data3DTexture[];
   volumeBaseData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
+  viewMatU: ReturnType<typeof uniform>;
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -106,6 +106,7 @@ export function initVmPipeline(): VmPipelineState {
     volumeTextures: [],
     volumeBaseData,
     volumeBaseBuf,
+    viewMatU: uniform(new THREE.Matrix4()),
   };
 }
 
@@ -286,7 +287,7 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     ));
 
     // 3-light model (view-space — camera-fixed)
-    const nView = normalize(cameraViewMatrix.mul(vec4(n, 0.0)).xyz);
+    const nView = normalize(state.viewMatU.mul(vec4(n, 0.0)).xyz);
     const keyDir = normalize(vec3(0.2, 0.3, 1.0));
     const fillDir = normalize(vec3(-0.5, 0.1, 0.6));
     const rimDir = normalize(vec3(0.0, -0.2, -1.0));
@@ -342,6 +343,7 @@ function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): voi
   state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
   state.invProjU.value.copy(cam.projectionMatrixInverse);
   state.invViewU.value.copy(cam.matrixWorldInverse).invert();
+  state.viewMatU.value.copy(cam.matrixWorldInverse);
 }
 
 // ── Dispose ─────────────────────────────────────────────────────────

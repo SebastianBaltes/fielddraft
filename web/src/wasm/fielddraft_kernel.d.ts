@@ -125,14 +125,9 @@ export class Kernel {
      * there all along.
      */
     addSketch(plane_query: string, sub_calls_json: string): number;
-    /**
-     * Create or merge a `transform` FeatureCall driven by the gizmo.
-     * Stores absolute world-space values. If the last FeatureCall is
-     * already a `transform` targeting the same feature, its params
-     * are updated in-place (merge); otherwise a new one is appended.
-     * Returns `false` if the target feature doesn't exist.
-     */
-    applyGizmoTransform(target_id: number, tx: number, ty: number, tz: number, rx: number, ry: number, rz: number, rw: number, sx: number, sy: number, sz: number): boolean;
+    applyGizmoRotate(target_id: number, rx: number, ry: number, rz: number, rw: number): boolean;
+    applyGizmoScale(target_id: number, sx: number, sy: number, sz: number): boolean;
+    applyGizmoTranslate(target_id: number, tx: number, ty: number, tz: number): boolean;
     bodyClassificationsPtr(i: number): number;
     bodyContributorsPtr(i: number): number;
     bodyCount(): number;
@@ -504,7 +499,9 @@ export interface InitOutput {
     readonly kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly kernel_applyGizmoTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
+    readonly kernel_applyGizmoRotate: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly kernel_applyGizmoScale: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly kernel_applyGizmoTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_bodyClassificationsPtr: (a: number, b: number) => number;
     readonly kernel_bodyContributorsPtr: (a: number, b: number) => number;
     readonly kernel_bodyCount: (a: number) => number;

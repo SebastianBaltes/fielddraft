@@ -43,7 +43,6 @@ import {
   vec2,
   vec3,
   vec4,
-  cameraViewMatrix,
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
@@ -187,6 +186,7 @@ export interface DeferredPipelineState {
   volumeBaseBuf: ReturnType<typeof uniformArray>;
   volumeBaseData: Float32Array;
   camPosUniform: ReturnType<typeof uniform>;
+  viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
@@ -275,6 +275,7 @@ function createShadeMaterial(
   selectionBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof uniformArray>,
   camPosU: ReturnType<typeof uniform>,
+  viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
@@ -402,7 +403,7 @@ function createShadeMaterial(
           .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase })),
       ));
 
-      const nView = normalize(cameraViewMatrix.mul(vec4(n, 0.0)).xyz);
+      const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
       const keyDir = normalize(vec3(0.2, 0.3, 1.0));
       const fillDir = normalize(vec3(-0.5, 0.1, 0.6));
       const rimDir = normalize(vec3(0.0, -0.2, -1.0));
@@ -490,6 +491,7 @@ export function initDeferredPipeline(
   const volumeBaseBuf = uniformArray(volumeBaseData, "float");
 
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
+  const viewMatU = uniform(new THREE.Matrix4());
   const widthU = uniform(width);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
@@ -510,6 +512,7 @@ export function initDeferredPipeline(
     selectionBuf,
     volumeBaseBuf,
     camPosUniform,
+    viewMatU,
     widthU,
   );
 
@@ -548,6 +551,7 @@ export function initDeferredPipeline(
     volumeBaseBuf,
     volumeBaseData,
     camPosUniform,
+    viewMatU,
     widthU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
@@ -884,6 +888,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.selectionBuf,
     state.volumeBaseBuf,
     state.camPosUniform,
+    state.viewMatU,
     state.widthU,
     state.volumeTextures,
   );
@@ -928,6 +933,7 @@ export function renderDeferredFrame(
 ): void {
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
+  state.viewMatU.value.copy(camera.matrixWorldInverse);
 
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();
