@@ -1016,13 +1016,23 @@ export function Outliner({ store, state }: OutlinerProps) {
           })()}
         </ul>
       ))}
-      {!sketchSession.active && selectedSchema ? (
-        <FeatureDialog
-          schema={selectedSchema}
-          definition={dialogDraft}
-          onChange={handleDialogChange}
-        />
-      ) : null}
+      {!sketchSession.active && (
+        <section className="detail-panel" data-testid="detail-panel">
+          <div className="header accordion-header" onClick={() => toggleSection("detail")} data-testid="detail-header">
+            <span className="accordion-chevron">{collapsed.has("detail") ? "▸" : "▾"}</span>
+            <span>Detail</span>
+          </div>
+          {!collapsed.has("detail") && (selectedSchema ? (
+            <FeatureDialog
+              schema={selectedSchema}
+              definition={dialogDraft}
+              onChange={handleDialogChange}
+            />
+          ) : (
+            <div className="empty">No feature selected.</div>
+          ))}
+        </section>
+      )}
       {!sketchSession.active && selectedFeature?.kind === "imported_mesh" ? (
         <div className="fd-mesh-mode-toggle">
           <label>
