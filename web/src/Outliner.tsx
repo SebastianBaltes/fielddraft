@@ -245,9 +245,11 @@ export function Outliner({ store, state }: OutlinerProps) {
       ? `${selectedFeature.id}:${selectedSchema.type}`
       : null;
   const [lastDraftKey, setLastDraftKey] = useState<string | null>(null);
+  const [dialogOpenUndoDepth, setDialogOpenUndoDepth] = useState(0);
   if (draftKey !== lastDraftKey) {
     setLastDraftKey(draftKey);
     if (selectedFeature && selectedSchema) {
+      setDialogOpenUndoDepth(state.undoDepth);
       try {
         setDialogDraft(store.getFeatureParams(selectedFeature.id));
       } catch {
@@ -299,6 +301,18 @@ export function Outliner({ store, state }: OutlinerProps) {
     );
     if (hasIncompleteFormula) return;
     store.updateFeatureParams(selectedFeature.id, next);
+  };
+
+  const handleDialogOk = () => {
+    store.clearSelection();
+  };
+
+  const handleDialogCancel = () => {
+    const undosNeeded = state.undoDepth - dialogOpenUndoDepth;
+    for (let i = 0; i < undosNeeded; i++) {
+      if (!store.undo()) break;
+    }
+    store.clearSelection();
   };
 
   const handleRowClick = (e: MouseEvent, id: number) => {
@@ -1021,6 +1035,12 @@ export function Outliner({ store, state }: OutlinerProps) {
           <div className="header accordion-header" onClick={() => toggleSection("detail")} data-testid="detail-header">
             <span className="accordion-chevron">{collapsed.has("detail") ? "▸" : "▾"}</span>
             <span>Detail</span>
+            {selectedSchema && (
+              <span className="detail-actions" onClick={(e) => e.stopPropagation()}>
+                <button className="detail-ok" data-testid="detail-ok" onClick={handleDialogOk} title="Accept">✓</button>
+                <button className="detail-cancel" data-testid="detail-cancel" onClick={handleDialogCancel} title="Cancel">✗</button>
+              </span>
+            )}
           </div>
           {!collapsed.has("detail") && (selectedSchema ? (
             <FeatureDialog

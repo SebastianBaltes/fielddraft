@@ -111,6 +111,36 @@
     font-style: italic;
   }
 
+  & .detail-actions {
+    margin-left: auto;
+    display: inline-flex;
+    gap: var(--space-1);
+  }
+
+  & .detail-ok,
+  & .detail-cancel {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--fs-md);
+    line-height: 1;
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    transition: background var(--motion-fast);
+
+    &:hover {
+      background: var(--color-bg-hover);
+    }
+  }
+
+  & .detail-ok {
+    color: var(--color-union, #16a34a);
+  }
+
+  & .detail-cancel {
+    color: var(--color-difference, #b91c1c);
+  }
+
   /* K7.22: part tree at the bottom of the outliner — one row per
    *        distinct solid body (onshape-ux overview.yaml "Parts (N)"). */
   & .part-tree {
