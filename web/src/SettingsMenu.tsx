@@ -691,7 +691,47 @@ function UnitRow<K extends string>({
   );
 }
 
+/* ── Workspace unit descriptors (data-driven) ─────────────── */
+
+interface UnitDescriptor {
+  label: string;
+  unitKey: keyof WorkspaceUnits;
+  decKey: keyof WorkspaceUnits;
+  options: { key: string; label: string }[];
+  testId: string;
+}
+
+const UNIT_GROUPS: { title: string; items: UnitDescriptor[] }[] = [
+  {
+    title: "Length",
+    items: [
+      { label: "Length", unitKey: "lengthUnit", decKey: "lengthDecimals", options: LENGTH_UNIT_OPTIONS, testId: "length" },
+      { label: "Linear acceleration", unitKey: "linearAccelerationUnit", decKey: "linearAccelerationDecimals", options: LINEAR_ACCELERATION_UNIT_OPTIONS, testId: "linear-acceleration" },
+    ],
+  },
+  {
+    title: "Angle",
+    items: [
+      { label: "Angle", unitKey: "angleUnit", decKey: "angleDecimals", options: ANGLE_UNIT_OPTIONS, testId: "angle" },
+      { label: "Angular velocity", unitKey: "angularVelocityUnit", decKey: "angularVelocityDecimals", options: ANGULAR_VELOCITY_UNIT_OPTIONS, testId: "angular-velocity" },
+    ],
+  },
+  {
+    title: "Mechanical",
+    items: [
+      { label: "Mass", unitKey: "massUnit", decKey: "massDecimals", options: MASS_UNIT_OPTIONS, testId: "mass" },
+      { label: "Density", unitKey: "densityUnit", decKey: "densityDecimals", options: DENSITY_UNIT_OPTIONS, testId: "density" },
+      { label: "Force", unitKey: "forceUnit", decKey: "forceDecimals", options: FORCE_UNIT_OPTIONS, testId: "force" },
+      { label: "Moment", unitKey: "momentUnit", decKey: "momentDecimals", options: MOMENT_UNIT_OPTIONS, testId: "moment" },
+      { label: "Pressure", unitKey: "pressureUnit", decKey: "pressureDecimals", options: PRESSURE_UNIT_OPTIONS, testId: "pressure" },
+      { label: "Energy", unitKey: "energyUnit", decKey: "energyDecimals", options: ENERGY_UNIT_OPTIONS, testId: "energy" },
+    ],
+  },
+];
+
 /* ── Settings dialog ───────────────────────────────────────── */
+
+type SettingsTab = "ui" | "units" | "shortcuts";
 
 function SettingsDialog({
   settings,
@@ -702,7 +742,7 @@ function SettingsDialog({
   onSettingsChange: (next: SettingsState) => void;
   onClose: () => void;
 }) {
-  const [shortcutsExpanded, setShortcutsExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("ui");
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -741,6 +781,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const TABS: { key: SettingsTab; label: string }[] = [
+    { key: "ui", label: "UI" },
+    { key: "units", label: "Workspace Units" },
+    { key: "shortcuts", label: "Shortcuts" },
+  ];
+
   return (
     <div
       className="fd-settings-overlay"
@@ -768,118 +814,120 @@ function SettingsDialog({
           </button>
         </div>
 
+        <div className="settings-tab-bar" role="tablist">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              className={"settings-tab" + (activeTab === tab.key ? " is-active" : "")}
+              aria-selected={activeTab === tab.key}
+              data-testid={`settings-tab-${tab.key}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         <div className="dialog-body">
-          <div className="setting-row" data-testid="setting-compact">
-            <span className="setting-label">Compact toolbar</span>
-            <button
-              type="button"
-              className={"toggle" + (settings.compact ? " is-on" : "")}
-              role="switch"
-              aria-checked={settings.compact}
-              data-testid="setting-compact-toggle"
-              onClick={toggleCompact}
-            >
-              {settings.compact ? "On" : "Off"}
-            </button>
-          </div>
+          {activeTab === "ui" && (
+            <>
+              <div className="setting-row" data-testid="setting-compact">
+                <span className="setting-label">Compact toolbar</span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.compact ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.compact}
+                  data-testid="setting-compact-toggle"
+                  onClick={toggleCompact}
+                >
+                  {settings.compact ? "On" : "Off"}
+                </button>
+              </div>
 
-          <div className="setting-section" data-testid="setting-units">
-            <div className="section-title">Workspace units</div>
+              <div className="setting-row" data-testid="setting-theme">
+                <span className="setting-label">Theme</span>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={"seg" + (settings.theme === "light" ? " is-active" : "")}
+                    data-testid="setting-theme-light"
+                    onClick={() => setTheme("light")}
+                  >
+                    Light
+                  </button>
+                  <button
+                    type="button"
+                    className={"seg" + (settings.theme === "dark" ? " is-active" : "")}
+                    data-testid="setting-theme-dark"
+                    onClick={() => setTheme("dark")}
+                  >
+                    Dark
+                  </button>
+                </div>
+              </div>
 
-            <div className="unit-group">
-              <div className="unit-group-title">Length</div>
-              <UnitRow label="Length default unit" value={settings.units.lengthUnit} options={LENGTH_UNIT_OPTIONS} decimals={settings.units.lengthDecimals} onUnitChange={(v) => updateUnits({ lengthUnit: v })} onDecimalsChange={(v) => updateUnits({ lengthDecimals: v })} testId="length" />
-              <UnitRow label="Linear acceleration default unit" value={settings.units.linearAccelerationUnit} options={LINEAR_ACCELERATION_UNIT_OPTIONS} decimals={settings.units.linearAccelerationDecimals} onUnitChange={(v) => updateUnits({ linearAccelerationUnit: v })} onDecimalsChange={(v) => updateUnits({ linearAccelerationDecimals: v })} testId="linear-acceleration" />
-            </div>
+              <div className="setting-row" data-testid="setting-render-mode">
+                <span className="setting-label">Render</span>
+                <select
+                  className="mode-select"
+                  value={settings.renderMode}
+                  data-testid="setting-render-mode-select"
+                  onChange={(e) => setRenderMode(e.target.value as RenderMode)}
+                >
+                  <option value="sdf-vm">SDF VM</option>
+                  <option value="sdf-deferred">SDF Deferred</option>
+                </select>
+              </div>
+            </>
+          )}
 
-            <div className="unit-group">
-              <div className="unit-group-title">Angle</div>
-              <UnitRow label="Angle default unit" value={settings.units.angleUnit} options={ANGLE_UNIT_OPTIONS} decimals={settings.units.angleDecimals} onUnitChange={(v) => updateUnits({ angleUnit: v })} onDecimalsChange={(v) => updateUnits({ angleDecimals: v })} testId="angle" />
-              <UnitRow label="Angular velocity default unit" value={settings.units.angularVelocityUnit} options={ANGULAR_VELOCITY_UNIT_OPTIONS} decimals={settings.units.angularVelocityDecimals} onUnitChange={(v) => updateUnits({ angularVelocityUnit: v })} onDecimalsChange={(v) => updateUnits({ angularVelocityDecimals: v })} testId="angular-velocity" />
-            </div>
-
-            <div className="unit-group">
-              <div className="unit-group-title">Mechanical</div>
-              <UnitRow label="Mass default unit" value={settings.units.massUnit} options={MASS_UNIT_OPTIONS} decimals={settings.units.massDecimals} onUnitChange={(v) => updateUnits({ massUnit: v })} onDecimalsChange={(v) => updateUnits({ massDecimals: v })} testId="mass" />
-              <UnitRow label="Density default unit" value={settings.units.densityUnit} options={DENSITY_UNIT_OPTIONS} decimals={settings.units.densityDecimals} onUnitChange={(v) => updateUnits({ densityUnit: v })} onDecimalsChange={(v) => updateUnits({ densityDecimals: v })} testId="density" />
-              <UnitRow label="Force default unit" value={settings.units.forceUnit} options={FORCE_UNIT_OPTIONS} decimals={settings.units.forceDecimals} onUnitChange={(v) => updateUnits({ forceUnit: v })} onDecimalsChange={(v) => updateUnits({ forceDecimals: v })} testId="force" />
-              <UnitRow label="Moment default unit" value={settings.units.momentUnit} options={MOMENT_UNIT_OPTIONS} decimals={settings.units.momentDecimals} onUnitChange={(v) => updateUnits({ momentUnit: v })} onDecimalsChange={(v) => updateUnits({ momentDecimals: v })} testId="moment" />
-              <UnitRow label="Pressure default unit" value={settings.units.pressureUnit} options={PRESSURE_UNIT_OPTIONS} decimals={settings.units.pressureDecimals} onUnitChange={(v) => updateUnits({ pressureUnit: v })} onDecimalsChange={(v) => updateUnits({ pressureDecimals: v })} testId="pressure" />
-              <UnitRow label="Energy default unit" value={settings.units.energyUnit} options={ENERGY_UNIT_OPTIONS} decimals={settings.units.energyDecimals} onUnitChange={(v) => updateUnits({ energyUnit: v })} onDecimalsChange={(v) => updateUnits({ energyDecimals: v })} testId="energy" />
-            </div>
-          </div>
-
-          <div className="setting-row" data-testid="setting-theme">
-            <span className="setting-label">Theme</span>
-            <div className="segmented">
-              <button
-                type="button"
-                className={"seg" + (settings.theme === "light" ? " is-active" : "")}
-                data-testid="setting-theme-light"
-                onClick={() => setTheme("light")}
-              >
-                Light
-              </button>
-              <button
-                type="button"
-                className={"seg" + (settings.theme === "dark" ? " is-active" : "")}
-                data-testid="setting-theme-dark"
-                onClick={() => setTheme("dark")}
-              >
-                Dark
-              </button>
-            </div>
-          </div>
-
-          <div className="setting-row" data-testid="setting-render-mode">
-            <span className="setting-label">Render</span>
-            <select
-              className="mode-select"
-              value={settings.renderMode}
-              data-testid="setting-render-mode-select"
-              onChange={(e) => setRenderMode(e.target.value as RenderMode)}
-            >
-              <option value="sdf-vm">SDF VM</option>
-              <option value="sdf-deferred">SDF Deferred</option>
-            </select>
-          </div>
-
-          <div className="setting-section" data-testid="setting-shortcuts">
-            <button
-              type="button"
-              className="section-toggle"
-              data-testid="setting-shortcuts-toggle"
-              aria-expanded={shortcutsExpanded}
-              onClick={() => setShortcutsExpanded((v) => !v)}
-            >
-              <span className="chevron">
-                {shortcutsExpanded ? "▾" : "▸"}
-              </span>
-              Keyboard Shortcuts
-            </button>
-            {shortcutsExpanded && (
-              <table
-                className="shortcuts-table"
-                data-testid="shortcuts-table"
-              >
-                <tbody>
-                  {SHORTCUTS.map((s) => (
-                    <tr key={s.keys}>
-                      <td className="shortcut-key">
-                        {s.keys.split(" / ").map((k, i) => (
-                          <span key={k}>
-                            {i > 0 && " / "}
-                            <kbd>{k.trim()}</kbd>
-                          </span>
-                        ))}
-                      </td>
-                      <td className="shortcut-action">{s.action}</td>
-                    </tr>
+          {activeTab === "units" && (
+            <div data-testid="setting-units">
+              {UNIT_GROUPS.map((group) => (
+                <div className="unit-group" key={group.title}>
+                  <div className="unit-group-title">{group.title}</div>
+                  {group.items.map((desc) => (
+                    <UnitRow
+                      key={desc.testId}
+                      label={desc.label}
+                      value={settings.units[desc.unitKey] as string}
+                      options={desc.options}
+                      decimals={settings.units[desc.decKey] as DecimalFormat}
+                      onUnitChange={(v) => updateUnits({ [desc.unitKey]: v })}
+                      onDecimalsChange={(v) => updateUnits({ [desc.decKey]: v })}
+                      testId={desc.testId}
+                    />
                   ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === "shortcuts" && (
+            <table
+              className="shortcuts-table"
+              data-testid="shortcuts-table"
+            >
+              <tbody>
+                {SHORTCUTS.map((s) => (
+                  <tr key={s.keys}>
+                    <td className="shortcut-key">
+                      {s.keys.split(" / ").map((k, i) => (
+                        <span key={k}>
+                          {i > 0 && " / "}
+                          <kbd>{k.trim()}</kbd>
+                        </span>
+                      ))}
+                    </td>
+                    <td className="shortcut-action">{s.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>

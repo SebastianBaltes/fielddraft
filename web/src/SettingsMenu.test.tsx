@@ -187,6 +187,8 @@ describe("SettingsMenu", () => {
     const t = setup();
     openSettingsDialog(t.container);
 
+    click(t.container.querySelector('[data-testid="settings-tab-units"]')!);
+
     const select = t.container.querySelector<HTMLSelectElement>(
       '[data-testid="setting-length-unit"]',
     )!;
@@ -216,7 +218,7 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
-  it("expands and collapses shortcuts in settings dialog", () => {
+  it("shows shortcuts table on shortcuts tab", () => {
     const t = setup();
     openSettingsDialog(t.container);
 
@@ -225,14 +227,14 @@ describe("SettingsMenu", () => {
     ).toBeNull();
 
     click(
-      t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!,
+      t.container.querySelector('[data-testid="settings-tab-shortcuts"]')!,
     );
     expect(
       t.container.querySelector('[data-testid="shortcuts-table"]'),
     ).toBeTruthy();
 
     click(
-      t.container.querySelector('[data-testid="setting-shortcuts-toggle"]')!,
+      t.container.querySelector('[data-testid="settings-tab-ui"]')!,
     );
     expect(
       t.container.querySelector('[data-testid="shortcuts-table"]'),

@@ -122,6 +122,52 @@ const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
 const SKETCH_TOOL_STUBS: { type: string; label: string; glyph: string }[] = [];
 
 /* ------------------------------------------------------------------ */
+/*  Generic feature tool button                                        */
+/* ------------------------------------------------------------------ */
+
+function FeatureToolButton({
+  kind,
+  onClick,
+  disabled,
+  title,
+  active,
+  testId,
+  draggable,
+  dragType,
+  labelOverride,
+}: {
+  kind: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  active?: boolean;
+  testId?: string;
+  draggable?: boolean;
+  dragType?: string;
+  labelOverride?: string;
+}) {
+  const m = meta(kind);
+  return (
+    <button
+      type="button"
+      className={"tool" + (active ? " is-active" : "")}
+      title={title ?? m.label}
+      data-testid={testId ?? `add-${kind.replace(/_/g, "-")}`}
+      disabled={disabled}
+      onClick={onClick}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => {
+        e.dataTransfer.setData(dragType ?? "fielddraft/primitive", kind);
+        e.dataTransfer.effectAllowed = "copy";
+      } : undefined}
+    >
+      <span className="glyph" aria-hidden="true">{m.glyph}</span>
+      <span className="tool-label">{labelOverride ?? m.label}</span>
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Drag helpers                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -269,47 +315,17 @@ export function Toolbar({ store, state }: ToolbarProps) {
       {/* Modeling */}
       <div className="group">
         <PrimitiveSplitButton store={store} />
-        <button type="button" className="tool" title="Add Hole (Ø6 × 40 mm, subtract)" data-testid="add-hole" onClick={() => store.addHole()} {...dragProps("hole")}>
-          <span className="glyph" aria-hidden="true">{meta("hole").glyph}</span>
-          <span className="tool-label">Hole</span>
-        </button>
+        <FeatureToolButton kind="hole" title="Add Hole (Ø6 × 40 mm, subtract)" onClick={() => store.addHole()} draggable dragType="fielddraft/primitive" />
         <ThreadSplitButton onAdd={handleAddThread} />
-        <button type="button" className="tool" title="Sketch on XY plane" data-testid="enter-sketch" onClick={handleSketchEnter} {...sketchDragProps()}>
-          <span className="glyph" aria-hidden="true">{meta("sketch").glyph}</span>
-          <span className="tool-label">Sketch</span>
-        </button>
-        <button type="button" className="tool" title="Extrude the most recent sketch (20 mm depth)" data-testid="extrude-latest-sketch" disabled={!hasSketch} onClick={() => store.addExtrudeFromLatestSketch(20)}>
-          <span className="glyph" aria-hidden="true">{meta("extrude").glyph}</span>
-          <span className="tool-label">Extrude</span>
-        </button>
-        <button type="button" className="tool" title="Revolve the most recent sketch around the world Y axis" data-testid="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()}>
-          <span className="glyph" aria-hidden="true">{meta("revolve").glyph}</span>
-          <span className="tool-label">Revolve</span>
-        </button>
-        <button type="button" className="tool" title="Add Gyroid infill" data-testid="add-gyroid" disabled={!hasFeatures} onClick={() => store.addGyroid()} {...dragProps("gyroid")}>
-          <span className="glyph" aria-hidden="true">{meta("gyroid").glyph}</span>
-          <span className="tool-label">Gyroid</span>
-        </button>
-        <button type="button" className="tool" title="Linear pattern (+X, 3×, 60 mm)" data-testid="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()}>
-          <span className="glyph" aria-hidden="true">{meta("linear_pattern").glyph}</span>
-          <span className="tool-label">Pattern</span>
-        </button>
-        <button type="button" className="tool" title="Circular pattern around Y axis (6×, 360°)" data-testid="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()}>
-          <span className="glyph" aria-hidden="true">{meta("circular_pattern").glyph}</span>
-          <span className="tool-label">Circ</span>
-        </button>
-        <button type="button" className="tool" title="Mirror through the world YZ plane" data-testid="mirror-latest" disabled={!hasFeatures} onClick={() => store.addMirrorOfLatest()}>
-          <span className="glyph" aria-hidden="true">{meta("mirror").glyph}</span>
-          <span className="tool-label">Mirror</span>
-        </button>
-        <button type="button" className="tool" title="Boolean (Union / Subtract / Intersect)" data-testid="add-boolean" disabled={!hasFeatures} onClick={() => store.addBoolean()}>
-          <span className="glyph" aria-hidden="true">{meta("boolean").glyph}</span>
-          <span className="tool-label">Boolean</span>
-        </button>
-        <button type="button" className="tool" title="Assign material (color, roughness, metalness)" data-testid="add-material" disabled={!hasFeatures} onClick={() => store.addMaterial()}>
-          <span className="glyph" aria-hidden="true">{meta("material").glyph}</span>
-          <span className="tool-label">Material</span>
-        </button>
+        <FeatureToolButton kind="sketch" title="Sketch on XY plane" testId="enter-sketch" onClick={handleSketchEnter} draggable dragType="fielddraft/sketch" />
+        <FeatureToolButton kind="extrude" title="Extrude latest sketch (20 mm)" testId="extrude-latest-sketch" disabled={!hasSketch} onClick={() => store.addExtrudeFromLatestSketch(20)} />
+        <FeatureToolButton kind="revolve" title="Revolve latest sketch" testId="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()} />
+        <FeatureToolButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
+        <FeatureToolButton kind="linear_pattern" title="Linear pattern (+X, 3×, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} labelOverride="Pattern" />
+        <FeatureToolButton kind="circular_pattern" title="Circular pattern (6×, 360°)" testId="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()} labelOverride="Circ" />
+        <FeatureToolButton kind="mirror" title="Mirror through YZ plane" testId="mirror-latest" disabled={!hasFeatures} onClick={() => store.addMirrorOfLatest()} />
+        <FeatureToolButton kind="boolean" title="Boolean (Union / Subtract / Intersect)" disabled={!hasFeatures} onClick={() => store.addBoolean()} />
+        <FeatureToolButton kind="material" title="Assign material properties" disabled={!hasFeatures} onClick={() => store.addMaterial()} />
       </div>
 
       {/* Transform */}
@@ -323,23 +339,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="glyph" aria-hidden="true">🗑</span>
           <span className="tool-label">Delete</span>
         </button>
-        <button type="button" className={"tool" + (state.filletMode ? " is-active" : "")} title="Click an edge to fillet it" data-testid="fillet-toggle" onClick={() => store.toggleFilletMode()}>
-          <span className="glyph" aria-hidden="true">{meta("fillet_edge").glyph}</span>
-          <span className="tool-label">Fillet</span>
-        </button>
-        <button type="button" className={"tool" + (state.mateMode ? " is-active" : "")} title="Click a surface to place a mate connector" data-testid="add-mate-connector" disabled={!hasFeatures} onClick={() => store.toggleMateMode()}>
-          <span className="glyph" aria-hidden="true">{meta("mate_connector").glyph}</span>
-          <span className="tool-label">Mate</span>
-        </button>
+        <FeatureToolButton kind="fillet_edge" title="Click an edge to fillet it" testId="fillet-toggle" active={state.filletMode} onClick={() => store.toggleFilletMode()} labelOverride="Fillet" />
+        <FeatureToolButton kind="mate_connector" title="Place a mate connector" testId="add-mate-connector" disabled={!hasFeatures} active={state.mateMode} onClick={() => store.toggleMateMode()} labelOverride="Mate" />
         <button type="button" className={"tool" + (state.measureMode ? " is-active" : "")} title="Measure distance (click two points)" data-testid="measure-toggle" onClick={() => store.toggleMeasureMode()}>
           <span className="glyph" aria-hidden="true">📏</span>
           <span className="tool-label">Measure</span>
         </button>
         {state.referenceMesh && (
-          <button type="button" className="tool" title="Convert reference mesh to a CSG solid" data-testid="convert-to-solid" onClick={() => store.convertReferenceToSolid()}>
-            <span className="glyph" aria-hidden="true">{meta("imported_mesh").glyph}</span>
-            <span className="tool-label">Solid</span>
-          </button>
+          <FeatureToolButton kind="imported_mesh" title="Convert reference mesh to solid" testId="convert-to-solid" onClick={() => store.convertReferenceToSolid()} labelOverride="Solid" />
         )}
       </div>
     </div>
