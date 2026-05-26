@@ -2516,23 +2516,48 @@ impl FeatureKind for BooleanFeature {
             _ => BoolOp::Union,
         };
 
-        let tool_ids: Vec<FeatureId> = d
-            .tools
-            .queries()
-            .iter()
-            .filter_map(|q| {
-                let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
-                inner.parse::<FeatureId>().ok()
-            })
-            .collect();
+        let resolve_ids = |mq: &MultiQuery| -> Vec<FeatureId> {
+            mq.queries()
+                .iter()
+                .filter_map(|q| {
+                    let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
+                    inner.parse::<FeatureId>().ok()
+                })
+                .collect()
+        };
 
+        let tool_ids = resolve_ids(&d.tools);
         if tool_ids.is_empty() {
             return Ok(());
         }
 
-        for feature in ctx.document.features.iter_mut() {
-            if tool_ids.contains(&feature.id) {
-                feature.op = op;
+        // The first tool in spine order must keep op=Union so it
+        // seeds a BodyPartition. Subsequent tools get the selected
+        // op so they attach to that body via AABB overlap.
+        let first_tool_pos = ctx
+            .document
+            .features
+            .iter()
+            .position(|f| tool_ids.contains(&f.id));
+
+        for (idx, feature) in ctx.document.features.iter_mut().enumerate() {
+            if !tool_ids.contains(&feature.id) {
+                continue;
+            }
+            match op {
+                BoolOp::Union => {
+                    feature.op = BoolOp::Union;
+                }
+                BoolOp::Intersect => {
+                    if Some(idx) == first_tool_pos {
+                        feature.op = BoolOp::Union;
+                    } else {
+                        feature.op = BoolOp::Intersect;
+                    }
+                }
+                BoolOp::Difference => {
+                    feature.op = BoolOp::Difference;
+                }
             }
         }
 

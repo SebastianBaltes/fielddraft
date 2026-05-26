@@ -13,7 +13,7 @@ import {
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { BoolOpTag, type BoolOpName, type BoolOpTagValue, type FeatureSummary } from "./kernel";
+import { type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { FeatureDialog, FEATURE_TYPE_LABELS } from "./widgets/FeatureDialog";
@@ -23,18 +23,6 @@ import {
 } from "./widgets/schema";
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import { buildDraftSketchState } from "./sketchSession";
-
-const OP_LABEL: Record<BoolOpName, string> = {
-  union: "+",
-  difference: "−",
-  intersect: "∩",
-};
-
-const OP_TOOLTIP: Record<BoolOpName, string> = {
-  union: "Union (add)",
-  difference: "Difference (subtract)",
-  intersect: "Intersect",
-};
 
 const KIND_GLYPH: Record<string, string> = {
   box: "▣",
@@ -126,29 +114,6 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_midpoint: "Midpoint",
   sketch_constraint_symmetric: "Symmetric",
 };
-
-function nameToTag(op: BoolOpName): BoolOpTagValue {
-  switch (op) {
-    case "union":
-      return BoolOpTag.Union;
-    case "difference":
-      return BoolOpTag.Difference;
-    case "intersect":
-      return BoolOpTag.Intersect;
-  }
-}
-
-function nextOp(op: BoolOpName): BoolOpTagValue {
-  // Cycle: union → difference → intersect → union
-  switch (op) {
-    case "union":
-      return BoolOpTag.Difference;
-    case "difference":
-      return BoolOpTag.Intersect;
-    case "intersect":
-      return BoolOpTag.Union;
-  }
-}
 
 interface OutlinerProps {
   store: KernelStore;
@@ -516,11 +481,6 @@ export function Outliner({ store, state }: OutlinerProps) {
       return;
     }
     beginRename(feature);
-  };
-
-  const handleOpClick = (e: MouseEvent, feature: FeatureSummary) => {
-    e.stopPropagation();
-    store.setFeatureOp(feature.id, nextOp(feature.op));
   };
 
   const handleDelete = (e: MouseEvent, id: number) => {
@@ -952,7 +912,6 @@ export function Outliner({ store, state }: OutlinerProps) {
               index: number,
             ) => {
               const selected = state.selection.has(feature.id);
-              const tagOp = feature.op;
               const isDragged = draggingId === feature.id;
               return (
                 <li
@@ -970,7 +929,6 @@ export function Outliner({ store, state }: OutlinerProps) {
                   }
                   data-testid={`feature-row-${feature.id}`}
                   data-feature-id={feature.id}
-                  data-feature-op={tagOp}
                   data-feature-kind={feature.kind}
                   data-feature-suppressed={feature.suppressed ? "true" : "false"}
                   draggable
@@ -983,14 +941,6 @@ export function Outliner({ store, state }: OutlinerProps) {
                   onDoubleClick={() => handleRowDoubleClick(feature)}
                   onContextMenu={(e) => openContextMenu(e, feature.id)}
                 >
-                  <button
-                    type="button"
-                    className={`op op-${tagOp}`}
-                    title={OP_TOOLTIP[tagOp]}
-                    onClick={(e) => handleOpClick(e, feature)}
-                  >
-                    {OP_LABEL[tagOp]}
-                  </button>
                   <span className="kind">
                     {KIND_GLYPH[feature.kind] ?? "?"}
                   </span>
@@ -1648,5 +1598,3 @@ function ConstraintManagerPanel({
     </div>
   );
 }
-
-export const __testing = { nameToTag, nextOp };
