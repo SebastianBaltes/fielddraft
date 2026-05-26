@@ -52,6 +52,7 @@ import {
   QueryWidget,
   SliderWidget,
   StringWidget,
+  ColorWidget,
   UnknownWidget,
   Vec2Widget,
   Vec3Widget,
@@ -99,6 +100,7 @@ export const FEATURE_TYPE_LABELS: Record<string, string> = {
   fillet_edge: "Fillet Edge",
   sweep: "Sweep",
   boolean: "Boolean",
+  material: "Material",
   transform: "Transform",
   imported_mesh: "Imported Mesh",
   sketch_line: "Line",
@@ -353,6 +355,16 @@ function WidgetFor({
           error={error}
           onChange={emit}
           unit={param.unit}
+        />
+      );
+    case "color":
+      return (
+        <ColorWidget
+          label={param.label}
+          value={value as [number, number, number]}
+          required={param.required}
+          error={error}
+          onChange={emit}
         />
       );
     case "bool":

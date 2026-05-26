@@ -609,6 +609,10 @@ export class Kernel {
     return this.inner.addBoolean();
   }
 
+  addMaterial(): number {
+    return this.inner.addMaterial();
+  }
+
   /** K8.4: append a revolve feature that consumes the sketch
    *  with id `sketchId` and sweeps its profile around the local
    *  Y axis through `(cx, cy, cz)`. Returns the new feature id. */

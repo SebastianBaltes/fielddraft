@@ -85,6 +85,7 @@ export type WidgetKind =
   | "number"
   | "vec2"
   | "vec3"
+  | "color"
   | "bool"
   | "string"
   | "enum"
@@ -99,7 +100,7 @@ export type WidgetKind =
   | "expandable"
   | "unknown";
 
-export type UiHint = "horizontal_enum" | "opposite_direction" | "slider";
+export type UiHint = "horizontal_enum" | "opposite_direction" | "slider" | "color";
 
 export interface EnumVariant {
   key: string;
@@ -385,7 +386,8 @@ function parseUiHint(value: unknown, where: string): UiHint | undefined {
   if (
     value === "horizontal_enum" ||
     value === "opposite_direction" ||
-    value === "slider"
+    value === "slider" ||
+    value === "color"
   ) {
     return value;
   }
@@ -430,6 +432,7 @@ export function widgetKindFor(
   if (rawType === "enum") return "enum";
   if (rawType === "bool" && uiHint === "opposite_direction") return "flip";
   if (rawType === "f32" && uiHint === "slider") return "slider";
+  if (rawType === "vec3" && uiHint === "color") return "color";
   switch (rawType) {
     case "f32":
       return "number";
@@ -501,6 +504,8 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
       return [0, 0];
     case "vec3":
       return [0, 0, 0];
+    case "color":
+      return [0.55, 0.65, 0.85];
     case "bool":
     case "flip":
       return false;
@@ -617,6 +622,7 @@ export function validateParamValue(
       }
       return null;
     case "vec3":
+    case "color":
       if (!Array.isArray(value) || value.length !== 3) {
         return `${param.label} must be a 3-element array`;
       }

@@ -380,6 +380,47 @@ export function Vec3Widget({
   );
 }
 
+// ─── color (vec3 with color picker) ─────────────────────────────
+
+function floatToHex(rgb: [number, number, number]): string {
+  const r = Math.round(Math.max(0, Math.min(1, rgb[0])) * 255);
+  const g = Math.round(Math.max(0, Math.min(1, rgb[1])) * 255);
+  const b = Math.round(Math.max(0, Math.min(1, rgb[2])) * 255);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+function hexToFloat(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return [r, g, b];
+}
+
+export function ColorWidget({
+  label,
+  value,
+  onChange,
+  error,
+  required,
+}: WidgetProps<[number, number, number]>) {
+  const id = useId();
+  const hex = floatToHex(value);
+  return (
+    <Field label={label} htmlFor={id} error={error} required={required}>
+      <div className="color-row">
+        <input
+          id={id}
+          type="color"
+          className="color-swatch"
+          value={hex}
+          onChange={(e) => onChange(hexToFloat(e.currentTarget.value))}
+        />
+        <span className="color-hex">{hex}</span>
+      </div>
+    </Field>
+  );
+}
+
 // ─── bool ───────────────────────────────────────────────────────
 
 export function BoolWidget({

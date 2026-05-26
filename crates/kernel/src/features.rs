@@ -2679,15 +2679,15 @@ pub struct MaterialDef {
     pub targets: ::fielddraft_protocol::MultiQuery,
 
     // ── PBR optical ──────────────────────────────────────────
-    #[param(name = "Color", default = [0.55, 0.65, 0.85])]
+    #[param(name = "Color", default = [0.55, 0.65, 0.85], ui_hint = "color")]
     pub color: [f32; 3],
-    #[param(name = "Roughness", default = 0.35)]
+    #[param(name = "Roughness", default = 0.35, ui_hint = "slider")]
     pub roughness: f32,
-    #[param(name = "Metalness", default = 0.0)]
+    #[param(name = "Metalness", default = 0.0, ui_hint = "slider")]
     pub metalness: f32,
-    #[param(name = "Emissive", default = [0.0, 0.0, 0.0])]
+    #[param(name = "Emissive", default = [0.0, 0.0, 0.0], ui_hint = "color")]
     pub emissive: [f32; 3],
-    #[param(name = "Opacity", default = 1.0)]
+    #[param(name = "Opacity", default = 1.0, ui_hint = "slider")]
     pub opacity: f32,
     #[param(name = "Wireframe", default = false)]
     pub wireframe: bool,

@@ -1,4 +1,4 @@
-import type { KernelHandle, FeatureSummary } from "./kernel";
+import type { Kernel, FeatureSummary } from "./kernel";
 import type { DeferredPipelineState } from "./sdfDeferredRenderer";
 import type { VmPipelineState } from "./sdfVmRenderer";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
@@ -21,7 +21,7 @@ const DEFAULTS: MaterialProps = {
 };
 
 export function resolveMaterials(
-  kernel: KernelHandle,
+  kernel: Kernel,
   features: FeatureSummary[],
 ): Map<number, MaterialProps> {
   const result = new Map<number, MaterialProps>();

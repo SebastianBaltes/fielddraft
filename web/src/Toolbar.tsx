@@ -289,6 +289,10 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="glyph" aria-hidden="true">⊕</span>
           <span className="tool-label">Boolean</span>
         </button>
+        <button type="button" className="tool" title="Assign material (color, roughness, metalness)" data-testid="add-material" disabled={!hasFeatures} onClick={() => store.addMaterial()}>
+          <span className="glyph" aria-hidden="true">🎨</span>
+          <span className="tool-label">Material</span>
+        </button>
       </div>
 
       {/* Gizmo mode toggles */}

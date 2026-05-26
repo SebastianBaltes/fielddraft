@@ -997,6 +997,19 @@ export class KernelStore {
     return id;
   }
 
+  addMaterial(): number {
+    let id: number;
+    try {
+      id = this.kernel.addMaterial();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addMaterial failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   addHole(diameterMm = 6, depthMm = 40): number {
     const offset: [number, number, number] = [0, 0, 0];
     let id: number;

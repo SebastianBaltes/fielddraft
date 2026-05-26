@@ -1514,6 +1514,40 @@ impl Kernel {
         Ok(flat)
     }
 
+    #[wasm_bindgen(js_name = addMaterial)]
+    pub fn add_material(&mut self) -> Result<u32, JsError> {
+        self.snapshot();
+        let id = self.document.allocate_id();
+        let flat = id
+            .as_u32_if_flat()
+            .expect("K4.5.1 still issues flat-numeric feature ids");
+        let params = serde_json::json!({
+            "targets": "",
+            "color": [0.55, 0.65, 0.85],
+            "roughness": 0.35,
+            "metalness": 0.0,
+            "emissive": [0.0, 0.0, 0.0],
+            "opacity": 1.0,
+            "wireframe": false,
+            "density": 0.0,
+            "youngs_modulus": 0.0,
+            "poissons_ratio": 0.0,
+            "yield_tensile": 0.0,
+            "ultimate_tensile": 0.0,
+            "yield_compressive": 0.0,
+        });
+        let call = fielddraft_protocol::FeatureCall::new("material", id, params);
+        self.document.feature_calls.push(call);
+        if let Err(err) = self.bootstrap_features_from_calls() {
+            self.undo();
+            return Err(JsError::new(&format!(
+                "material regeneration failed: {err}"
+            )));
+        }
+        self.rebuild_packed();
+        Ok(flat)
+    }
+
     /// K9.6: add a mate connector at a surface point.
     #[wasm_bindgen(js_name = addMateConnector)]
     pub fn add_mate_connector(
