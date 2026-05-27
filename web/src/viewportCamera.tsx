@@ -51,18 +51,18 @@ export function CameraRig() {
     [state?.selection, state?.features],
   );
 
+  const prevSelIdRef = useRef<number | undefined>(undefined);
+
   useEffect(() => {
     const c = controlsRef.current;
     if (!c || sketchActive) return;
-    const newTarget = new THREE.Vector3();
+    const selId = selectedFeature?.id;
+    if (selId === prevSelIdRef.current) return;
+    prevSelIdRef.current = selId;
     if (selectedFeature) {
       const [x, y, z] = selectedFeature.translate;
-      newTarget.set(x, y, z);
+      c.target.set(x, y, z);
     }
-    const delta = newTarget.clone().sub(c.target);
-    c.target.copy(newTarget);
-    c.object.position.add(delta);
-    c.update();
   }, [selectedFeature, sketchActive]);
 
   if (sketchActive) {
