@@ -1,274 +1,672 @@
-# FieldDraft — Architektur
-
-> **Diese Datei.** Die technische Architektur des Kernels, des Frontends, der Memory‑Brücke, des Constraint‑Solvers, der Variablen‑Engine, der Feature‑as‑Function‑Infrastruktur und des geplanten Backends — plus die offenen architektonischen Risiken. Der Rest der Dokumentation ist aufgeteilt in `README.md` (Vision, Zielgruppe, Scope, Lizenz), `docs/ROADMAP.md` (K‑Slices und Release‑Tiers), `docs/LITERATURE.md` (Referenzen) und `docs/STATUS.md` (Ist‑Zustand). Querverweise in diesem Dokument auf „§4.x", „§10", „§11", „§16" zeigen historisch auf die Abschnitte der alten monolithischen README und werden der Lesbarkeit halber beibehalten — §4.x lebt jetzt hier, §10 in ROADMAP.md, §11 unten in diesem Dokument, §16 in LITERATURE.md.
-
-## 1. Überblick
-
-FieldDraft besteht zunächst aus zwei Schichten: einem **Rust/WASM‑Geometriekern** im Browser und einem **React‑Three‑Fiber/WebGPU‑Frontend**. Die Verbindung zwischen Kernel und Frontend läuft über eine **Zero‑Copy‑Memory‑Brücke**. Ein **Go‑Backend‑Server** für Authentifizierung, Projektverwaltung und Synchronisation ist als spätere Phase vorgesehen — im MVP läuft alles rein clientseitig, der Projektzustand wird nach **`localStorage`** persistiert.
-
-## 4.1 Rust/WASM‑Kernel (Backend im Browser)
-
-Verantwortlich für alles, was Mathematik und Zustand ist — läuft ohne DOM‑Zugriff im Linear Memory von WebAssembly. Der Kernel ist kein reiner SDF‑Evaluator, sondern ein **hybrider Kern** aus drei eng gekoppelten Schichten: ein **CSG‑Graph mit Provenance‑Tracking** (mathematische Wahrheit), ein **Dual‑Contouring‑Mesher** (skalierbare Anzeigegeometrie) und ein daraus abgeleiteter **B‑Rep‑Proxy** (topologische Selektions‑ und Snapping‑Schicht). Diese Drei‑Schichten‑Architektur ist zwingend, weil reines Raymarching auf CSG‑Bäumen über mehrere Bodies und komplexe Sketches nicht skaliert (Instruction‑Cache‑Kollaps der GPU, siehe §11) und ein klassischer B‑Rep‑Kernel im WASM‑Payload zu groß und an Booleschen Grenzfällen zu fragil wäre.
-
-- **Feature‑Tree als sequentielles Programm (Feature‑as‑Function):** Der Kernel speichert den parametrischen Baum nicht als passiven annotierten DAG, sondern als **geordnete Liste von Funktionsaufrufen** — jedes Feature ist eine Funktion mit der kanonischen Signatur `execute(ctx: &mut Context, id: &FeatureId, def: &Definition) -> Result<()>`. Regeneration heißt: den Vektor der `FeatureCall`s von oben nach unten durchlaufen und jeden Call auf dem mutierenden `Context` ausführen. Damit übernimmt FieldDraft das Onshape‑FeatureScript‑Modell wörtlich (Feature Type = Funktion, Feature im Tree = Funktionsaufruf, Parameter = Funktionsargumente, Part Studio = Build‑Funktion, Regeneration = Ausführung der Build‑Funktion, Rollback Bar = Return‑Statement). Die Details der Infrastruktur — Feature Registry, Schema‑Reflexion, JS‑API, Query‑System, Regeneration Worker, Determinismus‑Prinzip — sind in §4.6 beschrieben; dieser Bullet legt nur das Datenmodell fest.
-
-  Jede Feature‑Instanz trägt eine **hierarchische, getypte `FeatureId`** (Pfad‑Struktur `FeatureId { parent: Option<Box<FeatureId>>, local: SmolStr }`, Debug‑Darstellung `extrude_3.op`, `fillet_7.mask_0`). Sub‑Operationen eines Features erzeugen Kind‑IDs unter dem Parent — wenn K10 drei Spatial Masks für ein Fillet anlegt, bekommen sie deterministisch `fillet_7.mask_0`, `fillet_7.mask_1`, `fillet_7.mask_2` und bleiben damit klar dem Parent‑Feature zugeordnet. Die CSG‑Leaves und inneren Operatoren (`Union`, `Difference`, `Intersection`, `Transform`, `Pattern`, Spatial Mask, Mesh‑to‑SDF, …) leben weiterhin im niedrigeren `CsgNode`‑AST, sind aber nicht mehr vom Frontend direkt adressierbar — Mutationen laufen ausschließlich über `Feature::execute`, das den CSG‑Context fortschreibt. Geometrische Referenzen zwischen Features werden über **Queries** (§4.6) ausgedrückt, die das Provenance‑System als lazy Such‑Sprache nutzen; damit ist das Topological Naming Problem strukturell gelöst, weil Referenzen nie auf flache IDs festnageln, sondern auf Suchkriterien („das Face, das von Extrude 1 an Position 0 erzeugt wurde") — bei Re‑Evaluation wandert die Referenz automatisch mit.
-
-- **Multi‑Body‑Isolation:** Jeder eigenständige Körper im Part Studio besitzt seinen **eigenen** CSG‑Graphen, eigenen BVH und eigenen Mesh‑Cache. Es gibt keine globale „Monster‑Gleichung", die alle Bodies verknüpft. Zwei Bodies werden mathematisch nur dann gekoppelt, wenn der User explizit eine Boolean‑Operation zwischen ihnen ausführt. Ohne diese Isolation würde die SDF‑Auswertung bei mehreren Bodies an der Instruction‑Cache‑Grenze der GPU und am asymptotischen O(N) der naiven Punkt‑Auswertung kollabieren.
-
-- **SDF‑Auswertung mit Provenance:** Jede Punkt‑Auswertung `f(p)` liefert nicht nur den Distanzwert, sondern zusätzlich die Liste der **Contributors** — die Leaf‑IDs, deren Distanzfeld am Punkt `p` aktiv den Wert dominiert (innerhalb eines Epsilons ε). Die Auswertung von `min(f_A, f_B)` propagiert beide IDs, sobald `|f_A − f_B| < ε`; sonst nur die ID des dominanten Terms. Aus dieser Contributor‑Menge entsteht der B‑Rep‑Proxy. Boolesche Operationen bleiben mathematisch trivial: Union = `min`, Intersection = `max`, Difference = `max(f_A, −f_B)` — alle hart.
-
-- **Fillets und Chamfers via räumlicher Maskierung:** Kanten‑Operationen (Fillet, Chamfer, organischer Smooth‑Blend) werden **nie global** auf den CSG‑Baum angewandt, sondern lokal über eine **Spatial Mask** — eine unsichtbare Zylinder‑ oder Kapsel‑SDF, die der Kernel entlang der selektierten B‑Rep‑Edge (aus dem Proxy, siehe weiter unten) legt. Innerhalb der Maske ersetzt der Operator das harte `min`/`max` durch den weichen Gegenpart: Fillet als Quadrat‑Summe der Distanzen `r − √(max(r−f_A, 0)² + max(r−f_B, 0)²)`, Chamfer als lineare Mittelung `min(min(f_A, f_B), (f_A + f_B − c)·0.5^½)`, organischer Blend als `smin`. Außerhalb der Maske bleibt das Feld bit‑identisch zum harten Baum, der Operator fällt transparent auf den harten Unteroperator zurück. Der Mechanismus ist für emergente Kanten (CSG‑Schnitte zweier Körper) und intrinsische Kanten (z. B. die vertikale Kante eines extrudierten Quaders) **einheitlich** — es gibt genau einen Code‑Pfad. 2D‑Verrundungen im Sketcher laufen nicht über diesen Pfad, sondern werden vom Solver als explizite Linien‑/Kreisbogen‑Segmente geführt (siehe §4.4), was den 3D‑Baum sauber hält.
-
-- **Ghost Topology (zweigeteilter Evaluator):** Smooth Blends und Fillet‑Masken zerstören die Provenance in der Übergangszone — auf der verrundeten Oberfläche ist weder `f_A = 0` noch `f_B = 0`, die Kante zwischen beiden Contributors existiert mathematisch nicht mehr, und der B‑Rep‑Proxy liefert dort keine Face/Edge/Vertex‑Zerlegung. Damit Picking und Snapping trotzdem funktionieren, fährt der Kernel den CSG‑Baum in **zwei Modi**: Der **visual path** (für Mesher und Render‑Buffer) wertet alle `smin`‑Operatoren und Spatial Masks voll aus und erzeugt die weichen Übergänge. Der **logical path** (für Picking, Snapping und die B‑Rep‑Proxy‑Konstruktion) degradiert `smin → min` und überspringt alle Fillet‑/Chamfer‑Masken — für die Sensorik besteht das Bauteil ausschließlich aus harten Grundkörpern und scharfen Original‑Kanten. Das ist kein zweiter Baum und kein zweites Mesh, sondern ein Flag am CSG‑Walker; die Implementierung kostet einen zusätzlichen Codepfad pro verrundendem Operator, keine doppelte Datenstruktur. Jede verrundete Kante behält damit ihre ursprüngliche Contributor‑Identität, und der User snappt beim Skizzieren auf die virtuelle scharfe Original‑Ecke — funktional äquivalent zu den „Virtual Sharps" klassischer B‑Rep‑Systeme, nur als Nebeneffekt der Dual‑Path‑Evaluation statt als separat gepflegtes Datenmodell.
-
-- **History‑Rollback bei Skizzen auf Ghost‑Edges:** Klickt der User auf eine virtuelle scharfe Kante, die durch ein nachgelagertes Fillet/Chamfer erzeugt wurde, darf das neue Feature (Skizze, Bohrung, Extrude) nicht hinter dem Fillet in die Historie gehängt werden — sonst läge sein Verankerungspunkt auf einer Kante, die im visual path nicht existiert. Stattdessen zieht der Feature‑Tree den Einfüge‑Zeitpunkt automatisch **vor** den ältesten Fillet/Chamfer‑Knoten, dessen Spatial Mask die Contributor‑IDs der geklickten Ghost‑Edge berührt, fügt das neue Feature dort ein und rechnet die Historie bis zum Ende neu. Die Bohrung wird dadurch vom nachgelagerten Fillet automatisch mit‑verrundet, so wie der User es erwartet. Dieser Rollback ist die logische Konsequenz der Ghost Topology und wird vom Feature‑Tree als stiller Schritt ausgeführt — kein Modal, keine User‑Bestätigung.
-
-- **BVH als Pflicht‑Basistechnologie, nicht Optimierung:** Jeder CSG‑Knoten trägt eine axis‑aligned Bounding Box (AABB), die bei jeder Parameter‑Änderung des Sub‑Baums neu berechnet wird. Mesher und Picking traversieren den Graphen ausschließlich über diese BVH; ganze Subtrees werden weggeschnitten, sobald `f_AABB(p) > Schrittweite`. Komplexität sinkt damit von O(N) auf O(log N). Ein Bauteil mit 500 Bohrungen evaluiert pro Sample‑Punkt nur die zwei oder drei tatsächlich relevanten Loch‑Knoten, nicht alle 500. Ohne BVH ist das System bei realistischen Bauteilen nicht nutzbar — sie ist deshalb von Anfang an Pflicht‑Bestandteil des Kernels, nicht eine spätere Optimierung.
-
-- **2D‑Kernel mit 2D‑BVH (immer, ohne Ausnahme):** Skizzen sind ihre eigene 2D‑SDF‑Welt: Linien, Kreisbögen, Polygone und Offset‑Regionen werden als 2D‑SDF‑Bäume gespeichert, mit identischer CSG‑Semantik (`min`/`max` über 2D‑Primitive) und einem dedizierten 2D‑BVH. **Jede** Skizze bekommt diesen BVH, auch triviale — keine Sonderfälle, keine adaptive Wahl. Alternative Strategien wie 2D‑SDF‑Baking in Float32‑Texturen oder Domain Repetition via Modulo werden bewusst **nicht** verwendet: Texturen kosten VRAM, blockieren parametrische Updates und verlieren bei jeder Maßänderung ihren Cache; Domain Repetition funktioniert nur für regelmäßige Muster und passt nicht in das parametrische CAD‑Modell. Die Extrude‑ und Revolve‑Knoten heben das fertige 2D‑Feld in den 3D‑Raum.
-
-- **Splines als Polylinien (im 3D‑Kernel):** Splines (B‑Splines, Bézier) und Kreisbögen werden im 2D‑Solver (siehe §4.4) weiterhin exakt als Kurven gehalten — der Constraint‑Solver braucht die mathematische Form, und auch die Sketch‑Visualisierung im 2D‑Editor zeigt sie exakt. Für die SDF‑Auswertung im 3D‑Kernel werden sie aber in **Polylinien‑Approximationen** mit konfigurierbarer Sehnenfehler‑Toleranz (Default 0,05 mm — feiner als die FDM‑Druckauflösung) zerlegt. Das hält den 2D‑SDF‑AST geschlossen über wenigen einfachen Primitiv‑Typen (Linie, Kreisbogen) und erspart dem Mesher exotische Spline‑SDFs mit transzendenten Distanzformeln, die sich gegen analytisches Provenance‑Tracking nur schwer verteidigen lassen.
-
-- **Dual Contouring als Pflicht‑Renderpfad (nicht Export‑only):** Der Kernel meshet jeden Body kontinuierlich in einem Web Worker und hält das aktuelle Mesh im VRAM gecacht. Bei jeder Parameter‑Änderung im CSG‑Sub‑Baum eines Body wird **nur dieser Body** neu gemesht; alle anderen Bodies bleiben unangetastet. Dual Contouring (statt Marching Cubes) ist Pflicht, weil es scharfe mechanische Kanten erhält und Hermite‑Daten aus den SDF‑Gradienten direkt nutzt. Inaktive Bodies bleiben als statische Meshes im Kontext; aktive Bodies (gerade in Bearbeitung) werden inkrementell re‑meshed. Manifold‑Verletzungen sind ein bekannter DC‑Edge‑Case und werden in einem Post‑Processing‑Pass repariert, siehe §11.
-
-- **Provenance‑gesteuerte Mesh‑Optimierung (K3.5, Post‑DC‑Pass im Worker):** Nach dem DC‑Durchlauf läuft ein deterministischer Simplifizierungs‑Pass, der auf der Provenance aus K2 aufsetzt. Ziel: das QEF‑Mikro‑Rauschen auf analytischen Flächen eliminieren und die Dreieckszahl flacher/abwickelbarer Bereiche drastisch reduzieren. Komplementär zum Octree‑Pfad, nicht alternativ.
-
-  - **Zero‑Noise‑Projektion.** Vertices mit genau einem dominanten Contributor (sie liegen auf einem B‑Rep‑Face) werden per Newton‑Iteration exakt auf die mathematische Null‑Fläche `f_A = 0` projiziert. Ersetzt den QEF‑Solver auf analytischen Flächen durch ein O(1)‑Verfahren und eliminiert das Mikro‑Rauschen.
-  - **Topologische Simplifizierung via 2D‑Retriangulierung.** Zusammenhängende Bereiche mit identischem dominanten Contributor werden simplifiziert: ein 2D‑Gitter im UV‑Parameterraum der Fläche klassifiziert per SDF‑Auswertung, wo der Contributor noch dominant ist; Marching Squares extrahiert die Randkonturen (inkl. Löcher wie Bohrungen) topologisch garantiert geschlossen; die Konturpunkte werden per Newton auf die exakte Schnittkurve `f_A = f_B = 0` zurückprojiziert; alle inneren Vertices werden verworfen und das Polygon per Earcut (O(R log R)) neu vernetzt. Rand‑Vertices zu benachbarten Flächen/Fillets bleiben unangetastet — Wasserdichtigkeit und T‑Junction‑Freiheit sind damit gewahrt.
-  - **Vier‑Stufen‑Hierarchie nach Flächentyp.** Stufe 1: **planare Flächen** (Newton + Earcut, triviale Projektion — Box‑Seiten, Extrude‑Deckflächen). Stufe 2: **einfach abwickelbare Flächen** (Zylinder‑Mäntel, Kegel, Extrude‑Profile — isometrische Abwicklung in 2D, Retriangulierung, Rücktransformation; verzerrungsfrei, Nahtlinie nur bei geschlossenen 360°‑Mänteln). Stufe 3: **abwickelbare Flächen mit analytischem Displacement** (Gewinde aus K12 — adaptives Heightfield‑Meshing via ROAM/Restricted Quadtree im UV‑Raum, periodische Wiederverwendung des Mittelteils, individuelle Verfeinerung an Gewindeauslauf und Stellen hohen Displacement‑Gradienten). Stufe 4: **doppelt gekrümmte und nicht‑analytische Bereiche** (Kugeln, Tori, Fillet‑Zonen, smin‑Blends, Domain Deformation, Mesh‑to‑SDF aus K13 — kein Simplifizierungs‑Schritt, Standard‑DC bleibt aktiv, perspektivisch adaptiver Octree nach Schaefer).
-  - **Flächentyp‑Erkennung.** Aus der Contributor‑Klasse abgeleitet: Box‑/Extrude‑Leaves → planar, Zylinder‑Leaves → abwickelbar, Thread‑Leaves → Heightfield, alles andere → Stufe 4. Die analytische Beschreibung (Ebene, Achse, Radius, Profilkurve) ist im Kernel bekannt und erlaubt die Abwicklungsberechnung ohne numerische Approximation.
-  - **Interaktives Verhalten.** Die Simplifizierung läuft nur bei committed Parameter‑Änderungen. Während eines Live‑Drags (z. B. Fillet‑Radius ändern) bleibt das Standard‑DC‑Mesh aktiv — das eliminiert jede Instabilität an wandernden Contributor‑Grenzen zwischen planarem Bereich und smin‑/Fillet‑Zone.
-  - **Laufzeit.** Asymptotisch gleich schnell oder schneller als Standard‑DC (Newton‑Projektion günstiger als SVD‑QEF; Earcut O(R log R) mit R ≪ V_planar) und refinanziert sich durch die drastisch reduzierte Dreieckszahl im VRAM‑Upload und der nachgelagerten WebGPU‑Rasterisierung.
-  - **Komplementär zum Octree.** Der Octree‑Pfad (Schaefer‑Paper, siehe LITERATURE.md §16.1) bleibt für Stufe 4 notwendig — wo keine analytische B‑Rep‑Beschreibung existiert, trägt nur adaptive Zellgröße die Qualität. Die beiden Ansätze sind komplementär, nicht alternativ.
-
-- **B‑Rep‑Proxy aus Provenance:** Aus der Contributor‑Analyse über das gemeshte Volumen entsteht ein dünner topologischer Layer: **Faces** sind zusammenhängende Mesh‑Regionen mit identischem dominanten Contributor; **Edges** sind die Punktmengen, an denen exakt zwei Contributors simultan den Distanz‑Nullwert bestimmen (Schnittkurven zwischen zwei Leaf‑Feldern); **Vertices** sind Punkte mit ≥3 gleichzeitig aktiven Contributors. Edge‑Sample‑Punkte werden zu Polylinien geclustert und auf die mathematisch exakte Schnittkurve der beteiligten Sub‑SDFs zurückprojiziert (Newton‑Iteration entlang `f_A = f_B = 0`), damit die finalen Snap‑Koordinaten nicht auf den ungenauen Mesh‑Vertices liegen. **Dieselbe Newton‑Iteration** wird in K3.5 auch auf ein zweites Anwendungsgebiet ausgeweitet: die exakte Positionierung von Mesh‑Vertices auf bekannten Faces (Zero‑Noise‑Projektion). Wenn die Provenance an einem Vertex genau einen dominanten Contributor liefert, projiziert der Mesher den Vertex per Newton auf `f_A = 0` statt einen QEF‑Solver laufen zu lassen — O(1), numerisch perfekt, dieselbe Codepath‑Technik wie Edge‑Snap. Dieser Proxy ist das einzige Zielobjekt jeder Selektion und jedes Snappings im Frontend. Faces, Edges und Vertices werden über ihre Provenance‑Rezepte gespeichert (z. B. `Edge = Intersection(Node_12, Node_15)`), nicht über Koordinaten — bei Re‑Evaluation des Baums wandern die Bezüge automatisch mit.
-
-- **Export:** STL (Ascii/Binary) und GLB (glTF 2.0) werden direkt aus dem ohnehin vorhandenen Body‑Mesh‑Cache erzeugt — kein separater Export‑Meshing‑Lauf nötig. Später STEP via dediziertem B‑Rep‑Exporter (M14+).
-
-- **Konstanten‑Cache und Undo/Redo:** Da der CSG‑Graph die Ground Truth ist, kommt Undo/Redo praktisch geschenkt — man spult den Baum einen Schritt zurück, der BVH wird inkrementell invalidiert, und nur die betroffenen Bodies werden neu gemesht.
-
-## 4.2 React‑Three‑Fiber‑Frontend (TypeScript)
-
-Verantwortlich für Darstellung, Interaktion und Gizmos. Das UI wird komplett in **React** gebaut; die 3D‑Szene über **React Three Fiber** (`@react-three/fiber`) mit Unterstützung durch **`@react-three/drei`** für Helper (Kamera, Gizmos, Ansichts‑Würfel, Controls). R3F wickelt Three.js deklarativ in den React‑Komponentenbaum ein, sodass Viewport‑State, Outliner, Panels und Feature‑Tree dieselbe State‑Management‑Welt teilen.
-
-- **Rendering:** **Klassische Rasterisierung** der vom Kernel gelieferten Body‑Meshes über die WebGPU‑Pipeline (kein WebGL‑Fallback). **Kein globales Raymarching im Viewport.** Begründung: Sphere Tracing eines verschachtelten CSG‑AST mit mehreren Bodies sprengt den Instruction‑Cache der GPU und führt zu Register Spilling — ein Bauteil mit 50 Features rendert auf der vorhandenen Hardware nicht mehr in Echtzeit. Stattdessen streamt der Kernel nach jeder Parameter‑Änderung neue Vertex/Index‑Buffer pro betroffenem Body an die GPU, und Three.js zeichnet sie wie jedes andere statische Mesh.
-- **Kamera‑Steuerung:** Orbit/Pan/Zoom, Ansichts‑Würfel oben rechts zum Ausrichten auf Standardansichten.
-- **Picking via Raymarching‑Sensor:** Raymarching wird nicht eliminiert, sondern auf eine spezifische Aufgabe reduziert: **ein einzelner Strahl pro Mausklick**. Die Kamera schießt den Strahl in den Kernel‑CSG‑Graphen, BVH‑beschleunigtes Sphere Tracing findet den ersten Treffpunkt, und der Kernel liefert die Contributor‑Liste an diesem Punkt zurück. Aus den Contributors wird der zugehörige Face/Edge/Vertex des B‑Rep‑Proxys (siehe §4.1) ermittelt. Bei einer komplexen Szene bleibt das selbst mit tausenden Features im Sub‑Millisekunden‑Bereich, weil pro Klick eben nur ein Strahl gerechnet wird, nicht acht Millionen. Mesh‑basiertes Picking gegen die Dreiecke wird **nicht** verwendet — das Mesh ist nur Anzeigelayer und liegt nicht auf den mathematisch exakten Oberflächen. Der Picking‑Ray läuft dabei auf dem **logical path** des Evaluators (§4.1, Ghost Topology): smooth Blends werden zu harten Booleans degradiert und Fillet‑/Chamfer‑Masken übersprungen. Der Strahl trifft damit die virtuelle scharfe Original‑Kante an der Stelle, an der der User visuell eine verrundete Fläche sieht — und der Cursor snappt zuverlässig auf die Contributor‑IDs, die der harte CSG‑Baum an diesem Punkt hinterlassen hat.
-- **Gizmos:** Translate, Rotate, Scale und Mirror‑Achse für ganze Feature‑Tree‑Knoten. **Keine** Push/Pull‑Gizmos auf einzelnen Faces — der Workflow ist strikt parametrisch, geändert wird ausschließlich über Skizzen, Maße und die Parameter‑Tabelle (siehe §6.3).
-- **Snapping:** Snaps fangen ausschließlich gegen den B‑Rep‑Proxy aus §4.1 — Faces, Edges, Edge‑Mittelpunkte, Vertices, Achsen, Mate‑Connectors. Niemals gegen die Dreiecke des gerenderten Meshes (das Mesh ist eine ungenaue Hülle). Die Snap‑Punkte werden bei Bedarf aus den Contributor‑Rezepten des Proxys analytisch nachberechnet, sodass sie exakt auf den mathematischen Oberflächen liegen, nicht auf den Mesh‑Vertices. Da der Proxy über den logical path der Ghost Topology konstruiert wird, liefert Snapping auch auf verrundeten Bauteilen die scharfen Original‑Edges — die aus klassischem CAD bekannten „Virtual Sharps" fallen in dieser Architektur als Nebeneffekt an, ohne ein zweites Datenmodell zu benötigen.
-- **Generischer `FeatureDialog` aus JSON‑Schema:** Es gibt **keine** handgeschriebenen Feature‑Dialoge. Stattdessen liest ein einziger generischer `FeatureDialog`‑React‑Component das JSON‑Schema eines Features (vom Kernel via `wasm-bindgen` exportiert, siehe §4.6) und rendert daraus automatisch das Panel — Length‑Input mit Einheiten‑Dropdown und Formel‑Support für `Length`‑Felder, Winkel‑Input für `Angle`, Klick‑in‑den‑Viewport‑Picker für `Query`, Select für `Enum`, Checkbox oder Flip‑Button für `Bool`, Tabs für gruppierte Unter‑Parameter, Listen für wiederholte Sub‑Einträge. Das Widget‑Kit wird ohnehin für die UI gebraucht; der Gewinn ist, dass neue Features **null Feature‑spezifischen React‑Code** erfordern — der Kernel liefert Schema plus `execute`, die Dialog‑Generierung ist Pflicht‑Infrastruktur, kein Pro‑Feature‑Aufwand. Bedingt sichtbare Felder (`visible_when`), Editing‑Logic‑Callbacks (Parameter‑Änderungen triggern andere Parameter‑Updates) und Manipulator‑Gizmos im Viewport werden alle deklarativ aus demselben Schema getrieben, siehe §4.6.
-- **Auto‑Save im Browser:** Jede Änderung am Feature‑Tree erzeugt einen Dirty‑Marker; nach einer kurzen Debounce‑Phase (ca. 500 ms) wird der aktuelle Projektzustand als JSON in `localStorage` persistiert. Beim Seiten‑Reload wird der letzte lokale Stand automatisch wiederhergestellt. Ein späterer Sync an einen Backend‑Server ist vorgesehen, aber nicht Teil des MVPs — die `localStorage`‑Schicht ist zunächst die einzige Persistenz.
-
-## 4.3 Memory‑Brücke
-
-Keine JSON‑Serialisierung zwischen Rust und JS auf dem Geometrie‑Pfad. Der Rust‑Mesher legt Vertices, Normals und Indices **pro Body** als fortlaufende Blöcke im WASM Linear Memory ab; JavaScript erzeugt `Float32Array`‑ und `Uint32Array`‑Views direkt auf diese Speicherbereiche und bindet sie an `THREE.BufferGeometry`‑Instanzen. Damit landet jedes Mesh ohne Kopiervorgang auf der GPU.
-
-Die Brücke ist außerdem **inkrementell**: Bei jeder Parameter‑Änderung, die einen Body invalidiert, streamt der Kernel ausschließlich für diesen Body neue Buffer ans Frontend (über einen Web‑Worker‑Channel), und das Frontend tauscht die `BufferGeometry` dieses Bodies atomar aus. Alle anderen Bodies bleiben unberührt — keine Re‑Allocation, kein GPU‑Upload für inaktiven Kontext. Alte Buffer werden verworfen, sobald der nächste Render‑Frame durch ist; die Lebenszeit‑Verwaltung läuft über Reference‑Counts im Rust‑Kernel und kontrollierte `free()`‑Calls aus dem JS‑Wrapper.
-
-## 4.4 2D‑Constraint‑Solver (Drei‑Schichten‑Architektur)
-
-Der Solver ist das **verbindende Herzstück** beider Projekte (FieldDraft und BeamDraft). Er ist bewusst in drei Schichten zerlegt, weil die Unterscheidung zwischen „FreeCAD‑Feeling" und „Onshape‑Feeling" nicht im Solver‑Kern, sondern in der **Adapter‑Schicht** darüber liegt. Die frühere Planung mit `libslvs` (SolveSpace) ist verworfen: libslvs hat keinen exponierten Drag‑Stabilitäts‑Mechanismus (das Lösungs‑Sprung‑Problem ist in den SolveSpace‑Foren dokumentiert), liefert nur eine unsortierte Liste möglicher Entferne‑Kandidaten statt unterscheidender Diagnostik (konflikt vs. redundant), und bietet weniger Geometrietypen. PlaneGCS deckt all das ab, und ein fertiger, gewarteter WASM‑Build existiert bereits.
-
-**Solver‑Kern: PlaneGCS (FreeCADs Geometric Constraint Solver).** Numerischer Optimizer mit mehreren Algorithmen (DogLeg, Levenberg‑Marquardt, BFGS, SQP), reifer Diagnostik (`getConflicting`, `getRedundant`, `getPartiallyRedundant`, `getMalformedConstraints`) und nativer Unterstützung für Linien, Kreise, Bögen, Ellipsen, Hyperbeln, Parabeln und B‑Splines. Bei Provenance geht keine Präzision verloren: der Solver ist eine Black Box, die Constraint‑Parameter rein bekommt und Koordinaten heraus gibt; numerische Konvergenz auf ~1e‑10 liegt sieben Größenordnungen unter der Druckauflösung und ist für den SDF‑Kernel irrelevant. Parametrik lebt im Feature‑Tree und im Constraint‑Graphen, nicht im Solver‑Algorithmus.
-
-- **Integrationsform (K5‑Entscheidung).** Zwei Pfade sind gangbar, beide erprobt. (1) **Separater WASM‑Build** via `@salusoft89/planegcs` — existiert auf npm, wird aktiv gewartet, wiegt ca. 881 kB gepackt, JSON‑basierte Primitiv‑API mit TypeScript‑Annotationen. Vorteil: PlaneGCS‑Updates unabhängig vom Rust‑Kernel einspielbar, kein C++‑Toolchain‑Zwang im Kernel‑Build. Nachteil: Zwei WASM‑Instanzen im selben Worker, Glue‑Code für Modul‑zu‑Modul‑Aufrufe. (2) **Statisches Linken via `cc`‑Crate** in das Rust‑Kernel‑Modul. Vorteil: Ein Binary, synchrone Solve‑Aufrufe im gemeinsamen Adressraum. Nachteil: Kernel‑Build wird C++‑abhängig, Lizenz‑Grauzone (siehe unten). Die Entscheidung fällt in K5a nach einer Messung der Aufruf‑Frequenz: wenn der Solver synchron vor jedem Dual‑Contouring‑Pass aufgerufen werden muss (weil ein Parameter‑Rebuild die Sketch‑Koordinaten ändert und der Mesher sie sofort braucht), spricht viel für den gemeinsamen Build; wenn er nur asynchron auf User‑Input läuft (Dragging, Dimension‑Edit, Constraint‑Hinzufügen), ist der separate WASM‑Pfad ausreichend und bequemer.
-
-- **Lizenz‑Randbedingung (LGPL‑2.1).** PlaneGCS ist unter LGPL‑2.1+ lizenziert (FreeCAD‑Erbe). Dynamisches Linken ist unter LGPL unkritisch, aber in der WASM‑Welt existiert klassisches dynamisches Linken nicht — alles wird zu einem Modul kompiliert. Die gängige Interpretation (u. a. von Mozilla und etablierten Emscripten‑Projekten gelebt): Bleibt PlaneGCS ein **separates WASM‑Modul**, das zur Laufzeit geladen wird, ist der LGPL‑Geist erfüllt und der Rest des Kernels kann unter einer freien, nicht‑copyleft‑vererbenden Lizenz stehen (Apache‑2.0 oder MIT). Wird PlaneGCS dagegen per `cc`‑Crate **statisch** in den Rust‑Kernel gelinkt, muss entweder der gesamte Kernel LGPL‑kompatibel lizenziert werden (z. B. LGPL oder AGPL, beide sind mit LGPL vereinbar), oder dem User müssen Object‑Files bereitgestellt werden, damit er die PlaneGCS‑Komponente gegen eine eigene Version austauschen kann. Der konkrete Lizenzpfad für FieldDraft fällt in §8 — und die Integrationsform aus dem vorigen Absatz hängt mit dran.
-
-**Adapter‑Schicht (Rust, `crates/solver`).** Sitzt zwischen dem Solver‑FFI und dem Feature‑Tree. Sie ist der eigentliche Hebel für die Onshape‑artige Sketch‑UX und wird als erste‑Klasse‑Komponente behandelt, nicht als Durchreichung. Vier Sub‑Komponenten:
-
-- **InferenceEngine** — Bei jeder Mausbewegung im aktiven Sketch prüft die Engine, ob der Cursor in die Nähe interessanter Snap‑Kandidaten kommt (Endpunkt, Mittelpunkt, Origin, Kreiszentrum) oder ob die entstehende Geometrie eine mögliche Beziehung zu existierenden Entities hat (Coincident, Horizontal, Vertical, Parallel, Tangent, Perpendicular, Concentric). Sie liefert eine priorisiert sortierte Kandidatenliste an die UI, die daraus den visuellen Indikator (gestrichelte Linie, Constraint‑Icon am Cursor) zeichnet. Beim Klick wird der top‑priorisierte Constraint automatisch eingefügt. Shift unterdrückt das Auto‑Inferencing — essentiell, weil aggressives Inferencing bei komplexen Sketches ungewollte Constraints erzeugt und in den Onshape‑Foren einer der häufigsten Beschwerdepunkte ist. Prioritätenreihenfolge: Coincident‑auf‑Endpunkt > Coincident‑auf‑Mittelpunkt > Horizontal/Vertical > Parallel > Tangent > Perpendicular > Concentric.
-- **DragController** — Beim Drag‑Start fügt die Adapter‑Schicht einen temporären Point‑on‑Point‑Constraint zwischen dem gezogenen Punkt und einem virtuellen „Cursor‑Punkt" ein und markiert ihn mit PlaneGCS' `temporary`‑Flag. Bei jeder Mausbewegung aktualisiert sie die Cursor‑Koordinaten und ruft `solve()` auf; PlaneGCS wählt automatisch den SQP‑Algorithmus, der temporäre Constraints als weiche Prioritäten behandelt und die nächstliegende Lösung relativ zum aktuellen Zustand sucht — damit bleibt der Sketch in derselben topologischen Konfiguration, das SolveSpace‑„Lösung kippt plötzlich"‑Problem tritt nicht auf. Beim Loslassen entfernt der Controller den temporären Constraint.
-- **DoF‑Preflight / Driving vs. Driven Dimensions** — Bevor eine neue Dimension dem Solver hinzugefügt wird, prüft die Adapter‑Schicht über die Jacobi‑Matrix, ob sie die Degree‑of‑Freedom‑Zahl unter Null drücken würde. Wenn ja, wird die Dimension automatisch als **Driven** (grau, Nur‑Anzeige, Wert wird vom Solver berechnet) eingefügt statt einen Fehler zu werfen. Der User kann sie jederzeit auf **Driving** (schwarz, bearbeitbar, wirkt als Constraint) umschalten; dann muss eine andere Dimension Driven werden oder der Sketch wird rot. Das ist der Mechanismus, mit dem Onshape über‑constrainte Sketches im normalen Arbeitsfluss praktisch unsichtbar macht.
-- **Diagnostics‑Pipeline** — Übersetzt die PlaneGCS‑Rohdaten in Entity‑ und Constraint‑Zustände für das UI: Drei‑Farben‑Codierung (blau = unter‑constrained, schwarz = voll constrained, rot = über‑constrained oder im Konflikt), Hervorhebung der beteiligten Constraints pro Fehler, und Rohdaten‑Feed für das Constraint‑Manager‑Panel.
-
-**UX‑Schicht (TypeScript/React).** Projekt‑spezifisch, nicht geteilt. Zeichnet die Drei‑Farben‑Codierung, rendert Constraint‑Icons auf dem Canvas, verwaltet das Constraint‑Manager‑Panel, handhabt Shift‑zum‑Unterdrücken des Inferencing und die Dimension‑Eingabe mit Formel‑Support aus §4.5. Für Touch‑/Projektions‑Eingabe in **BeamDraft** werden an dieser Stelle größere Snap‑Radien gewählt, ein 30‑Hz‑Debounce statt 60‑Hz‑Solver‑Takt aktiviert und das Auto‑Inferencing aggressiver eingestellt — der User steht an der Wand und kann nicht präzise klicken.
-
-**Shared‑Architektur FieldDraft ↔ BeamDraft.** Solver‑Kern (PlaneGCS) und Adapter‑Schicht (Rust) sind geteilt; die UX‑Schicht ist projektspezifisch. Das ersetzt die frühere, unscharfe Formulierung („derselbe Solver wird auch in BeamDraft eingesetzt") durch eine klare Schichten‑Trennung: *welche* Komponenten geteilt werden (Solver + Adapter als `crates/solver`) und *wo* die Divergenz sitzt (alles über dem Adapter‑FFI — Rendering, Touch‑Behandlung, Panel‑Layout, Tastaturbindings). Beide Projekte konsumieren dasselbe Workspace‑Crate.
-
-## 4.5 Variablen und Formel‑Engine
-
-Variablen sind **keine** bloßen Zahlwerte, sondern vollwertige **Formeln** — in UX und Mächtigkeit am Onshape‑Variablen­system (FeatureScript‑artige Expressions) orientiert. Jede Variable, jede Bemaßung und jeder numerische Parameter im Feature‑Tree kann durch einen Ausdruck statt einer Konstante definiert werden.
-
-- **Expression‑Sprache:** Arithmetik (`+ − × ÷ ^`), Vergleichs‑ und Logikoperatoren, Funktionsbibliothek (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sqrt`, `abs`, `floor`, `ceil`, `round`, `min`, `max`, `mod`, `if`/ternär, `pi`, `e`). Referenzen auf andere Variablen per Name (`radius = diameter / 2`). Keine Schleifen, keine Seiteneffekte — rein funktional, damit die Re‑Evaluation deterministisch und zyklensicher bleibt.
-- **Einheiten‑System (unit‑safe):** Werte tragen Einheiten (`mm`, `cm`, `m`, `in`, `ft`, `deg`, `rad`, dimensionslos). Der Parser prüft Dimensionskonsistenz zur Compile‑Zeit des Ausdrucks: `width + 30°` wird abgelehnt, `width + 5 mm` akzeptiert. Winkel‑Funktionen nehmen `deg`/`rad` korrekt entgegen. Das Ergebnis eines Ausdrucks ist immer eine typisierte Quantity, nicht nur ein Float.
-- **Parser & Interpreter im Rust‑Kernel:** Die Expression wird im Kernel geparst (handgeschriebener Recursive‑Descent oder `pest`/`chumsky`), in einen typ‑ und einheitsgeprüften AST überführt und bei jedem Re‑Evaluate des Feature‑Trees ausgewertet. Keine JavaScript‑Eval‑Fallgrube. Fehler (Syntax, unbekannter Identifier, Zirkelreferenz, Einheiten‑Mismatch, Division durch Null) werden als strukturierte Diagnostics zurückgegeben und im UI am Ort der fehlerhaften Variable hervorgehoben.
-- **Abhängigkeitsgraph:** Variablen bilden einen DAG; der Kernel topologisch‑sortiert vor jedem Rebuild und erkennt Zyklen (`a = b + 1`, `b = a * 2`) sofort. Änderungen propagieren nur durch die betroffenen Downstream‑Knoten, nicht durch den gesamten Baum.
-- **UX‑Äquivalenz zu Onshape:** Variablen‑Panel mit Liste aller Variablen, Live‑Validierung beim Tippen, Inline‑Fehleranzeige, Autovervollständigung anderer Variablen­namen, Einheiten‑Anzeige rechts vom Wert. Direkt in Maßfeldern im Sketch‑Editor sind Formeln erlaubt: `=width/2 + 5 mm` statt nur `15`. Das ist das zentrale Werkzeug, um aus einem Einzelteil eine ganze Bauteil‑Familie zu machen (Schrankhöhe variieren, Motor‑Lochbild skalieren, Linsenradius an Fassung koppeln).
-- **Serialisierung:** Im JSON‑Dokument stehen Variablen als `{ name, expression, unit? }`. Der evaluierte Wert wird **nicht** mitgespeichert — er entsteht beim Laden durch erneute Auswertung, was die Dokumente sauber diffbar hält.
-- **Tests:** Expression‑Parser bekommt eine umfangreiche `proptest`‑Suite für Roundtrip (`parse→print→parse`), Einheiten‑Arithmetik, Fehler­fälle und Zyklenerkennung. Goldfiles für kanonische Formeln aus dem Onshape‑Vokabular.
-
-## 4.6 Feature‑as‑Function: Registry, Schema‑Reflexion, JS‑API
-
-Der Feature‑Tree aus §4.1 ist ein sequentielles Programm aus Funktionsaufrufen. Dieser Abschnitt beschreibt die Infrastruktur, die dieses Modell trägt — Feature Registry, Schema‑Reflexion, Regeneration Worker mit nativer JS‑Execution, Query‑System und die zwei API‑Shells (Inner API im Worker, Outer API im Main‑Thread). Die Architektur orientiert sich explizit an Onshape‑FeatureScript und übernimmt daraus die fundamentalen Patterns (Context + Id + Definition, Schema aus Precondition, Queries als lazy Entity‑Referenzen, Determinismus als harte Invariante) — aber nicht die komplette Programmiersprache: FeatureScript als eigenes Typsystem mit Standard‑Library baut FieldDraft nicht nach. User‑Feature‑Bodies sind **plain JavaScript** (dazu unten mehr), nicht eine eigene DSL.
-
-**Execution‑Modell (Context + Id + Definition).** Jedes Feature in FieldDraft — egal ob Rust‑nativ oder JavaScript‑backed — hat dieselbe Drei‑Argument‑Signatur:
-
-- **`Context`** ist der mutierbare Weltzustand: der CSG‑Graph, die Body‑Liste, die Variablen‑Umgebung, die Provenance‑Tabelle. Jedes Feature bekommt eine `&mut Context`‑Referenz und darf sie fortschreiben.
-- **`FeatureId`** ist die hierarchische, getypte Identität des aktuellen Feature‑Aufrufs (siehe §4.1). Sub‑Operationen innerhalb des Feature‑Bodies erzeugen Kind‑IDs unter der übergebenen Parent‑ID — damit bleibt jeder Leaf‑Knoten im CSG‑Graphen eindeutig und deterministisch einem bestimmten Feature‑Call zugeordnet.
-- **`Definition`** ist die getypte Parameter‑Map, die der User im Dialog eingegeben hat (oder die ein Test/JS‑Aufruf direkt liefert). Parameter sind `Length`, `Angle`, `Query`, `Enum`, `Bool`, `String`, `Formel` (aus §4.5) — jeder Parameter trägt sowohl den Runtime‑Wert als auch die Schema‑Metadaten.
-
-Regeneration heißt: Der Kernel walked den `Vec<FeatureCall>` des Feature‑Trees, für jeden Call wird das zugehörige Feature aus der Registry gesucht, die Definition gegen das Schema validiert, und die `execute`‑Funktion mit frischem Context aufgerufen. Fehler werden pro Feature isoliert — ein gescheitertes Feature bricht die Regeneration ab und markiert den betroffenen Knoten rot, nachfolgende Features laufen nicht (Rollback‑Semantik).
-
-**Feature Registry (Dual‑Backend).** Eine zentrale `FeatureRegistry` im Kernel hält zwei Arten von Feature‑Definitionen, die **nach außen ununterscheidbar** sind:
-
-- **Rust‑native Features** werden über ein `derive(FeatureSchema)`‑Proc‑Macro auf einem Rust‑Struct definiert. Der Macro generiert zur Compile‑Zeit das JSON‑Schema und registriert eine `execute`‑Rust‑Funktion. Attribute auf den Struct‑Feldern (`#[param(name, bounds, default, visible_when, filter, ui_hint)]`) steuern sowohl die Validierung zur Laufzeit als auch die UI‑Generierung. Das ist der Standard‑Pfad für alle eingebauten Features (Extrude, Revolve, Fillet, Chamfer, Thread, Gyroid, …).
-- **JS‑backed Features** werden zur Laufzeit registriert: Ein JSON‑Schema wird als Objekt an die Registry übergeben, zusammen mit einer JavaScript‑Funktion, die als `execute`‑Body dient. Der Body darf alles, was JavaScript kann — Schleifen, Bedingungen, Lambdas, Closures, async **nicht** (determinismus‑ und sync‑getrieben). Die Funktion bekommt `ctx`, `id`, `def` als Argumente und ruft die Inner‑API (`fd.sketch`, `fd.extrude`, `fd.query.createdBy`, …) synchron auf, um den Context zu mutieren.
-
-Beide Pfade produzieren am Ende einen `FeatureCall`‑Eintrag im Feature‑Tree, der identisch serialisiert, identisch regeneriert, identisch über Queries referenzierbar ist. Der Dialog‑Generator im Frontend unterscheidet sie nicht — er bekommt in beiden Fällen ein JSON‑Schema und rendert den Dialog (§4.2). **Das `derive`‑Macro ist Convenience, JSON ist die universelle Schnittstelle.**
-
-**JS‑Features sind MVP‑Pflicht, nicht Phase 2+.** Der JS‑Backend‑Pfad steht von Tag eins, weil er das primäre Test‑Instrument ist: Integrationstests definieren Feature‑Bodies als JS‑Strings, registrieren sie über eine Test‑API, lassen sie durch den regulären Regeneration‑Pfad laufen und vergleichen das Ergebnis gegen Goldfiles. Playwright‑E2E‑Tests können ebenfalls JS‑Features registrieren, um Szenarien zu bauen, die nicht mühsam über Mausklicks simuliert werden müssen. **User‑sichtbares** Feature‑Authoring (Custom‑Feature‑Editor, CRUD, Feature‑Studio‑Äquivalent) ist dagegen explizit **Phase 2+** — der Runtime ist da, die UI‑Schicht darüber nicht.
-
-**Regeneration Worker mit nativer JS‑Execution.** JS‑Feature‑Bodies laufen **im selben Web Worker**, der den Rust‑Kernel hostet. Dieser Worker (der „Regeneration Worker", der in K3 ohnehin für asynchrones Meshing eingeführt wird) hat als Standard‑Web‑Worker seinen eigenen vollwertigen JavaScript‑Runtime (V8 in Chromium, JavaScriptCore in Safari, SpiderMonkey in Firefox). Das Kernel‑WASM ist in diesem Worker als Instanz geladen, und die JS‑Feature‑Bodies greifen über die Inner API **synchron** und im selben Adressraum auf die WASM‑Bindings zu. Kein `postMessage` pro Sub‑Operation, kein Cross‑Worker‑Overhead, keine async‑Kontamination innerhalb der Regeneration — ein Feature‑Body, der hundert `fd.extrude`‑Aufrufe macht, hat hundert synchrone WASM‑Calls und nicht hundert Message‑Passing‑Runden. Ein eingebetteter JS‑Interpreter (QuickJS, Boa) wird bewusst **nicht** benötigt, weil der Browser‑Worker schon alles mitbringt, was gebraucht wird.
-
-**Dispatch‑Mechanismus: Rust‑Feature vs. JS‑Feature.** Der Regeneration‑Walker im Rust‑Kernel läuft über die `Vec<FeatureCall>`‑Liste und schaut für jeden Call den Feature‑Typ in der Registry nach. Der Registry‑Eintrag enthält einen `FeatureBackend`‑Enum mit zwei Varianten:
-
-- **`FeatureBackend::Rust(Box<dyn Feature>)`** — der Walker ruft direkt die `execute`‑Methode des Trait‑Objekts auf. Synchron, im WASM‑Adressraum, keine Serialisierung.
-- **`FeatureBackend::Js { schema: JsonSchema, callback_id: JsCallbackId }`** — der Walker ruft eine `wasm-bindgen`‑importierte Funktion auf (`invoke_js_feature(callback_id, ctx_handle, id_json, def_json)`), die im Worker‑Scope als JavaScript‑Funktion definiert ist und die beim Registrieren des Features gespeichert wurde. Diese Import‑Funktion holt die passende JS‑Callback‑Closure aus einem Worker‑lokalen Registry‑Objekt (`globalThis.__fd_callbacks[callback_id]`) und ruft sie mit den Argumenten auf. Der `ctx_handle` ist ein opaker Handle auf den WASM‑Context, den die JS‑Inner‑API in jeden ihrer `fd.*`‑Aufrufe einschleust, damit die Mutationen am richtigen Context landen.
-
-Aus Sicht des Walkers ist der Unterschied **ein einziger Branch im Code‑Pfad**, aus Sicht des Frontend und der Serialisierung **gar kein Unterschied** — beide produzieren einen `FeatureCall`‑Eintrag, der identisch persistiert und identisch regeneriert wird. Der `wasm-bindgen`‑Import‑Callback ist der einzige Punkt, an dem die WASM‑Grenze zum Worker‑JS‑Scope überschritten wird, und er ist synchron — das Kernel‑WASM ruft in den Worker‑Scope hinauf, der Worker‑Scope läuft den JS‑Body, der Body ruft wieder synchron in die Kernel‑WASM‑Bindings hinunter. Rekursive Aufrufe (ein JS‑Feature, das intern ein anderes JS‑Feature über `fd.callFeature(...)` triggert) sind über denselben Mechanismus unterstützt.
-
-**Zwei API‑Shells über einer Registry.** Die JS‑API zum Kernel existiert in zwei Formen mit identischer Semantik, aber unterschiedlicher Execution‑Umgebung:
-
-- **Inner API (synchron, im Worker).** Wird beim Start des Regeneration Workers in dessen globalen Scope injiziert (`globalThis.fd = { sketch, extrude, fillet, query, … }`). JS‑Feature‑Bodies rufen diese API direkt auf; jeder Call landet als synchrone WASM‑Binding‑Invocation im Kernel. Rückgabewerte (neue `FeatureId`s, Query‑Handles) kommen ohne Wrapping zurück.
-- **Outer API (async, im Main‑Thread).** Wird vom React‑Frontend und von Playwright‑Tests benutzt. Jeder Aufruf (`await fd.extrude(...)`) serialisiert den Call als JSON, schickt ihn per `postMessage` an den Regeneration Worker, der Worker validiert gegen das Schema und führt das Feature über die Inner API aus. Die Antwort geht als JSON zurück. Dieselbe Semantik wie die Inner API, aber asynchron und batch‑fähig.
-
-Beide Shells sind **dünne Wrapper über dieselbe Feature Registry**. Die Semantik eines `extrude`‑Aufrufs ist an genau einer Stelle definiert — der Rust‑`execute` (oder der JS‑Body, bei JS‑Features) — und beide Shells erreichen sie. Tests sind dadurch doppelt lauffähig: dieselbe Test‑Szenario‑Datei kann im Main‑Thread über die Outer API laufen (E2E, nah an der User‑Erfahrung) und im Worker über die Inner API (schneller, näher am Kernel).
-
-**Query‑System (lazy Entity‑Referenzen).** Referenzen zwischen Features werden nie als direkte Entity‑IDs persistiert, sondern als **Queries** — Suchbeschreibungen, die bei jeder Regeneration neu evaluiert werden:
-
-- `qCreatedBy(feature_id, entity_type)` — „alle Entities, deren dominanter Contributor das Feature mit dieser ID enthält", z. B. alle Faces, die von `extrude_1` erzeugt wurden.
-- `qFaceOf(feature_id)` — „das Face, das von diesem Feature dominiert wird"; für Sketches‑auf‑Face der Standard‑Pfad.
-- `qSketchRegion(sketch_id)` — „die geschlossenen 2D‑Regionen dieser Skizze", abgeleitet nach der Sketch‑Bestätigung aus dem 2D‑SDF‑Baum (siehe §4.1 „2D‑Kernel"). Regionen sind ein eigener Entity‑Typ auf der Skizzen‑Ebene, nicht auf dem 3D‑Proxy — und sind der Input, den `fd.extrude` und `fd.revolve` fast immer konsumieren. In Onshape ist das implizit in der Profil‑Auswahl des Extrude‑Dialogs, wo der User geschlossene Region‑Flächen einer Skizze anklickt. `qSketchRegion` macht diesen Schritt explizit in der Query‑Sprache und erlaubt Verweise wie „die Region, die dieses Rechteck enthält" ohne harte Koordinaten.
-- `qEdgeBetween(feature_a, feature_b)` — „die Edge, an der sich die Distanzfelder dieser beiden Features treffen"; liefert emergente Schnittkanten aus CSG‑Operationen, baut direkt auf dem Provenance‑System aus K2 auf.
-- `qAdjacent(query, adjacency_type)` — „alle Vertices an der Kante, die diese Query liefert" (oder Edges am Face, etc.).
-- `qEverything(entity_type)` — „alle Entities des Typs im Part Studio".
-- Set‑Operationen `qUnion`, `qIntersection`, `qDifference` über Query‑Resultaten für Kompositionen.
-
-Queries werden im JSON‑Dokument als strukturierte Objekte serialisiert (`{ "type": "qCreatedBy", "feature_id": "extrude_1", "entity_type": "face" }`). Die **Evaluation läuft lazy im Kernel** und ist transparent gecacht: Der Kernel hält pro Query einen Cache‑Eintrag, der an die Context‑Version gekoppelt ist; wird der Context durch ein Feature mutiert, invalidiert der Cache automatisch. Frontend und JS‑Features sehen nur das Ergebnis einer Query (eine Entity‑Liste), nicht den Evaluations‑Mechanismus dahinter. Im FeatureDialog erscheint eine Query als **Query‑Picker‑Widget**: Ein Klick im Viewport erzeugt eine Query, die auf das geklickte Element zeigt — mit automatischem Fallback auf die beste verfügbare Beschreibungsform (vorzugsweise `qFaceOf`/`qEdgeBetween` über Contributor‑IDs, notfalls `qCreatedBy` mit Index).
-
-**Editing Logic und Manipulators (prozedural plus deklarativ).** Zwei optionale Callbacks pro Feature heben die Dialog‑UX auf Onshape‑Niveau:
-
-- **Editing Logic Function** — eine Rust‑ oder JS‑Funktion, die vom FeatureDialog aufgerufen wird, sobald ein Parameter sich ändert, und die andere Parameter im Zustand des Dialogs automatisch anpasst. Beispiel: Beim Umschalten des Extrude‑Operation‑Type von „New" auf „Add" wird das `targets`‑Feld automatisch mit dem nächsten Body unter dem Cursor vorgefüllt. Editing Logic ist **prozedural, nicht deklarativ** — sie lässt sich nicht aus dem Schema ableiten, sondern ist zusätzlicher Code pro Feature. Die Deklaration hängt vom Backend ab: Bei **Rust‑nativen Features** ist es eine optionale Trait‑Methode `fn editing_logic(&self, changed_param: &str, def: &mut Definition, ctx: &Context) -> Result<()>` neben `execute`; der Default ist ein No‑Op. Bei **JS‑backed Features** ist es ein optionales `editingLogic`‑Feld im Registrierungs‑Objekt: `fd.registerFeature({ type, params, execute, editingLogic: (changedParam, def, ctx) => { ... } })`. Das Schema markiert via `#[param(affects_editing_logic)]`, welche Parameter den Callback auslösen, damit der FeatureDialog nur bei relevanten Änderungen zurückrufen muss.
-- **Manipulators (Gizmos im Viewport)** — deklarative Attribute auf Feature‑Feldern, die das Frontend in Gizmo‑Handles übersetzt. Beispiel: `#[manipulator(param = "depth", axis = "extrude_direction", style = "linear_arrow")]` erzeugt einen Pfeil im Viewport, der beim Ziehen direkt den `depth`‑Parameter der Live‑Definition schreibt. Auch hier: null handgeschriebener Gizmo‑Code pro Feature — ein generischer Manipulator‑Renderer liest das Schema und wickelt Three.js‑Gizmos daraus ab.
-
-**Determinismus als explizites Architektur‑Prinzip.** Dieselbe `FeatureCall`‑Liste plus dieselbe Variablen‑Umgebung müssen **bit‑identische** CSG‑Graphen, Meshes und Proxies erzeugen — egal in welchem Browser, egal zu welcher Zeit, egal wie oft wiederholt. Konkrete Konsequenzen:
-
-- Kein `Math.random()`, kein `Date.now()`, kein `fetch`, kein `setTimeout` in JS‑Feature‑Bodies. Der Regeneration Worker friert diese Globals beim Start ein — `Math.random` wird durch einen seeded PRNG ersetzt, dessen Seed aus dem Hash des Projekt‑Dokuments abgeleitet ist (damit derselbe Dokument‑Zustand auch denselben Zufall liefert), `Date.now` liefert 0, Netzwerk‑APIs werden entfernt. Das ist kein harter Sandbox (ein ausreichend motivierter Angreifer könnte ihn umgehen), aber für den CAD‑Determinismus‑Zweck vollständig.
-- Keine Seiteneffekte außerhalb des `Context`. Ein Feature darf nicht in `localStorage` schreiben, keine Kernel‑Globals anfassen, keine anderen Features direkt aufrufen — nur die Inner API.
-- Property‑Tests prüfen die Invariante systematisch: zufällig generierte Feature‑Tree‑Sequenzen werden zweimal regeneriert, die Mesh‑Hashes müssen übereinstimmen.
-
-**Caveat: Custom‑Features können den Kernel crashen oder die Performance ruinieren.** Ein JS‑Feature‑Body ist beliebiger User‑Code: Eine Endlos‑Schleife hängt den Regeneration Worker auf, eine rekursive Funktion ohne Abbruch‑Bedingung sprengt den Stack, ein `fd.extrude`‑Aufruf mit absurden Parametern produziert Millionen Dreiecke und füllt den WASM‑RAM. Im MVP ist das **akzeptiert und undokumentiert gegenüber dem User** — JS‑Features sind in Phase 1 ein Entwickler‑ und Test‑Werkzeug, nicht ein User‑Feature, und die einzige Möglichkeit, ein Custom‑Feature zu registrieren, führt über eine Test‑API, die nicht im produktiven UI exponiert ist. Die Härtung (Execution‑Budget, Iteration‑Limits, Watchdog‑Timer auf dem Worker, Memory‑Quotas, Sandbox‑Verschärfung, Abbruch‑fähiger Regeneration‑Loop) wird in **Phase 2+** adressiert, parallel zur Einführung des User‑sichtbaren Feature‑Editors — siehe §11 Risiko 6 (Custom‑Feature‑Robustheit). Wer vor Phase 2+ JS‑Features registriert, tut das auf eigene Verantwortung und muss wissen, was er tut.
-
-**Konkretes Beispiel (Rust‑Seite, Extrude).** Der Macro generiert aus dem Struct das JSON‑Schema und registriert die `execute`‑Funktion:
-
-```rust
-#[derive(FeatureSchema, Serialize, Deserialize)]
-pub struct ExtrudeDef {
-    #[param(name = "Profiles", filter = "sketch_region")]
-    pub profiles: Query,
-
-    #[param(name = "Depth", bounds = "0.01 mm .. 10000 mm", default = "10 mm")]
-    pub depth: Length,
-
-    #[param(name = "Operation", default = "add")]
-    pub operation: BooleanOp,
-
-    #[param(name = "Second direction")]
-    pub second_direction: bool,
-
-    #[param(name = "Depth 2", bounds = "0.01 mm .. 10000 mm",
-            visible_when = "second_direction == true")]
-    pub depth2: Option<Length>,
-}
-
-impl Feature for ExtrudeDef {
-    fn execute(&self, ctx: &mut Context, id: &FeatureId) -> Result<()> { /* ... */ }
-}
+# FieldDraft Architecture
+
+FieldDraft is a browser-based, parametric 3D modeler for FDM/SLA 3D printing. It uses a **Signed Distance Field (SDF)** geometry kernel instead of traditional B-Rep/NURBS, compiled from Rust to WebAssembly and rendered via WebGPU ray marching.
+
+```mermaid
+graph TB
+    subgraph Browser
+        UI["React UI\n(Zustand Store)"]
+        Renderer["Three.js\nWebGPU SDF Raymarch"]
+        subgraph Workers["Web Workers"]
+            Mesher["Mesher\n(Dual Contouring)"]
+            OCCT["OCCT\n(STEP I/O)"]
+        end
+        Kernel["Kernel\n(Rust / WASM)"]
+
+        UI <--> Renderer
+        UI --> Kernel
+        Kernel -- "opcodes" --> Renderer
+        Kernel <--> Mesher
+        Kernel <--> OCCT
+    end
+
+    Kernel -. "optional" .-> Server["Go Server\n(Auth, Sync)"]
+    Server --> DB["MariaDB"]
 ```
-
-Dieselbe Operation als JS‑Test‑Feature (registriert aus einer Playwright‑Testdatei):
-
-```js
-fd.registerFeature({
-  type: "test_extrude_chain",
-  params: [
-    { key: "count", type: "int", bounds: [1, 50], default: 5 },
-    { key: "spacing", type: "length", default: "20 mm" },
-  ],
-  execute: (ctx, id, def) => {
-    for (let i = 0; i < def.count; i++) {
-      const childId = id.child(`step_${i}`);
-      const sketch = fd.sketch(fd.query.faceOf("origin", "xy"));
-      sketch.rectangle([0, 0], [10, 10]);
-      sketch.confirm();
-      fd.extrude(sketch, { depth: `${(i + 1) * 5} mm`, operation: "add" }, childId);
-    }
-  },
-});
-```
-
-Beide Features erzeugen identische Einträge im Feature‑Tree, werden vom FeatureDialog identisch visualisiert (sobald ein Schema‑Export vorliegt), und sind über Queries identisch referenzierbar.
-
-**Architektur‑abgeleitete Mehrwerte.** Die Feature‑as‑Function‑Infrastruktur trägt zwei Zusatz‑Features als natürliche Konsequenz, ohne dass dafür separate Subsysteme gebaut werden müssen. Beide sind im MVP **ausdrücklich nicht enthalten** — sie werden hier nur benannt, damit der Agent beim Implementieren von §4.6 weiß, welche späteren Use‑Cases die Infrastruktur bereits mittragen muss. Die strategische Einordnung (Zielgruppen, Positionierung, Roadmap‑Reihenfolge für die Kommerzialisierung) ist in `BUSINESS.md` (neben dieser Datei in `docs/`) dokumentiert.
-
-- **Quick Mode (Einsteiger‑UX) als alternative Schema‑Präsentation.** Die Feature‑Registry erlaubt, dass ein Feature wie ein „QuickCube" einfach ein Schema mit drei Parametern (`size_x`, `size_y`, `size_z`, `position`) hat und intern per `execute` einen regulären Sketch‑plus‑Extrude‑Baum komponiert. Ein Mini‑Schema rendert im FeatureDialog drei Schieberegler; ein Wechsel in den Pro Mode zeigt denselben Feature‑Tree mit dem vollen Extrude‑Dialog und den Sub‑Features. Es gibt keine zwei Codebases, nur zwei Schema‑Präsentationen über derselben Registry. Das ist der Mechanismus — die Priorisierung und Umsetzung kommt später und benötigt keine Änderungen an §4.6.
-
-- **KI‑Integration als LLM → Feature‑Call‑Pfad.** Die JS‑API aus diesem Abschnitt ist eine skriptbare Schnittstelle über einer deterministischen Feature‑Registry. Ein LLM kann `fd.sketch()`, `fd.extrude()`, `fd.pattern()`, `fd.fillet()`‑Sequenzen direkt als JS‑Feature‑Body generieren und über die reguläre Feature‑Registrierungs‑API in den Tree einhängen. Das Ergebnis ist ein parametrischer Feature‑Tree, der wie jedes handgebaute Modell editierbar bleibt — keine Sonderbehandlung im Kernel nötig, weil das LLM‑Output denselben Pfad durchläuft wie ein Test‑JS‑Feature. Der Agent muss in §4.6 **nichts ergänzen**, damit dieser Use‑Case später funktioniert; die Infrastruktur trägt ihn bereits.
-
-## 4.7 Backend‑Server (spätere Phase, nicht im MVP)
-
-> **Hinweis:** Das MVP läuft komplett clientseitig, persistiert wird ausschließlich in `localStorage`. Ein Backend‑Server wird erst nach Abschluss der Kernel‑Phase (siehe ROADMAP.md, nach K9) eingeführt. Der folgende Abschnitt beschreibt die geplante Architektur dieser späteren Phase — inklusive MariaDB, Auth und Projekt‑CRUD.
-
-Der Server wird bewusst schlank gehalten und hat nur wenige Aufgaben:
-
-- **Tech‑Stack:** Go mit `chi` als HTTP‑Router (alternativ `net/http` direkt), `sqlc` für Compile‑Time‑geprüfte SQL‑Queries, `go-sql-driver/mysql` als Datenbank‑Treiber, `golang-migrate` für Schema‑Migrationen. **MariaDB in allen Umgebungen** — lokal für Dev in einem Docker‑Container (via `docker-compose up db`), in Production als Managed‑MariaDB/MySQL oder ebenfalls containerisiert. Dev/Prod‑Parität ohne DB‑Sonderfall.
-- **Warum Go (und nicht Rust):** Der Server berechnet keine Geometrie, macht kein Meshing, kein WASM — die Rust‑Stärken werden hier nicht gebraucht. Go bietet dagegen deutlich schnellere Build‑ und Test‑Zyklen, ein pflegeleichteres Standard‑Ökosystem für HTTP/Auth/Sessions, eingebautes `pprof`‑Profiling und ein statisches Single‑Binary‑Deployment. Der Wire‑Contract zum Kernel läuft über ein JSON‑Schema, das aus dem Rust‑`protocol`‑Crate generiert wird — so können beide Seiten dieselbe Struktur typ‑scharf lesen, und der Server kann das Projektdokument für Migrationen, Suche und Thumbnails bei Bedarf sogar interpretieren.
-- **Authentifizierung:** Klassisches E‑Mail + Passwort mit `argon2id`‑Hashing (`golang.org/x/crypto/argon2`). Session‑Cookies (HttpOnly, Secure, SameSite=Lax) anstelle von JWT, um CSRF/Replay‑Probleme zu minimieren. Optional OAuth (GitHub, Google) in einer späteren Phase.
-- **User‑Modell:** `users(id, email, password_hash, display_name, created_at, last_seen_at)`.
-- **Projekt‑CRUD (pro User):** `projects(id, owner_id, name, slug, visibility, document_blob, updated_at, created_at, size_bytes)`. Endpunkte: `POST/GET/PATCH/DELETE /api/projects`, `POST /api/projects/:id/snapshot` für Auto‑Save‑Synchronisation.
-- **Sichtbarkeit:** Jedes Projekt hat einen Schalter `visibility ∈ {private, public}`. Private Projekte sind nur für den Owner sichtbar und werden nie öffentlich indiziert. Öffentliche Projekte erscheinen in einer durchsuchbaren Galerie und sind read‑only für Nicht‑Owner. Der Wechsel ist jederzeit umkehrbar.
-- **Storage:** Das Projektdokument ist **JSON** (UTF‑8). Im Kernel via `serde_json` serialisiert, im Server als `JSON`‑Spalte in MariaDB gespeichert (intern LONGTEXT mit Validierung). Vorteile: menschenlesbar und direkt diffbar (auch in `git`), debuggbar ohne Spezial‑Tools, indizierbare Metadaten via **Generated Columns** + regulären Indizes (z. B. `name`, Feature‑Count, verwendete Node‑Typen aus dem Dokument extrahiert), saubere Schema‑Migrationen per Versionsfeld. Kompression passiert — falls nötig — transparent auf HTTP‑Ebene via `Content-Encoding: gzip`, nicht im Speicherformat. Kein Filesystem‑Zugriff, alles in der DB — vereinfacht Backups und Self‑Hosting drastisch.
-- **Rate‑Limits:** Per IP und per User, um Auto‑Save‑Loops nicht zum Denial‑of‑Service werden zu lassen.
-- **Quotas:** Pro User ein weiches Limit (z. B. 100 Projekte, 50 MB pro Projekt) — später über Rollen konfigurierbar.
 
 ---
 
-## 11. Offene Risiken
+## Table of Contents
 
-1. **Meshing‑Qualität an scharfen Kanten und Manifold‑Verletzungen:** Dual Contouring ist bekannt anspruchsvoll und erzeugt an Drei‑ und Vier‑Flächen‑Schnitten artefakt­anfällige Übergänge. Manifold‑Verletzungen (zwei Faces, die sich an einer einzigen Kante berühren) können beim STL‑Export Slicer‑Probleme erzeugen. Gegenmaßnahme: Manifold‑Variante des DC‑Algorithmus implementieren oder einen Post‑Processing‑Pass, der nicht‑manifolde Kanten entdeckt und durch Vertex‑Splitting auflöst. Goldfile‑Tests gegen kanonische Bauteile (z. B. drei orthogonal verschnittene Quader) erkennen Regressions früh. **Zusätzlich** adressiert **K3.5 (Provenance‑gesteuerte Mesh‑Optimierung)** die Qualitätsprobleme auf allen *analytisch bekannten* Flächen direkt an der Quelle: Zero‑Noise‑Projektion per Newton‑Iteration eliminiert das Mikro‑Rauschen, und die topologische Simplifizierung per Marching Squares + Earcut drückt die Dreieckszahl flacher und abwickelbarer Bereiche von O(V) auf O(R). Für doppelt gekrümmte und nicht‑analytische Flächen (smin‑Blends, Domain Deformation, Mesh‑to‑SDF) bleibt der adaptive Octree nach dem Schaefer‑Paper (LITERATURE.md §16.1) als perspektivische Maßnahme bestehen — die beiden Ansätze sind komplementär, nicht alternativ.
+1. [Technology Stack](#1-technology-stack)
+2. [Repository Layout](#2-repository-layout)
+3. [Rust Kernel](#3-rust-kernel)
+   - [Protocol Crate](#31-protocol-crate)
+   - [Solver Crate](#32-solver-crate)
+   - [Features-Macros Crate](#33-features-macros-crate)
+   - [Kernel Crate](#34-kernel-crate)
+4. [Web Frontend](#4-web-frontend)
+   - [State Management](#41-state-management)
+   - [WASM Bridge](#42-wasm-bridge)
+   - [Rendering Pipeline](#43-rendering-pipeline)
+   - [Sketch System](#44-sketch-system)
+   - [Import/Export](#45-importexport)
+   - [CSS Architecture](#46-css-architecture)
+5. [Go Server](#5-go-server)
+6. [Build System & Deployment](#6-build-system--deployment)
+7. [Testing Strategy](#7-testing-strategy)
+8. [Key Data Flows](#8-key-data-flows)
 
-2. **Provenance‑Epsilon‑Stabilität:** Die Klassifikation eines Punkts als „auf einer Edge" beruht auf `|f_A − f_B| < ε`. Ein zu großes ε liefert Falsch‑Positive (Faces werden fälschlich als Edges markiert), ein zu kleines verfehlt echte Edges in numerisch verrauschten Regionen. Gegenmaßnahme: ε proportional zur lokalen Mesh‑Auflösung wählen, nicht absolut; Property‑Tests, die für zufällige CSG‑Bäume die Konsistenz der Klassifikation gegen Referenz‑Berechnungen prüfen.
+---
 
-3. **Adapter‑Layer‑Komplexität und PlaneGCS‑Integration:** Mit der Solver‑Wahl auf PlaneGCS (§4.4) entfällt das alte Risiko einer C++→Rust‑Portierung. An seine Stelle treten zwei neue Risiken. (a) **Adapter‑Layer als UX‑Engpass:** Die Onshape‑artige Sketch‑UX lebt in der Adapter‑Schicht, nicht im Solver — InferenceEngine, DragController, DoF‑Preflight und Diagnostics‑Pipeline müssen jede für sich ausgereift sein, sonst fühlt sich der Sketcher trotz gutem Solver „billig" an. Gegenmaßnahme: Headless‑Integrationstests gegen Referenz‑Szenarien aus dem Onshape‑User‑Guide (Rechteck zentrieren, Parallel‑Inferencing beim Zeichnen, Dragging ohne Topologie‑Kippen, Über‑Constraint‑automatisch‑Driven), plus Playwright‑E2E‑Tests, die echte Mausbewegungen gegen erwartete Constraint‑Zustände prüfen. (b) **PlaneGCS‑WASM‑Payload und Lizenz:** Der `@salusoft89/planegcs`‑Build wiegt ca. 881 kB gepackt — vertretbar, aber er muss **lazy** geladen werden (erst beim Öffnen eines Sketchers, nicht im initialen Bundle), um die Time‑to‑Interactive des Viewports nicht zu belasten. LGPL‑2.1 erfordert außerdem, dass die Integrationsform (separates WASM‑Modul vs. statisches `cc`‑Crate‑Link) mit dem Lizenzpfad des Gesamtsystems (README.md §8) verträglich ist; die Entscheidung fällt in K5a.
+## 1. Technology Stack
 
-4. **Feature‑Registry‑Refactor‑Tiefe:** Die Feature‑as‑Function‑Architektur aus §4.6 wird als K4.5‑Slice **nach** K4 und **vor** K5 eingezogen — sie berührt jeden existierenden CSG‑Leaf aus K1, jede Provenance‑Call‑Site aus K2 und jeden neuen 2D‑/Extrude‑/Revolve‑Knoten aus K4. Konkret: flache `FeatureId` wird durch hierarchische getypte `FeatureId { parent, local }` ersetzt (Signatur‑Break an jeder Call‑Site), `CsgNode`‑Mutationen wandern hinter eine `Feature::execute(ctx, id, def)`‑Fassade, und der Regeneration‑Pfad bekommt die Dual‑Shell‑API (synchron im Worker, asynchron aus dem Main‑Thread). Gegenmaßnahme: K4.5 läuft als eigener Slice mit grünen K1/K2/K4‑Goldfile‑Regression‑Tests als Abnahme‑Kriterium — kein Verhaltens‑Break, nur Strukturumbau. Die Refactor‑Arbeit ist jetzt am billigsten, weil K3 (BVH, Multi‑Body) und K5 (PlaneGCS) noch nicht gebaut sind und die neuen Strukturen von Anfang an mitdenken können. Verzögert man den Refactor auf später, wird BVH‑Code parallel zum alten Modell gebaut und muss anschließend umgezogen werden — ein paralleler Umbau kostet ein Vielfaches.
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Geometry Kernel | Rust → WebAssembly (wasm-pack) | SDF evaluation, CSG tree, Dual Contouring mesh |
+| Frontend | React 19, TypeScript 6, Vite 8 | UI components, state management |
+| 3D Rendering | Three.js 0.183 + @react-three/fiber 9 | WebGPU ray marching, mesh display |
+| Constraint Solver | @salusoft89/planegcs (WASM) | 2D sketch geometric constraint solving |
+| CAD Import | opencascade.js 2.0, occt-import-js | STEP/IGES file import via B-Rep tessellation |
+| Backend (optional) | Go 1.26, MariaDB 11 | Authentication, project sync, snapshots |
+| Testing | cargo test, Vitest, Playwright | Unit (Rust/TS), integration, E2E with real WebGPU |
 
-5. **Determinismus‑Disziplin bei JS‑Feature‑Bodies:** JS‑Features sind von Tag eins im Runtime (§4.6), und der Regeneration Worker hat vollen JavaScript‑Zugriff. Die Determinismus‑Invariante („zweimal Regeneration desselben Feature‑Trees liefert bit‑identische Meshes") ist damit nicht mehr rein architektonisch, sondern hängt an der Disziplin der Feature‑Autoren. Ein `Date.now()`‑Aufruf, ein nicht‑seedbarer Zufallsgenerator, ein vergessener `Math.random()` im Feature‑Body bricht die Wiederherstellbarkeit von Projekten über Zeit und Browser hinweg. Gegenmaßnahme: Der Regeneration Worker friert beim Start die globalen Scope‑Einträge ein (`fetch`, `setTimeout`, `setInterval`, `Date.now`, `Math.random` entfernt oder durch deterministische Varianten ersetzt — `Math.random` wird zu einem seeded PRNG, dessen Seed aus dem Hash des Projekt‑Dokuments abgeleitet ist). Property‑Tests prüfen die Invariante systematisch: zufällig generierte Feature‑Tree‑Sequenzen werden zweimal regeneriert, die Mesh‑Hashes müssen übereinstimmen. Das ist kein harter Sandbox — ein motivierter Angreifer könnte ihn umgehen — aber für den CAD‑Zweck reicht die Global‑Freeze‑Disziplin vollständig.
+**Key design choice:** No hand-written shaders. All GPU code is generated dynamically via Three.js TSL (Texture Shading Language) node graphs.
 
-6. **Custom‑Features können Kernel crashen oder Performance ruinieren (Phase 2+ Hardening):** Ein JS‑Feature‑Body ist beliebiger User‑Code. Eine Endlos‑Schleife hängt den Regeneration Worker auf, eine rekursive Funktion ohne Abbruch‑Bedingung sprengt den Stack, ein `fd.extrude`‑Aufruf mit absurden Parametern produziert Millionen Dreiecke und füllt den WASM‑RAM bis zum Out‑of‑Memory‑Absturz. Im MVP ist das **akzeptiert und nicht adressiert**, weil die einzige Möglichkeit, ein Custom‑Feature zu registrieren, über eine Test‑API läuft, die nicht im produktiven UI exponiert ist — JS‑Features sind in Phase 1 ein Entwickler‑ und Test‑Werkzeug, kein User‑Feature. Die Härtung wird in **Phase 2+** angegangen, parallel zur Einführung des User‑sichtbaren Feature‑Editors („Feature Studio", siehe ROADMAP.md M14+):
-   - **AST-Validator per Acorn:** Eingehender KI-generierter oder User-Code wird vor Ausführung als Abstract Syntax Tree geparst und gegen eine strikte Blockliste validiert (Verbot von `ImportExpression`, dynamischem Module-Import, globalen Objekten wie `window`, Manipulation via Computed Properties, Object/Array-Patterns gegen Destructuring-Escapes).
-   - **Strict Mode Enforcement:** Die Ausführung via `new Function('fd', 'ctx', 'id', 'def', '"use strict";\n' + userCode)` schließt das this-Binding auf das globale Objekt auf Engine-Ebene aus.
-   - **DoS-Protection (AST-Rewriting):** Loop-Knoten (While, For) erhalten einen injizierten Timestamp-Check, der bei Endlosschleifen einen Timeout-Error wirft (z. B. >1000ms Laufzeit).
-   - Ergänzend greifen Watchdog‑Timer, Execution‑Budgets und Memory‑Quotas (via WASM‑Linear‑Memory‑Accounting). Wer vor Phase 2+ JS‑Features registriert, tut das auf eigene Verantwortung und muss wissen, was er tut.
+---
 
-7. **BVH‑Invalidierung und Re‑Meshing‑Kaskaden:** Eine Parameter‑Änderung an einem hoch referenzierten Variablen‑Knoten kann viele Bodies invalidieren. Auch wenn jeder Body‑Re‑Mesh asynchron im Web Worker läuft, summieren sich die Latenzen bei großen Baugruppen zu sichtbaren Wartezeiten, ähnlich dem Onshape‑„Regenerating"‑Spinner. Gegenmaßnahme: inkrementelles BVH‑Update statt Komplett‑Rebuild, Sub‑Tree‑Hashing zum Erkennen, ob ein Body wirklich invalidiert wurde, Priorisierung des aktiven Bodies vor Context‑Bodies. Akzeptanz: ≥1 s Wartezeit bei 100‑Body‑Szenen ist im MVP OK.
+## 2. Repository Layout
 
-8. **Vertex Blending / Setbacks (Zimmerecke):** Eine Spatial Mask muss am Kantenende irgendwo aufhören. Hartes Abschneiden der Maske am Boden einer Zimmerecke verletzt die Lipschitz‑Bedingung — der Mesher erzeugt Löcher, Zacken oder doppelte Normalen. Weicher Auslauf hält das Feld stetig, lässt die Fase/Rundung aber organisch in die angrenzenden Flächen ausschmelzen, statt in einem messerscharfen Dreieck zu enden. FieldDraft wählt den weichen Auslauf als Default; scharfe Kanten‑Enden im Stil klassischer B‑Rep‑Kernel sind in dieser Architektur nicht erreichbar, und automatisch generierte CSG‑Schnittkörper als Ersatz sind bewusst verworfen (sie funktionieren nur für triviale, gerade Kanten und wären für den allgemeinen Fall kryptisch). User, die exakt geometrische Enden brauchen, müssen den Fasen‑/Stufenkörper manuell im Sketcher modellieren und per harter Boolean abziehen — das ist ein bewusster Workaround, keine System‑Automatik. Goldfile‑Tests fixieren den Auslauf‑Look als Regression‑Baseline.
+```
+fielddraft/
+├── crates/
+│   ├── protocol/          # Wire types & document schema (Rust)
+│   ├── solver/            # Constraint solver data model (Rust)
+│   ├── features-macros/   # Proc-macro code generation (Rust)
+│   └── kernel/            # SDF kernel, CSG, meshing, WASM bindings (Rust)
+├── web/
+│   ├── src/
+│   │   ├── wasm/          # Auto-generated WASM output (wasm-pack)
+│   │   ├── solver/        # PlaneGCS integration (TypeScript)
+│   │   ├── widgets/       # Feature dialog, schema parser
+│   │   ├── styles/        # CSS architecture (tokens → components)
+│   │   ├── api/           # Backend API client
+│   │   └── *.ts/tsx       # Application modules (~50 files)
+│   ├── tests/             # Playwright E2E tests
+│   └── package.json       # v0.3.55
+├── server/
+│   └── main.go            # Optional Go backend
+├── Cargo.toml             # Workspace: 4 crates, AGPL-3.0
+├── justfile               # Developer command surface
+├── docker-compose.yml     # MariaDB + Go + Vite
+└── DEPLOY.md              # Production deployment guide
+```
 
-9. **Masken‑Stacking‑Performance:** Jedes Fillet und jeder Chamfer fügt dem CSG‑Baum einen Masken‑Test plus Interpolations‑Operator hinzu. Bei 50 Verrundungen an einem Gehäuse läuft die Punkt‑Auswertung naiv linear mit der Anzahl der Masken. Gegenmaßnahme: Jede Masken‑SDF erhält eine eigene AABB im BVH — außerhalb der Masken‑Hülle wird der Mix‑Operator nicht ausgewertet, der Punkt fällt transparent auf den harten Unteroperator zurück. Die Rechenlast skaliert damit wieder logarithmisch mit der Anzahl räumlich nahe beieinanderliegender Masken, nicht mit der Gesamtanzahl im Baum.
+---
 
-10. **Masken‑Kollision benachbarter Fillets:** Überlappen zwei Fillet‑Masken räumlich (z. B. zwei parallele Kanten im Abstand von 3 mm mit Radius 2 mm), interferieren ihre Mix‑Operatoren unvorhersehbar an der Schnittstelle — mal gewinnt A, mal B, und in der Übergangszone entstehen Artefakte. Gegenmaßnahme: Overlap‑Detection beim Anlegen einer neuen Maske mit UI‑Warnung und Vorschlag zur Radius‑Reduktion; deterministische Interferenz‑Regel („innerer Operator gewinnt") als Fallback, wenn der User die Warnung ignoriert; Property‑Tests mit zufälligen Masken‑Paarungen gegen Referenz‑Auswertungen.
+## 3. Rust Kernel
 
-11. **Edge Chaining tangentialer Kanten (MVP deferred):** In Onshape wählt der User eine Kante, und das System findet automatisch alle tangential angrenzenden Kanten und zieht das Fillet als geschlossene Schleife herum. Im SDF‑Modell müsste die Spatial Mask einer durch mehrere CSG‑Schnitte erzeugten, gekrümmten 3D‑Kurve folgen — analytisch schwer, weil der exakte Kurvenverlauf nicht ohne eine aufwendige Edge‑Propagation entlang tangentialer Proxy‑Nachbarn vorliegt. MVP‑Ausweg: Fillet/Chamfer wirken nur auf einzelne selektierte Edge‑Segmente des Proxys; tangentiales Chaining wird durch Mehrfach‑Selektion simuliert. Automatisches Chaining ist ein Later‑Feature und wird erst angegangen, sobald die Proxy‑Edge‑Propagation robust steht.
+The kernel is a Cargo workspace with four crates. The compilation target is `wasm32-unknown-unknown` via wasm-pack, with release profile: `opt-level = 3`, fat LTO, single codegen unit.
 
-12. **Sketch‑Ebenen auf gekrümmten Faces (deferred):** Klickt der User in der Zukunft auf eine gekrümmte Face (z. B. eine Revolve‑Außenseite), gibt es keine kanonische planare Ebene, an die sich die neue Skizze auto‑locken ließe. Die geplante Lösung über „unconstrained planes" mit harten Maßen zum 3D‑Origin ist in K6 noch nicht enthalten und wird erst implementiert, wenn der MVP steht und konkrete Anwendungsfälle es erzwingen.
+### 3.1 Protocol Crate
 
-13. **STEP‑Import als B‑Rep‑Mauer:** Mesh‑to‑SDF‑Konvertierung von STEP‑Daten setzt wasserdichte Meshes voraus — COTS‑STEP‑Dateien aus Fernost sind es oft nicht. OpenCASCADE in WASM kostet 20–30 MB Payload. Deshalb ist STEP‑Import bewusst aus K9 herausgeschoben (siehe ROADMAP.md M14+). Im MVP reicht STL/OBJ‑Referenz, bei Bedarf extern konvertiert.
+**`crates/protocol`** — Shared wire types between kernel and frontend.
 
-14. **WebAssembly‑Speicherlimits:** 2–4 GB Linear Memory pro WASM‑Instanz reicht für Maker‑Bauteile sehr gut, könnte aber bei sehr großen Baugruppen mit hochaufgelösten Body‑Meshes ein Thema werden. Sparse‑Grids (z. B. OpenVDB‑Ansatz) im Mesher und Mesh‑Decimation für Context‑Bodies sind die Plan‑B‑Pfade. Ein weiterer Plan‑B‑Pfad ist ein **Worker‑Pool**: Mehrere Web Worker laden jeweils eine eigene WASM‑Instanz mit eigenem 2–4 GB Linear Memory, und die Multi‑Body‑Isolation aus §4.1 verteilt Bodies per Message‑Passing auf die Worker (jeder Body hat seinen eigenen CSG‑Graphen, keine Shared State). Damit steht das Speicherlimit N‑fach zur Verfügung (4 Worker × 4 GB = 16 GB effektiv), und das Meshing parallelisiert sich automatisch auf mehrere Kerne — architektonisch passt der Worker‑Pool exakt zur Body‑Isolation und wird gezogen, wenn Nutzer mit großen Baugruppen ans Single‑Instance‑Limit stoßen. Perspektivisch übernimmt im Tauri‑Desktop‑Build `rayon` im nativen Prozess diese Rolle. Offener Punkt: Body‑übergreifende Booleans, die zwei vorher isolierte Bodies koppeln, brauchen dann eine Merge‑Strategie zwischen Worker‑Instanzen — relevant erst bei Implementierung. Konkrete Schätzung für den MVP: ein typisches Maker‑Bauteil mit 100 k–300 k Dreiecken belegt unter 5 % des verfügbaren WASM‑RAMs.
+Defines the document schema:
 
-15. **WebGPU‑Browser‑Support:** WebGPU ist in Chromium und Safari stabil, in Firefox teilweise. Da FieldDraft bewusst kein WebGL‑Fallback pflegt, ist die Browser‑Matrix enger. Gegenmaßnahme: klare System‑Requirements‑Seite und eine Feature‑Detection beim Ladezeitpunkt.
+```
+Document
+├── feature_calls: Vec<FeatureCall>    # Authoritative serialization format
+│   └── FeatureCall { type_name, id: FeatureId, params: Value }
+├── features: Vec<SpineFeature>        # In-memory spine (skip-serialized)
+├── next_feature_id: u32
+└── variables: HashMap<String, f64>    # Formula engine variable table
+```
 
-16. **Auto‑Save‑Konflikte:** Wenn derselbe User zwei Tabs parallel öffnet, können lokale Stände divergieren. Gegenmaßnahme: Last‑Writer‑Wins mit Warnung plus versionierte Snapshots im Backend, damit nichts verloren geht.
+**FeatureId** supports flat (`"42"`) and hierarchical (`"3.op.mask_0"`) identifiers.
+
+**Primitive enum** — 13 geometric shape types:
+
+| Primitive | Description |
+|-----------|-------------|
+| `Box`, `Sphere`, `Cylinder`, `Torus`, `Cone`, `Capsule`, `HexPrism`, `Ellipsoid` | Direct SDF evaluation |
+| `Extrude` | 2D sketch profile swept along Z |
+| `Revolve` | 2D sketch profile revolved around Y |
+| `Gyroid` | TPMS lattice (`\|f\| - thickness`) |
+| `Thread` | Metric helix |
+| `ImportedMesh` | CSG-participating triangle mesh (passthrough storage) |
+
+**Typed parameters** (K4.5.4f): `Length` (mm/cm/m/in → mm), `Angle` (deg/rad), `Query`, `MultiQuery`, `BoolOp`.
+
+**Additional types:** `Sketch2d`, `Sketch2dPrimitive`, `MeshSdf`, `BakedVolume`, `Transform` (translate + quaternion + per-axis scale).
+
+### 3.2 Solver Crate
+
+**`crates/solver`** — Data model for 2D constraint sketching. This crate is **data-only** — it defines wire types but contains no solver logic. The actual constraint solving happens in TypeScript via PlaneGCS WASM.
+
+```
+SketchState
+├── entities: Vec<Entity>           # Point, Line, Circle, Arc, Origin
+├── constraints: Vec<Constraint>    # 12 types (see below)
+├── next_entity_id: u32
+└── next_constraint_id: u32
+
+SketchDiagnostics
+├── converged: bool
+├── dof: i32                        # +ve = under, 0 = full, -ve = over
+├── conflicting: Vec<ConstraintId>
+├── redundant: Vec<ConstraintId>
+├── partially_redundant: Vec<ConstraintId>
+└── malformed: Vec<ConstraintId>
+```
+
+**Constraint types:** Coincident, Parallel, Horizontal, Vertical, Perpendicular, Distance, Angle, Tangent, Concentric, Equal, Midpoint, Symmetric.
+
+### 3.3 Features-Macros Crate
+
+**`crates/features-macros`** — Procedural macro `#[derive(FeatureSchema)]`.
+
+Generates from annotated structs:
+1. `const TYPE_NAME: &'static str` — registry key
+2. `fn type_name() → &'static str`
+3. `fn schema_json() → Value` — JSON schema with types, defaults, UI hints
+4. `fn parse(def: &Value) → Result<Self, FeatureError>` — validated parameter extraction
+
+Field annotations: `#[param(name = "...", default = expr, ui_hint = "slider"|"opposite_direction"|"horizontal_enum", unit = "m"|"°")]`.
+
+### 3.4 Kernel Crate
+
+**`crates/kernel`** — The core geometry engine. Compiled as `cdylib` (WASM) + `rlib` (Rust tests).
+
+#### Feature System (`features.rs`)
+
+Central dispatch for the parametric modeling timeline:
+
+```rust
+trait FeatureKind: Send + Sync {
+    fn type_name(&self) -> &'static str;
+    fn schema_json(&self) -> Value;
+    fn execute(&self, ctx: &mut Context, id: &FeatureId, def: &Value) -> Result<(), FeatureError>;
+}
+```
+
+`FeatureRegistry::with_builtins()` registers ~24 feature kinds: primitives, patterns (linear/circular/mirror), transforms (translate/rotate/scale), sketch, extrude, revolve, sweep, boolean, fillet, shell, material. `regenerate()` walks feature calls in document order, resolves formula variables, and dispatches to each feature's `execute()`.
+
+`Context` holds the mutable document reference, solved sketch data (`HashMap<FeatureId, SketchData>`), and collected edge fillets.
+
+#### CSG Tree (`csg.rs`)
+
+The `CsgNode` enum (23 variants) represents the constructive solid geometry tree:
+
+- **Leaf:** `Leaf { id, primitive }` — terminal SDF evaluation
+- **Binary ops:** `Union`, `Difference`, `Intersection`, `SmoothUnion`, `SmoothDifference`
+- **Domain warps:** `Twist` (rotate XZ by rate*y), `Bend` (rotate XY by rate*x), `Displace` (sine-product bump)
+- **Modifiers:** `Shell` (`|sdf| - thickness`), `Morph` (lerp between SDFs)
+- **Profile-based:** `Extrude { sketch, half_height }`, `Revolve { sketch }`
+- **Masked blend:** Capsule-masked smooth transition between two SDFs
+
+`CsgNode::from_features()` folds the spine linearly: each feature becomes a leaf, wrapped in its transform and domain warps, then folded into the accumulator via the feature's boolean operation.
+
+**Contributors:** Each CSG evaluation tracks up to 4 `NodeId`s (leaves dominating the SDF within epsilon), classified as `ProxyElement`: Face (1 contributor), Edge (2), Vertex (3+). This provides B-Rep-like topology from a pure SDF representation.
+
+#### BVH & Bounded CSG (`bvh.rs`)
+
+`BoundedCsg` mirrors `CsgNode` but adds precomputed world-space AABBs at every node and collapses transform chains at leaves. This eliminates intermediate transform nodes from the hot evaluation path and enables spatial culling.
+
+#### SDF Compiler (`sdf_compiler.rs`)
+
+Compiles the `BoundedCsg` tree into a flat opcode buffer for GPU consumption:
+
+```
+compile_body(node: &BoundedCsg) → CompiledSdf { opcodes: Vec<f32>, aabb, volumes }
+```
+
+**Opcode set** (31 opcodes, postfix encoding):
+
+| Category | Opcodes |
+|----------|---------|
+| 3D Primitives | BOX, SPHERE, CYLINDER, TORUS, CONE, CAPSULE, HEX_PRISM, ELLIPSOID, CONST, GYROID, THREAD, TEX3D |
+| 2D Primitives | CIRCLE, RECT, POLY, SECTOR |
+| Binary Ops | UNION, DIFFERENCE, INTERSECT, SMOOTH_UNION, SMOOTH_DIFF |
+| Modifiers | SHELL, MORPH, DISPLACE_VAL, EXTRUDE, REVOLVE_SCALE, OFFSET_2D |
+| Domain Warps | WARP_PUSH, WARP_POP, WARP_TWIST, WARP_BEND, WARP_TRANSFORM, WARP_REVOLVE |
+| Masked Blend | MASKED_BLEND |
+| Control | END |
+
+Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 scale) + shape parameters. This flat buffer is uploaded to the GPU as a uniform array and interpreted by the VM shader at runtime.
+
+#### Multi-Body Partitioning (`body.rs`)
+
+Features are grouped into independent solid bodies by AABB overlap analysis:
+
+- **Union:** Overlapping AABBs coalesce into one body (merge if multi-hit)
+- **Difference/Intersect:** Attach to first overlapping body; drop if none
+- Feature order within a body always matches document order (deterministic)
+
+Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse.
+
+#### Meshing (`dc.rs`, `mdc.rs`)
+
+**Dual Contouring** (`dc.rs`) generates triangle meshes from the SDF:
+- Voxelizes the body's AABB at configurable resolution
+- Narrow-band optimization: only processes voxels near the surface
+- Per-vertex classification (face/edge/vertex) from contributor analysis
+
+**Marching Cubes** variant (`mdc.rs`) available as alternative mesher.
+
+#### Additional Modules
+
+| Module | Purpose |
+|--------|---------|
+| `sketch2d.rs` | BVH-wrapped 2D sketch profiles for SDF evaluation |
+| `sketch_features.rs` | Sketch feature execution, `SketchToolRegistry` with ~20 sketch tools |
+| `sketch_regions.rs` | Flood-fill region detection for extrude profile selection |
+| `expr.rs` | Formula expression evaluator for parametric variables |
+| `export.rs` | STL export (ASCII + binary) |
+| `export_3mf.rs` | 3MF export with per-body colors |
+| `queries.rs` | Geometry reference queries (`qCreatedBy`, `qFaceOf`) |
+| `raycast.rs` | Ray-mesh intersection for viewport picking |
+| `topology.rs` | B-Rep-like edge/face tracking derived from SDF contributors |
+| `mesh_sdf.rs` | Triangle mesh as SDF primitive (imported geometry) |
+| `voxel_repair.rs` | Voxel-based mesh repair for imported geometry |
+| `edge_detect.rs` | Sharp edge detection / silhouette extraction |
+| `step_classifier.rs` | Step-by-step feature classification for STEP export |
+
+#### WASM API (`lib.rs`)
+
+The `Kernel` struct is the main entry point exported to JavaScript via `wasm-bindgen`:
+
+- **Document I/O:** `load_json`, `to_json`
+- **Feature mutations:** `add_primitive`, `add_boolean`, `duplicate_feature`, `remove_feature`, `reorder_feature`, `nudge_feature`, `set_feature_op`, `set_feature_rotation`, `set_feature_scale`
+- **Variables:** `set_variable`, `remove_variable`, `list_variables`
+- **Multi-body access:** `body_count`, per-body position/normal/index/classification buffer pointers
+- **SDF access:** `body_sdf_opcodes_ptr` (flat opcode buffer), `body_sdf_aabb` (world bounds)
+- **Mesh control:** `set_mesh_resolution`, `set_context_mesh_resolution`, `set_active_body_id`
+- **Undo/redo:** `can_undo`, `can_redo`, `undo()`, `redo()` (kernel holds document snapshots)
+- **Introspection:** `list_feature_types`, `schema_for_type`, `list_features`, `get_feature_call_params`
+
+Mesh data is exposed as **zero-copy typed array views** into WASM linear memory (pointers must be re-acquired after any mutating call due to potential memory reallocation).
+
+---
+
+## 4. Web Frontend
+
+### 4.1 State Management
+
+**`store.ts`** — Central state via a custom pub-sub store (consumed by React's `useSyncExternalStore`).
+
+**Key state slices:**
+
+| Slice | Type | Purpose |
+|-------|------|---------|
+| `features` | `FeatureSummary[]` | Feature spine mirror from kernel |
+| `selection` | `Set<number>` | Selected feature IDs |
+| `meshedBodies` | `MeshedBody[]` | Per-body mesh cache (from worker) |
+| `canUndo/canRedo` | `boolean` | Undo/redo availability |
+| `sketchSession` | `SketchSessionState` | Active sketch draft |
+| `variables` | `{name, value}[]` | Document-level scalar variables |
+| `assembly` | `AssemblyState` | Multi-body assembly data |
+| `rollbackIndex` | `number` | Feature timeline position |
+| `syncState` | `string` | Server sync state (clean/dirty/syncing/error/offline) |
+
+**Undo/redo** is implemented in the WASM kernel (document snapshots, 64-deep stack). The store only caches availability flags and calls `kernel.undo()` / `kernel.redo()`.
+
+**Mutation flow:**
+1. Store method calls kernel mutation (e.g., `kernel.addBox()`)
+2. `commit()` refreshes all derived state (features, undo flags, variables, scene bounds)
+3. `syncActiveBody()` updates LOD hint for the selected body
+4. `autosave.schedule()` debounces localStorage write (500ms)
+5. `scheduleWorkerRebuild()` triggers mesh regeneration in worker
+6. Listeners notified → React re-renders
+
+**Persistence** (`persistence.ts`): Auto-save to `localStorage["fielddraft.project.v1"]` with 500ms debounce. UI state (folders, visible sketches, hidden datums, outliner width) persisted separately in individual keys.
+
+### 4.2 WASM Bridge
+
+**`kernel.ts`** — TypeScript wrapper around the Rust WASM kernel.
+
+**Worker architecture** (`mesher.worker.ts`):
+- Main thread kernel: document state + undo history + picking (sync meshing disabled)
+- Worker kernel: independent copy with Dual Contouring enabled
+- Communication: `{type: "rebuild", documentJson, resolutions, activeBodyId}` → `{type: "bodies", bodies: [{id, positions, normals, indices, ...}]}`
+- TypedArrays transferred (zero-copy) via structured clone
+- Progressive refinement: initial coarse pass (half-res), then auto-refine to full resolution
+- Coalescing: `workerInflight` flag prevents backlog of stale mesh requests
+
+### 4.3 Rendering Pipeline
+
+FieldDraft implements **two active SDF rendering modes**, both built on Three.js TSL and WebGPU. There are no hand-written shader files — all GPU code is generated dynamically.
+
+#### SDF-VM Mode (`sdfVmRenderer.ts`)
+
+Single-pass fullscreen ray marching:
+
+```mermaid
+graph LR
+    A["Screen Quad"] --> B["Reconstruct Ray"] --> C["Sphere-Trace\nAll Bodies"] --> D["PBR Shade"]
+```
+
+- Fullscreen `PlaneGeometry(2, 2)` with orthographic camera
+- GPU bytecode VM interprets opcode stream at shader invocation time
+- Per-body SDF evaluation, closest hit wins
+- Constraints: max 8 bodies, 4096 opcodes total, 512 march steps
+
+#### SDF-Deferred Mode (`sdfDeferredRenderer.ts`)
+
+Three-pass hybrid rasterization + deferred ray marching:
+
+```mermaid
+graph TD
+    subgraph "Pass 1: Opaque G-Buffer"
+        P1["Rasterize primitive meshes\n(FrontSide)"] --> P1out["Output: world position\n+ body tag"]
+    end
+
+    subgraph "Pass 2: Transparent G-Buffer"
+        P2a["Rasterize inflated hulls\n(scale 1.01)"]
+        P2b["Back-face distances\n(MAX blend)"]
+        P2a --> P2out["Output: position + body tag\n+ exit depth"]
+        P2b --> P2out
+    end
+
+    subgraph "Pass 3: Unified Shading"
+        P3["Fullscreen quad reads\nall G-buffers"] --> P3b{"Transparent\nregion?"}
+        P3b -- "Yes" --> P3c["Sphere-trace via VM"]
+        P3b -- "No" --> P3d["Use rasterized hit"]
+        P3c --> PBR["PBR Shading"]
+        P3d --> PBR
+    end
+
+    P1out --> P3
+    P2out --> P3
+```
+
+Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized opaque meshes for speed. Complex geometry (gyroid, boolean regions) is ray-marched through transparent hull volumes. Constraints: max 32 bodies, 4096 opcodes.
+
+#### Opcode Interpretation
+
+Two tiers of GPU evaluation:
+
+1. **Transpiled WGSL** (`sdfRenderer.ts`): Compile opcode stream to straight-line `fn fd_eval_sdf(p: vec3f) -> f32`. Branchless, fully unrolled. Topology extracted for caching — parameter-only updates skip recompile.
+
+2. **Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes.
+
+#### Material System
+
+Per-body PBR materials stored in a GPU storage buffer (12 floats/body stride):
+
+```
+[colorR, colorG, colorB, roughness, metalness, emissiveR, emissiveG, emissiveB,
+ opacity, wireframe, displaceDepth, displaceFreq]
+```
+
+**PBR shading** (`pbrShading.ts`): Cook-Torrance BRDF with metallic workflow. 3 directional lights, GGX distribution, Schlick-Beckmann visibility, Fresnel. Normals computed via central differences on the SDF.
+
+**Material resolution** (`materialBridge.ts`): CAD "Material" features target bodies via query selectors (`qCreatedBy(featureId)`). Resolved each frame, written to the GPU material buffer.
+
+#### Synchronization (`viewportSdfOverlays.tsx`)
+
+Per-frame fingerprinting drives the rebuild/update cycle:
+
+- `structFp` (topology hash: body count, IDs, opcode lengths) → full shader rebuild
+- `dataFp` (data hash: body versions) → opcode/volume buffer upload only
+- Material application runs every frame regardless
+
+#### Rendering Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Max march steps | 512 (VM/Deferred), 96 (Transpiled) |
+| Surface epsilon | 0.002 mm |
+| Normal epsilon | 0.01 mm |
+| Max ray distance | 1200–3000 mm |
+| Hull inflate factor | 1.01 (deferred) |
+| Build volume | 600 mm cubic |
+
+### 4.4 Sketch System
+
+Three-layer architecture for 2D parametric constraint sketching:
+
+```mermaid
+graph TD
+    Canvas["Canvas UI\n(SketchCanvas2d.tsx)"]
+    Session["Session State Machine\n(sketchSession.ts)"]
+    Inference["inferenceEngine.ts\nReal-time constraint suggestions"]
+    PlaneGCS["planegcs.ts\nPlaneGCS WASM wrapper"]
+    Drag["dragController.ts\nLive drag with continuation"]
+    DoF["dofPreflight.ts\nDoF tally"]
+    Diag["diagnosticsPipeline.ts\nPer-entity state coloring"]
+    KernelSketch["Kernel Integration\n(sketch_features.rs)"]
+    Extrude["Profile Extrusion\n(sketch2d.rs, sketch_regions.rs)"]
+
+    Canvas -- "pointer events,\nsnap resolution" --> Session
+    Session -- "sub-calls:\nFeatureCall[]" --> Solver
+
+    subgraph Solver["Solver Integration (solver/)"]
+        Inference
+        PlaneGCS
+        Drag
+        DoF
+        Diag
+    end
+
+    Solver --> KernelSketch
+    KernelSketch -- "SketchToolRegistry\n→ SketchState" --> Extrude
+```
+
+**Data flow:**
+
+1. **User draws** on 2D canvas overlay → pointer events emitted
+2. **Snap inference** (`inferenceEngine.ts`): Checks proximity to endpoints, midpoints, origin; detects horizontal/vertical/parallel alignment. Priority-sorted candidates.
+3. **Sub-calls accumulated** in `sketchSession.subCalls` (geometry + constraints as `FeatureCall[]`)
+4. **Solver replay** (`planegcs.ts`): Translates entities/constraints to PlaneGCS format, runs DogLeg solver, reads back solved positions + diagnostics
+5. **Drag controller**: Snapshots sketch, overwrites dragged point each frame, re-solves. PlaneGCS' numerical continuation keeps hard constraints satisfied.
+6. **Diagnostics pipeline**: Maps solver output to per-entity visual states (blue = underconstrained, black = fully constrained, red = overconstrained)
+7. **Commit**: `kernel.addSketch(planeQuery, subCalls)` stores solved state in `Context::sketches`
+8. **Extrude/Revolve** features reference sketch via query, evaluate 2D SDF profile from `Sketch2d`
+
+**Entity types:** Point, Line, Circle, Arc, Origin (fixed at 0,0).
+
+**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim`, `sketch_mirror`, `sketch_offset`.
+
+**Critical invariant:** Entity ID allocation order in TypeScript must exactly match kernel allocation. `buildDraftSketchState()` replicates this deterministically. Any mismatch silently corrupts constraint references.
+
+### 4.5 Import/Export
+
+#### STEP Export
+
+```mermaid
+graph LR
+    A["Feature Tree"] --> B["StepCommand[]"] --> C["OCCT Worker"] --> D["opencascade.js\nB-Rep"] --> E["STEP File"]
+```
+
+The OCCT worker (`occt.worker.ts`) loads opencascade.js (~25 MB WASM) and executes CSG operations (box, sphere, cylinder, cone, torus, hexprism, extrude, revolve, union/difference/intersect, transform) as B-Rep geometry via OCCT's `BRepAlgoAPI`. Only root shapes (not consumed operands) are written to STEP via `STEPControl_Writer`.
+
+#### STEP Import
+
+```mermaid
+graph LR
+    A["STEP File"] --> B["OCCT Worker"] --> C["occt-import-js\nTessellation"] --> D["ImportedMesh"] --> E["Kernel"]
+```
+
+Configurable deflection (0.02 mm linear, 0.1 rad angular). AP242 fallback extracts `COMPLEX_TRIANGULATED_FACE` entities via regex parser for convergent geometry.
+
+#### STL/OBJ
+
+- **Rust kernel** (`export.rs`): STL ASCII + binary export, normals via cross product
+- **TypeScript** (`meshIO.ts`): STL binary import (parser), OBJ import/export
+
+#### 3MF
+
+- **Rust kernel** (`export_3mf.rs`): Multi-body 3MF with per-body color palette (8 colors)
+- **TypeScript** (`threemf.ts`): 3MF roundtrip preserving slicer metadata (Bambu, Prusa, Cura, OrcaSlicer)
+
+### 4.6 CSS Architecture
+
+Hierarchical, token-driven CSS with native nesting:
+
+```
+styles/
+├── tokens.css         # Design tokens: colors, spacing, typography, radii, shadows
+├── base.css           # Browser resets, html/body defaults
+├── index.css          # Master entry point (@import all modules)
+├── layout/
+│   └── shell.css      # App shell container
+└── components/
+    ├── toolbar.css    # .fd-toolbar { ... }
+    ├── outliner.css   # .fd-outliner { ... }
+    ├── settings-menu.css
+    ├── feature-dialog.css
+    ├── viewport.css
+    └── ...            # One file per component
+```
+
+- No BEM, no CSS-in-JS — native CSS nesting
+- Each component has one top-level class with `fd-` prefix (`.fd-toolbar`, `.fd-outliner`, ...)
+- Child selectors are short and unprefixed, scoped by nesting
+- Custom properties from `tokens.css` used extensively
+- Light mode only
+- Minimum font size: 1rem
+
+---
+
+## 5. Go Server
+
+**`server/main.go`** — Optional backend for multi-user project sync.
+
+The application runs purely in the browser with localStorage persistence. The Go server adds:
+
+- **Authentication:** Argon2id password hashing (t=1, m=64MB, p=4), HttpOnly session cookies (7-day TTL, SameSite=Lax)
+- **Project CRUD:** Create, read, update, delete projects (50 MB document limit, 100 project quota/user)
+- **Visibility:** Private or public projects; public gallery endpoint
+- **Snapshots:** Frozen read-only copies for sharing (`/api/v/{id}`)
+- **Thumbnails:** Per-project PNG upload/serve (2 MB limit)
+- **Rate limiting:** Per-IP token bucket (60 burst, 1 req/sec refill)
+- **Password reset:** 1-hour token, CLI-logged (SMTP integration TBD)
+
+**API endpoints** (16 routes): `/api/auth/*` (register/login/logout/reset), `/api/me`, `/api/projects/*` (CRUD + publish + thumbnail), `/api/gallery`, `/api/v/{id}`.
+
+Currently uses in-memory store; MariaDB integration planned.
+
+---
+
+## 6. Build System & Deployment
+
+### Justfile (Developer Commands)
+
+| Command | Description |
+|---------|-------------|
+| `just install` | npm install web dependencies |
+| `just build-wasm` | Compile Rust kernel to WASM (`wasm-pack build --target web`) |
+| `just dev` | Build WASM + start Vite dev server (:5173) |
+| `just build` | Full production bundle (WASM + Vite) |
+| `just test` | Rust unit tests + Vitest |
+| `just test-rust` | `cargo test --workspace` |
+| `just test-web` | Build WASM + Vitest |
+| `just test-e2e` | Playwright E2E (headed Chromium + real WebGPU) |
+| `just fmt` | cargo fmt + prettier |
+| `just clean` | Remove all build artifacts |
+
+### Docker Deployment
+
+```yaml
+services:
+  db:     MariaDB 11 (port 3306)
+  server: Go server (Dockerfile, port 8080)
+  web:    Vite dev server (port 5173)
+```
+
+Server Dockerfile: Multi-stage `golang:1.26-alpine` build + `alpine:3` runtime. CGO disabled, static binary.
+
+Environment: `DB_DSN` (MariaDB connection), `PORT` (default 8080), `SESSION_TTL` (default 168h).
+
+---
+
+## 7. Testing Strategy
+
+### Unit Tests
+
+- **Rust:** `cargo test --workspace` — kernel logic, CSG operations, SDF evaluation, meshing, export
+- **TypeScript:** Vitest — solver integration, inference engine, drag controller, diagnostics pipeline, persistence, worker RPC, 3MF roundtrip, tooltips, settings
+
+### E2E Tests (Playwright)
+
+Runs headed Chromium with real WebGPU (no headless — requires GPU):
+
+| Test Suite | Coverage |
+|------------|----------|
+| `smoke.spec.ts` | Full feature stack: add/undo/redo/delete, boolean ops, patterns, sketches, revolve, rename, reorder, suppress, duplicate, variables, formulas, fillet, STL/STEP/3MF export, STEP import, persistence |
+| `renderer.spec.ts` | SDF renderer mode switching (VM ↔ Deferred), shader compilation, body count preservation, multi-primitive rendering |
+| `visual.spec.ts` | Screenshot regression at 3 viewports (600/900/1440px), 2% pixel diff tolerance |
+
+Configuration: 1 worker (serial), 30s timeout, trace on failure, Vite dev server auto-started.
+
+---
+
+## 8. Key Data Flows
+
+### Feature Creation (Add a Box)
+
+```mermaid
+graph TD
+    Click["User clicks 'Box' in Toolbar"]
+    Store["store.addPrimitive('box')"]
+    WASM["kernel.addBox(op, translate, dimensions)\n(WASM: regenerate + mesh)"]
+
+    Click --> Store --> WASM --> Commit
+
+    subgraph Commit["commit()"]
+        Refresh["Refresh: features, canUndo,\nvariables, sceneSize"]
+        Sync["syncActiveBody()\n→ kernel.setActiveBodyByFeature()"]
+        Save["autosave.schedule(kernel.toJson())\n500ms debounce → localStorage"]
+        Worker["scheduleWorkerRebuild()\n→ Worker: Dual Contouring"]
+        Notify["notify listeners\n→ React re-renders"]
+    end
+
+    Worker --> WorkerExec["Worker: kernel.loadJson()\n→ mesh → transferrable buffers"]
+    WorkerExec --> MeshUpdate["store.meshedBodies updated\n→ React re-renders"]
+    MeshUpdate --> Viewport
+
+    subgraph Viewport["viewportSdfOverlays: fingerprint changed"]
+        Collect["Collect opcode buffers from kernel"]
+        Upload["Upload to GPU (uniform buffer)"]
+        Compile["Compile VM pipeline\n(if topology changed)"]
+        Render["Render frame\n(ray march + PBR shade)"]
+        Collect --> Upload --> Compile --> Render
+    end
+```
+
+### Document → GPU Pipeline
+
+```mermaid
+graph TD
+    Calls["Document.feature_calls[]"]
+    Spine["Document.features[]\n(SpineFeature spine)"]
+    CSG["CsgNode\n(boolean tree)"]
+    BVH["BoundedCsg\n(AABB-annotated,\ntransforms collapsed)"]
+    Partition["Per-body BoundedCsg"]
+    Compiled["CompiledSdf\n{ opcodes: Vec&lt;f32&gt;, aabb, volumes }"]
+    GPU["GPU uniform buffer"]
+    Screen["Per-pixel SDF evaluation\n→ sphere trace → PBR shade → screen"]
+
+    Calls -- "FeatureRegistry.regenerate()" --> Spine
+    Spine -- "CsgNode::from_features()" --> CSG
+    CSG -- "BoundedCsg::from_csg()" --> BVH
+    BVH -- "partition()\ngroup by AABB overlap" --> Partition
+    Partition -- "compile_body()" --> Compiled
+    Compiled -- "Transfer to JS\nvia WASM pointer" --> GPU
+    GPU -- "VM interpreter or\ntranspiled WGSL" --> Screen
+```
+
+### Sketch → Extrude
+
+```mermaid
+graph TD
+    Draw["User draws on SketchCanvas2d"]
+    SubCalls["sketchSession.subCalls[] accumulated\n(sketch_line, sketch_circle,\nsketch_constraint_*, ...)"]
+    Solve["PlaneGCS solve\n(async, WASM worker)"]
+    Solved["Solved SketchState\n(positions updated, diagnostics)"]
+    Commit["kernel.addSketch(planeQuery, subCalls)\nSketchToolRegistry.apply()\n→ ctx.sketches[id]"]
+    Extrude["User adds Extrude feature\n(references sketch via query)"]
+    Resolve["features.rs: Resolve sketch\n→ Sketch2d → Primitive::Extrude"]
+    CsgNode["CsgNode::Extrude\n{ sketch, half_height }"]
+    Body["3D solid body"]
+
+    Draw -- "pointer events +\nsnap inference" --> SubCalls
+    SubCalls --> Solve
+    Solve -- "Translate entities/constraints\n→ DogLeg solver" --> Solved
+    Solved --> Commit
+    Commit --> Extrude
+    Extrude --> Resolve
+    Resolve --> CsgNode
+    CsgNode -- "BoundedCsg, compile,\nmesh, render" --> Body
+```
