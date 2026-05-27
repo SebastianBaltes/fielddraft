@@ -373,9 +373,7 @@ Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized o
 
 #### Opcode Interpretation
 
-**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes.
-
-`sdfRenderer.ts` contains a transpiled-WGSL path that compiles opcodes to straight-line `fn fd_eval_sdf(p: vec3f) -> f32`, but this code is **currently unused** — no call site invokes it.
+**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
 
 #### Material System
 
@@ -641,7 +639,7 @@ graph TD
     BVH -- "partition()\ngroup by AABB overlap" --> Partition
     Partition -- "compile_body()" --> Compiled
     Compiled -- "Transfer to JS\nvia WASM pointer" --> GPU
-    GPU -- "VM interpreter or\ntranspiled WGSL" --> Screen
+    GPU -- "VM interpreter" --> Screen
 ```
 
 ### Sketch → Extrude
