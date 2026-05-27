@@ -7,7 +7,7 @@
 //! as LineSegments.
 
 use crate::bvh::BoundedCsg;
-use crate::csg::{Contributors, EvalMode};
+use crate::csg::EvalMode;
 use fielddraft_protocol::FeatureId;
 
 /// One detected B-Rep edge segment.

@@ -6,7 +6,7 @@
  */
 
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally
-// loose; we keep this file un-typed like raymarch.ts.
+// loose; we keep this file un-typed.
 
 import {
   wgslFn,

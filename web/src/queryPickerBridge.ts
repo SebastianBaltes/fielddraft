@@ -59,14 +59,6 @@ export function register(picker: ActivePicker): () => void {
   };
 }
 
-/** Clear any active picker unconditionally. */
-export function clearActivePicker(): void {
-  if (active !== null) {
-    active = null;
-    notify();
-  }
-}
-
 /** Current active picker, or `null`. */
 export function getActive(): ActivePicker | null {
   return active;

@@ -104,7 +104,7 @@ export const BODY_COLORS: [number, number, number][] = [
 
 // ── Primitive mesh factory ─────────────────────────────────────────
 
-export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
   const p = leaf.params;
   switch (leaf.kind) {
     case "box":
@@ -158,7 +158,7 @@ function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | nul
   return new THREE.LatheGeometry(points, 48);
 }
 
-export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
+function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
   const t = leaf.transform;
   const translate = new THREE.Vector3(t[0], t[1], t[2]);
   const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);

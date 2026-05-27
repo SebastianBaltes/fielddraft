@@ -15,13 +15,13 @@ export const DEFAULT_ROUGHNESS = 0.35;
 export const DEFAULT_METALNESS = 0.0;
 export const DEFAULT_BASE_COLOR: [number, number, number] = [0.55, 0.65, 0.85];
 
-export const LIGHTS = [
+const LIGHTS = [
   { dir: [0.2, 0.3, 1.0], radiance: 3.0 },
   { dir: [-0.5, 0.1, 0.6], radiance: 0.5 },
   { dir: [0.0, -0.2, -1.0], radiance: 0.3 },
 ];
 
-export const AMBIENT = 0.25;
+const AMBIENT = 0.25;
 
 /**
  * PBR shade a surface point (Cook-Torrance BRDF).

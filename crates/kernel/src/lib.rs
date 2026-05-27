@@ -33,7 +33,7 @@ use body::{
 };
 use bvh::BoundedCsg;
 use csg::CsgNode;
-use dc::{dual_contour, Mesh};
+use dc::Mesh;
 use raycast::{raycast, RaycastParams};
 use features::quat_to_euler_xyz;
 use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};

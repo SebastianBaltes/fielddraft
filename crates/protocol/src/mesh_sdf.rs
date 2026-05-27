@@ -545,7 +545,7 @@ impl MeshSdf {
             return f32::INFINITY;
         }
 
-        let (best_dist_sq, best_tri, best_s, best_t) = if self.bvh_nodes.is_empty() {
+        let (best_dist_sq, _best_tri, _best_s, _best_t) = if self.bvh_nodes.is_empty() {
             self.sdf_brute_force_dist_sq(p)
         } else {
             self.sdf_bvh_dist_sq(p)
@@ -731,7 +731,7 @@ impl MeshSdf {
 
 // ─── BVH construction ────────────────────────────────────────
 
-fn build_bvh(tris: &[f32], bboxes: &[f32], tri_count: usize) -> (Vec<BvhNode>, Vec<u32>) {
+fn build_bvh(_tris: &[f32], bboxes: &[f32], tri_count: usize) -> (Vec<BvhNode>, Vec<u32>) {
     if tri_count == 0 {
         return (vec![], vec![]);
     }
@@ -1102,15 +1102,6 @@ fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 #[inline]
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Detect whether face normals point inward (CW winding) by
