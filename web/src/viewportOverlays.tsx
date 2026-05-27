@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useThree } from "@react-three/fiber";
-import { Text } from "@react-three/drei";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
@@ -642,6 +641,33 @@ const DATUM_LABEL_POS: [number, number, number] = [
   0.5,
 ];
 
+function makeLabelTexture(text: string): THREE.SpriteMaterial {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  const font = "bold 64px sans-serif";
+  ctx.font = font;
+  const metrics = ctx.measureText(text);
+  const w = Math.ceil(metrics.width) + 8;
+  const h = 80;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.font = font;
+  ctx.fillStyle = "#3b82f6";
+  ctx.globalAlpha = 0.6;
+  ctx.textBaseline = "top";
+  ctx.fillText(text, 0, 4);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+}
+
+const datumLabelMaterials: Record<string, THREE.SpriteMaterial> = {};
+function getDatumLabelMaterial(text: string) {
+  if (!datumLabelMaterials[text]) datumLabelMaterials[text] = makeLabelTexture(text);
+  return datumLabelMaterials[text];
+}
+
 const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE);
 const datumEdgesGeometry = new THREE.EdgesGeometry(datumEdgesSource);
 datumEdgesSource.dispose();
@@ -681,16 +707,11 @@ export function DatumOverlay() {
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
-          <Text
+          <sprite
             position={DATUM_LABEL_POS}
-            fontSize={40}
-            color="#3b82f6"
-            anchorX="left"
-            anchorY="top"
-            fillOpacity={0.5}
-          >
-            {plane.label}
-          </Text>
+            material={getDatumLabelMaterial(plane.label)}
+            scale={[40, 12, 1]}
+          />
         </group>
       ))}
     </group>
