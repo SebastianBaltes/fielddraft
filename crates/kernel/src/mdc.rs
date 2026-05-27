@@ -1,78 +1,403 @@
-//! Adaptive Dual Contouring with QEF vertex placement (K3.7).
+//! Manifold Dual Contouring (MDC).
 //!
-//! Replaces the uniform/sparse DC paths for resolutions above 64.
-//! Uses a recursive octree that subdivides only where the SDF has a
-//! sign change, and places vertices via QEF (Quadratic Error Function)
-//! instead of cell centroids — producing sharp edges on boxes and
-//! adaptive resolution on curved surfaces.
+//! Guarantees 2-manifold output by using Nielson's Dual Marching Cubes
+//! approach: each cell may contain multiple contour components (cycles),
+//! each receiving its own vertex placed via QEF minimization for sharp
+//! feature preservation.
+//!
+//! Reference: Schaefer, Ju, Warren — "Manifold Dual Contouring" (TVCG).
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
 use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL};
+use std::collections::HashMap;
 
-// ── Lookup tables ────────────────────────────────────────────────────
+// ── MC vertex / edge conventions ────────────────────────────────────
+//
+//   MC vertex layout (Paul Bourke / Lorensen & Cline):
+//
+//       7-----------6
+//      /|          /|
+//     / |         / |
+//    4-----------5  |
+//    |  3--------|--2
+//    | /         | /
+//    |/          |/
+//    0-----------1
+//
+//   Vertex positions:
+//     0=(0,0,0)  1=(1,0,0)  2=(1,1,0)  3=(0,1,0)
+//     4=(0,0,1)  5=(1,0,1)  6=(1,1,1)  7=(0,1,1)
 
-/// Edge endpoint corner indices (12 edges of a cube).
-const EDGE_CORNERS: [[usize; 2]; 12] = [
-    [0, 1], [2, 3], [4, 5], [6, 7], // X-axis edges
-    [0, 2], [1, 3], [4, 6], [5, 7], // Y-axis edges
-    [0, 4], [1, 5], [2, 6], [3, 7], // Z-axis edges
+const MC_CORNER_POS: [[f32; 3]; 8] = [
+    [0.0, 0.0, 0.0], // 0
+    [1.0, 0.0, 0.0], // 1
+    [1.0, 1.0, 0.0], // 2
+    [0.0, 1.0, 0.0], // 3
+    [0.0, 0.0, 1.0], // 4
+    [1.0, 0.0, 1.0], // 5
+    [1.0, 1.0, 1.0], // 6
+    [0.0, 1.0, 1.0], // 7
 ];
 
-/// Corner offsets in [x, y, z] order. Corner 0 = min corner.
-const CORNER_OFFSETS: [[f32; 3]; 8] = [
-    [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0], [1.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0], [1.0, 0.0, 1.0],
-    [0.0, 1.0, 1.0], [1.0, 1.0, 1.0],
+const MC_EDGE_VERTS: [[usize; 2]; 12] = [
+    [0, 1], [1, 2], [2, 3], [3, 0], // bottom ring
+    [4, 5], [5, 6], [6, 7], [7, 4], // top ring
+    [0, 4], [1, 5], [2, 6], [3, 7], // vertical pillars
 ];
 
-/// Which cells share each of the 12 edges of a parent cell when
-/// processing faces/edges. ProcessFace examines pairs of children
-/// sharing a face; ProcessEdge examines quads of children sharing
-/// an edge.
+/// Maps each MC edge of a cell to the grid edge it corresponds to.
+/// (axis, di, dj, dk) — grid edge at (ci+di, cj+dj, ck+dk) along axis.
+#[allow(dead_code)]
+const MC_EDGE_TO_GRID: [(usize, usize, usize, usize); 12] = [
+    (0, 0, 0, 0), // MC 0:  X-edge at (ci,   cj,   ck)
+    (1, 1, 0, 0), // MC 1:  Y-edge at (ci+1, cj,   ck)
+    (0, 0, 1, 0), // MC 2:  X-edge at (ci,   cj+1, ck)
+    (1, 0, 0, 0), // MC 3:  Y-edge at (ci,   cj,   ck)
+    (0, 0, 0, 1), // MC 4:  X-edge at (ci,   cj,   ck+1)
+    (1, 1, 0, 1), // MC 5:  Y-edge at (ci+1, cj,   ck+1)
+    (0, 0, 1, 1), // MC 6:  X-edge at (ci,   cj+1, ck+1)
+    (1, 0, 0, 1), // MC 7:  Y-edge at (ci,   cj,   ck+1)
+    (2, 0, 0, 0), // MC 8:  Z-edge at (ci,   cj,   ck)
+    (2, 1, 0, 0), // MC 9:  Z-edge at (ci+1, cj,   ck)
+    (2, 1, 1, 0), // MC 10: Z-edge at (ci+1, cj+1, ck)
+    (2, 0, 1, 0), // MC 11: Z-edge at (ci,   cj+1, ck)
+];
+
+/// For each grid-edge axis, the 4 (cell-offset, mc-edge) pairs that
+/// share that edge, in quad winding order (v00, v10, v11, v01).
 ///
-/// CellProcFaceMask: for each of the 3 axes, 4 face-sharing pairs.
-/// [axis][pair] => [child0, child1]
-const CELL_PROC_FACE_MASK: [[[usize; 2]; 4]; 3] = [
-    [[0, 1], [2, 3], [4, 5], [6, 7]], // X faces
-    [[0, 2], [1, 3], [4, 6], [5, 7]], // Y faces
-    [[0, 4], [1, 5], [2, 6], [3, 7]], // Z faces
+/// For axis A grid-edge at (ei, ej, ek), cell is at
+/// (ei + off[0], ej + off[1], ek + off[2]).
+const QUAD_CELLS: [[(i32, i32, i32, usize); 4]; 3] = [
+    // X-edges: 4 cells in the YZ plane
+    [
+        (0, -1, -1, 6), // v00
+        (0,  0, -1, 4), // v10
+        (0,  0,  0, 0), // v11
+        (0, -1,  0, 2), // v01
+    ],
+    // Y-edges: 4 cells in the XZ plane
+    [
+        (-1, 0, -1, 5), // v00
+        ( 0, 0, -1, 7), // v10
+        ( 0, 0,  0, 3), // v11
+        (-1, 0,  0, 1), // v01
+    ],
+    // Z-edges: 4 cells in the XY plane
+    [
+        (-1, -1, 0, 10), // v00
+        ( 0, -1, 0, 11), // v10
+        ( 0,  0, 0,  8), // v11
+        (-1,  0, 0,  9), // v01
+    ],
 ];
 
-/// CellProcEdgeMask: for each of the 3 edge axes, 2 quads of children.
-/// [axis][quad] => [child0, child1, child2, child3]
-const CELL_PROC_EDGE_MASK: [[[usize; 4]; 2]; 3] = [
-    [[0, 2, 4, 6], [1, 3, 5, 7]], // X-axis edges
-    [[0, 1, 4, 5], [2, 3, 6, 7]], // Y-axis edges
-    [[0, 1, 2, 3], [4, 5, 6, 7]], // Z-axis edges
+// ── Marching Cubes lookup tables ────────────────────────────────────
+
+/// Bitmask of intersected edges for each of 256 MC cases.
+#[rustfmt::skip]
+const EDGE_TABLE: [u16; 256] = [
+    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
+    0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
+    0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c,
+    0x99c, 0x895, 0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90,
+    0x230, 0x339, 0x033, 0x13a, 0x636, 0x73f, 0x435, 0x53c,
+    0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30,
+    0x3a0, 0x2a9, 0x1a3, 0x0aa, 0x7a6, 0x6af, 0x5a5, 0x4ac,
+    0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0,
+    0x460, 0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c,
+    0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69, 0xb60,
+    0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0x0ff, 0x3f5, 0x2fc,
+    0xdfc, 0xcf5, 0xfff, 0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
+    0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c,
+    0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950,
+    0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf, 0x1c5, 0x0cc,
+    0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0,
+    0x8c0, 0x9c9, 0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc,
+    0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
+    0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c,
+    0x15c, 0x055, 0x35f, 0x256, 0x55a, 0x453, 0x759, 0x650,
+    0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc,
+    0x2fc, 0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0,
+    0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f, 0xd65, 0xc6c,
+    0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460,
+    0xca0, 0xda9, 0xea3, 0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac,
+    0x4ac, 0x5a5, 0x6af, 0x7a6, 0x0aa, 0x1a3, 0x2a9, 0x3a0,
+    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c,
+    0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x033, 0x339, 0x230,
+    0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c,
+    0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190,
+    0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c,
+    0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x000,
 ];
 
-/// FaceProcEdgeMask: for each face orientation, which edges to process.
-/// Maps face-sharing pairs into edge-sharing quads.
-/// [face_axis][sub] => [child0, child1, child2, child3, edge_axis]
-const FACE_PROC_EDGE_MASK: [[[usize; 5]; 4]; 3] = [
-    // X faces → Y and Z edges
-    [[0, 1, 2, 3, 1], [4, 5, 6, 7, 1], [0, 1, 4, 5, 2], [2, 3, 6, 7, 2]],
-    // Y faces → X and Z edges
-    [[0, 2, 1, 3, 0], [4, 6, 5, 7, 0], [0, 2, 4, 6, 2], [1, 3, 5, 7, 2]],
-    // Z faces → X and Y edges
-    [[0, 4, 1, 5, 0], [2, 6, 3, 7, 0], [0, 4, 2, 6, 1], [1, 5, 3, 7, 1]],
+/// Triangle table: up to 5 triangles (15 edge indices) per case, -1 terminated.
+#[rustfmt::skip]
+const TRI_TABLE: [[i8; 16]; 256] = [
+    [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 8, 3, 9, 8, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 1, 2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 2,10, 0, 2, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 8, 3, 2,10, 8,10, 9, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,11, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,11, 2, 8,11, 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 2, 3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1,11, 2, 1, 9,11, 9, 8,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,10, 1,11,10, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,10, 1, 0, 8,10, 8,11,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 9, 0, 3,11, 9,11,10, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 8,10,10, 8,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 7, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 3, 0, 7, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 1, 9, 4, 7, 1, 7, 3, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 4, 7, 3, 0, 4, 1, 2,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 2,10, 9, 0, 2, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 2,10, 9, 2, 9, 7, 2, 7, 3, 7, 9, 4,-1,-1,-1,-1],
+    [ 8, 4, 7, 3,11, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 4, 7,11, 2, 4, 2, 0, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 1, 8, 4, 7, 2, 3,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 7,11, 9, 4,11, 9,11, 2, 9, 2, 1,-1,-1,-1,-1],
+    [ 3,10, 1, 3,11,10, 7, 8, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 1,11,10, 1, 4,11, 1, 0, 4, 7,11, 4,-1,-1,-1,-1],
+    [ 4, 7, 8, 9, 0,11, 9,11,10,11, 0, 3,-1,-1,-1,-1],
+    [ 4, 7,11, 4,11, 9, 9,11,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4, 0, 8, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 5, 4, 1, 5, 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 5, 4, 8, 3, 5, 3, 1, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 9, 5, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8, 1, 2,10, 4, 9, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 2,10, 5, 4, 2, 4, 0, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 2,10, 5, 3, 2, 5, 3, 5, 4, 3, 4, 8,-1,-1,-1,-1],
+    [ 9, 5, 4, 2, 3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,11, 2, 0, 8,11, 4, 9, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 5, 4, 0, 1, 5, 2, 3,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 1, 5, 2, 5, 8, 2, 8,11, 4, 8, 5,-1,-1,-1,-1],
+    [10, 3,11,10, 1, 3, 9, 5, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 5, 0, 8, 1, 8,10, 1, 8,11,10,-1,-1,-1,-1],
+    [ 5, 4, 0, 5, 0,11, 5,11,10,11, 0, 3,-1,-1,-1,-1],
+    [ 5, 4, 8, 5, 8,10,10, 8,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 7, 8, 5, 7, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 3, 0, 9, 5, 3, 5, 7, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 7, 8, 0, 1, 7, 1, 5, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 5, 3, 3, 5, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 7, 8, 9, 5, 7,10, 1, 2,-1,-1,-1,-1,-1,-1,-1],
+    [10, 1, 2, 9, 5, 0, 5, 3, 0, 5, 7, 3,-1,-1,-1,-1],
+    [ 8, 0, 2, 8, 2, 5, 8, 5, 7,10, 5, 2,-1,-1,-1,-1],
+    [ 2,10, 5, 2, 5, 3, 3, 5, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 9, 5, 7, 8, 9, 3,11, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 7, 9, 7, 2, 9, 2, 0, 2, 7,11,-1,-1,-1,-1],
+    [ 2, 3,11, 0, 1, 8, 1, 7, 8, 1, 5, 7,-1,-1,-1,-1],
+    [11, 2, 1,11, 1, 7, 7, 1, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 8, 8, 5, 7,10, 1, 3,10, 3,11,-1,-1,-1,-1],
+    [ 5, 7, 0, 5, 0, 9, 7,11, 0, 1, 0,10,11,10, 0,-1],
+    [11,10, 0,11, 0, 3,10, 5, 0, 8, 0, 7, 5, 7, 0,-1],
+    [11,10, 5, 7,11, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [10, 6, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 5,10, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 1, 5,10, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 8, 3, 1, 9, 8, 5,10, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 5, 2, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 5, 1, 2, 6, 3, 0, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 6, 5, 9, 0, 6, 0, 2, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 9, 8, 5, 8, 2, 5, 2, 6, 3, 2, 8,-1,-1,-1,-1],
+    [ 2, 3,11,10, 6, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 0, 8,11, 2, 0,10, 6, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9, 2, 3,11, 5,10, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 1, 9, 2, 9,11, 2, 9, 8,11,-1,-1,-1,-1],
+    [ 6, 3,11, 6, 5, 3, 5, 1, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8,11, 0,11, 5, 0, 5, 1, 5,11, 6,-1,-1,-1,-1],
+    [ 3,11, 6, 0, 3, 6, 0, 6, 5, 0, 5, 9,-1,-1,-1,-1],
+    [ 6, 5, 9, 6, 9,11,11, 9, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 4, 7, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 3, 0, 4, 7, 3, 6, 5,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 5,10, 6, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1],
+    [10, 6, 5, 1, 9, 7, 1, 7, 3, 7, 9, 4,-1,-1,-1,-1],
+    [ 6, 1, 2, 6, 5, 1, 4, 7, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2, 5, 5, 2, 6, 3, 0, 4, 3, 4, 7,-1,-1,-1,-1],
+    [ 8, 4, 7, 9, 0, 5, 0, 6, 5, 0, 2, 6,-1,-1,-1,-1],
+    [ 7, 3, 9, 7, 9, 4, 3, 2, 9, 5, 9, 6, 2, 6, 9,-1],
+    [ 3,11, 2, 7, 8, 4,10, 6, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 4, 7, 2, 4, 2, 0, 2, 7,11,-1,-1,-1,-1],
+    [ 0, 1, 9, 4, 7, 8, 2, 3,11, 5,10, 6,-1,-1,-1,-1],
+    [ 9, 2, 1, 9,11, 2, 9, 4,11, 7,11, 4, 5,10, 6,-1],
+    [ 8, 4, 7, 3,11, 5, 3, 5, 1, 5,11, 6,-1,-1,-1,-1],
+    [ 5, 1,11, 5,11, 6, 1, 0,11, 7,11, 4, 0, 4,11,-1],
+    [ 0, 5, 9, 0, 6, 5, 0, 3, 6,11, 6, 3, 8, 4, 7,-1],
+    [ 6, 5, 9, 6, 9,11, 4, 7, 9, 7,11, 9,-1,-1,-1,-1],
+    [10, 4, 9, 6, 4,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4,10, 6, 4, 9,10, 0, 8, 3,-1,-1,-1,-1,-1,-1,-1],
+    [10, 0, 1,10, 6, 0, 6, 4, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 3, 1, 8, 1, 6, 8, 6, 4, 6, 1,10,-1,-1,-1,-1],
+    [ 1, 4, 9, 1, 2, 4, 2, 6, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8, 1, 2, 9, 2, 4, 9, 2, 6, 4,-1,-1,-1,-1],
+    [ 0, 2, 4, 4, 2, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 3, 2, 8, 2, 4, 4, 2, 6,-1,-1,-1,-1,-1,-1,-1],
+    [10, 4, 9,10, 6, 4,11, 2, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 2, 2, 8,11, 4, 9,10, 4,10, 6,-1,-1,-1,-1],
+    [ 3,11, 2, 0, 1, 6, 0, 6, 4, 6, 1,10,-1,-1,-1,-1],
+    [ 6, 4, 1, 6, 1,10, 4, 8, 1, 2, 1,11, 8,11, 1,-1],
+    [ 9, 6, 4, 9, 3, 6, 9, 1, 3,11, 6, 3,-1,-1,-1,-1],
+    [ 8,11, 1, 8, 1, 0,11, 6, 1, 9, 1, 4, 6, 4, 1,-1],
+    [ 3,11, 6, 3, 6, 0, 0, 6, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 6, 4, 8,11, 6, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7,10, 6, 7, 8,10, 8, 9,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 7, 3, 0,10, 7, 0, 9,10, 6, 7,10,-1,-1,-1,-1],
+    [10, 6, 7, 1,10, 7, 1, 7, 8, 1, 8, 0,-1,-1,-1,-1],
+    [10, 6, 7,10, 7, 1, 1, 7, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2, 6, 1, 6, 8, 1, 8, 9, 8, 6, 7,-1,-1,-1,-1],
+    [ 2, 6, 9, 2, 9, 1, 6, 7, 9, 0, 9, 3, 7, 3, 9,-1],
+    [ 7, 8, 0, 7, 0, 6, 6, 0, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 3, 2, 6, 7, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3,11,10, 6, 8,10, 8, 9, 8, 6, 7,-1,-1,-1,-1],
+    [ 2, 0, 7, 2, 7,11, 0, 9, 7, 6, 7,10, 9,10, 7,-1],
+    [ 1, 8, 0, 1, 7, 8, 1,10, 7, 6, 7,10, 2, 3,11,-1],
+    [11, 2, 1,11, 1, 7,10, 6, 1, 6, 7, 1,-1,-1,-1,-1],
+    [ 8, 9, 6, 8, 6, 7, 9, 1, 6,11, 6, 3, 1, 3, 6,-1],
+    [ 0, 9, 1,11, 6, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 8, 0, 7, 0, 6, 3,11, 0,11, 6, 0,-1,-1,-1,-1],
+    [ 7,11, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8,11, 7, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9,11, 7, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 1, 9, 8, 3, 1,11, 7, 6,-1,-1,-1,-1,-1,-1,-1],
+    [10, 1, 2, 6,11, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 3, 0, 8, 6,11, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 9, 0, 2,10, 9, 6,11, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 6,11, 7, 2,10, 3,10, 8, 3,10, 9, 8,-1,-1,-1,-1],
+    [ 7, 2, 3, 6, 2, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 0, 8, 7, 6, 0, 6, 2, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 7, 6, 2, 3, 7, 0, 1, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 2, 1, 8, 6, 1, 9, 8, 8, 7, 6,-1,-1,-1,-1],
+    [10, 7, 6,10, 1, 7, 1, 3, 7,-1,-1,-1,-1,-1,-1,-1],
+    [10, 7, 6, 1, 7,10, 1, 8, 7, 1, 0, 8,-1,-1,-1,-1],
+    [ 0, 3, 7, 0, 7,10, 0,10, 9, 6,10, 7,-1,-1,-1,-1],
+    [ 7, 6,10, 7,10, 8, 8,10, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 6, 8, 4,11, 8, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 6,11, 3, 0, 6, 0, 4, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 6,11, 8, 4, 6, 9, 0, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 4, 6, 9, 6, 3, 9, 3, 1,11, 3, 6,-1,-1,-1,-1],
+    [ 6, 8, 4, 6,11, 8, 2,10, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 3, 0,11, 0, 6,11, 0, 4, 6,-1,-1,-1,-1],
+    [ 4,11, 8, 4, 6,11, 0, 2, 9, 2,10, 9,-1,-1,-1,-1],
+    [10, 9, 3,10, 3, 2, 9, 4, 3,11, 3, 6, 4, 6, 3,-1],
+    [ 8, 2, 3, 8, 4, 2, 4, 6, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 4, 2, 4, 6, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 2, 3, 4, 2, 4, 6, 4, 3, 8,-1,-1,-1,-1],
+    [ 1, 9, 4, 1, 4, 2, 2, 4, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 1, 3, 8, 6, 1, 8, 4, 6, 6,10, 1,-1,-1,-1,-1],
+    [10, 1, 0,10, 0, 6, 6, 0, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 6, 3, 4, 3, 8, 6,10, 3, 0, 3, 9,10, 9, 3,-1],
+    [10, 9, 4, 6,10, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 5, 7, 6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 4, 9, 5,11, 7, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 0, 1, 5, 4, 0, 7, 6,11,-1,-1,-1,-1,-1,-1,-1],
+    [11, 7, 6, 8, 3, 4, 3, 5, 4, 3, 1, 5,-1,-1,-1,-1],
+    [ 9, 5, 4,10, 1, 2, 7, 6,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 6,11, 7, 1, 2,10, 0, 8, 3, 4, 9, 5,-1,-1,-1,-1],
+    [ 7, 6,11, 5, 4,10, 4, 2,10, 4, 0, 2,-1,-1,-1,-1],
+    [ 3, 4, 8, 3, 5, 4, 3, 2, 5,10, 5, 2,11, 7, 6,-1],
+    [ 7, 2, 3, 7, 6, 2, 5, 4, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4, 0, 8, 6, 0, 6, 2, 6, 8, 7,-1,-1,-1,-1],
+    [ 3, 6, 2, 3, 7, 6, 1, 5, 0, 5, 4, 0,-1,-1,-1,-1],
+    [ 6, 2, 8, 6, 8, 7, 2, 1, 8, 4, 8, 5, 1, 5, 8,-1],
+    [ 9, 5, 4,10, 1, 6, 1, 7, 6, 1, 3, 7,-1,-1,-1,-1],
+    [ 1, 6,10, 1, 7, 6, 1, 0, 7, 8, 7, 0, 9, 5, 4,-1],
+    [ 4, 0,10, 4,10, 5, 0, 3,10, 6,10, 7, 3, 7,10,-1],
+    [ 7, 6,10, 7,10, 8, 5, 4,10, 4, 8,10,-1,-1,-1,-1],
+    [ 6, 9, 5, 6,11, 9,11, 8, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 6,11, 0, 6, 3, 0, 5, 6, 0, 9, 5,-1,-1,-1,-1],
+    [ 0,11, 8, 0, 5,11, 0, 1, 5, 5, 6,11,-1,-1,-1,-1],
+    [ 6,11, 3, 6, 3, 5, 5, 3, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 9, 5,11, 9,11, 8,11, 5, 6,-1,-1,-1,-1],
+    [ 0,11, 3, 0, 6,11, 0, 9, 6, 5, 6, 9, 1, 2,10,-1],
+    [11, 8, 5,11, 5, 6, 8, 0, 5,10, 5, 2, 0, 2, 5,-1],
+    [ 6,11, 3, 6, 3, 5, 2,10, 3,10, 5, 3,-1,-1,-1,-1],
+    [ 5, 8, 9, 5, 2, 8, 5, 6, 2, 3, 8, 2,-1,-1,-1,-1],
+    [ 9, 5, 6, 9, 6, 0, 0, 6, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 5, 8, 1, 8, 0, 5, 6, 8, 3, 8, 2, 6, 2, 8,-1],
+    [ 1, 5, 6, 2, 1, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 3, 6, 1, 6,10, 3, 8, 6, 5, 6, 9, 8, 9, 6,-1],
+    [10, 1, 0,10, 0, 6, 9, 5, 0, 5, 6, 0,-1,-1,-1,-1],
+    [ 0, 3, 8, 5, 6,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [10, 5, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 5,10, 7, 5,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 5,10,11, 7, 5, 8, 3, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,11, 7, 5,10,11, 1, 9, 0,-1,-1,-1,-1,-1,-1,-1],
+    [10, 7, 5,10,11, 7, 9, 8, 1, 8, 3, 1,-1,-1,-1,-1],
+    [11, 1, 2,11, 7, 1, 7, 5, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 1, 2, 7, 1, 7, 5, 7, 2,11,-1,-1,-1,-1],
+    [ 9, 7, 5, 9, 2, 7, 9, 0, 2, 2,11, 7,-1,-1,-1,-1],
+    [ 7, 5, 2, 7, 2,11, 5, 9, 2, 3, 2, 8, 9, 8, 2,-1],
+    [ 2, 5,10, 2, 3, 5, 3, 7, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 2, 0, 8, 5, 2, 8, 7, 5,10, 2, 5,-1,-1,-1,-1],
+    [ 9, 0, 1, 5,10, 3, 5, 3, 7, 3,10, 2,-1,-1,-1,-1],
+    [ 9, 8, 2, 9, 2, 1, 8, 7, 2,10, 2, 5, 7, 5, 2,-1],
+    [ 1, 3, 5, 3, 7, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 7, 0, 7, 1, 1, 7, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 3, 9, 3, 5, 5, 3, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 8, 7, 5, 9, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 8, 4, 5,10, 8,10,11, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 0, 4, 5,11, 0, 5,10,11,11, 3, 0,-1,-1,-1,-1],
+    [ 0, 1, 9, 8, 4,10, 8,10,11,10, 4, 5,-1,-1,-1,-1],
+    [10,11, 4,10, 4, 5,11, 3, 4, 9, 4, 1, 3, 1, 4,-1],
+    [ 2, 5, 1, 2, 8, 5, 2,11, 8, 4, 5, 8,-1,-1,-1,-1],
+    [ 0, 4,11, 0,11, 3, 4, 5,11, 2,11, 1, 5, 1,11,-1],
+    [ 0, 2, 5, 0, 5, 9, 2,11, 5, 4, 5, 8,11, 8, 5,-1],
+    [ 9, 4, 5, 2,11, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 5,10, 3, 5, 2, 3, 4, 5, 3, 8, 4,-1,-1,-1,-1],
+    [ 5,10, 2, 5, 2, 4, 4, 2, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,10, 2, 3, 5,10, 3, 8, 5, 4, 5, 8, 0, 1, 9,-1],
+    [ 5,10, 2, 5, 2, 4, 1, 9, 2, 9, 4, 2,-1,-1,-1,-1],
+    [ 8, 4, 5, 8, 5, 3, 3, 5, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 4, 5, 1, 0, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 4, 5, 8, 5, 3, 9, 0, 5, 0, 3, 5,-1,-1,-1,-1],
+    [ 9, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4,11, 7, 4, 9,11, 9,10,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 4, 9, 7, 9,11, 7, 9,10,11,-1,-1,-1,-1],
+    [ 1,10,11, 1,11, 4, 1, 4, 0, 7, 4,11,-1,-1,-1,-1],
+    [ 3, 1, 4, 3, 4, 8, 1,10, 4, 7, 4,11,10,11, 4,-1],
+    [ 4,11, 7, 9,11, 4, 9, 2,11, 9, 1, 2,-1,-1,-1,-1],
+    [ 9, 7, 4, 9,11, 7, 9, 1,11, 2,11, 1, 0, 8, 3,-1],
+    [11, 7, 4, 11, 4, 2, 2, 4, 0,-1,-1,-1,-1,-1,-1,-1],
+    [11, 7, 4,11, 4, 2, 8, 3, 4, 3, 2, 4,-1,-1,-1,-1],
+    [ 2, 9,10, 2, 7, 9, 2, 3, 7, 7, 4, 9,-1,-1,-1,-1],
+    [ 9,10, 7, 9, 7, 4,10, 2, 7, 8, 7, 0, 2, 0, 7,-1],
+    [ 3, 7,10, 3,10, 2, 7, 4,10, 1,10, 0, 4, 0,10,-1],
+    [ 1,10, 2, 8, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 1, 4, 1, 7, 7, 1, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 1, 4, 1, 7, 0, 8, 1, 8, 7, 1,-1,-1,-1,-1],
+    [ 4, 0, 3, 7, 4, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 8, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9,10, 8,10,11, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 9, 3, 9,11,11, 9,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1,10, 0,10, 8, 8,10,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 1,10,11, 3,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,11, 1,11, 9, 9,11, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 9, 3, 9,11, 1, 2, 9, 2,11, 9,-1,-1,-1,-1],
+    [ 0, 2,11, 8, 0,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 2,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3, 8, 2, 8,10,10, 8, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9,10, 2, 0, 9, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3, 8, 2, 8,10, 0, 1, 8, 1,10, 8,-1,-1,-1,-1],
+    [ 1,10, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 3, 8, 9, 1, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 9, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 3, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
 ];
 
-/// For ProcessEdge: which two corners of the 4 cells form the actual
-/// edge being processed. [edge_axis] => [corner_in_cell_a, corner_in_cell_d]
-const PROCESS_EDGE_MASK: [[usize; 2]; 3] = [
-    [0, 7], // X edge: corners 0 and 7
-    [0, 7], // Y edge: corners 0 and 7
-    [0, 7], // Z edge: corners 0 and 7
-];
-
-// ── QEF Solver ───────────────────────────────────────────────────────
+// ── QEF Solver ──────────────────────────────────────────────────────
 
 struct QefData {
-    ata: [f64; 6], // upper triangle of A^T A (symmetric 3x3)
-    atb: [f64; 3], // A^T b
+    ata: [f64; 6],
+    atb: [f64; 3],
     btb: f64,
     mass_point: [f64; 3],
     num_points: u32,
@@ -93,7 +418,6 @@ impl QefData {
         let (px, py, pz) = (p[0] as f64, p[1] as f64, p[2] as f64);
         let (nx, ny, nz) = (n[0] as f64, n[1] as f64, n[2] as f64);
 
-        // A^T A accumulation (upper triangle, row-major)
         self.ata[0] += nx * nx;
         self.ata[1] += nx * ny;
         self.ata[2] += nx * nz;
@@ -122,31 +446,24 @@ impl QefData {
             self.mass_point[1] / self.num_points as f64,
             self.mass_point[2] / self.num_points as f64,
         ];
-
-        // Solve (A^T A) x = A^T b via pseudoinverse using Givens rotations.
-        // For robustness, solve in mass-point-centered coordinates, then
-        // translate back. The matrix is only 3x3 so direct SVD is fine.
         let solved = svd_solve_3x3(&self.ata, &self.atb, &mp);
         [solved[0] as f32, solved[1] as f32, solved[2] as f32]
     }
 }
 
 fn svd_solve_3x3(ata: &[f64; 6], atb: &[f64; 3], mass_point: &[f64; 3]) -> [f64; 3] {
-    // Expand upper triangle to full symmetric matrix
     let mut a = [
         [ata[0], ata[1], ata[2]],
         [ata[1], ata[3], ata[4]],
         [ata[2], ata[4], ata[5]],
     ];
 
-    // Shift to mass-point coordinates: b' = b - A * mp
     let b = [
         atb[0] - (a[0][0] * mass_point[0] + a[0][1] * mass_point[1] + a[0][2] * mass_point[2]),
         atb[1] - (a[1][0] * mass_point[0] + a[1][1] * mass_point[1] + a[1][2] * mass_point[2]),
         atb[2] - (a[2][0] * mass_point[0] + a[2][1] * mass_point[1] + a[2][2] * mass_point[2]),
     ];
 
-    // Jacobi SVD: diagonalize A^T A via sweeps
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..10 {
         for p in 0..3 {
@@ -156,7 +473,6 @@ fn svd_solve_3x3(ata: &[f64; 6], atb: &[f64; 3], mass_point: &[f64; 3]) -> [f64;
         }
     }
 
-    // Eigenvalues are the diagonal of `a`, eigenvectors are columns of `v`.
     let threshold = 0.1;
     let mut x = [0.0f64; 3];
     for i in 0..3 {
@@ -190,7 +506,6 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
     let c = 1.0 / (1.0 + t * t).sqrt();
     let s = t * c;
 
-    // Rotate a
     let app = a[p][p];
     let aqq = a[q][q];
     let apq = a[p][q];
@@ -209,7 +524,6 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
         }
     }
 
-    // Rotate v
     for r in 0..3 {
         let vrp = v[r][p];
         let vrq = v[r][q];
@@ -218,18 +532,70 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
     }
 }
 
-// ── Octree ───────────────────────────────────────────────────────────
+// ── Cycle detection ─────────────────────────────────────────────────
 
-struct OctreeNode {
-    min: [f32; 3],
-    size: f32,
-    kind: OctreeNodeKind,
+/// For a given MC case, determine which edges belong to which contour
+/// cycle using union-find on the MC triangle table.
+///
+/// Returns (edge_to_cycle, num_cycles) where edge_to_cycle[e] is the
+/// cycle index for MC edge e, or -1 if the edge has no sign change.
+fn compute_edge_cycles(case: u8) -> ([i8; 12], usize) {
+    let mut parent = [0u8; 12];
+    for i in 0..12 {
+        parent[i] = i as u8;
+    }
+
+    fn find(parent: &mut [u8; 12], mut x: u8) -> u8 {
+        while parent[x as usize] != x {
+            parent[x as usize] = parent[parent[x as usize] as usize];
+            x = parent[x as usize];
+        }
+        x
+    }
+
+    fn union(parent: &mut [u8; 12], a: u8, b: u8) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[ra as usize] = rb;
+        }
+    }
+
+    let tris = &TRI_TABLE[case as usize];
+    let mut active = [false; 12];
+    let mut i = 0;
+    while i + 2 < 16 && tris[i] >= 0 {
+        let e0 = tris[i] as u8;
+        let e1 = tris[i + 1] as u8;
+        let e2 = tris[i + 2] as u8;
+        active[e0 as usize] = true;
+        active[e1 as usize] = true;
+        active[e2 as usize] = true;
+        union(&mut parent, e0, e1);
+        union(&mut parent, e1, e2);
+        i += 3;
+    }
+
+    let mut cycle_of_root = [-1i8; 12];
+    let mut next_cycle = 0i8;
+    let mut edge_cycle = [-1i8; 12];
+
+    for e in 0..12 {
+        if !active[e] {
+            continue;
+        }
+        let root = find(&mut parent, e as u8) as usize;
+        if cycle_of_root[root] < 0 {
+            cycle_of_root[root] = next_cycle;
+            next_cycle += 1;
+        }
+        edge_cycle[e] = cycle_of_root[root];
+    }
+
+    (edge_cycle, next_cycle as usize)
 }
 
-enum OctreeNodeKind {
-    Internal { children: [Option<Box<OctreeNode>>; 8] },
-    Leaf { corners: [f32; 8], vertex_index: Option<usize> },
-}
+// ── Main algorithm ──────────────────────────────────────────────────
 
 struct MdcVertex {
     pos: [f32; 3],
@@ -238,346 +604,272 @@ struct MdcVertex {
     contributors: [u32; MAX_CONTRIBUTORS],
 }
 
-fn corner_pos(min: [f32; 3], size: f32, corner: usize) -> [f32; 3] {
-    [
-        min[0] + CORNER_OFFSETS[corner][0] * size,
-        min[1] + CORNER_OFFSETS[corner][1] * size,
-        min[2] + CORNER_OFFSETS[corner][2] * size,
-    ]
+/// Per-cell data: maps each MC edge to the vertex index assigned to it.
+struct CellInfo {
+    edge_vertex: [u32; 12],
 }
 
-fn has_sign_change(corners: &[f32; 8]) -> bool {
-    let first_sign = corners[0] > 0.0;
-    corners[1..].iter().any(|&c| (c > 0.0) != first_sign)
-}
-
-fn cell_overlaps_model(node: &BoundedCsg, min: [f32; 3], size: f32) -> bool {
-    let aabb = node.aabb();
-    if aabb.is_empty() {
-        return false;
-    }
-    let max = [min[0] + size, min[1] + size, min[2] + size];
-    min[0] <= aabb.max[0] && max[0] >= aabb.min[0]
-        && min[1] <= aabb.max[1] && max[1] >= aabb.min[1]
-        && min[2] <= aabb.max[2] && max[2] >= aabb.min[2]
-}
-
-fn build_octree(
-    node: &BoundedCsg,
-    min: [f32; 3],
-    size: f32,
-    max_depth: u32,
-    depth: u32,
-) -> Option<OctreeNode> {
-    if !cell_overlaps_model(node, min, size) {
-        return None;
-    }
-
-    let corners: [f32; 8] = std::array::from_fn(|i| {
-        let p = corner_pos(min, size, i);
-        node.sdf(p, EvalMode::Visual)
-    });
-
-    if depth >= max_depth {
-        if !has_sign_change(&corners) {
-            return None;
-        }
-        return Some(OctreeNode {
-            min,
-            size,
-            kind: OctreeNodeKind::Leaf {
-                corners,
-                vertex_index: None,
-            },
-        });
-    }
-
-    // At non-leaf levels, recurse into children even if this cell's
-    // corners don't show a sign change — the surface may exist
-    // entirely between corners.
-    let half = size * 0.5;
-    let children: [Option<Box<OctreeNode>>; 8] = std::array::from_fn(|i| {
-        let child_min = [
-            min[0] + CORNER_OFFSETS[i][0] * half,
-            min[1] + CORNER_OFFSETS[i][1] * half,
-            min[2] + CORNER_OFFSETS[i][2] * half,
-        ];
-        build_octree(node, child_min, half, max_depth, depth + 1)
-            .map(Box::new)
-    });
-
-    let any_child = children.iter().any(|c| c.is_some());
-    if !any_child {
-        return None;
-    }
-
-    Some(OctreeNode {
-        min,
-        size,
-        kind: OctreeNodeKind::Internal { children },
-    })
-}
-
-// ── Vertex placement ─────────────────────────────────────────────────
-
-fn place_vertices(
-    octree: &mut OctreeNode,
-    node: &BoundedCsg,
-    vertices: &mut Vec<MdcVertex>,
-    normal_eps: f32,
-) {
-    match &mut octree.kind {
-        OctreeNodeKind::Internal { children } => {
-            for child in children.iter_mut().flatten() {
-                place_vertices(child, node, vertices, normal_eps);
-            }
-        }
-        OctreeNodeKind::Leaf { corners, vertex_index } => {
-            let mut qef = QefData::new();
-            let min = octree.min;
-            let size = octree.size;
-
-            for &[c0, c1] in &EDGE_CORNERS {
-                let v0 = corners[c0];
-                let v1 = corners[c1];
-                if (v0 > 0.0) == (v1 > 0.0) {
-                    continue;
-                }
-                let t = v0 / (v0 - v1);
-                let p0 = corner_pos(min, size, c0);
-                let p1 = corner_pos(min, size, c1);
-                let p = [
-                    p0[0] + t * (p1[0] - p0[0]),
-                    p0[1] + t * (p1[1] - p0[1]),
-                    p0[2] + t * (p1[2] - p0[2]),
-                ];
-                let n = sdf_normal(node, p, normal_eps);
-                qef.add(p, n);
-            }
-
-            let mut pos = qef.solve();
-
-            // Clamp to cell bounds
-            pos[0] = pos[0].clamp(min[0], min[0] + size);
-            pos[1] = pos[1].clamp(min[1], min[1] + size);
-            pos[2] = pos[2].clamp(min[2], min[2] + size);
-
-            let normal = sdf_normal(node, pos, normal_eps);
-
-            // Evaluate contributors
-            let (_, cs) = node.evaluate(pos, normal_eps, EvalMode::Visual);
-            let mut element = cs.element();
-            if element == ProxyElement::None {
-                element = ProxyElement::Face;
-            }
-            let slice = cs.as_slice();
-            let mut contributors = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
-            for slot in 0..MAX_CONTRIBUTORS {
-                if slot < slice.len() {
-                    contributors[slot] = slice[slot]
-                        .as_u32_or_root()
-                        .unwrap_or(CONTRIBUTOR_SENTINEL);
-                }
-            }
-
-            let idx = vertices.len();
-            vertices.push(MdcVertex {
-                pos,
-                normal,
-                classification: element.tag(),
-                contributors,
-            });
-            *vertex_index = Some(idx);
-        }
-    }
-}
-
-// ── Quad emission (ProcessCell / ProcessFace / ProcessEdge) ──────────
-
-fn process_cell(octree: &OctreeNode, mesh: &mut MeshBuilder) {
-    if let OctreeNodeKind::Internal { children } = &octree.kind {
-        // Recurse into children
-        for child in children.iter().flatten() {
-            process_cell(child, mesh);
-        }
-
-        // Process shared faces between child pairs
-        for axis in 0..3 {
-            for pair in &CELL_PROC_FACE_MASK[axis] {
-                let (c0, c1) = (pair[0], pair[1]);
-                if let (Some(a), Some(b)) = (&children[c0], &children[c1]) {
-                    process_face(a, b, axis, mesh);
-                }
-            }
-        }
-
-        // Process shared edges between child quads
-        for axis in 0..3 {
-            for quad in &CELL_PROC_EDGE_MASK[axis] {
-                let nodes: [Option<&OctreeNode>; 4] = [
-                    children[quad[0]].as_deref(),
-                    children[quad[1]].as_deref(),
-                    children[quad[2]].as_deref(),
-                    children[quad[3]].as_deref(),
-                ];
-                if nodes.iter().any(|n| n.is_some()) {
-                    process_edge(&nodes, axis, mesh);
-                }
-            }
-        }
-    }
-}
-
-fn process_face(
-    a: &OctreeNode,
-    b: &OctreeNode,
-    axis: usize,
-    mesh: &mut MeshBuilder,
-) {
-    let a_internal = matches!(&a.kind, OctreeNodeKind::Internal { .. });
-    let b_internal = matches!(&b.kind, OctreeNodeKind::Internal { .. });
-
-    if !a_internal && !b_internal {
-        // Both leaves — nothing to emit at the face level.
-        // Edge processing will handle the quads.
-        return;
-    }
-
-    // Process edges that cross this face
-    for sub in &FACE_PROC_EDGE_MASK[axis] {
-        let edge_axis = sub[4];
-        let nodes: [Option<&OctreeNode>; 4] = std::array::from_fn(|i| {
-            let child_idx = sub[i];
-            // Determine which parent (a or b) owns this child
-            // and descend into it if internal.
-            let (parent, local_idx) = if child_idx < 4 {
-                (a, child_idx)
-            } else {
-                (b, child_idx - 4)
-            };
-            match &parent.kind {
-                OctreeNodeKind::Internal { children } => children[local_idx].as_deref(),
-                OctreeNodeKind::Leaf { .. } => Some(parent),
-            }
-        });
-        if nodes.iter().any(|n| n.is_some()) {
-            process_edge(&nodes, edge_axis, mesh);
-        }
-    }
-}
-
-fn process_edge(
-    nodes: &[Option<&OctreeNode>; 4],
-    axis: usize,
-    mesh: &mut MeshBuilder,
-) {
-    // If any node is internal, we need to recurse deeper.
-    let any_internal = nodes.iter().any(|n| {
-        n.map_or(false, |n| matches!(&n.kind, OctreeNodeKind::Internal { .. }))
-    });
-
-    if any_internal {
-        // Recurse: each internal node contributes its relevant child;
-        // leaf nodes repeat themselves for all sub-edges.
-        for sub in &CELL_PROC_EDGE_MASK[axis] {
-            let sub_nodes: [Option<&OctreeNode>; 4] = std::array::from_fn(|i| {
-                let parent = nodes[i]?;
-                match &parent.kind {
-                    OctreeNodeKind::Internal { children } => children[sub[i]].as_deref(),
-                    OctreeNodeKind::Leaf { .. } => Some(parent),
-                }
-            });
-            if sub_nodes.iter().any(|n| n.is_some()) {
-                process_edge(&sub_nodes, axis, mesh);
-            }
-        }
-        return;
-    }
-
-    // All four are leaves (or None). Check if the edge has a sign change.
-    let [c0_idx, c1_idx] = PROCESS_EDGE_MASK[axis];
-    let mut v0_sign = None;
-    let mut v1_sign = None;
-
-    for n in nodes.iter().flatten() {
-        if let OctreeNodeKind::Leaf { corners, .. } = &n.kind {
-            if v0_sign.is_none() { v0_sign = Some(corners[c0_idx] > 0.0); }
-            if v1_sign.is_none() { v1_sign = Some(corners[c1_idx] > 0.0); }
-        }
-    }
-
-    let (Some(s0), Some(s1)) = (v0_sign, v1_sign) else { return };
-    if s0 == s1 {
-        return;
-    }
-
-    // Collect vertex indices from the four leaf cells
-    let mut vi = [None; 4];
-    for (i, n) in nodes.iter().enumerate() {
-        if let Some(node) = n {
-            if let OctreeNodeKind::Leaf { vertex_index, .. } = &node.kind {
-                vi[i] = *vertex_index;
-            }
-        }
-    }
-
-    // Emit a quad (two triangles) from the four vertices
-    if let (Some(a), Some(b), Some(c), Some(d)) = (vi[0], vi[1], vi[2], vi[3]) {
-        if a == b || a == c || a == d || b == c || b == d || c == d {
-            return;
-        }
-        // Wind based on sign: if inside is on the c0 side, flip
-        if s0 {
-            mesh.push_tri(a, b, c);
-            mesh.push_tri(c, b, d);
-        } else {
-            mesh.push_tri(a, c, b);
-            mesh.push_tri(b, c, d);
-        }
-    }
-}
-
-// ── Mesh builder ─────────────────────────────────────────────────────
-
-struct MeshBuilder {
-    indices: Vec<u32>,
-}
-
-impl MeshBuilder {
-    fn new() -> Self {
-        Self { indices: Vec::new() }
-    }
-
-    fn push_tri(&mut self, a: usize, b: usize, c: usize) {
-        self.indices.push(a as u32);
-        self.indices.push(b as u32);
-        self.indices.push(c as u32);
-    }
-}
-
-// ── Public entry point ───────────────────────────────────────────────
-
-pub fn mdc_core(
+pub fn manifold_dc(
     node: &BoundedCsg,
     grid_min: [f32; 3],
-    grid_size: f32,
-    resolution: u32,
+    cell: f32,
+    nx: usize,
+    ny: usize,
+    nz: usize,
 ) -> Mesh {
-    let max_depth = (resolution as f32).log2().ceil() as u32;
+    let cnx = nx + 1;
+    let cny = ny + 1;
+    let cnz = nz + 1;
 
-    let mut octree = match build_octree(node, grid_min, grid_size, max_depth, 0) {
-        Some(tree) => tree,
-        None => return Mesh::default(),
+    let corner_index =
+        |i: usize, j: usize, k: usize| -> usize { i + j * cnx + k * cnx * cny };
+    let corner_point = |i: usize, j: usize, k: usize| -> [f32; 3] {
+        [
+            grid_min[0] + i as f32 * cell,
+            grid_min[1] + j as f32 * cell,
+            grid_min[2] + k as f32 * cell,
+        ]
     };
+    let cell_index = |i: usize, j: usize, k: usize| -> usize { i + j * nx + k * nx * ny };
 
-    let normal_eps = grid_size / resolution as f32 * 0.25;
-    let mut vertices = Vec::new();
-    place_vertices(&mut octree, node, &mut vertices, normal_eps);
+    // ── 1. Evaluate SDF at all grid corners ─────────────────────────
 
-    let mut builder = MeshBuilder::new();
-    process_cell(&octree, &mut builder);
+    let mut sdf_grid = vec![0.0_f32; cnx * cny * cnz];
+    for k in 0..cnz {
+        for j in 0..cny {
+            for i in 0..cnx {
+                sdf_grid[corner_index(i, j, k)] =
+                    node.sdf(corner_point(i, j, k), EvalMode::Visual);
+            }
+        }
+    }
 
-    // Pack into Mesh
+    let normal_eps = cell * 0.25;
+    let contributor_eps = cell * 0.5;
+
+    // ── 2. Process cells: MC case → cycles → QEF → vertices ────────
+
+    let mut vertices: Vec<MdcVertex> = Vec::new();
+    let mut cell_data: HashMap<usize, CellInfo> = HashMap::new();
+
+    for ck in 0..nz {
+        for cj in 0..ny {
+            for ci in 0..nx {
+                // Get SDF values at 8 MC corners of this cell
+                let mc_corners: [f32; 8] = std::array::from_fn(|v| {
+                    let gi = ci + MC_CORNER_POS[v][0] as usize;
+                    let gj = cj + MC_CORNER_POS[v][1] as usize;
+                    let gk = ck + MC_CORNER_POS[v][2] as usize;
+                    sdf_grid[corner_index(gi, gj, gk)]
+                });
+
+                // Compute MC case index
+                let mut case = 0u8;
+                for v in 0..8 {
+                    if mc_corners[v] < 0.0 {
+                        case |= 1 << v;
+                    }
+                }
+
+                if EDGE_TABLE[case as usize] == 0 {
+                    continue;
+                }
+
+                // Determine cycles
+                let (edge_cycle, num_cycles) = compute_edge_cycles(case);
+
+                let mut edge_vertex = [u32::MAX; 12];
+                let cell_min = corner_point(ci, cj, ck);
+
+                for cycle in 0..num_cycles {
+                    let cycle_id = cycle as i8;
+                    let mut qef = QefData::new();
+
+                    for e in 0..12 {
+                        if edge_cycle[e] != cycle_id {
+                            continue;
+                        }
+                        let [v0, v1] = MC_EDGE_VERTS[e];
+                        let d0 = mc_corners[v0];
+                        let d1 = mc_corners[v1];
+                        if (d0 < 0.0) == (d1 < 0.0) {
+                            continue;
+                        }
+                        let t = d0 / (d0 - d1);
+                        let p0 = [
+                            cell_min[0] + MC_CORNER_POS[v0][0] * cell,
+                            cell_min[1] + MC_CORNER_POS[v0][1] * cell,
+                            cell_min[2] + MC_CORNER_POS[v0][2] * cell,
+                        ];
+                        let p1 = [
+                            cell_min[0] + MC_CORNER_POS[v1][0] * cell,
+                            cell_min[1] + MC_CORNER_POS[v1][1] * cell,
+                            cell_min[2] + MC_CORNER_POS[v1][2] * cell,
+                        ];
+                        let p = [
+                            p0[0] + t * (p1[0] - p0[0]),
+                            p0[1] + t * (p1[1] - p0[1]),
+                            p0[2] + t * (p1[2] - p0[2]),
+                        ];
+                        let n = sdf_normal(node, p, normal_eps);
+                        qef.add(p, n);
+                    }
+
+                    if qef.num_points == 0 {
+                        continue;
+                    }
+
+                    let mut pos = qef.solve();
+
+                    // Clamp to cell bounds
+                    let cell_max = [
+                        cell_min[0] + cell,
+                        cell_min[1] + cell,
+                        cell_min[2] + cell,
+                    ];
+                    pos[0] = pos[0].clamp(cell_min[0], cell_max[0]);
+                    pos[1] = pos[1].clamp(cell_min[1], cell_max[1]);
+                    pos[2] = pos[2].clamp(cell_min[2], cell_max[2]);
+
+                    let normal = sdf_normal(node, pos, normal_eps);
+
+                    let (_, cs) = node.evaluate(pos, contributor_eps, EvalMode::Visual);
+                    let mut element = cs.element();
+                    if element == ProxyElement::None {
+                        element = ProxyElement::Face;
+                    }
+                    let slice = cs.as_slice();
+                    let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
+                    for slot in 0..MAX_CONTRIBUTORS {
+                        if slot < slice.len() {
+                            contribs[slot] = slice[slot]
+                                .as_u32_or_root()
+                                .unwrap_or(CONTRIBUTOR_SENTINEL);
+                        }
+                    }
+
+                    let idx = vertices.len() as u32;
+                    vertices.push(MdcVertex {
+                        pos,
+                        normal,
+                        classification: element.tag(),
+                        contributors: contribs,
+                    });
+
+                    // Map each edge of this cycle to this vertex
+                    for e in 0..12 {
+                        if edge_cycle[e] == cycle_id {
+                            edge_vertex[e] = idx;
+                        }
+                    }
+                }
+
+                cell_data.insert(cell_index(ci, cj, ck), CellInfo { edge_vertex });
+            }
+        }
+    }
+
+    // ── 3. Emit quads ───────────────────────────────────────────────
+
+    let mut indices: Vec<u32> = Vec::new();
+
+    for axis in 0..3usize {
+        let (ei_max, _ej_max, _ek_max) = match axis {
+            0 => (nx, ny + 1, nz + 1),
+            1 => (nx + 1, ny, nz + 1),
+            2 => (nx + 1, ny + 1, nz),
+            _ => unreachable!(),
+        };
+        let (ej_start, ek_start) = match axis {
+            0 => (1usize, 1usize),
+            1 => (0, 1),
+            2 => (0, 0),
+            _ => unreachable!(),
+        };
+        let (ej_end, ek_end) = match axis {
+            0 => (ny, nz),
+            1 => (ny, nz),
+            2 => (ny, nz),
+            _ => unreachable!(),
+        };
+
+        // Iterate only over grid edges whose 4 adjacent cells all exist
+        for ek in ek_start..ek_end {
+            for ej in ej_start..ej_end {
+                for ei in 0..ei_max {
+                    // Check sign change on this grid edge
+                    let (ca_pos, cb_pos) = match axis {
+                        0 => ((ei, ej, ek), (ei + 1, ej, ek)),
+                        1 => ((ei, ej, ek), (ei, ej + 1, ek)),
+                        2 => ((ei, ej, ek), (ei, ej, ek + 1)),
+                        _ => unreachable!(),
+                    };
+                    let da = sdf_grid[corner_index(ca_pos.0, ca_pos.1, ca_pos.2)];
+                    let db = sdf_grid[corner_index(cb_pos.0, cb_pos.1, cb_pos.2)];
+                    if (da < 0.0) == (db < 0.0) {
+                        continue;
+                    }
+
+                    // Look up vertices from the 4 cells sharing this edge
+                    let quad_spec = &QUAD_CELLS[axis];
+                    let mut vi = [u32::MAX; 4];
+                    let mut all_valid = true;
+
+                    for q in 0..4 {
+                        let (di, dj, dk, mc_edge) = quad_spec[q];
+                        let ci = ei as i32 + di;
+                        let cj = ej as i32 + dj;
+                        let ck = ek as i32 + dk;
+                        if ci < 0 || cj < 0 || ck < 0
+                            || ci >= nx as i32
+                            || cj >= ny as i32
+                            || ck >= nz as i32
+                        {
+                            all_valid = false;
+                            break;
+                        }
+                        let cidx = cell_index(ci as usize, cj as usize, ck as usize);
+                        if let Some(info) = cell_data.get(&cidx) {
+                            vi[q] = info.edge_vertex[mc_edge];
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+
+                    if !all_valid
+                        || vi[0] == u32::MAX
+                        || vi[1] == u32::MAX
+                        || vi[2] == u32::MAX
+                        || vi[3] == u32::MAX
+                    {
+                        continue;
+                    }
+
+                    // Skip degenerate quads
+                    if vi[0] == vi[1] || vi[0] == vi[2] || vi[0] == vi[3]
+                        || vi[1] == vi[2] || vi[1] == vi[3] || vi[2] == vi[3]
+                    {
+                        continue;
+                    }
+
+                    let (v00, v10, v11, v01) = (vi[0], vi[1], vi[2], vi[3]);
+
+                    let flip = axis == 1;
+                    if (da > 0.0) ^ flip {
+                        indices.extend_from_slice(&[v00, v01, v11]);
+                        indices.extend_from_slice(&[v00, v11, v10]);
+                    } else {
+                        indices.extend_from_slice(&[v00, v10, v11]);
+                        indices.extend_from_slice(&[v00, v11, v01]);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 4. Pack into Mesh ───────────────────────────────────────────
+
     let vert_count = vertices.len();
     let mut positions = Vec::with_capacity(vert_count * 3);
     let mut normals = Vec::with_capacity(vert_count * 3);
@@ -594,13 +886,13 @@ pub fn mdc_core(
     Mesh {
         positions,
         normals,
-        indices: builder.indices,
+        indices,
         classifications,
         contributors,
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -626,66 +918,106 @@ mod tests {
         }
     }
 
-    fn bounded_sphere(center: [f32; 3], radius: f32) -> BoundedCsg {
+    fn bounded_sphere(center: [f32; 3], radius: f32) -> crate::bvh::BoundedCsg {
         let f = make_feature(1, Primitive::Sphere { center, radius });
         let csg = CsgNode::from_features(&[f]);
-        BoundedCsg::from_csg(&csg)
+        crate::bvh::BoundedCsg::from_csg(&csg)
     }
 
-    fn bounded_box(center: [f32; 3], half: [f32; 3]) -> BoundedCsg {
-        let f = make_feature(1, Primitive::Box { center, half_extents: half });
+    fn bounded_box(center: [f32; 3], half: [f32; 3]) -> crate::bvh::BoundedCsg {
+        let f = make_feature(
+            1,
+            Primitive::Box {
+                center,
+                half_extents: half,
+            },
+        );
         let csg = CsgNode::from_features(&[f]);
-        BoundedCsg::from_csg(&csg)
+        crate::bvh::BoundedCsg::from_csg(&csg)
+    }
+
+    fn run_manifold_dc(bounded: &crate::bvh::BoundedCsg, resolution: u32) -> Mesh {
+        let aabb = bounded.aabb();
+        let raw_size = aabb.size();
+        let max_dim = raw_size[0].max(raw_size[1]).max(raw_size[2]);
+        let cell = max_dim / resolution as f32;
+        let grid = aabb.expanded(cell * crate::dc::DC_MARGIN_CELLS);
+        let size = grid.size();
+        let nx = ((size[0] / cell).ceil() as usize).max(1);
+        let ny = ((size[1] / cell).ceil() as usize).max(1);
+        let nz = ((size[2] / cell).ceil() as usize).max(1);
+        manifold_dc(bounded, grid.min, cell, nx, ny, nz)
     }
 
     #[test]
-    fn octree_prunes_empty_cells() {
-        let bounded = bounded_sphere([0.0, 0.0, 0.0], 5.0);
-        let tree = build_octree(&bounded, [-10.0, -10.0, -10.0], 20.0, 3, 0);
-        assert!(tree.is_some());
+    fn cycle_detection_single_triangle() {
+        // Case 1: only MC vertex 0 inside → edges 0, 3, 8 → 1 cycle
+        let (cycles, num) = compute_edge_cycles(1);
+        assert_eq!(num, 1);
+        assert!(cycles[0] >= 0);
+        assert!(cycles[3] >= 0);
+        assert!(cycles[8] >= 0);
+        assert_eq!(cycles[0], cycles[3]);
+        assert_eq!(cycles[3], cycles[8]);
+    }
 
-        // A sphere in a large grid should prune many cells
-        fn count_leaves(node: &OctreeNode) -> usize {
-            match &node.kind {
-                OctreeNodeKind::Leaf { .. } => 1,
-                OctreeNodeKind::Internal { children } => {
-                    children.iter().flatten().map(|c| count_leaves(c)).sum()
-                }
-            }
+    #[test]
+    fn cycle_detection_empty() {
+        let (cycles, num) = compute_edge_cycles(0);
+        assert_eq!(num, 0);
+        assert!(cycles.iter().all(|&c| c < 0));
+    }
+
+    #[test]
+    fn cycle_detection_full() {
+        let (cycles, num) = compute_edge_cycles(255);
+        assert_eq!(num, 0);
+        assert!(cycles.iter().all(|&c| c < 0));
+    }
+
+    #[test]
+    fn sphere_produces_manifold_mesh() {
+        let bounded = bounded_sphere([0.0, 0.0, 0.0], 10.0);
+        let mesh = run_manifold_dc(&bounded, 32);
+
+        assert!(mesh.vertex_count() > 0, "mesh should have vertices");
+        assert!(mesh.triangle_count() > 0, "mesh should have triangles");
+        assert_eq!(mesh.indices.len() % 3, 0);
+
+        for &idx in &mesh.indices {
+            assert!(
+                (idx as usize) < mesh.vertex_count(),
+                "index {idx} out of bounds"
+            );
         }
 
-        let total_possible = 8usize.pow(3); // 512 at depth 3
-        let actual = count_leaves(tree.as_ref().unwrap());
-        assert!(
-            actual < total_possible,
-            "octree should prune: {actual} leaves vs {total_possible} possible"
+        // Check manifold: every edge should be shared by exactly 2 triangles
+        let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in 0..mesh.triangle_count() {
+            let tri = [
+                mesh.indices[t * 3],
+                mesh.indices[t * 3 + 1],
+                mesh.indices[t * 3 + 2],
+            ];
+            for e in 0..3 {
+                let a = tri[e];
+                let b = tri[(e + 1) % 3];
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_count.entry(key).or_default() += 1;
+            }
+        }
+        let non_manifold = edge_count.values().filter(|&&c| c != 2).count();
+        assert_eq!(
+            non_manifold, 0,
+            "{non_manifold} non-manifold edges (expected all edges shared by exactly 2 triangles)"
         );
-    }
-
-    #[test]
-    fn qef_places_vertex_on_edge() {
-        // A plane with normal (1,0,0) through x=5 should place vertex at x≈5
-        let mut qef = QefData::new();
-        qef.add([5.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
-        qef.add([5.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
-        qef.add([5.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
-        let pos = qef.solve();
-        assert!((pos[0] - 5.0).abs() < 0.1, "x should be ~5, got {}", pos[0]);
     }
 
     #[test]
     fn sphere_vertices_hug_surface() {
         let radius = 10.0;
         let bounded = bounded_sphere([0.0, 0.0, 0.0], radius);
-        let aabb = bounded.aabb();
-        let grid_size = aabb.size().iter().copied().fold(0.0f32, f32::max);
-        let grid_min = aabb.min.map(|v| v - 1.0);
-        let grid_total = grid_size + 2.0;
-
-        let mesh = mdc_core(&bounded, grid_min, grid_total, 64);
-
-        assert!(mesh.vertex_count() > 0, "mesh should have vertices");
-        assert!(mesh.triangle_count() > 0, "mesh should have triangles");
+        let mesh = run_manifold_dc(&bounded, 32);
 
         let mut max_dist = 0.0f32;
         for i in 0..mesh.vertex_count() {
@@ -695,58 +1027,31 @@ mod tests {
             let dist = (x * x + y * y + z * z).sqrt() - radius;
             max_dist = max_dist.max(dist.abs());
         }
+        let cell = 20.0 / 32.0;
         assert!(
-            max_dist < 1.0,
-            "sphere vertices should be within 1mm of surface, max dist = {max_dist}"
+            max_dist < cell * 2.0,
+            "sphere vertices should be near surface, max dist = {max_dist}"
         );
-    }
-
-    #[test]
-    fn mdc_produces_valid_mesh() {
-        let bounded = bounded_box([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
-        let aabb = bounded.aabb();
-        let grid_size = aabb.size().iter().copied().fold(0.0f32, f32::max);
-        let grid_min = aabb.min.map(|v| v - 1.0);
-        let grid_total = grid_size + 2.0;
-
-        let mesh = mdc_core(&bounded, grid_min, grid_total, 32);
-
-        assert!(mesh.vertex_count() > 0, "box mesh should have vertices");
-        assert!(mesh.triangle_count() > 0, "box mesh should have triangles");
-
-        // All indices should be in bounds
-        for &idx in &mesh.indices {
-            assert!(
-                (idx as usize) < mesh.vertex_count(),
-                "index {idx} out of bounds (vertex_count = {})",
-                mesh.vertex_count()
-            );
-        }
-
-        assert_eq!(mesh.classifications.len(), mesh.vertex_count());
-        assert_eq!(mesh.contributors.len(), mesh.vertex_count() * MAX_CONTRIBUTORS);
     }
 
     #[test]
     fn box_preserves_sharp_edges() {
         let half = [5.0, 5.0, 5.0];
         let bounded = bounded_box([0.0, 0.0, 0.0], half);
-        let aabb = bounded.aabb();
-        let grid_size = aabb.size().iter().copied().fold(0.0f32, f32::max);
-        let grid_min = aabb.min.map(|v| v - 1.0);
-        let grid_total = grid_size + 2.0;
+        let mesh = run_manifold_dc(&bounded, 32);
 
-        let mesh = mdc_core(&bounded, grid_min, grid_total, 32);
         assert!(mesh.vertex_count() > 0);
+        assert!(mesh.triangle_count() > 0);
 
-        // Check that some vertices are near the box corners.
-        // A perfect QEF solver should place vertices exactly at
-        // corners/edges; we allow some tolerance.
         let corners = [
-            [-5.0, -5.0, -5.0], [5.0, -5.0, -5.0],
-            [-5.0, 5.0, -5.0], [5.0, 5.0, -5.0],
-            [-5.0, -5.0, 5.0], [5.0, -5.0, 5.0],
-            [-5.0, 5.0, 5.0], [5.0, 5.0, 5.0],
+            [-5.0, -5.0, -5.0],
+            [5.0, -5.0, -5.0],
+            [-5.0, 5.0, -5.0],
+            [5.0, 5.0, -5.0],
+            [-5.0, -5.0, 5.0],
+            [5.0, -5.0, 5.0],
+            [-5.0, 5.0, 5.0],
+            [5.0, 5.0, 5.0],
         ];
         let mut corners_found = 0;
         for corner in &corners {
@@ -758,13 +1063,66 @@ mod tests {
                 let d = (dx * dx + dy * dy + dz * dz).sqrt();
                 best = best.min(d);
             }
-            if best < 2.0 {
+            if best < 1.0 {
                 corners_found += 1;
             }
         }
         assert!(
             corners_found >= 6,
             "QEF should place vertices near box corners, found {corners_found}/8"
+        );
+    }
+
+    #[test]
+    fn box_manifold_check() {
+        let bounded = bounded_box([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+        let mesh = run_manifold_dc(&bounded, 16);
+
+        assert!(mesh.vertex_count() > 0);
+
+        let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in 0..mesh.triangle_count() {
+            let tri = [
+                mesh.indices[t * 3],
+                mesh.indices[t * 3 + 1],
+                mesh.indices[t * 3 + 2],
+            ];
+            for e in 0..3 {
+                let a = tri[e];
+                let b = tri[(e + 1) % 3];
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_count.entry(key).or_default() += 1;
+            }
+        }
+        let non_manifold = edge_count.values().filter(|&&c| c != 2).count();
+        assert_eq!(non_manifold, 0, "{non_manifold} non-manifold edges in box mesh");
+    }
+
+    #[test]
+    fn classification_arrays_parallel() {
+        let bounded = bounded_box([0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+        let mesh = run_manifold_dc(&bounded, 16);
+
+        assert_eq!(mesh.classifications.len(), mesh.vertex_count());
+        assert_eq!(
+            mesh.contributors.len(),
+            mesh.vertex_count() * MAX_CONTRIBUTORS
+        );
+        assert_eq!(mesh.positions.len(), mesh.vertex_count() * 3);
+        assert_eq!(mesh.normals.len(), mesh.vertex_count() * 3);
+    }
+
+    #[test]
+    fn qef_places_vertex_on_plane() {
+        let mut qef = QefData::new();
+        qef.add([5.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        qef.add([5.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+        qef.add([5.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let pos = qef.solve();
+        assert!(
+            (pos[0] - 5.0).abs() < 0.1,
+            "x should be ~5, got {}",
+            pos[0]
         );
     }
 }

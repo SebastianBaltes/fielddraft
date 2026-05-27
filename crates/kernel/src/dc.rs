@@ -1,13 +1,14 @@
 //! Dual Contouring mesher.
 //!
-//! Evaluates the SDF at every grid corner (dense path) and places
-//! one vertex per sign-changing cell via edge-intersection averaging.
+//! Delegates to the Manifold DC implementation in [`crate::mdc`] for
+//! mesh extraction, then applies post-processing (Newton projection,
+//! planar simplification, developable simplification).
 //!
 //! Everything here operates on a [`BoundedCsg`]; the kernel's linear
 //! feature list is lifted into a tree first.
 
 use crate::bvh::BoundedCsg;
-use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
+use crate::csg::{EvalMode, MAX_CONTRIBUTORS};
 use crate::world_to_local;
 use fielddraft_protocol::{Primitive, Transform};
 use std::collections::HashMap;
@@ -102,12 +103,7 @@ pub fn dual_contour_with_primitives(
 
     let normal_eps = cell * 0.25;
 
-    let mut mesh = if nx.max(ny).max(nz) > 64 {
-        let grid_size = size[0].max(size[1]).max(size[2]);
-        crate::mdc::mdc_core(node, grid.min, grid_size, resolution)
-    } else {
-        dc_core_dense(node, grid.min, cell, nx, ny, nz)
-    };
+    let mut mesh = crate::mdc::manifold_dc(node, grid.min, cell, nx, ny, nz);
 
     project_face_vertices(&mut mesh, node, normal_eps);
     simplify_planar_faces(&mut mesh);
@@ -117,215 +113,6 @@ pub fn dual_contour_with_primitives(
     }
 
     mesh
-}
-
-// ── Dense path (resolution ≤ 64 cells per axis) ───────────────────
-
-fn dc_core_dense(
-    node: &BoundedCsg,
-    grid_min: [f32; 3],
-    cell: f32,
-    nx: usize, ny: usize, nz: usize,
-) -> Mesh {
-    let cnx = nx + 1;
-    let cny = ny + 1;
-    let cnz = nz + 1;
-    let corner_index = |i: usize, j: usize, k: usize| -> usize {
-        i + j * cnx + k * cnx * cny
-    };
-    let corner_point = |i: usize, j: usize, k: usize| -> [f32; 3] {
-        [
-            grid_min[0] + i as f32 * cell,
-            grid_min[1] + j as f32 * cell,
-            grid_min[2] + k as f32 * cell,
-        ]
-    };
-
-    let mut sdf_grid = vec![0.0_f32; cnx * cny * cnz];
-    for k in 0..cnz {
-        for j in 0..cny {
-            for i in 0..cnx {
-                sdf_grid[corner_index(i, j, k)] =
-                    node.sdf(corner_point(i, j, k), EvalMode::Visual);
-            }
-        }
-    }
-
-    let cell_index = |i: usize, j: usize, k: usize| -> usize { i + j * nx + k * nx * ny };
-
-    let cell_edges: [((usize, usize, usize), (usize, usize, usize)); 12] = [
-        ((0, 0, 0), (1, 0, 0)),
-        ((0, 1, 0), (1, 1, 0)),
-        ((0, 0, 1), (1, 0, 1)),
-        ((0, 1, 1), (1, 1, 1)),
-        ((0, 0, 0), (0, 1, 0)),
-        ((1, 0, 0), (1, 1, 0)),
-        ((0, 0, 1), (0, 1, 1)),
-        ((1, 0, 1), (1, 1, 1)),
-        ((0, 0, 0), (0, 0, 1)),
-        ((1, 0, 0), (1, 0, 1)),
-        ((0, 1, 0), (0, 1, 1)),
-        ((1, 1, 0), (1, 1, 1)),
-    ];
-
-    let mut cell_vertex_index = vec![u32::MAX; nx * ny * nz];
-    let mut positions: Vec<f32> = Vec::new();
-    let mut normals: Vec<f32> = Vec::new();
-    let mut classifications: Vec<u8> = Vec::new();
-    let mut contributors: Vec<u32> = Vec::new();
-
-    let normal_eps = cell * 0.25;
-    let contributor_eps = cell * 0.5;
-
-    for k in 0..nz {
-        for j in 0..ny {
-            for i in 0..nx {
-                let mut acc = [0.0_f32; 3];
-                let mut hits = 0;
-                for &(a, b) in &cell_edges {
-                    let ca = corner_index(i + a.0, j + a.1, k + a.2);
-                    let cb = corner_index(i + b.0, j + b.1, k + b.2);
-                    let da = sdf_grid[ca];
-                    let db = sdf_grid[cb];
-                    if (da < 0.0) == (db < 0.0) {
-                        continue;
-                    }
-                    let denom = da - db;
-                    let t = if denom.abs() < 1e-12 { 0.5 } else { da / denom };
-                    let t = t.clamp(0.0, 1.0);
-                    let pa = corner_point(i + a.0, j + a.1, k + a.2);
-                    let pb = corner_point(i + b.0, j + b.1, k + b.2);
-                    acc[0] += pa[0] + t * (pb[0] - pa[0]);
-                    acc[1] += pa[1] + t * (pb[1] - pa[1]);
-                    acc[2] += pa[2] + t * (pb[2] - pa[2]);
-                    hits += 1;
-                }
-                if hits == 0 {
-                    continue;
-                }
-                let inv = 1.0 / hits as f32;
-                let vp = [acc[0] * inv, acc[1] * inv, acc[2] * inv];
-                let n = sdf_normal(node, vp, normal_eps);
-                let idx = (positions.len() / 3) as u32;
-                positions.extend_from_slice(&vp);
-                normals.extend_from_slice(&n);
-
-                let (_, cs) = node.evaluate(vp, contributor_eps, EvalMode::Visual);
-                let mut element = cs.element();
-                if element == ProxyElement::None {
-                    element = ProxyElement::Face;
-                }
-                classifications.push(element.tag());
-                let slice = cs.as_slice();
-                for slot in 0..MAX_CONTRIBUTORS {
-                    if slot < slice.len() {
-                        let compact = slice[slot]
-                            .as_u32_or_root()
-                            .unwrap_or(CONTRIBUTOR_SENTINEL);
-                        contributors.push(compact);
-                    } else {
-                        contributors.push(CONTRIBUTOR_SENTINEL);
-                    }
-                }
-
-                cell_vertex_index[cell_index(i, j, k)] = idx;
-            }
-        }
-    }
-
-    let mut indices: Vec<u32> = Vec::new();
-
-    for i in 0..nx {
-        for j in 1..ny {
-            for k in 1..nz {
-                let ca = corner_index(i, j, k);
-                let cb = corner_index(i + 1, j, k);
-                let da = sdf_grid[ca];
-                let db = sdf_grid[cb];
-                if (da < 0.0) == (db < 0.0) {
-                    continue;
-                }
-                let v00 = cell_vertex_index[cell_index(i, j - 1, k - 1)];
-                let v10 = cell_vertex_index[cell_index(i, j, k - 1)];
-                let v11 = cell_vertex_index[cell_index(i, j, k)];
-                let v01 = cell_vertex_index[cell_index(i, j - 1, k)];
-                if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
-                    continue;
-                }
-                if da > 0.0 {
-                    indices.extend_from_slice(&[v00, v01, v11]);
-                    indices.extend_from_slice(&[v00, v11, v10]);
-                } else {
-                    indices.extend_from_slice(&[v00, v10, v11]);
-                    indices.extend_from_slice(&[v00, v11, v01]);
-                }
-            }
-        }
-    }
-
-    for j in 0..ny {
-        for i in 1..nx {
-            for k in 1..nz {
-                let ca = corner_index(i, j, k);
-                let cb = corner_index(i, j + 1, k);
-                let da = sdf_grid[ca];
-                let db = sdf_grid[cb];
-                if (da < 0.0) == (db < 0.0) {
-                    continue;
-                }
-                let v00 = cell_vertex_index[cell_index(i - 1, j, k - 1)];
-                let v10 = cell_vertex_index[cell_index(i, j, k - 1)];
-                let v11 = cell_vertex_index[cell_index(i, j, k)];
-                let v01 = cell_vertex_index[cell_index(i - 1, j, k)];
-                if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
-                    continue;
-                }
-                if da > 0.0 {
-                    indices.extend_from_slice(&[v00, v10, v11]);
-                    indices.extend_from_slice(&[v00, v11, v01]);
-                } else {
-                    indices.extend_from_slice(&[v00, v01, v11]);
-                    indices.extend_from_slice(&[v00, v11, v10]);
-                }
-            }
-        }
-    }
-
-    for k in 0..nz {
-        for i in 1..nx {
-            for j in 1..ny {
-                let ca = corner_index(i, j, k);
-                let cb = corner_index(i, j, k + 1);
-                let da = sdf_grid[ca];
-                let db = sdf_grid[cb];
-                if (da < 0.0) == (db < 0.0) {
-                    continue;
-                }
-                let v00 = cell_vertex_index[cell_index(i - 1, j - 1, k)];
-                let v10 = cell_vertex_index[cell_index(i, j - 1, k)];
-                let v11 = cell_vertex_index[cell_index(i, j, k)];
-                let v01 = cell_vertex_index[cell_index(i - 1, j, k)];
-                if v00 == u32::MAX || v10 == u32::MAX || v11 == u32::MAX || v01 == u32::MAX {
-                    continue;
-                }
-                if da > 0.0 {
-                    indices.extend_from_slice(&[v00, v01, v11]);
-                    indices.extend_from_slice(&[v00, v11, v10]);
-                } else {
-                    indices.extend_from_slice(&[v00, v10, v11]);
-                    indices.extend_from_slice(&[v00, v11, v01]);
-                }
-            }
-        }
-    }
-
-    Mesh {
-        positions,
-        normals,
-        indices,
-        classifications,
-        contributors,
-    }
 }
 
 // ── K3.5 Phase B: planar face simplification ────────────────────────
