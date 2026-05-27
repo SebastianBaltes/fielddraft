@@ -278,7 +278,7 @@ export function SelectionTransformGizmo() {
     const helper = tc.getHelper() as THREE.Object3D;
     tc.attach(mesh);
     tc.setMode(gizmoMode);
-    tc.setSize(0.3);
+    tc.setSize(0.5);
     helper.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
 
     const onDragging = (e: { value: boolean }) => {
