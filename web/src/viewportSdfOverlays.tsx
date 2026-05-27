@@ -49,14 +49,17 @@ function collectBodyVolumes(k: KernelLike, bodyIndex: number): BodyVolumes | und
   return volumes;
 }
 
-function computeFingerprints(k: KernelLike, count: number): { structFp: string; dataFp: string } {
+function computeFingerprints(k: KernelLike, count: number): { volumeFp: string; structFp: string; dataFp: string } {
+  let totalVolumes = 0;
   const structParts: (string | number)[] = [count];
   const dataParts: number[] = [];
   for (let i = 0; i < count; i++) {
-    structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, k.bodyVolumeCount(i));
+    const volCount = k.bodyVolumeCount(i);
+    totalVolumes += volCount;
+    structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, volCount);
     dataParts.push(k.bodyVersion(i));
   }
-  return { structFp: structParts.join(","), dataFp: dataParts.join(",") };
+  return { volumeFp: String(totalVolumes), structFp: structParts.join(","), dataFp: dataParts.join(",") };
 }
 
 function showCompilationStatus(text: string): void {
@@ -118,14 +121,14 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
   const invalidate = useThree((s) => s.invalidate);
 
   const pipelineRef = useRef<VmPipelineState | null>(null);
-  const structFpRef = useRef("");
+  const volumeFpRef = useRef("");
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
 
   useEffect(() => {
     pipelineRef.current = initVmPipeline();
-    structFpRef.current = "";
+    volumeFpRef.current = "";
     dataFpRef.current = "";
     compilingRef.current = false;
     readyRef.current = false;
@@ -145,9 +148,9 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
     const k = store.kernel;
     const count = k.bodyCount();
 
-    const { structFp, dataFp } = computeFingerprints(k, count);
-    const needsCompile = structFp !== structFpRef.current;
-    const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
+    const { volumeFp, structFp, dataFp } = computeFingerprints(k, count);
+    const needsCompile = volumeFp !== volumeFpRef.current;
+    const needsDataUpdate = !needsCompile && (structFp + dataFp) !== dataFpRef.current;
 
     if (needsCompile && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
@@ -157,8 +160,8 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
         bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
       }
       rebuildVmBodies(pipeline, bodies);
-      structFpRef.current = structFp;
-      dataFpRef.current = dataFp;
+      volumeFpRef.current = volumeFp;
+      dataFpRef.current = structFp + dataFp;
 
       showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
@@ -182,7 +185,7 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
         bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
       }
       updateVmData(pipeline, bodies);
-      dataFpRef.current = dataFp;
+      dataFpRef.current = structFp + dataFp;
     }
 
     const vmMaterials = resolveMaterials(k, store.getState().features);
@@ -250,8 +253,8 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
     const count = k.bodyCount();
 
     const { structFp, dataFp } = computeFingerprints(k, count);
-    const needsCompile = structFp !== structFpRef.current;
-    const needsDataUpdate = !needsCompile && dataFp !== dataFpRef.current;
+    const needsRebuild = structFp !== structFpRef.current;
+    const needsDataUpdate = !needsRebuild && dataFp !== dataFpRef.current;
 
     const collectDeferredBodies = () => {
       const bodies = [];
@@ -267,7 +270,7 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
       return bodies;
     };
 
-    if (needsCompile && !compilingRef.current) {
+    if (needsRebuild && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
 
       rebuildDeferredBodies(pipeline, collectDeferredBodies());
@@ -295,6 +298,7 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
       updateDeferredData(pipeline, collectDeferredBodies());
       dataFpRef.current = dataFp;
     }
+
 
     const storeState = store.getState();
     const materials = resolveMaterials(k, storeState.features);
