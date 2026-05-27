@@ -367,7 +367,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
 
             const renderer = new WebGPURenderer({
               ...(props as object),
-              antialias: false,
+              antialias: true,
             });
             await renderer.init();
             (window as any).__threeRenderer = renderer;
