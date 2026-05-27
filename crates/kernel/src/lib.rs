@@ -716,7 +716,8 @@ impl Kernel {
         if feature_indices.len() == 1 {
             let f = &self.document.features[feature_indices[0]];
             if let Primitive::ImportedMesh { mesh } = &f.primitive {
-                return Self::mesh_from_imported(mesh);
+                let cid = f.id.as_u32_or_root().unwrap_or(0);
+                return Self::mesh_from_imported(mesh, cid);
             }
         }
 
@@ -728,11 +729,14 @@ impl Kernel {
 
     /// Convert an ImportedMesh's triangle data directly into a renderable
     /// Mesh without running Dual Contouring.
-    fn mesh_from_imported(mesh: &fielddraft_protocol::MeshSdf) -> Mesh {
+    fn mesh_from_imported(mesh: &fielddraft_protocol::MeshSdf, contributor_id: u32) -> Mesh {
         let (positions, normals, indices) = mesh.to_display_mesh();
         let vert_count = positions.len() / 3;
-        let classifications = vec![0u8; vert_count];
-        let contributors = vec![dc::CONTRIBUTOR_SENTINEL; vert_count * csg::MAX_CONTRIBUTORS];
+        let classifications = vec![1u8; vert_count];
+        let mut contributors = vec![dc::CONTRIBUTOR_SENTINEL; vert_count * csg::MAX_CONTRIBUTORS];
+        for v in 0..vert_count {
+            contributors[v * csg::MAX_CONTRIBUTORS] = contributor_id;
+        }
         Mesh { positions, normals, indices, classifications, contributors }
     }
 

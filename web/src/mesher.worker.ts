@@ -200,7 +200,9 @@ function snapshotBodies(
     let topologyJson = '{"faces":[],"edges":[]}';
     try {
       topologyJson = kernel.bodyTopologyJson(i);
-    } catch { /* topology extraction may fail for imported meshes */ }
+    } catch (e) {
+      console.warn(`[mesher] bodyTopologyJson(${i}) failed:`, e);
+    }
 
     bodies.push({
       id: kernel.bodyId(i),
