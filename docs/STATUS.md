@@ -1,6 +1,6 @@
 # FieldDraft — Projektstatus
 
-**Stand:** 2026-05-23
+**Stand:** 2026-05-27
 **Branch:** `main`
 
 ---
@@ -132,6 +132,7 @@ FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, d
 | K10.5 | K10 | Edge Detection | ✅ | Proxy-basierte Edge-Extraktion für interaktive Selektion |
 | K10.6 | K10 | Edge Rendering | ✅ | Viewport-Overlay für B-Rep-Edges mit Hover/Select-States |
 | K10.7 | K10 | Click-to-Fillet UI | ✅ | Click-to-Fillet-Tool, Edge-Picking, Radius-Eingabe, Live-Preview, Fillet-all-edges-Stresstest grün |
+| K10.8 | K10 | B-Rep Topology + Visualization | ✅ | Per-body TopoFace/TopoEdge extraction from DC mesh classifications+contributors, topology JSON via mesher worker, Three.js LineSegments rendering on OVERLAY_LAYER. Commits `953bae3`, `121d586`. |
 
 ---
 
