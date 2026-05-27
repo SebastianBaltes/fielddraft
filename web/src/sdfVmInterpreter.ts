@@ -49,7 +49,7 @@ import {
 
 export const MAX_VOLUME_TEXTURES = 4;
 
-export const VM_MAX_OPCODES = 2048;
+export const VM_MAX_OPCODES = 512;
 
 export const bitcastTagFn = wgslFn(`
   fn fd_bitcast_tag(v: f32) -> i32 {
