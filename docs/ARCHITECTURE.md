@@ -186,7 +186,7 @@ trait FeatureKind: Send + Sync {
 
 #### CSG Tree (`csg.rs`)
 
-The `CsgNode` enum (23 variants) represents the constructive solid geometry tree:
+The `CsgNode` enum (16 variants) represents the constructive solid geometry tree:
 
 - **Leaf:** `Leaf { id, primitive }` — terminal SDF evaluation
 - **Binary ops:** `Union`, `Difference`, `Intersection`, `SmoothUnion`, `SmoothDifference`
@@ -197,7 +197,7 @@ The `CsgNode` enum (23 variants) represents the constructive solid geometry tree
 
 `CsgNode::from_features()` folds the spine linearly: each feature becomes a leaf, wrapped in its transform and domain warps, then folded into the accumulator via the feature's boolean operation.
 
-**Contributors:** Each CSG evaluation tracks up to 4 `NodeId`s (leaves dominating the SDF within epsilon), classified as `ProxyElement`: Face (1 contributor), Edge (2), Vertex (3+). This provides B-Rep-like topology from a pure SDF representation.
+**Contributors:** Each CSG evaluation tracks up to 4 `NodeId`s (leaves dominating the SDF within epsilon), classified as `ProxyElement`: Face (1 contributor), Edge (2), Vertex (3+). This provides approximate B-Rep-like topology from a pure SDF representation — accuracy depends on mesh resolution and breaks down at sharp feature transitions.
 
 #### BVH & Bounded CSG (`bvh.rs`)
 
@@ -211,7 +211,7 @@ Compiles the `BoundedCsg` tree into a flat opcode buffer for GPU consumption:
 compile_body(node: &BoundedCsg) → CompiledSdf { opcodes: Vec<f32>, aabb, volumes }
 ```
 
-**Opcode set** (31 opcodes, postfix encoding):
+**Opcode set** (35 opcodes, postfix encoding):
 
 | Category | Opcodes |
 |----------|---------|
@@ -258,7 +258,6 @@ Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incr
 | `raycast.rs` | Ray-mesh intersection for viewport picking |
 | `topology.rs` | B-Rep-like edge/face tracking derived from SDF contributors |
 | `mesh_sdf.rs` | Triangle mesh as SDF primitive (imported geometry) |
-| `voxel_repair.rs` | Voxel-based mesh repair for imported geometry |
 | `edge_detect.rs` | Sharp edge detection / silhouette extraction |
 | `step_classifier.rs` | Step-by-step feature classification for STEP export |
 
@@ -338,8 +337,8 @@ graph LR
 
 - Fullscreen `PlaneGeometry(2, 2)` with orthographic camera
 - GPU bytecode VM interprets opcode stream at shader invocation time
-- Per-body SDF evaluation, closest hit wins
-- Constraints: max 8 bodies, 4096 opcodes total, 512 march steps
+- Per-body SDF evaluation, closest hit wins — **brute-force: every body evaluated at every pixel**
+- **Hard limits: max 8 bodies, 4096 opcodes total (uniform buffer), 512 march steps.** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
 
 #### SDF-Deferred Mode (`sdfDeferredRenderer.ts`)
 
@@ -370,15 +369,13 @@ graph TD
     P2out --> P3
 ```
 
-Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized opaque meshes for speed. Complex geometry (gyroid, boolean regions) is ray-marched through transparent hull volumes. Constraints: max 32 bodies, 4096 opcodes.
+Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized opaque meshes for speed. Complex geometry (gyroid, boolean regions) is ray-marched through transparent hull volumes. **Hard limits: max 32 bodies (uint32 per-pixel bitmask), 4096 opcodes total (uniform buffer).** The 32-body ceiling is a direct consequence of the bitmask architecture.
 
 #### Opcode Interpretation
 
-Two tiers of GPU evaluation:
+**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes.
 
-1. **Transpiled WGSL** (`sdfRenderer.ts`): Compile opcode stream to straight-line `fn fd_eval_sdf(p: vec3f) -> f32`. Branchless, fully unrolled. Topology extracted for caching — parameter-only updates skip recompile.
-
-2. **Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes.
+`sdfRenderer.ts` contains a transpiled-WGSL path that compiles opcodes to straight-line `fn fd_eval_sdf(p: vec3f) -> f32`, but this code is **currently unused** — no call site invokes it.
 
 #### Material System
 
@@ -405,7 +402,7 @@ Per-frame fingerprinting drives the rebuild/update cycle:
 
 | Parameter | Value |
 |-----------|-------|
-| Max march steps | 512 (VM/Deferred), 96 (Transpiled) |
+| Max march steps | 512 (VM/Deferred) |
 | Surface epsilon | 0.002 mm |
 | Normal epsilon | 0.01 mm |
 | Max ray distance | 1200–3000 mm |
@@ -456,7 +453,7 @@ graph TD
 
 **Entity types:** Point, Line, Circle, Arc, Origin (fixed at 0,0).
 
-**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim`, `sketch_mirror`, `sketch_offset`.
+**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim` (stub — no-op in V0), `sketch_mirror`, `sketch_offset`.
 
 **Critical invariant:** Entity ID allocation order in TypeScript must exactly match kernel allocation. `buildDraftSketchState()` replicates this deterministically. Any mismatch silently corrupts constraint references.
 
