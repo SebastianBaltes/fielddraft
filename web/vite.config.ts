@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
 
 function liveVersion(): Plugin {
+  const versionModules = new Set<string>();
   return {
     name: "live-version",
     config(_, { command }) {
@@ -14,8 +15,19 @@ function liveVersion(): Plugin {
         return { define: { __APP_VERSION__: JSON.stringify(pkg.version) } };
       }
     },
+    configureServer(server) {
+      server.watcher.on("change", (file) => {
+        if (!file.endsWith("package.json")) return;
+        for (const id of versionModules) {
+          const mod = server.moduleGraph.getModuleById(id);
+          if (mod) server.moduleGraph.invalidateModule(mod);
+        }
+        server.hot.send({ type: "full-reload" });
+      });
+    },
     transform(code, id) {
       if (!id.includes("node_modules") && code.includes("__APP_VERSION__")) {
+        versionModules.add(id);
         const v = JSON.parse(readFileSync("package.json", "utf-8")).version;
         return code.replaceAll("__APP_VERSION__", JSON.stringify(v));
       }
