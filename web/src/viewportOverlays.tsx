@@ -413,6 +413,73 @@ export function EdgeOverlay() {
   );
 }
 
+export function BRepEdgeOverlay() {
+  const { store, state } = useKernelStore();
+  const geometryRef = useRef(new THREE.BufferGeometry());
+  const materialRef = useRef(
+    new THREE.LineBasicMaterial({ color: 0x111111, linewidth: 1 }),
+  );
+  const cachedVersionRef = useRef(-1);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!store || !state || state.meshedBodies.length === 0) {
+      setReady(false);
+      return;
+    }
+    const version = store.kernel.meshVersion();
+    if (version === cachedVersionRef.current) return;
+    cachedVersionRef.current = version;
+    try {
+      const bodyCount = state.meshedBodies.length;
+      const segments: number[] = [];
+      for (let b = 0; b < bodyCount; b++) {
+        const edgeCount = store.kernel.bodyEdgeCount(b);
+        for (let e = 0; e < edgeCount; e++) {
+          const pts = store.kernel.bodyEdgePointsView(b, e);
+          const pointCount = store.kernel.bodyEdgePointCount(b, e);
+          for (let p = 0; p < pointCount - 1; p++) {
+            segments.push(
+              pts[p * 3], pts[p * 3 + 1], pts[p * 3 + 2],
+              pts[(p + 1) * 3], pts[(p + 1) * 3 + 1], pts[(p + 1) * 3 + 2],
+            );
+          }
+        }
+      }
+      if (segments.length === 0) {
+        setReady(false);
+        return;
+      }
+      const positions = new Float32Array(segments);
+      geometryRef.current.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3),
+      );
+      geometryRef.current.computeBoundingSphere();
+      setReady(true);
+    } catch {
+      setReady(false);
+    }
+  }, [store, state?.meshedBodies]);
+
+  useEffect(() => {
+    return () => {
+      geometryRef.current.dispose();
+      materialRef.current.dispose();
+    };
+  }, []);
+
+  if (!ready) return null;
+
+  return (
+    <lineSegments
+      geometry={geometryRef.current}
+      material={materialRef.current}
+      frustumCulled={false}
+    />
+  );
+}
+
 function AssemblyPartBody({ body, isSelected }: {
   body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
   isSelected: boolean;

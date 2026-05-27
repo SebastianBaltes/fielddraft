@@ -32,6 +32,7 @@ import {
   SelectionTransformGizmo,
   Invalidator,
   EdgeOverlay,
+  BRepEdgeOverlay,
   AssemblyParts,
   MateConnectorOverlay,
   DatumOverlay,
@@ -390,6 +391,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
           <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
           <ReferenceMesh />
           <EdgeOverlay />
+          <BRepEdgeOverlay />
           <MateConnectorOverlay />
           <AssemblyParts />
           <WorldGrid />
