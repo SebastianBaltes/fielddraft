@@ -636,7 +636,7 @@ const DATUM_PLANES: {
 ];
 
 const DATUM_LABEL_POS: [number, number, number] = [
-  -DATUM_PLANE_SIZE / 2 - 2,
+  -DATUM_PLANE_SIZE / 2 + 22,
   DATUM_PLANE_SIZE / 2 - 10,
   0.5,
 ];
