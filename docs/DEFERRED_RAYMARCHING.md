@@ -68,13 +68,15 @@ dabei:
 - Den Startpunkt des Rays (Front-Face-Tiefe = tMin)
 - Den Endpunkt des Rays (siehe tMax-Bestimmung unten)
 
-### Per-Pixel SDF-Term-Set
+### Per-Pixel Body-ID-Buffer
 
 Durch die Rasterisierung aller Hüll-Meshes entsteht pro Pixel ein **Set der
-relevanten SDF-Terme**. Dieses Set wird als Bitmask in einem atomaren Storage
-Buffer gespeichert: Jeder transparente Fragment-Shader schreibt
-`atomicOr(buf[pixelIdx], 1u << bodyIdx)`. So werden alle transparenten Bodies
-gesammelt, nicht nur der vorderste.
+relevanten SDF-Terme**. Dieses Set wird in einem atomaren Storage Buffer
+als gepackte Body-IDs gespeichert: 2 × `uint32` pro Pixel, jeweils mit
+16-Bit Count und 16-Bit Body-IDs. Jeder transparente Fragment-Shader
+registriert seine Body-ID per `atomicAdd` (Count) + `atomicOr` (ID-Slot).
+So werden bis zu 2 transparente Bodies pro Pixel gesammelt, nicht nur der
+vorderste.
 
 Die SDF-Auswertung folgt der CSG-Baumstruktur: Werden die Terme A und B durch
 `Difference(A, B)` verknüpft, evaluiert der Raymarcher `max(sdf_A, -sdf_B)`.
@@ -164,10 +166,10 @@ Vorteile gegenüber nur-inflated Meshes:
 - **Weniger SDF-Arbeit**: Für opak-only Pixel (Fall A) entfällt der
   Sphere-Trace komplett — nur 6 SDF-Evals für die Normale.
 
-### Three-RT + Bitmask-Implementierung
+### Three-RT + Body-ID-Buffer-Implementierung
 
 Die Implementierung nutzt drei Render Targets plus einen
-Fragment-Shader-Atomic-Bitmask-Buffer:
+Fragment-Shader-Atomic Body-ID-Buffer:
 
 - **RT1 (Opaque)**: Nicht-inflated Hüll-Meshes → `vec4(worldPos, bodyIndex+1)`.
   Standard-Depth-Test, nächstes opakes Objekt gewinnt.
@@ -175,28 +177,25 @@ Fragment-Shader-Atomic-Bitmask-Buffer:
   `vec4(worldPos, bodyIndex+1)`. Standard-Depth-Test, nächste Vorderseite = tMin.
 - **RT3 (Back-Face)**: Selbe Hulls, BackSide → `vec4(scalarCamDist, 0, 0, 1)`.
   MAX-Blending, kein Depth-Buffer. Fernste Rückseite = tMax-Basis.
-- **Bitmask Buffer**: `uint32` pro Pixel, Fragment-Shader schreibt via
-  `atomicOr(buf[pixelIdx], 1u << bodyIdx)` — sammelt alle transparenten
-  Body-IDs, nicht nur den vordersten.
+- **Body-ID-Buffer**: 2 × `uint32` pro Pixel, gepackte 16-Bit Body-IDs + Count.
+  Fragment-Shader registriert Body-IDs per `atomicAdd` + `atomicOr`.
 
 #### Pipeline (5 Passes)
 
-```
-Pass 0:  Compute Clear    → atomicStore(bitmaskBuf[i], 0) für alle Pixel
-Pass 1:  Opaque Raster    → RT1 (worldPos + bodyTag), Depth Buffer
-Pass 2:  Transparent Front → RT2 (worldPos + bodyTag, FrontSide)
-         + atomicOr(bitmaskBuf[pixelIdx], 1u << bodyIdx)
-Pass 2b: Back-Face Collect → RT3 (scalar camDist, BackSide, MAX-Blending)
-Pass 3:  Unified Shade     → Fullscreen Quad liest RT1, RT2, RT3, bitmaskBuf
-```
+    Pass 0:  Compute Clear    → atomicStore(bodyIdBuf[i], 0) für alle Pixel (2 Wörter pro Pixel)
+    Pass 1:  Opaque Raster    → RT1 (worldPos + bodyTag), Depth Buffer
+    Pass 2:  Transparent Front → RT2 (worldPos + bodyTag, FrontSide)
+             + Body-ID-Insertion in bodyIdBuf
+    Pass 2b: Back-Face Collect → RT3 (scalar camDist, BackSide, MAX-Blending)
+    Pass 3:  Unified Shade     → Fullscreen Quad liest RT1, RT2, RT3, bodyIdBuf
 
 #### Shade-Logik (Pass 3)
 
 - **Fall A** (`!hasTrans && hasOpaque`): 6 SDF-Evals für Normale + Lighting.
 - **Fall B** (`hasTrans`): Multi-Body Sphere-Trace von tMin (RT2 Front-Face)
   bis tMax (RT3 Back-Face-Distanz minus Front-Distanz, optional verengt durch
-  Opaque-Depth eines anderen Bodies). Iteriert über alle Bits in der Bitmask,
-  evaluiert SDF nur für gesetzte Bodies. Der nächste Treffer (min distance)
+  Opaque-Depth eines anderen Bodies). Evaluiert nur die 1–2 tatsächlich im
+  Body-ID-Buffer eingetragenen Bodies. Der nächste Treffer (min distance)
   wird geshaded.
   Hit → Shade. Kein Hit + hasOpaque (anderer Body) → Fall A.
   Kein Hit + kein anderer opaker Body → Discard.
@@ -276,10 +275,12 @@ n = normalize(vec3(
 | Konstante | Wert | Zweck |
 |-----------|------|-------|
 | `DEFERRED_MAX_OPCODES` | 4096 | Max. Opcodes im concatenated Buffer |
-| `MAX_BODIES` | 32 | Max. Bodies (Bitmask = uint32) |
+| `MAX_BODIES` | 256 | Max. Bodies (Buffer-Allokation, frei erhöhbar) |
 | `DEFERRED_MARCH_STEPS` | 512 | Max. Sphere-Trace-Schritte pro Pixel |
 | `SURFACE_EPS` | 0.002 | Konvergenz-Schwelle für Treffer |
 | `HULL_INFLATE` | 1.001 | Aufblasfaktor für transparente Hulls |
+| `MAX_PIXELS` | 4096 × 2160 | Max. Viewport-Auflösung für Body-ID-Buffer |
+| `BODY_ID_WORDS_PER_PIXEL` | 2 | uint32-Wörter pro Pixel im Body-ID-Buffer |
 
 ### Dateien
 
@@ -295,18 +296,14 @@ n = normalize(vec3(
 
 ### DeferredPipelineState
 
-```typescript
-interface DeferredPipelineState {
-  opaqueRT, transparentRT, transparentBackRT: WebGLRenderTarget;
-  opaqueScene, transparentScene, transparentBackScene, shadeScene: Scene;
-  shadeCamera: OrthographicCamera;
-  shadeMaterial, backFaceMaterial: MeshBasicNodeMaterial;
-  opcodeBuf, offsetBuf, colorBuf: uniformArray;
-  camPosUniform: uniform;
-  bitmaskBuf: StorageBuffer (atomic uint32);
-  bodyOpaqueMeshes, bodyTransparentMeshes, bodyBackMeshes: Map<number, Mesh[]>;
-}
-```
+Siehe `DEFERRED_RAYMARCHING_IMPL.md` für die vollständige State-Struktur.
+Kern-Elemente:
+
+- 3 Render Targets (Opaque, Transparent Front, Back-Face)
+- Body-ID-Buffer: `StorageBufferAttribute` (2 × uint32 pro Pixel, atomic)
+- Opcode + Offset Buffers: `uniformArray`
+- Material StorageBuffer: 12 floats pro Body
+- Volume-Texturen: bis zu 4 `Data3DTexture`
 
 ### Render Targets
 
@@ -322,7 +319,7 @@ interface DeferredPipelineState {
 FrontSide, depthWrite + depthTest.
 
 **Transparent G-Buffer Material**: Wie G-Buffer, zusätzlich
-`atomicOr(bitmaskBuf[pixelIdx], 1u << bodyIdx)` im Fragment-Shader.
+Body-ID-Insertion per `atomicAdd` + `atomicOr` in den Body-ID-Buffer.
 
 **Back-Face Material**: `outputNode = vec4(length(worldPos - camPos), 0, 0, 1)`.
 BackSide, kein depthTest/Write, `CustomBlending` mit `MaxEquation` +
@@ -330,20 +327,20 @@ BackSide, kein depthTest/Write, `CustomBlending` mit `MaxEquation` +
 
 ### Pipeline (5 Passes)
 
-**Pass 0 — Compute Clear**: `atomicStore(bitmaskBuf[i], 0)` per Compute.
+**Pass 0 — Compute Clear**: `atomicStore(bodyIdBuf[i], 0)` per Compute (2 Wörter pro Pixel).
 
 **Pass 1 — Opaque Raster**: Nicht-inflated Hüll-Meshes → opaqueRT.
 Standard-Depth-Test, nächstes opakes Objekt gewinnt.
 
 **Pass 2 — Transparent Front**: Inflated Hüll-Meshes (FrontSide) →
-transparentRT. Standard-Depth-Test + atomicOr Bitmask. Nächste
-Vorderseite = tMin.
+transparentRT. Standard-Depth-Test + Body-ID-Insertion in bodyIdBuf.
+Nächste Vorderseite = tMin.
 
 **Pass 2b — Back-Face Collect**: Selbe Hulls (BackSide) → transparentBackRT.
 MAX-Blending auf skalare Kamera-Distanz, kein Depth-Buffer. Fernste
 Rückseite gewinnt.
 
-**Pass 3 — Unified Shade**: Fullscreen Quad liest alle RTs + Bitmask.
+**Pass 3 — Unified Shade**: Fullscreen Quad liest alle RTs + Body-ID-Buffer.
 
 ### Shade-Logik (Pass 3)
 
@@ -360,7 +357,7 @@ Rückseite gewinnt.
    eines *anderen* Bodies aus RT1: `tMax = min(tMax, opaqueDist)`.
    Same-Body-Opaques werden ignoriert.
 3. **March**: Loop über `DEFERRED_MARCH_STEPS`. Pro Schritt: evaluiere
-   SDF für alle Bodies in der Bitmask, finde minimale Distanz.
+   SDF für die 1–2 Bodies aus dem Body-ID-Buffer, finde minimale Distanz.
    Treffer bei `d < SURFACE_EPS`.
 4. **Ergebnis**:
    - Hit → Shade am Trefferpunkt.
@@ -378,3 +375,41 @@ Hüll-Meshes erzeugt:
   Back-Face Mesh (inflated, BackSide, shared backFaceMaterial).
 - **Gyroid / needs_full_sdf**: Nur transparentes + Back-Face Mesh
   (BoxGeometry über AABB).
+
+---
+
+## Kapitel 4: Skalierung
+
+### Warum tausende Bodies kein Problem sind
+
+Die Deferred-Architektur entkoppelt die Szenen-Komplexität (Gesamtzahl Bodies)
+von den Per-Pixel-Kosten:
+
+1. **Rasterisierung als Vorfilter**: Die GPU rasterisiert Hüll-Meshes in
+   Hardware-Geschwindigkeit. Z-Culling, Frustum-Culling und Occlusion
+   eliminieren unsichtbare Bodies vollständig — sie erzeugen weder Fragments
+   noch Body-ID-Einträge.
+
+2. **Per-Pixel O(present)**: Der Sphere-Tracer evaluiert nur die 1–2 Bodies,
+   die tatsächlich am Pixel eingetragen sind (aus dem Body-ID-Buffer), nicht
+   die gesamte Szene. Ein Pixel mit 2 überlappenden Bodies kostet gleich viel,
+   egal ob die Szene 10 oder 10.000 Bodies hat.
+
+3. **Opake Pixels sind fast kostenlos**: Für opak-only Pixel (kein
+   transparenter Overlap) entfällt der March-Loop komplett — nur 6 SDF-Evals
+   für die Finite-Difference Normale. Das betrifft den Großteil aller Pixel.
+
+4. **Transparente Regionen sind screen-space-begrenzt**: Fillets, Booleans
+   und Objektränder betreffen nur schmale Streifen in Screen-Space. Selbst bei
+   vielen Bodies bleibt der Anteil der Pixel, die tatsächlich marchen müssen,
+   gering.
+
+### Verbleibende Bottlenecks
+
+| Bottleneck                  | Aktuell                | Lösung                                           |
+| --------------------------- | ---------------------- | ------------------------------------------------ |
+| Transparente Bodies/Pixel   | Max. 2                 | Overflow-Liste (Storage Buffer, nicht impl.)     |
+| Opcode-Buffer               | 4096 floats (uniform)  | Storage Buffer oder Indirection (geplant)        |
+| Body-ID-Buffer Speicher     | 2 × uint32 × Pixel     | Skaliert mit Viewport, nicht mit Body-Count      |
+| Shader-Kompilationszeit     | Steigt mit VM-Opcodes  | Betrifft nur Rebuild, nicht Render-Performance   |
+| Mesh-Verwaltung (CPU-seitig) | Map pro Body           | Linear skalierbar                                |

@@ -30,16 +30,17 @@ müssen. Der Sphere-Tracer erzeugt dann das finale Bild.
 
 | Konstante              | Wert        | Bedeutung                                            |
 | ---------------------- | ----------- | ---------------------------------------------------- |
-| `DEFERRED_MAX_OPCODES` | 4096        | Max. Opcodes im concatenated Buffer (uniform buffer) |
-| `MAX_BODIES`           | 32          | Max. Bodies — begrenzt durch uint32-Bitmask          |
-| `DEFERRED_MARCH_STEPS` | 512         | Max. Sphere-Trace-Schritte pro Pixel                 |
-| `SURFACE_EPS`          | 0.002       | Konvergenz-Schwelle für Treffer                      |
-| `MAX_MARCH_DIST`       | 3000        | Raymarching-Distanzlimit                             |
-| `HULL_INFLATE`         | 1.01        | Aufblasfaktor für transparente Hulls (1%)            |
-| `MAX_BITMASK_PIXELS`   | 4096 × 2160 | Maximale Viewport-Auflösung für Bitmask-Buffer       |
-| `VM_MAX_OPCODES`       | 2048        | Per-Body Opcode-Limit im VM-Interpreter              |
-| `MAX_VOLUME_TEXTURES`  | 4           | Max. 3D-Texturen für importierte Mesh-SDFs           |
-| `NORMAL_EPS`           | 0.01        | Epsilon für Finite-Difference Normalen               |
+| `DEFERRED_MAX_OPCODES`    | 4096        | Max. Opcodes im concatenated Buffer (uniform buffer)       |
+| `MAX_BODIES`              | 256         | Max. Bodies für Buffer-Pre-Allokation                      |
+| `DEFERRED_MARCH_STEPS`    | 512         | Max. Sphere-Trace-Schritte pro Pixel                       |
+| `SURFACE_EPS`             | 0.002       | Konvergenz-Schwelle für Treffer                            |
+| `MAX_MARCH_DIST`          | 3000        | Raymarching-Distanzlimit                                   |
+| `HULL_INFLATE`            | 1.01        | Aufblasfaktor für transparente Hulls (1%)                  |
+| `MAX_PIXELS`              | 4096 × 2160 | Maximale Viewport-Auflösung für Body-ID-Buffer             |
+| `BODY_ID_WORDS_PER_PIXEL` | 2           | uint32-Wörter pro Pixel im Body-ID-Buffer                  |
+| `VM_MAX_OPCODES`          | 2048        | Per-Body Opcode-Limit im VM-Interpreter                    |
+| `MAX_VOLUME_TEXTURES`     | 4           | Max. 3D-Texturen für importierte Mesh-SDFs                 |
+| `NORMAL_EPS`              | 0.01        | Epsilon für Finite-Difference Normalen                     |
 
 ***
 
@@ -142,9 +143,9 @@ interface DeferredPipelineState {
   volumeBaseData: Float32Array;
   volumeTextures: Data3DTexture[];
 
-  // Bitmask (Atomic Storage Buffer)
-  bitmaskAttr: StorageBufferAttribute;     // uint32 pro Pixel
-  bitmaskBuf: storage(...).toAtomic();
+  // Body-ID Buffer (Atomic Storage Buffer, 2 uint32 pro Pixel)
+  bodyIdAttr: StorageBufferAttribute;      // packed body IDs + count
+  bodyIdBuf: storage(...).toAtomic();
   clearNode: computeNode;                  // atomicStore(0) per Compute
 
   // Uniforms
@@ -183,7 +184,7 @@ interface DeferredPipelineState {
 **Transparent G-Buffer Material** (`createTransparentGBufferMaterial`):
 
 * Output: `vec4(worldPos, bodyIndex+1)`
-* Zusätzlich: `atomicOr(bitmaskBuf[pixelIdx], 1u << bodyIdx)`
+* Zusätzlich: Packed Body-ID Insertion via `atomicAdd` + `atomicOr` in den `bodyIdBuf`
 * FrontSide, depthWrite + depthTest
 
 **Back-Face Material** (`createBackFaceMaterial`):
@@ -194,17 +195,18 @@ interface DeferredPipelineState {
 
 **Shade Material** (`createShadeMaterial`):
 
-* Fullscreen-Quad, liest alle RTs + Bitmask
+* Fullscreen-Quad, liest alle RTs + Body-ID-Buffer
 * Enthält den VM-Interpreter (`buildVmSdfEvalFn`)
+* March-Loop iteriert nur über die 1–2 tatsächlich vorhandenen Bodies pro Pixel (statt über alle Bodies)
 * Evaluiert SDF, berechnet Normalen, Cook-Torrance PBR, Edge Detection, Selection, Wireframe
 
 ### Pipeline (5 Passes)
 
-1. **Pass 0 — Compute Clear**: `atomicStore(bitmaskBuf[i], 0)` per Compute Shader
+1. **Pass 0 — Compute Clear**: `atomicStore(bodyIdBuf[i], 0)` per Compute Shader (2 Wörter pro Pixel)
 2. **Pass 1 — Opaque Raster**: → `opaqueRT` (worldPos + bodyTag), mit Depth Buffer
-3. **Pass 2 — Transparent Front**: → `transparentRT` (worldPos + bodyTag, FrontSide) + `atomicOr(bitmaskBuf[pixelIdx], 1u << bodyIdx)`
+3. **Pass 2 — Transparent Front**: → `transparentRT` (worldPos + bodyTag, FrontSide) + Body-ID-Insertion in `bodyIdBuf`
 4. **Pass 2b — Back-Face Collect**: → `transparentBackRT` (scalar camDist, BackSide, MAX-Blending)
-5. **Pass 3 — Unified Shade**: Fullscreen Quad, liest alle RTs + `bitmaskBuf` → Screen
+5. **Pass 3 — Unified Shade**: Fullscreen Quad, liest alle RTs + `bodyIdBuf` → Screen
 
 ***
 
@@ -224,14 +226,15 @@ interface DeferredPipelineState {
 2. **tMax**: `backDist - frontDist` aus `transparentBackRT`.
    Optional verengt: Liegt ein opakes Objekt eines *anderen* Bodies dahinter,
    wird `tMax = min(tMax, opaqueDist)`. Same-Body-Opaques werden per
-   Bitmask-Check erkannt und ignoriert.
+   Body-ID-Vergleich erkannt und ignoriert.
 3. **March-Loop** (`DEFERRED_MARCH_STEPS` = 512 Iterationen):
-   - Pro Schritt: iteriere über alle 32 möglichen Bodies
-   - Für jeden Body mit gesetztem Bitmask-Bit:
+   - Pro Schritt: evaluiere nur die 1–2 Bodies aus dem Body-ID-Buffer
+   - Für jeden Body (via `evalBodySdf`-Helper):
      - Lade Opcode-Offset aus `offsetBuf`
      - Evaluiere SDF via VM-Interpreter
      - Optional: addiere Surface Displacement (trigonometrisch per Material)
      - Tracke minimale Distanz + closest Body
+   - Zwei unrollte Aufrufe: `transId0` (immer), `transId1` (nur wenn `transCount >= 2`)
    - Bei `d < SURFACE_EPS` → Hit, Break
    - `t += max(minD, SURFACE_EPS)`
    - Bei `t > tMax` → Break (kein Treffer)
@@ -344,15 +347,67 @@ aber THREE.js r183 blockiert dies. Zwei Patches in `web/patches/three+0.183.2.pa
 
 ***
 
+## Per-Pixel Body-ID-Buffer
+
+### Encoding
+
+Statt einer Bitmask (altes Konzept: 1 Bit pro Body, max 32) speichert der
+Body-ID-Buffer 2 × `uint32` pro Pixel mit gepackten 16-Bit Body-IDs:
+
+| Wort   | Bits 31–16       | Bits 15–0          |
+| ------ | ---------------- | ------------------- |
+| Word 0 | Count (0, 1, 2+) | Body-ID 0 (1-based) |
+| Word 1 | (reserviert)     | Body-ID 1 (1-based) |
+
+Body-IDs sind 1-based (0 = leer). Pro Frame werden dichte Indizes vergeben
+(keine UUIDs), sodass 16 Bit für bis zu 65534 Bodies reichen.
+
+### Atomare Schreiblogik (Fragment-Shader)
+
+Jeder transparente Fragment-Shader fügt seine Body-ID per lock-free Atomics ein:
+
+1. `atomicAdd(word0, 0x10000)` — inkrementiert Count im oberen Halbwort, gibt alten Wert zurück
+2. Aus dem alten Wert wird `oldCount = (old >> 16) & 0xFFFF` extrahiert
+3. `oldCount == 0` → `atomicOr(word0, encodedId)` — ID in unteres Halbwort von Word 0
+4. `oldCount == 1` → `atomicOr(word1, encodedId)` — ID in unteres Halbwort von Word 1
+5. `oldCount >= 2` → Drop (kein Platz, Overflow wird ignoriert)
+
+Kein CAS nötig: Jedes ID-Slot-Halbwort wird genau einmal von 0 auf einen
+Wert ≠ 0 gesetzt. `atomicOr` mit einem Wert ≤ 0xFFFF lässt das Count-Feld
+in Word 0 unverändert.
+
+### Auslesen (Shade-Pass)
+
+    word0      = atomicLoad(bodyIdBuf[pixelIdx * 2])
+    word1      = atomicLoad(bodyIdBuf[pixelIdx * 2 + 1])
+    transCount = min((word0 >> 16) & 0xFFFF, 2)
+    transId0   = word0 & 0xFFFF
+    transId1   = word1 & 0xFFFF
+
+Die March-Loop evaluiert dann `transId0` (immer, wenn `transCount >= 1`) und
+`transId1` (wenn `transCount >= 2`) — O(present) statt O(max).
+
+### Overflow
+
+Die aktuelle Implementierung unterstützt max. 2 transparente Bodies pro Pixel.
+Der dritte und weitere Bodies werden ignoriert. In der Praxis reicht das,
+weil transparente Überlappung (Fillets, Booleans, Ränder) typischerweise nur
+2 Bodies betrifft. Eine Overflow-Liste (zusätzlicher Storage Buffer) ist
+architektonisch vorgesehen, aber nicht implementiert.
+
+***
+
 ## Harte Architektur-Limits
 
-| Limit                 | Wert                     | Ursache                                                |
-| --------------------- | ------------------------ | ------------------------------------------------------ |
-| Max. Bodies           | 32                       | Per-Pixel Bitmask \= `uint32` → 32 Bits \= 32 Bodies   |
-| Max. Opcodes          | 4096                     | `uniformArray` (WebGPU uniform buffer, 64KB Minimum)   |
-| Brute-Force pro Pixel | O(bodies × march\_steps) | March-Loop iteriert über alle Bitmask-Bits pro Schritt |
-| Max. Viewport         | 4096 × 2160              | Bitmask-Buffer voralloziert für diese Auflösung        |
-| Max. Volume-Texturen  | 4                        | Hardcoded im VM-Interpreter                            |
+| Limit                     | Wert                    | Ursache                                                      |
+| ------------------------- | ----------------------- | ------------------------------------------------------------ |
+| Max. Bodies (Szene)       | 256 (Buffer-Allokation) | `MAX_BODIES` Konstante, frei erhöhbar                        |
+| Max. Bodies (per Pixel)   | 65534                   | 16-Bit Body-ID-Encoding (1-based, 0 = leer)                 |
+| Transparente Bodies/Pixel | 2                       | 2 Slots im Body-ID-Buffer (Overflow nicht implementiert)     |
+| Max. Opcodes              | 4096                    | `uniformArray` (WebGPU uniform buffer, 64KB Minimum)         |
+| March-Kosten pro Pixel    | O(present × steps)      | Loop evaluiert nur die 1–2 tatsächlich vorhandenen Bodies    |
+| Max. Viewport             | 4096 × 2160             | Body-ID-Buffer voralloziert für diese Auflösung              |
+| Max. Volume-Texturen      | 4                       | Hardcoded im VM-Interpreter                                  |
 
-Diese Limits sind architektonische Constraints des brute-force per-pixel Ansatzes,
-nicht Tuning-Parameter.
+`MAX_BODIES` ist ein Buffer-Allokations-Limit, kein algorithmisches. Die
+per-Pixel-Kosten sind unabhängig von der Gesamtzahl der Bodies in der Szene.
