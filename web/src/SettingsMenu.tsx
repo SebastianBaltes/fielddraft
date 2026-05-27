@@ -161,9 +161,9 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 }
 
 export type ThemeChoice = "light" | "dark";
-export type RenderMode = "sdf-vm" | "sdf-deferred";
+export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
 
-const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred"];
+const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh"];
 
 export interface SettingsState {
   compact: boolean;

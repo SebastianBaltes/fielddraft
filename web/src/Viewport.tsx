@@ -32,6 +32,7 @@ import {
   Invalidator,
   EdgeOverlay,
   BRepEdgeOverlay,
+  MeshPreview,
   AssemblyParts,
   MateConnectorOverlay,
   DatumOverlay,
@@ -92,6 +93,7 @@ function Scene({ ndc, onPick, renderMode, showEdges }: SceneProps) {
     <>
       {renderMode === "sdf-vm" && <SdfVmOverlay showEdges={showEdges} />}
       {renderMode === "sdf-deferred" && <SdfDeferredOverlay showEdges={showEdges} />}
+      {renderMode === "mesh" && <MeshPreview />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <SelectionTransformGizmo />

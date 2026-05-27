@@ -37,6 +37,35 @@
       }
     }
 
+    & .render-mode-toggle {
+      display: flex;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+
+      & button {
+        border: none;
+        background: transparent;
+        padding: var(--space-1) var(--space-3);
+        font-size: var(--fs-sm);
+        font-weight: var(--fw-medium, 500);
+        color: var(--color-text-muted);
+        cursor: pointer;
+        line-height: 1;
+        transition: background 100ms ease, color 100ms ease;
+
+        &:not(:last-child) {
+          border-right: 1px solid var(--color-border);
+        }
+
+        &.active {
+          background: var(--color-accent);
+          color: var(--color-text-on-accent, white);
+          cursor: default;
+        }
+      }
+    }
+
     & .meta {
       display: flex;
       align-items: center;

@@ -483,6 +483,44 @@ export function BRepEdgeOverlay() {
   );
 }
 
+function MeshPreviewBody({ body }: { body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } }) {
+  const geometry = useMemo(() => {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+    geom.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
+    geom.setIndex(new THREE.BufferAttribute(body.indices, 1));
+    geom.computeBoundingSphere();
+    return geom;
+  }, [body.positions, body.normals, body.indices]);
+
+  useEffect(() => {
+    return () => geometry.dispose();
+  }, [geometry]);
+
+  return (
+    <mesh geometry={geometry}>
+      <meshStandardMaterial color="#94a3b8" side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+export function MeshPreview() {
+  const { state } = useKernelStore();
+  const bodies = state?.meshedBodies;
+  if (!bodies || bodies.length === 0) return null;
+
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[200, 400, 300]} intensity={0.8} />
+      <directionalLight position={[-100, 200, -200]} intensity={0.3} />
+      {bodies.map((body) => (
+        <MeshPreviewBody key={body.id} body={body} />
+      ))}
+    </>
+  );
+}
+
 function AssemblyPartBody({ body, isSelected }: {
   body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
   isSelected: boolean;

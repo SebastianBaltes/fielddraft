@@ -5,7 +5,36 @@ import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
-import type { SettingsState } from "./SettingsMenu";
+import type { SettingsState, RenderMode } from "./SettingsMenu";
+
+const LS_LAST_SDF_MODE = "fielddraft.lastSdfMode";
+
+function RenderModeToggle({ mode, onChange }: { mode: RenderMode; onChange: (m: RenderMode) => void }) {
+  const isMesh = mode === "mesh";
+  return (
+    <div className="render-mode-toggle">
+      <button
+        type="button"
+        className={!isMesh ? "active" : ""}
+        onClick={() => {
+          if (!isMesh) return;
+          let prev: RenderMode = "sdf-deferred";
+          try { const v = localStorage.getItem(LS_LAST_SDF_MODE); if (v === "sdf-vm") prev = "sdf-vm"; } catch {}
+          onChange(prev);
+        }}
+      >SDF</button>
+      <button
+        type="button"
+        className={isMesh ? "active" : ""}
+        onClick={() => {
+          if (isMesh) return;
+          try { localStorage.setItem(LS_LAST_SDF_MODE, mode); } catch {}
+          onChange("mesh");
+        }}
+      >Mesh</button>
+    </div>
+  );
+}
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -18,9 +47,10 @@ export function App() {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
 
+  const isMeshMode = settings.renderMode === "mesh";
   useEffect(() => {
-    if (store) store.setDcMeshingEnabled(false);
-  }, [store, settings.renderMode]);
+    if (store) store.setDcMeshingEnabled(isMeshMode);
+  }, [store, isMeshMode]);
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
@@ -176,6 +206,14 @@ export function App() {
       <header className="topbar">
         <div className="title">
           FieldDraft <span className="version">v{__APP_VERSION__}</span>
+          <RenderModeToggle
+            mode={settings.renderMode}
+            onChange={(mode: RenderMode) => {
+              const next = { ...settings, renderMode: mode };
+              try { localStorage.setItem("fielddraft.renderMode", mode); } catch {}
+              setSettings(next);
+            }}
+          />
           <SettingsMenu
             store={store}
             state={state}
