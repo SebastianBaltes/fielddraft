@@ -61,7 +61,7 @@ import {
 } from "./sdfPipelineCommon";
 
 const MAX_BODIES = 8;
-const GLOBAL_MAX_OPCODES = 65536;
+const GLOBAL_MAX_OPCODES = 16384;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;

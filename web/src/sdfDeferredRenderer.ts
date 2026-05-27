@@ -82,7 +82,7 @@ import {
 
 // ── Constants ───────────────────────────────────────────────────────
 
-const DEFERRED_MAX_OPCODES = 65536;
+const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
