@@ -22,6 +22,7 @@ import {
   If,
   Loop,
   abs,
+  atomicAdd,
   atomicLoad,
   atomicOr,
   atomicStore,
@@ -35,7 +36,7 @@ import {
   mix,
   normalize,
   screenCoordinate,
-  shiftLeft,
+  shiftRight,
   smoothstep,
   storage,
   texture,
@@ -82,12 +83,13 @@ import {
 // ── Constants ───────────────────────────────────────────────────────
 
 const DEFERRED_MAX_OPCODES = 4096;
-const MAX_BODIES = 32;
+const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
 const HULL_INFLATE = 1.01;
-const MAX_BITMASK_PIXELS = 4096 * 2160;
+const MAX_PIXELS = 4096 * 2160;
+const BODY_ID_WORDS_PER_PIXEL = 2;
 
 // ── Body colors ────────────────────────────────────────────────────
 
@@ -220,8 +222,8 @@ export interface DeferredPipelineState {
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
   bodyOpcodeRanges: Map<number, { start: number; length: number }>;
-  bitmaskAttr: any;
-  bitmaskBuf: any;
+  bodyIdAttr: any;
+  bodyIdBuf: any;
   clearNode: any;
   width: number;
   height: number;
@@ -245,11 +247,11 @@ function createGBufferMaterial(bodyIndex: number): MeshBasicNodeMaterial {
   return material;
 }
 
-// ── Transparent G-Buffer material (+ bitmask atomicOr) ─────────────
+// ── Transparent G-Buffer material (+ packed body-ID insertion) ─────
 
 function createTransparentGBufferMaterial(
   bodyIndex: number,
-  bitmaskBuf: any,
+  bodyIdBuf: any,
   widthU: ReturnType<typeof uniform>,
 ): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial();
@@ -258,8 +260,17 @@ function createTransparentGBufferMaterial(
     const px = int(screenCoordinate.x);
     const py = int(screenCoordinate.y);
     const pixelIdx = py.mul(int(widthU)).add(px);
-    const bit = shiftLeft(uint(1), uint(bodyIndex));
-    atomicOr(bitmaskBuf.element(pixelIdx), bit);
+    const word0Idx = pixelIdx.mul(BODY_ID_WORDS_PER_PIXEL);
+    const word1Idx = word0Idx.add(1);
+    const encodedId = uint(bodyIndex + 1);
+    const oldWord0 = atomicAdd(bodyIdBuf.element(word0Idx), uint(0x10000));
+    const oldCount = bitAnd(shiftRight(oldWord0, uint(16)), uint(0xFFFF));
+    If(oldCount.equal(uint(0)), () => {
+      atomicOr(bodyIdBuf.element(word0Idx), encodedId);
+    });
+    If(oldCount.equal(uint(1)), () => {
+      atomicOr(bodyIdBuf.element(word1Idx), encodedId);
+    });
     return vec4(worldPos, float(bodyIndex + 1));
   })();
   material.depthWrite = true;
@@ -297,7 +308,7 @@ function createShadeMaterial(
   opaqueGbufTex: THREE.Texture,
   transGbufTex: THREE.Texture,
   transBackTex: THREE.Texture,
-  bitmaskBuf: any,
+  bodyIdBuf: any,
   opcodeBuf: ReturnType<typeof uniformArray>,
   offsetBuf: ReturnType<typeof uniformArray>,
   materialBuf: any,
@@ -327,6 +338,16 @@ function createShadeMaterial(
     return d.sub(depth.mul(disp));
   };
 
+  const evalBodySdf = (p: any, bodyIdx: any, minD: any, closestBody: any) => {
+    const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
+    const volBase = int(volumeBaseBuf.element(bodyIdx));
+    const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
+    If(d.lessThan(minD), () => {
+      minD.assign(d);
+      closestBody.assign(bodyIdx);
+    });
+  };
+
   const material = new MeshBasicNodeMaterial();
   material.outputNode = Fn(() => {
     const texUv = vec2(uv().x, float(1).sub(uv().y));
@@ -339,8 +360,14 @@ function createShadeMaterial(
     const px = int(screenCoordinate.x);
     const py = int(screenCoordinate.y);
     const pixelIdx = py.mul(int(widthU)).add(px);
-    const mask = atomicLoad(bitmaskBuf.element(pixelIdx)).toVar();
-    const hasTrans = mask.greaterThan(uint(0));
+    const word0Idx = pixelIdx.mul(BODY_ID_WORDS_PER_PIXEL);
+    const word1Idx = word0Idx.add(1);
+    const word0 = atomicLoad(bodyIdBuf.element(word0Idx)).toVar();
+    const word1 = atomicLoad(bodyIdBuf.element(word1Idx)).toVar();
+    const transCount = min(bitAnd(shiftRight(word0, uint(16)), uint(0xFFFF)), uint(2)).toVar();
+    const transId0 = bitAnd(word0, uint(0xFFFF)).toVar();
+    const transId1 = bitAnd(word1, uint(0xFFFF)).toVar();
+    const hasTrans = transCount.greaterThan(uint(0));
 
     const shadePos = vec3(0, 0, 0).toVar();
     const shadeBodyIdx = int(0).toVar();
@@ -357,8 +384,10 @@ function createShadeMaterial(
 
         If(hasOpaque, () => {
           const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
-          const opaqueBodyBit = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
-          const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit).greaterThan(uint(0));
+          const opaqueBodyEncoded = uint(int(opaqueTag.sub(0.5)).add(1));
+          const opaqueIsAlsoTrans = transId0.equal(opaqueBodyEncoded).or(
+            transCount.greaterThanEqual(uint(2)).and(transId1.equal(opaqueBodyEncoded)),
+          );
           If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
             tMax.assign(min(tMax, opaqueDist));
           });
@@ -374,17 +403,11 @@ function createShadeMaterial(
           const minD = float(1e30).toVar();
           const closestBody = int(0).toVar();
 
-          Loop(int(MAX_BODIES), ({ i: bodyIdx }) => {
-            const bit = shiftLeft(uint(1), uint(bodyIdx));
-            If(bitAnd(mask, bit).greaterThan(uint(0)), () => {
-              const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
-              const volBase = int(volumeBaseBuf.element(bodyIdx));
-              const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
-              If(d.lessThan(minD), () => {
-                minD.assign(d);
-                closestBody.assign(bodyIdx);
-              });
-            });
+          If(transCount.greaterThanEqual(uint(1)), () => {
+            evalBodySdf(p, int(transId0.sub(uint(1))), minD, closestBody);
+          });
+          If(transCount.greaterThanEqual(uint(2)), () => {
+            evalBodySdf(p, int(transId1.sub(uint(1))), minD, closestBody);
           });
 
           If(minD.lessThan(float(SURFACE_EPS)), () => {
@@ -397,8 +420,10 @@ function createShadeMaterial(
           If(t.greaterThan(tMax), () => { Break(); });
         });
 
-        const opaqueBodyBit2 = shiftLeft(uint(1), uint(int(opaqueTag.sub(0.5))));
-        const opaqueIsAlsoTrans = bitAnd(mask, opaqueBodyBit2).greaterThan(uint(0));
+        const opaqueBodyEncoded2 = uint(int(opaqueTag.sub(0.5)).add(1));
+        const opaqueIsAlsoTrans = transId0.equal(opaqueBodyEncoded2).or(
+          transCount.greaterThanEqual(uint(2)).and(transId1.equal(opaqueBodyEncoded2)),
+        );
         const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
 
         If(hit.greaterThan(float(0.5)), () => {
@@ -557,17 +582,18 @@ export function initDeferredPipeline(
   const showEdgesU = uniform(1);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
-  const bitmaskAttr = new StorageBufferAttribute(MAX_BITMASK_PIXELS, 1, Uint32Array);
-  const bitmaskBuf = storage(bitmaskAttr, 'uint', MAX_BITMASK_PIXELS).toAtomic();
+  const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
+  const bodyIdAttr = new StorageBufferAttribute(bodyIdCount, 1, Uint32Array);
+  const bodyIdBuf = storage(bodyIdAttr, 'uint', bodyIdCount).toAtomic();
   const clearNode = Fn(() => {
-    atomicStore(bitmaskBuf.element(instanceIndex), uint(0));
-  })().compute(width * height);
+    atomicStore(bodyIdBuf.element(instanceIndex), uint(0));
+  })().compute(width * height * BODY_ID_WORDS_PER_PIXEL);
 
   const shadeMaterial = createShadeMaterial(
     opaqueRT.texture,
     transparentRT.texture,
     transparentBackRT.texture,
-    bitmaskBuf,
+    bodyIdBuf,
     opBufs.opcodeBuf,
     opBufs.offsetBuf,
     matBufs.materialBuf,
@@ -615,8 +641,8 @@ export function initDeferredPipeline(
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
     bodyOpcodeRanges: new Map(),
-    bitmaskAttr,
-    bitmaskBuf,
+    bodyIdAttr,
+    bodyIdBuf,
     clearNode,
     width,
     height,
@@ -735,7 +761,7 @@ export function rebuildDeferredBodies(
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
     const transMat = createTransparentGBufferMaterial(
-      bodyIndex, state.bitmaskBuf, state.widthU,
+      bodyIndex, state.bodyIdBuf, state.widthU,
     );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
@@ -876,7 +902,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.opaqueRT.texture,
     state.transparentRT.texture,
     state.transparentBackRT.texture,
-    state.bitmaskBuf,
+    state.bodyIdBuf,
     state.opcodeBuf,
     state.offsetBuf,
     state.materialBuf,
@@ -914,7 +940,7 @@ export function resizeDeferredPipeline(
   }
   state.transparentBackRT.setSize(width, height);
   state.widthU.value = width;
-  state.clearNode.count = width * height;
+  state.clearNode.count = width * height * BODY_ID_WORDS_PER_PIXEL;
   state.width = width;
   state.height = height;
 }
@@ -934,7 +960,7 @@ export function renderDeferredFrame(
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();
 
-  // Pass 0: clear bitmask buffer
+  // Pass 0: clear body-ID buffer
   renderer.compute(state.clearNode);
 
   // Pass 1: opaque G-buffer
