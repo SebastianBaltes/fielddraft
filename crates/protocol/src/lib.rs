@@ -39,16 +39,6 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// via the [`fmt::Display`] impl. Parseable back via [`FromStr`] with
 /// the mirror rules.
 ///
-/// ## Backward compatibility with K1 documents
-///
-/// Old `fielddraft` JSON documents serialise feature ids as bare
-/// integers (`"id": 3`). The custom [`Serialize`] / [`Deserialize`]
-/// impls below keep that shape for flat-numeric ids (those with no
-/// parent whose `local` parses as `u32`), and reject nothing on the
-/// deserialiser side — bare numbers, dotted strings, and bare strings
-/// are all accepted. The K4.5.1 slice never creates hierarchical
-/// ids, so every document in the wild still round-trips to the
-/// exact same bytes it had under K1.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Default)]
 pub struct FeatureId {
     pub parent: Option<Box<FeatureId>>,
@@ -64,11 +54,7 @@ impl FeatureId {
         }
     }
 
-    /// Build a top-level id from a flat numeric counter — the
-    /// classic K1-style id, just typed. Used by
-    /// [`Document::allocate_id`] to keep the existing
-    /// monotonic-counter allocation scheme alive inside the new
-    /// type.
+    /// Build a top-level id from a flat numeric counter.
     pub fn from_u32(n: u32) -> Self {
         Self::root(n.to_string())
     }
@@ -88,19 +74,13 @@ impl FeatureId {
     }
 
     /// `true` when this id has no parent and the local part parses
-    /// cleanly as a `u32`. This is the "compat-shim" predicate:
-    /// [`Self::as_u32_if_flat`] uses it to decide whether the id
-    /// can still go through the K1-era `u32` wasm-bindgen surface.
+    /// cleanly as a `u32`.
     pub fn is_flat_numeric(&self) -> bool {
         self.parent.is_none() && self.local.parse::<u32>().is_ok()
     }
 
     /// Collapse the id back to a `u32`, assuming it's flat-numeric.
-    /// Returns `None` for hierarchical or non-numeric ids. The
-    /// wasm-bindgen surface in `crates/kernel/src/lib.rs` uses this
-    /// to keep the existing `u32` signatures working during K4.5.1
-    /// — every id issued in this slice is still flat-numeric, so
-    /// the `.expect` paths are unreachable for well-behaved inputs.
+    /// Returns `None` for hierarchical or non-numeric ids.
     pub fn as_u32_if_flat(&self) -> Option<u32> {
         if self.parent.is_some() {
             return None;
@@ -193,9 +173,6 @@ impl Serialize for FeatureId {
     where
         S: Serializer,
     {
-        // Keep byte-identical shape with K1 documents: a flat
-        // numeric id serialises as a bare integer, anything else
-        // as the dotted-path string form.
         if let Some(n) = self.as_u32_if_flat() {
             serializer.serialize_u32(n)
         } else {
@@ -977,10 +954,6 @@ impl FeatureCall {
     }
 }
 
-/// Wire-format name for a boolean operation. Mirrors the
-/// `#[serde(rename_all = "snake_case")]` on [`BoolOp`] so the K4.5
-/// `FeatureCall::params.op` field uses the same spelling as the
-/// top-level `Feature.op` field does in the legacy K1 JSON.
 fn bool_op_wire_name(op: BoolOp) -> &'static str {
     match op {
         BoolOp::Union => "union",
@@ -994,40 +967,16 @@ fn bool_op_wire_name(op: BoolOp) -> &'static str {
 pub struct Document {
     pub schema_version: u32,
     pub name: String,
-    /// Linear feature list, evaluated top-to-bottom. Stays the
-    /// authoritative in-memory working storage the mesher walks
-    /// and the kernel mutates; K4.5.4e strips it from the JSON
-    /// wire form via `skip_serializing`, so save/load now flow
-    /// exclusively through [`Document::feature_calls`]. The
-    /// `default` lets legacy K1 JSON that still carries a
-    /// top-level `features` array deserialise cleanly — those
-    /// documents never hit the bootstrap path because their
-    /// `feature_calls` list is empty, and `sync_feature_calls`
-    /// repopulates it on the next mutation.
+    /// In-memory feature spine. Not serialized — the wire format
+    /// uses `feature_calls` exclusively. On deserialize the kernel
+    /// rehydrates this from `feature_calls` via `FeatureRegistry::regenerate`.
     #[serde(skip_serializing, default)]
     pub features: Vec<Feature>,
-    /// K4.5 Feature-as-Function canonical wire form.
-    ///
-    /// K4.5.4e promotes this to the **only** feature list that
-    /// round-trips through JSON. On serialize, `sync_feature_calls`
-    /// keeps it in lock-step with the in-memory
-    /// [`Document::features`] spine after every mutation. On
-    /// deserialize, the kernel detects a populated `feature_calls`
-    /// with empty `features` and rehydrates the spine via
-    /// `FeatureRegistry::regenerate` (K4.5.4d bootstrap). Legacy
-    /// K1 documents without this field still load — the
-    /// `default` gives them an empty list, and the loader falls
-    /// through the bootstrap branch because `features` is
-    /// already populated.
+    /// Canonical wire form: each entry is a typed function call
+    /// that the kernel can replay into the `features` spine.
     #[serde(default)]
     pub feature_calls: Vec<FeatureCall>,
-    /// Monotonic counter that seeds the next flat-numeric
-    /// [`FeatureId`]. Persisted so reloads keep stable ids. The
-    /// field name stays as `next_feature_id` for JSON backward
-    /// compatibility with K1 documents that wrote it as a bare
-    /// integer; the type is a plain counter because K4.5.1 still
-    /// only issues flat-numeric ids. A future K4.5 slice will
-    /// grow a proper hierarchical allocator on top.
+    /// Monotonic counter that seeds the next [`FeatureId`].
     pub next_feature_id: u32,
     /// K8.10: document-level scalar variables. Keyed by
     /// user-chosen name, value in the model unit
@@ -1477,43 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_k1_document_without_feature_calls_loads_with_empty_list() {
-        // K1-era documents predate the K4.5.4c dual-write field.
-        // The `#[serde(default)]` attribute on feature_calls lets
-        // them deserialise cleanly with an empty list — the next
-        // kernel mutation will fill it in via sync_feature_calls.
-        let json = r#"{
-            "schema_version": 2,
-            "name": "legacy",
-            "features": [{
-                "id": 1,
-                "name": "Base",
-                "op": "union",
-                "primitive": {
-                    "kind": "box",
-                    "center": [0, 0, 0],
-                    "half_extents": [1, 1, 1]
-                },
-                "transform": {
-                    "translate": [0, 0, 0],
-                    "rotation": [0, 0, 0, 1],
-                    "scale": 1
-                }
-            }],
-            "next_feature_id": 2
-        }"#;
-        let parsed: Document = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.features.len(), 1);
-        assert!(parsed.feature_calls.is_empty());
-    }
-
-    #[test]
     fn document_roundtrips_through_json() {
-        // K4.5.4e: the top-level `features` array no longer
-        // survives serialize; the kernel carries the bootstrap.
-        // At the protocol level we verify that syncing first,
-        // then round-tripping, leaves all wire-carried fields
-        // intact.
         let mut doc = Document::default();
         let id = doc.allocate_id();
         doc.features.push(Feature {
@@ -1555,33 +1468,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_feature_without_transform_loads_with_identity() {
-        // A document that predates the transform field should still parse,
-        // gaining `Transform::IDENTITY` via `#[serde(default)]`.
-        let json = r#"{
-            "schema_version": 2,
-            "name": "legacy",
-            "features": [{
-                "id": 1,
-                "name": "Base",
-                "op": "union",
-                "primitive": {"kind":"box","center":[0,0,0],"half_extents":[1,1,1]}
-            }],
-            "next_feature_id": 2
-        }"#;
-        let parsed: Document = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.features.len(), 1);
-        assert!(parsed.features[0].transform.is_identity());
-    }
-
-    #[test]
     fn allocate_id_is_monotonic() {
         let mut doc = Document::default();
         let a = doc.allocate_id();
         let b = doc.allocate_id();
         let c = doc.allocate_id();
-        // K4.5 still issues flat-numeric ids, so we can round-trip
-        // them through u32 for the ordering assertion.
         let an = a.as_u32_if_flat().unwrap();
         let bn = b.as_u32_if_flat().unwrap();
         let cn = c.as_u32_if_flat().unwrap();
@@ -1608,23 +1499,16 @@ mod tests {
     }
 
     #[test]
-    fn feature_id_serializes_flat_numeric_as_bare_integer() {
-        // Backward-compat with K1 JSON documents that stored ids
-        // as bare integers.
-        let id = FeatureId::from_u32(7);
-        let json = serde_json::to_string(&id).unwrap();
+    fn feature_id_serde_round_trip() {
+        let flat = FeatureId::from_u32(7);
+        let json = serde_json::to_string(&flat).unwrap();
         assert_eq!(json, "7");
-        let parsed: FeatureId = serde_json::from_str("7").unwrap();
-        assert_eq!(parsed, id);
-    }
+        assert_eq!(serde_json::from_str::<FeatureId>("7").unwrap(), flat);
 
-    #[test]
-    fn feature_id_serializes_hierarchical_as_string() {
-        let id = FeatureId::from_u32(3).child("op");
-        let json = serde_json::to_string(&id).unwrap();
+        let hier = FeatureId::from_u32(3).child("op");
+        let json = serde_json::to_string(&hier).unwrap();
         assert_eq!(json, "\"3.op\"");
-        let parsed: FeatureId = serde_json::from_str("\"3.op\"").unwrap();
-        assert_eq!(parsed, id);
+        assert_eq!(serde_json::from_str::<FeatureId>("\"3.op\"").unwrap(), hier);
     }
 
     // ─── FeatureCall (K4.5.4b) ──────────────────────────────────

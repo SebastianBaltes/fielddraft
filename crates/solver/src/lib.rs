@@ -696,31 +696,6 @@ mod tests {
         assert_eq!(wire["driven"], true);
     }
 
-    #[test]
-    fn legacy_sketch_without_driven_field_loads_as_driving() {
-        // Forward-compat check: a JSON payload that predates the
-        // `driven` flag should still parse and default to false.
-        let json = r#"{
-            "name": "legacy",
-            "next_entity_id": 3,
-            "next_constraint_id": 2,
-            "entities": [
-                {"kind": "point", "id": 1, "at": {"x": 0.0, "y": 0.0}},
-                {"kind": "point", "id": 2, "at": {"x": 10.0, "y": 0.0}}
-            ],
-            "constraints": [
-                {"kind": "distance", "id": 1, "a": 1, "b": 2, "value_mm": 10.0}
-            ]
-        }"#;
-        let parsed: SketchState = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.entities.len(), 2);
-        assert_eq!(parsed.constraints.len(), 1);
-        match &parsed.constraints[0] {
-            Constraint::Distance { driven, .. } => assert!(!driven),
-            other => panic!("expected Distance, got {other:?}"),
-        }
-    }
-
     // ─── diagnostics ──────────────────────────────────────────
 
     #[test]

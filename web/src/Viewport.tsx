@@ -2,8 +2,7 @@
  * Main 3D viewport.
  *
  * Render modes: `sdf-vm` (SdfVmOverlay) and `sdf-deferred`
- * (SdfDeferredOverlay). Legacy renderers (DC mesh, SDF-baked,
- * SDF-batch, SDF-hybrid, SDF-hybrid-compute) have been removed.
+ * (SdfDeferredOverlay).
  */
 
 import {

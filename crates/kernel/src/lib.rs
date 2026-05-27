@@ -1,12 +1,8 @@
 //! FieldDraft geometry kernel.
 //!
-//! After K1 the kernel owns the canonical `Document`, builds a CSG tree
-//! from its feature spine, and meshes it with a naive uniform-grid
-//! Dual Contouring pass. The mesh buffers are held inside the kernel
-//! and exposed to JavaScript through a zero-copy pointer interface;
-//! the old raymarcher-era packed feature buffer is still shipped for
-//! the legacy TSL viewport path but is no longer the primary render
-//! input.
+//! The kernel owns the canonical `Document`, builds a CSG tree from its
+//! feature spine, and meshes it via Dual Contouring. Mesh buffers are
+//! exposed to JavaScript through a zero-copy pointer interface.
 
 pub mod body;
 pub mod bvh;

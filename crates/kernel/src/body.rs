@@ -286,8 +286,6 @@ pub fn hash_body_payload_split(
     (geo.finish(), xform.finish())
 }
 
-/// Combined payload hash — backwards-compatible single value for
-/// the cache-invalidation check.
 pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
     let (g, t) = hash_body_payload_split(features, indices);
     combine_hashes(g, t)

@@ -744,13 +744,13 @@ export function ReferenceMesh() {
     return store.getMeshOverlayFeatures();
   }, [store, state?.features]);
 
-  const legacyMesh = state?.referenceMesh;
+  const refMesh = state?.referenceMesh;
 
-  if (overlays.length === 0 && !legacyMesh) return null;
+  if (overlays.length === 0 && !refMesh) return null;
 
   return (
     <>
-      {legacyMesh ? <MeshOverlayEntry data={legacyMesh} /> : null}
+      {refMesh ? <MeshOverlayEntry data={refMesh} /> : null}
       {overlays.map((o) => (
         <MeshOverlayEntry key={o.id} data={o.data} />
       ))}
