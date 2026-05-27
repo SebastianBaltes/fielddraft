@@ -82,7 +82,7 @@ import {
 
 // ── Constants ───────────────────────────────────────────────────────
 
-const DEFERRED_MAX_OPCODES = 4096;
+const DEFERRED_MAX_OPCODES = 65536;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
@@ -204,17 +204,20 @@ export interface DeferredPipelineState {
   shadeCamera: THREE.OrthographicCamera;
   shadeMaterial: MeshBasicNodeMaterial;
   backFaceMaterial: MeshBasicNodeMaterial;
-  opcodeBuf: ReturnType<typeof uniformArray>;
+  opcodeBuf: ReturnType<typeof storage>;
   opcodeData: Float32Array;
-  offsetBuf: ReturnType<typeof uniformArray>;
+  opcodeAttr: StorageBufferAttribute;
+  offsetBuf: ReturnType<typeof storage>;
   offsetData: Float32Array;
+  offsetAttr: StorageBufferAttribute;
   materialData: Float32Array;
   materialAttr: any;
   materialBuf: any;
   selectionBuf: ReturnType<typeof uniformArray>;
   selectionData: Float32Array;
-  volumeBaseBuf: ReturnType<typeof uniformArray>;
+  volumeBaseBuf: ReturnType<typeof storage>;
   volumeBaseData: Float32Array;
+  volumeBaseAttr: StorageBufferAttribute;
   camPosUniform: ReturnType<typeof uniform>;
   viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
@@ -309,11 +312,11 @@ function createShadeMaterial(
   transGbufTex: THREE.Texture,
   transBackTex: THREE.Texture,
   bodyIdBuf: any,
-  opcodeBuf: ReturnType<typeof uniformArray>,
-  offsetBuf: ReturnType<typeof uniformArray>,
+  opcodeBuf: ReturnType<typeof storage>,
+  offsetBuf: ReturnType<typeof storage>,
   materialBuf: any,
   selectionBuf: ReturnType<typeof uniformArray>,
-  volumeBaseBuf: ReturnType<typeof uniformArray>,
+  volumeBaseBuf: ReturnType<typeof storage>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
@@ -663,6 +666,8 @@ export function updateDeferredData(
   }[],
 ): void {
   const ranges = packOpcodes(state.opcodeData, state.offsetData, bodies, DEFERRED_MAX_OPCODES, MAX_BODIES);
+  state.opcodeAttr.needsUpdate = true;
+  state.offsetAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
   for (const { bodyIndex, hybridInfo, aabb } of bodies) {
@@ -703,6 +708,7 @@ export function updateDeferredData(
   }
 
   updateVolumeData(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+  state.volumeBaseAttr.needsUpdate = true;
 }
 
 export function updateDeferredSelection(
@@ -753,6 +759,8 @@ export function rebuildDeferredBodies(
   state.bodyOpcodeRanges.clear();
 
   const ranges = packOpcodes(state.opcodeData, state.offsetData, bodies, DEFERRED_MAX_OPCODES, MAX_BODIES);
+  state.opcodeAttr.needsUpdate = true;
+  state.offsetAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
   for (const { bodyIndex, hybridInfo, opcodes, aabb } of bodies) {
@@ -845,6 +853,7 @@ export function rebuildDeferredBodies(
     state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES,
   );
   state.volumeTextures = textures;
+  state.volumeBaseAttr.needsUpdate = true;
   state.needsShadeRebuild = countChanged;
 }
 

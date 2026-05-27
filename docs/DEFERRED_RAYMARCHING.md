@@ -239,7 +239,7 @@ Hardware-Eigenschaften:
 ### Concatenated Opcode Buffer
 
 Alle Opcode-Snippets aller Bodies werden hintereinander in einem einzigen
-`uniformArray` abgelegt. Eine Offset-Tabelle (`[start, length]` pro Body)
+Storage Buffer (`StorageBufferAttribute`) abgelegt. Eine Offset-Tabelle (`[start, length]` pro Body)
 erlaubt dem Shade-Pass, das richtige Snippet zu laden:
 
 ```
@@ -274,7 +274,7 @@ n = normalize(vec3(
 
 | Konstante | Wert | Zweck |
 |-----------|------|-------|
-| `DEFERRED_MAX_OPCODES` | 4096 | Max. Opcodes im concatenated Buffer |
+| `DEFERRED_MAX_OPCODES` | 65536 | Max. Opcodes im concatenated Buffer |
 | `MAX_BODIES` | 256 | Max. Bodies (Buffer-Allokation, frei erhöhbar) |
 | `DEFERRED_MARCH_STEPS` | 512 | Max. Sphere-Trace-Schritte pro Pixel |
 | `SURFACE_EPS` | 0.002 | Konvergenz-Schwelle für Treffer |
@@ -301,7 +301,7 @@ Kern-Elemente:
 
 - 3 Render Targets (Opaque, Transparent Front, Back-Face)
 - Body-ID-Buffer: `StorageBufferAttribute` (2 × uint32 pro Pixel, atomic)
-- Opcode + Offset Buffers: `uniformArray`
+- Opcode + Offset Buffers: `StorageBufferAttribute` (read-only storage buffer)
 - Material StorageBuffer: 12 floats pro Body
 - Volume-Texturen: bis zu 4 `Data3DTexture`
 
@@ -409,7 +409,7 @@ von den Per-Pixel-Kosten:
 | Bottleneck                  | Aktuell                | Lösung                                           |
 | --------------------------- | ---------------------- | ------------------------------------------------ |
 | Transparente Bodies/Pixel   | Max. 2                 | Overflow-Liste (Storage Buffer, nicht impl.)     |
-| Opcode-Buffer               | 4096 floats (uniform)  | Storage Buffer oder Indirection (geplant)        |
+| ~~Opcode-Buffer~~           | ~~4096 floats (uniform)~~ | Gelöst: Storage Buffer, 65536 floats          |
 | Body-ID-Buffer Speicher     | 2 × uint32 × Pixel     | Skaliert mit Viewport, nicht mit Body-Count      |
 | Shader-Kompilationszeit     | Steigt mit VM-Opcodes  | Betrifft nur Rebuild, nicht Render-Performance   |
 | Mesh-Verwaltung (CPU-seitig) | Map pro Body           | Linear skalierbar                                |

@@ -25,7 +25,6 @@ import {
   vec3,
   vec4,
   wgslFn,
-  uniformArray,
 } from "three/tsl";
 
 import * as THREE from "three";
@@ -65,7 +64,7 @@ export const floatToIntFn = wgslFn(`
 `);
 
 export function buildVmSdfEvalFn(
-  opBuf: ReturnType<typeof uniformArray>,
+  opBuf: { element: (index: any) => any },
   options?: {
     withBaseOffset?: boolean;
     volumeTextures?: THREE.Data3DTexture[];

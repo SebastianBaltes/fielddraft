@@ -30,7 +30,7 @@ müssen. Der Sphere-Tracer erzeugt dann das finale Bild.
 
 | Konstante              | Wert        | Bedeutung                                            |
 | ---------------------- | ----------- | ---------------------------------------------------- |
-| `DEFERRED_MAX_OPCODES`    | 4096        | Max. Opcodes im concatenated Buffer (uniform buffer)       |
+| `DEFERRED_MAX_OPCODES`    | 65536       | Max. Opcodes im concatenated Buffer (storage buffer)       |
 | `MAX_BODIES`              | 256         | Max. Bodies für Buffer-Pre-Allokation                      |
 | `DEFERRED_MARCH_STEPS`    | 512         | Max. Sphere-Trace-Schritte pro Pixel                       |
 | `SURFACE_EPS`             | 0.002       | Konvergenz-Schwelle für Treffer                            |
@@ -125,8 +125,10 @@ interface DeferredPipelineState {
   shadeMaterial: MeshBasicNodeMaterial;     // Fullscreen-Shade-Pass
   backFaceMaterial: MeshBasicNodeMaterial;  // Shared für alle Back-Face-Meshes
 
-  // Opcode-Buffers (uniformArray)
+  // Opcode-Buffers (StorageBuffer, read-only)
+  opcodeAttr: StorageBufferAttribute;
   opcodeBuf, opcodeData: Float32Array;     // Concatenated Opcode-Stream
+  offsetAttr: StorageBufferAttribute;
   offsetBuf, offsetData: Float32Array;     // [start, length] pro Body
 
   // Material-Buffer (StorageBuffer, read-only)
@@ -138,8 +140,9 @@ interface DeferredPipelineState {
   selectionBuf: uniformArray;              // 1.0 = selektiert, 0.0 = nicht
   selectionData: Float32Array;
 
-  // Volume-Texturen (importierte Mesh-SDFs)
-  volumeBaseBuf: uniformArray;             // Base-Index pro Body
+  // Volume-Texturen (importierte Mesh-SDFs, StorageBuffer)
+  volumeBaseAttr: StorageBufferAttribute;
+  volumeBaseBuf;                           // Base-Index pro Body
   volumeBaseData: Float32Array;
   volumeTextures: Data3DTexture[];
 
@@ -293,7 +296,7 @@ Die SDF-Auswertung erfolgt durch `buildVmSdfEvalFn()` (`sdfVmInterpreter.ts`):
 
 ### Opcode-Buffer-Layout
 
-Alle Bodies' Opcodes werden in einem einzigen `uniformArray` hintereinander gepackt.
+Alle Bodies' Opcodes werden in einem einzigen Storage Buffer hintereinander gepackt.
 Eine Offset-Tabelle (`offsetBuf`, 2 floats pro Body: `[start, length]`) erlaubt
 dem Shade-Pass, das richtige Snippet zu laden.
 
@@ -404,7 +407,7 @@ architektonisch vorgesehen, aber nicht implementiert.
 | Max. Bodies (Szene)       | 256 (Buffer-Allokation) | `MAX_BODIES` Konstante, frei erhöhbar                        |
 | Max. Bodies (per Pixel)   | 65534                   | 16-Bit Body-ID-Encoding (1-based, 0 = leer)                 |
 | Transparente Bodies/Pixel | 2                       | 2 Slots im Body-ID-Buffer (Overflow nicht implementiert)     |
-| Max. Opcodes              | 4096                    | `uniformArray` (WebGPU uniform buffer, 64KB Minimum)         |
+| Max. Opcodes              | 65536                   | `StorageBufferAttribute` (WebGPU storage buffer, 128 MiB+)  |
 | March-Kosten pro Pixel    | O(present × steps)      | Loop evaluiert nur die 1–2 tatsächlich vorhandenen Bodies    |
 | Max. Viewport             | 4096 × 2160             | Body-ID-Buffer voralloziert für diese Auflösung              |
 | Max. Volume-Texturen      | 4                       | Hardcoded im VM-Interpreter                                  |

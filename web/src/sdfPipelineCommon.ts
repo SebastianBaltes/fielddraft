@@ -1,7 +1,7 @@
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
 
 import * as THREE from "three";
-import { storage, uniformArray } from "three/tsl";
+import { storage } from "three/tsl";
 import { StorageBufferAttribute } from "three/webgpu";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
 import { DEFAULT_ROUGHNESS } from "./pbrShading";
@@ -32,11 +32,14 @@ export interface MaterialBufferSet {
 
 export interface OpcodeBufferSet {
   opcodeData: Float32Array;
-  opcodeBuf: ReturnType<typeof uniformArray>;
+  opcodeAttr: StorageBufferAttribute;
+  opcodeBuf: ReturnType<typeof storage>;
   offsetData: Float32Array;
-  offsetBuf: ReturnType<typeof uniformArray>;
+  offsetAttr: StorageBufferAttribute;
+  offsetBuf: ReturnType<typeof storage>;
   volumeBaseData: Float32Array;
-  volumeBaseBuf: ReturnType<typeof uniformArray>;
+  volumeBaseAttr: StorageBufferAttribute;
+  volumeBaseBuf: ReturnType<typeof storage>;
   volumeTextures: THREE.Data3DTexture[];
 }
 
@@ -60,13 +63,25 @@ export function createMaterialBuffers(maxBodies: number): MaterialBufferSet {
 }
 
 export function createOpcodeBuffers(maxOpcodes: number, maxBodies: number): OpcodeBufferSet {
-  const opcodeData = new Float32Array(maxOpcodes);
-  const opcodeBuf = uniformArray(opcodeData, "float");
-  const offsetData = new Float32Array(maxBodies * 2);
-  const offsetBuf = uniformArray(offsetData, "float");
-  const volumeBaseData = new Float32Array(maxBodies);
-  const volumeBaseBuf = uniformArray(volumeBaseData, "float");
-  return { opcodeData, opcodeBuf, offsetData, offsetBuf, volumeBaseData, volumeBaseBuf, volumeTextures: [] };
+  const opcodeAttr = new StorageBufferAttribute(maxOpcodes, 1);
+  const opcodeData = opcodeAttr.array as Float32Array;
+  const opcodeBuf = storage(opcodeAttr, "float", maxOpcodes).toReadOnly();
+
+  const offsetCount = maxBodies * 2;
+  const offsetAttr = new StorageBufferAttribute(offsetCount, 1);
+  const offsetData = offsetAttr.array as Float32Array;
+  const offsetBuf = storage(offsetAttr, "float", offsetCount).toReadOnly();
+
+  const volumeBaseAttr = new StorageBufferAttribute(maxBodies, 1);
+  const volumeBaseData = volumeBaseAttr.array as Float32Array;
+  const volumeBaseBuf = storage(volumeBaseAttr, "float", maxBodies).toReadOnly();
+
+  return {
+    opcodeData, opcodeAttr, opcodeBuf,
+    offsetData, offsetAttr, offsetBuf,
+    volumeBaseData, volumeBaseAttr, volumeBaseBuf,
+    volumeTextures: [],
+  };
 }
 
 // ── Shared opcode packing ──────────────────────────────────────────

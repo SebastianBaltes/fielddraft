@@ -25,12 +25,12 @@ import {
   positionGeometry,
   mix,
   smoothstep,
+  storage,
   uniform,
   vec3,
   vec4,
-  uniformArray,
 } from "three/tsl";
-import { MeshBasicNodeMaterial } from "three/webgpu";
+import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { pbrShade } from "./pbrShading";
 
 import { NORMAL_EPS } from "./sdfRenderer";
@@ -61,7 +61,7 @@ import {
 } from "./sdfPipelineCommon";
 
 const MAX_BODIES = 8;
-const GLOBAL_MAX_OPCODES = 4096;
+const GLOBAL_MAX_OPCODES = 65536;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
@@ -73,10 +73,12 @@ export interface VmPipelineState {
   camera: THREE.OrthographicCamera;
   material: MeshBasicNodeMaterial | null;
   mesh: THREE.Mesh | null;
-  opcodeBuf: ReturnType<typeof uniformArray>;
+  opcodeBuf: ReturnType<typeof storage>;
   opcodeData: Float32Array;
-  offsetBuf: ReturnType<typeof uniformArray>;
+  opcodeAttr: StorageBufferAttribute;
+  offsetBuf: ReturnType<typeof storage>;
   offsetData: Float32Array;
+  offsetAttr: StorageBufferAttribute;
   materialData: Float32Array;
   materialAttr: any;
   materialBuf: any;
@@ -86,7 +88,8 @@ export interface VmPipelineState {
   invViewU: ReturnType<typeof uniform>;
   volumeTextures: THREE.Data3DTexture[];
   volumeBaseData: Float32Array;
-  volumeBaseBuf: ReturnType<typeof uniformArray>;
+  volumeBaseAttr: StorageBufferAttribute;
+  volumeBaseBuf: ReturnType<typeof storage>;
   viewMatU: ReturnType<typeof uniform>;
   showEdgesU: ReturnType<typeof uniform>;
 }
@@ -129,7 +132,10 @@ export function updateVmData(
   }[],
 ): void {
   packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  state.opcodeAttr.needsUpdate = true;
+  state.offsetAttr.needsUpdate = true;
   updateVolumeData(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+  state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
 }
 
@@ -144,8 +150,11 @@ export function rebuildVmBodies(
   }[],
 ): void {
   packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  state.opcodeAttr.needsUpdate = true;
+  state.offsetAttr.needsUpdate = true;
   const { textures } = rebuildVolumeTextures(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
   state.volumeTextures = textures;
+  state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
 
   if (state.material) state.material.dispose();
