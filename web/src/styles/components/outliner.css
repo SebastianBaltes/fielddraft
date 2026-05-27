@@ -577,12 +577,12 @@
   }
 
   & .rollback-bar {
-    height: 4px;
-    background: var(--color-accent);
+    height: 0.4em;
+    background: var(--color-border-strong);
     border-radius: 2px;
     cursor: grab;
     flex-shrink: 0;
-    margin: var(--space-1) 0;
+    margin: var(--space-1) 0.5rem;
     transition: opacity 120ms ease;
     position: relative;
 
