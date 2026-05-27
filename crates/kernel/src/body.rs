@@ -186,22 +186,25 @@ pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
                 }
             }
             BoolOp::Difference | BoolOp::Intersect => {
-                let target = if !feature.target_ids.is_empty() {
-                    groups.iter().enumerate().find(|(_, g)| {
-                        g.feature_indices.iter().any(|&fi| {
+                if !feature.target_ids.is_empty() {
+                    for idx in 0..groups.len() {
+                        let matches = groups[idx].feature_indices.iter().any(|&fi| {
                             let root = features[fi].id.root_ancestor();
                             feature.target_ids.iter().any(|tid| root == tid)
-                        })
-                    })
+                        });
+                        if matches {
+                            groups[idx].feature_indices.push(i);
+                        }
+                    }
                 } else {
-                    groups
+                    let target = groups
                         .iter()
                         .enumerate()
                         .find(|(_, g)| aabbs_overlap(g.aabb, feat_aabb))
-                }
-                .map(|(idx, _)| idx);
-                if let Some(idx) = target {
-                    groups[idx].feature_indices.push(i);
+                        .map(|(idx, _)| idx);
+                    if let Some(idx) = target {
+                        groups[idx].feature_indices.push(i);
+                    }
                 }
             }
         }

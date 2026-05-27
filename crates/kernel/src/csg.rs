@@ -344,11 +344,8 @@ impl Aabb {
                     max: [c[0] + r, c[1] + minor_radius, c[2] + r],
                 }
             }
-            // Gyroid repeats infinitely — return a large conservative AABB.
-            Primitive::Gyroid { .. } => Self {
-                min: [-1000.0; 3],
-                max: [1000.0; 3],
-            },
+            // Gyroid is infinite — partitioning uses target_ids, not AABB.
+            Primitive::Gyroid { .. } => Self::EMPTY,
             Primitive::Thread { nominal_radius, half_height, .. } => {
                 let r = *nominal_radius;
                 let hh = *half_height;
