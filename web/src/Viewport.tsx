@@ -83,14 +83,15 @@ interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
   renderMode: string;
+  showEdges: boolean;
 }
-function Scene({ ndc, onPick, renderMode }: SceneProps) {
+function Scene({ ndc, onPick, renderMode, showEdges }: SceneProps) {
   const { store } = useKernelStore();
   if (!store) return null;
   return (
     <>
-      {renderMode === "sdf-vm" && <SdfVmOverlay />}
-      {renderMode === "sdf-deferred" && <SdfDeferredOverlay />}
+      {renderMode === "sdf-vm" && <SdfVmOverlay showEdges={showEdges} />}
+      {renderMode === "sdf-deferred" && <SdfDeferredOverlay showEdges={showEdges} />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <SelectionTransformGizmo />
@@ -254,7 +255,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode }: { renderMode: string }) {
+export function Viewport({ renderMode, showEdges }: { renderMode: string; showEdges: boolean }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [webgpuError, setWebgpuError] = useState(false);
@@ -386,7 +387,7 @@ export function Viewport({ renderMode }: { renderMode: string }) {
           }}
         >
           <ClearColorSync />
-          <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} />
+          <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
           <ReferenceMesh />
           <EdgeOverlay />
           <MateConnectorOverlay />

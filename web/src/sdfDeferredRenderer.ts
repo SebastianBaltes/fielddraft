@@ -226,6 +226,7 @@ export interface DeferredPipelineState {
   width: number;
   height: number;
   volumeTextures: THREE.Data3DTexture[];
+  showEdgesU: ReturnType<typeof uniform>;
   needsShadeRebuild: boolean;
 }
 
@@ -305,6 +306,7 @@ function createShadeMaterial(
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
+  showEdgesU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
   const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
@@ -459,20 +461,22 @@ function createShadeMaterial(
       const emissive = vec3(er, eg, eb);
       const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
-      const edgeEps = float(EDGE_EPS);
-      const eex = vec3(edgeEps, 0, 0);
-      const eey = vec3(0, edgeEps, 0);
-      const eez = vec3(0, 0, edgeEps);
-      const edgeSum = abs(
-        sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-          .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-      );
-      const edgeFactor = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
-      color.assign(mix(color, vec3(EDGE_COLOR), edgeFactor));
+      If(showEdgesU.greaterThan(float(0.5)), () => {
+        const edgeEps = float(EDGE_EPS);
+        const eex = vec3(edgeEps, 0, 0);
+        const eey = vec3(0, edgeEps, 0);
+        const eez = vec3(0, 0, edgeEps);
+        const edgeSum = abs(
+          sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+            .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+            .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+            .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+            .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+            .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        );
+        const edgeFactor = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
+        color.assign(mix(color, vec3(EDGE_COLOR), edgeFactor));
+      });
 
       const sel = selectionBuf.element(shadeBodyIdx);
       If(sel.greaterThan(float(0.5)), () => {
@@ -550,6 +554,7 @@ export function initDeferredPipeline(
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
   const viewMatU = uniform(new THREE.Matrix4());
   const widthU = uniform(width);
+  const showEdgesU = uniform(1);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
   const bitmaskAttr = new StorageBufferAttribute(MAX_BITMASK_PIXELS, 1, Uint32Array);
@@ -571,6 +576,7 @@ export function initDeferredPipeline(
     camPosUniform,
     viewMatU,
     widthU,
+    showEdgesU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -604,6 +610,7 @@ export function initDeferredPipeline(
     camPosUniform,
     viewMatU,
     widthU,
+    showEdgesU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -878,6 +885,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.camPosUniform,
     state.viewMatU,
     state.widthU,
+    state.showEdgesU,
     state.volumeTextures,
   );
 

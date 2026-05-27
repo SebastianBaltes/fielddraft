@@ -40,6 +40,7 @@ function setup() {
     units: { ...DEFAULT_UNITS },
     theme: "light",
     renderMode: "sdf-deferred",
+    showEdges: true,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -292,6 +293,7 @@ describe("loadSettings", () => {
       units: DEFAULT_UNITS,
       theme: "light",
       renderMode: "sdf-deferred",
+      showEdges: true,
     });
   });
 
@@ -309,6 +311,7 @@ describe("loadSettings", () => {
       units: { lengthUnit: "mm", lengthDecimals: "0.12", angleUnit: "rad", angleDecimals: "0.1" },
       theme: "dark",
       renderMode: "sdf-deferred",
+      showEdges: true,
     });
   });
 

@@ -6,6 +6,7 @@ const LS_COMPACT = "fielddraft.compact";
 const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
+const LS_SHOW_EDGES = "fielddraft.showEdges";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -169,6 +170,7 @@ export interface SettingsState {
   units: WorkspaceUnits;
   theme: ThemeChoice;
   renderMode: RenderMode;
+  showEdges: boolean;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -215,6 +217,7 @@ export function loadSettings(): SettingsState {
   let units: WorkspaceUnits = DEFAULT_UNITS;
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
+  let showEdges = true;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -223,10 +226,12 @@ export function loadSettings(): SettingsState {
     const rawMode = localStorage.getItem(LS_RENDER_MODE);
     if (rawMode && VALID_RENDER_MODES.includes(rawMode as RenderMode))
       renderMode = rawMode as RenderMode;
+    const rawEdges = localStorage.getItem(LS_SHOW_EDGES);
+    if (rawEdges !== null) showEdges = rawEdges !== "false";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode };
+  return { compact, units, theme, renderMode, showEdges };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -781,6 +786,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleShowEdges = () => {
+    const next = { ...settings, showEdges: !settings.showEdges };
+    saveSetting(LS_SHOW_EDGES, String(next.showEdges));
+    onSettingsChange(next);
+  };
+
   const TABS: { key: SettingsTab; label: string }[] = [
     { key: "ui", label: "UI" },
     { key: "units", label: "Workspace Units" },
@@ -880,6 +891,20 @@ function SettingsDialog({
                   <option value="sdf-vm">SDF VM</option>
                   <option value="sdf-deferred">SDF Deferred</option>
                 </select>
+              </div>
+
+              <div className="setting-row" data-testid="setting-show-edges">
+                <span className="setting-label">Edge detection</span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.showEdges ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.showEdges}
+                  data-testid="setting-show-edges-toggle"
+                  onClick={toggleShowEdges}
+                >
+                  {settings.showEdges ? "On" : "Off"}
+                </button>
               </div>
             </>
           )}

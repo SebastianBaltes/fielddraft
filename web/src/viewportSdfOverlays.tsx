@@ -112,7 +112,7 @@ function copyOpcodes(k: KernelLike, bodyIndex: number): Float32Array {
   return view.length > 0 ? view.slice() : new Float32Array(0);
 }
 
-export function SdfVmOverlay() {
+export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const invalidate = useThree((s) => s.invalidate);
@@ -187,6 +187,7 @@ export function SdfVmOverlay() {
 
     const vmMaterials = resolveMaterials(k, store.getState().features);
     applyMaterials(pipeline, vmMaterials, count);
+    pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 
@@ -206,7 +207,7 @@ export function SdfVmOverlay() {
   return null;
 }
 
-export function SdfDeferredOverlay() {
+export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
@@ -305,6 +306,7 @@ export function SdfDeferredOverlay() {
       if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
     }
     updateDeferredSelection(pipeline, selectedBodies);
+    pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 

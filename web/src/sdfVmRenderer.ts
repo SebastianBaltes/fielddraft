@@ -88,6 +88,7 @@ export interface VmPipelineState {
   volumeBaseData: Float32Array;
   volumeBaseBuf: ReturnType<typeof uniformArray>;
   viewMatU: ReturnType<typeof uniform>;
+  showEdgesU: ReturnType<typeof uniform>;
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ export function initVmPipeline(): VmPipelineState {
     invProjU: uniform(new THREE.Matrix4()),
     invViewU: uniform(new THREE.Matrix4()),
     viewMatU: uniform(new THREE.Matrix4()),
+    showEdgesU: uniform(1),
   };
 }
 
@@ -257,20 +259,22 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const emissive = vec3(er, eg, eb);
     const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
 
-    const edgeEps = float(EDGE_EPS);
-    const eex = vec3(edgeEps, 0, 0);
-    const eey = vec3(0, edgeEps, 0);
-    const eez = vec3(0, 0, edgeEps);
-    const edgeSum = abs(
-      sdfEval({ p: hitPos.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-        .add(sdfEval({ p: hitPos.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: hitPos.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: hitPos.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: hitPos.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: hitPos.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-    );
-    const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
-    color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
+    If(state.showEdgesU.greaterThan(float(0.5)), () => {
+      const edgeEps = float(EDGE_EPS);
+      const eex = vec3(edgeEps, 0, 0);
+      const eey = vec3(0, edgeEps, 0);
+      const eez = vec3(0, 0, edgeEps);
+      const edgeSum = abs(
+        sdfEval({ p: hitPos.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+          .add(sdfEval({ p: hitPos.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: hitPos.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: hitPos.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: hitPos.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+          .add(sdfEval({ p: hitPos.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+      );
+      const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
+      color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
+    });
 
     const bodyOpacity = state.materialBuf.element(matBase.add(MAT_OPACITY));
     const wf = state.materialBuf.element(matBase.add(MAT_WIREFRAME));
