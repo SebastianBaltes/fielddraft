@@ -274,7 +274,7 @@ n = normalize(vec3(
 
 | Konstante | Wert | Zweck |
 |-----------|------|-------|
-| `DEFERRED_MAX_OPCODES` | 65536 | Max. Opcodes im concatenated Buffer |
+| `DEFERRED_MAX_OPCODES` | 16384 | Max. Opcodes im concatenated Buffer |
 | `MAX_BODIES` | 256 | Max. Bodies (Buffer-Allokation, frei erhöhbar) |
 | `DEFERRED_MARCH_STEPS` | 512 | Max. Sphere-Trace-Schritte pro Pixel |
 | `SURFACE_EPS` | 0.002 | Konvergenz-Schwelle für Treffer |
@@ -409,7 +409,7 @@ von den Per-Pixel-Kosten:
 | Bottleneck                  | Aktuell                | Lösung                                           |
 | --------------------------- | ---------------------- | ------------------------------------------------ |
 | Transparente Bodies/Pixel   | Max. 2                 | Overflow-Liste (Storage Buffer, nicht impl.)     |
-| ~~Opcode-Buffer~~           | ~~4096 floats (uniform)~~ | Gelöst: Storage Buffer, 65536 floats          |
+| ~~Opcode-Buffer~~           | ~~4096 floats (uniform)~~ | Gelöst: Storage Buffer, 16384 floats          |
 | Body-ID-Buffer Speicher     | 2 × uint32 × Pixel     | Skaliert mit Viewport, nicht mit Body-Count      |
 | Shader-Kompilationszeit     | Steigt mit VM-Opcodes  | Betrifft nur Rebuild, nicht Render-Performance   |
 | Mesh-Verwaltung (CPU-seitig) | Map pro Body           | Linear skalierbar                                |

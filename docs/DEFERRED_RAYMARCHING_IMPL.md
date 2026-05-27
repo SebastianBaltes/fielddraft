@@ -30,7 +30,7 @@ müssen. Der Sphere-Tracer erzeugt dann das finale Bild.
 
 | Konstante              | Wert        | Bedeutung                                            |
 | ---------------------- | ----------- | ---------------------------------------------------- |
-| `DEFERRED_MAX_OPCODES`    | 65536       | Max. Opcodes im concatenated Buffer (storage buffer)       |
+| `DEFERRED_MAX_OPCODES`    | 16384       | Max. Opcodes im concatenated Buffer (storage buffer)       |
 | `MAX_BODIES`              | 256         | Max. Bodies für Buffer-Pre-Allokation                      |
 | `DEFERRED_MARCH_STEPS`    | 512         | Max. Sphere-Trace-Schritte pro Pixel                       |
 | `SURFACE_EPS`             | 0.002       | Konvergenz-Schwelle für Treffer                            |
@@ -38,7 +38,7 @@ müssen. Der Sphere-Tracer erzeugt dann das finale Bild.
 | `HULL_INFLATE`            | 1.01        | Aufblasfaktor für transparente Hulls (1%)                  |
 | `MAX_PIXELS`              | 4096 × 2160 | Maximale Viewport-Auflösung für Body-ID-Buffer             |
 | `BODY_ID_WORDS_PER_PIXEL` | 2           | uint32-Wörter pro Pixel im Body-ID-Buffer                  |
-| `VM_MAX_OPCODES`          | 2048        | Per-Body Opcode-Limit im VM-Interpreter                    |
+| `VM_MAX_OPCODES`          | 512         | Per-Body Opcode-Limit im VM-Interpreter (~35 Primitives)   |
 | `MAX_VOLUME_TEXTURES`     | 4           | Max. 3D-Texturen für importierte Mesh-SDFs                 |
 | `NORMAL_EPS`              | 0.01        | Epsilon für Finite-Difference Normalen                     |
 
@@ -322,17 +322,21 @@ komplett neu gebaut (`needsShadeRebuild = true` → `rebuildShadeMaterialIfNeede
 
 ## Change Detection & Compilation
 
-Die `SdfDeferredOverlay`-Komponente (`viewportSdfOverlays.tsx`) trackt Änderungen
-über ein Fingerprinting-System:
+Die Overlay-Komponenten (`viewportSdfOverlays.tsx`) tracken Änderungen
+über ein dreistufiges Fingerprinting-System:
 
+* **Volume Fingerprint** (`volumeFp`): Gesamtzahl der Volume-Texturen — nur Änderungen hier erzwingen Shader-Recompile (Volume-Texturen sind in den Shader eingebaut)
 * **Structural Fingerprint** (`structFp`): Body-Count + Body-IDs + Opcode-Längen + Volume-Counts
 * **Data Fingerprint** (`dataFp`): Body-Versionen (Parameter-Änderungen)
 
-| Änderung                 | Reaktion                                                           |
-| ------------------------ | ------------------------------------------------------------------ |
-| `structFp` ändert sich   | Voller Rebuild: neue Meshes + Shader-Kompilation                   |
-| Nur `dataFp` ändert sich | Daten-Update: Opcodes + Offsets + Mesh-Transforms (kein Recompile) |
-| Keine Änderung           | Nur Rendern                                                        |
+| Änderung                 | Reaktion (VM Overlay)                                              | Reaktion (Deferred Overlay)                    |
+| ------------------------ | ------------------------------------------------------------------ | ---------------------------------------------- |
+| `volumeFp` ändert sich   | Voller Rebuild + Shader-Kompilation                                | Rebuild + Shader-Kompilation (via needsShadeRebuild) |
+| `structFp` ändert sich   | Daten-Update: Opcodes + Offsets (kein Recompile)                   | Voller Rebuild: neue Meshes + Kompilation      |
+| Nur `dataFp` ändert sich | Daten-Update: Opcodes + Offsets                                    | Daten-Update: Opcodes + Offsets + Mesh-Transforms |
+| Keine Änderung           | Nur Rendern                                                        | Nur Rendern                                    |
+
+Das Hinzufügen/Entfernen von Bodies oder Ändern von Opcodes löst im VM-Modus nur ein schnelles Buffer-Update aus, keinen Shader-Recompile — es sei denn, die Anzahl der Volume-Texturen ändert sich.
 
 Shader-Kompilation ist asynchron (`compileDeferredPipeline`). Während der
 Kompilation wird ein Overlay ("Compiling shader…") angezeigt, und der Renderer
@@ -407,7 +411,8 @@ architektonisch vorgesehen, aber nicht implementiert.
 | Max. Bodies (Szene)       | 256 (Buffer-Allokation) | `MAX_BODIES` Konstante, frei erhöhbar                        |
 | Max. Bodies (per Pixel)   | 65534                   | 16-Bit Body-ID-Encoding (1-based, 0 = leer)                 |
 | Transparente Bodies/Pixel | 2                       | 2 Slots im Body-ID-Buffer (Overflow nicht implementiert)     |
-| Max. Opcodes              | 65536                   | `StorageBufferAttribute` (WebGPU storage buffer, 128 MiB+)  |
+| Max. Opcodes              | 16384                   | `StorageBufferAttribute` (WebGPU storage buffer)             |
+| Max. Opcodes/Body (VM)    | 512                     | GPU-Loop-Limit im VM-Interpreter (~35 Primitives/Body)       |
 | March-Kosten pro Pixel    | O(present × steps)      | Loop evaluiert nur die 1–2 tatsächlich vorhandenen Bodies    |
 | Max. Viewport             | 4096 × 2160             | Body-ID-Buffer voralloziert für diese Auflösung              |
 | Max. Volume-Texturen      | 4                       | Hardcoded im VM-Interpreter                                  |

@@ -223,7 +223,7 @@ compile_body(node: &BoundedCsg) → CompiledSdf { opcodes: Vec<f32>, aabb, volum
 | Masked Blend | MASKED_BLEND |
 | Control | END |
 
-Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 scale) + shape parameters. This flat buffer is uploaded to the GPU as a uniform array and interpreted by the VM shader at runtime.
+Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 scale) + shape parameters. This flat buffer is uploaded to the GPU as a storage buffer and interpreted by the VM shader at runtime. Typical per-body sizes: single primitive = 14–18 floats, 5 primitives + operators = ~100 floats, complex 20-primitive body = ~400 floats.
 
 #### Multi-Body Partitioning (`body.rs`)
 
@@ -338,7 +338,7 @@ graph LR
 - Fullscreen `PlaneGeometry(2, 2)` with orthographic camera
 - GPU bytecode VM interprets opcode stream at shader invocation time
 - Per-body SDF evaluation, closest hit wins — **brute-force: every body evaluated at every pixel**
-- **Hard limits: max 8 bodies, 4096 opcodes total (uniform buffer), 512 march steps.** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
+- **Hard limits: max 8 bodies, 16384 opcodes total (storage buffer), 512 march steps, 512 opcodes/body (VM loop).** These are architectural constraints of the brute-force per-pixel approach, not tuning parameters.
 
 #### SDF-Deferred Mode (`sdfDeferredRenderer.ts`)
 
@@ -369,11 +369,11 @@ graph TD
     P2out --> P3
 ```
 
-Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized opaque meshes for speed. Complex geometry (gyroid, boolean regions) is ray-marched through transparent hull volumes. **Hard limits: max 32 bodies (uint32 per-pixel bitmask), 4096 opcodes total (uniform buffer).** The 32-body ceiling is a direct consequence of the bitmask architecture.
+Simple primitives (box, sphere, cylinder, torus, cone, capsule) get rasterized opaque meshes for speed. Complex geometry (gyroid, boolean regions) is ray-marched through transparent hull volumes. **Hard limits: max 256 bodies (buffer allocation), 16384 opcodes total (storage buffer), 2 transparent bodies/pixel.** Per-pixel cost is O(present), independent of total body count.
 
 #### Opcode Interpretation
 
-**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a uniform buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence. Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
+**Runtime VM** (`sdfVmInterpreter.ts`): TSL function interprets opcodes at runtime from a storage buffer. 8-slot value stack + 4-slot position stack. Single shader handles any opcode sequence up to 512 opcodes/body (~35 primitives). Used by both VM and Deferred modes. `sdfRenderer.ts` provides the shared opcode constants and WGSL primitive functions.
 
 #### Material System
 
@@ -390,11 +390,14 @@ Per-body PBR materials stored in a GPU storage buffer (12 floats/body stride):
 
 #### Synchronization (`viewportSdfOverlays.tsx`)
 
-Per-frame fingerprinting drives the rebuild/update cycle:
+Per-frame fingerprinting drives the rebuild/update cycle with three fingerprints:
 
-- `structFp` (topology hash: body count, IDs, opcode lengths) → full shader rebuild
+- `volumeFp` (total volume texture count) → shader rebuild (VM mode only — volume textures are baked into shader)
+- `structFp` (topology hash: body count, IDs, opcode lengths, volume counts) → full mesh rebuild (deferred) or data update (VM)
 - `dataFp` (data hash: body versions) → opcode/volume buffer upload only
 - Material application runs every frame regardless
+
+Adding/removing bodies or changing opcodes triggers only a fast buffer update, not a shader recompile (unless volume texture count changes).
 
 #### Rendering Parameters
 
