@@ -407,6 +407,15 @@ Per-frame fingerprinting drives the rebuild/update cycle:
 | Hull inflate factor | 1.01 (deferred) |
 | Build volume | 600 mm cubic |
 
+### THREE.js Patches
+
+The WebGPU spec allows `GPUBufferBindingType.Storage` (read_write) in fragment shaders, but Three.js r183 blocks this. Two patches in `web/patches/three+0.183.2.patch` (applied via `patch-package` postinstall):
+
+- **`WGSLNodeBuilder.getNodeAccess()`** — Removes the warning that rejects atomics in non-compute stages, allowing `READ_WRITE` access in fragment shaders
+- **`WebGPUBindingUtils`** — Respects `binding.access` for all shader stages, not just compute. Without this, storage buffers in fragment shaders are always downgraded to `ReadOnlyStorage`.
+
+Both patches are required for the deferred renderer's per-pixel atomic body-tag buffer. Upstream PR: `mrdoob/three.js#33626` — once merged into a Three.js release, the patch file and `patch-package` dependency can be removed.
+
 ### 4.4 Sketch System
 
 Three-layer architecture for 2D parametric constraint sketching:
