@@ -839,7 +839,7 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
     regions
 }
 
-fn connected_components(tris: &[usize], mesh: &Mesh) -> Vec<Vec<usize>> {
+pub(crate) fn connected_components(tris: &[usize], mesh: &Mesh) -> Vec<Vec<usize>> {
     if tris.is_empty() {
         return vec![];
     }

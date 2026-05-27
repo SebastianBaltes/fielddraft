@@ -90,6 +90,22 @@ export type FeatureKindName =
   | "material"
   | "unknown";
 
+export interface TopoFaceData {
+  index: number;
+  contributor: number;
+  area: number;
+  centroid: [number, number, number];
+  normal: [number, number, number];
+  triangleCount: number;
+}
+
+export interface TopoEdgeData {
+  index: number;
+  contributorA: number;
+  contributorB: number;
+  pointCount: number;
+}
+
 export interface ContourData {
   outer: [number, number][];
   holes: [number, number][][];
@@ -330,6 +346,66 @@ export class Kernel {
 
   bodyHybridInfo(i: number): HybridInfo {
     return JSON.parse(this.inner.bodyHybridInfoJson(i));
+  }
+
+  // ── Per-body topology (faces + edges) ────────────────────
+
+  bodyFaceCount(i: number): number {
+    return this.inner.bodyFaceCount(i);
+  }
+
+  bodyEdgeCount(i: number): number {
+    return this.inner.bodyEdgeCount(i);
+  }
+
+  bodyFaceContributor(body: number, face: number): number {
+    return this.inner.bodyFaceContributor(body, face);
+  }
+
+  bodyFaceArea(body: number, face: number): number {
+    return this.inner.bodyFaceArea(body, face);
+  }
+
+  bodyFaceCentroid(body: number, face: number): [number, number, number] {
+    const v = this.inner.bodyFaceCentroid(body, face);
+    return [v[0], v[1], v[2]];
+  }
+
+  bodyFaceNormal(body: number, face: number): [number, number, number] {
+    const v = this.inner.bodyFaceNormal(body, face);
+    return [v[0], v[1], v[2]];
+  }
+
+  bodyFaceTriangleCount(body: number, face: number): number {
+    return this.inner.bodyFaceTriangleCount(body, face);
+  }
+
+  bodyFaceTrianglesView(body: number, face: number): Uint32Array {
+    const ptr = this.inner.bodyFaceTrianglesPtr(body, face);
+    const count = this.inner.bodyFaceTriangleCount(body, face);
+    return new Uint32Array(this.memory.buffer, ptr, count);
+  }
+
+  bodyEdgeContributorA(body: number, edge: number): number {
+    return this.inner.bodyEdgeContributorA(body, edge);
+  }
+
+  bodyEdgeContributorB(body: number, edge: number): number {
+    return this.inner.bodyEdgeContributorB(body, edge);
+  }
+
+  bodyEdgePointCount(body: number, edge: number): number {
+    return this.inner.bodyEdgePointCount(body, edge);
+  }
+
+  bodyEdgePointsView(body: number, edge: number): Float32Array {
+    const ptr = this.inner.bodyEdgePointsPtr(body, edge);
+    const count = this.inner.bodyEdgePointCount(body, edge);
+    return new Float32Array(this.memory.buffer, ptr, count * 3);
+  }
+
+  bodyTopologyJson(i: number): string {
+    return this.inner.bodyTopologyJson(i);
   }
 
   /**

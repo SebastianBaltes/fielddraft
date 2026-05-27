@@ -52,6 +52,7 @@ use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, CsgNode};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
+use crate::topology::BodyTopology;
 
 /// One partitioned body as seen by the [`partition`] pass — just the
 /// feature indices and the accumulated world AABB, without any
@@ -130,6 +131,18 @@ pub struct Body {
     /// Compiled SDF opcode buffer for GPU raymarching. Recompiled
     /// whenever the body's geometry changes (payload_hash differs).
     pub compiled_sdf: Option<CompiledSdf>,
+    /// Lazily computed B-Rep topology (faces + edges) from mesh
+    /// classifications. Invalidated on mesh rebuild.
+    pub topology: Option<BodyTopology>,
+}
+
+impl Body {
+    pub fn ensure_topology(&mut self) -> &BodyTopology {
+        if self.topology.is_none() {
+            self.topology = Some(crate::topology::extract_topology(&self.mesh));
+        }
+        self.topology.as_ref().unwrap()
+    }
 }
 
 /// Walk the feature spine once and return one [`BodyPartition`] per

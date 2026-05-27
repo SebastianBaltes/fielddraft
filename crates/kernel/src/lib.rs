@@ -19,6 +19,7 @@ pub mod features;
 // Primitive::ImportedMesh can carry it serialised.
 pub use fielddraft_protocol::mesh_sdf;
 pub mod edge_detect;
+pub mod topology;
 pub mod sketch_regions;
 pub mod queries;
 pub mod export;
@@ -668,6 +669,7 @@ impl Kernel {
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
+                prev.topology = None;
                 new_bodies.push(prev);
             } else {
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
@@ -690,6 +692,7 @@ impl Kernel {
                     transform_delta: None,
                     last_mesh_transforms: transforms,
                     compiled_sdf: Some(compiled),
+                    topology: None,
                 });
             }
         }
@@ -2710,6 +2713,80 @@ impl Kernel {
         );
         let info = bounded.classify_for_hybrid();
         serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())
+    }
+
+    // ── Per-body topology (faces + edges) ────────────────────
+
+    #[wasm_bindgen(js_name = bodyFaceCount)]
+    pub fn body_face_count(&mut self, i: usize) -> usize {
+        self.bodies[i].ensure_topology().faces.len()
+    }
+
+    #[wasm_bindgen(js_name = bodyEdgeCount)]
+    pub fn body_edge_count(&mut self, i: usize) -> usize {
+        self.bodies[i].ensure_topology().edges.len()
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceContributor)]
+    pub fn body_face_contributor(&mut self, body: usize, face: usize) -> u32 {
+        self.bodies[body].ensure_topology().faces[face].contributor
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceArea)]
+    pub fn body_face_area(&mut self, body: usize, face: usize) -> f32 {
+        self.bodies[body].ensure_topology().faces[face].area
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceCentroid)]
+    pub fn body_face_centroid(&mut self, body: usize, face: usize) -> Vec<f32> {
+        self.bodies[body].ensure_topology().faces[face].centroid.to_vec()
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceNormal)]
+    pub fn body_face_normal(&mut self, body: usize, face: usize) -> Vec<f32> {
+        self.bodies[body].ensure_topology().faces[face].normal.to_vec()
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceTriangleCount)]
+    pub fn body_face_triangle_count(&mut self, body: usize, face: usize) -> usize {
+        self.bodies[body].ensure_topology().faces[face].triangles.len()
+    }
+
+    #[wasm_bindgen(js_name = bodyFaceTrianglesPtr)]
+    pub fn body_face_triangles_ptr(&mut self, body: usize, face: usize) -> *const u32 {
+        self.bodies[body].ensure_topology();
+        self.bodies[body].topology.as_ref().unwrap().faces[face]
+            .triangles
+            .as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyEdgeContributorA)]
+    pub fn body_edge_contributor_a(&mut self, body: usize, edge: usize) -> u32 {
+        self.bodies[body].ensure_topology().edges[edge].contributor_a
+    }
+
+    #[wasm_bindgen(js_name = bodyEdgeContributorB)]
+    pub fn body_edge_contributor_b(&mut self, body: usize, edge: usize) -> u32 {
+        self.bodies[body].ensure_topology().edges[edge].contributor_b
+    }
+
+    #[wasm_bindgen(js_name = bodyEdgePointCount)]
+    pub fn body_edge_point_count(&mut self, body: usize, edge: usize) -> usize {
+        self.bodies[body].ensure_topology().edges[edge].points.len() / 3
+    }
+
+    #[wasm_bindgen(js_name = bodyEdgePointsPtr)]
+    pub fn body_edge_points_ptr(&mut self, body: usize, edge: usize) -> *const f32 {
+        self.bodies[body].ensure_topology();
+        self.bodies[body].topology.as_ref().unwrap().edges[edge]
+            .points
+            .as_ptr()
+    }
+
+    #[wasm_bindgen(js_name = bodyTopologyJson)]
+    pub fn body_topology_json(&mut self, i: usize) -> String {
+        let topo = self.bodies[i].ensure_topology();
+        serde_json::to_string(topo).unwrap_or_else(|_| "{}".into())
     }
 
     /// Number of `u32` slots reserved per vertex in the per-body
