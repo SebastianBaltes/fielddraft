@@ -641,7 +641,7 @@ const DATUM_LABEL_POS: [number, number, number] = [
   0.5,
 ];
 
-function makeLabelTexture(text: string): THREE.SpriteMaterial {
+function makeLabelMaterial(text: string): THREE.MeshBasicMaterial {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
   const font = "bold 64px sans-serif";
@@ -659,13 +659,17 @@ function makeLabelTexture(text: string): THREE.SpriteMaterial {
   const tex = new THREE.CanvasTexture(canvas);
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
-  return new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  return new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, side: THREE.DoubleSide });
 }
 
-const datumLabelMaterials: Record<string, THREE.SpriteMaterial> = {};
-function getDatumLabelMaterial(text: string) {
-  if (!datumLabelMaterials[text]) datumLabelMaterials[text] = makeLabelTexture(text);
-  return datumLabelMaterials[text];
+const datumLabelCache: Record<string, { material: THREE.MeshBasicMaterial; aspect: number }> = {};
+function getDatumLabel(text: string) {
+  if (!datumLabelCache[text]) {
+    const mat = makeLabelMaterial(text);
+    const aspect = (mat.map as THREE.CanvasTexture).image.width / (mat.map as THREE.CanvasTexture).image.height;
+    datumLabelCache[text] = { material: mat, aspect };
+  }
+  return datumLabelCache[text];
 }
 
 const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE);
@@ -707,11 +711,13 @@ export function DatumOverlay() {
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
           </lineSegments>
-          <sprite
+          <mesh
             position={DATUM_LABEL_POS}
-            material={getDatumLabelMaterial(plane.label)}
-            scale={[40, 12, 1]}
-          />
+            material={getDatumLabel(plane.label).material}
+            scale={[12 * getDatumLabel(plane.label).aspect, 12, 1]}
+          >
+            <planeGeometry args={[1, 1]} />
+          </mesh>
         </group>
       ))}
     </group>
