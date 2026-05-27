@@ -71,6 +71,7 @@ export interface MesherBodyPayload {
   classifications: Uint8Array;
   contributors: Uint32Array;
   transformDelta: [number, number, number] | null;
+  topologyJson: string;
 }
 
 export interface MesherRebuildRequest {
@@ -196,6 +197,11 @@ function snapshotBodies(
       transformDelta = [d[0], d[1], d[2]];
     }
 
+    let topologyJson = '{"faces":[],"edges":[]}';
+    try {
+      topologyJson = kernel.bodyTopologyJson(i);
+    } catch { /* topology extraction may fail for imported meshes */ }
+
     bodies.push({
       id: kernel.bodyId(i),
       seedId: kernel.bodySeedFeatureId(i),
@@ -206,6 +212,7 @@ function snapshotBodies(
       classifications,
       contributors,
       transformDelta,
+      topologyJson,
     });
 
     transfers.push(

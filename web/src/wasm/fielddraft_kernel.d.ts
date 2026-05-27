@@ -132,6 +132,18 @@ export class Kernel {
     bodyClassificationsPtr(i: number): number;
     bodyContributorsPtr(i: number): number;
     bodyCount(): number;
+    bodyEdgeContributorA(body: number, edge: number): number;
+    bodyEdgeContributorB(body: number, edge: number): number;
+    bodyEdgeCount(i: number): number;
+    bodyEdgePointCount(body: number, edge: number): number;
+    bodyEdgePointsPtr(body: number, edge: number): number;
+    bodyFaceArea(body: number, face: number): number;
+    bodyFaceCentroid(body: number, face: number): Float32Array;
+    bodyFaceContributor(body: number, face: number): number;
+    bodyFaceCount(i: number): number;
+    bodyFaceNormal(body: number, face: number): Float32Array;
+    bodyFaceTriangleCount(body: number, face: number): number;
+    bodyFaceTrianglesPtr(body: number, face: number): number;
     /**
      * K3.6: returns `true` when the i-th body has a pending
      * translation delta that the frontend should apply as a GPU
@@ -164,6 +176,7 @@ export class Kernel {
      * feature name even though `bodyId` is a unique hash.
      */
     bodySeedFeatureId(i: number): number;
+    bodyTopologyJson(i: number): string;
     /**
      * K3.6: returns a 3-element `Float32Array` [dx, dy, dz] for
      * the i-th body's pending translation delta. Panics if the
@@ -509,6 +522,18 @@ export interface InitOutput {
     readonly kernel_bodyClassificationsPtr: (a: number, b: number) => number;
     readonly kernel_bodyContributorsPtr: (a: number, b: number) => number;
     readonly kernel_bodyCount: (a: number) => number;
+    readonly kernel_bodyEdgeContributorA: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyEdgeContributorB: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyEdgeCount: (a: number, b: number) => number;
+    readonly kernel_bodyEdgePointCount: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyEdgePointsPtr: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyFaceArea: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyFaceCentroid: (a: number, b: number, c: number) => [number, number];
+    readonly kernel_bodyFaceContributor: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyFaceCount: (a: number, b: number) => number;
+    readonly kernel_bodyFaceNormal: (a: number, b: number, c: number) => [number, number];
+    readonly kernel_bodyFaceTriangleCount: (a: number, b: number, c: number) => number;
+    readonly kernel_bodyFaceTrianglesPtr: (a: number, b: number, c: number) => number;
     readonly kernel_bodyHasTransformDelta: (a: number, b: number) => number;
     readonly kernel_bodyHybridInfoJson: (a: number, b: number) => [number, number];
     readonly kernel_bodyId: (a: number, b: number) => number;
@@ -520,6 +545,7 @@ export interface InitOutput {
     readonly kernel_bodySdfOpcodesLen: (a: number, b: number) => number;
     readonly kernel_bodySdfOpcodesPtr: (a: number, b: number) => number;
     readonly kernel_bodySeedFeatureId: (a: number, b: number) => number;
+    readonly kernel_bodyTopologyJson: (a: number, b: number) => [number, number];
     readonly kernel_bodyTransformDelta: (a: number, b: number) => [number, number];
     readonly kernel_bodyTriangleCount: (a: number, b: number) => number;
     readonly kernel_bodyVersion: (a: number, b: number) => number;

@@ -375,7 +375,7 @@ fn place_vertices(
             for slot in 0..MAX_CONTRIBUTORS {
                 if slot < slice.len() {
                     contributors[slot] = slice[slot]
-                        .as_u32_if_flat()
+                        .as_u32_or_root()
                         .unwrap_or(CONTRIBUTOR_SENTINEL);
                 }
             }

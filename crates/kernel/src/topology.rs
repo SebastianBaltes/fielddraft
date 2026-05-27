@@ -486,6 +486,80 @@ mod tests {
     }
 
     #[test]
+    fn hierarchical_child_id_gets_contributor() {
+        let features = vec![
+            box_feature(1),
+            Feature {
+                id: FeatureId::from_u32(2).child("0"),
+                name: "Hole".into(),
+                op: BoolOp::Difference,
+                primitive: Primitive::Cylinder {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 10.0,
+                    half_height: 30.0,
+                },
+                transform: Transform::IDENTITY,
+                blend_radius: 0.0,
+                chamfer_size: 0.0,
+                twist_rate: 0.0,
+                bend_rate: 0.0,
+                displace_depth: 0.0,
+                displace_freq: 0.0,
+                shell_thickness: 0.0,
+                target_ids: vec![],
+            },
+        ];
+        let (mesh, _) = mesh_for(&features, 24);
+        if mesh.is_empty() {
+            return;
+        }
+        let mut has_contributor_2 = false;
+        for i in 0..mesh.positions.len() / 3 {
+            let c = mesh.contributors[i * crate::csg::MAX_CONTRIBUTORS];
+            if c == 2 {
+                has_contributor_2 = true;
+                break;
+            }
+        }
+        assert!(
+            has_contributor_2,
+            "hole cylinder with child id 2.0 should produce contributor 2 via root ancestor"
+        );
+        let topo = extract_topology(&mesh);
+        assert!(
+            !topo.edges.is_empty(),
+            "box-minus-hole should produce topo edges"
+        );
+    }
+
+    #[test]
+    fn box_minus_sphere_has_edges_mdc() {
+        let features = vec![
+            box_feature(1),
+            sphere_diff(2, [10.0, 0.0, 0.0], 15.0),
+        ];
+        let (mesh, _) = mesh_for(&features, 80);
+        if mesh.is_empty() {
+            return;
+        }
+        let topo = extract_topology(&mesh);
+        let mut has_c2 = false;
+        for i in 0..mesh.positions.len() / 3 {
+            if mesh.contributors[i * crate::csg::MAX_CONTRIBUTORS] == 2 {
+                has_c2 = true;
+                break;
+            }
+        }
+        assert!(has_c2, "MDC path should produce contributor 2");
+        assert!(
+            !topo.edges.is_empty(),
+            "box-minus-sphere at MDC resolution should produce topo edges, faces={} edges={}",
+            topo.faces.len(),
+            topo.edges.len()
+        );
+    }
+
+    #[test]
     fn edge_contributor_pairs_are_canonical() {
         let features = vec![
             box_feature(1),

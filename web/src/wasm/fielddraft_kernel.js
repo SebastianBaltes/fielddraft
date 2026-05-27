@@ -373,6 +373,116 @@ export class Kernel {
         return ret >>> 0;
     }
     /**
+     * @param {number} body
+     * @param {number} edge
+     * @returns {number}
+     */
+    bodyEdgeContributorA(body, edge) {
+        const ret = wasm.kernel_bodyEdgeContributorA(this.__wbg_ptr, body, edge);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} edge
+     * @returns {number}
+     */
+    bodyEdgeContributorB(body, edge) {
+        const ret = wasm.kernel_bodyEdgeContributorB(this.__wbg_ptr, body, edge);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @returns {number}
+     */
+    bodyEdgeCount(i) {
+        const ret = wasm.kernel_bodyEdgeCount(this.__wbg_ptr, i);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} edge
+     * @returns {number}
+     */
+    bodyEdgePointCount(body, edge) {
+        const ret = wasm.kernel_bodyEdgePointCount(this.__wbg_ptr, body, edge);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} edge
+     * @returns {number}
+     */
+    bodyEdgePointsPtr(body, edge) {
+        const ret = wasm.kernel_bodyEdgePointsPtr(this.__wbg_ptr, body, edge);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {number}
+     */
+    bodyFaceArea(body, face) {
+        const ret = wasm.kernel_bodyFaceArea(this.__wbg_ptr, body, face);
+        return ret;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {Float32Array}
+     */
+    bodyFaceCentroid(body, face) {
+        const ret = wasm.kernel_bodyFaceCentroid(this.__wbg_ptr, body, face);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {number}
+     */
+    bodyFaceContributor(body, face) {
+        const ret = wasm.kernel_bodyFaceContributor(this.__wbg_ptr, body, face);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @returns {number}
+     */
+    bodyFaceCount(i) {
+        const ret = wasm.kernel_bodyFaceCount(this.__wbg_ptr, i);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {Float32Array}
+     */
+    bodyFaceNormal(body, face) {
+        const ret = wasm.kernel_bodyFaceNormal(this.__wbg_ptr, body, face);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {number}
+     */
+    bodyFaceTriangleCount(body, face) {
+        const ret = wasm.kernel_bodyFaceTriangleCount(this.__wbg_ptr, body, face);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} body
+     * @param {number} face
+     * @returns {number}
+     */
+    bodyFaceTrianglesPtr(body, face) {
+        const ret = wasm.kernel_bodyFaceTrianglesPtr(this.__wbg_ptr, body, face);
+        return ret >>> 0;
+    }
+    /**
      * K3.6: returns `true` when the i-th body has a pending
      * translation delta that the frontend should apply as a GPU
      * matrix instead of re-uploading geometry.
@@ -484,6 +594,22 @@ export class Kernel {
     bodySeedFeatureId(i) {
         const ret = wasm.kernel_bodySeedFeatureId(this.__wbg_ptr, i);
         return ret >>> 0;
+    }
+    /**
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyTopologyJson(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyTopologyJson(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * K3.6: returns a 3-element `Float32Array` [dx, dy, dz] for

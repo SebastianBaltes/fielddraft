@@ -406,11 +406,19 @@ export function EdgeOverlay() {
 
   return (
     <lineSegments
+      ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.set(OVERLAY_LAYER); }}
       geometry={geometryRef.current}
       material={materialRef.current}
       frustumCulled={false}
     />
   );
+}
+
+interface TopoEdgeJson {
+  points: number[];
+}
+interface BodyTopologyJson {
+  edges: TopoEdgeJson[];
 }
 
 export function BRepEdgeOverlay() {
@@ -419,7 +427,6 @@ export function BRepEdgeOverlay() {
   const materialRef = useRef(
     new THREE.LineBasicMaterial({ color: 0x111111, linewidth: 1 }),
   );
-  const cachedVersionRef = useRef(-1);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -427,17 +434,13 @@ export function BRepEdgeOverlay() {
       setReady(false);
       return;
     }
-    const version = store.kernel.meshVersion();
-    if (version === cachedVersionRef.current) return;
-    cachedVersionRef.current = version;
     try {
-      const bodyCount = state.meshedBodies.length;
       const segments: number[] = [];
-      for (let b = 0; b < bodyCount; b++) {
-        const edgeCount = store.kernel.bodyEdgeCount(b);
-        for (let e = 0; e < edgeCount; e++) {
-          const pts = store.kernel.bodyEdgePointsView(b, e);
-          const pointCount = store.kernel.bodyEdgePointCount(b, e);
+      for (const body of state.meshedBodies) {
+        const topo: BodyTopologyJson = JSON.parse(body.topologyJson);
+        for (const edge of topo.edges) {
+          const pts = edge.points;
+          const pointCount = pts.length / 3;
           for (let p = 0; p < pointCount - 1; p++) {
             segments.push(
               pts[p * 3], pts[p * 3 + 1], pts[p * 3 + 2],
@@ -473,6 +476,7 @@ export function BRepEdgeOverlay() {
 
   return (
     <lineSegments
+      ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.set(OVERLAY_LAYER); }}
       geometry={geometryRef.current}
       material={materialRef.current}
       frustumCulled={false}

@@ -224,7 +224,7 @@ fn dc_core_dense(
                 for slot in 0..MAX_CONTRIBUTORS {
                     if slot < slice.len() {
                         let compact = slice[slot]
-                            .as_u32_if_flat()
+                            .as_u32_or_root()
                             .unwrap_or(CONTRIBUTOR_SENTINEL);
                         contributors.push(compact);
                     } else {
@@ -540,7 +540,7 @@ fn dc_core_sparse(
                     for slot in 0..MAX_CONTRIBUTORS {
                         if slot < slice.len() {
                             let compact = slice[slot]
-                                .as_u32_if_flat()
+                                .as_u32_or_root()
                                 .unwrap_or(CONTRIBUTOR_SENTINEL);
                             contributors.push(compact);
                         } else {

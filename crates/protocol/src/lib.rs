@@ -108,6 +108,13 @@ impl FeatureId {
         self.local.parse::<u32>().ok()
     }
 
+    /// Collapse to a u32, falling back to the root ancestor's numeric
+    /// id for hierarchical ids like `2.0` (hole child).
+    pub fn as_u32_or_root(&self) -> Option<u32> {
+        self.as_u32_if_flat()
+            .or_else(|| self.root_ancestor().as_u32_if_flat())
+    }
+
     /// Walk up the parent chain and return the root-most ancestor.
     pub fn root_ancestor(&self) -> &FeatureId {
         let mut cur = self;
