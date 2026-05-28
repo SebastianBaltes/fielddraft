@@ -6,6 +6,8 @@ import { useKernelStore, type StoreState } from "./store";
 import type { FeatureSummary, PickResult } from "./kernel";
 import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
+import { resolveMaterials, type MaterialProps } from "./materialBridge";
+import { BODY_COLORS } from "./sdfDeferredRenderer";
 
 export function findSingleSelectedFeature(state: StoreState | null | undefined): FeatureSummary | undefined {
   if (!state || state.selection.size !== 1) return undefined;
@@ -483,7 +485,11 @@ export function BRepEdgeOverlay() {
   );
 }
 
-function MeshPreviewBody({ body }: { body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } }) {
+function MeshPreviewBody({ body, mat, bodyIndex }: {
+  body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+  mat: MaterialProps | undefined;
+  bodyIndex: number;
+}) {
   const geometry = useMemo(() => {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
@@ -497,16 +503,40 @@ function MeshPreviewBody({ body }: { body: { positions: Float32Array; normals: F
     return () => geometry.dispose();
   }, [geometry]);
 
+  const fallback = BODY_COLORS[bodyIndex % BODY_COLORS.length];
+  const color = mat
+    ? new THREE.Color(mat.color[0], mat.color[1], mat.color[2])
+    : new THREE.Color(fallback[0], fallback[1], fallback[2]);
+  const emissive = mat
+    ? new THREE.Color(mat.emissive[0], mat.emissive[1], mat.emissive[2])
+    : undefined;
+
   return (
     <mesh geometry={geometry}>
-      <meshStandardMaterial color="#94a3b8" side={THREE.DoubleSide} />
+      <meshStandardMaterial
+        color={color}
+        roughness={mat?.roughness ?? 0.6}
+        metalness={mat?.metalness ?? 0.0}
+        emissive={emissive}
+        opacity={mat?.opacity ?? 1}
+        transparent={mat != null && mat.opacity < 1}
+        wireframe={mat?.wireframe ?? false}
+        side={THREE.DoubleSide}
+      />
     </mesh>
   );
 }
 
 export function MeshPreview() {
-  const { state } = useKernelStore();
+  const { store, state } = useKernelStore();
   const bodies = state?.meshedBodies;
+  const features = state?.features;
+
+  const materials = useMemo(() => {
+    if (!store || !features) return new Map<number, MaterialProps>();
+    return resolveMaterials(store.kernel, features);
+  }, [store, features]);
+
   if (!bodies || bodies.length === 0) return null;
 
   return (
@@ -514,8 +544,8 @@ export function MeshPreview() {
       <ambientLight intensity={0.5} />
       <directionalLight position={[200, 400, 300]} intensity={0.8} />
       <directionalLight position={[-100, 200, -200]} intensity={0.3} />
-      {bodies.map((body) => (
-        <MeshPreviewBody key={body.id} body={body} />
+      {bodies.map((body, i) => (
+        <MeshPreviewBody key={body.id} body={body} mat={materials.get(i)} bodyIndex={i} />
       ))}
     </>
   );
