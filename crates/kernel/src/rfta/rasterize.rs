@@ -7,24 +7,6 @@
 
 use super::sphere_tree::SdfSphere;
 
-/// Simple LCG pseudo-random number generator for deterministic jitter.
-struct Lcg {
-    state: u32,
-}
-
-impl Lcg {
-    fn new(seed: u32) -> Self {
-        Self { state: seed }
-    }
-
-    /// Returns a value in [0, 1).
-    fn next_f32(&mut self) -> f32 {
-        // LCG parameters from Numerical Recipes
-        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
-        (self.state >> 8) as f32 / 16777216.0
-    }
-}
-
 /// Compute outside points via sphere rasterization in [0,1]^3.
 ///
 /// `spheres` must already be normalized to [0,1]^3 and be of one sign class.
@@ -36,42 +18,22 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
         return vec![];
     }
 
-    // Resolution: r = 64 * ceil((n/16)^(1/3))
-    // Paper Section 4.1, reference: reach_for_the_arcs.py
-    let r = (64.0 * (n as f64 / 16.0).cbrt().ceil()) as usize;
-    let r = r.max(64);
+    // Resolution: ceil(64 * (n/16)^(1/3))
+    // Reference: reach_for_the_arcs.py — int(np.ceil(64*(len(U)/16)**(1/3)))
+    // Capped at 256 to keep memory feasible in WASM (~34 MB at 256^3).
+    let r = ((64.0 * (n as f64 / 16.0).cbrt()).ceil() as usize).clamp(64, 256);
 
     let cell_size = 1.0 / r as f32;
     let raster_shrink = 0.95_f32;
 
-    // Initialize grid: false = unoccupied, true = occupied
     let total_cells = r * r * r;
     let mut occupied = vec![false; total_cells];
-
-    // Generate jittered cell centers
-    let mut rng = Lcg::new(3452);
-    let mut cell_centers = Vec::with_capacity(total_cells);
-    for k in 0..r {
-        for j in 0..r {
-            for i in 0..r {
-                let jx = rng.next_f32();
-                let jy = rng.next_f32();
-                let jz = rng.next_f32();
-                cell_centers.push([
-                    (i as f32 + jx) * cell_size,
-                    (j as f32 + jy) * cell_size,
-                    (k as f32 + jz) * cell_size,
-                ]);
-            }
-        }
-    }
 
     // Mark cells occupied by each sphere (with raster_shrink)
     for sphere in spheres {
         let shrunk_r = raster_shrink * sphere.radius;
         let shrunk_r_sq = shrunk_r * shrunk_r;
 
-        // Bounding box in grid coordinates
         let imin = ((sphere.center[0] - shrunk_r) / cell_size).floor() as i32;
         let imax = ((sphere.center[0] + shrunk_r) / cell_size).ceil() as i32;
         let jmin = ((sphere.center[1] - shrunk_r) / cell_size).floor() as i32;
@@ -80,11 +42,11 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
         let kmax = ((sphere.center[2] + shrunk_r) / cell_size).ceil() as i32;
 
         let ri = r as i32;
-        for k in kmin.max(0)..imax_clamp(kmax, ri) {
-            for j in jmin.max(0)..imax_clamp(jmax, ri) {
-                for i in imin.max(0)..imax_clamp(imax, ri) {
+        for k in kmin.max(0)..kmax.min(ri) {
+            for j in jmin.max(0)..jmax.min(ri) {
+                for i in imin.max(0)..imax.min(ri) {
                     let idx = i as usize + j as usize * r + k as usize * r * r;
-                    let cc = cell_centers[idx];
+                    let cc = cell_center(i as usize, j as usize, k as usize, cell_size);
                     let dx = cc[0] - sphere.center[0];
                     let dy = cc[1] - sphere.center[1];
                     let dz = cc[2] - sphere.center[2];
@@ -96,8 +58,8 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
         }
     }
 
-    // Narrow-band filter: remove unoccupied cells whose entire
-    // 3x3x3 neighborhood is also unoccupied (too far from surface).
+    // Narrow-band filter: keep unoccupied cells that have at least one
+    // occupied neighbor in their 3×3×3 neighborhood.
     let mut near_boundary = vec![false; total_cells];
     let ri = r as i32;
     for k in 0..r {
@@ -107,7 +69,6 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
                 if occupied[idx] {
                     continue;
                 }
-                // Check if any neighbor in 3x3x3 is occupied
                 let mut has_occupied_neighbor = false;
                 'outer: for dk in -1i32..=1 {
                     for dj in -1i32..=1 {
@@ -135,16 +96,38 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
 
     // Collect unoccupied cells in the narrow band
     let mut result = Vec::new();
-    for idx in 0..total_cells {
-        if !occupied[idx] && near_boundary[idx] {
-            result.push(cell_centers[idx]);
+    for k in 0..r {
+        for j in 0..r {
+            for i in 0..r {
+                let idx = i + j * r + k * r * r;
+                if !occupied[idx] && near_boundary[idx] {
+                    result.push(cell_center(i, j, k, cell_size));
+                }
+            }
         }
     }
 
     result
 }
 
-/// Clamp max index to grid resolution.
-fn imax_clamp(val: i32, r: i32) -> i32 {
-    val.min(r)
+/// Jittered cell center using a spatial hash (no storage needed).
+fn cell_center(i: usize, j: usize, k: usize, cell_size: f32) -> [f32; 3] {
+    let base = (i as u32)
+        .wrapping_mul(73856093)
+        ^ (j as u32).wrapping_mul(19349663)
+        ^ (k as u32).wrapping_mul(83492791);
+    let jx = hash_to_f32(base);
+    let jy = hash_to_f32(base.wrapping_add(1));
+    let jz = hash_to_f32(base.wrapping_add(2));
+    [
+        (i as f32 + jx) * cell_size,
+        (j as f32 + jy) * cell_size,
+        (k as f32 + jz) * cell_size,
+    ]
+}
+
+/// Deterministic hash → [0, 1).
+fn hash_to_f32(seed: u32) -> f32 {
+    let h = seed.wrapping_mul(2654435761);
+    (h >> 8) as f32 / 16777216.0
 }
