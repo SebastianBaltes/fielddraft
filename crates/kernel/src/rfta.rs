@@ -569,8 +569,8 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
                         && v0 != v1 && v1 != v2 && v0 != v2
                     {
                         indices.push(v0);
-                        indices.push(v1);
                         indices.push(v2);
+                        indices.push(v1);
                     }
                     t += 3;
                 }
@@ -607,11 +607,10 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
             let e01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
             let e02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
             let e12 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
-            // Negate: MC table winding produces inward-pointing cross products
             let fn_ = [
-                -(e01[1] * e02[2] - e01[2] * e02[1]),
-                -(e01[2] * e02[0] - e01[0] * e02[2]),
-                -(e01[0] * e02[1] - e01[1] * e02[0]),
+                e01[1] * e02[2] - e01[2] * e02[1],
+                e01[2] * e02[0] - e01[0] * e02[2],
+                e01[0] * e02[1] - e01[1] * e02[0],
             ];
             let corners: [(usize, [f32; 3], [f32; 3]); 3] = [
                 (i0, e01, e02),
