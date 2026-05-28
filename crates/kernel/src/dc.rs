@@ -101,7 +101,7 @@ pub fn dual_contour_with_primitives(
     let ny = ((size[1] / cell).ceil() as usize).max(1);
     let nz = ((size[2] / cell).ceil() as usize).max(1);
 
-    let normal_eps = cell * 0.05;
+    let normal_eps = cell * 0.25;
 
     let mut mesh = crate::mdc::manifold_dc(node, grid.min, cell, nx, ny, nz);
 
