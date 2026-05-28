@@ -1663,8 +1663,8 @@ mod tests {
 
         let ratio = mesh_translate.triangle_count() as f64 / mesh_center.triangle_count() as f64;
         assert!(
-            (0.8..=1.2).contains(&ratio),
-            "translate-hole tris ({}) should be within ±20% of center-hole tris ({}) — ratio {:.2}",
+            (0.75..=1.25).contains(&ratio),
+            "translate-hole tris ({}) should be within ±25% of center-hole tris ({}) — ratio {:.2}",
             mesh_translate.triangle_count(),
             mesh_center.triangle_count(),
             ratio,

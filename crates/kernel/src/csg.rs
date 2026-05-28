@@ -632,27 +632,26 @@ impl CsgNode {
             } else {
                 (0.0, BlendMode::Fillet)
             };
-            acc = match (acc, f.op) {
-                (Self::Empty, _) => leaf,
-                (a, BoolOp::Union) if blend_r > 0.0 => {
-                    Self::SmoothUnion(Box::new(a), Box::new(leaf), blend_r, blend_mode)
+            acc = if !f.target_ids.is_empty() && !matches!(acc, Self::Empty) {
+                wrap_targeted(acc, &f.target_ids, leaf, f.op, blend_r, blend_mode)
+            } else {
+                match (acc, f.op) {
+                    (Self::Empty, _) => leaf,
+                    (a, BoolOp::Union) if blend_r > 0.0 => {
+                        Self::SmoothUnion(Box::new(a), Box::new(leaf), blend_r, blend_mode)
+                    }
+                    (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
+                    (a, BoolOp::Difference) if blend_r > 0.0 => {
+                        Self::SmoothDifference(Box::new(a), Box::new(leaf), blend_r, blend_mode)
+                    }
+                    (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
+                    (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
                 }
-                (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
-                (a, BoolOp::Difference) if blend_r > 0.0 => {
-                    Self::SmoothDifference(Box::new(a), Box::new(leaf), blend_r, blend_mode)
-                }
-                (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
-                (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
             };
         }
         acc
     }
 
-    /// Evaluate the signed distance at a world-space point. Matches
-    /// K10.4: post-process the tree by replacing Union/Difference
-    /// nodes with MaskedBlend where an EdgeFillet matches. A fillet
-    /// matches a junction when one subtree contains feature_a and
-    /// the other contains feature_b (either order).
     pub fn apply_edge_fillets(self, fillets: &[EdgeFillet]) -> Self {
         if fillets.is_empty() {
             return self;
@@ -752,6 +751,32 @@ impl CsgNode {
     }
 
     /// Collect all leaf FeatureIds reachable from this node.
+    fn contains_any_target(&self, target_ids: &[FeatureId]) -> bool {
+        match self {
+            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } => {
+                let root = id.root_ancestor();
+                target_ids.iter().any(|tid| root == tid)
+            }
+            CsgNode::Transform(_, inner)
+            | CsgNode::Twist(inner, _)
+            | CsgNode::Bend(inner, _)
+            | CsgNode::Shell(inner, _)
+            | CsgNode::Displace(inner, _, _) => inner.contains_any_target(target_ids),
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => {
+                a.contains_any_target(target_ids) || b.contains_any_target(target_ids)
+            }
+            CsgNode::MaskedBlend { a, b, .. } => {
+                a.contains_any_target(target_ids) || b.contains_any_target(target_ids)
+            }
+            CsgNode::Empty => false,
+        }
+    }
+
     pub fn leaf_ids(&self) -> Vec<FeatureId> {
         let mut out = Vec::new();
         self.collect_leaf_ids(&mut out);
@@ -1190,6 +1215,77 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
     }
     let h = (r - (da - db).abs()).max(0.0) / r;
     da.min(db) - h * h * h * r / 6.0
+}
+
+/// Recursively descend through Union/SmoothUnion nodes in `tree`,
+/// applying `op(subtree, wrapper)` only to the branch(es) that
+/// contain a leaf whose root_ancestor matches one of `target_ids`.
+/// Non-target branches pass through unchanged.
+fn wrap_targeted(
+    tree: CsgNode,
+    target_ids: &[FeatureId],
+    wrapper: CsgNode,
+    op: BoolOp,
+    blend_r: f32,
+    blend_mode: BlendMode,
+) -> CsgNode {
+    if !tree.contains_any_target(target_ids) {
+        return tree;
+    }
+    match tree {
+        CsgNode::Union(a, b) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => CsgNode::Union(
+                    Box::new(wrap_targeted(*a, target_ids, wrapper, op, blend_r, blend_mode)),
+                    b,
+                ),
+                (false, true) => CsgNode::Union(
+                    a,
+                    Box::new(wrap_targeted(*b, target_ids, wrapper, op, blend_r, blend_mode)),
+                ),
+                _ => apply_op(CsgNode::Union(a, b), wrapper, op, blend_r, blend_mode),
+            }
+        }
+        CsgNode::SmoothUnion(a, b, r, m) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => CsgNode::SmoothUnion(
+                    Box::new(wrap_targeted(*a, target_ids, wrapper, op, blend_r, blend_mode)),
+                    b, r, m,
+                ),
+                (false, true) => CsgNode::SmoothUnion(
+                    a,
+                    Box::new(wrap_targeted(*b, target_ids, wrapper, op, blend_r, blend_mode)),
+                    r, m,
+                ),
+                _ => apply_op(CsgNode::SmoothUnion(a, b, r, m), wrapper, op, blend_r, blend_mode),
+            }
+        }
+        other => apply_op(other, wrapper, op, blend_r, blend_mode),
+    }
+}
+
+fn apply_op(
+    tree: CsgNode,
+    operand: CsgNode,
+    op: BoolOp,
+    blend_r: f32,
+    blend_mode: BlendMode,
+) -> CsgNode {
+    match op {
+        BoolOp::Union if blend_r > 0.0 => {
+            CsgNode::SmoothUnion(Box::new(tree), Box::new(operand), blend_r, blend_mode)
+        }
+        BoolOp::Union => CsgNode::Union(Box::new(tree), Box::new(operand)),
+        BoolOp::Difference if blend_r > 0.0 => {
+            CsgNode::SmoothDifference(Box::new(tree), Box::new(operand), blend_r, blend_mode)
+        }
+        BoolOp::Difference => CsgNode::Difference(Box::new(tree), Box::new(operand)),
+        BoolOp::Intersect => CsgNode::Intersection(Box::new(tree), Box::new(operand)),
+    }
 }
 
 /// K10.4: find the first EdgeFillet that matches a junction
@@ -2052,6 +2148,68 @@ mod tests {
         assert_eq!(
             hard_d.sdf(p, EvalMode::Logical),
             smooth_d.sdf(p, EvalMode::Logical),
+        );
+    }
+
+    #[test]
+    fn targeted_intersect_only_wraps_target_subtree() {
+        let sphere = Feature {
+            id: FeatureId::from_u32(1),
+            name: "Sphere".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Sphere { center: [0.0; 3], radius: 10.0 },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
+        };
+        let cube = Feature {
+            id: FeatureId::from_u32(2),
+            name: "Box".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [15.0, 0.0, 0.0],
+                half_extents: [5.0; 3],
+            },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
+        };
+        let gyroid = Feature {
+            id: FeatureId::from_u32(3),
+            name: "Gyroid".into(),
+            op: BoolOp::Intersect,
+            primitive: Primitive::Gyroid { cell_size: 5.0, thickness: 1.0 },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![FeatureId::from_u32(1)],
+        };
+
+        let csg = CsgNode::from_features(&[sphere, cube, gyroid]);
+
+        // Centre of the cube (15,0,0) must remain inside —
+        // the Gyroid targets only the Sphere, not the Box.
+        let cube_centre = csg.sdf([15.0, 0.0, 0.0], EvalMode::Visual);
+        assert!(
+            cube_centre < 0.0,
+            "cube centre must stay solid, got sdf = {cube_centre}",
         );
     }
 }

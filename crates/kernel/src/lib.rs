@@ -4146,7 +4146,7 @@ mod tests {
     }
 
     #[test]
-    fn bridging_union_merges_into_one_body() {
+    fn each_union_is_its_own_body() {
         let mut k = Kernel::new();
         let _id_a = k
             .add_primitive(
@@ -4165,7 +4165,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(k.body_count(), 2);
-        let _id_bridge = k
+        let _id_c = k
             .add_primitive(
                 Primitive::KIND_BOX,
                 BoolOp::TAG_UNION,
@@ -4173,7 +4173,7 @@ mod tests {
                 40.0, 10.0, 10.0,
             )
             .unwrap();
-        assert_eq!(k.body_count(), 1, "bridging union must merge all three");
+        assert_eq!(k.body_count(), 3, "each union must be its own body");
     }
 
     #[test]
