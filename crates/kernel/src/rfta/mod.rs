@@ -1,17 +1,19 @@
 //! Reach For The Arcs (Sellán et al., SIGGRAPH 2024) — full port.
 //!
-//! Pipeline: SDF grid → spheres → tangency point cloud → sPSR → mesh.
-//! Optionally refined via a fine-tuning loop that reprojects tangency
-//! points onto the evolving sPSR surface.
+//! Pipeline: SDF grid → spheres → normalize → sign separation →
+//! rasterize → locally_make_feasible → merge → fine-tune → sPSR → mesh.
 
 mod closest_point;
+mod feasibility;
 mod finetune;
 mod poisson;
+mod rasterize;
 mod sphere_tree;
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, MAX_CONTRIBUTORS};
-use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL, DC_MARGIN_CELLS};
+use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL};
+use feasibility::TangentPoint;
 use sphere_tree::{SdfSphere, SphereAabbTree};
 
 pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
@@ -29,7 +31,11 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         return Mesh::default();
     }
     let cell = max_dim / resolution as f32;
-    let grid = raw.expanded(cell * DC_MARGIN_CELLS);
+    // RFTA does not need grid expansion (unlike MDC/DC which need cells
+    // on both sides of the boundary). The tight AABB already covers the
+    // object. Expansion creates huge spheres far from the surface whose
+    // feasibility arcs face away from the true surface.
+    let grid = raw;
     let size = grid.size();
 
     let nx = ((size[0] / cell).ceil() as usize).max(1);
@@ -62,121 +68,175 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
 
     // ── 2. Build SDF spheres from grid corners ─────────────────────
 
-    let mut spheres = Vec::with_capacity(cnx * cny * cnz);
+    let tol = 1e-10_f32;
+    let mut spheres_raw: Vec<(SdfSphere, [f32; 3])> = Vec::with_capacity(cnx * cny * cnz);
     for k in 0..cnz {
         for j in 0..cny {
             for i in 0..cnx {
                 let idx = i + j * cnx + k * cnx * cny;
                 let d = sdf_vals[idx];
-                if d.abs() < 1e-10 {
+                if d.abs() < tol {
                     continue;
                 }
-                spheres.push(SdfSphere {
-                    center: corner_point(i, j, k),
-                    radius: d.abs(),
-                    positive: d > 0.0,
+                let p = corner_point(i, j, k);
+                spheres_raw.push((
+                    SdfSphere {
+                        center: p,  // will be normalized below
+                        radius: d.abs(),
+                        positive: d > 0.0,
+                    },
+                    p, // original position for un-normalization
+                ));
+            }
+        }
+    }
+
+    if spheres_raw.is_empty() {
+        return Mesh::default();
+    }
+
+    // ── 3. Normalize to [0,1]³ ─────────────────────────────────────
+
+    let (norm_offset, norm_scale) = compute_normalization(&spheres_raw);
+    let inv_scale = 1.0 / norm_scale;
+
+    let spheres: Vec<SdfSphere> = spheres_raw
+        .iter()
+        .map(|(s, _)| SdfSphere {
+            center: normalize_point(s.center, norm_offset, inv_scale),
+            radius: s.radius * inv_scale,
+            positive: s.positive,
+        })
+        .collect();
+
+    // ── 4. Sign separation: process positive and negative separately ──
+
+    // Split by sign
+    let (pos_indices, neg_indices) = split_by_sign(&spheres);
+
+    let mut all_tangent_points: Vec<TangentPoint> = Vec::new();
+
+    for (sign_indices, positive) in [(&pos_indices, true), (&neg_indices, false)] {
+        if sign_indices.is_empty() {
+            continue;
+        }
+
+        // Build subset of spheres for this sign class
+        let subset: Vec<SdfSphere> = sign_indices
+            .iter()
+            .map(|&i| SdfSphere {
+                center: spheres[i].center,
+                radius: spheres[i].radius,
+                positive: spheres[i].positive,
+            })
+            .collect();
+
+        let sub_tree = SphereAabbTree::build(&subset);
+
+        // Rasterize: find outside points
+        let outside_pts = rasterize::outside_points(&subset);
+
+        // Locally make feasible: compute initial tangent points
+        let tangent_pts = feasibility::locally_make_feasible(
+            &subset,
+            &sub_tree,
+            &outside_pts,
+            positive,
+        );
+
+        // Convert local indices to global and collect
+        for (local_idx, tp_opt) in tangent_pts.into_iter().enumerate() {
+            if let Some(tp) = tp_opt {
+                all_tangent_points.push(TangentPoint {
+                    position: tp.position,
+                    normal: tp.normal,
+                    sphere_idx: sign_indices[local_idx],
                 });
             }
         }
     }
 
-    if spheres.is_empty() {
+    if all_tangent_points.is_empty() {
         return Mesh::default();
     }
 
-    let tree = SphereAabbTree::build(&spheres);
+    // ── 5. Initial sPSR → mesh ─────────────────────────────────────
 
-    // ── 3. Compute initial tangency set ────────────────────────────
-    //
-    // For each SDF sphere, the tangency point is the closest point on
-    // the sphere surface to the zero iso-surface.  This is found by
-    // projecting along the SDF gradient: a_i = p_i − d_i·n_i.
-
-    let grad_eps = cell * 0.25;
-    let mut tangency_pos = Vec::with_capacity(spheres.len());
-    let mut tangency_nrm = Vec::with_capacity(spheres.len());
-    let mut tangency_active = Vec::with_capacity(spheres.len());
-
-    for sphere in &spheres {
-        let g = sdf_normal(node, sphere.center, grad_eps);
-        let glen = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
-        if glen < 1e-8 {
-            tangency_pos.push(sphere.center);
-            tangency_nrm.push([0.0, 1.0, 0.0]);
-            tangency_active.push(false);
-            continue;
-        }
-        let n = [g[0] / glen, g[1] / glen, g[2] / glen];
-        let d = if sphere.positive { sphere.radius } else { -(sphere.radius) };
-        tangency_pos.push([
-            sphere.center[0] - d * n[0],
-            sphere.center[1] - d * n[1],
-            sphere.center[2] - d * n[2],
-        ]);
-        tangency_nrm.push(n);
-        tangency_active.push(true);
-    }
-
-    let (points, normals): (Vec<_>, Vec<_>) = tangency_pos
-        .iter()
-        .zip(tangency_nrm.iter())
-        .zip(tangency_active.iter())
-        .filter(|((_, _), active)| **active)
-        .map(|((p, n), _)| (*p, *n))
-        .unzip();
-
-    if points.is_empty() {
-        return Mesh::default();
-    }
-
-    // ── 4. sPSR → initial mesh ─────────────────────────────────────
+    let (points, normals) = tangent_points_to_arrays(&all_tangent_points);
 
     let (mut psr_verts, mut psr_tris) = match poisson::reconstruct(&points, &normals) {
         Some(m) => m,
         None => return Mesh::default(),
     };
 
-    // ── 5. Fine-tuning loop ────────────────────────────────────────
+    // ── 6. Fine-tuning loop ────────────────────────────────────────
 
-    let k_max = if resolution <= 8 { 0 } else if resolution <= 16 { 1 } else if resolution <= 32 { 2 } else { 3 };
+    let k_max = if resolution <= 8 {
+        0
+    } else if resolution <= 16 {
+        3
+    } else if resolution <= 32 {
+        5
+    } else {
+        10
+    };
+
+    // We need per-sign trees for fine-tuning feasibility checks.
+    // Build a combined tree for all spheres.
+    let full_tree = SphereAabbTree::build(&spheres);
 
     for _iter in 0..k_max {
-        let updated = finetune::finetune_iteration(
-            &spheres,
-            &tree,
-            &mut tangency_pos,
-            &tangency_active,
-            &psr_verts,
-            &psr_tris,
-        );
-        if !updated {
+        // Fine-tune positive tangent points
+        let mut pos_tps: Vec<TangentPoint> = all_tangent_points
+            .iter()
+            .filter(|tp| tp.sphere_idx < spheres.len() && spheres[tp.sphere_idx].positive)
+            .copied()
+            .collect();
+
+        let pos_changed = if !pos_tps.is_empty() {
+            finetune::finetune_iteration(
+                &spheres,
+                &full_tree,
+                &mut pos_tps,
+                &psr_verts,
+                &psr_tris,
+                true,
+            )
+        } else {
+            false
+        };
+
+        // Fine-tune negative tangent points
+        let mut neg_tps: Vec<TangentPoint> = all_tangent_points
+            .iter()
+            .filter(|tp| tp.sphere_idx < spheres.len() && !spheres[tp.sphere_idx].positive)
+            .copied()
+            .collect();
+
+        let neg_changed = if !neg_tps.is_empty() {
+            finetune::finetune_iteration(
+                &spheres,
+                &full_tree,
+                &mut neg_tps,
+                &psr_verts,
+                &psr_tris,
+                false,
+            )
+        } else {
+            false
+        };
+
+        if !pos_changed && !neg_changed {
             break;
         }
 
-        let (pts, nrm): (Vec<_>, Vec<_>) = tangency_pos
-            .iter()
-            .zip(tangency_nrm.iter_mut())
-            .zip(tangency_active.iter())
-            .zip(spheres.iter())
-            .filter(|(((_, _), active), _)| **active)
-            .map(|(((pos, nrm_slot), _), sphere)| {
-                let d = [
-                    pos[0] - sphere.center[0],
-                    pos[1] - sphere.center[1],
-                    pos[2] - sphere.center[2],
-                ];
-                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                let sign = if sphere.positive { 1.0 } else { -1.0 };
-                let n = if len > 1e-10 {
-                    [sign * d[0] / len, sign * d[1] / len, sign * d[2] / len]
-                } else {
-                    [0.0, sign, 0.0]
-                };
-                *nrm_slot = n;
-                (*pos, n)
-            })
-            .unzip();
+        // Merge back
+        all_tangent_points.clear();
+        all_tangent_points.extend(pos_tps);
+        all_tangent_points.extend(neg_tps);
 
+        // Reconstruct mesh
+        let (pts, nrm) = tangent_points_to_arrays(&all_tangent_points);
         if pts.is_empty() {
             break;
         }
@@ -190,12 +250,28 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         }
     }
 
-    // ── 6. Convert to output Mesh ──────────────────────────────────
+    // ── 7. Un-normalize coordinates ────────────────────────────────
 
+    let vc = psr_verts.len() / 3;
+    for i in 0..vc {
+        psr_verts[i * 3] = psr_verts[i * 3] * norm_scale + norm_offset[0];
+        psr_verts[i * 3 + 1] = psr_verts[i * 3 + 1] * norm_scale + norm_offset[1];
+        psr_verts[i * 3 + 2] = psr_verts[i * 3 + 2] * norm_scale + norm_offset[2];
+    }
+
+    // ── 8. Trim sPSR mesh: remove faces far from the zero isosurface ──
+    // Remove triangles where any vertex's SDF exceeds the grid cell size.
+    let trim_threshold = cell;
+
+    let (trimmed_positions, trimmed_indices) =
+        trim_mesh(&psr_verts, &psr_tris, node, trim_threshold);
+
+    // ── 9. Convert to output Mesh ──────────────────────────────────
+
+    let vc = trimmed_positions.len() / 3;
     let normal_eps = cell * 0.25;
     let contributor_eps = cell * 0.5;
-    let vc = psr_verts.len() / 3;
-    let positions = psr_verts;
+    let positions = trimmed_positions;
     let mut normals_out = Vec::with_capacity(vc * 3);
     let mut classifications = Vec::with_capacity(vc);
     let mut contributors = Vec::with_capacity(vc * MAX_CONTRIBUTORS);
@@ -230,10 +306,111 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
     Mesh {
         positions,
         normals: normals_out,
-        indices: psr_tris,
+        indices: trimmed_indices,
         classifications,
         contributors,
     }
+}
+
+/// Compute normalization parameters to map all sphere centers+radii into [0,1]³.
+fn compute_normalization(spheres: &[(SdfSphere, [f32; 3])]) -> ([f32; 3], f32) {
+    let mut amin = [f32::INFINITY; 3];
+    let mut amax = [f32::NEG_INFINITY; 3];
+    for (s, _) in spheres {
+        for a in 0..3 {
+            amin[a] = amin[a].min(s.center[a] - s.radius);
+            amax[a] = amax[a].max(s.center[a] + s.radius);
+        }
+    }
+    let extent = [amax[0] - amin[0], amax[1] - amin[1], amax[2] - amin[2]];
+    let scale = extent[0].max(extent[1]).max(extent[2]).max(1e-10);
+    (amin, scale)
+}
+
+/// Trim sPSR mesh by removing triangles whose centroid is far from the isosurface.
+/// Returns (compacted positions, compacted indices).
+fn trim_mesh(
+    verts: &[f32],
+    tris: &[u32],
+    node: &BoundedCsg,
+    threshold: f32,
+) -> (Vec<f32>, Vec<u32>) {
+    let vc = verts.len() / 3;
+    let tc = tris.len() / 3;
+
+    let mut keep_face = vec![false; tc];
+    let mut vertex_used = vec![false; vc];
+
+    // Evaluate SDF at all vertices once
+    let mut vert_sdf = vec![0.0f32; vc];
+    for i in 0..vc {
+        let p = [verts[i * 3], verts[i * 3 + 1], verts[i * 3 + 2]];
+        vert_sdf[i] = node.sdf(p, EvalMode::Visual).abs();
+    }
+
+    for fi in 0..tc {
+        let i0 = tris[fi * 3] as usize;
+        let i1 = tris[fi * 3 + 1] as usize;
+        let i2 = tris[fi * 3 + 2] as usize;
+        let max_sdf = vert_sdf[i0].max(vert_sdf[i1]).max(vert_sdf[i2]);
+        if max_sdf <= threshold {
+            keep_face[fi] = true;
+            vertex_used[i0] = true;
+            vertex_used[i1] = true;
+            vertex_used[i2] = true;
+        }
+    }
+
+    let mut remap = vec![u32::MAX; vc];
+    let mut new_verts = Vec::new();
+    let mut new_idx = 0u32;
+    for i in 0..vc {
+        if vertex_used[i] {
+            remap[i] = new_idx;
+            new_verts.push(verts[i * 3]);
+            new_verts.push(verts[i * 3 + 1]);
+            new_verts.push(verts[i * 3 + 2]);
+            new_idx += 1;
+        }
+    }
+
+    let mut new_tris = Vec::new();
+    for fi in 0..tc {
+        if keep_face[fi] {
+            new_tris.push(remap[tris[fi * 3] as usize]);
+            new_tris.push(remap[tris[fi * 3 + 1] as usize]);
+            new_tris.push(remap[tris[fi * 3 + 2] as usize]);
+        }
+    }
+
+    (new_verts, new_tris)
+}
+
+fn normalize_point(p: [f32; 3], offset: [f32; 3], inv_scale: f32) -> [f32; 3] {
+    [
+        (p[0] - offset[0]) * inv_scale,
+        (p[1] - offset[1]) * inv_scale,
+        (p[2] - offset[2]) * inv_scale,
+    ]
+}
+
+fn split_by_sign(spheres: &[SdfSphere]) -> (Vec<usize>, Vec<usize>) {
+    let mut pos = Vec::new();
+    let mut neg = Vec::new();
+    for (i, s) in spheres.iter().enumerate() {
+        if s.positive {
+            pos.push(i);
+        } else {
+            neg.push(i);
+        }
+    }
+    (pos, neg)
+}
+
+fn tangent_points_to_arrays(tps: &[TangentPoint]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let points: Vec<[f32; 3]> = tps.iter().map(|tp| tp.position).collect();
+    let normals: Vec<[f32; 3]> = tps.iter().map(|tp| tp.normal).collect();
+    (points, normals)
 }
 
 #[cfg(test)]
@@ -316,3 +493,4 @@ mod tests {
         );
     }
 }
+
