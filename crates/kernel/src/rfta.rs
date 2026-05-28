@@ -1,14 +1,8 @@
-//! Reach for the Arcs (RFTA) mesher.
-//!
-//! Inspired by Sellán, Ren, Batty, Stein (2024). Uses sphere-constraint
-//! vertex placement with Marching Cubes topology for SDF-to-mesh
-//! extraction.
+//! Marching Cubes mesher with Newton-refined vertex placement.
 //!
 //! Key differences from MDC:
 //! - MC triangle table for topology (not Dual MC quads)
-//! - Sphere-constraint vertex refinement: each SDF sample defines a
-//!   sphere; vertices are projected to satisfy nearby sphere constraints
-//! - Newton projection onto the SDF zero-level set
+//! - Bisection + Newton projection for accurate zero-crossing placement
 //! - Angle-weighted vertex normals from triangle geometry
 
 use crate::bvh::BoundedCsg;
@@ -448,12 +442,11 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
             let p0 = corner_point(i0, j0, k0);
             let p1 = corner_point(i1, j1, k1);
 
-            // Bisection to find zero crossing
             let sign_lo = d0 < 0.0;
             let mut lo = 0.0f32;
             let mut hi = 1.0f32;
             let mut t = d0 / (d0 - d1);
-            for _ in 0..8 {
+            for _ in 0..12 {
                 let mp = [
                     p0[0] + t * (p1[0] - p0[0]),
                     p0[1] + t * (p1[1] - p0[1]),
@@ -473,81 +466,6 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
                 p0[1] + t * (p1[1] - p0[1]),
                 p0[2] + t * (p1[2] - p0[2]),
             ];
-
-            // Sphere-constraint refinement: check against nearby SDF
-            // samples and project onto the nearest violated sphere
-            // boundary. Each grid corner sample (u, s) defines a sphere
-            // of radius |s|; a valid surface point must lie outside
-            // positive spheres and inside negative spheres.
-            for _ in 0..4 {
-                let mut worst_violation = 0.0_f32;
-                let mut push = [0.0_f32; 3];
-
-                let ci = ((p[0] - grid.min[0]) / cell).floor() as i32;
-                let cj = ((p[1] - grid.min[1]) / cell).floor() as i32;
-                let ck = ((p[2] - grid.min[2]) / cell).floor() as i32;
-
-                for dk in -1..=2 {
-                    for dj in -1..=2 {
-                        for di in -1..=2 {
-                            let si = ci + di;
-                            let sj = cj + dj;
-                            let sk = ck + dk;
-                            if si < 0 || sj < 0 || sk < 0
-                                || si >= cnx as i32
-                                || sj >= cny as i32
-                                || sk >= cnz as i32
-                            {
-                                continue;
-                            }
-                            let su = si as usize;
-                            let sv = sj as usize;
-                            let sw = sk as usize;
-                            let s_val = sdf_grid[corner_index(su, sv, sw)];
-                            let s_pos = corner_point(su, sv, sw);
-                            let dx = p[0] - s_pos[0];
-                            let dy = p[1] - s_pos[1];
-                            let dz = p[2] - s_pos[2];
-                            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                            let r = s_val.abs();
-
-                            // Positive SDF: surface must be outside sphere
-                            // Negative SDF: surface must be inside sphere
-                            let violation = if s_val > 0.0 {
-                                r - dist
-                            } else {
-                                dist - r
-                            };
-
-                            if violation > worst_violation && dist > 1e-10 {
-                                worst_violation = violation;
-                                let inv_dist = 1.0 / dist;
-                                let dir = [dx * inv_dist, dy * inv_dist, dz * inv_dist];
-                                if s_val > 0.0 {
-                                    push = [
-                                        dir[0] * violation,
-                                        dir[1] * violation,
-                                        dir[2] * violation,
-                                    ];
-                                } else {
-                                    push = [
-                                        -dir[0] * violation,
-                                        -dir[1] * violation,
-                                        -dir[2] * violation,
-                                    ];
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if worst_violation < cell * 0.001 {
-                    break;
-                }
-                p[0] += push[0] * 0.5;
-                p[1] += push[1] * 0.5;
-                p[2] += push[2] * 0.5;
-            }
 
             // Newton projection onto zero-level set
             for _ in 0..4 {
