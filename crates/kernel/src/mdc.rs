@@ -10,7 +10,7 @@
 use crate::bvh::BoundedCsg;
 use crate::csg::{EvalMode, ProxyElement, MAX_CONTRIBUTORS};
 use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // ── MC vertex / edge conventions ────────────────────────────────────
 //
@@ -609,246 +609,6 @@ struct CellInfo {
     edge_vertex: [u32; 12],
 }
 
-/// Process a single MC cell: detect cycles via MDC, place QEF vertices,
-/// return edge→vertex mapping and whether any feature vertex was created.
-fn process_mc_cell(
-    node: &BoundedCsg,
-    mc_corners: &[f32; 8],
-    cell_size: f32,
-    cell_min: [f32; 3],
-    normal_eps: f32,
-    contributor_eps: f32,
-    vertices: &mut Vec<MdcVertex>,
-) -> ([u32; 12], bool) {
-    let mut case = 0u8;
-    for v in 0..8 {
-        if mc_corners[v] < 0.0 {
-            case |= 1 << v;
-        }
-    }
-    if EDGE_TABLE[case as usize] == 0 {
-        return ([u32::MAX; 12], false);
-    }
-
-    let (edge_cycle, num_cycles) = compute_edge_cycles(case);
-    let mut edge_vertex = [u32::MAX; 12];
-    let mut has_feature = false;
-
-    for cycle in 0..num_cycles {
-        let cycle_id = cycle as i8;
-        let mut qef = QefData::new();
-
-        for e in 0..12 {
-            if edge_cycle[e] != cycle_id {
-                continue;
-            }
-            let [v0, v1] = MC_EDGE_VERTS[e];
-            let d0 = mc_corners[v0];
-            let d1 = mc_corners[v1];
-            if (d0 < 0.0) == (d1 < 0.0) {
-                continue;
-            }
-            let p0 = [
-                cell_min[0] + MC_CORNER_POS[v0][0] * cell_size,
-                cell_min[1] + MC_CORNER_POS[v0][1] * cell_size,
-                cell_min[2] + MC_CORNER_POS[v0][2] * cell_size,
-            ];
-            let p1 = [
-                cell_min[0] + MC_CORNER_POS[v1][0] * cell_size,
-                cell_min[1] + MC_CORNER_POS[v1][1] * cell_size,
-                cell_min[2] + MC_CORNER_POS[v1][2] * cell_size,
-            ];
-            let sign_lo = d0 < 0.0;
-            let mut lo = 0.0f32;
-            let mut hi = 1.0f32;
-            let mut t = d0 / (d0 - d1);
-            for _ in 0..6 {
-                let mp = [
-                    p0[0] + t * (p1[0] - p0[0]),
-                    p0[1] + t * (p1[1] - p0[1]),
-                    p0[2] + t * (p1[2] - p0[2]),
-                ];
-                let d = node.sdf(mp, EvalMode::Visual);
-                if (d < 0.0) == sign_lo {
-                    lo = t;
-                } else {
-                    hi = t;
-                }
-                t = (lo + hi) * 0.5;
-            }
-            let p = [
-                p0[0] + t * (p1[0] - p0[0]),
-                p0[1] + t * (p1[1] - p0[1]),
-                p0[2] + t * (p1[2] - p0[2]),
-            ];
-            let n = sdf_normal(node, p, normal_eps);
-            qef.add(p, n);
-        }
-
-        if qef.num_points == 0 {
-            continue;
-        }
-
-        let mut pos = qef.solve();
-        let cell_max = [
-            cell_min[0] + cell_size,
-            cell_min[1] + cell_size,
-            cell_min[2] + cell_size,
-        ];
-        pos[0] = pos[0].clamp(cell_min[0], cell_max[0]);
-        pos[1] = pos[1].clamp(cell_min[1], cell_max[1]);
-        pos[2] = pos[2].clamp(cell_min[2], cell_max[2]);
-
-        let normal = sdf_normal(node, pos, normal_eps);
-        let (_, cs) = node.evaluate(pos, contributor_eps, EvalMode::Visual);
-        let mut element = cs.element();
-        if element == ProxyElement::None {
-            element = ProxyElement::Face;
-        }
-        let slice = cs.as_slice();
-        let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
-        for slot in 0..MAX_CONTRIBUTORS {
-            if slot < slice.len() {
-                contribs[slot] = slice[slot]
-                    .as_u32_or_root()
-                    .unwrap_or(CONTRIBUTOR_SENTINEL);
-            }
-        }
-
-        if element.tag() >= 2 {
-            has_feature = true;
-        }
-
-        let idx = vertices.len() as u32;
-        vertices.push(MdcVertex {
-            pos,
-            normal,
-            classification: element.tag(),
-            contributors: contribs,
-        });
-
-        for e in 0..12 {
-            if edge_cycle[e] == cycle_id {
-                edge_vertex[e] = idx;
-            }
-        }
-    }
-
-    (edge_vertex, has_feature)
-}
-
-/// Emit quads for a grid level. Pushes triangle indices into `indices`.
-/// `skip_cell` is called with (ci, cj, ck) — return true to exclude
-/// edges touching that cell.
-fn emit_quads<'a>(
-    sdf_at: &dyn Fn(usize, usize, usize) -> f32,
-    cell_at: &dyn Fn(usize, usize, usize) -> Option<&'a CellInfo>,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-    skip_cell: &dyn Fn(usize, usize, usize) -> bool,
-    require_any: &dyn Fn(usize, usize, usize) -> bool,
-    indices: &mut Vec<u32>,
-) {
-    for axis in 0..3usize {
-        let ei_max = match axis {
-            0 => nx,
-            1 => nx + 1,
-            _ => nx + 1,
-        };
-        let (ej_start, ek_start) = match axis {
-            0 => (1usize, 1usize),
-            1 => (0, 1),
-            _ => (0, 0),
-        };
-        let (ej_end, ek_end) = (ny, nz);
-
-        for ek in ek_start..ek_end {
-            for ej in ej_start..ej_end {
-                for ei in 0..ei_max {
-                    let (ca, cb) = match axis {
-                        0 => ((ei, ej, ek), (ei + 1, ej, ek)),
-                        1 => ((ei, ej, ek), (ei, ej + 1, ek)),
-                        _ => ((ei, ej, ek), (ei, ej, ek + 1)),
-                    };
-                    let da = sdf_at(ca.0, ca.1, ca.2);
-                    let db = sdf_at(cb.0, cb.1, cb.2);
-                    if (da < 0.0) == (db < 0.0) {
-                        continue;
-                    }
-
-                    let quad_spec = &QUAD_CELLS[axis];
-                    let mut vi = [u32::MAX; 4];
-                    let mut all_valid = true;
-                    let mut any_skip = false;
-                    let mut any_required = false;
-
-                    for q in 0..4 {
-                        let (di, dj, dk, mc_edge) = quad_spec[q];
-                        let ci = ei as i32 + di;
-                        let cj = ej as i32 + dj;
-                        let ck = ek as i32 + dk;
-                        if ci < 0
-                            || cj < 0
-                            || ck < 0
-                            || ci >= nx as i32
-                            || cj >= ny as i32
-                            || ck >= nz as i32
-                        {
-                            all_valid = false;
-                            break;
-                        }
-                        let (cu, cv, cw) = (ci as usize, cj as usize, ck as usize);
-                        if skip_cell(cu, cv, cw) {
-                            any_skip = true;
-                            break;
-                        }
-                        if require_any(cu, cv, cw) {
-                            any_required = true;
-                        }
-                        if let Some(info) = cell_at(cu, cv, cw) {
-                            vi[q] = info.edge_vertex[mc_edge];
-                        } else {
-                            all_valid = false;
-                            break;
-                        }
-                    }
-
-                    if any_skip || !all_valid || !any_required {
-                        continue;
-                    }
-                    if vi[0] == u32::MAX
-                        || vi[1] == u32::MAX
-                        || vi[2] == u32::MAX
-                        || vi[3] == u32::MAX
-                    {
-                        continue;
-                    }
-                    if vi[0] == vi[1]
-                        || vi[0] == vi[2]
-                        || vi[0] == vi[3]
-                        || vi[1] == vi[2]
-                        || vi[1] == vi[3]
-                        || vi[2] == vi[3]
-                    {
-                        continue;
-                    }
-
-                    let (v00, v10, v11, v01) = (vi[0], vi[1], vi[2], vi[3]);
-                    let flip = axis == 1;
-                    if (da > 0.0) ^ flip {
-                        indices.extend_from_slice(&[v00, v01, v11]);
-                        indices.extend_from_slice(&[v00, v11, v10]);
-                    } else {
-                        indices.extend_from_slice(&[v00, v10, v11]);
-                        indices.extend_from_slice(&[v00, v11, v01]);
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub fn manifold_dc(
     node: &BoundedCsg,
     grid_min: [f32; 3],
@@ -872,7 +632,7 @@ pub fn manifold_dc(
     };
     let cell_index = |i: usize, j: usize, k: usize| -> usize { i + j * nx + k * nx * ny };
 
-    // ── 1. Evaluate SDF at all coarse grid corners ──────────────────
+    // ── 1. Evaluate SDF at all grid corners ─────────────────────────
 
     let mut sdf_grid = vec![0.0_f32; cnx * cny * cnz];
     for k in 0..cnz {
@@ -887,15 +647,15 @@ pub fn manifold_dc(
     let normal_eps = cell * 0.25;
     let contributor_eps = cell * 0.5;
 
-    // ── 2. Process coarse cells ─────────────────────────────────────
+    // ── 2. Process cells: MC case → cycles → QEF → vertices ────────
 
     let mut vertices: Vec<MdcVertex> = Vec::new();
-    let mut coarse_data: HashMap<usize, CellInfo> = HashMap::new();
-    let mut feature_cells: Vec<(usize, usize, usize)> = Vec::new();
+    let mut cell_data: HashMap<usize, CellInfo> = HashMap::new();
 
     for ck in 0..nz {
         for cj in 0..ny {
             for ci in 0..nx {
+                // Get SDF values at 8 MC corners of this cell
                 let mc_corners: [f32; 8] = std::array::from_fn(|v| {
                     let gi = ci + MC_CORNER_POS[v][0] as usize;
                     let gj = cj + MC_CORNER_POS[v][1] as usize;
@@ -903,351 +663,230 @@ pub fn manifold_dc(
                     sdf_grid[corner_index(gi, gj, gk)]
                 });
 
-                let cm = corner_point(ci, cj, ck);
-                let (edge_vertex, has_feature) = process_mc_cell(
-                    node,
-                    &mc_corners,
-                    cell,
-                    cm,
-                    normal_eps,
-                    contributor_eps,
-                    &mut vertices,
-                );
-
-                if edge_vertex.iter().any(|&v| v != u32::MAX) {
-                    coarse_data.insert(cell_index(ci, cj, ck), CellInfo { edge_vertex });
-                    if has_feature {
-                        feature_cells.push((ci, cj, ck));
+                // Compute MC case index
+                let mut case = 0u8;
+                for v in 0..8 {
+                    if mc_corners[v] < 0.0 {
+                        case |= 1 << v;
                     }
                 }
-            }
-        }
-    }
 
-    // ── 3. Build refinement sets ────────────────────────────────────
-
-    let mut refine_set: HashSet<(usize, usize, usize)> = HashSet::new();
-    for &(ci, cj, ck) in &feature_cells {
-        for di in -1i32..=1 {
-            for dj in -1i32..=1 {
-                for dk in -1i32..=1 {
-                    let ri = ci as i32 + di;
-                    let rj = cj as i32 + dj;
-                    let rk = ck as i32 + dk;
-                    if ri >= 0
-                        && ri < nx as i32
-                        && rj >= 0
-                        && rj < ny as i32
-                        && rk >= 0
-                        && rk < nz as i32
-                    {
-                        refine_set.insert((ri as usize, rj as usize, rk as usize));
-                    }
-                }
-            }
-        }
-    }
-
-    if refine_set.is_empty() {
-        // No features — emit coarse mesh directly.
-        let mut indices = Vec::new();
-        let always_true = |_: usize, _: usize, _: usize| true;
-        let never = |_: usize, _: usize, _: usize| false;
-        emit_quads(
-            &|i, j, k| sdf_grid[corner_index(i, j, k)],
-            &|i, j, k| coarse_data.get(&cell_index(i, j, k)),
-            nx,
-            ny,
-            nz,
-            &never,
-            &always_true,
-            &mut indices,
-        );
-        return pack_mesh(vertices, indices);
-    }
-
-    // Transition set: non-refined cells adjacent to refine_set.
-    let mut transition_set: HashSet<(usize, usize, usize)> = HashSet::new();
-    for &(ci, cj, ck) in &refine_set {
-        for di in -1i32..=1 {
-            for dj in -1i32..=1 {
-                for dk in -1i32..=1 {
-                    let ti = ci as i32 + di;
-                    let tj = cj as i32 + dj;
-                    let tk = ck as i32 + dk;
-                    if ti >= 0
-                        && ti < nx as i32
-                        && tj >= 0
-                        && tj < ny as i32
-                        && tk >= 0
-                        && tk < nz as i32
-                    {
-                        let tc = (ti as usize, tj as usize, tk as usize);
-                        if !refine_set.contains(&tc) {
-                            transition_set.insert(tc);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Promote multi-cycle transition cells into refine_set.
-    let mut promoted: Vec<(usize, usize, usize)> = Vec::new();
-    for &(ci, cj, ck) in &transition_set {
-        if let Some(info) = coarse_data.get(&cell_index(ci, cj, ck)) {
-            let mut unique = 0u32;
-            let mut first = u32::MAX;
-            for &v in &info.edge_vertex {
-                if v != u32::MAX {
-                    if first == u32::MAX {
-                        first = v;
-                        unique = 1;
-                    } else if v != first {
-                        unique = 2;
-                        break;
-                    }
-                }
-            }
-            if unique > 1 {
-                promoted.push((ci, cj, ck));
-            }
-        }
-    }
-    for &c in &promoted {
-        transition_set.remove(&c);
-        refine_set.insert(c);
-    }
-    if !promoted.is_empty() {
-        for &(ci, cj, ck) in &promoted {
-            for di in -1i32..=1 {
-                for dj in -1i32..=1 {
-                    for dk in -1i32..=1 {
-                        let ti = ci as i32 + di;
-                        let tj = cj as i32 + dj;
-                        let tk = ck as i32 + dk;
-                        if ti >= 0
-                            && ti < nx as i32
-                            && tj >= 0
-                            && tj < ny as i32
-                            && tk >= 0
-                            && tk < nz as i32
-                        {
-                            let tc = (ti as usize, tj as usize, tk as usize);
-                            if !refine_set.contains(&tc) {
-                                transition_set.insert(tc);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── 4. Fine SDF sampling ────────────────────────────────────────
-
-    let fine_cell = cell * 0.5;
-    let fnx = 2 * nx;
-    let fny = 2 * ny;
-    let fnz = 2 * nz;
-    let fcnx = fnx + 1;
-    let fcny = fny + 1;
-
-    let fine_corner_index =
-        |fi: usize, fj: usize, fk: usize| -> usize { fi + fj * fcnx + fk * fcnx * fcny };
-    let fine_corner_point = |fi: usize, fj: usize, fk: usize| -> [f32; 3] {
-        [
-            grid_min[0] + fi as f32 * fine_cell,
-            grid_min[1] + fj as f32 * fine_cell,
-            grid_min[2] + fk as f32 * fine_cell,
-        ]
-    };
-    let fine_cell_index =
-        |fi: usize, fj: usize, fk: usize| -> usize { fi + fj * fnx + fk * fnx * fny };
-
-    let mut fine_sdf: HashMap<usize, f32> = HashMap::new();
-    for ci in 0..nx {
-        for cj in 0..ny {
-            for ck in 0..nz {
-                if !refine_set.contains(&(ci, cj, ck))
-                    && !transition_set.contains(&(ci, cj, ck))
-                {
+                if EDGE_TABLE[case as usize] == 0 {
                     continue;
                 }
-                for di in 0..=2usize {
-                    for dj in 0..=2usize {
-                        for dk in 0..=2usize {
-                            let fi = 2 * ci + di;
-                            let fj = 2 * cj + dj;
-                            let fk = 2 * ck + dk;
-                            let fidx = fine_corner_index(fi, fj, fk);
-                            if fine_sdf.contains_key(&fidx) {
-                                continue;
-                            }
-                            let val = if fi % 2 == 0 && fj % 2 == 0 && fk % 2 == 0 {
-                                sdf_grid[corner_index(fi / 2, fj / 2, fk / 2)]
+
+                // Determine cycles
+                let (edge_cycle, num_cycles) = compute_edge_cycles(case);
+
+                let mut edge_vertex = [u32::MAX; 12];
+                let cell_min = corner_point(ci, cj, ck);
+
+                for cycle in 0..num_cycles {
+                    let cycle_id = cycle as i8;
+                    let mut qef = QefData::new();
+
+                    for e in 0..12 {
+                        if edge_cycle[e] != cycle_id {
+                            continue;
+                        }
+                        let [v0, v1] = MC_EDGE_VERTS[e];
+                        let d0 = mc_corners[v0];
+                        let d1 = mc_corners[v1];
+                        if (d0 < 0.0) == (d1 < 0.0) {
+                            continue;
+                        }
+                        let p0 = [
+                            cell_min[0] + MC_CORNER_POS[v0][0] * cell,
+                            cell_min[1] + MC_CORNER_POS[v0][1] * cell,
+                            cell_min[2] + MC_CORNER_POS[v0][2] * cell,
+                        ];
+                        let p1 = [
+                            cell_min[0] + MC_CORNER_POS[v1][0] * cell,
+                            cell_min[1] + MC_CORNER_POS[v1][1] * cell,
+                            cell_min[2] + MC_CORNER_POS[v1][2] * cell,
+                        ];
+                        let sign_lo = d0 < 0.0;
+                        let mut lo = 0.0f32;
+                        let mut hi = 1.0f32;
+                        let mut t = d0 / (d0 - d1);
+                        for _ in 0..6 {
+                            let mp = [
+                                p0[0] + t * (p1[0] - p0[0]),
+                                p0[1] + t * (p1[1] - p0[1]),
+                                p0[2] + t * (p1[2] - p0[2]),
+                            ];
+                            let d = node.sdf(mp, EvalMode::Visual);
+                            if (d < 0.0) == sign_lo {
+                                lo = t;
                             } else {
-                                node.sdf(fine_corner_point(fi, fj, fk), EvalMode::Visual)
-                            };
-                            fine_sdf.insert(fidx, val);
+                                hi = t;
+                            }
+                            t = (lo + hi) * 0.5;
+                        }
+                        let p = [
+                            p0[0] + t * (p1[0] - p0[0]),
+                            p0[1] + t * (p1[1] - p0[1]),
+                            p0[2] + t * (p1[2] - p0[2]),
+                        ];
+                        let n = sdf_normal(node, p, normal_eps);
+                        qef.add(p, n);
+                    }
+
+                    if qef.num_points == 0 {
+                        continue;
+                    }
+
+                    let mut pos = qef.solve();
+
+                    // Clamp to cell bounds
+                    let cell_max = [
+                        cell_min[0] + cell,
+                        cell_min[1] + cell,
+                        cell_min[2] + cell,
+                    ];
+                    pos[0] = pos[0].clamp(cell_min[0], cell_max[0]);
+                    pos[1] = pos[1].clamp(cell_min[1], cell_max[1]);
+                    pos[2] = pos[2].clamp(cell_min[2], cell_max[2]);
+
+                    let normal = sdf_normal(node, pos, normal_eps);
+
+                    let (_, cs) = node.evaluate(pos, contributor_eps, EvalMode::Visual);
+                    let mut element = cs.element();
+                    if element == ProxyElement::None {
+                        element = ProxyElement::Face;
+                    }
+                    let slice = cs.as_slice();
+                    let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
+                    for slot in 0..MAX_CONTRIBUTORS {
+                        if slot < slice.len() {
+                            contribs[slot] = slice[slot]
+                                .as_u32_or_root()
+                                .unwrap_or(CONTRIBUTOR_SENTINEL);
                         }
                     }
-                }
-            }
-        }
-    }
 
-    // ── 5. Fine-level QEF for refined cells ─────────────────────────
-
-    let fine_normal_eps = fine_cell * 0.25;
-    let fine_contributor_eps = fine_cell * 0.5;
-    let mut fine_data: HashMap<usize, CellInfo> = HashMap::new();
-
-    for &(ci, cj, ck) in &refine_set {
-        for si in 0..2usize {
-            for sj in 0..2usize {
-                for sk in 0..2usize {
-                    let fi = 2 * ci + si;
-                    let fj = 2 * cj + sj;
-                    let fk = 2 * ck + sk;
-
-                    let mc_corners: [f32; 8] = std::array::from_fn(|v| {
-                        let gi = fi + MC_CORNER_POS[v][0] as usize;
-                        let gj = fj + MC_CORNER_POS[v][1] as usize;
-                        let gk = fk + MC_CORNER_POS[v][2] as usize;
-                        fine_sdf[&fine_corner_index(gi, gj, gk)]
+                    let idx = vertices.len() as u32;
+                    vertices.push(MdcVertex {
+                        pos,
+                        normal,
+                        classification: element.tag(),
+                        contributors: contribs,
                     });
 
-                    let fcm = fine_corner_point(fi, fj, fk);
-                    let (edge_vertex, _) = process_mc_cell(
-                        node,
-                        &mc_corners,
-                        fine_cell,
-                        fcm,
-                        fine_normal_eps,
-                        fine_contributor_eps,
-                        &mut vertices,
-                    );
-
-                    if edge_vertex.iter().any(|&v| v != u32::MAX) {
-                        fine_data
-                            .insert(fine_cell_index(fi, fj, fk), CellInfo { edge_vertex });
-                    }
-                }
-            }
-        }
-    }
-
-    // ── 6. Virtual fine sub-cells for transition cells ───────────────
-
-    for &(ci, cj, ck) in &transition_set {
-        let coarse_info = match coarse_data.get(&cell_index(ci, cj, ck)) {
-            Some(info) => info,
-            None => continue,
-        };
-
-        let mut coarse_vertex = u32::MAX;
-        for &v in &coarse_info.edge_vertex {
-            if v != u32::MAX {
-                coarse_vertex = v;
-                break;
-            }
-        }
-        if coarse_vertex == u32::MAX {
-            continue;
-        }
-
-        for si in 0..2usize {
-            for sj in 0..2usize {
-                for sk in 0..2usize {
-                    let fi = 2 * ci + si;
-                    let fj = 2 * cj + sj;
-                    let fk = 2 * ck + sk;
-
-                    let mut mc_corners = [0.0f32; 8];
-                    let mut all_ok = true;
-                    for v in 0..8 {
-                        let gi = fi + MC_CORNER_POS[v][0] as usize;
-                        let gj = fj + MC_CORNER_POS[v][1] as usize;
-                        let gk = fk + MC_CORNER_POS[v][2] as usize;
-                        match fine_sdf.get(&fine_corner_index(gi, gj, gk)) {
-                            Some(&val) => mc_corners[v] = val,
-                            None => {
-                                all_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !all_ok {
-                        continue;
-                    }
-
-                    let mut case = 0u8;
-                    for v in 0..8 {
-                        if mc_corners[v] < 0.0 {
-                            case |= 1 << v;
-                        }
-                    }
-                    if EDGE_TABLE[case as usize] == 0 {
-                        continue;
-                    }
-
-                    let (edge_cycle, _) = compute_edge_cycles(case);
-                    let mut edge_vertex = [u32::MAX; 12];
+                    // Map each edge of this cycle to this vertex
                     for e in 0..12 {
-                        if edge_cycle[e] >= 0 {
-                            edge_vertex[e] = coarse_vertex;
+                        if edge_cycle[e] == cycle_id {
+                            edge_vertex[e] = idx;
                         }
                     }
-
-                    fine_data
-                        .insert(fine_cell_index(fi, fj, fk), CellInfo { edge_vertex });
                 }
+
+                cell_data.insert(cell_index(ci, cj, ck), CellInfo { edge_vertex });
             }
         }
     }
 
-    // ── 7. Emit quads ───────────────────────────────────────────────
+    // ── 3. Emit quads ───────────────────────────────────────────────
 
     let mut indices: Vec<u32> = Vec::new();
 
-    // 7a. Coarse quads: skip edges touching refine_set.
-    let always_true = |_: usize, _: usize, _: usize| true;
-    emit_quads(
-        &|i, j, k| sdf_grid[corner_index(i, j, k)],
-        &|i, j, k| coarse_data.get(&cell_index(i, j, k)),
-        nx,
-        ny,
-        nz,
-        &|ci, cj, ck| refine_set.contains(&(ci, cj, ck)),
-        &always_true,
-        &mut indices,
-    );
+    for axis in 0..3usize {
+        let (ei_max, _ej_max, _ek_max) = match axis {
+            0 => (nx, ny + 1, nz + 1),
+            1 => (nx + 1, ny, nz + 1),
+            2 => (nx + 1, ny + 1, nz),
+            _ => unreachable!(),
+        };
+        let (ej_start, ek_start) = match axis {
+            0 => (1usize, 1usize),
+            1 => (0, 1),
+            2 => (0, 0),
+            _ => unreachable!(),
+        };
+        let (ej_end, ek_end) = match axis {
+            0 => (ny, nz),
+            1 => (ny, nz),
+            2 => (ny, nz),
+            _ => unreachable!(),
+        };
 
-    // 7b. Fine quads: emit where all 4 fine cells have data and at
-    //     least one lies in a refined coarse cell.
-    emit_quads(
-        &|fi, fj, fk| {
-            fine_sdf
-                .get(&fine_corner_index(fi, fj, fk))
-                .copied()
-                .unwrap_or(0.0)
-        },
-        &|fi, fj, fk| fine_data.get(&fine_cell_index(fi, fj, fk)),
-        fnx,
-        fny,
-        fnz,
-        &|_, _, _| false,
-        &|fi, fj, fk| refine_set.contains(&(fi / 2, fj / 2, fk / 2)),
-        &mut indices,
-    );
+        // Iterate only over grid edges whose 4 adjacent cells all exist
+        for ek in ek_start..ek_end {
+            for ej in ej_start..ej_end {
+                for ei in 0..ei_max {
+                    // Check sign change on this grid edge
+                    let (ca_pos, cb_pos) = match axis {
+                        0 => ((ei, ej, ek), (ei + 1, ej, ek)),
+                        1 => ((ei, ej, ek), (ei, ej + 1, ek)),
+                        2 => ((ei, ej, ek), (ei, ej, ek + 1)),
+                        _ => unreachable!(),
+                    };
+                    let da = sdf_grid[corner_index(ca_pos.0, ca_pos.1, ca_pos.2)];
+                    let db = sdf_grid[corner_index(cb_pos.0, cb_pos.1, cb_pos.2)];
+                    if (da < 0.0) == (db < 0.0) {
+                        continue;
+                    }
 
-    // ── 8. Pack into Mesh ───────────────────────────────────────────
+                    // Look up vertices from the 4 cells sharing this edge
+                    let quad_spec = &QUAD_CELLS[axis];
+                    let mut vi = [u32::MAX; 4];
+                    let mut all_valid = true;
 
-    pack_mesh(vertices, indices)
-}
+                    for q in 0..4 {
+                        let (di, dj, dk, mc_edge) = quad_spec[q];
+                        let ci = ei as i32 + di;
+                        let cj = ej as i32 + dj;
+                        let ck = ek as i32 + dk;
+                        if ci < 0 || cj < 0 || ck < 0
+                            || ci >= nx as i32
+                            || cj >= ny as i32
+                            || ck >= nz as i32
+                        {
+                            all_valid = false;
+                            break;
+                        }
+                        let cidx = cell_index(ci as usize, cj as usize, ck as usize);
+                        if let Some(info) = cell_data.get(&cidx) {
+                            vi[q] = info.edge_vertex[mc_edge];
+                        } else {
+                            all_valid = false;
+                            break;
+                        }
+                    }
 
-fn pack_mesh(vertices: Vec<MdcVertex>, indices: Vec<u32>) -> Mesh {
+                    if !all_valid
+                        || vi[0] == u32::MAX
+                        || vi[1] == u32::MAX
+                        || vi[2] == u32::MAX
+                        || vi[3] == u32::MAX
+                    {
+                        continue;
+                    }
+
+                    // Skip degenerate quads
+                    if vi[0] == vi[1] || vi[0] == vi[2] || vi[0] == vi[3]
+                        || vi[1] == vi[2] || vi[1] == vi[3] || vi[2] == vi[3]
+                    {
+                        continue;
+                    }
+
+                    let (v00, v10, v11, v01) = (vi[0], vi[1], vi[2], vi[3]);
+
+                    let flip = axis == 1;
+                    if (da > 0.0) ^ flip {
+                        indices.extend_from_slice(&[v00, v01, v11]);
+                        indices.extend_from_slice(&[v00, v11, v10]);
+                    } else {
+                        indices.extend_from_slice(&[v00, v10, v11]);
+                        indices.extend_from_slice(&[v00, v11, v01]);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 4. Pack into Mesh ───────────────────────────────────────────
+
     let vert_count = vertices.len();
     let mut positions = Vec::with_capacity(vert_count * 3);
     let mut normals = Vec::with_capacity(vert_count * 3);
