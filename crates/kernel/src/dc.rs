@@ -111,6 +111,7 @@ pub fn dual_contour_with_primitives(
         let leaf_transforms = node.leaf_world_transforms();
         simplify_developable_faces(&mut mesh, leaf_primitives, &leaf_transforms);
     }
+    fix_feature_normals(&mut mesh);
 
     mesh
 }
@@ -963,6 +964,88 @@ fn project_face_vertices(mesh: &mut Mesh, node: &BoundedCsg, normal_eps: f32) {
         mesh.normals[v * 3] = n[0];
         mesh.normals[v * 3 + 1] = n[1];
         mesh.normals[v * 3 + 2] = n[2];
+    }
+}
+
+/// Recompute normals for Edge/Vertex classified vertices using
+/// angle-weighted geometric normals from adjacent triangles.
+/// SDF-derived normals are inaccurate at CSG boundaries because
+/// central differences straddle the gradient discontinuity.
+fn fix_feature_normals(mesh: &mut Mesh) {
+    let vc = mesh.vertex_count();
+    let tc = mesh.triangle_count();
+
+    let mut needs = vec![false; vc];
+    let mut any = false;
+    for v in 0..vc {
+        if mesh.classifications[v] >= 2 {
+            needs[v] = true;
+            any = true;
+        }
+    }
+    if !any {
+        return;
+    }
+
+    let mut accum = vec![[0.0f64; 3]; vc];
+
+    for t in 0..tc {
+        let i0 = mesh.indices[t * 3] as usize;
+        let i1 = mesh.indices[t * 3 + 1] as usize;
+        let i2 = mesh.indices[t * 3 + 2] as usize;
+
+        if !needs[i0] && !needs[i1] && !needs[i2] {
+            continue;
+        }
+
+        let p0 = vtx_pos(mesh, i0);
+        let p1 = vtx_pos(mesh, i1);
+        let p2 = vtx_pos(mesh, i2);
+
+        let e01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let e12 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+        let fn_ = [
+            e01[1] * e02[2] - e01[2] * e02[1],
+            e01[2] * e02[0] - e01[0] * e02[2],
+            e01[0] * e02[1] - e01[1] * e02[0],
+        ];
+
+        let corners: [(usize, [f32; 3], [f32; 3]); 3] = [
+            (i0, e01, e02),
+            (i1, [-e01[0], -e01[1], -e01[2]], e12),
+            (i2, [-e02[0], -e02[1], -e02[2]], [-e12[0], -e12[1], -e12[2]]),
+        ];
+
+        for (vi, ea, eb) in corners {
+            if !needs[vi] {
+                continue;
+            }
+            let da = (ea[0] * ea[0] + ea[1] * ea[1] + ea[2] * ea[2]).sqrt();
+            let db = (eb[0] * eb[0] + eb[1] * eb[1] + eb[2] * eb[2]).sqrt();
+            if da < 1e-12 || db < 1e-12 {
+                continue;
+            }
+            let cos_a = (ea[0] * eb[0] + ea[1] * eb[1] + ea[2] * eb[2]) / (da * db);
+            let angle = cos_a.clamp(-1.0, 1.0).acos();
+            accum[vi][0] += angle as f64 * fn_[0] as f64;
+            accum[vi][1] += angle as f64 * fn_[1] as f64;
+            accum[vi][2] += angle as f64 * fn_[2] as f64;
+        }
+    }
+
+    for v in 0..vc {
+        if !needs[v] {
+            continue;
+        }
+        let len =
+            (accum[v][0] * accum[v][0] + accum[v][1] * accum[v][1] + accum[v][2] * accum[v][2])
+                .sqrt();
+        if len > 1e-12 {
+            mesh.normals[v * 3] = (accum[v][0] / len) as f32;
+            mesh.normals[v * 3 + 1] = (accum[v][1] / len) as f32;
+            mesh.normals[v * 3 + 2] = (accum[v][2] / len) as f32;
+        }
     }
 }
 

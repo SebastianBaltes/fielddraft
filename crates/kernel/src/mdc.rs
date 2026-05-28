@@ -696,7 +696,6 @@ pub fn manifold_dc(
                         if (d0 < 0.0) == (d1 < 0.0) {
                             continue;
                         }
-                        let t = d0 / (d0 - d1);
                         let p0 = [
                             cell_min[0] + MC_CORNER_POS[v0][0] * cell,
                             cell_min[1] + MC_CORNER_POS[v0][1] * cell,
@@ -707,6 +706,24 @@ pub fn manifold_dc(
                             cell_min[1] + MC_CORNER_POS[v1][1] * cell,
                             cell_min[2] + MC_CORNER_POS[v1][2] * cell,
                         ];
+                        let sign_lo = d0 < 0.0;
+                        let mut lo = 0.0f32;
+                        let mut hi = 1.0f32;
+                        let mut t = d0 / (d0 - d1);
+                        for _ in 0..6 {
+                            let mp = [
+                                p0[0] + t * (p1[0] - p0[0]),
+                                p0[1] + t * (p1[1] - p0[1]),
+                                p0[2] + t * (p1[2] - p0[2]),
+                            ];
+                            let d = node.sdf(mp, EvalMode::Visual);
+                            if (d < 0.0) == sign_lo {
+                                lo = t;
+                            } else {
+                                hi = t;
+                            }
+                            t = (lo + hi) * 0.5;
+                        }
                         let p = [
                             p0[0] + t * (p1[0] - p0[0]),
                             p0[1] + t * (p1[1] - p0[1]),
