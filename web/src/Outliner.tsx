@@ -391,7 +391,12 @@ export function Outliner({ store, state }: OutlinerProps) {
 
   // ── rollback bar drag ──────────────────────────────────────
   const [draggingRollback, setDraggingRollback] = useState(false);
-  const [rollbackDropIndex, setRollbackDropIndex] = useState<number | null>(null);
+  const [rollbackDropIndex, _setRollbackDropIndex] = useState<number | null>(null);
+  const rollbackDropIndexRef = useRef<number | null>(null);
+  const setRollbackDropIndex = (v: number | null) => {
+    rollbackDropIndexRef.current = v;
+    _setRollbackDropIndex(v);
+  };
 
   const handleRollbackDragStart = (e: React.DragEvent) => {
     setDraggingRollback(true);
@@ -414,8 +419,9 @@ export function Outliner({ store, state }: OutlinerProps) {
     e.preventDefault();
     e.stopPropagation();
     if (!e.dataTransfer.types.includes("fielddraft/rollback-bar")) return;
-    if (rollbackDropIndex !== null) {
-      store.setRollbackIndex(rollbackDropIndex);
+    const idx = rollbackDropIndexRef.current;
+    if (idx !== null) {
+      store.setRollbackIndex(idx);
     }
     setDraggingRollback(false);
     setRollbackDropIndex(null);
@@ -915,6 +921,9 @@ export function Outliner({ store, state }: OutlinerProps) {
               const isDragged = draggingId === feature.id;
               const isRolledBack = !!feature.rolled_back;
               const showRbDrop = draggingRollback && rollbackDropIndex === index;
+              const showRbDropBelow = draggingRollback
+                && rollbackDropIndex === state.features.length
+                && index === state.features.length - 1;
               return (
                 <li
                   key={feature.id}
@@ -929,7 +938,8 @@ export function Outliner({ store, state }: OutlinerProps) {
                     index === state.features.length - 1
                       ? " drop-below"
                       : "") +
-                    (showRbDrop ? " rollback-drop-above" : "")
+                    (showRbDrop ? " rollback-drop-above" : "") +
+                    (showRbDropBelow ? " rollback-drop-below" : "")
                   }
                   data-testid={`feature-row-${feature.id}`}
                   data-feature-id={feature.id}

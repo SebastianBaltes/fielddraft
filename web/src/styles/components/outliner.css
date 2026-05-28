@@ -576,6 +576,17 @@
     border-radius: 2px;
   }
 
+  & .row.rollback-drop-below::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--color-accent);
+    border-radius: 2px;
+  }
+
   & .rollback-bar {
     height: 0.4em;
     background: var(--color-border-strong);
