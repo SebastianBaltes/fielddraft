@@ -7,6 +7,7 @@ const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
 const LS_SHOW_EDGES = "fielddraft.showEdges";
+const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -162,14 +163,17 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
+export type MeshAlgorithm = "mdc" | "rfta";
 
 const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh"];
+const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta"];
 
 export interface SettingsState {
   compact: boolean;
   units: WorkspaceUnits;
   theme: ThemeChoice;
   renderMode: RenderMode;
+  meshAlgorithm: MeshAlgorithm;
   showEdges: boolean;
 }
 
@@ -217,6 +221,7 @@ export function loadSettings(): SettingsState {
   let units: WorkspaceUnits = DEFAULT_UNITS;
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
+  let meshAlgorithm: MeshAlgorithm = "mdc";
   let showEdges = true;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
@@ -226,12 +231,15 @@ export function loadSettings(): SettingsState {
     const rawMode = localStorage.getItem(LS_RENDER_MODE);
     if (rawMode && VALID_RENDER_MODES.includes(rawMode as RenderMode))
       renderMode = rawMode as RenderMode;
+    const rawAlgo = localStorage.getItem(LS_MESH_ALGORITHM);
+    if (rawAlgo && VALID_MESH_ALGORITHMS.includes(rawAlgo as MeshAlgorithm))
+      meshAlgorithm = rawAlgo as MeshAlgorithm;
     const rawEdges = localStorage.getItem(LS_SHOW_EDGES);
     if (rawEdges !== null) showEdges = rawEdges !== "false";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, showEdges };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges };
 }
 
 function saveSetting(key: string, value: string): void {

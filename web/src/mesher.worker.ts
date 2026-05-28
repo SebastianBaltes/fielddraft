@@ -82,6 +82,8 @@ export interface MesherRebuildRequest {
   contextMeshResolution: number;
   /** Stable body id to treat as "active" for LOD, or `0` for none. */
   activeBodyId: number;
+  /** Mesh algorithm: "mdc" (default) or "rfta". */
+  meshAlgorithm?: string;
 }
 
 export interface MesherBodiesResponse {
@@ -254,6 +256,7 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   // Then apply the LOD knobs. Each setter short-circuits to a
   // no-op if the value matches the current setting and only
   // re-meshes when something actually changed.
+  kernel.setMeshAlgorithm(msg.meshAlgorithm ?? "mdc");
   kernel.setMeshResolution(msg.activeMeshResolution);
   kernel.setContextMeshResolution(msg.contextMeshResolution);
   kernel.setActiveBodyId(msg.activeBodyId);

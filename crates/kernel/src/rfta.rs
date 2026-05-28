@@ -1,0 +1,830 @@
+//! Reach for the Arcs (RFTA) mesher.
+//!
+//! Inspired by Sellán, Ren, Batty, Stein (2024). Uses sphere-constraint
+//! vertex placement with Marching Cubes topology for SDF-to-mesh
+//! extraction.
+//!
+//! Key differences from MDC:
+//! - MC triangle table for topology (not Dual MC quads)
+//! - Sphere-constraint vertex refinement: each SDF sample defines a
+//!   sphere; vertices are projected to satisfy nearby sphere constraints
+//! - Newton projection onto the SDF zero-level set
+//! - Angle-weighted vertex normals from triangle geometry
+
+use crate::bvh::BoundedCsg;
+use crate::csg::{EvalMode, MAX_CONTRIBUTORS};
+use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL, DC_MARGIN_CELLS};
+
+// MC corner layout (same as mdc.rs):
+//       7-----------6
+//      /|          /|
+//     / |         / |
+//    4-----------5  |
+//    |  3--------|--2
+//    | /         | /
+//    |/          |/
+//    0-----------1
+
+const MC_CORNER_POS: [[f32; 3]; 8] = [
+    [0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [1.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [1.0, 0.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [0.0, 1.0, 1.0],
+];
+
+const MC_EDGE_VERTS: [[usize; 2]; 12] = [
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+];
+
+#[rustfmt::skip]
+const EDGE_TABLE: [u16; 256] = [
+    0x000, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
+    0x80c, 0x905, 0xa0f, 0xb06, 0xc0a, 0xd03, 0xe09, 0xf00,
+    0x190, 0x099, 0x393, 0x29a, 0x596, 0x49f, 0x795, 0x69c,
+    0x99c, 0x895, 0xb9f, 0xa96, 0xd9a, 0xc93, 0xf99, 0xe90,
+    0x230, 0x339, 0x033, 0x13a, 0x636, 0x73f, 0x435, 0x53c,
+    0xa3c, 0xb35, 0x83f, 0x936, 0xe3a, 0xf33, 0xc39, 0xd30,
+    0x3a0, 0x2a9, 0x1a3, 0x0aa, 0x7a6, 0x6af, 0x5a5, 0x4ac,
+    0xbac, 0xaa5, 0x9af, 0x8a6, 0xfaa, 0xea3, 0xda9, 0xca0,
+    0x460, 0x569, 0x663, 0x76a, 0x066, 0x16f, 0x265, 0x36c,
+    0xc6c, 0xd65, 0xe6f, 0xf66, 0x86a, 0x963, 0xa69, 0xb60,
+    0x5f0, 0x4f9, 0x7f3, 0x6fa, 0x1f6, 0x0ff, 0x3f5, 0x2fc,
+    0xdfc, 0xcf5, 0xfff, 0xef6, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
+    0x650, 0x759, 0x453, 0x55a, 0x256, 0x35f, 0x055, 0x15c,
+    0xe5c, 0xf55, 0xc5f, 0xd56, 0xa5a, 0xb53, 0x859, 0x950,
+    0x7c0, 0x6c9, 0x5c3, 0x4ca, 0x3c6, 0x2cf, 0x1c5, 0x0cc,
+    0xfcc, 0xec5, 0xdcf, 0xcc6, 0xbca, 0xac3, 0x9c9, 0x8c0,
+    0x8c0, 0x9c9, 0xac3, 0xbca, 0xcc6, 0xdcf, 0xec5, 0xfcc,
+    0x0cc, 0x1c5, 0x2cf, 0x3c6, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
+    0x950, 0x859, 0xb53, 0xa5a, 0xd56, 0xc5f, 0xf55, 0xe5c,
+    0x15c, 0x055, 0x35f, 0x256, 0x55a, 0x453, 0x759, 0x650,
+    0xaf0, 0xbf9, 0x8f3, 0x9fa, 0xef6, 0xfff, 0xcf5, 0xdfc,
+    0x2fc, 0x3f5, 0x0ff, 0x1f6, 0x6fa, 0x7f3, 0x4f9, 0x5f0,
+    0xb60, 0xa69, 0x963, 0x86a, 0xf66, 0xe6f, 0xd65, 0xc6c,
+    0x36c, 0x265, 0x16f, 0x066, 0x76a, 0x663, 0x569, 0x460,
+    0xca0, 0xda9, 0xea3, 0xfaa, 0x8a6, 0x9af, 0xaa5, 0xbac,
+    0x4ac, 0x5a5, 0x6af, 0x7a6, 0x0aa, 0x1a3, 0x2a9, 0x3a0,
+    0xd30, 0xc39, 0xf33, 0xe3a, 0x936, 0x83f, 0xb35, 0xa3c,
+    0x53c, 0x435, 0x73f, 0x636, 0x13a, 0x033, 0x339, 0x230,
+    0xe90, 0xf99, 0xc93, 0xd9a, 0xa96, 0xb9f, 0x895, 0x99c,
+    0x69c, 0x795, 0x49f, 0x596, 0x29a, 0x393, 0x099, 0x190,
+    0xf00, 0xe09, 0xd03, 0xc0a, 0xb06, 0xa0f, 0x905, 0x80c,
+    0x70c, 0x605, 0x50f, 0x406, 0x30a, 0x203, 0x109, 0x000,
+];
+
+#[rustfmt::skip]
+const TRI_TABLE: [[i8; 16]; 256] = [
+    [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 8, 3, 9, 8, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 1, 2,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 2,10, 0, 2, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 8, 3, 2,10, 8,10, 9, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,11, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,11, 2, 8,11, 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 2, 3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1,11, 2, 1, 9,11, 9, 8,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,10, 1,11,10, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,10, 1, 0, 8,10, 8,11,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 9, 0, 3,11, 9,11,10, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 8,10,10, 8,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 7, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 3, 0, 7, 3, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 1, 9, 4, 7, 1, 7, 3, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 4, 7, 3, 0, 4, 1, 2,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 2,10, 9, 0, 2, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 2,10, 9, 2, 9, 7, 2, 7, 3, 7, 9, 4,-1,-1,-1,-1],
+    [ 8, 4, 7, 3,11, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 4, 7,11, 2, 4, 2, 0, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 1, 8, 4, 7, 2, 3,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 7,11, 9, 4,11, 9,11, 2, 9, 2, 1,-1,-1,-1,-1],
+    [ 3,10, 1, 3,11,10, 7, 8, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 1,11,10, 1, 4,11, 1, 0, 4, 7,11, 4,-1,-1,-1,-1],
+    [ 4, 7, 8, 9, 0,11, 9,11,10,11, 0, 3,-1,-1,-1,-1],
+    [ 4, 7,11, 4,11, 9, 9,11,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4, 0, 8, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 5, 4, 1, 5, 0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 5, 4, 8, 3, 5, 3, 1, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 9, 5, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8, 1, 2,10, 4, 9, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 2,10, 5, 4, 2, 4, 0, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 2,10, 5, 3, 2, 5, 3, 5, 4, 3, 4, 8,-1,-1,-1,-1],
+    [ 9, 5, 4, 2, 3,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0,11, 2, 0, 8,11, 4, 9, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 5, 4, 0, 1, 5, 2, 3,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 1, 5, 2, 5, 8, 2, 8,11, 4, 8, 5,-1,-1,-1,-1],
+    [10, 3,11,10, 1, 3, 9, 5, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 5, 0, 8, 1, 8,10, 1, 8,11,10,-1,-1,-1,-1],
+    [ 5, 4, 0, 5, 0,11, 5,11,10,11, 0, 3,-1,-1,-1,-1],
+    [ 5, 4, 8, 5, 8,10,10, 8,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 7, 8, 5, 7, 9,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 3, 0, 9, 5, 3, 5, 7, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 7, 8, 0, 1, 7, 1, 5, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 5, 3, 3, 5, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 7, 8, 9, 5, 7,10, 1, 2,-1,-1,-1,-1,-1,-1,-1],
+    [10, 1, 2, 9, 5, 0, 5, 3, 0, 5, 7, 3,-1,-1,-1,-1],
+    [ 8, 0, 2, 8, 2, 5, 8, 5, 7,10, 5, 2,-1,-1,-1,-1],
+    [ 2,10, 5, 2, 5, 3, 3, 5, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 9, 5, 7, 8, 9, 3,11, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 7, 9, 7, 2, 9, 2, 0, 2, 7,11,-1,-1,-1,-1],
+    [ 2, 3,11, 0, 1, 8, 1, 7, 8, 1, 5, 7,-1,-1,-1,-1],
+    [11, 2, 1,11, 1, 7, 7, 1, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 8, 8, 5, 7,10, 1, 3,10, 3,11,-1,-1,-1,-1],
+    [ 5, 7, 0, 5, 0, 9, 7,11, 0, 1, 0,10,11,10, 0,-1],
+    [11,10, 0,11, 0, 3,10, 5, 0, 8, 0, 7, 5, 7, 0,-1],
+    [11,10, 5, 7,11, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [10, 6, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 5,10, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 1, 5,10, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 8, 3, 1, 9, 8, 5,10, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 5, 2, 6, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 5, 1, 2, 6, 3, 0, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 6, 5, 9, 0, 6, 0, 2, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 9, 8, 5, 8, 2, 5, 2, 6, 3, 2, 8,-1,-1,-1,-1],
+    [ 2, 3,11,10, 6, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 0, 8,11, 2, 0,10, 6, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9, 2, 3,11, 5,10, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 1, 9, 2, 9,11, 2, 9, 8,11,-1,-1,-1,-1],
+    [ 6, 3,11, 6, 5, 3, 5, 1, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8,11, 0,11, 5, 0, 5, 1, 5,11, 6,-1,-1,-1,-1],
+    [ 3,11, 6, 0, 3, 6, 0, 6, 5, 0, 5, 9,-1,-1,-1,-1],
+    [ 6, 5, 9, 6, 9,11,11, 9, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 4, 7, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 3, 0, 4, 7, 3, 6, 5,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 5,10, 6, 8, 4, 7,-1,-1,-1,-1,-1,-1,-1],
+    [10, 6, 5, 1, 9, 7, 1, 7, 3, 7, 9, 4,-1,-1,-1,-1],
+    [ 6, 1, 2, 6, 5, 1, 4, 7, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2, 5, 5, 2, 6, 3, 0, 4, 3, 4, 7,-1,-1,-1,-1],
+    [ 8, 4, 7, 9, 0, 5, 0, 6, 5, 0, 2, 6,-1,-1,-1,-1],
+    [ 7, 3, 9, 7, 9, 4, 3, 2, 9, 5, 9, 6, 2, 6, 9,-1],
+    [ 3,11, 2, 7, 8, 4,10, 6, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,10, 6, 4, 7, 2, 4, 2, 0, 2, 7,11,-1,-1,-1,-1],
+    [ 0, 1, 9, 4, 7, 8, 2, 3,11, 5,10, 6,-1,-1,-1,-1],
+    [ 9, 2, 1, 9,11, 2, 9, 4,11, 7,11, 4, 5,10, 6,-1],
+    [ 8, 4, 7, 3,11, 5, 3, 5, 1, 5,11, 6,-1,-1,-1,-1],
+    [ 5, 1,11, 5,11, 6, 1, 0,11, 7,11, 4, 0, 4,11,-1],
+    [ 0, 5, 9, 0, 6, 5, 0, 3, 6,11, 6, 3, 8, 4, 7,-1],
+    [ 6, 5, 9, 6, 9,11, 4, 7, 9, 7,11, 9,-1,-1,-1,-1],
+    [10, 4, 9, 6, 4,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4,10, 6, 4, 9,10, 0, 8, 3,-1,-1,-1,-1,-1,-1,-1],
+    [10, 0, 1,10, 6, 0, 6, 4, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 3, 1, 8, 1, 6, 8, 6, 4, 6, 1,10,-1,-1,-1,-1],
+    [ 1, 4, 9, 1, 2, 4, 2, 6, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8, 1, 2, 9, 2, 4, 9, 2, 6, 4,-1,-1,-1,-1],
+    [ 0, 2, 4, 4, 2, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 3, 2, 8, 2, 4, 4, 2, 6,-1,-1,-1,-1,-1,-1,-1],
+    [10, 4, 9,10, 6, 4,11, 2, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 2, 2, 8,11, 4, 9,10, 4,10, 6,-1,-1,-1,-1],
+    [ 3,11, 2, 0, 1, 6, 0, 6, 4, 6, 1,10,-1,-1,-1,-1],
+    [ 6, 4, 1, 6, 1,10, 4, 8, 1, 2, 1,11, 8,11, 1,-1],
+    [ 9, 6, 4, 9, 3, 6, 9, 1, 3,11, 6, 3,-1,-1,-1,-1],
+    [ 8,11, 1, 8, 1, 0,11, 6, 1, 9, 1, 4, 6, 4, 1,-1],
+    [ 3,11, 6, 3, 6, 0, 0, 6, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 6, 4, 8,11, 6, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7,10, 6, 7, 8,10, 8, 9,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 7, 3, 0,10, 7, 0, 9,10, 6, 7,10,-1,-1,-1,-1],
+    [10, 6, 7, 1,10, 7, 1, 7, 8, 1, 8, 0,-1,-1,-1,-1],
+    [10, 6, 7,10, 7, 1, 1, 7, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2, 6, 1, 6, 8, 1, 8, 9, 8, 6, 7,-1,-1,-1,-1],
+    [ 2, 6, 9, 2, 9, 1, 6, 7, 9, 0, 9, 3, 7, 3, 9,-1],
+    [ 7, 8, 0, 7, 0, 6, 6, 0, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 3, 2, 6, 7, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3,11,10, 6, 8,10, 8, 9, 8, 6, 7,-1,-1,-1,-1],
+    [ 2, 0, 7, 2, 7,11, 0, 9, 7, 6, 7,10, 9,10, 7,-1],
+    [ 1, 8, 0, 1, 7, 8, 1,10, 7, 6, 7,10, 2, 3,11,-1],
+    [11, 2, 1,11, 1, 7,10, 6, 1, 6, 7, 1,-1,-1,-1,-1],
+    [ 8, 9, 6, 8, 6, 7, 9, 1, 6,11, 6, 3, 1, 3, 6,-1],
+    [ 0, 9, 1,11, 6, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 8, 0, 7, 0, 6, 3,11, 0,11, 6, 0,-1,-1,-1,-1],
+    [ 7,11, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 8,11, 7, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1, 9,11, 7, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 1, 9, 8, 3, 1,11, 7, 6,-1,-1,-1,-1,-1,-1,-1],
+    [10, 1, 2, 6,11, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 3, 0, 8, 6,11, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 9, 0, 2,10, 9, 6,11, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 6,11, 7, 2,10, 3,10, 8, 3,10, 9, 8,-1,-1,-1,-1],
+    [ 7, 2, 3, 6, 2, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 7, 0, 8, 7, 6, 0, 6, 2, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 7, 6, 2, 3, 7, 0, 1, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 6, 2, 1, 8, 6, 1, 9, 8, 8, 7, 6,-1,-1,-1,-1],
+    [10, 7, 6,10, 1, 7, 1, 3, 7,-1,-1,-1,-1,-1,-1,-1],
+    [10, 7, 6, 1, 7,10, 1, 8, 7, 1, 0, 8,-1,-1,-1,-1],
+    [ 0, 3, 7, 0, 7,10, 0,10, 9, 6,10, 7,-1,-1,-1,-1],
+    [ 7, 6,10, 7,10, 8, 8,10, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 6, 8, 4,11, 8, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 6,11, 3, 0, 6, 0, 4, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 6,11, 8, 4, 6, 9, 0, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 4, 6, 9, 6, 3, 9, 3, 1,11, 3, 6,-1,-1,-1,-1],
+    [ 6, 8, 4, 6,11, 8, 2,10, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 3, 0,11, 0, 6,11, 0, 4, 6,-1,-1,-1,-1],
+    [ 4,11, 8, 4, 6,11, 0, 2, 9, 2,10, 9,-1,-1,-1,-1],
+    [10, 9, 3,10, 3, 2, 9, 4, 3,11, 3, 6, 4, 6, 3,-1],
+    [ 8, 2, 3, 8, 4, 2, 4, 6, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 4, 2, 4, 6, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 9, 0, 2, 3, 4, 2, 4, 6, 4, 3, 8,-1,-1,-1,-1],
+    [ 1, 9, 4, 1, 4, 2, 2, 4, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 1, 3, 8, 6, 1, 8, 4, 6, 6,10, 1,-1,-1,-1,-1],
+    [10, 1, 0,10, 0, 6, 6, 0, 4,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 6, 3, 4, 3, 8, 6,10, 3, 0, 3, 9,10, 9, 3,-1],
+    [10, 9, 4, 6,10, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 5, 7, 6,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 4, 9, 5,11, 7, 6,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 0, 1, 5, 4, 0, 7, 6,11,-1,-1,-1,-1,-1,-1,-1],
+    [11, 7, 6, 8, 3, 4, 3, 5, 4, 3, 1, 5,-1,-1,-1,-1],
+    [ 9, 5, 4,10, 1, 2, 7, 6,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 6,11, 7, 1, 2,10, 0, 8, 3, 4, 9, 5,-1,-1,-1,-1],
+    [ 7, 6,11, 5, 4,10, 4, 2,10, 4, 0, 2,-1,-1,-1,-1],
+    [ 3, 4, 8, 3, 5, 4, 3, 2, 5,10, 5, 2,11, 7, 6,-1],
+    [ 7, 2, 3, 7, 6, 2, 5, 4, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 5, 4, 0, 8, 6, 0, 6, 2, 6, 8, 7,-1,-1,-1,-1],
+    [ 3, 6, 2, 3, 7, 6, 1, 5, 0, 5, 4, 0,-1,-1,-1,-1],
+    [ 6, 2, 8, 6, 8, 7, 2, 1, 8, 4, 8, 5, 1, 5, 8,-1],
+    [ 9, 5, 4,10, 1, 6, 1, 7, 6, 1, 3, 7,-1,-1,-1,-1],
+    [ 1, 6,10, 1, 7, 6, 1, 0, 7, 8, 7, 0, 9, 5, 4,-1],
+    [ 4, 0,10, 4,10, 5, 0, 3,10, 6,10, 7, 3, 7,10,-1],
+    [ 7, 6,10, 7,10, 8, 5, 4,10, 4, 8,10,-1,-1,-1,-1],
+    [ 6, 9, 5, 6,11, 9,11, 8, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 6,11, 0, 6, 3, 0, 5, 6, 0, 9, 5,-1,-1,-1,-1],
+    [ 0,11, 8, 0, 5,11, 0, 1, 5, 5, 6,11,-1,-1,-1,-1],
+    [ 6,11, 3, 6, 3, 5, 5, 3, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,10, 9, 5,11, 9,11, 8,11, 5, 6,-1,-1,-1,-1],
+    [ 0,11, 3, 0, 6,11, 0, 9, 6, 5, 6, 9, 1, 2,10,-1],
+    [11, 8, 5,11, 5, 6, 8, 0, 5,10, 5, 2, 0, 2, 5,-1],
+    [ 6,11, 3, 6, 3, 5, 2,10, 3,10, 5, 3,-1,-1,-1,-1],
+    [ 5, 8, 9, 5, 2, 8, 5, 6, 2, 3, 8, 2,-1,-1,-1,-1],
+    [ 9, 5, 6, 9, 6, 0, 0, 6, 2,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 5, 8, 1, 8, 0, 5, 6, 8, 3, 8, 2, 6, 2, 8,-1],
+    [ 1, 5, 6, 2, 1, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 3, 6, 1, 6,10, 3, 8, 6, 5, 6, 9, 8, 9, 6,-1],
+    [10, 1, 0,10, 0, 6, 9, 5, 0, 5, 6, 0,-1,-1,-1,-1],
+    [ 0, 3, 8, 5, 6,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [10, 5, 6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 5,10, 7, 5,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [11, 5,10,11, 7, 5, 8, 3, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 5,11, 7, 5,10,11, 1, 9, 0,-1,-1,-1,-1,-1,-1,-1],
+    [10, 7, 5,10,11, 7, 9, 8, 1, 8, 3, 1,-1,-1,-1,-1],
+    [11, 1, 2,11, 7, 1, 7, 5, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 1, 2, 7, 1, 7, 5, 7, 2,11,-1,-1,-1,-1],
+    [ 9, 7, 5, 9, 2, 7, 9, 0, 2, 2,11, 7,-1,-1,-1,-1],
+    [ 7, 5, 2, 7, 2,11, 5, 9, 2, 3, 2, 8, 9, 8, 2,-1],
+    [ 2, 5,10, 2, 3, 5, 3, 7, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 2, 0, 8, 5, 2, 8, 7, 5,10, 2, 5,-1,-1,-1,-1],
+    [ 9, 0, 1, 5,10, 3, 5, 3, 7, 3,10, 2,-1,-1,-1,-1],
+    [ 9, 8, 2, 9, 2, 1, 8, 7, 2,10, 2, 5, 7, 5, 2,-1],
+    [ 1, 3, 5, 3, 7, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 7, 0, 7, 1, 1, 7, 5,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 0, 3, 9, 3, 5, 5, 3, 7,-1,-1,-1,-1,-1,-1,-1],
+    [ 9, 8, 7, 5, 9, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 8, 4, 5,10, 8,10,11, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 5, 0, 4, 5,11, 0, 5,10,11,11, 3, 0,-1,-1,-1,-1],
+    [ 0, 1, 9, 8, 4,10, 8,10,11,10, 4, 5,-1,-1,-1,-1],
+    [10,11, 4,10, 4, 5,11, 3, 4, 9, 4, 1, 3, 1, 4,-1],
+    [ 2, 5, 1, 2, 8, 5, 2,11, 8, 4, 5, 8,-1,-1,-1,-1],
+    [ 0, 4,11, 0,11, 3, 4, 5,11, 2,11, 1, 5, 1,11,-1],
+    [ 0, 2, 5, 0, 5, 9, 2,11, 5, 4, 5, 8,11, 8, 5,-1],
+    [ 9, 4, 5, 2,11, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 5,10, 3, 5, 2, 3, 4, 5, 3, 8, 4,-1,-1,-1,-1],
+    [ 5,10, 2, 5, 2, 4, 4, 2, 0,-1,-1,-1,-1,-1,-1,-1],
+    [ 3,10, 2, 3, 5,10, 3, 8, 5, 4, 5, 8, 0, 1, 9,-1],
+    [ 5,10, 2, 5, 2, 4, 1, 9, 2, 9, 4, 2,-1,-1,-1,-1],
+    [ 8, 4, 5, 8, 5, 3, 3, 5, 1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 4, 5, 1, 0, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 8, 4, 5, 8, 5, 3, 9, 0, 5, 0, 3, 5,-1,-1,-1,-1],
+    [ 9, 4, 5,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4,11, 7, 4, 9,11, 9,10,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 8, 3, 4, 9, 7, 9,11, 7, 9,10,11,-1,-1,-1,-1],
+    [ 1,10,11, 1,11, 4, 1, 4, 0, 7, 4,11,-1,-1,-1,-1],
+    [ 3, 1, 4, 3, 4, 8, 1,10, 4, 7, 4,11,10,11, 4,-1],
+    [ 4,11, 7, 9,11, 4, 9, 2,11, 9, 1, 2,-1,-1,-1,-1],
+    [ 9, 7, 4, 9,11, 7, 9, 1,11, 2,11, 1, 0, 8, 3,-1],
+    [11, 7, 4,11, 4, 2, 2, 4, 0,-1,-1,-1,-1,-1,-1,-1],
+    [11, 7, 4,11, 4, 2, 8, 3, 4, 3, 2, 4,-1,-1,-1,-1],
+    [ 2, 9,10, 2, 7, 9, 2, 3, 7, 7, 4, 9,-1,-1,-1,-1],
+    [ 9,10, 7, 9, 7, 4,10, 2, 7, 8, 7, 0, 2, 0, 7,-1],
+    [ 3, 7,10, 3,10, 2, 7, 4,10, 1,10, 0, 4, 0,10,-1],
+    [ 1,10, 2, 8, 7, 4,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 1, 4, 1, 7, 7, 1, 3,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 9, 1, 4, 1, 7, 0, 8, 1, 8, 7, 1,-1,-1,-1,-1],
+    [ 4, 0, 3, 7, 4, 3,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 4, 8, 7,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 9,10, 8,10,11, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 9, 3, 9,11,11, 9,10,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 1,10, 0,10, 8, 8,10,11,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 1,10,11, 3,10,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 2,11, 1,11, 9, 9,11, 8,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 0, 9, 3, 9,11, 1, 2, 9, 2,11, 9,-1,-1,-1,-1],
+    [ 0, 2,11, 8, 0,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 3, 2,11,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3, 8, 2, 8,10,10, 8, 9,-1,-1,-1,-1,-1,-1,-1],
+    [ 9,10, 2, 0, 9, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 2, 3, 8, 2, 8,10, 0, 1, 8, 1,10, 8,-1,-1,-1,-1],
+    [ 1,10, 2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 1, 3, 8, 9, 1, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 9, 1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [ 0, 3, 8,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+    [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1],
+];
+
+struct EdgeKey {
+    axis: u8,
+    i: u32,
+    j: u32,
+    k: u32,
+}
+
+impl EdgeKey {
+    fn pack(&self) -> u64 {
+        (self.axis as u64) << 48
+            | (self.i as u64) << 32
+            | (self.j as u64) << 16
+            | self.k as u64
+    }
+}
+
+struct RftaVertex {
+    pos: [f32; 3],
+    normal: [f32; 3],
+    classification: u8,
+    contributors: [u32; MAX_CONTRIBUTORS],
+}
+
+pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
+    if resolution == 0 {
+        return Mesh::default();
+    }
+    let raw = node.aabb();
+    if raw.is_empty() {
+        return Mesh::default();
+    }
+
+    let raw_size = raw.size();
+    let max_dim = raw_size[0].max(raw_size[1]).max(raw_size[2]);
+    if max_dim <= 0.0 {
+        return Mesh::default();
+    }
+    let cell = max_dim / resolution as f32;
+    let grid = raw.expanded(cell * DC_MARGIN_CELLS);
+    let size = grid.size();
+
+    let nx = ((size[0] / cell).ceil() as usize).max(1);
+    let ny = ((size[1] / cell).ceil() as usize).max(1);
+    let nz = ((size[2] / cell).ceil() as usize).max(1);
+
+    let cnx = nx + 1;
+    let cny = ny + 1;
+    let cnz = nz + 1;
+
+    let corner_index =
+        |i: usize, j: usize, k: usize| -> usize { i + j * cnx + k * cnx * cny };
+    let corner_point = |i: usize, j: usize, k: usize| -> [f32; 3] {
+        [
+            grid.min[0] + i as f32 * cell,
+            grid.min[1] + j as f32 * cell,
+            grid.min[2] + k as f32 * cell,
+        ]
+    };
+
+    // ── 1. Sample SDF at grid corners ──────────────────────────────
+
+    let mut sdf_grid = vec![0.0_f32; cnx * cny * cnz];
+    for k in 0..cnz {
+        for j in 0..cny {
+            for i in 0..cnx {
+                sdf_grid[corner_index(i, j, k)] =
+                    node.sdf(corner_point(i, j, k), EvalMode::Visual);
+            }
+        }
+    }
+
+    let normal_eps = cell * 0.25;
+    let contributor_eps = cell * 0.5;
+
+    // ── 2. Extract edge vertices with sphere-constraint refinement ─
+
+    let mut edge_map: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+    let mut vertices: Vec<RftaVertex> = Vec::new();
+
+    let mut get_or_create_edge_vertex =
+        |edge: EdgeKey,
+         sdf_grid: &[f32],
+         vertices: &mut Vec<RftaVertex>,
+         edge_map: &mut std::collections::HashMap<u64, u32>|
+         -> u32 {
+            let key = edge.pack();
+            if let Some(&idx) = edge_map.get(&key) {
+                return idx;
+            }
+
+            let (i0, j0, k0, i1, j1, k1) = match edge.axis {
+                0 => (
+                    edge.i as usize, edge.j as usize, edge.k as usize,
+                    edge.i as usize + 1, edge.j as usize, edge.k as usize,
+                ),
+                1 => (
+                    edge.i as usize, edge.j as usize, edge.k as usize,
+                    edge.i as usize, edge.j as usize + 1, edge.k as usize,
+                ),
+                _ => (
+                    edge.i as usize, edge.j as usize, edge.k as usize,
+                    edge.i as usize, edge.j as usize, edge.k as usize + 1,
+                ),
+            };
+
+            let d0 = sdf_grid[corner_index(i0, j0, k0)];
+            let d1 = sdf_grid[corner_index(i1, j1, k1)];
+            let p0 = corner_point(i0, j0, k0);
+            let p1 = corner_point(i1, j1, k1);
+
+            // Bisection to find zero crossing
+            let sign_lo = d0 < 0.0;
+            let mut lo = 0.0f32;
+            let mut hi = 1.0f32;
+            let mut t = d0 / (d0 - d1);
+            for _ in 0..8 {
+                let mp = [
+                    p0[0] + t * (p1[0] - p0[0]),
+                    p0[1] + t * (p1[1] - p0[1]),
+                    p0[2] + t * (p1[2] - p0[2]),
+                ];
+                let d = node.sdf(mp, EvalMode::Visual);
+                if (d < 0.0) == sign_lo {
+                    lo = t;
+                } else {
+                    hi = t;
+                }
+                t = (lo + hi) * 0.5;
+            }
+
+            let mut p = [
+                p0[0] + t * (p1[0] - p0[0]),
+                p0[1] + t * (p1[1] - p0[1]),
+                p0[2] + t * (p1[2] - p0[2]),
+            ];
+
+            // Sphere-constraint refinement: check against nearby SDF
+            // samples and project onto the nearest violated sphere
+            // boundary. Each grid corner sample (u, s) defines a sphere
+            // of radius |s|; a valid surface point must lie outside
+            // positive spheres and inside negative spheres.
+            for _ in 0..4 {
+                let mut worst_violation = 0.0_f32;
+                let mut push = [0.0_f32; 3];
+
+                let ci = ((p[0] - grid.min[0]) / cell).floor() as i32;
+                let cj = ((p[1] - grid.min[1]) / cell).floor() as i32;
+                let ck = ((p[2] - grid.min[2]) / cell).floor() as i32;
+
+                for dk in -1..=2 {
+                    for dj in -1..=2 {
+                        for di in -1..=2 {
+                            let si = ci + di;
+                            let sj = cj + dj;
+                            let sk = ck + dk;
+                            if si < 0 || sj < 0 || sk < 0
+                                || si >= cnx as i32
+                                || sj >= cny as i32
+                                || sk >= cnz as i32
+                            {
+                                continue;
+                            }
+                            let su = si as usize;
+                            let sv = sj as usize;
+                            let sw = sk as usize;
+                            let s_val = sdf_grid[corner_index(su, sv, sw)];
+                            let s_pos = corner_point(su, sv, sw);
+                            let dx = p[0] - s_pos[0];
+                            let dy = p[1] - s_pos[1];
+                            let dz = p[2] - s_pos[2];
+                            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                            let r = s_val.abs();
+
+                            // Positive SDF: surface must be outside sphere
+                            // Negative SDF: surface must be inside sphere
+                            let violation = if s_val > 0.0 {
+                                r - dist
+                            } else {
+                                dist - r
+                            };
+
+                            if violation > worst_violation && dist > 1e-10 {
+                                worst_violation = violation;
+                                let inv_dist = 1.0 / dist;
+                                let dir = [dx * inv_dist, dy * inv_dist, dz * inv_dist];
+                                if s_val > 0.0 {
+                                    push = [
+                                        dir[0] * violation,
+                                        dir[1] * violation,
+                                        dir[2] * violation,
+                                    ];
+                                } else {
+                                    push = [
+                                        -dir[0] * violation,
+                                        -dir[1] * violation,
+                                        -dir[2] * violation,
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if worst_violation < cell * 0.001 {
+                    break;
+                }
+                p[0] += push[0] * 0.5;
+                p[1] += push[1] * 0.5;
+                p[2] += push[2] * 0.5;
+            }
+
+            // Newton projection onto zero-level set
+            for _ in 0..4 {
+                let d = node.sdf(p, EvalMode::Visual);
+                if d.abs() < 1e-5 {
+                    break;
+                }
+                let n = sdf_normal(node, p, normal_eps);
+                p[0] -= d * n[0];
+                p[1] -= d * n[1];
+                p[2] -= d * n[2];
+            }
+
+            let normal = sdf_normal(node, p, normal_eps);
+
+            let (_, cs) = node.evaluate(p, contributor_eps, EvalMode::Visual);
+            let mut element = cs.element();
+            if element == crate::csg::ProxyElement::None {
+                element = crate::csg::ProxyElement::Face;
+            }
+            let slice = cs.as_slice();
+            let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
+            for slot in 0..MAX_CONTRIBUTORS {
+                if slot < slice.len() {
+                    contribs[slot] = slice[slot]
+                        .as_u32_or_root()
+                        .unwrap_or(CONTRIBUTOR_SENTINEL);
+                }
+            }
+
+            let idx = vertices.len() as u32;
+            vertices.push(RftaVertex {
+                pos: p,
+                normal,
+                classification: element.tag(),
+                contributors: contribs,
+            });
+            edge_map.insert(key, idx);
+            idx
+        };
+
+    // ── 3. Walk cells and emit MC triangles ────────────────────────
+
+    let mut indices: Vec<u32> = Vec::new();
+
+    for ck in 0..nz {
+        for cj in 0..ny {
+            for ci in 0..nx {
+                let mut case = 0u8;
+                let mut d = [0.0f32; 8];
+                for (v, corner) in MC_CORNER_POS.iter().enumerate() {
+                    let gi = ci + corner[0] as usize;
+                    let gj = cj + corner[1] as usize;
+                    let gk = ck + corner[2] as usize;
+                    d[v] = sdf_grid[corner_index(gi, gj, gk)];
+                    if d[v] < 0.0 {
+                        case |= 1 << v;
+                    }
+                }
+
+                let edges = EDGE_TABLE[case as usize];
+                if edges == 0 {
+                    continue;
+                }
+
+                let mut edge_verts = [u32::MAX; 12];
+                for e in 0..12 {
+                    if edges & (1 << e) == 0 {
+                        continue;
+                    }
+                    let [v0, v1] = MC_EDGE_VERTS[e];
+                    let c0 = MC_CORNER_POS[v0];
+                    let c1 = MC_CORNER_POS[v1];
+
+                    let (axis, ei, ej, ek) = if c0[0] != c1[0] {
+                        (0, ci + c0[0].min(c1[0]) as usize, cj + c0[1] as usize, ck + c0[2] as usize)
+                    } else if c0[1] != c1[1] {
+                        (1, ci + c0[0] as usize, cj + c0[1].min(c1[1]) as usize, ck + c0[2] as usize)
+                    } else {
+                        (2, ci + c0[0] as usize, cj + c0[1] as usize, ck + c0[2].min(c1[2]) as usize)
+                    };
+
+                    edge_verts[e] = get_or_create_edge_vertex(
+                        EdgeKey { axis: axis as u8, i: ei as u32, j: ej as u32, k: ek as u32 },
+                        &sdf_grid,
+                        &mut vertices,
+                        &mut edge_map,
+                    );
+                }
+
+                let tri_row = &TRI_TABLE[case as usize];
+                let mut t = 0;
+                while t + 2 < 16 && tri_row[t] >= 0 {
+                    let e0 = tri_row[t] as usize;
+                    let e1 = tri_row[t + 1] as usize;
+                    let e2 = tri_row[t + 2] as usize;
+                    let v0 = edge_verts[e0];
+                    let v1 = edge_verts[e1];
+                    let v2 = edge_verts[e2];
+                    if v0 != u32::MAX && v1 != u32::MAX && v2 != u32::MAX
+                        && v0 != v1 && v1 != v2 && v0 != v2
+                    {
+                        indices.push(v0);
+                        indices.push(v1);
+                        indices.push(v2);
+                    }
+                    t += 3;
+                }
+            }
+        }
+    }
+
+    // ── 4. Compute angle-weighted normals for feature vertices ─────
+
+    let vc = vertices.len();
+    let tc = indices.len() / 3;
+
+    let mut needs_fix = vec![false; vc];
+    let mut any_fix = false;
+    for v in 0..vc {
+        if vertices[v].classification >= 2 {
+            needs_fix[v] = true;
+            any_fix = true;
+        }
+    }
+
+    if any_fix {
+        let mut accum = vec![[0.0f64; 3]; vc];
+        for t in 0..tc {
+            let i0 = indices[t * 3] as usize;
+            let i1 = indices[t * 3 + 1] as usize;
+            let i2 = indices[t * 3 + 2] as usize;
+            if !needs_fix[i0] && !needs_fix[i1] && !needs_fix[i2] {
+                continue;
+            }
+            let p0 = vertices[i0].pos;
+            let p1 = vertices[i1].pos;
+            let p2 = vertices[i2].pos;
+            let e01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let e02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let e12 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+            let fn_ = [
+                e01[1] * e02[2] - e01[2] * e02[1],
+                e01[2] * e02[0] - e01[0] * e02[2],
+                e01[0] * e02[1] - e01[1] * e02[0],
+            ];
+            let corners: [(usize, [f32; 3], [f32; 3]); 3] = [
+                (i0, e01, e02),
+                (i1, [-e01[0], -e01[1], -e01[2]], e12),
+                (i2, [-e02[0], -e02[1], -e02[2]], [-e12[0], -e12[1], -e12[2]]),
+            ];
+            for (vi, ea, eb) in corners {
+                if !needs_fix[vi] { continue; }
+                let da = (ea[0] * ea[0] + ea[1] * ea[1] + ea[2] * ea[2]).sqrt();
+                let db = (eb[0] * eb[0] + eb[1] * eb[1] + eb[2] * eb[2]).sqrt();
+                if da < 1e-12 || db < 1e-12 { continue; }
+                let cos_a = (ea[0] * eb[0] + ea[1] * eb[1] + ea[2] * eb[2]) / (da * db);
+                let angle = cos_a.clamp(-1.0, 1.0).acos();
+                accum[vi][0] += angle as f64 * fn_[0] as f64;
+                accum[vi][1] += angle as f64 * fn_[1] as f64;
+                accum[vi][2] += angle as f64 * fn_[2] as f64;
+            }
+        }
+        for v in 0..vc {
+            if !needs_fix[v] { continue; }
+            let len = (accum[v][0] * accum[v][0]
+                + accum[v][1] * accum[v][1]
+                + accum[v][2] * accum[v][2])
+            .sqrt();
+            if len > 1e-12 {
+                vertices[v].normal = [
+                    (accum[v][0] / len) as f32,
+                    (accum[v][1] / len) as f32,
+                    (accum[v][2] / len) as f32,
+                ];
+            }
+        }
+    }
+
+    // ── 5. Pack into Mesh ──────────────────────────────────────────
+
+    let mut positions = Vec::with_capacity(vc * 3);
+    let mut normals = Vec::with_capacity(vc * 3);
+    let mut classifications = Vec::with_capacity(vc);
+    let mut contributors = Vec::with_capacity(vc * MAX_CONTRIBUTORS);
+
+    for v in &vertices {
+        positions.extend_from_slice(&v.pos);
+        normals.extend_from_slice(&v.normal);
+        classifications.push(v.classification);
+        contributors.extend_from_slice(&v.contributors);
+    }
+
+    Mesh {
+        positions,
+        normals,
+        indices,
+        classifications,
+        contributors,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::csg::CsgNode;
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+
+    fn make_feature(id: u32, prim: Primitive) -> Feature {
+        Feature {
+            id: FeatureId::from_u32(id),
+            name: String::new(),
+            op: BoolOp::Union,
+            primitive: prim,
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
+        }
+    }
+
+    fn bounded_sphere(center: [f32; 3], radius: f32) -> crate::bvh::BoundedCsg {
+        let f = make_feature(1, Primitive::Sphere { center, radius });
+        let csg = CsgNode::from_features(&[f]);
+        crate::bvh::BoundedCsg::from_csg(&csg)
+    }
+
+    #[test]
+    fn rfta_sphere_produces_mesh() {
+        let node = bounded_sphere([0.0; 3], 20.0);
+        let mesh = reach_for_the_arcs(&node, 24);
+        assert!(mesh.vertex_count() > 0);
+        assert!(mesh.triangle_count() > 0);
+        assert_eq!(mesh.indices.len() % 3, 0);
+    }
+
+    #[test]
+    fn rfta_sphere_vertices_near_surface() {
+        let f = make_feature(1, Primitive::Sphere { center: [0.0; 3], radius: 20.0 });
+        let csg = CsgNode::from_features(&[f]);
+        let node = crate::bvh::BoundedCsg::from_csg(&csg);
+        let mesh = reach_for_the_arcs(&node, 24);
+        let mut max_err = 0.0_f32;
+        for i in 0..mesh.vertex_count() {
+            let p = [
+                mesh.positions[i * 3],
+                mesh.positions[i * 3 + 1],
+                mesh.positions[i * 3 + 2],
+            ];
+            let d = csg.sdf(p, EvalMode::Logical).abs();
+            if d > max_err { max_err = d; }
+        }
+        assert!(
+            max_err < 0.5,
+            "RFTA sphere vertices drifted off surface by {max_err}",
+        );
+    }
+
+    #[test]
+    fn rfta_empty_scene() {
+        let mesh = reach_for_the_arcs(&crate::bvh::BoundedCsg::Empty, 24);
+        assert!(mesh.is_empty());
+    }
+
+    #[test]
+    fn rfta_classifications_valid() {
+        let node = bounded_sphere([0.0; 3], 20.0);
+        let mesh = reach_for_the_arcs(&node, 16);
+        assert_eq!(mesh.classifications.len(), mesh.vertex_count());
+        assert_eq!(
+            mesh.contributors.len(),
+            mesh.vertex_count() * MAX_CONTRIBUTORS,
+        );
+    }
+}

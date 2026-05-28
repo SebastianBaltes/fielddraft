@@ -9,6 +9,7 @@ pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod mdc;
+pub mod rfta;
 pub mod expr;
 pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
@@ -531,6 +532,8 @@ pub struct Kernel {
     /// Default `true` so every Rust test keeps producing real
     /// meshes without needing to opt in.
     sync_meshing: bool,
+    /// Mesh algorithm selection: 0 = MDC (default), 1 = RFTA.
+    mesh_algorithm: u8,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
@@ -720,7 +723,10 @@ impl Kernel {
         let (bounded, prims) = build_bounded_with_primitives(&self.document.features, feature_indices);
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
-        dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs)
+        match self.mesh_algorithm {
+            1 => rfta::reach_for_the_arcs(&bounded, resolution),
+            _ => dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs),
+        }
     }
 
     /// Convert an ImportedMesh's triangle data directly into a renderable
@@ -956,6 +962,7 @@ impl Kernel {
             context_mesh_resolution: DEFAULT_CONTEXT_MESH_RESOLUTION,
             active_body_id: None,
             sync_meshing: true,
+            mesh_algorithm: 0,
             mesh_version: 0,
             edge_fillets: Vec::new(),
             rollback_after: None,
@@ -2822,6 +2829,23 @@ impl Kernel {
             return false;
         }
         self.active_mesh_resolution = resolution;
+        self.rebuild_mesh_internal();
+        true
+    }
+
+    // ── Mesh algorithm selection ────────────────────────────────────────
+
+    #[wasm_bindgen(js_name = setMeshAlgorithm)]
+    pub fn set_mesh_algorithm(&mut self, name: &str) -> bool {
+        let algo = match name {
+            "rfta" => 1,
+            _ => 0,
+        };
+        if algo == self.mesh_algorithm {
+            return false;
+        }
+        self.mesh_algorithm = algo;
+        self.bodies.clear();
         self.rebuild_mesh_internal();
         true
     }

@@ -5,11 +5,16 @@ import { Viewport } from "./Viewport";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
-import type { SettingsState, RenderMode } from "./SettingsMenu";
+import type { SettingsState, RenderMode, MeshAlgorithm } from "./SettingsMenu";
 
 const LS_LAST_SDF_MODE = "fielddraft.lastSdfMode";
 
-function RenderModeToggle({ mode, onChange }: { mode: RenderMode; onChange: (m: RenderMode) => void }) {
+function RenderModeToggle({ mode, onChange, meshAlgorithm, onAlgorithmChange }: {
+  mode: RenderMode;
+  onChange: (m: RenderMode) => void;
+  meshAlgorithm: MeshAlgorithm;
+  onAlgorithmChange: (a: MeshAlgorithm) => void;
+}) {
   const isMesh = mode === "mesh";
   return (
     <div className="render-mode-toggle">
@@ -32,6 +37,16 @@ function RenderModeToggle({ mode, onChange }: { mode: RenderMode; onChange: (m: 
           onChange("mesh");
         }}
       >Mesh</button>
+      {isMesh && (
+        <select
+          className="mesh-algo-select"
+          value={meshAlgorithm}
+          onChange={(e) => onAlgorithmChange(e.target.value as MeshAlgorithm)}
+        >
+          <option value="mdc">MDC</option>
+          <option value="rfta">RFTA</option>
+        </select>
+      )}
     </div>
   );
 }
@@ -49,8 +64,8 @@ export function App() {
 
   const isMeshMode = settings.renderMode === "mesh";
   useEffect(() => {
-    if (store) store.setDcMeshingEnabled(isMeshMode);
-  }, [store, isMeshMode]);
+    if (store) store.setDcMeshingEnabled(isMeshMode, settings.meshAlgorithm);
+  }, [store, isMeshMode, settings.meshAlgorithm]);
 
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
@@ -211,6 +226,12 @@ export function App() {
             onChange={(mode: RenderMode) => {
               const next = { ...settings, renderMode: mode };
               try { localStorage.setItem("fielddraft.renderMode", mode); } catch {}
+              setSettings(next);
+            }}
+            meshAlgorithm={settings.meshAlgorithm}
+            onAlgorithmChange={(algo: MeshAlgorithm) => {
+              const next = { ...settings, meshAlgorithm: algo };
+              try { localStorage.setItem("fielddraft.meshAlgorithm", algo); } catch {}
               setSettings(next);
             }}
           />

@@ -456,6 +456,7 @@ export class Kernel {
      * Replace the translate component of a feature's transform.
      */
     setFeatureTranslate(id: number, tx: number, ty: number, tz: number): boolean;
+    setMeshAlgorithm(name: string): boolean;
     /**
      * Change the active-body voxel grid resolution and re-mesh.
      * No-op if the resolution is unchanged or zero. Returns true
@@ -605,6 +606,7 @@ export interface InitOutput {
     readonly kernel_setFeatureSuppressed: (a: number, b: number, c: number) => [number, number];
     readonly kernel_setFeatureTransform: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => number;
     readonly kernel_setFeatureTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly kernel_setMeshAlgorithm: (a: number, b: number, c: number) => number;
     readonly kernel_setMeshResolution: (a: number, b: number) => number;
     readonly kernel_setRollbackIndex: (a: number, b: number) => void;
     readonly kernel_setSyncMeshing: (a: number, b: number) => number;

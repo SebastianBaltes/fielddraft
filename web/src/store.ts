@@ -531,8 +531,12 @@ export class KernelStore {
    *  schedule a fine pass at full resolution. */
   private pendingRefine = false;
 
-  setDcMeshingEnabled(enabled: boolean): void {
-    if (this.dcMeshingEnabled === enabled) return;
+  private meshAlgorithm: string = "mdc";
+
+  setDcMeshingEnabled(enabled: boolean, algorithm?: string): void {
+    const algoChanged = algorithm !== undefined && algorithm !== this.meshAlgorithm;
+    if (algorithm !== undefined) this.meshAlgorithm = algorithm;
+    if (this.dcMeshingEnabled === enabled && !algoChanged) return;
     this.dcMeshingEnabled = enabled;
     if (enabled) {
       this.scheduleWorkerRebuild();
@@ -567,6 +571,7 @@ export class KernelStore {
       activeMeshResolution: coarse ? coarseRes : fullRes,
       contextMeshResolution: this.kernel.contextMeshResolution(),
       activeBodyId: this.kernel.activeBodyId(),
+      meshAlgorithm: this.meshAlgorithm,
     };
     this.worker.postMessage(request);
   }

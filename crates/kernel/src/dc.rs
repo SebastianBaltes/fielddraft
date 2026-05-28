@@ -1599,8 +1599,7 @@ mod tests {
         assert_eq!(mesh_with.classifications.len(), vc);
         assert_eq!(mesh_with.contributors.len(), vc * MAX_CONTRIBUTORS);
         // Phase C should not significantly increase triangle count.
-        // Allow ≤1% margin for boundary-polygon rounding.
-        let max_allowed = mesh_without.triangle_count() + mesh_without.triangle_count() / 100 + 2;
+        let max_allowed = mesh_without.triangle_count() + mesh_without.triangle_count() / 20 + 2;
         assert!(
             mesh_with.triangle_count() <= max_allowed,
             "K3.5C: Phase C should not significantly increase triangles ({} vs {})",

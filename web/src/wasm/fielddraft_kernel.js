@@ -1454,6 +1454,16 @@ export class Kernel {
         return ret !== 0;
     }
     /**
+     * @param {string} name
+     * @returns {boolean}
+     */
+    setMeshAlgorithm(name) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_setMeshAlgorithm(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
      * Change the active-body voxel grid resolution and re-mesh.
      * No-op if the resolution is unchanged or zero. Returns true
      * if the mesh was actually rebuilt. Aliased as

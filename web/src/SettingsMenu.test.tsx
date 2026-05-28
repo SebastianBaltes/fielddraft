@@ -40,6 +40,7 @@ function setup() {
     units: { ...DEFAULT_UNITS },
     theme: "light",
     renderMode: "sdf-deferred",
+    meshAlgorithm: "mdc",
     showEdges: true,
   };
 
