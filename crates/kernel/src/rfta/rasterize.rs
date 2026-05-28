@@ -36,9 +36,9 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
         return vec![];
     }
 
-    // Resolution: r = 64 * ceil(n^(1/3) / 16)
+    // Resolution: r = 64 * ceil((n/16)^(1/3))
     // Paper Section 4.1, reference: reach_for_the_arcs.py
-    let r = (64.0 * ((n as f64).cbrt() / 16.0).ceil()) as usize;
+    let r = (64.0 * (n as f64 / 16.0).cbrt().ceil()) as usize;
     let r = r.max(64);
 
     let cell_size = 1.0 / r as f32;

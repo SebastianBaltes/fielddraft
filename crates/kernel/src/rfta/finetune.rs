@@ -52,7 +52,11 @@ pub fn finetune_iteration(
             continue;
         }
 
-        // Compute ideal tangent point q_i
+        // Compute ideal tangent point q_i with sign correction.
+        // Paper: N *= sign(s_i) * sign(winding_number).
+        // Fallback (no winding number): if dist_to_mesh < radius the
+        // center is inside the mesh, otherwise outside. Combined with
+        // the sphere sign this tells us which direction to project.
         let mut dir = [
             closest_on_mesh[0] - sphere.center[0],
             closest_on_mesh[1] - sphere.center[1],
@@ -63,6 +67,14 @@ pub fn finetune_iteration(
             continue;
         }
         dir = [dir[0] / dir_len, dir[1] / dir_len, dir[2] / dir_len];
+
+        let center_inside_mesh = dist_to_mesh < sphere.radius;
+        let sign_corr = if positive {
+            if center_inside_mesh { -1.0_f32 } else { 1.0 }
+        } else {
+            if center_inside_mesh { 1.0_f32 } else { -1.0 }
+        };
+        dir = [dir[0] * sign_corr, dir[1] * sign_corr, dir[2] * sign_corr];
 
         let q_i = [
             sphere.center[0] + sphere.radius * dir[0],
