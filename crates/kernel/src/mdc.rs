@@ -473,7 +473,8 @@ fn svd_solve_3x3(ata: &[f64; 6], atb: &[f64; 3], mass_point: &[f64; 3]) -> [f64;
         }
     }
 
-    let threshold = 0.1;
+    let max_sigma = a[0][0].abs().max(a[1][1].abs()).max(a[2][2].abs());
+    let threshold = (max_sigma * 1e-3).max(1e-12);
     let mut x = [0.0f64; 3];
     for i in 0..3 {
         let sigma = a[i][i];
@@ -644,7 +645,7 @@ pub fn manifold_dc(
         }
     }
 
-    let normal_eps = cell * 0.25;
+    let normal_eps = cell * 0.05;
     let contributor_eps = cell * 0.5;
 
     // ── 2. Process cells: MC case → cycles → QEF → vertices ────────
