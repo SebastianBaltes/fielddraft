@@ -483,6 +483,29 @@ mod tests {
     }
 
     #[test]
+    fn rfta_differs_from_mdc() {
+        let f = make_feature(1, Primitive::Sphere { center: [0.0; 3], radius: 20.0 });
+        let prim = f.primitive.clone();
+        let csg = CsgNode::from_features(&[f]);
+        let node = crate::bvh::BoundedCsg::from_csg(&csg);
+        let prims: std::collections::HashMap<u32, &Primitive> =
+            [(1, &prim)].into_iter().collect();
+
+        let rfta_mesh = reach_for_the_arcs(&node, 8);
+        let mdc_mesh = crate::dc::dual_contour_with_primitives(&node, 8, &prims);
+
+        assert!(rfta_mesh.vertex_count() > 0, "RFTA produced empty mesh");
+        assert!(mdc_mesh.vertex_count() > 0, "MDC produced empty mesh");
+        assert_ne!(
+            rfta_mesh.vertex_count(),
+            mdc_mesh.vertex_count(),
+            "RFTA ({} verts, {} tris) and MDC ({} verts, {} tris) produced identical vertex counts — likely same algorithm",
+            rfta_mesh.vertex_count(), rfta_mesh.triangle_count(),
+            mdc_mesh.vertex_count(), mdc_mesh.triangle_count(),
+        );
+    }
+
+    #[test]
     fn rfta_classifications_valid() {
         let node = bounded_sphere([0.0; 3], 20.0);
         let mesh = reach_for_the_arcs(&node, 4);
