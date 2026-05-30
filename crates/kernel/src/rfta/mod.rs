@@ -16,6 +16,18 @@ use crate::dc::{sdf_normal, Mesh, CONTRIBUTOR_SENTINEL};
 use feasibility::TangentPoint;
 use sphere_tree::{SdfSphere, SphereAabbTree};
 
+/// Upper bound on RFTA's internal SDF sampling resolution.
+///
+/// RFTA samples the SDF on a grid and emits one sphere per corner, so the
+/// sphere/tangent-point count grows as `res³`. Those points feed sPSR (whose
+/// unoptimized solver is super-linear) and the fine-tuning loop, so an
+/// uncapped display resolution of 32/64 would push the count to 30k–270k and
+/// stall the worker for minutes. RFTA is a sampled-grid method by design —
+/// the reference runs on fixed grids — so capping the *internal* sampling
+/// grid is a legitimate parameter, decoupled from the display resolution.
+/// Output detail is still governed by the sPSR octree depth.
+const MAX_SAMPLE_RES: u32 = 16;
+
 pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
     if resolution == 0 {
         return Mesh::default();
@@ -25,12 +37,15 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         return Mesh::default();
     }
 
+    // Decouple the internal sampling grid from the display resolution.
+    let sample_res = resolution.min(MAX_SAMPLE_RES);
+
     let raw_size = raw.size();
     let max_dim = raw_size[0].max(raw_size[1]).max(raw_size[2]);
     if max_dim <= 0.0 {
         return Mesh::default();
     }
-    let cell = max_dim / resolution as f32;
+    let cell = max_dim / sample_res as f32;
     // RFTA does not need grid expansion (unlike MDC/DC which need cells
     // on both sides of the boundary). The tight AABB already covers the
     // object. Expansion creates huge spheres far from the surface whose
@@ -134,7 +149,7 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         let sub_tree = SphereAabbTree::build(&subset);
 
         // Rasterize: find outside points
-        let outside_pts = rasterize::outside_points(&subset);
+        let outside_pts = rasterize::outside_points(&subset, &sub_tree);
 
         // Locally make feasible: compute initial tangent points
         let tangent_pts = feasibility::locally_make_feasible(
@@ -164,22 +179,20 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
 
     let (points, normals) = tangent_points_to_arrays(&all_tangent_points);
 
-    let (mut psr_verts, mut psr_tris) = match poisson::reconstruct(&points, &normals) {
+    let psr_depth = poisson::depth_for_resolution(sample_res);
+
+    let (mut psr_verts, mut psr_tris) = match poisson::reconstruct(&points, &normals, psr_depth) {
         Some(m) => m,
         None => return Mesh::default(),
     };
 
     // ── 6. Fine-tuning loop ────────────────────────────────────────
 
-    let k_max = if resolution <= 8 {
-        0
-    } else if resolution <= 16 {
-        3
-    } else if resolution <= 32 {
-        5
-    } else {
-        10
-    };
+    // Fine-tuning re-runs sPSR each iteration and adds tangent points, so its
+    // cost grows super-linearly. Keyed off the (capped) sampling resolution and
+    // kept low — the initial reconstruction is already a valid surface; these
+    // iterations only refine it onto the evolving mesh.
+    let k_max = if sample_res <= 8 { 0 } else { 1 };
 
     // We need per-sign trees for fine-tuning feasibility checks.
     // Build a combined tree for all spheres.
@@ -241,7 +254,7 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
             break;
         }
 
-        match poisson::reconstruct(&pts, &nrm) {
+        match poisson::reconstruct(&pts, &nrm, psr_depth) {
             Some((v, t)) => {
                 psr_verts = v;
                 psr_tris = t;
@@ -474,6 +487,19 @@ mod tests {
             max_err < 10.0,
             "RFTA sphere vertices drifted off surface by {max_err}",
         );
+    }
+
+    #[test]
+    fn rfta_box_terminates_and_meshes() {
+        // Regression guard for the res-32/64 hang: a solid box at a high
+        // display resolution must still terminate quickly (internal sampling
+        // is capped) and produce a non-trivial mesh.
+        let f = make_feature(1, Primitive::Box { center: [0.0; 3], half_extents: [50.0, 50.0, 50.0] });
+        let csg = CsgNode::from_features(&[f]);
+        let node = crate::bvh::BoundedCsg::from_csg(&csg);
+        let mesh = reach_for_the_arcs(&node, 64);
+        assert!(mesh.triangle_count() > 100, "box produced too few triangles");
+        assert_eq!(mesh.indices.len() % 3, 0);
     }
 
     #[test]

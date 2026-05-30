@@ -5,14 +5,15 @@
 //! Given a set of spheres (one sign class), produces points that lie
 //! *outside* all spheres — the "free space" near sphere boundaries.
 
-use super::sphere_tree::SdfSphere;
+use super::sphere_tree::{SdfSphere, SphereAabbTree};
 
 /// Compute outside points via sphere rasterization in [0,1]^3.
 ///
-/// `spheres` must already be normalized to [0,1]^3 and be of one sign class.
+/// `spheres` must already be normalized to [0,1]^3 and be of one sign class;
+/// `tree` is the AABB tree already built over exactly those spheres.
 /// Returns positions of grid cells in the narrow band that are not occupied
 /// by any sphere.
-pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
+pub fn outside_points(spheres: &[SdfSphere], tree: &SphereAabbTree) -> Vec<[f32; 3]> {
     let n = spheres.len();
     if n == 0 {
         return vec![];
@@ -20,8 +21,12 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
 
     // Resolution: ceil(64 * (n/16)^(1/3))
     // Reference: reach_for_the_arcs.py — int(np.ceil(64*(len(U)/16)**(1/3)))
-    // Capped at 256 to keep memory feasible in WASM (~34 MB at 256^3).
-    let r = ((64.0 * (n as f64 / 16.0).cbrt()).ceil() as usize).clamp(64, 256);
+    // Capped at 128: cells scale with r³, and at the sphere counts the
+    // browser feeds in (res 32 → ~30k spheres, res 64 → ~270k) the
+    // reference formula yields r≈800. The raster only *seeds* outside
+    // points that the fine-tuning loop then refines, so a coarser grid
+    // trades initial seed density for tractability, not final fidelity.
+    let r = ((64.0 * (n as f64 / 16.0).cbrt()).ceil() as usize).clamp(64, 128);
 
     let cell_size = 1.0 / r as f32;
     let raster_shrink = 0.95_f32;
@@ -29,30 +34,19 @@ pub fn outside_points(spheres: &[SdfSphere]) -> Vec<[f32; 3]> {
     let total_cells = r * r * r;
     let mut occupied = vec![false; total_cells];
 
-    // Mark cells occupied by each sphere (with raster_shrink)
-    for sphere in spheres {
-        let shrunk_r = raster_shrink * sphere.radius;
-        let shrunk_r_sq = shrunk_r * shrunk_r;
-
-        let imin = ((sphere.center[0] - shrunk_r) / cell_size).floor() as i32;
-        let imax = ((sphere.center[0] + shrunk_r) / cell_size).ceil() as i32;
-        let jmin = ((sphere.center[1] - shrunk_r) / cell_size).floor() as i32;
-        let jmax = ((sphere.center[1] + shrunk_r) / cell_size).ceil() as i32;
-        let kmin = ((sphere.center[2] - shrunk_r) / cell_size).floor() as i32;
-        let kmax = ((sphere.center[2] + shrunk_r) / cell_size).ceil() as i32;
-
-        let ri = r as i32;
-        for k in kmin.max(0)..kmax.min(ri) {
-            for j in jmin.max(0)..jmax.min(ri) {
-                for i in imin.max(0)..imax.min(ri) {
-                    let idx = i as usize + j as usize * r + k as usize * r * r;
-                    let cc = cell_center(i as usize, j as usize, k as usize, cell_size);
-                    let dx = cc[0] - sphere.center[0];
-                    let dy = cc[1] - sphere.center[1];
-                    let dz = cc[2] - sphere.center[2];
-                    if dx * dx + dy * dy + dz * dz < shrunk_r_sq {
-                        occupied[idx] = true;
-                    }
+    // Mark occupancy per cell via the AABB tree instead of per sphere.
+    // The per-sphere fill costs Σ(bbox volume); large interior spheres
+    // (radius ~0.5 normalized) each cover a huge fraction of the grid,
+    // so at browser sphere counts that sum explodes into billions of
+    // overwrites and the worker hangs. Querying per cell is bounded by
+    // the grid size, and interior cells early-exit on the first sphere
+    // that contains them — same occupancy result, terminating cost.
+    for k in 0..r {
+        for j in 0..r {
+            for i in 0..r {
+                let cc = cell_center(i, j, k, cell_size);
+                if tree.point_inside_any_shrunk(spheres, cc, raster_shrink) {
+                    occupied[i + j * r + k * r * r] = true;
                 }
             }
         }

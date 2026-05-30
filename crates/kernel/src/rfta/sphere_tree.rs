@@ -169,6 +169,52 @@ impl SphereAabbTree {
         false
     }
 
+    /// Returns true if `p` lies inside any sphere whose radius has been
+    /// scaled by `shrink` (e.g. 0.95 for the rasterization raster-shrink).
+    /// Sign is ignored — callers pass a single-sign subset. Early-exits on
+    /// the first containing sphere, so interior points resolve in O(depth).
+    ///
+    /// The node AABBs are built from the *full* radii, so a point inside a
+    /// shrunk sphere is always inside the enclosing AABB — pruning stays
+    /// valid even though the effective spheres are smaller.
+    pub fn point_inside_any_shrunk(
+        &self,
+        spheres: &[SdfSphere],
+        p: [f32; 3],
+        shrink: f32,
+    ) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack = vec![0usize];
+        while let Some(ni) = stack.pop() {
+            let node = &self.nodes[ni];
+            if p[0] < node.aabb_min[0] || p[0] > node.aabb_max[0]
+                || p[1] < node.aabb_min[1] || p[1] > node.aabb_max[1]
+                || p[2] < node.aabb_min[2] || p[2] > node.aabb_max[2]
+            {
+                continue;
+            }
+            if node.count > 0 {
+                for i in node.offset as usize..(node.offset + node.count) as usize {
+                    let s = &spheres[self.order[i] as usize];
+                    let sr = s.radius * shrink;
+                    let dx = p[0] - s.center[0];
+                    let dy = p[1] - s.center[1];
+                    let dz = p[2] - s.center[2];
+                    if dx * dx + dy * dy + dz * dz < sr * sr {
+                        return true;
+                    }
+                }
+            } else {
+                let left = node.offset as usize;
+                stack.push(left);
+                stack.push(left + 1);
+            }
+        }
+        false
+    }
+
     /// Returns the k closest spheres (by center distance) of the given sign
     /// to `point`, excluding `exclude_idx`. Returns sphere indices sorted by
     /// distance (nearest first).

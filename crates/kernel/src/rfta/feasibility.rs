@@ -32,11 +32,18 @@ pub fn locally_make_feasible(
     let k_search = (2.0 * (n as f64).cbrt()).ceil().max(4.0) as usize;
     let mut results = Vec::with_capacity(n);
 
+    // Spatial grid over the outside points so the per-sphere nearest-point
+    // lookup is ~O(1) instead of O(|outside_pts|). With one sphere per grid
+    // corner the sphere count and outside-point count both scale with res³,
+    // so the old linear search was O(spheres × outside_pts) — billions of
+    // distance evals at res 32 — and dominated the whole pipeline.
+    let point_grid = PointGrid::build(outside_pts);
+
     for si in 0..n {
         let sphere = &spheres[si];
 
-        // 1. Find nearest outside point (linear search)
-        let nearest = nearest_outside_point(sphere.center, outside_pts);
+        // 1. Find nearest outside point via the spatial grid
+        let nearest = point_grid.nearest(sphere.center);
         let nearest_pt = match nearest {
             Some(p) => p,
             None => {
@@ -182,21 +189,116 @@ pub fn tangent_normal(pos: [f32; 3], sphere: &SdfSphere) -> [f32; 3] {
     }
 }
 
-/// Find the nearest outside point to `center` via linear search.
-fn nearest_outside_point(center: [f32; 3], pts: &[[f32; 3]]) -> Option<[f32; 3]> {
-    let mut best_d2 = f32::INFINITY;
-    let mut best = None;
-    for &pt in pts {
-        let dx = pt[0] - center[0];
-        let dy = pt[1] - center[1];
-        let dz = pt[2] - center[2];
-        let d2 = dx * dx + dy * dy + dz * dz;
-        if d2 < best_d2 {
-            best_d2 = d2;
-            best = Some(pt);
+/// Uniform spatial grid over a point set in (roughly) [0,1]³, supporting
+/// approximate-free nearest-neighbour queries via an expanding shell search.
+struct PointGrid {
+    res: usize,
+    inv_cell: f32,
+    cell_size: f32,
+    /// Flattened res³ buckets, each holding indices into `pts`.
+    buckets: Vec<Vec<u32>>,
+    pts: Vec<[f32; 3]>,
+}
+
+impl PointGrid {
+    fn build(pts: &[[f32; 3]]) -> Self {
+        let n = pts.len();
+        // ~1 point per cell on average, clamped to a sane range.
+        let res = ((n as f64).cbrt().ceil() as usize).clamp(1, 128);
+        let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); res * res * res];
+        let inv_cell = res as f32; // points live in [0,1], so cell = 1/res
+        let cell_size = 1.0 / res as f32;
+        let clamp_idx = |v: f32| -> usize {
+            let c = (v * inv_cell).floor();
+            if c < 0.0 {
+                0
+            } else if c as usize >= res {
+                res - 1
+            } else {
+                c as usize
+            }
+        };
+        for (i, p) in pts.iter().enumerate() {
+            let cx = clamp_idx(p[0]);
+            let cy = clamp_idx(p[1]);
+            let cz = clamp_idx(p[2]);
+            buckets[cx + cy * res + cz * res * res].push(i as u32);
+        }
+        Self {
+            res,
+            inv_cell,
+            cell_size,
+            buckets,
+            pts: pts.to_vec(),
         }
     }
-    best
+
+    fn nearest(&self, q: [f32; 3]) -> Option<[f32; 3]> {
+        if self.pts.is_empty() {
+            return None;
+        }
+        let res = self.res as i32;
+        let cell = |v: f32| -> i32 {
+            let c = (v * self.inv_cell).floor() as i32;
+            c.clamp(0, res - 1)
+        };
+        let (qx, qy, qz) = (cell(q[0]), cell(q[1]), cell(q[2]));
+
+        let mut best_d2 = f32::INFINITY;
+        let mut best: Option<[f32; 3]> = None;
+
+        let mut radius = 0i32;
+        loop {
+            // Scan the Chebyshev shell at distance `radius` from the query cell.
+            let lo = -radius;
+            let hi = radius;
+            for dz in lo..=hi {
+                for dy in lo..=hi {
+                    for dx in lo..=hi {
+                        // Only the shell surface, not the filled cube.
+                        if dx.abs() != radius && dy.abs() != radius && dz.abs() != radius {
+                            continue;
+                        }
+                        let cx = qx + dx;
+                        let cy = qy + dy;
+                        let cz = qz + dz;
+                        if cx < 0 || cx >= res || cy < 0 || cy >= res || cz < 0 || cz >= res {
+                            continue;
+                        }
+                        let bucket =
+                            &self.buckets[cx as usize + cy as usize * self.res + cz as usize * self.res * self.res];
+                        for &pi in bucket {
+                            let p = self.pts[pi as usize];
+                            let ex = p[0] - q[0];
+                            let ey = p[1] - q[1];
+                            let ez = p[2] - q[2];
+                            let d2 = ex * ex + ey * ey + ez * ez;
+                            if d2 < best_d2 {
+                                best_d2 = d2;
+                                best = Some(p);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Once we have a candidate, any point in a shell at Chebyshev
+            // distance `radius+1` is at least `radius * cell_size` away, so we
+            // can stop as soon as that lower bound exceeds the best distance.
+            if best.is_some() {
+                let shell_min = radius as f32 * self.cell_size;
+                if shell_min * shell_min > best_d2 {
+                    break;
+                }
+            }
+            radius += 1;
+            if radius > res {
+                break;
+            }
+        }
+
+        best
+    }
 }
 
 /// Core collision resolution: given a point `p` on sphere `sphere_idx`,
