@@ -88,6 +88,10 @@
       gap: var(--space-3);
       font-size: var(--fs-base);
       color: var(--color-text-muted);
+
+      & .tri-count {
+        font-variant-numeric: tabular-nums;
+      }
     }
 
     & .error {
