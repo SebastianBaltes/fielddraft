@@ -256,12 +256,23 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   // Then apply the LOD knobs. Each setter short-circuits to a
   // no-op if the value matches the current setting and only
   // re-meshes when something actually changed.
-  kernel.setMeshAlgorithm(msg.meshAlgorithm ?? "mdc");
+  const algo = msg.meshAlgorithm ?? "mdc";
+  const algoChanged = kernel.setMeshAlgorithm(algo);
   kernel.setMeshResolution(msg.activeMeshResolution);
   kernel.setContextMeshResolution(msg.contextMeshResolution);
   kernel.setActiveBodyId(msg.activeBodyId);
 
   const { bodies, transfers } = snapshotBodies(kernel, memory);
+
+  // Diagnostic: report which mesher actually ran, whether the
+  // algorithm switch took effect this rebuild, and the resulting
+  // geometry size. Lets a stale/no-op algorithm switch be spotted
+  // from the console without guesswork.
+  const triCount = bodies.reduce((sum, b) => sum + b.indices.length / 3, 0);
+  console.info(
+    `[mesher] algo=${algo} (changed=${algoChanged}) res=${msg.activeMeshResolution} ` +
+      `bodies=${bodies.length} tris=${triCount}`,
+  );
   const response: MesherBodiesResponse = {
     type: "bodies",
     requestId: msg.requestId,
