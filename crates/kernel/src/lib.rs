@@ -942,6 +942,15 @@ impl Kernel {
     }
 }
 
+/// The app version this WASM binary was stamped with at build time
+/// (see `build.rs`). The web app compares it against `__APP_VERSION__`
+/// on boot to catch a stale kernel module. Returns "dev" when built
+/// without `FIELDDRAFT_VERSION` (e.g. `cargo test`).
+#[wasm_bindgen(js_name = wasmVersion)]
+pub fn wasm_version() -> String {
+    env!("FIELDDRAFT_VERSION").to_string()
+}
+
 #[wasm_bindgen]
 impl Kernel {
     /// Create a new kernel with an empty document.

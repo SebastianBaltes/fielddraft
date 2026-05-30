@@ -116,6 +116,7 @@ export const kernel_syncMeshing: (a: number) => number;
 export const kernel_toJson: (a: number) => [number, number, number, number];
 export const kernel_undo: (a: number) => number;
 export const kernel_undoDepth: (a: number) => number;
+export const wasmVersion: () => [number, number];
 export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

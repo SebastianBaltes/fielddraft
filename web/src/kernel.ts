@@ -10,7 +10,7 @@
  */
 
 // eslint-disable-next-line import/no-unresolved
-import initWasm, { Kernel as WasmKernel } from "./wasm/fielddraft_kernel.js";
+import initWasm, { Kernel as WasmKernel, wasmVersion } from "./wasm/fielddraft_kernel.js";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -191,7 +191,31 @@ export class Kernel {
     const inner = new WasmKernel();
     inner.setMeshResolution(64);
     inner.setContextMeshResolution(32);
+
+    // Stale-WASM guard: the binary is stamped with the web app version
+    // at build time (see build.rs / `just build-wasm`). If the loaded
+    // kernel doesn't match the freshly-served JS bundle, the tab is
+    // running an outdated module — typically a long-open tab whose
+    // worker booted before the last `just build-wasm`. Warn loudly so
+    // the mismatch is never silent (e.g. MDC and RFTA returning the
+    // same triangle count because the new mesher code never loaded).
+    const wasmV = wasmVersion();
+    if (wasmV !== __APP_VERSION__) {
+      console.warn(
+        `[fielddraft] WASM/app version mismatch: kernel is v${wasmV}, app is v${__APP_VERSION__}. ` +
+          `The loaded WASM is stale — reload the page (Ctrl+Shift+R). ` +
+          `If it persists, rebuild with \`just build-wasm\`.`,
+      );
+    } else {
+      console.info(`[fielddraft] kernel v${wasmV}`);
+    }
+
     return new Kernel(inner, exports.memory);
+  }
+
+  /** App version this kernel's WASM binary was stamped with at build time. */
+  version(): string {
+    return wasmVersion();
   }
 
   // ── packed buffer (zero-copy bridge) ────────────────────────────────

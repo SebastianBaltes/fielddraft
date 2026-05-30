@@ -497,6 +497,14 @@ export class Kernel {
     undoDepth(): number;
 }
 
+/**
+ * The app version this WASM binary was stamped with at build time
+ * (see `build.rs`). The web app compares it against `__APP_VERSION__`
+ * on boot to catch a stale kernel module. Returns "dev" when built
+ * without `FIELDDRAFT_VERSION` (e.g. `cargo test`).
+ */
+export function wasmVersion(): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -616,6 +624,7 @@ export interface InitOutput {
     readonly kernel_toJson: (a: number) => [number, number, number, number];
     readonly kernel_undo: (a: number) => number;
     readonly kernel_undoDepth: (a: number) => number;
+    readonly wasmVersion: () => [number, number];
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -13,8 +13,10 @@ install:
     cd web && npm install
 
 # Build the Rust kernel to WASM and drop the output into web/src/wasm.
+# Stamp the binary with the web app version (single source of truth =
+# web/package.json) so the app can detect a stale kernel module on boot.
 build-wasm:
-    cd crates/kernel && wasm-pack build --target web --out-dir ../../web/src/wasm --out-name fielddraft_kernel
+    cd crates/kernel && FIELDDRAFT_VERSION="$(node -p "require('../../web/package.json').version")" wasm-pack build --target web --out-dir ../../web/src/wasm --out-name fielddraft_kernel
 
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
 dev: build-wasm

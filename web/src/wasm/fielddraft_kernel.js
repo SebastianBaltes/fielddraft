@@ -1578,6 +1578,26 @@ export class Kernel {
 }
 if (Symbol.dispose) Kernel.prototype[Symbol.dispose] = Kernel.prototype.free;
 
+/**
+ * The app version this WASM binary was stamped with at build time
+ * (see `build.rs`). The web app compares it against `__APP_VERSION__`
+ * on boot to catch a stale kernel module. Returns "dev" when built
+ * without `FIELDDRAFT_VERSION` (e.g. `cargo test`).
+ * @returns {string}
+ */
+export function wasmVersion() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.wasmVersion();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
