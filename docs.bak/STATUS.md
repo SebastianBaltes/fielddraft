@@ -1,0 +1,344 @@
+# FieldDraft — Projektstatus
+
+**Stand:** 2026-05-27
+**Branch:** `main`
+
+---
+
+## Kurzfassung
+
+FieldDraft ist ein browserbasierter, parametrischer 3D-Modeller auf SDF-Basis, der sich an Onshape orientiert und auf den FDM/SLA-3D-Druck zielt. Das Projekt durchläuft eine Roadmap mit fünf Release-Tiers (T0–T3 + T∞) und gliedert sich in Kernel-Slices (K1–K15), Backend-Meilensteine (M11–M13) und eine langfristige Phase 3 (P1–P5).
+
+**Aktueller Stand:** T0–T3 (100%), M11–M14i (100%), Phase 3 P1–P3 (100%), K7.21a–j (100%). **22 Feature-Kinds**, 590+ Tests grün. **M14 (STEP/3MF) vollständig.**
+
+**Registry & Tests (Stand heute):**
+- Feature Registry: **22 FeatureKinds**, **13 Primitive-Typen**
+- Testsuite: **310 Kernel-Tests + 38 Protocol-Tests + 16 Solver-Tests + 204 Vitest + 38 Playwright = 606+ Tests grün**
+
+---
+
+## Tabellarische Feature-Übersicht
+
+### Legende
+
+| Symbol | Bedeutung |
+|--------|-----------|
+| ✅ | Implementiert und committed |
+| partial | Teilweise implementiert, Lücken offen |
+| open | Noch nicht begonnen |
+
+---
+
+### T0 — Demonstrator / Architektur-Validierung (abgeschlossen bis auf K3.5)
+
+| Ref | Meilenstein | Feature | Status | Beschreibung |
+|-----|-------------|---------|--------|--------------|
+| M0 | M0 | Repo-Scaffold | ✅ | Build-Tooling, Test-Harnesses, Crate-Struktur |
+| M1 | M1 | WebGPU-Viewport | ✅ | TSL-Raymarcher, Zero-Copy-Bridge, Auto-Save |
+| M2 | M2 | Feature-Tree UI v1 | ✅ | Outliner, Boolean-Ops, Undo/Redo, Light-Mode |
+| K1 | K1 | CSG-AST + Dual Contouring | ✅ | Box/Sphere/Cylinder Leaves, Union/Diff/Intersect, DC-Mesher, Goldfile-Tests |
+| K2 | K2 | Provenance + Picking | ✅ | Contributor-Tracking, Sphere-Tracing Raycaster, B-Rep-Proxy (grob) |
+| K3 | K3 | BVH + Multi-Body + Worker-Mesher | ✅ | 3D-BVH, Body-Partitionierung, Per-Body Mesh-Cache, Active/Context-LOD, Web-Worker |
+| K3.5 | K3.5 | Provenance-gesteuerte Mesh-Optimierung | ✅ | Phase A (Newton-Projektion), Phase B (Planar-Simplifizierung mit Ear-Clipping), Phase C (Zylinder/Kegel UV-Unwrap). 83% Vertex-/87% Dreieck-Reduktion für Boxen. |
+| K3.6 | K3.6 | Dirty-Tracking-Fixes & Affine-Fastpath | ✅ | Hash-Bug (7 fehlende Modifier-Felder), Split-Hash (Geometry/Transform), GPU-Translation-Delta statt Remesh bei reinen Verschiebungen. |
+| K3.7 | K3.7 | Adaptives DC + QEF | ✅ | Octree + Jacobi-SVD QEF, ProcessCell/Face/Edge Traversierung, ersetzt sparse DC für Res>64. 5 Tests. |
+| K3.8 | K3.8 | SDF-CWF Export-Mesher | open | CVT+QEM-Optimierung für Slicer-Qualität (Liu et al., CAD 2025). |
+| K4 | K4 | 2D-Kernel + Extrude + Revolve | ✅ | 2D-SDF-AST, 2D-BVH, Extrude/Revolve CsgNode-Varianten |
+| K4.5 | K4.5 | Feature-as-Function Refactor | ✅ | FeatureId hierarchisch, Feature-Trait, Registry, FeatureSchema-Derive, Runtime-Types, Query-Minimum, Regeneration-Worker, Dual-API |
+| K5a | K5a | PlaneGCS-Integration | ✅ | Separater WASM-Build, Solver-Datenmodell |
+| K5b | K5b | Sketch-Adapter-Schicht | ✅ | InferenceEngine, DragController, DoF-Preflight, Diagnostics |
+| K6a | K6a | Generischer FeatureDialog | ✅ | Schema-Lookup, Widget-Kit, automatische Dialog-Generierung |
+| K6a.1 | K6a.1 | Onshape-Paritäts-Widgets | ✅ | Enum-Widget, FlipButton, Slider, GroupHeader, visible_when, Gruppen |
+
+---
+
+### T1 — Shippable Alpha ("Usable CAD")
+
+| Ref | Meilenstein | Feature | Status | Beschreibung |
+|-----|-------------|---------|--------|--------------|
+| K6b.1 | K6b | Sketch Feature + Sub-Spine | ✅ | Sketch-FeatureCall, Sub-Feature-Tree-Infrastruktur im Kernel |
+| K6b.2 | K6b | Sketch-Mode UI-Shell | ✅ | Orthographic Kamera, Sketch-Overlay, Smoke-Tests |
+| K6b.3 | K6b | 2D-Canvas-Overlay + Zeichenwerkzeuge | ✅ | Canvas-Overlay, Commit-Path, Inference, Snap, Constraints, Line/Rect/Circle/Polygon |
+| K6b.4 | K6b | Arc, Trim, Mirror, Offset | ✅ | Sketch-Tools vervollständigt (Audit Punkt 1) |
+| K6b.5 | K6b | Sketch-Ebenen-Picker + Grid | ✅ | XY/XZ/YZ Picker, Sketch-Grid, Origin-Axes, Polygon-Close |
+| K6b.6 | K6b | Constraint Glyphs + 3-Farben-DOF | ✅ | Constraint-Visualisierung im Sketch-Canvas, Unter-/Voll-/Über-Constrained in drei Farben |
+| K7.0 | K7 | Sketch2d-Synthese | ✅ | Kernel-seitige Sketch-Auflösung aus sub_calls |
+| K7.1 | K7 | ExtrudeFeature + Sketches | ✅ | Extrude konsumiert aufgelöste Sketches |
+| K7.2 | K7 | STL-Export | ✅ | ASCII + Binary STL, UI-Download-Button |
+| K7.3 | K7 | Extrude-Primitiv | ✅ | Primitive::Extrude mit echten Sketch-Profilen |
+| K7.4 | K7 | Extrude-Toolbar-Button | ✅ | End-to-End UI-Workflow Sketch → Extrude |
+| K7.5 | K7 | Editable Features via Outliner | ✅ | FeatureDialog für bestehende Features |
+| K7.6 | K7 | Standard-View-Buttons | ✅ | Front/Top/Right/Iso Kamera-Presets |
+| K7.7 | K7 | Keyboard-Shortcuts | ✅ | Tastenkürzel für häufige Operationen |
+| K7.8 | K7 | Torus-Primitiv | ✅ | Neues Torus-Leaf im CSG-AST |
+| K7.9 | K7 | Cone (Frustum) | ✅ | Kegelstumpf-Primitiv |
+| K7.10 | K7 | New Project + Select All | ✅ | Ctrl+A, New-Project-Button |
+| K7.11 | K7 | Per-Body-Farben | ✅ | Individuelle Farben pro Body im Viewport |
+| K7.12 | K7 | Capsule-Primitiv | ✅ | Kapsel-Geometrie |
+| K7.13 | K7 | Save/Load (.fdraft) | ✅ | Projekt als Datei speichern und laden |
+| K7.14 | K7 | Viewport-Selektion (Highlight) | ✅ | Wireframe-Highlight bei Selektion |
+| K7.15 | K7 | Click-to-Select | ✅ | Klick-Selektion im Viewport |
+| K7.16 | K7 | Ground Grid | ✅ | 3D-Boden-Gitter im Viewport |
+| K7.17 | K7 | Compact Mode + Responsive Toolbar | ✅ | Compact Mode + Overflow-Dropdown (K7.21b) + Settings-Menü (K7.21a) + Tooltip-Pflicht (K7.21c) |
+| K7.22h | K7.22 | UX-Fix: Sketch-XY-Crash (React hooks) | ✅ | Conditional `useRef` inline in JSX entfernt — Sketch-Mode-Übergang crashte mit "Rendered fewer hooks than expected" |
+| K7.22a | K7.22 | UX-Fix: Dirty-Flag / Frameloop demand | ✅ | `<Canvas frameloop="demand">` + Invalidator-Component, Chrome-Tab bleibt idle wenn nichts mutiert |
+| K7.22i | K7.22 | UX-Fix: YAML-Specs gelesen und integriert | ✅ | `assets/onshape/yaml/*.yaml` als Source of Truth für Dialog-Refactor (K7.21g) adoptiert |
+| K7.22j | K7.22 | UX-Fix: Thread/Sketch Toolbar-Dropdowns entfernt | ✅ | Toolbar-Aufklapp-Menüs für Feature-Parameter (Thread M3-M12, Sketch XY/XZ/YZ) entfernt — Feature-Parameter gehören in den Dialog, nicht die Toolbar |
+| K7.22c | K7.22 | UX-Fix: "no hover" Label entfernt | ✅ | PickHud rendert im Idle-State als leeres `.is-idle` Div (`display: none`) |
+| K7.22b | K7.22 | UX-Fix: Outliner-Splitter für X-Resize | ✅ | 7px Gutter auf linker Kante, PointerCapture-Drag, `localStorage.fielddraft.outlinerWidth`, Double-Click reset |
+| K7.22e | K7.22 | UX-Fix: Feature-Delete inkonsistent | ✅ | `Kernel::remove_feature` iteriert jetzt `feature_calls` + `features` mit Descendant-Cascade für Pattern/Mirror/Hole-Kinder. Neuer Regression-Test für Hole. |
+| K7.22f | K7.22 | UX-Fix: Part-Tree unter Feature-Tree | ✅ | Neue `PartTree`-Sektion im Outliner mit Farb-Swatch, Name aus Seed-Feature, Triangle-Count, Klick selektiert Seed |
+| K7.22g | K7.22 | UX-Fix: Extrude Profiles Click-Picker | ✅ | `queryPickerBridge` + `QueryWidget` mit ⊕-Toggle + auto-arm auf Required. Viewport-Click emittiert `qCreatedBy(feature_id)`. Drag-Gizmo für Depth NICHT enthalten (siehe K7.21i) |
+| K7.22d | K7.22 | UX-Fix: Click-Select + Drop-Position + Translate-Gizmo | ✅ | Click-Select, Drop-Position, TransformControls mit Translate/Rotate/Scale (K7.21h/i/j erledigt) |
+| K7.21g | K7.21 | YAML-driven Dialog-Refactor | ✅ | Tabs-Widget, Expandable-Sections, Enum-Reveals (conditional visibility per Dropdown-Auswahl), Schema-Parser + FeatureDialog + CSS |
+| K7.21h | K7.21 | Rotation/Scale-Gizmo-Modi | ✅ | G/R Shortcuts, TransformControls mit mode-State, setFeatureRotation/Scale WASM API |
+| K7.21i | K7.21 | Extrude-Face-Button | ✅ | "Extrude Face"-Button im Viewport HUD bei Face-Selektion |
+| K7.21j | K7.21 | Transform als eigenes Feature | ✅ | TransformFeature in Registry (22 Features), setFeatureRotation/Scale |
+| K7.21a | K7.21 | Burger-Menu + Settings-Panel | ✅ | SettingsMenu in Topbar, Popover mit Compact/Units/Shortcuts/Theme, localStorage-Persistenz |
+| K7.21b | K7.21 | Toolbar-Overflow-Dropdown | ✅ | ResizeObserver + ToolItem[] mit 5 Prioritätsleveln + MoreDropdown |
+| K7.21c | K7.21 | Compact-Mode-Tooltips | ✅ | Alle Toolbar-Buttons tragen non-empty title; Vitest-Test parst Toolbar.tsx statisch und blockt Regressionen |
+| K7.21d | K7.21 | Constraint-Manager-Panel | ✅ | DoF-Badge, Driving/Driven-Toggle per Rechtsklick, Constraint-Liste |
+| K7.21e | K7.21 | Face-Lock via Viewport-Klick | ✅ | facePickMode, Normal→Achsen-Ebene, HUD-Anzeige, Esc-Fallback |
+| K7.21f | K7.21 | Visual-Regression-Baselines | ✅ | 9 Playwright-Screenshot-Tests, Baselines in visual.spec.ts-snapshots/ |
+| K7.18 | K7 | Undo/Redo Depth Display | ✅ | Undo/Redo-Tiefe in der Toolbar sichtbar |
+| K7.19 | K7 | OBJ-Export | ✅ | Wavefront-OBJ-Export neben STL/GLB |
+| K7.20 | K7 | Ellipsoid-Primitiv | ✅ | Neues Ellipsoid-Leaf im CSG-AST mit generischem FeatureDialog |
+| K8.0 | K8 | Linear Pattern | ✅ | Pattern als wiederholte CSG-Sub-Bäume |
+| K8.1 | K8 | Circular Pattern | ✅ | Kreisförmiges Muster |
+| K8.2 | K8 | Mirror | ✅ | Spiegelungs-Feature |
+| K8.3 | K8 | Editable Pattern Params | ✅ | Pattern-Parameter über FeatureDialog editierbar |
+| K8.4 | K8 | Revolve Feature | ✅ | Revolve als UI-Feature |
+| K8.5 | K8 | Inline Rename | ✅ | Feature-Umbenennung im Outliner |
+| K8.6 | K8 | Feature Reorder | ✅ | Up/Down-Pfeile im Outliner |
+| K8.7 | K8 | Feature Suppress | ✅ | Eye-Icon zum Unterdrücken |
+| K8.8 | K8 | Feature Duplicate | ✅ | Duplizierung im Outliner |
+| K8.9 | K8 | Hole Feature | ✅ | Parametrische Zylindersubtraktion |
+| K8.10 | K8 | Variables v0 | ✅ | Skalare Variablen-Tabelle + Outliner-Panel |
+| K8.11 | K8 | Formula Engine | ✅ | Expression-Parser mit Einheiten im Kernel |
+| K8.12 | K8 | Formeln in LengthInput | ✅ | fx-Toggle für Formel-Eingabe in Maßfeldern |
+| K8.13 | K8 | Sketch-Region-Selektion | ✅ | Multi-Profile Extrude, 2D-Region-Zerlegung, Region-Picker |
+| K9.0 | K9 | STL-Import als Referenz | ✅ | Visuelle Referenzgeometrie ohne SDF |
+| K9.1 | K9 | Scene Measure Readout | ✅ | AABB-Dimensionen im Header |
+| K9.2 | K9 | GLB/glTF-Import | ✅ | Referenzgeometrie-Import |
+| K9.3 | K9 | OBJ-Import | ✅ | OBJ als Referenz |
+| K9.4 | K9 | Interaktives Measure-Tool | ✅ | Point-to-Point Distanzmessung |
+| K9.5 | K9 | Goldfile-Regression | ✅ | Box+Hole STL Baseline |
+| K9.6 | K9 | Mate Connector | ✅ | Pick-basierte Platzierung, mateMode, Achstriade-Overlay, Outliner-Integration |
+| K10.0 | K10 | Smooth Blend CSG (Fillet-Infrastruktur) | ✅ | smin-Operatoren im CSG-Walker |
+| K10.1 | K10 | Per-Feature Blend Radius | ✅ | Blend-Radius pro Feature einstellbar |
+| K10.2 | K10 | Chamfer Blend Mode | ✅ | Flache 45°-Schnitt-Variante |
+| K10.3 | K10 | Spatial Mask Infrastructure | ✅ | MaskedBlend CSG-Knoten mit Per-Edge-Masken, hierarchischen Sub-IDs und BVH-Integration |
+| K10.4 | K10 | Ghost Topology (Dual-Path) | partial | EvalMode-Enum (Visual/Logical) vorhanden, aber nur Visual wird in Mesher/Picking genutzt. Divergenz nicht implementiert — beide Pfade liefern identische Ergebnisse. |
+| K10.5 | K10 | Edge Detection | ✅ | Proxy-basierte Edge-Extraktion für interaktive Selektion |
+| K10.6 | K10 | Edge Rendering | ✅ | Viewport-Overlay für B-Rep-Edges mit Hover/Select-States |
+| K10.7 | K10 | Click-to-Fillet UI | ✅ | Click-to-Fillet-Tool, Edge-Picking, Radius-Eingabe, Live-Preview, Fillet-all-edges-Stresstest grün |
+| K10.8 | K10 | B-Rep Topology + Visualization | ✅ | Per-body TopoFace/TopoEdge extraction from DC mesh classifications+contributors, topology JSON via mesher worker, Three.js LineSegments rendering on OVERLAY_LAYER. Commits `953bae3`, `121d586`. |
+
+---
+
+### T2 — Differentiated v1 ("Reason to Exist")
+
+| Ref | Meilenstein | Feature | Status | Beschreibung |
+|-----|-------------|---------|--------|--------------|
+| K11.0 | K11 | Gyroid TPMS-Infill | ✅ | Gyroid als SDF-Formel, Toolbar-Button |
+| K11.1 | K11 | Twist Deformation | ✅ | Per-Primitiv Twist + Gyroid-Toolbar |
+| K11.2 | K11 | Bend Deformation | ✅ | Per-Primitiv Bend mit Lipschitz-Korrektur |
+| K11.3 | K11 | Procedural Displacement | ✅ | Surface-Texture als Terminal-Operator |
+| K11.4 | K11 | Shell Operator | ✅ | Hollow-Body-Operator |
+| K11.5 | K11 | Morph CSG Node | ✅ | Lerp zwischen zwei SDFs |
+
+---
+
+### T3 — Feature-Complete Vision
+
+| Ref | Meilenstein | Feature | Status | Beschreibung |
+|-----|-------------|---------|--------|--------------|
+| K12 | K12 | Analytisches Gewinde | ✅ | Helix-SDF Thread-Primitiv (Bug #1 fix: `fc77aee` — Cosine-Profil statt broken groove intersection) |
+| K12.1 | K12 | GLB-Export | ✅ | glTF 2.0 Binary Export |
+| K12.2 | K12 | Metrische Thread-Presets | ✅ | M3–M12 Dropdown |
+| K13.0 | K13 | mesh_sdf Modul | ✅ | Triangle-Distance + Ray-Parity Sign |
+| K13.1 | K13 | ImportedMesh als CSG-Solid | ✅ | Audit Punkt 6 — Mesh als Boolean-Teilnehmer |
+| K13.2 | K13 | Sweep Feature | ✅ | Profil entlang Pfad mit Twist, Mesh-to-SDF-Konvertierung der Sweep-Hülle |
+| K13.3 | K13 | Manifold Check (Import) | ✅ | Wasserdichtigkeits-Check für importierte Meshes vor SDF-Konvertierung |
+| K13.4 | K13 | Manifold Repair | ✅ | Auto-Repair via repair() bei Import, Boundary-Loop + Centroid-Fan |
+| K13.5 | K13 | Mesh Import 3D SDF Volume Textures | ✅ | `BakedVolume` bakt MeshSdf in 64³-Grid, `OP_PRIM_TEX3D`-Opcode (0x0C) mit `CompileCtx`-Refactor, Zero-Copy WASM-Bridge, `Data3DTexture` mit Hardware-Trilinear-Interpolation. Unterstützt in sdf-vm (per-body) und sdf-deferred (globaler Volume-Index mit per-body Base-Offset). Commit `3cb23e3`. |
+| K14 | K14 | Drag-and-Drop Primitives | ✅ | Toolbar → Viewport DnD |
+| K14.1 | K14 | Drag-and-Drop Sketches | ✅ | handleDrop prüft fielddraft/sketch, Face-Normal → Sketch-Ebene |
+| K15 | K15 | Input Map Presets | open | Konfigurierbare Maus-/Tastatur-Belegung: Web/Three.js, Onshape, Fusion 360, Blender, Tinkercad. Betrifft Orbit/Pan/Zoom, Selektion, Context-Menu, Gizmo-Koordination. |
+
+---
+
+### Backend-Phase (M11–M13)
+
+| Ref | Meilenstein | Feature | Status | Beschreibung |
+|-----|-------------|---------|--------|--------------|
+| M11 | M11 | Go-Server + Auth | ✅ | chi + sqlc, Docker-Compose, Register/Login/Logout |
+| M11 | M11 | Frontend Auth Views | ✅ | Login/Register/Guest UI |
+| M12 | M12 | Projekt-Dashboard | ✅ | List/Create/Rename/Delete |
+| M12 | M12 | Projekt-Sync + Offline-Hybrid | ✅ | Sync-State-Machine, localStorage als Offline-Cache |
+| M12 | M12 | Öffentliche Galerie | ✅ | Read-only Browse ohne Login |
+| M12 | M12 | Sichtbarkeits-Toggle | ✅ | Privat/Öffentlich-Umschaltung |
+| M13 | M13 | Rate Limiting | ✅ | Per-IP Rate Limits |
+| M13 | M13 | AppShell Router | ✅ | Auth → Dashboard → Editor Navigation |
+| M13 | M13 | Self-Hosting Docs | ✅ | DEPLOY.md |
+| M13 | M13 | Quotas | ✅ | Pro User Soft-Limits |
+| M13.1 | M13 | Passwort-Reset | ✅ | Token-basiert, 1h Expiry, SMTP-Ready |
+| M13.2 | M13 | Performance-Pass | ✅ | Progressive Refinement + K3.5 Mesh-Opt |
+| M13.3 | M13 | Thumbnails in Galerie | ✅ | PUT/GET /api/projects/{id}/thumbnail |
+
+---
+
+### T∞ — Experimentell / Forschung
+
+| Ref | Feature | Status | Beschreibung |
+|-----|---------|--------|--------------|
+| K-Exp1 | Analytischer Preview-Pfad | open | Skelett-First-Rendering, 3-Stufen-Orchestrierung |
+| K-Exp2 | SDF Raymarching Performance | ✅ | **Zwei aktive Render-Modi: `sdf-vm` und `sdf-deferred`.** Legacy-Modi (dc/sdf/sdf-baked/sdf-batch/sdf-hybrid*) entfernt. PerfMonitor+HUD (F2), Shared VM-Interpreter (`sdfVmInterpreter.ts`), Benchmark-Infrastruktur (Playwright `benchmark.spec.ts` + standalone `perf-test.mjs`). 8 Playwright-Tests (7 Renderer + 1 Benchmark). |
+| K-Exp3 | SDF VM (Forward Per-Body Raymarcher) | ✅ | Komplett neu geschrieben (`8070ae7`): Jeder Body bekommt ein eigenes AABB-Box-Mesh (BackSide), Fragment-Shader sphere-traced von Kamera bis Box-Exit, Hardware-Depth-Buffer für Inter-Body-Komposition. 512 Steps, SURFACE_EPS=0.002, 3-Licht-Rig. |
+| K-Exp3.4 | Extrude/Revolve Contour Meshes | ✅ | Marching Squares Kontur-Extraktion aus Sketch-SDF, EdgeKey-Segment-Chaining, Douglas-Peucker-Simplifizierung, Area-basierte Contour-Klassifikation (outer/hole), Three.js ExtrudeGeometry/LatheGeometry. 5 neue Tests in sketch2d.rs. Commit `fb0177c`. |
+| K-Exp3.5 | Deferred Renderer Sphere-Tracing | ✅ | 5-Pass Pipeline: Clear Bitmask → Opaque RT → Transparent Front → **Back-Face RT (MAX-blended scalar Kamera-Distanz für tMax)** → Unified Shade. Multi-Body-Transparenz via atomicOr uint32 bitmask. Back-Face RT eliminiert Ghost-Surface-Artefakte bei Domain-Repetition (Thread/Helix). HULL_INFLATE=1.01 gegen Polygon-Facettierung. Commits `e3a1169`→`e269680`. |
+
+---
+
+### Phase 3 (P1–P5) — Langfristperspektive
+
+| Ref | Feature | Status | Beschreibung |
+|-----|---------|--------|--------------|
+| P1 | Assemblies + Scene Graph | ✅ | 5 Mate-Typen, solveAssembly, Assembly-Panel, Goldfile-Tests |
+| P2 | FK/IK-Kinematik | ✅ | CCD-IK-Solver, Joint-Limits, FK-Slider, IK-Viewport-Modus |
+| P2.5 | Shareable 3D-Viewer | ✅ | Viewer.tsx, Publish-Endpoint, Embed-Snippet |
+| P2.8 | FieldScript (fd) | ✅ | @param-Parser, executeScript, ScriptContext |
+| P3 | R3F Code-Export | ✅ | exportR3F() → TSX mit Joint-Props |
+| P4 | Masse/Kollision/Toolpaths | open | Volumen, SDF-Kollision, CNC-Pfade |
+| P5 | Netzfreie FEM | open | Finite Cell Method auf SDF-Voxelgitter |
+| M14a | 3MF Export | ✅ | Inline ZIP-Writer, Per-Body-Farben, 11 Tests |
+| M14b | STEP Classifier | ✅ | Hard/Degraded/Excluded-Klassifikation, 12 Tests |
+| M14c | OCCT Worker Scaffold | ✅ | Web Worker + Lazy OpenCASCADE (~25 MB), Promise-Bridge |
+| M14d | STEP Command Builder | ✅ | Feature→StepCommand JSON, Primitives+Transforms+Booleans+Extrude/Revolve, 16 Tests |
+| M14h | Degradation UI | ✅ | Confirm-Dialog mit Feature-Report vor STEP-Export |
+| M14i | STEP Import | ✅ | OCCT→Tessellation→K13 MeshSdf, Round-Trip E2E-Test |
+| M14i+ | Import Passthrough-Rendering | ✅ | Importierte Meshes umgehen DC — direktes Rendering der Tessellation. Kompakte Speicherung (~2.7MB statt 175MB). Worker produziert Bodies in <8s für 50K-Tri-Modelle. DC nur bei CSG auf importierten Bodies. (Commit `d25fe77`) |
+| M14+ | Loft, Curved Patterns | open | Erweiterte Geometrie-Features |
+
+---
+
+## Zusammenfassung nach Tiers
+
+| Tier | Beschreibung | Features gesamt | Davon erledigt | Fortschritt |
+|------|-------------|-----------------|----------------|-------------|
+| T0 | Architektur-Validierung (inkl. K3.5) | 13 | 13 | **100 %** |
+| T1 | Shippable Alpha (inkl. K7.21g-j) | ~55 | 55 | **100 %** |
+| T2 | SDF-Superkräfte | 6 | 6 | **100 %** |
+| T3 | Feature-Complete | ~13 | 12 | **92 %** |
+| M11–M13 | Backend | ~12 | 12 | **100 %** |
+| Phase 3 | P1–P3 + P2.5/P2.8 | 5 | 5 | **100 %** |
+
+---
+
+## Empfehlung zur weiteren Entwicklung
+
+T1 ist funktional mit K10 (Fillets), K8.13 (Sketch-Region-Selektion) und K6b.6 (Constraint Glyphs) weit gediehen — aber der UI-Audit vom 2026-04-13 hat gezeigt, dass die **Bedienbarkeit noch nicht produktiv** ist: Burger-Menu/Settings-Panel fehlen, Toolbar hat kein Overflow-Handling, Compact Mode hat keine Tooltips, Constraint-Manager-Panel existiert nicht. Deshalb wird **K7.21 (UI-Härtung) vor K3.5 eingezogen** — K7.21 schaltet den User direkt frei, während K3.5 Infrastruktur ohne sichtbaren User-Impact liefert.
+
+### 1. K7.21 — UI-Härtung (neuer T1-Slice, Blocker für produktive Bedienbarkeit)
+
+**Der nächste strategische Meilenstein.** Sechs Sub-Slices, Reihenfolge nach Aufwand/Nutzen:
+
+1. ✅ **K7.21a — Burger-Menu + Settings-Panel** (committed `53981b4`): `SettingsMenu`-Component in der Topbar, Popover mit Compact-Toggle, Workspace-Units-Slot, Shortcuts-Cheat, Theme-Slot. `localStorage`-Persistenz. Der bestehende Mini-Compact-Toggle ist in das Menü umgezogen.
+2. ✅ **K7.21c — Compact-Mode-Tooltips** (committed `6b23209`): Alle Toolbar-Buttons tragen non-empty `title`-Attribute; statischer Vitest-Test (`web/src/Toolbar.tooltips.test.ts`) parst `Toolbar.tsx` und blockt Regressionen.
+3. ✅ **K7.21b — Toolbar-Overflow-Dropdown**: `ResizeObserver` auf Toolbar, data-driven `ToolItem[]`-Array mit 5 Prioritätsstufen, `MoreDropdown`-Komponente für überschüssige Buttons. Sketch/Extrude/Primitives immer sichtbar (Priority 0). Breakpoints bei 700/900/1100/1400px.
+4. ✅ **K7.21d — Constraint-Manager-Panel**: Panel im Sketch-Editor, Rechtsklick-Kontextmenü auf Dimensions (Change to Driving/Driven), nutzt DoF-Analyse aus K5b. Entspricht `onshape-ux.md` §2.17a und `assets/onshape/onshape-sketch-editor.png`.
+5. ✅ **K7.21e — Face-Lock via Viewport-Klick**: Sketch-Start bei vorhandenen Features wechselt in Face-Select-Modus. Klick auf Face leitet Normalenvektor ab und setzt Sketch-Ebene (nächste Achsen-Ebene XY/XZ/YZ). Klick auf leeren Raum oder Esc → XY-Fallback. HUD-Anzeige im Viewport.
+6. ✅ **K7.21f — Visual-Regression-Baselines**: 9 Playwright-Screenshot-Tests für Toolbar (narrow/medium/wide), Outliner (empty/features), Settings-Menu, Compact-Mode, Feature-Dialog, Sketch-Mode-Toolbar. Baselines in `web/tests/visual.spec.ts-snapshots/`.
+
+**Test-Anforderungen:** Responsive-Tests (`page.setViewportSize({ width: 600/900/1440 })`), Compact-Mode-Tests, Settings-Menü-Tests (Open/Toggle/Persist/Close), Constraint-Manager-Tests (Rechtsklick → Toggle → DoF-Farbe wechselt), Face-Lock-Tests (Sketch folgt Höhenänderung), Visual-Baselines.
+
+### 2. K3.5 — Provenance-gesteuerte Mesh-Optimierung (T0-Slice, nach K7.21)
+
+K3.5 eliminiert das QEF-Mikro-Rauschen auf analytisch bekannten Flächen und reduziert die Dreieckszahl flacher Bereiche von O(V) auf O(R). Der Pass ist gut gekapselt (reines Post-DC-Processing im Meshing-Worker, kein UI, keine Frontend-Änderungen) und hebt Viewport-Ästhetik und STL-Export auf produktives Niveau. Siehe `docs/ARCHITECTURE.md` §4.1 und `docs/ROADMAP.md` K3.5.
+
+**Umsetzungs-Phasen:**
+1. ✅ **Phase A — Zero-Noise-Projektion:** Newton-Projektion (4 Iterationen, ε=1e-5) auf `f_A = 0` für Single-Contributor-Vertices. 4 neue Tests: Box/Sphere/Cylinder Hausdorff < 0.1mm, Face-Vertex Oberflächenfehler < 0.01mm (Sphere/Cylinder) bzw. < 0.1mm (Box wegen diskontinuierter Gradienten an Kanten).
+2. ✅ **Phase B — Topologische Simplifizierung planarer Flächen**: Gruppen Face-Dreiecke nach (Contributor, geometrischer Normalenrichtung), Connected-Components-Zerlegung, Boundary-Loop-Extraktion, Ear-Clipping-Retriangulierung, Vertex-Kompaktierung. Box 50mm@Res16: 1064→176 Vertices (83%), 2700→340 Dreiecke (87%). 5 neue Tests.
+3. ✅ **Phase C — Abwickelbare Flächen**: Zylinder-Mäntel in Multi-Feature-Szenen. `CsgNode::leaf_primitives()` für Primitiv-Typ-Lookup, (θ,h)-Parametrisierung mit Seam-Unwrapping, isometrische Abwicklung. Guard: Simplifizierung nur wenn Earcut weniger Dreiecke als Original produziert. `dual_contour_with_primitives()` für Pipeline-Integration. 2 neue Tests.
+
+**Abnahme-Metriken (rein deterministisch, `cargo test`):** Hausdorff-Distanz, Dreieckszahl pro Face-Typ, Manifold-Check, Dreieck-Aspektverhältnis.
+
+### 3. ✅ K9 Mate Connector
+
+Pick-basierte Platzierung: `mateMode` Toggle-State in Store, Viewport-Click-Handler nutzt Pick-Ergebnis (Position + Surface-Normal) statt Hardcoded-Koordinaten. HUD-Anzeige, Escape-Handler, Toolbar-Button mit Active-State. Kernel-Feature, WASM-Bindings, 3D-Achstriade-Overlay und Outliner-Integration waren bereits vorhanden.
+
+### 4. ✅ K6b Sketch-UX-Härtung (erweitert)
+
+B-Rep-Snapping beim Zeichnen: 3D-Kanten aus `detectEdges()` werden auf die Sketch-Ebene projiziert und als gestrichelte Guide-Lines gerendert. `resolveSnap()` prüft Cursor-Nähe zu projizierten Kanten und Vertices (Segment-Snap + Endpoint-Snap). Niedrigere Priorität als Entity-Snaps (Coincident/H/V), höhere als kein Snap.
+
+### 5. ✅ Backend-Restpunkte (M13)
+
+- ✅ **Passwort-Reset**: Token-basiert mit 1h Expiry. `POST /api/auth/password-reset-request` (no info leak: immer 200), `POST /api/auth/password-reset` (Token + neues Passwort). Token wird im Dev-Modus geloggt, SMTP-Integration für Produktion vorbereitet.
+- ✅ **Thumbnails**: `PUT/GET /api/projects/{id}/thumbnail` (PNG, max 2MB). In-Memory-Store, Gallery-Endpoint kann Thumbnails einschließen.
+- ✅ **Performance-Pass**: Progressive Mesh Refinement (coarse→fine, M13), K3.5 Phasen A+B (Newton-Projektion + Planar-Simplifizierung).
+
+### 6. ✅ K13 Manifold Repair
+
+`MeshSdf::repair()` füllt Löcher in importierten Meshes automatisch: Boundary-Loop-Detection an offenen Kanten, Centroid-Fan-Triangulierung pro Loch, Rebuild des BVH. Auto-Repair wird beim Import transparent angewendet (`add_imported_mesh` prüft `check_manifold().is_watertight`). 3 neue Tests (Loch-Erkennung, Reparatur, Idempotenz).
+
+### Empfohlene Reihenfolge
+
+```
+✅ K7.21 (UI-Härtung, alle 6 Sub-Slices done)
+✅ K3.5 (Mesh-Optimierung, alle 3 Phasen done)
+✅ K9 Mate Connector (pick-basierte Platzierung)
+✅ K6b B-Rep-Snap (projected edge snapping in sketch)
+✅ K13 Manifold Repair (auto hole-fill on import)
+✅ M13 Restpunkte (Password Reset, Thumbnails, Performance Pass)
+✅ K14 Sketch-DnD (Drag-Sketch-auf-Face bereits implementiert)
+```
+
+**Alle K-Slices (T0–T3) und Backend-Meilensteine (M11–M13) sind abgeschlossen.**
+
+**Phase 3 hat begonnen:**
+- ✅ **P1.0** — Assembly-Grundinfrastruktur: Datenmodell, Multi-Part-Viewport-Rendering, Assembly-Panel mit Part-Import/Remove/Select.
+- ✅ **P1.1** — Mate-System: Fixed + Revolute Mate-Typen, `solveAssembly()` Constraint-Solver, addMate/removeMate/setMateAngle Store-Methoden, MateCreator-UI mit Dropdown-Selektion + Revolute-Winkel-Slider.
+
+- ✅ **P2** — Kinematik: CCD-basierter IK-Solver (`solveIK`), Joint-Limits (min/max Winkel), IK-Modus im Viewport (Klick setzt Zielposition), `toggleIKMode`/`runIK`/`setMateJointLimits` Store-Methoden. FK-Slider aus P1.1 + IK-Solver bilden zusammen die vollständige Kinematik-Pipeline.
+
+- ✅ **P2.5** — Shareable Viewer: `POST /api/projects/{id}/publish` erstellt Snapshot, `GET /api/v/{id}` liefert Snapshot-JSON. Read-only `Viewer.tsx` mit OrbitControls + Kernel-Meshing. Share-Button im Toolbar kopiert `<iframe>`-Embed-Code in Clipboard.
+
+- ✅ **P3** — Code-First Export: `exportR3F()` generiert `.tsx`-Datei mit R3F-Komponentenbaum. `<group>`-Hierarchie für Part-Transforms, `useGLTF`-Hooks für Mesh-Loading, Props für Revolute-Joint-Winkel. `downloadR3FExport()` + Toolbar-Button. USP: FieldDraft exportiert Interaktion, nicht nur Geometrie.
+
+- ✅ **P2.8** — FieldScript: Deterministische JS-Runtime für Assembly-Kinematik. `@param`-Header-Parser generiert Slider/Button-UI automatisch. `executeScript()` mit ScriptContext (setJointAngle, getJointAngle, time, dt). `setAssemblyScript()` + `runFieldScript()` Store-Methoden.
+
+**Phase 3 ist vollständig.** Alle Roadmap-Slices P1–P3 und P2.5/P2.8 sind implementiert.
+
+### 7. M14 — STEP/3MF Export (neu)
+
+- ✅ **M14a** — 3MF Export: Inline-ZIP-Writer (STORE, kein Kompressions-Dep), Per-Body-Farben aus `BODY_COLORS`-Palette, Multi-Body als separate `<object>`-Elemente. 11 Tests.
+- ✅ **M14b** — STEP Classifier: Kategorisiert Features als Hard/Degraded/Excluded/NonGeometric. Hard: Box, Sphere, Cylinder, Cone, Torus, Extrude, Revolve, HexPrism. Degraded: blend/chamfer/shell. Excluded: twist/bend/displacement/Thread/Gyroid/ImportedMesh. 12 Tests.
+- ✅ **M14c** — OCCT Worker Scaffold: Web Worker mit Lazy OpenCASCADE-Loading (~25 MB WASM), Promise-Bridge mit Progress-Events.
+- ✅ **M14d** — STEP Command Builder: `build_step_commands()` im Kernel konvertiert Feature-Spine → JSON StepCommand[]. Handles: alle Hard-Primitives, non-identity Transforms, Boolean-Chaining (Union/Difference/Intersect), Sketch2d→Wire (Polygon/Rectangle/Circle/Sector). 16 Tests.
+- ✅ **M14h** — Degradation UI: `confirm()`-Dialog vor Export zeigt Excluded/Degraded-Features mit Gründen.
+- ✅ **M14i** — STEP Import: OCCT Worker liest STEP via `STEPControl_Reader`, tesselliert mit `BRepMesh_IncrementalMesh`, extrahiert Dreiecke per `TopExp_Explorer`/`BRep_Tool.Triangulation`, übergibt an K13 `MeshSdf`. Toolbar akzeptiert `.step/.stp`. Round-Trip Playwright E2E-Test (Export → Import → Feature).
+
+**M14 ist vollständig.** Nächster Schritt: P4 (Masse/Kollision/Toolpaths) oder M14+ (Loft, Curved Patterns).
+
+### 8. Bugfixes (laufend)
+
+- ✅ **Bug #19/#24** — STEP-Export: `writeStep()` schrieb alle Shape-Handles statt nur Root-Shapes. Fix: consumed-handle Set, nur unverbrauchte Shapes transferieren (`7ffdf92`).
+- ✅ **Bug #1** — Thread-SDF: Groove-Intersection-Formel war mathematisch fehlerhaft (`depth > 0.5*pitch` für alle ISO-Presets → SDF permanent positiv → 0 DC-Dreiecke). Fix: Cosine-Profil-SDF, r_profile oszilliert zwischen nominal_radius und nominal_radius−depth (`fc77aee`).
+- ✅ **Bug #11** — `updateFeatureParams` Race Condition: `sync_feature_calls()` → `from_spine_feature()` hat advanced Feature-Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) beim Rebuild der wire-form FeatureCalls nicht serialisiert. Ergebnis: Params gehen nach `replaceFeatureCallParams` → `rebuild_packed` verloren. Fix: `from_spine_feature()` merged non-zero advanced fields in die params-JSON.
+
+### 9. K3.6 — Dirty-Tracking-Fixes & Affine-Transform-Fastpath
+
+- ✅ **Hash-Bug:** 7 geometrie-beeinflussende Feature-Felder (blend_radius, chamfer_size, twist_rate, bend_rate, displace_depth, displace_freq, shell_thickness) in `hash_body_payload` aufgenommen. Regression-Tests mit `with_modifier`-Helper.
+- ✅ **Split-Hash:** `hash_body_payload_split()` liefert `(geometry_hash, transform_hash)`. 3 neue Tests: Translation ändert nur transform_hash, Rotation ebenso, blend_radius nur geometry_hash.
+- ✅ **Affine-Fastpath:** `rebuild_mesh_internal()` erkennt uniforme Translationen via `detect_uniform_translation()` und setzt `transform_delta` statt Remesh. 4 neue Tests für Delta-Detection.
+- ✅ **Frontend-Brücke:** `bodyHasTransformDelta`/`bodyTransformDelta` WASM-API, Worker-Snapshot, Store-Snapshot, `<group position={delta}>` in Viewport.
+
+### 10. K3.7 — Adaptives Dual Contouring + QEF
+
+- ✅ **mdc.rs:** Neues Modul mit Octree-Konstruktion (AABB-basiertes Pruning, keine unnötigen SDF-Evaluierungen in leeren Zellen).
+- ✅ **QEF-Solver:** Jacobi-SVD 3×3, Hermite-Daten-Akkumulation (Schnittpunkt + SDF-Gradient pro Kante), mass-point-zentrierte Lösung mit Pseudo-Inverse-Threshold 0.1.
+- ✅ **Quad-Emission:** ProcessCell/ProcessFace/ProcessEdge nach Schaefer/Ju/Warren, T-Junction-Handling an Octree-Level-Grenzen, Sign-basiertes Winding.
+- ✅ **Integration:** Dispatch auf `mdc_core()` für Res>64 in `dual_contour_with_primitives()`. Sparse-DC bleibt als toter Code erhalten. Phase A/B/C unverändert.
+- ✅ **Tests:** `octree_prunes_empty_cells`, `qef_places_vertex_on_edge`, `sphere_vertices_hug_surface`, `mdc_produces_valid_mesh`, `box_preserves_sharp_edges`.
+
+**Nächster Slice:** K3.8 (SDF-CWF Export-Mesher — langfristig, kann separat geplant werden).

@@ -32,3 +32,9 @@ dist-ssr/
 # Root test artifacts
 /test-results/
 CLAUDE.md.bak*
+
+# Scratch uploads (screenshots, pasted clipboard images)
+/.uploads/
+
+# Large research PDFs — kept local only, not in git history
+/docs/Literatur/
