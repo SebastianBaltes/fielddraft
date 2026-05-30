@@ -535,6 +535,10 @@ export class KernelStore {
 
   setDcMeshingEnabled(enabled: boolean, algorithm?: string): void {
     const algoChanged = algorithm !== undefined && algorithm !== this.meshAlgorithm;
+    console.info(
+      `[store] setDcMeshingEnabled enabled=${enabled} algorithm=${algorithm} ` +
+        `prev=${this.meshAlgorithm} algoChanged=${algoChanged}`,
+    );
     if (algorithm !== undefined) this.meshAlgorithm = algorithm;
     if (this.dcMeshingEnabled === enabled && !algoChanged) return;
     this.dcMeshingEnabled = enabled;

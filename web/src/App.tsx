@@ -230,6 +230,7 @@ export function App() {
             }}
             meshAlgorithm={settings.meshAlgorithm}
             onAlgorithmChange={(algo: MeshAlgorithm) => {
+              console.info(`[app] algo dropdown -> ${algo}`);
               const next = { ...settings, meshAlgorithm: algo };
               try { localStorage.setItem("fielddraft.meshAlgorithm", algo); } catch {}
               setSettings(next);
