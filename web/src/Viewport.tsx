@@ -10,6 +10,7 @@ import {
   type ErrorInfo,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -76,6 +77,65 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
     );
     onPick(result);
   });
+
+  return null;
+}
+
+/**
+ * WebGPU + `frameloop="demand"` warm-up.
+ *
+ * WebGPU compiles render pipelines asynchronously. In demand mode a
+ * single `invalidate()` renders one frame *before* a freshly-needed
+ * pipeline has finished compiling — that frame draws nothing for the
+ * affected object, and because nothing schedules a follow-up frame the
+ * object stays invisible until an unrelated event (a window resize)
+ * forces another render. That's why the scene came up blank on boot and
+ * only the resized object — not the datum planes or grid — reappeared.
+ *
+ * The fix: whenever the scene content changes (and once on mount),
+ * `compileAsync` the whole graph so every pipeline is ready, then
+ * `invalidate()`. A short rAF-driven invalidation burst follows as a
+ * belt-and-suspenders fallback in case a pipeline slips past the
+ * compile (or `compileAsync` is unavailable), guaranteeing at least a
+ * few presented frames after compilation settles.
+ */
+function WebGpuWarmup() {
+  const invalidate = useThree((s) => s.invalidate);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  const { state } = useKernelStore();
+  // Re-warm whenever the mesh bodies change — new geometry means new
+  // pipelines that need the same compile-then-present treatment.
+  const bodies = state?.meshedBodies;
+
+  useEffect(() => {
+    let cancelled = false;
+    let raf = 0;
+    let framesLeft = 8;
+    const pump = () => {
+      if (cancelled) return;
+      invalidate();
+      if (framesLeft-- > 0) raf = requestAnimationFrame(pump);
+    };
+    const compileAsync = (
+      gl as unknown as {
+        compileAsync?: (s: THREE.Object3D, c: THREE.Camera) => Promise<unknown>;
+      }
+    ).compileAsync;
+    if (compileAsync) {
+      compileAsync
+        .call(gl, scene, camera)
+        .then(() => { if (!cancelled) pump(); })
+        .catch(() => { if (!cancelled) pump(); });
+    } else {
+      pump();
+    }
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [invalidate, gl, scene, camera, bodies]);
 
   return null;
 }
@@ -389,6 +449,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
           }}
         >
           <ClearColorSync />
+          <WebGpuWarmup />
           <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
           <ReferenceMesh />
           <EdgeOverlay />
