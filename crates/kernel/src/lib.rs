@@ -9,6 +9,7 @@ pub mod bvh;
 pub mod csg;
 pub mod dc;
 pub mod mdc;
+pub mod mt;
 pub mod rfta;
 pub mod expr;
 pub mod features;
@@ -725,6 +726,7 @@ impl Kernel {
             prims.iter().map(|(k, v)| (*k, v)).collect();
         match self.mesh_algorithm {
             1 => rfta::reach_for_the_arcs(&bounded, resolution),
+            2 => mt::marching_tetrahedra(&bounded, resolution),
             _ => dc::dual_contour_with_primitives(&bounded, resolution, &prim_refs),
         }
     }
@@ -2848,6 +2850,7 @@ impl Kernel {
     pub fn set_mesh_algorithm(&mut self, name: &str) -> bool {
         let algo = match name {
             "rfta" => 1,
+            "mt" => 2,
             _ => 0,
         };
         if algo == self.mesh_algorithm {

@@ -82,7 +82,7 @@ export interface MesherRebuildRequest {
   contextMeshResolution: number;
   /** Stable body id to treat as "active" for LOD, or `0` for none. */
   activeBodyId: number;
-  /** Mesh algorithm: "mdc" (default) or "rfta". */
+  /** Mesh algorithm: "mdc" (default), "rfta", or "mt". */
   meshAlgorithm?: string;
 }
 

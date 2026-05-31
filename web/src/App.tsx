@@ -45,6 +45,7 @@ function RenderModeToggle({ mode, onChange, meshAlgorithm, onAlgorithmChange }: 
         >
           <option value="mdc">MDC</option>
           <option value="rfta">RFTA</option>
+          <option value="mt">Marching Tetrahedra</option>
         </select>
       )}
     </div>

@@ -163,10 +163,10 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
-export type MeshAlgorithm = "mdc" | "rfta";
+export type MeshAlgorithm = "mdc" | "rfta" | "mt";
 
 const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh"];
-const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta"];
+const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta", "mt"];
 
 export interface SettingsState {
   compact: boolean;
