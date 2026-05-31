@@ -10,7 +10,6 @@ import {
   type ErrorInfo,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  useEffect,
   useRef,
   useState,
 } from "react";
@@ -77,65 +76,6 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
     );
     onPick(result);
   });
-
-  return null;
-}
-
-/**
- * WebGPU + `frameloop="demand"` warm-up.
- *
- * WebGPU compiles render pipelines asynchronously. In demand mode a
- * single `invalidate()` renders one frame *before* a freshly-needed
- * pipeline has finished compiling — that frame draws nothing for the
- * affected object, and because nothing schedules a follow-up frame the
- * object stays invisible until an unrelated event (a window resize)
- * forces another render. That's why the scene came up blank on boot and
- * only the resized object — not the datum planes or grid — reappeared.
- *
- * The fix: whenever the scene content changes (and once on mount),
- * `compileAsync` the whole graph so every pipeline is ready, then
- * `invalidate()`. A short rAF-driven invalidation burst follows as a
- * belt-and-suspenders fallback in case a pipeline slips past the
- * compile (or `compileAsync` is unavailable), guaranteeing at least a
- * few presented frames after compilation settles.
- */
-function WebGpuWarmup() {
-  const invalidate = useThree((s) => s.invalidate);
-  const gl = useThree((s) => s.gl);
-  const scene = useThree((s) => s.scene);
-  const camera = useThree((s) => s.camera);
-  const { state } = useKernelStore();
-  // Re-warm whenever the mesh bodies change — new geometry means new
-  // pipelines that need the same compile-then-present treatment.
-  const bodies = state?.meshedBodies;
-
-  useEffect(() => {
-    let cancelled = false;
-    let raf = 0;
-    let framesLeft = 8;
-    const pump = () => {
-      if (cancelled) return;
-      invalidate();
-      if (framesLeft-- > 0) raf = requestAnimationFrame(pump);
-    };
-    const compileAsync = (
-      gl as unknown as {
-        compileAsync?: (s: THREE.Object3D, c: THREE.Camera) => Promise<unknown>;
-      }
-    ).compileAsync;
-    if (compileAsync) {
-      compileAsync
-        .call(gl, scene, camera)
-        .then(() => { if (!cancelled) pump(); })
-        .catch(() => { if (!cancelled) pump(); });
-    } else {
-      pump();
-    }
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [invalidate, gl, scene, camera, bodies]);
 
   return null;
 }
@@ -321,6 +261,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [webgpuError, setWebgpuError] = useState(false);
+  const [canvasReady, setCanvasReady] = useState(false);
   const [ndc, setNdc] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
     y: 0,
@@ -418,7 +359,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
-          frameloop="demand"
+          frameloop="always"
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
@@ -445,21 +386,47 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
             return renderer;
           }}
           onCreated={(rootState) => {
-            rootState.invalidate();
+            // Gate the scene graph until the renderer is fully created.
+            // With an async `gl` factory, children that commit before the
+            // renderer/scene are ready never attach to the live scene and
+            // stay invisible (planes, grid and mesh all missing on boot).
+            // Mounting them only after `onCreated` guarantees they land in
+            // the ready scene.
+            setCanvasReady(true);
+            // One-shot present nudge. On first boot the WebGPU swapchain
+            // can come up mis-configured: the scene renders but never
+            // reaches the screen until something resizes the canvas — the
+            // "blank until I resize the window" symptom. Re-apply the
+            // canvas size (reconfiguring the swapchain) and bounce a
+            // resize so R3F and the SDF overlays re-sync to the real
+            // viewport. Two animation frames in, after layout settled.
+            const nudge = () => {
+              const gl = rootState.gl;
+              const parent = gl.domElement.parentElement;
+              if (parent) {
+                const { width, height } = parent.getBoundingClientRect();
+                if (width > 0 && height > 0) gl.setSize(width, height, false);
+              }
+              window.dispatchEvent(new Event("resize"));
+            };
+            requestAnimationFrame(() => requestAnimationFrame(nudge));
           }}
         >
-          <ClearColorSync />
-          <WebGpuWarmup />
-          <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
-          <ReferenceMesh />
-          <EdgeOverlay />
-          <BRepEdgeOverlay />
-          <MateConnectorOverlay />
-          <AssemblyParts />
-          <WorldGrid />
-          <CameraRig />
-          <ViewCommandConsumer />
-          <CameraQuaternionBridge />
+          {canvasReady && (
+            <>
+              <ClearColorSync />
+              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
+              <ReferenceMesh />
+              <EdgeOverlay />
+              <BRepEdgeOverlay />
+              <MateConnectorOverlay />
+              <AssemblyParts />
+              <WorldGrid />
+              <CameraRig />
+              <ViewCommandConsumer />
+              <CameraQuaternionBridge />
+            </>
+          )}
         </Canvas>
       </CanvasErrorBoundary>
       {!state?.sketchSession.active && <ViewCube />}

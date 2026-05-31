@@ -168,12 +168,19 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileVmPipeline(pipeline, wgpu, camera)
         .then(() => {
+          // Ignore a compile that finished for a pipeline we've since
+          // replaced (StrictMode remounts dispose the old pipeline while
+          // its async compile is still in flight). Acting on a stale
+          // result would flip `readyRef` true for a disposed pipeline and
+          // wedge the loop on a blank frame.
+          if (pipeline !== pipelineRef.current) return;
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
           invalidate();
         })
         .catch((err) => {
+          if (pipeline !== pipelineRef.current) return;
           compilingRef.current = false;
           showGpuError(err);
         });
@@ -283,12 +290,19 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
       const wgpu = renderer as unknown as THREE.WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera)
         .then(() => {
+          // Ignore a compile that finished for a pipeline we've since
+          // replaced (StrictMode remounts dispose the old pipeline while
+          // its async compile is still in flight). Acting on a stale
+          // result would flip `readyRef` true for a disposed pipeline and
+          // wedge the loop on a blank frame.
+          if (pipeline !== pipelineRef.current) return;
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
           invalidate();
         })
         .catch((err) => {
+          if (pipeline !== pipelineRef.current) return;
           compilingRef.current = false;
           showGpuError(err);
         });
