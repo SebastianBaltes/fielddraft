@@ -2,6 +2,8 @@
 //! Used by the fine-tuning loop to project sphere centers onto the
 //! evolving sPSR mesh.
 
+use fielddraft_protocol::mesh_sdf::point_triangle;
+
 const BVH_LEAF: usize = 4;
 
 struct CpNode {
@@ -178,7 +180,7 @@ impl ClosestPointBvh {
                     let v0 = [self.verts[b], self.verts[b + 1], self.verts[b + 2]];
                     let v1 = [self.verts[b + 3], self.verts[b + 4], self.verts[b + 5]];
                     let v2 = [self.verts[b + 6], self.verts[b + 7], self.verts[b + 8]];
-                    let (d2, cp) = point_triangle_closest(p, v0, v1, v2);
+                    let (d2, _s, _t, cp) = point_triangle(p, v0, v1, v2);
                     if d2 < best_dist_sq {
                         best_dist_sq = d2;
                         best_point = cp;
@@ -207,104 +209,4 @@ fn aabb_dist_sq(p: [f32; 3], amin: [f32; 3], amax: [f32; 3]) -> f32 {
         }
     }
     d2
-}
-
-fn point_triangle_closest(
-    p: [f32; 3],
-    v0: [f32; 3],
-    v1: [f32; 3],
-    v2: [f32; 3],
-) -> (f32, [f32; 3]) {
-    let e0 = sub3(v1, v0);
-    let e1 = sub3(v2, v0);
-    let v = sub3(p, v0);
-
-    let a = dot3(e0, e0);
-    let b = dot3(e0, e1);
-    let c = dot3(e1, e1);
-    let d = dot3(e0, v);
-    let ee = dot3(e1, v);
-
-    let det = a * c - b * b;
-    let mut s = c * d - b * ee;
-    let mut t = a * ee - b * d;
-
-    if s + t <= det {
-        if s < 0.0 {
-            if t < 0.0 {
-                if d > 0.0 {
-                    t = 0.0;
-                    s = if d >= a { 1.0 } else { d / a };
-                } else {
-                    s = 0.0;
-                    t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
-                }
-            } else {
-                s = 0.0;
-                t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
-            }
-        } else if t < 0.0 {
-            t = 0.0;
-            s = if d <= 0.0 { 0.0 } else if d >= a { 1.0 } else { d / a };
-        } else if det.abs() < 1e-12 {
-            s = 0.0;
-            t = 0.0;
-        } else {
-            let inv = 1.0 / det;
-            s *= inv;
-            t *= inv;
-        }
-    } else if s < 0.0 {
-        let tmp0 = b - d;
-        let tmp1 = c - ee;
-        if tmp1 > tmp0 {
-            let numer = tmp1 - tmp0;
-            let denom = a - 2.0 * b + c;
-            s = if numer >= denom { 1.0 } else { (numer / denom).max(0.0) };
-            t = 1.0 - s;
-        } else {
-            s = 0.0;
-            t = if ee <= 0.0 { 0.0 } else if ee >= c { 1.0 } else { ee / c };
-        }
-    } else if t < 0.0 {
-        let tmp0 = b - ee;
-        let tmp1 = a - d;
-        if tmp1 > tmp0 {
-            let numer = tmp1 - tmp0;
-            let denom = a - 2.0 * b + c;
-            t = if numer >= denom { 1.0 } else { (numer / denom).max(0.0) };
-            s = 1.0 - t;
-        } else {
-            t = 0.0;
-            s = if d <= 0.0 { 0.0 } else if d >= a { 1.0 } else { d / a };
-        }
-    } else {
-        let numer = (c - ee) - (b - d);
-        if numer <= 0.0 {
-            s = 0.0;
-            t = 1.0;
-        } else {
-            let denom = a - 2.0 * b + c;
-            s = if numer >= denom { 1.0 } else { numer / denom };
-            t = 1.0 - s;
-        }
-    }
-
-    let closest = [
-        v0[0] + s * e0[0] + t * e1[0],
-        v0[1] + s * e0[1] + t * e1[1],
-        v0[2] + s * e0[2] + t * e1[2],
-    ];
-    let diff = sub3(p, closest);
-    (dot3(diff, diff), closest)
-}
-
-#[inline]
-fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-#[inline]
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
