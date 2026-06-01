@@ -1363,3 +1363,51 @@ Befund: Topologie blieb unter dem Warp erhalten (in allen Fällen 12 Kanten-Sign
 2. **Stage 2 — fehlende Ecke rekonstruieren.** Verbleibende dangling Enden werden räumlich geclustert; wo **≥3 Edges mit ≥3 verschiedenen Branches** zusammentreffen, wird am Cluster-Zentrum eine **synthetische `Vertex`-Zelle** gebildet und an `extract_vertex` übergeben — unverändert, inkl. Ebenen-Schnitt-LSQ + Refinement + Acceptance-/Phantom-Gate. Das Gate weist Cluster ab, die keine echte Ecke sind (kein Quick-Win-Hack). Der gelöste Punkt ist der **analytische** Schnitt der inzidenten Flächen — am L-Prisma exakt `(1,1,±1)`, nicht der zellverkürzte Endpunkt-Schwerpunkt.
 
 **Ergebnis.** L-Prisma: 12/12 Ecken, 18 Kanten, 8 analytische Flächen, wasserdicht; `order_loops` braucht **keinen** Fallback mehr. Keine Änderung an der `extract_vertex`-Kernlogik (nur Wiederverwendung), kein neuer Sampling-Pfad. Test `l_polygon_extrude_weaves_watertight_eight_planes` verschärft: Vertex-Count 12 + Positions-Assertion der zwei rekonstruierten Reflex-Ecken. Ein sauberer Körper (Würfel) hat keine dangling Enden → Pass ist ein No-op (keine Regression).
+
+### DL-61: Fat-`Feature`-Spine auflösen — dekodierte IR ist der offene `CsgNode`-Baum, nicht ein Feld-Union-Struct
+
+**Problem.** `protocol::Feature` (die dekodierte Laufzeit-„Spine"-IR) ist ein **Feld-Union über alle Built-in-Features**: `primitive`, `transform`, `blend_radius`, `chamfer_size`, `twist_rate`, `bend_rate`, `displace_depth`, `displace_freq`, `shell_thickness`, `target_ids`. Jedes neue Feature, das einen neuen Modifier braucht, müsste ein weiteres Feld an diesem zentralen Struct ergänzen. Das ist mit dem geplanten **FieldSkript** (laufzeit-/skriptdefinierte Features, Onshape-FeatureScript-Analog) grundsätzlich unvereinbar: ein zur Laufzeit definiertes Feature kann nicht in ein zur Compile-Zeit geschlossenes Feld-Set passen. Features müssen dynamisch behandelt werden.
+
+**Befund — die Modifier-Felder sind bereits reine `from_features`-Plumbing.** Die Feldkommentare im Struct sagen es wörtlich („when non-zero, `from_features` wraps this feature's leaf in `CsgNode::Twist`/`Bend`/`Displace`/`Shell`"). In `csg.rs::from_features` (≈667–697) werden genau diese Skalare unmittelbar in **kompositionelle `CsgNode`-Wrapper** entpackt — `Twist(leaf, rate)`, `Bend`, `Displace`, `Shell`, und die Junction-Blends `SmoothUnion`/`SmoothDifference(blend_radius, mode)`. Die Felder sind **write-once-read-once**: von `execute` geschrieben, ~30 Zeilen später von `from_features` gelesen, danach nie wieder. Der einzige zweite Leser ist der Geometrie-Hash in `body.rs:291–298` (Cache-Key), der exakt dieselben Felder hasht.
+
+**Schlüssel-Einsicht — die offene IR existiert schon.** `CsgNode`/`BoundedCsg` ist bereits der dynamische, kompositionelle Baum (`Leaf`, `Union`/`Difference`/`Intersection`, `SmoothUnion`/`SmoothDifference`, `Twist`, `Bend`, `Displace`, `Shell`, `Morph`, `MaskedBlend`, `Extrude`, `Revolve`) **mit Provenienz** (jeder `Leaf` trägt eine `BranchId`/`FeatureId`, csg.rs:32/495). Der GPU-Compiler (`sdf_compiler::compile_body`) konsumiert `BoundedCsg`, **nicht** `Feature`; CPU-Eval, B-Rep und STEP hängen alle hinter `from_features`. Modifiers sind also bereits Knoten — der Fat-Struct ist eine redundante denormalisierte Zwischenstufe davor.
+
+**Entscheidung — `Feature` zu einem dünnen Envelope um einen offenen `CsgNode` reduzieren.** Kein Feld-Union mehr. Die dekodierte Feature-Repräsentation wird:
+
+```rust
+pub struct DecodedFeature {     // ersetzt das Fat-`Feature`
+    pub id: FeatureId,
+    pub name: String,
+    pub op: BoolOp,             // Combine-mit-Akkumulator (Partitioner-Granularität)
+    pub blend: BlendSpec,       // blend_radius/chamfer → generische Junction-Spec
+    pub node: CsgNode,          // ← OFFEN: primitive + transform + alle Modifier als Knoten
+    pub target_ids: Vec<FeatureId>,
+}
+```
+
+Alles **feature-spezifische** wandert in den offenen `node`; auf dem Envelope bleibt nur, was **jedes** Feature hat (Identität, Combine-Semantik, Targeting). `op`/`blend`/`target_ids` bleiben oben, weil der **Partitioner** (Body-Zuordnung) auf Feature- nicht Knoten-Granularität arbeitet.
+
+**Konsequenz für die Ausführung.** `FeatureKind::execute` (Rust-Built-ins **und** FieldSkript-Interpreter) emittiert künftig direkt einen `node`-Subtree (gemeinsamer Helper `build_leaf_node(primitive, transform, modifiers)` zieht die heutige `from_features`-Wrapping-Logik an den Emit-Ort). `from_features` schrumpft zum trivialen Fold (`f.node` per `f.op`/`blend`/Targeting kombinieren). Ein FieldSkript-Feature emittiert einen **beliebigen** Subtree → vollständig dynamisch, der zentrale Struct muss für neue Feature-Typen **nie** wieder geändert werden. Das ist exakt das FeatureScript-Modell: Features sind node-emittierende Funktionen über einen Context, kein geschlossenes Datenschema.
+
+**Stufenplan (test-getrieben, jede Stufe grün).**
+1. **A — Konsolidierung (verhaltensneutral):** `build_leaf_node`-Helper extrahieren, der die Per-Leaf-Wrapping-Logik aus `from_features` kapselt. Keine Signaturänderung, reiner Refactor.
+2. **B — Envelope-Umbau:** `Feature` → `DecodedFeature{node}`, Modifier-Felder löschen; `execute` füllt `node` über den Helper; `from_features` wird Trivial-Fold; `body.rs`-Hash hasht den `node`-Subtree statt Einzelfelder; STEP/Naming-Reads von `.primitive`/`.transform` lesen aus `node.Leaf`. Mechanisch, aber groß (~141 Reads, 7 Dateien). `FeatureCall` (Wire-Form) bleibt unberührt.
+3. **C — FieldSkript (später):** Feature-Typ, dessen `execute` den `node` aus Skriptquelle baut.
+
+**Korrektur einer früheren Einschätzung.** Die Aussage „`Feature` ist load-bearing und nicht entfernbar" galt nur **für die heutige Pipeline-Form**. Sie wird nicht ersatzlos gelöscht, sondern in den bereits existierenden offenen `CsgNode` **aufgelöst** — die korrekte, durable Antwort auf die FieldSkript-Anforderung.
+
+**Stufe A erledigt** (Commit `d717258`, 2026-06-01): `CsgNode::build_leaf_node(&Feature) -> (CsgNode, f32, BlendMode)` aus `from_features` extrahiert, verhaltensneutral, `cargo test --workspace` grün.
+
+#### DL-61 Nachtrag — Befund aus dem Scope-Mapping (2026-06-01): Stufe B ist ein **Cross-Crate-Umzug**, kein Feld-Tausch
+
+Das Scope-Mapping vor Stufe B förderte eine harte Randbedingung zutage, die der ursprüngliche Stufenplan übersah:
+
+- **Crate-Grenze.** `Feature`, `Document`, `Primitive` liegen in **protocol**; `CsgNode` in **kernel**; **protocol hat keine kernel-Abhängigkeit** (Richtung kernel→protocol). Ein `node: CsgNode`-Feld in einem protocol-`Feature` ist damit **physisch unmöglich**. Der dekodierte, node-tragende Typ **muss in kernel leben**.
+- **`Document.features` ist tief verdrahtet:** `#[serde(skip_serializing)]` (reine Laufzeit, Persistenz safe ✅), aber **192 kernel-Zugriffe**, ~20 wasm-Mutatoren (`setFeatureTranslate/Op/Transform`, `nudgeFeature`, …), GPU-Packing (`pack_feature`/`pack_features` lesen Felder direkt), web-Getter (`listFeatures`→Outliner/Overlays), und der **Reverse-Sync** `from_spine_feature` (protocol:766–974), der jeden Modifier liest, um `FeatureCall`-Params zu rekonstruieren. Die spine-first-wasm-Mutatoren sind genau die Treiber dieses Reverse-Syncs.
+
+**Reframing — was *muss* dynamisch werden:** nicht das protocol-`Feature` (ein statisch-bekannter Built-in-Dekodier-Puffer ist akzeptabel), sondern der **kernel-seitige dekodierte Spine-Eintrag**. Dort konvergieren Built-in und FieldSkript: ein Feature-Beitrag = `{op, blend, node: CsgNode, target_ids}`. Ein FieldSkript emittiert diesen Eintrag **direkt** (es hat kein `primitive`-Feld); ein Built-in baut ihn via `build_leaf_node`. Damit gehört `DecodedFeature` nach **kernel**.
+
+**Revidierte Stufung (Entscheidung steht beim User — siehe unten):**
+- **B-inkrementell (empfohlen):** kernel-seitigen `DecodedFeature{op, blend, node, target_ids, id, name}` einführen, von `regenerate`/`build_leaf_node` erzeugt; die **reinen Konsumenten** (Mesher-Hash `body.rs`, STEP `step_classifier`, `sdf_compiler`, GPU-Pack) auf `DecodedFeature` umstellen. protocol-`Feature` bleibt vorerst als Built-in-Dekodier-Puffer + Mutations-Puffer. **Entkoppelt die offene IR von der wasm-Mutations-API und von der Persistenz** → mittleres, sicheres Inkrement, das FieldSkript bereits freischaltet.
+- **B-voll (Folge-Arbeit):** spine-first-wasm-Mutatoren auf **call-first** (editiere `feature_calls`, regeneriere), Reverse-Sync `from_spine_feature`/`sync_feature_calls` löschen, `Document.features` ganz entfernen (Document trägt nur noch `feature_calls`). Das ist die saubere Endform, aber groß und berührt die wasm-API.
+- **C — FieldSkript-Feature-Typ** (wie gehabt, später).
