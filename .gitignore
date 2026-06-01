@@ -18,8 +18,12 @@ dist-ssr/
 
 # Per-instance deployment/webapp config (ports, instance name).
 # fielddraft vs fielddraft-a run side by side from a shared checkout
-# layout but must not collide on ports. See .env.example.
+# layout but must not collide on ports. Copy the *.example files per
+# checkout. See .env.example and .claudedraft.json.example.
 /.env
+# Webapp launcher contract read by the ClaudeDraft daemon (static JSON, no
+# .env interpolation), so its port must be set per instance here too.
+/.claudedraft.json
 
 # Editor / OS
 .DS_Store
