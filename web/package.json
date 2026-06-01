@@ -22,6 +22,7 @@
     "opencascade.js": "^2.0.0-beta.b5ff984",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "sucrase": "^3.35.1",
     "three": "^0.183.2"
   },
   "devDependencies": {

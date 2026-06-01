@@ -279,9 +279,8 @@ der schon `globalThis.fd` injiziert (§4.6). Der Browser-eigene JIT (V8/SpiderMo
 Engine; **kein eingebetteter Interpreter** (verworfen — der Kernel bleibt Hoheit + Loop, TS dockt
 nur als Callback über die wasm-bindgen-Grenze an, §2).
 
-- **Quellsprache: TypeScript.** Pro Skript transpiliert nach JS (esbuild-wasm oder
-  sucrase — beide browserfähig, sucrase ist schneller/typprüfungsfrei, esbuild liefert
-  bessere Fehlerpositionen). Transpilation passiert **beim Speichern** (CRUD), nicht im
+- **Quellsprache: TypeScript.** Pro Skript transpiliert nach CommonJS via **sucrase**
+  (`transpile.ts`, Entscheidung #4). Transpilation passiert **beim Speichern** (CRUD), nicht im
   heißen Regen-Pfad; gespeichert wird `{ source, compiledJs, schema }`.
 - **Ausführung: bestehende Determinismus-Sandbox** (`workerSandbox.ts`). `freezeGlobals`
   + `reseedRandom(seed = hashDocumentJson(...))` gelten unverändert; FieldSkript erbt sie.
@@ -567,6 +566,11 @@ verallgemeinert.
    Features; die 25 nativen Built-ins bleiben der schnelle Rust-Pfad (`FeatureKind::execute`).
    Kein Dogfooding-Zwang, kein zweiter Pfad für dieselbe Geometrie.
 3. **Query-Tiefe:** Wie weit treiben wir Adjazenz/räumliche Queries in S3 vs. später?
-4. **Transpiler:** esbuild-wasm (Fehlerqualität) vs. sucrase (Geschwindigkeit) — messen.
+4. ~~**Transpiler:** esbuild-wasm vs. sucrase.~~ **ENTSCHIEDEN (2026-06-02, User): sucrase.**
+   `web/src/fieldskript/transpile.ts` (`transforms: ['typescript','imports']`) erzeugt beim
+   Speichern CommonJS (`require("fielddraft")` + `module.exports.default = build`), das der
+   Worker-Build-Host evaluiert. Kein Bundling nötig (einziger Import = `fielddraft`, zur Laufzeit
+   in-memory aufgelöst); kein WASM-Blob im Editor-Bundle. Typprüfung macht Monaco (S4), nicht der
+   Transpiler.
 5. **`Def`-Typinferenz:** Wie viel TS-Typmagie aus `parameters` ableiten, ohne den Editor zu
    verlangsamen?

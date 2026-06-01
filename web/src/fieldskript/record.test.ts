@@ -1,14 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { feature, length, bool } from "./dsl";
-import { createRecord, reviseRecord, identityTranspiler } from "./record";
+import { createRecord, reviseRecord } from "./record";
 
 const definition = feature({
   name: "Slot",
   parameters: [length("width", { default: 10 }), bool("through", { default: true })],
 });
 
-const SOURCE = `export const definition = fd.feature({ /* ... */ });
-export default function build() {}`;
+const SOURCE = `import { fd } from "fielddraft";
+export const definition = fd.feature({ name: "Slot" });
+export default function build(context, id, def: { width: number }) {
+  fd.opBox(context, id, { half_extents: [def.width, 1, 1] });
+}`;
 
 describe("createRecord", () => {
   it("builds a v1 record with schema extracted from the definition", () => {
@@ -20,10 +23,15 @@ describe("createRecord", () => {
     expect(rec.schema.params.map((p) => p.key)).toEqual(["width", "through"]);
   });
 
-  it("defaults to the identity transpiler (compiledJs === source)", () => {
+  it("defaults to the sucrase transpiler (ESM/TS → CommonJS)", () => {
     const rec = createRecord({ id: "slot", source: SOURCE, definition });
-    expect(rec.compiledJs).toBe(SOURCE);
-    expect(identityTranspiler(SOURCE)).toBe(SOURCE);
+    // ESM in, CommonJS out: the import becomes a require the worker host
+    // resolves, the default export becomes module.exports.default, and
+    // the TypeScript annotation is stripped.
+    expect(rec.compiledJs).toContain(`require('fielddraft')`);
+    expect(rec.compiledJs).toContain("exports.default = build");
+    expect(rec.compiledJs).not.toMatch(/^\s*import\s/m);
+    expect(rec.compiledJs).not.toContain(": { width: number }");
   });
 
   it("uses an injected transpiler when provided", () => {

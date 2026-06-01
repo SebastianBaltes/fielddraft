@@ -7,16 +7,17 @@
  * matches the serde rename) so it round-trips through the kernel's
  * `toJson`/`loadJson` inside `Document.scripts` with no translation.
  *
- * S1 scope: author → schema → record → persist. Execution of the
- * `build()` body is S2 (the Rust callback + Context mutation), so the
- * transpiler is only a thin seam here: the esbuild-wasm vs sucrase
- * choice (concept open decision #4) is deferred, and the default is an
- * identity pass that keeps already-JS sources intact.
+ * Author → schema → record → persist. At save time `source` is
+ * transpiled to the CommonJS `compiledJs` the worker build host runs
+ * (S2); the transpiler is injected ({@link Transpiler}) and defaults to
+ * sucrase — see `./transpile`. Transpilation happens once here, never
+ * during regeneration.
  */
 
 import type { RawFeatureSchema } from "../widgets/schema";
 import type { FeatureDefinition } from "./dsl";
 import { buildSchema } from "./dsl";
+import { type Transpiler, sucraseTranspiler } from "./transpile";
 
 /**
  * Document-local record of a FieldSkript feature type. Mirrors
@@ -37,22 +38,6 @@ export interface FieldSkriptRecord {
   version: number;
 }
 
-/**
- * A transpiler turns a script's TypeScript source into executable
- * JavaScript. Injected so the heavy esbuild-wasm/sucrase dependency
- * (concept #4) stays out of S1 and out of the hot path — transpilation
- * runs once at save, never during regeneration.
- */
-export type Transpiler = (source: string) => string;
-
-/**
- * The S1 default transpiler: an identity pass. It is correct for
- * sources that are already valid JS (the common authoring case until
- * a real TS transpiler lands in S2/S4) and keeps the seam honest —
- * `compiledJs` is always populated, never silently empty.
- */
-export const identityTranspiler: Transpiler = (source) => source;
-
 export interface CreateRecordInput {
   /** Stable script-type id (also the FeatureCall `type`). */
   id: string;
@@ -67,7 +52,7 @@ export interface CreateRecordInput {
   definition: FeatureDefinition;
   /** Overrides the display name; defaults to `definition.name`. */
   name?: string;
-  /** Transpiler to compile `source`; defaults to identity. */
+  /** Transpiler to compile `source`; defaults to {@link sucraseTranspiler}. */
   transpile?: Transpiler;
 }
 
@@ -76,7 +61,7 @@ export interface CreateRecordInput {
  * source and evaluated definition.
  */
 export function createRecord(input: CreateRecordInput): FieldSkriptRecord {
-  const transpile = input.transpile ?? identityTranspiler;
+  const transpile = input.transpile ?? sucraseTranspiler;
   return {
     id: input.id,
     name: input.name ?? input.definition.name,
@@ -96,7 +81,7 @@ export function reviseRecord(
   prev: FieldSkriptRecord,
   input: { source: string; definition: FeatureDefinition; name?: string; transpile?: Transpiler },
 ): FieldSkriptRecord {
-  const transpile = input.transpile ?? identityTranspiler;
+  const transpile = input.transpile ?? sucraseTranspiler;
   return {
     id: prev.id,
     name: input.name ?? input.definition.name,
