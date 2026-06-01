@@ -123,13 +123,19 @@ fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
                 t_raw
             };
             let r_at_y = T::from(*r_bottom as f64) * (one - t) + T::from(*r_top as f64) * t;
-            let d_radial = r - r_at_y;
+            // Project the radial gap onto the inclined wall normal (constant
+            // scalar factor) so the field is the true perpendicular distance
+            // and stays Lipschitz-1. For a cylinder (dr == 0) the factor is 1.
+            let dr = (*r_bottom - *r_top) as f64;
+            let slant_len = (dr * dr + (2.0 * *half_height as f64) * (2.0 * *half_height as f64)).sqrt();
+            let wall_scale = if slant_len > 1e-9 { (2.0 * *half_height as f64) / slant_len } else { 1.0 };
+            let d_wall = (r - r_at_y) * T::from(wall_scale);
             let d_axial = p[1].abs() - hh;
             // Branch on real parts
-            if d_radial.re() > 0.0 && d_axial.re() > 0.0 {
-                safe_sqrt(d_radial * d_radial + d_axial * d_axial)
+            if d_wall.re() > 0.0 && d_axial.re() > 0.0 {
+                safe_sqrt(d_wall * d_wall + d_axial * d_axial)
             } else {
-                if d_radial > d_axial { d_radial } else { d_axial }
+                if d_wall > d_axial { d_wall } else { d_axial }
             }
         }
         Primitive::Capsule { radius, half_height } => {

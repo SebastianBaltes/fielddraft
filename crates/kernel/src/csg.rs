@@ -1643,7 +1643,13 @@ pub(crate) fn expand_evaluate_leaf(
             let hh = *half_height;
             let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
             let r_at_y = r_bottom * (1.0 - t) + r_top * t;
-            let d_wall = r - r_at_y;
+            // Project the raw radial gap onto the inclined wall normal so the
+            // contributor comparison uses the true perpendicular distance
+            // (matches sdf_primitive). For a cylinder (dr == 0) the factor is 1.
+            let dr = r_bottom - r_top;
+            let slant_len = (dr * dr + (2.0 * hh) * (2.0 * hh)).sqrt();
+            let wall_scale = if slant_len > 1e-9 { (2.0 * hh) / slant_len } else { 1.0 };
+            let d_wall = (r - r_at_y) * wall_scale;
             let halves = [
                 (d_wall, 0u32),
                 (sdf_halfspace(&HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: hh }, p), 1),

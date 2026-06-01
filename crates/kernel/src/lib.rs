@@ -299,13 +299,18 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             // Interpolated radius at p.y
             let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
             let r_at_y = r_bottom * (1.0 - t) + r_top * t;
-            // 2D distance to the trapezoid cross-section in (r, y) space
-            let d_radial = r - r_at_y;
+            // Perpendicular distance to the inclined wall: project the raw
+            // radial gap onto the wall normal so the field stays Lipschitz-1.
+            // For a cylinder (dr == 0) the factor is 1.
+            let dr = r_bottom - r_top;
+            let slant_len = (dr * dr + (2.0 * hh) * (2.0 * hh)).sqrt();
+            let wall_scale = if slant_len > 1e-9 { (2.0 * hh) / slant_len } else { 1.0 };
+            let d_wall = (r - r_at_y) * wall_scale;
             let d_axial = p[1].abs() - hh;
-            if d_radial > 0.0 && d_axial > 0.0 {
-                (d_radial * d_radial + d_axial * d_axial).sqrt()
+            if d_wall > 0.0 && d_axial > 0.0 {
+                (d_wall * d_wall + d_axial * d_axial).sqrt()
             } else {
-                d_radial.max(d_axial)
+                d_wall.max(d_axial)
             }
         }
         Primitive::Capsule { radius, half_height } => {
@@ -1953,13 +1958,21 @@ impl Kernel {
     #[wasm_bindgen(js_name = setRollbackIndex)]
     pub fn set_rollback_index(&mut self, index: i32) {
         let n = self.document.feature_calls.len();
+        let prev = self.rollback_after;
         self.rollback_after = if index < 0 || index as usize >= n {
             None
         } else {
             Some(index as usize)
         };
         self.document.features.clear();
-        let _ = self.bootstrap_features_from_calls();
+        if self.bootstrap_features_from_calls().is_err() {
+            // Rolling to this position left the spine unbuildable. Revert to the
+            // previous rollback position and rebuild so we never render a torn,
+            // half-built spine (document.features was just cleared above).
+            self.rollback_after = prev;
+            self.document.features.clear();
+            let _ = self.bootstrap_features_from_calls();
+        }
         self.rebuild_packed();
     }
 

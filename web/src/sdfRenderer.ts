@@ -114,7 +114,12 @@ export const sdfConeFn = wgslFn(`
     let r = length(vec2f(p.x, p.z));
     let t = clamp((p.y + hh) / (2.0 * hh), 0.0, 1.0);
     let r_at_y = rb * (1.0 - t) + rt * t;
-    let dr = r - r_at_y;
+    // Project the radial gap onto the inclined wall normal so the field is the
+    // true perpendicular distance (Lipschitz-1). Cylinder (rb == rt) -> 1.
+    let drr = rb - rt;
+    let slant_len = sqrt(drr * drr + (2.0 * hh) * (2.0 * hh));
+    let wall_scale = select(1.0, (2.0 * hh) / slant_len, slant_len > 1e-9);
+    let dr = (r - r_at_y) * wall_scale;
     let da = abs(p.y) - hh;
     if (dr > 0.0 && da > 0.0) {
       return sqrt(dr * dr + da * da);
