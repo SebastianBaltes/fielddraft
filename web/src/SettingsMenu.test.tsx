@@ -294,6 +294,7 @@ describe("loadSettings", () => {
       units: DEFAULT_UNITS,
       theme: "light",
       renderMode: "sdf-deferred",
+      meshAlgorithm: "mdc",
       showEdges: true,
     });
   });
@@ -309,9 +310,16 @@ describe("loadSettings", () => {
     const s = loadSettings();
     expect(s).toEqual({
       compact: true,
-      units: { lengthUnit: "mm", lengthDecimals: "0.12", angleUnit: "rad", angleDecimals: "0.1" },
+      units: {
+        ...DEFAULT_UNITS,
+        lengthUnit: "mm",
+        lengthDecimals: "0.12",
+        angleUnit: "rad",
+        angleDecimals: "0.1",
+      },
       theme: "dark",
       renderMode: "sdf-deferred",
+      meshAlgorithm: "mdc",
       showEdges: true,
     });
   });
