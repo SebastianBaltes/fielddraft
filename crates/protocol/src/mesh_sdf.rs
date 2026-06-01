@@ -58,10 +58,13 @@ pub struct BakedVolume {
 impl BakedVolume {
     pub fn sample_trilinear(&self, p: [f32; 3]) -> f32 {
         let [nx, ny, nz] = self.dims;
+        // Guard against a degenerate (zero-extent) axis — e.g. a planar imported
+        // mesh — which would otherwise yield NaN/inf normalized coordinates.
+        let span = |a: usize| (self.aabb_max[a] - self.aabb_min[a]).max(1e-6);
         let uvw = [
-            (p[0] - self.aabb_min[0]) / (self.aabb_max[0] - self.aabb_min[0]),
-            (p[1] - self.aabb_min[1]) / (self.aabb_max[1] - self.aabb_min[1]),
-            (p[2] - self.aabb_min[2]) / (self.aabb_max[2] - self.aabb_min[2]),
+            (p[0] - self.aabb_min[0]) / span(0),
+            (p[1] - self.aabb_min[1]) / span(1),
+            (p[2] - self.aabb_min[2]) / span(2),
         ];
         let fx = uvw[0] * nx as f32 - 0.5;
         let fy = uvw[1] * ny as f32 - 0.5;

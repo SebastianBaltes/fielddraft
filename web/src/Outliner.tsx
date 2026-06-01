@@ -360,10 +360,11 @@ export function Outliner({ store, state }: OutlinerProps) {
     setDropIndex(insertAbove ? targetIndex : targetIndex + 1);
   };
   const handleFeatureDragLeave = () => {
-    // Defer the clear to the next frame so a DragOver on the
-    // neighbouring row doesn't flicker the indicator.
+    // Defer the clear to the next frame so a DragOver on the neighbouring row
+    // (which fires continuously and re-sets dropIndex) doesn't flicker the
+    // indicator while dragging across the row boundary.
     requestAnimationFrame(() => {
-      setDropIndex((prev) => prev);
+      setDropIndex(null);
     });
   };
   const handleFeatureDrop = (e: React.DragEvent<HTMLLIElement>) => {

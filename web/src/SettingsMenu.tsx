@@ -898,6 +898,7 @@ function SettingsDialog({
                 >
                   <option value="sdf-vm">SDF VM</option>
                   <option value="sdf-deferred">SDF Deferred</option>
+                  <option value="mesh">Mesh</option>
                 </select>
               </div>
 

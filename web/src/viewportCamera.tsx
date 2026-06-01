@@ -43,7 +43,6 @@ export function CameraBridgePublisher() {
 export function CameraRig() {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
-  const controlsRef = useRef<any>(null);
 
   if (sketchActive) {
     return (
@@ -72,7 +71,6 @@ export function CameraRig() {
 
   return (
     <OrbitControls
-      ref={controlsRef}
       makeDefault
       enableDamping={false}
       rotateSpeed={1.4}

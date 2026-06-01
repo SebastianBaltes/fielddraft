@@ -64,8 +64,6 @@ function dofColor(dof: number): string {
   return COLOR_OVER;
 }
 
-// Legacy alias — default to underconstrained.
-const COLOR_COMMITTED = COLOR_UNDER;
 const COLOR_SNAP = "#f59e0b";
 const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
 const LABEL_BG = "rgba(246, 246, 244, 0.92)";
@@ -961,6 +959,11 @@ function drawOverlay(
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.scale(dpr, dpr);
 
+  // A non-positive zoom is a degenerate camera: every screen transform
+  // divides by zoom and the adaptive-grid loop below would never terminate.
+  // Bail with a cleared canvas rather than freezing the tab.
+  if (!(cam.zoom > 0)) return;
+
   // Grid: adaptive spacing that snaps to 1/2/5/10/… mm steps
   // and stays visually stable across zoom levels.
   {
@@ -1019,14 +1022,15 @@ function drawOverlay(
     ctx.setLineDash([]);
   }
 
-  // K6b.6: compute DOF to pick the 3-color status.
-  let committedColor = COLOR_COMMITTED;
+  // K6b.6: compute DOF to pick the 3-color status. skState is reused below
+  // for constraint-glyph placement.
+  const skState = buildDraftSketchState(session.subCalls);
+  let committedColor = COLOR_UNDER;
   try {
-    const skState = buildDraftSketchState(session.subCalls);
     const dof = countDegreesOfFreedom(skState);
     committedColor = dofColor(dof);
   } catch {
-    // Solver not available or sub-calls can't build a state.
+    // Solver not available — fall back to the underconstrained color.
   }
 
   // Draw committed geometry first (darker), then the drag preview
@@ -1099,42 +1103,47 @@ function drawOverlay(
     }
   }
 
-  // K6b.6: draw constraint glyphs at entity midpoints.
-  for (const call of session.subCalls) {
-    if (!call.type.startsWith("sketch_constraint")) continue;
-    // Find the constrained line's midpoint from its entity_a
-    // index. Walk earlier sub-calls to find the line with
-    // matching entity allocation order.
-    const entityA = Number(call.params.entity_a ?? call.params.line_a ?? -1);
-    if (entityA < 0) continue;
-    // Heuristic: find the line sub-call whose first endpoint
-    // entity index is near entityA (each line allocates 3 ids:
-    // start_point, end_point, line).
-    const lineCalls = session.subCalls.filter((c) => c.type === "sketch_line");
-    let lineIdx = Math.floor(entityA / 3) - 1; // rough mapping
-    if (lineIdx < 0) lineIdx = 0;
-    if (lineIdx >= lineCalls.length) continue;
-    const lc = lineCalls[lineIdx];
-    const start = toXy(lc?.params?.start);
-    const end = toXy(lc?.params?.end);
-    if (!start || !end) continue;
-    const mid: [number, number] = [
-      (start[0] + end[0]) / 2,
-      (start[1] + end[1]) / 2,
-    ];
-    const [px, py] = sketchToScreen(mid[0], mid[1], cam);
+  // K6b.6: draw constraint glyphs anchored to the constrained geometry.
+  // Resolve entity ids against the already-built solved state (skState)
+  // rather than guessing from sub-call ordering.
+  {
+    const entityPos = (entityId: number): [number, number] | null => {
+      const e = skState.entities.find((x) => x.id === entityId);
+      if (!e) return null;
+      if (e.kind === "point") return [e.at.x, e.at.y];
+      if (e.kind === "origin") return [0, 0];
+      return null;
+    };
+    const lineMidpoint = (lineId: number): [number, number] | null => {
+      const e = skState.entities.find((x) => x.id === lineId);
+      if (!e || e.kind !== "line") return null;
+      const s = entityPos(e.start);
+      const en = entityPos(e.end);
+      if (!s || !en) return null;
+      return [(s[0] + en[0]) / 2, (s[1] + en[1]) / 2];
+    };
+
     ctx.font = "bold 11px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const label = call.type.includes("horizontal")
-      ? "H"
-      : call.type.includes("vertical")
-        ? "V"
-        : call.type.includes("coincident")
-          ? "⊙"
-          : "C";
     ctx.fillStyle = committedColor;
-    ctx.fillText(label, px, py - 10);
+    for (const c of skState.constraints) {
+      let anchor: [number, number] | null = null;
+      let label = "C";
+      if (c.kind === "horizontal") {
+        anchor = lineMidpoint(c.line);
+        label = "H";
+      } else if (c.kind === "vertical") {
+        anchor = lineMidpoint(c.line);
+        label = "V";
+      } else if (c.kind === "coincident") {
+        anchor = entityPos(c.a);
+        label = "⊙";
+      }
+      if (!anchor) continue;
+      const [px, py] = sketchToScreen(anchor[0], anchor[1], cam);
+      ctx.fillText(label, px, py - 10);
+    }
   }
 
   if (drag.kind === "line") {
@@ -1291,7 +1300,7 @@ function drawRadiusLabel(
   const textW = metrics.width;
   const textH = 16;
   ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_COMMITTED;
+  ctx.strokeStyle = COLOR_UNDER;
   ctx.lineWidth = 1;
   roundRect(
     ctx,
@@ -1355,7 +1364,7 @@ function drawSizeLabel(
   const boxX = px - textW / 2 - LABEL_PADDING;
   const boxY = py - textH / 2 - LABEL_PADDING / 2;
   ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_COMMITTED;
+  ctx.strokeStyle = COLOR_UNDER;
   ctx.lineWidth = 1;
   roundRect(ctx, boxX, boxY, textW + LABEL_PADDING * 2, textH + LABEL_PADDING, 4);
   ctx.fill();
@@ -1425,7 +1434,7 @@ function drawDistanceLabel(
   const boxW = textW + LABEL_PADDING * 2;
   const boxH = textH + LABEL_PADDING;
   ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_COMMITTED;
+  ctx.strokeStyle = COLOR_UNDER;
   ctx.lineWidth = 1;
   roundRect(ctx, boxX, boxY, boxW, boxH, 4);
   ctx.fill();

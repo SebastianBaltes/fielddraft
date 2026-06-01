@@ -563,7 +563,7 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
     case "enum":
       return p.variants && p.variants.length > 0 ? p.variants[0].key : "";
     case "length":
-      return { value: 1, unit: "m" };
+      return { value: 1, unit: "mm" };
     case "angle":
       return { value: 0, unit: "deg" };
     case "query":
