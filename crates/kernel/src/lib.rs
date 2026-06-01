@@ -942,7 +942,19 @@ impl Kernel {
     /// in place keeps this helper independent of its caller's
     /// sequencing.
     fn bootstrap_features_from_calls(&mut self) -> Result<(), features::FeatureError> {
-        let registry = features::FeatureRegistry::with_builtins();
+        let mut registry = features::FeatureRegistry::with_builtins();
+        // FieldSkript S2b: a document's scripts register as runtime
+        // feature kinds keyed by their stable id, so a `FeatureCall`
+        // whose `type` is a script id dispatches through the same
+        // regenerate path as a built-in. Their geometry is produced by
+        // the JS `build()` the worker drives via the script runner; a
+        // headless run with no runner fails such a feature explicitly.
+        for record in &self.document.scripts {
+            registry.register(Box::new(script_runtime::ScriptFeature::new(
+                record.id.clone(),
+                record.schema.clone(),
+            )));
+        }
         let calls = std::mem::take(&mut self.document.feature_calls);
         let rollback = self.rollback_after;
         // DL-61 C2b: regeneration accumulates the decoded spine in the

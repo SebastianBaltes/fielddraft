@@ -85,6 +85,15 @@ pub enum ScriptError {
     NoScratch,
     /// The op-descriptor's `id` string didn't parse as a [`FeatureId`].
     BadId(String),
+    /// An op-descriptor's params blob wasn't valid JSON.
+    BadParams(String),
+    /// A script feature was reached but no JS runner is installed — a
+    /// headless/native regenerate of a document that contains a script
+    /// feature (§2.7: pure-Rust docs regenerate without a JS runtime,
+    /// only script docs need one).
+    NoRunner,
+    /// The JS `build()` threw. Carries the JS-side message.
+    JsRun(String),
     /// The underlying built-in rejected the op (unknown type, invalid
     /// params, …). Carries the feature-layer error verbatim.
     Feature(FeatureError),
@@ -95,6 +104,9 @@ impl std::fmt::Display for ScriptError {
         match self {
             Self::NoScratch => f.write_str("no script scratch is installed"),
             Self::BadId(s) => write!(f, "invalid feature id `{s}`"),
+            Self::BadParams(s) => write!(f, "invalid op params json: {s}"),
+            Self::NoRunner => f.write_str("no script runner is installed"),
+            Self::JsRun(s) => write!(f, "script build() failed: {s}"),
             Self::Feature(e) => write!(f, "{e}"),
         }
     }
@@ -208,10 +220,160 @@ pub fn commit_builtin(
     })?
 }
 
+/// The synchronous Rust→JS hop: runs one script's `build(context, id,
+/// def)` to completion. On wasm this closure calls the JS function the
+/// worker registered (which executes `build()` in the determinism
+/// sandbox and re-enters via [`commit_builtin_global`]); in native
+/// tests it's a Rust stub that drives commits directly.
+///
+/// Not `Send` — on wasm it captures a `js_sys::Function`, and the whole
+/// runtime is single-threaded — so it lives in a `thread_local`, never
+/// in the `Send + Sync` feature registry.
+pub type ScriptRunFn = Box<dyn Fn(&str, &str) -> Result<(), ScriptError>>;
+
+thread_local! {
+    /// The script runner for the current regenerate pass. Installed by
+    /// the kernel around `regenerate` (wasm: wrapping the worker's JS
+    /// callback), `None` for a pure-Rust headless run.
+    static RUNNER: RefCell<Option<ScriptRunFn>> = const { RefCell::new(None) };
+}
+
+/// Install the script runner for the upcoming regenerate pass. Replaces
+/// any previous runner.
+pub fn set_runner(runner: ScriptRunFn) {
+    RUNNER.with(|cell| *cell.borrow_mut() = Some(runner));
+}
+
+/// Remove the script runner once regeneration is done.
+pub fn clear_runner() {
+    RUNNER.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Drive one script's `build()` through the installed runner.
+///
+/// The runner is held borrowed for the duration of the JS call. That is
+/// sound because a script's `build()` never re-enters *this* function:
+/// script-to-script composition (`fd.call`) recurses in pure JS sharing
+/// the live scratch (§2.4), and the re-entrant `fd.op*` commits go
+/// through the *separate* [`SCRATCH`] thread-local — disjoint borrows.
+pub fn run_script(script_id: &str, params_json: &str) -> Result<(), ScriptError> {
+    RUNNER.with(|cell| {
+        let borrow = cell.borrow();
+        let runner = borrow.as_ref().ok_or(ScriptError::NoRunner)?;
+        runner(script_id, params_json)
+    })
+}
+
+/// The global commit entry the JS `fd.op*` re-enters: rebuilds the
+/// stateless built-in registry, parses the op params, and commits into
+/// the live scratch. Returns the created-feature handles.
+///
+/// A free function with no kernel `self` — that is exactly what lets it
+/// be called re-entrantly while `regenerate` holds `&mut Kernel` on the
+/// stack (§2.6).
+pub fn commit_builtin_global(
+    id: &str,
+    type_name: &str,
+    params_json: &str,
+) -> Result<Vec<String>, ScriptError> {
+    let params: Value =
+        serde_json::from_str(params_json).map_err(|e| ScriptError::BadParams(e.to_string()))?;
+    let registry = FeatureRegistry::with_builtins();
+    commit_builtin(&registry, id, type_name, &params)
+}
+
+/// A FieldSkript feature: a runtime-registered [`FeatureKind`] whose
+/// geometry comes from a JS `build()` rather than native Rust.
+///
+/// Holds only its stable id (= `FeatureCall.type_name` = `record.id`)
+/// and its schema, so it stays `Send + Sync` and the registry treats it
+/// exactly like a built-in. `execute` hands the live accumulator to the
+/// script runner and folds the script's committed geometry back into
+/// the regeneration context.
+pub struct ScriptFeature {
+    id: String,
+    schema: Value,
+}
+
+impl ScriptFeature {
+    /// Build a script feature kind from a persisted record's id +
+    /// schema (see `FieldSkriptRecord`).
+    pub fn new(id: impl Into<String>, schema: Value) -> Self {
+        Self {
+            id: id.into(),
+            schema,
+        }
+    }
+}
+
+impl crate::features::FeatureKind for ScriptFeature {
+    fn type_name(&self) -> &str {
+        &self.id
+    }
+
+    fn schema_json(&self) -> Value {
+        self.schema.clone()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        // Hand the in-flight accumulator to the script as its live
+        // context, run build(), then fold whatever it committed back in.
+        // A fresh scratch is *not* used: the script must see the
+        // geometry earlier features produced (Onshape's "created by an
+        // earlier operation").
+        let scratch = RegenScratch {
+            features: std::mem::take(&mut ctx.features),
+            sketches: std::mem::take(&mut ctx.sketches),
+            edge_fillets: std::mem::take(&mut ctx.edge_fillets),
+        };
+        enter(scratch);
+
+        let params_json = serde_json::to_string(def).unwrap_or_else(|_| "{}".to_string());
+        let result = run_script(&self.id, &params_json);
+
+        let scratch = exit();
+        ctx.features = scratch.features;
+        ctx.sketches = scratch.sketches;
+        ctx.edge_fillets = scratch.edge_fillets;
+
+        result.map_err(|e| FeatureError::InvalidParameter {
+            feature: "fieldskript",
+            name: "build",
+            message: e.to_string(),
+        })
+    }
+}
+
+/// wasm-bindgen surface for the JS→Rust commit re-entry. The mutating
+/// half of `fd.op*`: the worker's `fd.opBox(...)` etc. call `fdOpCommit`
+/// synchronously while the kernel's `regenerate` is on the stack. It is
+/// a *free* export, never a `Kernel` method, so the re-entrant call
+/// doesn't recursively borrow the already-borrowed kernel object
+/// (§2.6). The Rust→JS half (the script runner) is wired in S2c with
+/// the worker.
+#[cfg(target_arch = "wasm32")]
+mod wasm_exports {
+    use wasm_bindgen::prelude::*;
+
+    /// Commit one built-in op into the live script scratch; returns the
+    /// created-feature handle ids as a JSON array.
+    #[wasm_bindgen(js_name = fdOpCommit)]
+    pub fn fd_op_commit(id: &str, type_name: &str, params_json: &str) -> Result<String, JsError> {
+        let handles = super::commit_builtin_global(id, type_name, params_json)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        serde_json::to_string(&handles).map_err(|e| JsError::new(&e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::FeatureCall;
+    use crate::features::{FeatureCall, FeatureKind};
     use serde_json::json;
 
     /// Run the registry's normal regenerate for a single feature call
@@ -313,5 +475,99 @@ mod tests {
         with_scratch(|s| assert_eq!(s.features.len(), 1)).unwrap();
         let back = exit();
         assert_eq!(back.features[0].id.to_string(), "5");
+    }
+
+    // ── S2b: ScriptFeature dispatch via the regenerate loop ─────────
+
+    /// Build a registry with the built-ins plus one script feature, and
+    /// regenerate `calls` against it with `runner` installed for the
+    /// pass — mirroring how the kernel will drive a script document.
+    fn regenerate_with_script(
+        script_id: &str,
+        runner: ScriptRunFn,
+        calls: &[FeatureCall],
+    ) -> Result<Vec<DecodedFeature>, FeatureError> {
+        let mut registry = FeatureRegistry::with_builtins();
+        registry.register(Box::new(ScriptFeature::new(script_id, json!({}))));
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+        set_runner(runner);
+        let result = registry.regenerate(&mut ctx, calls, None);
+        clear_runner();
+        result.map(|()| ctx.features)
+    }
+
+    fn script_call(type_name: &str, id: &str) -> FeatureCall {
+        FeatureCall {
+            type_name: type_name.to_string(),
+            id: FeatureId::from_str(id).unwrap(),
+            params: json!({}),
+            suppressed: false,
+        }
+    }
+
+    #[test]
+    fn script_feature_commits_its_build_geometry() {
+        // The runner simulates a build() that emits two primitives.
+        let runner: ScriptRunFn = Box::new(|_script_id, _params| {
+            commit_builtin_global("10.a", "box", &box_params().to_string())?;
+            commit_builtin_global(
+                "10.b",
+                "sphere",
+                &json!({ "radius": 1.0, "center": [0.0, 0.0, 0.0] }).to_string(),
+            )?;
+            Ok(())
+        });
+        let spine = regenerate_with_script("counterbore", runner, &[script_call("counterbore", "10")])
+            .unwrap();
+
+        assert_eq!(spine.len(), 2, "both committed primitives land on the spine");
+        assert_eq!(spine[0].id.to_string(), "10.a");
+        assert_eq!(spine[1].id.to_string(), "10.b");
+    }
+
+    #[test]
+    fn script_sees_geometry_from_earlier_features() {
+        // A native box precedes the script; the script's build() must
+        // observe it in the live scratch (created-by-earlier-operation).
+        let runner: ScriptRunFn = Box::new(|_id, _params| {
+            let seen = with_scratch(|s| s.features.len())?;
+            assert_eq!(seen, 1, "the prior box is visible to build()");
+            commit_builtin_global("9.boss", "box", &box_params().to_string())?;
+            Ok(())
+        });
+        let calls = [
+            FeatureCall {
+                type_name: "box".to_string(),
+                id: FeatureId::from_str("1").unwrap(),
+                params: box_params(),
+                suppressed: false,
+            },
+            script_call("counterbore", "9"),
+        ];
+        let spine = regenerate_with_script("counterbore", runner, &calls).unwrap();
+        assert_eq!(spine.len(), 2);
+        assert_eq!(spine[1].id.to_string(), "9.boss");
+    }
+
+    #[test]
+    fn script_without_a_runner_fails_the_feature() {
+        let mut registry = FeatureRegistry::with_builtins();
+        registry.register(Box::new(ScriptFeature::new("counterbore", json!({}))));
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+        clear_runner();
+        let err = registry
+            .regenerate(&mut ctx, &[script_call("counterbore", "10")], None)
+            .unwrap_err();
+        assert!(matches!(err, FeatureError::InvalidParameter { feature: "fieldskript", .. }));
+    }
+
+    #[test]
+    fn script_feature_exposes_its_schema() {
+        let schema = json!({ "type": "counterbore", "params": [] });
+        let feature = ScriptFeature::new("counterbore", schema.clone());
+        assert_eq!(feature.type_name(), "counterbore");
+        assert_eq!(feature.schema_json(), schema);
     }
 }

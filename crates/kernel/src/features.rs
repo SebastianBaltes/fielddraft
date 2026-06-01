@@ -162,8 +162,11 @@ impl<'a> Context<'a> {
 /// feature in a lock.
 pub trait FeatureKind: Send + Sync {
     /// Registry key — stable, snake_case, matches the `type` field
-    /// in the serialised feature tree.
-    fn type_name(&self) -> &'static str;
+    /// in the serialised feature tree. Built-ins return their static
+    /// `TYPE_NAME`; a FieldSkript [`ScriptFeature`](crate::script_runtime::ScriptFeature)
+    /// borrows its runtime `record.id`, so the return is `&self`-bound,
+    /// not `'static`.
+    fn type_name(&self) -> &str;
 
     /// K6a: the JSON schema shape the K4.5.4a `FeatureSchema`
     /// derive generates for the definition struct this feature
