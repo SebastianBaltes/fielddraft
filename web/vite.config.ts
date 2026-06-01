@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,11 +40,23 @@ const certFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.crt");
 const keyFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.key");
 const hasTailscaleCert = existsSync(certFile) && existsSync(keyFile);
 
+// Per-instance dev-server port: lets `fielddraft` and `fielddraft-a` run side
+// by side. Sourced (in order) from the recipe env (e.g. `just dev`, which
+// dotenv-loads the repo-root .env), then the repo-root .env directly (so a bare
+// `npm run dev` works too), then the 5173 default. See ../.env.example.
+function webPort(mode: string): number {
+  const repoRoot = join(process.cwd(), "..");
+  const env = loadEnv(mode, repoRoot, "");
+  const raw = process.env.FIELDDRAFT_WEB_PORT ?? env.FIELDDRAFT_WEB_PORT;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 ? port : 5173;
+}
+
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), liveVersion()],
   server: {
-    port: 5173,
+    port: webPort(mode),
     strictPort: true,
     allowedHosts: true,
     https: hasTailscaleCert
@@ -55,4 +67,4 @@ export default defineConfig({
     exclude: ["./src/wasm/fielddraft_kernel.js"],
   },
   assetsInclude: ["**/*.wasm"],
-});
+}));

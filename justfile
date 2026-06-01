@@ -4,6 +4,12 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# Load per-instance config (ports, instance name) from a gitignored .env so
+# that `fielddraft` and `fielddraft-a` can run side by side. Optional: a clean
+# checkout with no .env just falls back to the in-file/Vite defaults.
+# See .env.example.
+set dotenv-load := true
+
 # Default: print the available recipes.
 default:
     @just --list
@@ -20,6 +26,7 @@ build-wasm:
 
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
 dev: build-wasm
+    @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
     cd web && npm run dev
 
 # Build the full web bundle (WASM + Vite).

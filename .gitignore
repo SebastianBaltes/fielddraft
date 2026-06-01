@@ -16,6 +16,11 @@ dist-ssr/
 # Agent worktrees / scratch
 /.claude/
 
+# Per-instance deployment/webapp config (ports, instance name).
+# fielddraft vs fielddraft-a run side by side from a shared checkout
+# layout but must not collide on ports. See .env.example.
+/.env
+
 # Editor / OS
 .DS_Store
 *.log
