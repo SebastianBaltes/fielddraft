@@ -384,7 +384,11 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
             const { WebGPURenderer } = await import("three/webgpu");
 
             if (!navigator.gpu) {
+              // Surface the error UI and bail before constructing the renderer —
+              // WebGPURenderer.init() would otherwise reject and the rejection
+              // would escape the async factory unhandled.
               setWebgpuError(true);
+              throw new Error("WebGPU unavailable: navigator.gpu is undefined");
             }
 
             const renderer = new WebGPURenderer({

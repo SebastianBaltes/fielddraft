@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import type { WebGPURenderer } from "three/webgpu";
 import { useKernelStore } from "./store";
 import {
   initVmPipeline,
@@ -89,7 +90,7 @@ function showGpuError(err: unknown): void {
 }
 
 function renderOverlayLayer(
-  wgpuRenderer: THREE.WebGPURenderer,
+  wgpuRenderer: WebGPURenderer,
   scene: THREE.Scene,
   camera: THREE.Camera,
   renderSdf: () => void,
@@ -130,11 +131,13 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
+  const matFeaturesRef = useRef<unknown>(null);
 
   useEffect(() => {
     pipelineRef.current = initVmPipeline();
     volumeFpRef.current = "";
     dataFpRef.current = "";
+    matFeaturesRef.current = null;
     compilingRef.current = false;
     readyRef.current = false;
     showCompilationStatus("Initializing…");
@@ -170,7 +173,7 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
 
       showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
-      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      const wgpu = renderer as unknown as WebGPURenderer;
       compileVmPipeline(pipeline, wgpu, camera)
         .then(() => {
           // Ignore a compile that finished for a pipeline we've since
@@ -200,13 +203,21 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
       dataFpRef.current = structFp + dataFp;
     }
 
-    const vmMaterials = resolveMaterials(k, store.getState().features);
-    applyMaterials(pipeline, vmMaterials, count);
+    // Materials only change when the feature list changes (any edit commits a
+    // fresh array) or when geometry rebuilt/updated this frame. Gate the
+    // resolve+GPU upload behind that so a static scene doesn't re-upload the
+    // material buffer every frame.
+    const featuresArr = store.getState().features;
+    if (featuresArr !== matFeaturesRef.current || needsCompile || needsDataUpdate) {
+      const vmMaterials = resolveMaterials(k, featuresArr);
+      applyMaterials(pipeline, vmMaterials, count);
+      matFeaturesRef.current = featuresArr;
+    }
     pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 
-    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderVmFrame(pipeline, wgpuRenderer, camera),
@@ -234,11 +245,15 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
+  const matFeaturesRef = useRef<unknown>(null);
+  const selectionRef = useRef<unknown>(null);
 
   useEffect(() => {
     pipelineRef.current = initDeferredPipeline(1, 1);
     structFpRef.current = "";
     dataFpRef.current = "";
+    matFeaturesRef.current = null;
+    selectionRef.current = null;
     compilingRef.current = false;
     readyRef.current = false;
     showCompilationStatus("Initializing…");
@@ -293,7 +308,7 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
 
       showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
-      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      const wgpu = renderer as unknown as WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera)
         .then(() => {
           // Ignore a compile that finished for a pipeline we've since
@@ -321,20 +336,31 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
 
 
     const storeState = store.getState();
-    const materials = resolveMaterials(k, storeState.features);
-    applyMaterials(pipeline, materials, count);
 
-    const selection = storeState.selection;
-    const selectedBodies = new Set<number>();
-    for (let i = 0; i < count; i++) {
-      if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+    // Re-resolve + re-upload materials only when the feature list changed or
+    // geometry rebuilt/updated this frame — not on every static frame.
+    if (storeState.features !== matFeaturesRef.current || needsRebuild || needsDataUpdate) {
+      const materials = resolveMaterials(k, storeState.features);
+      applyMaterials(pipeline, materials, count);
+      matFeaturesRef.current = storeState.features;
     }
-    updateDeferredSelection(pipeline, selectedBodies);
+
+    // Selection likewise only changes via a fresh selection Set (or when the
+    // body set rebuilt).
+    const selection = storeState.selection;
+    if (selection !== selectionRef.current || needsRebuild) {
+      const selectedBodies = new Set<number>();
+      for (let i = 0; i < count; i++) {
+        if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+      }
+      updateDeferredSelection(pipeline, selectedBodies);
+      selectionRef.current = selection;
+    }
     pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 
-    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderDeferredFrame(pipeline, wgpuRenderer, camera),

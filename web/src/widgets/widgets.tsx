@@ -25,7 +25,7 @@
  *   in one place.
  */
 
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   register as registerQueryPicker,
   isActive as isQueryPickerActive,
@@ -34,9 +34,9 @@ import {
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
+import { formatQueryDisplay } from "../queryLabels";
 import {
   ANGLE_UNITS,
-  LENGTH_UNITS,
   type AngleUnit,
   type EnumVariant,
   type LengthUnit,
@@ -857,29 +857,6 @@ export function GroupHeader({
  * dialog's definition via `onChange`. The widget then drops its
  * focus automatically.
  */
-const QUERY_DISPLAY_LABELS: Record<string, string> = {
-  "qCreatedBy(origin_plane_xy)": "XY Plane",
-  "qCreatedBy(origin_plane_xz)": "XZ Plane",
-  "qCreatedBy(origin_plane_yz)": "YZ Plane",
-};
-
-function formatQueryDisplay(
-  raw: string,
-  featureNames?: Map<number, string>,
-): string {
-  if (QUERY_DISPLAY_LABELS[raw]) return QUERY_DISPLAY_LABELS[raw];
-  const match = raw.match(/^qCreatedBy\((.+)\)$/);
-  if (match) {
-    const inner = match[1];
-    if (featureNames) {
-      const id = Number(inner);
-      if (!Number.isNaN(id) && featureNames.has(id))
-        return featureNames.get(id)!;
-    }
-    return inner.replace(/_/g, " ");
-  }
-  return raw;
-}
 
 export function QueryWidget({
   label,
@@ -907,20 +884,25 @@ export function QueryWidget({
     () => false,
   );
 
-  // Register with the bridge while `active` is true. The register
-  // function returns an unregister closure that we wire up as
-  // the effect's cleanup.
+  // Single source of truth for what a viewport pick does for this widget.
+  const onPick = useCallback(
+    (query: string) => {
+      setText(query);
+      onChange(query);
+      return true;
+    },
+    [onChange],
+  );
+
+  // The bridge holds at most one active picker. Registering flips this
+  // widget's `active` to true, which runs the effect below — that effect is
+  // the single owner of the registration's lifecycle: it re-registers and
+  // returns the unregister closure as its cleanup, so the picker is always
+  // torn down on unmount or when another widget claims focus.
   useEffect(() => {
     if (!active) return;
-    return registerQueryPicker({
-      ownerId: id,
-      onPick: (query: string) => {
-        setText(query);
-        onChange(query);
-        return true;
-      },
-    });
-  }, [active, id, onChange]);
+    return registerQueryPicker({ ownerId: id, onPick });
+  }, [active, id, onPick]);
 
   // Auto-activate on an empty required field so a freshly-opened
   // dialog already has the viewport click focus on its primary
@@ -932,26 +914,12 @@ export function QueryWidget({
   useEffect(() => {
     if (autoArmed && value === "" && !active && !getActiveQueryPicker()) {
       setAutoArmed(false);
-      registerQueryPicker({
-        ownerId: id,
-        onPick: (query: string) => {
-          setText(query);
-          onChange(query);
-          return true;
-        },
-      });
+      registerQueryPicker({ ownerId: id, onPick });
     }
-  }, [autoArmed, value, active, id, onChange]);
+  }, [autoArmed, value, active, id, onPick]);
 
   const activate = () => {
-    registerQueryPicker({
-      ownerId: id,
-      onPick: (query: string) => {
-        setText(query);
-        onChange(query);
-        return true;
-      },
-    });
+    registerQueryPicker({ ownerId: id, onPick });
   };
 
   const commitText = () => {

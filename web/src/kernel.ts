@@ -1015,28 +1015,23 @@ export class Kernel {
   }
 
   setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).setFeatureRotation(id, rx, ry, rz, rw);
+    return this.inner.setFeatureRotation(id, rx, ry, rz, rw);
   }
 
   setFeatureScale(id: number, sx: number, sy: number, sz: number): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).setFeatureScale(id, sx, sy, sz);
+    return this.inner.setFeatureScale(id, sx, sy, sz);
   }
 
   applyGizmoTranslate(id: number, tx: number, ty: number, tz: number): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).applyGizmoTranslate(id, tx, ty, tz);
+    return this.inner.applyGizmoTranslate(id, tx, ty, tz);
   }
 
   applyGizmoRotate(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).applyGizmoRotate(id, rx, ry, rz, rw);
+    return this.inner.applyGizmoRotate(id, rx, ry, rz, rw);
   }
 
   applyGizmoScale(id: number, sx: number, sy: number, sz: number): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this.inner as any).applyGizmoScale(id, sx, sy, sz);
+    return this.inner.applyGizmoScale(id, sx, sy, sz);
   }
 
   nudgeFeature(id: number, dx: number, dy: number, dz: number): boolean {

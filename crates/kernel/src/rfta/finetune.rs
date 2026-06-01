@@ -110,25 +110,34 @@ pub fn finetune_iteration(
                 .filter(|(s, _)| *s == si)
                 .count();
 
-            if current_count < MAX_POINTS_PER_SPHERE {
-                let severe = dist_to_mesh < 0.25 * sphere.radius;
+            let severe = dist_to_mesh < 0.25 * sphere.radius;
+            let at_cap = current_count >= MAX_POINTS_PER_SPHERE;
 
-                if !severe && tp_indices.len() >= MAX_POINTS_PER_SPHERE {
-                    // Light case: discard the point farthest from mesh,
-                    // then add new at q_i
-                    let farthest_ti = tp_indices
-                        .iter()
-                        .copied()
-                        .max_by(|&a, &b| {
-                            let da = bvh.closest_point(tangent_points[a].position).1;
-                            let db = bvh.closest_point(tangent_points[b].position).1;
-                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    if let Some(ti) = farthest_ti {
-                        indices_to_remove.push(ti);
-                    }
+            // Decide whether to add a tangent point at q_i:
+            //  - room left      → add directly,
+            //  - at cap, mild   → "light case": discard the point farthest from
+            //                     the mesh to make room, then add,
+            //  - at cap, severe → keep the existing coverage (don't churn).
+            let should_add = if !at_cap {
+                true
+            } else if !severe {
+                let farthest_ti = tp_indices
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| {
+                        let da = bvh.closest_point(tangent_points[a].position).1;
+                        let db = bvh.closest_point(tangent_points[b].position).1;
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                if let Some(ti) = farthest_ti {
+                    indices_to_remove.push(ti);
                 }
+                true
+            } else {
+                false
+            };
 
+            if should_add {
                 if let Some(feasible) =
                     make_feasible_or_resolve(q_i, si, spheres, tree, positive)
                 {

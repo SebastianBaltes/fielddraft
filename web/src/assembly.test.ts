@@ -11,8 +11,6 @@ import { describe, expect, it } from "vitest";
 import {
   type AssemblyDocument,
   type AssemblyPartInstance,
-  type Mate,
-  IDENTITY_TRANSFORM,
   solveAssembly,
   solveIK,
 } from "./assembly";

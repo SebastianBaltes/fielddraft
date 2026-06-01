@@ -47,8 +47,6 @@ import {
   sdfRect2dFn, sdfCircle2dFn, sdfSector2dFn,
 } from "./sdfRenderer";
 
-export const MAX_VOLUME_TEXTURES = 4;
-
 export const VM_MAX_OPCODES = 512;
 
 export const bitcastTagFn = wgslFn(`

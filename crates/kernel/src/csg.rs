@@ -936,9 +936,7 @@ impl CsgNode {
                 let da = a.sdf(p, mode);
                 let db_raw = b.sdf(p, mode);
                 match mode {
-                    EvalMode::Logical => {
-                        if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
-                    }
+                    EvalMode::Logical => hard_combine(*is_difference, da, db_raw),
                     EvalMode::Visual => {
                         let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
                         if mask_d < 0.0 {
@@ -948,7 +946,7 @@ impl CsgNode {
                                 blend_min(da, db_raw, *blend_radius, *blend_mode)
                             }
                         } else {
-                            if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
+                            hard_combine(*is_difference, da, db_raw)
                         }
                     }
                 }
@@ -1443,6 +1441,17 @@ pub(crate) fn blend_min(da: f32, db: f32, r: f32, mode: BlendMode) -> f32 {
     }
 }
 
+/// The hard (non-blended) masked-blend combine: subtraction (`da ∖ db`) or
+/// union (`da ∪ db`). Shared by the analytic SDF and the opcode interpreter.
+#[inline]
+pub(crate) fn hard_combine(is_difference: bool, da: f32, db: f32) -> f32 {
+    if is_difference {
+        da.max(-db)
+    } else {
+        da.min(db)
+    }
+}
+
 pub(crate) fn chamfer_union(da: f32, db: f32, r: f32) -> f32 {
     use std::f32::consts::FRAC_1_SQRT_2;
     da.min(db).min((da + db - r) * FRAC_1_SQRT_2)
@@ -1643,7 +1652,13 @@ pub(crate) fn expand_evaluate_leaf(
             let hh = *half_height;
             let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
             let r_at_y = r_bottom * (1.0 - t) + r_top * t;
-            let d_wall = r - r_at_y;
+            // Project the raw radial gap onto the inclined wall normal so the
+            // contributor comparison uses the true perpendicular distance
+            // (matches sdf_primitive). For a cylinder (dr == 0) the factor is 1.
+            let dr = r_bottom - r_top;
+            let slant_len = (dr * dr + (2.0 * hh) * (2.0 * hh)).sqrt();
+            let wall_scale = if slant_len > 1e-9 { (2.0 * hh) / slant_len } else { 1.0 };
+            let d_wall = (r - r_at_y) * wall_scale;
             let halves = [
                 (d_wall, 0u32),
                 (sdf_halfspace(&HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: hh }, p), 1),

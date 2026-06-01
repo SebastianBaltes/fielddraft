@@ -36,14 +36,13 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { pbrShade } from "./pbrShading";
 
 import { NORMAL_EPS } from "./sdfRenderer";
-import { buildVmSdfEvalFn, VM_MAX_OPCODES } from "./sdfVmInterpreter";
+import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
   packOpcodes,
   updateVolumeData,
   rebuildVolumeTextures,
-  createVolumeTexture,
   MAT_STRIDE,
   MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
   MAT_ROUGHNESS, MAT_METALNESS,
@@ -164,7 +163,10 @@ export function rebuildVmBodies(
   state.bodyCountU.value = bodies.length;
 
   if (state.material) state.material.dispose();
-  if (state.mesh) state.scene.remove(state.mesh);
+  if (state.mesh) {
+    state.scene.remove(state.mesh);
+    state.mesh.geometry.dispose();
+  }
 
   state.material = createVmMaterial(state);
   state.mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), state.material);
@@ -355,11 +357,11 @@ export function renderVmFrame(
 
 function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): void {
   const cam = camera as THREE.PerspectiveCamera;
-  state.camPosU.value.copy(cam.position);
   if (cam.parent) cam.updateMatrixWorld();
   state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
   state.invProjU.value.copy(cam.projectionMatrixInverse);
-  state.invViewU.value.copy(cam.matrixWorldInverse).invert();
+  // invView is the camera's world matrix (the inverse of the view matrix).
+  state.invViewU.value.copy(cam.matrixWorld);
   state.viewMatU.value.copy(cam.matrixWorldInverse);
   state.nearU.value = cam.near;
   state.farU.value = cam.far;

@@ -198,9 +198,9 @@ fn is_region_planar(mesh: &Mesh, comp: &[usize], _ref_normal: [f32; 3]) -> bool 
     let mut min_d = f32::MAX;
     let mut max_d = f32::MIN;
     let mut min_u = f32::MAX;
-    let mut max_u = f32::MAX;
+    let mut max_u = f32::MIN;
     let mut min_v = f32::MAX;
-    let mut max_v = f32::MAX;
+    let mut max_v = f32::MIN;
 
     let (u_axis, v_axis) = orthonormal_basis(plane_n);
 

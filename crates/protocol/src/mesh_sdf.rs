@@ -58,10 +58,13 @@ pub struct BakedVolume {
 impl BakedVolume {
     pub fn sample_trilinear(&self, p: [f32; 3]) -> f32 {
         let [nx, ny, nz] = self.dims;
+        // Guard against a degenerate (zero-extent) axis — e.g. a planar imported
+        // mesh — which would otherwise yield NaN/inf normalized coordinates.
+        let span = |a: usize| (self.aabb_max[a] - self.aabb_min[a]).max(1e-6);
         let uvw = [
-            (p[0] - self.aabb_min[0]) / (self.aabb_max[0] - self.aabb_min[0]),
-            (p[1] - self.aabb_min[1]) / (self.aabb_max[1] - self.aabb_min[1]),
-            (p[2] - self.aabb_min[2]) / (self.aabb_max[2] - self.aabb_min[2]),
+            (p[0] - self.aabb_min[0]) / span(0),
+            (p[1] - self.aabb_min[1]) / span(1),
+            (p[2] - self.aabb_min[2]) / span(2),
         ];
         let fx = uvw[0] * nx as f32 - 0.5;
         let fy = uvw[1] * ny as f32 - 0.5;
@@ -667,7 +670,7 @@ impl MeshSdf {
             let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
             let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
             let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-            let (dist_sq, s, t_bary) = point_triangle_dist_sq(p, v0, v1, v2);
+            let (dist_sq, s, t_bary, _) = point_triangle(p, v0, v1, v2);
             if dist_sq < best_dist_sq {
                 best_dist_sq = dist_sq;
                 best_tri = t;
@@ -701,7 +704,7 @@ impl MeshSdf {
                     let v0 = [self.tris[base], self.tris[base + 1], self.tris[base + 2]];
                     let v1 = [self.tris[base + 3], self.tris[base + 4], self.tris[base + 5]];
                     let v2 = [self.tris[base + 6], self.tris[base + 7], self.tris[base + 8]];
-                    let (dist_sq, s, t_bary) = point_triangle_dist_sq(p, v0, v1, v2);
+                    let (dist_sq, s, t_bary, _) = point_triangle(p, v0, v1, v2);
                     if dist_sq < best_dist_sq {
                         best_dist_sq = dist_sq;
                         best_tri = tri_idx;
@@ -1000,14 +1003,16 @@ fn aabb_point_dist_sq(p: [f32; 3], aabb_min: [f32; 3], aabb_max: [f32; 3]) -> f3
     dist_sq
 }
 
-/// Squared distance from point `p` to triangle `(v0, v1, v2)`,
-/// plus barycentric (s, t): closest = v0 + s*(v1-v0) + t*(v2-v0).
-fn point_triangle_dist_sq(
+/// Squared distance from point `p` to triangle `(v0, v1, v2)`, the barycentric
+/// coordinates (s, t) where `closest = v0 + s*(v1-v0) + t*(v2-v0)`, and the
+/// closest point itself. Ericson's region solver; shared with the kernel's
+/// RFTA closest-point BVH.
+pub fn point_triangle(
     p: [f32; 3],
     v0: [f32; 3],
     v1: [f32; 3],
     v2: [f32; 3],
-) -> (f32, f32, f32) {
+) -> (f32, f32, f32, [f32; 3]) {
     let e0 = sub3(v1, v0);
     let e1 = sub3(v2, v0);
     let v = sub3(p, v0);
@@ -1091,7 +1096,7 @@ fn point_triangle_dist_sq(
         v0[2] + s * e0[2] + t * e1[2],
     ];
     let diff = sub3(p, closest);
-    (dot3(diff, diff), s, t)
+    (dot3(diff, diff), s, t, closest)
 }
 
 #[inline]

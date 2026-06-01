@@ -252,6 +252,12 @@ export function solveAssembly(doc: AssemblyDocument): AssemblyPartInstance[] {
       case "ball":
         newTransform = solveBall(partA, connA, connB);
         break;
+      default: {
+        // Exhaustiveness guard: a new MateType must add a case above.
+        const _exhaustive: never = mate.type;
+        void _exhaustive;
+        continue;
+      }
     }
 
     partB.transform = newTransform;

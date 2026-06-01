@@ -298,7 +298,7 @@ function makeRevolve(cmd: { wirePts: number[]; angle: number; cx: number; cy: nu
   return shape;
 }
 
-function wireFromPoints(pts: number[]): unknown {
+function wireFromPoints(pts: number[]): { delete(): void } {
   const builder = new oc.BRepBuilderAPI_MakeWire_1();
   const count = pts.length / 2;
   for (let i = 0; i < count; i++) {

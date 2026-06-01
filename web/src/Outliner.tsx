@@ -24,24 +24,15 @@ import {
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import { buildDraftSketchState } from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
+import { formatQueryDisplay } from "./queryLabels";
 
 function kindGlyph(kind: string): string {
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
 }
 
 
-const PLANE_QUERY_LABELS: Record<string, string> = {
-  "qCreatedBy(origin_plane_xy)": "XY Plane",
-  "qCreatedBy(origin_plane_xz)": "XZ Plane",
-  "qCreatedBy(origin_plane_yz)": "YZ Plane",
-};
-
 function formatPlaneQuery(query: string | null): string {
-  if (!query) return "—";
-  if (PLANE_QUERY_LABELS[query]) return PLANE_QUERY_LABELS[query];
-  const match = query.match(/^qCreatedBy\((.+)\)$/);
-  if (match) return match[1].replace(/_/g, " ");
-  return query;
+  return query ? formatQueryDisplay(query) : "—";
 }
 
 function prettifyFeatureName(name: string, kind: string): string {
@@ -360,10 +351,11 @@ export function Outliner({ store, state }: OutlinerProps) {
     setDropIndex(insertAbove ? targetIndex : targetIndex + 1);
   };
   const handleFeatureDragLeave = () => {
-    // Defer the clear to the next frame so a DragOver on the
-    // neighbouring row doesn't flicker the indicator.
+    // Defer the clear to the next frame so a DragOver on the neighbouring row
+    // (which fires continuously and re-sets dropIndex) doesn't flicker the
+    // indicator while dragging across the row boundary.
     requestAnimationFrame(() => {
-      setDropIndex((prev) => prev);
+      setDropIndex(null);
     });
   };
   const handleFeatureDrop = (e: React.DragEvent<HTMLLIElement>) => {

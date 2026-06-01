@@ -13,6 +13,7 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+pub mod mc_tables;
 pub mod mesh_sdf;
 pub mod sketch2d;
 pub mod voxel_repair;
@@ -196,7 +197,8 @@ impl<'de> Deserialize<'de> for FeatureId {
             }
 
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<FeatureId, E> {
-                Ok(FeatureId::from_u32(v as u32))
+                let v = u32::try_from(v).map_err(|_| E::custom("feature id out of u32 range"))?;
+                Ok(FeatureId::from_u32(v))
             }
 
             fn visit_u32<E: de::Error>(self, v: u32) -> Result<FeatureId, E> {
@@ -207,7 +209,8 @@ impl<'de> Deserialize<'de> for FeatureId {
                 if v < 0 {
                     return Err(E::custom("negative feature id"));
                 }
-                Ok(FeatureId::from_u32(v as u32))
+                let v = u32::try_from(v).map_err(|_| E::custom("feature id out of u32 range"))?;
+                Ok(FeatureId::from_u32(v))
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<FeatureId, E> {

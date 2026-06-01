@@ -35,17 +35,31 @@ use crate::{compose_transforms, quat_rotate};
 /// surface transforms in the local frame (DL-50); this is the single
 /// fold-back applied at export. For an identity placement it is a no-op,
 /// so a body woven at the origin exports byte-for-byte as before.
+/// `scale` (per-axis) → rotate (quaternion) → `translate`, all in f64. The
+/// single transform-application shared by the body-placement fold-back
+/// ([`place_point`], uniform scale) and primitive-local → world
+/// ([`local_to_world_point`], anisotropic scale).
+fn apply_trs_f64(scale: [f64; 3], rotation: [f32; 4], translate: [f64; 3], p: [f64; 3]) -> [f64; 3] {
+    let scaled = [p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]];
+    let r = quat_rotate_f64(rotation, scaled);
+    [r[0] + translate[0], r[1] + translate[1], r[2] + translate[2]]
+}
+
 fn place_point(placement: &Transform, p: [f64; 3]) -> [f64; 3] {
-    // T(p) = R·(s·p) + t, computed in f64 so vertices far from the origin
-    // keep full precision (placement scale is uniform, so scale[0] suffices).
+    // T(p) = R·(s·p) + t, in f64 so vertices far from the origin keep full
+    // precision. Placement scale is uniform (rigid + uniform), so scale[0]
+    // applies to all three axes.
     let s = placement.scale[0] as f64;
-    let scaled = [p[0] * s, p[1] * s, p[2] * s];
-    let r = quat_rotate_f64(placement.rotation, scaled);
-    [
-        r[0] + placement.translate[0] as f64,
-        r[1] + placement.translate[1] as f64,
-        r[2] + placement.translate[2] as f64,
-    ]
+    apply_trs_f64(
+        [s, s, s],
+        placement.rotation,
+        [
+            placement.translate[0] as f64,
+            placement.translate[1] as f64,
+            placement.translate[2] as f64,
+        ],
+        p,
+    )
 }
 
 /// f64 quaternion rotation (placement fold-back keeps full precision).
@@ -119,13 +133,12 @@ fn real(x: f64) -> String {
 /// scale, then rotate (quaternion), then translate. Inverse of
 /// [`crate::world_to_local`].
 fn local_to_world_point(t: &Transform, p: [f32; 3]) -> [f64; 3] {
-    let scaled = [p[0] * t.scale[0], p[1] * t.scale[1], p[2] * t.scale[2]];
-    let rot = quat_rotate(t.rotation, scaled);
-    [
-        (rot[0] + t.translate[0]) as f64,
-        (rot[1] + t.translate[1]) as f64,
-        (rot[2] + t.translate[2]) as f64,
-    ]
+    apply_trs_f64(
+        [t.scale[0] as f64, t.scale[1] as f64, t.scale[2] as f64],
+        t.rotation,
+        [t.translate[0] as f64, t.translate[1] as f64, t.translate[2] as f64],
+        [p[0] as f64, p[1] as f64, p[2] as f64],
+    )
 }
 
 /// Rotate a local direction into world space (rotation only — directions are

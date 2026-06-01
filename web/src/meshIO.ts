@@ -98,7 +98,13 @@ export function parseObjText(text: string): MeshOverlayData | null {
       );
     } else if (line.startsWith("f ")) {
       const parts = line.split(/\s+/).slice(1);
-      const idxs = parts.map((p) => parseInt(p.split("/")[0], 10) - 1);
+      const vertexCount = verts.length / 3;
+      const idxs = parts.map((p) => {
+        const raw = parseInt(p.split("/")[0], 10);
+        // OBJ allows negative indices that count back from the most recently
+        // seen vertex (-1 = last). Resolve those relative to the current count.
+        return raw < 0 ? vertexCount + raw : raw - 1;
+      });
       for (let i = 1; i < idxs.length - 1; i++) {
         for (const idx of [idxs[0], idxs[i], idxs[i + 1]]) {
           positions.push(

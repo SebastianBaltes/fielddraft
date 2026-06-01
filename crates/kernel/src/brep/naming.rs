@@ -187,22 +187,10 @@ fn cmp_axis_order(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
 }
 
 // ─── geometry helpers ─────────────────────────────────────────────────────
+// Shared algebra lives in brep::vec3; `normalize` is kept local because the
+// naming pass returns a zero axis (not the input) for a degenerate vector.
+use super::vec3::{add, dot, norm, scale, sub};
 
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
 fn normalize(a: [f64; 3]) -> [f64; 3] {
     let n = norm(a);
     if n > 1e-12 {

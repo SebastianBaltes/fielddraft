@@ -98,6 +98,7 @@ export type WidgetKind =
   | "group"
   | "tabs"
   | "expandable"
+  | "material_preset"
   | "unknown";
 
 export type UiHint = "horizontal_enum" | "opposite_direction" | "slider" | "color";
@@ -562,7 +563,7 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
     case "enum":
       return p.variants && p.variants.length > 0 ? p.variants[0].key : "";
     case "length":
-      return { value: 1, unit: "m" };
+      return { value: 1, unit: "mm" };
     case "angle":
       return { value: 0, unit: "deg" };
     case "query":
@@ -708,6 +709,7 @@ export function validateParamValue(
     case "group":
     case "tabs":
     case "expandable":
+    case "material_preset":
     case "unknown":
       return null;
   }

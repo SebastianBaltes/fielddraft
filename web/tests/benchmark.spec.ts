@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { test } from "@playwright/test";
 
 const RENDER_MODES = ["sdf-vm", "sdf-deferred"] as const;
 const WARMUP_MS = 3000;

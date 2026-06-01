@@ -288,11 +288,8 @@ function persistHiddenDatumsToStorage(ids: ReadonlySet<string>): void {
   }
 }
 
-/** Pull a user-readable message out of a wasm-bindgen-thrown error.
- *  The kernel emits strings like
- *  `"extrude regeneration failed: feature ‘extrude’: parameter
- *  ‘profiles’ invalid: sketch has no closed regions to extrude — …"`
- *  — we strip the machine-friendly prefix and keep the human tail. */
+/** Pick the origin datum plane whose normal is closest to the given
+ *  direction, expressed as a `qCreatedBy(...)` query string. */
 function normalToPlaneQuery(normal: [number, number, number]): string {
   const [nx, ny, nz] = normal;
   const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
@@ -301,6 +298,11 @@ function normalToPlaneQuery(normal: [number, number, number]): string {
   return "qCreatedBy(origin_plane_yz)";
 }
 
+/** Pull a user-readable message out of a wasm-bindgen-thrown error.
+ *  The kernel emits strings like
+ *  `"extrude regeneration failed: feature ‘extrude’: parameter
+ *  ‘profiles’ invalid: sketch has no closed regions to extrude — …"`
+ *  — we strip the machine-friendly prefix and keep the human tail. */
 function formatKernelError(err: unknown, fallback: string): string {
   if (err instanceof Error) {
     const raw = err.message ?? fallback;
@@ -579,16 +581,19 @@ export class KernelStore {
   private handleWorkerMessage(event: MessageEvent): void {
     const data = event.data as MesherBodiesResponse | undefined;
     if (!data || data.type !== "bodies") return;
-    this.workerInflight = false;
     if (data.requestId < this.latestWorkerRequestId) {
-      // Stale response — a newer rebuild is already in flight or
-      // queued. Drop it; we'll render the fresh one shortly.
+      // Stale response — a newer rebuild is already in flight or queued. Drop
+      // it; we'll render the fresh one shortly. Crucially we keep
+      // workerInflight=true here: the newer request is still outstanding, so
+      // clearing the flag would let the next scheduleWorkerRebuild post a
+      // second concurrent job whose result could clobber the newer one.
       this.pendingRefine = false;
       if (this.workerRebuildQueued) {
         this.postWorkerRebuild();
       }
       return;
     }
+    this.workerInflight = false;
     this.state = {
       ...this.state,
       meshedBodies: data.bodies,
@@ -1313,12 +1318,18 @@ export class KernelStore {
     if (!asm.active) return;
 
     const id = allocateAssemblyId();
-    const partName = name ?? `Part ${asm.document.parts.length + 1}`;
+    // Derive the default name from the highest existing "Part N" so removing a
+    // part and adding another doesn't reuse a name that's still in use.
+    const maxPartNumber = asm.document.parts.reduce((max, p) => {
+      const m = /^Part (\d+)$/.exec(p.name);
+      return m ? Math.max(max, Number(m[1])) : max;
+    }, 0);
+    const partName = name ?? `Part ${maxPartNumber + 1}`;
 
-    let meshBodies: AssemblyMeshedBody[] = [];
-    let mateConnectors: import("./assembly").MateConnectorDef[] = [];
+    const meshBodies: AssemblyMeshedBody[] = [];
+    const mateConnectors: import("./assembly").MateConnectorDef[] = [];
     const savedJson = this.kernel.toJson();
-    const wasSyncOff = this.kernel.setSyncMeshing(true);
+    const syncChanged = this.kernel.setSyncMeshing(true);
     try {
       this.kernel.loadJson(documentJson);
       const bodyCount = this.kernel.bodyCount();
@@ -1344,8 +1355,14 @@ export class KernelStore {
     } catch {
       // Meshing failed — add the part with empty meshes
     } finally {
-      this.kernel.loadJson(savedJson);
-      if (wasSyncOff) this.kernel.setSyncMeshing(false);
+      // Restore the live document. If this ever throws the main kernel state
+      // would be lost, so surface it loudly rather than swallowing it.
+      try {
+        this.kernel.loadJson(savedJson);
+      } catch (err) {
+        console.error("fielddraft: failed to restore document after addPartToAssembly", err);
+      }
+      if (syncChanged) this.kernel.setSyncMeshing(false);
     }
 
     const newPart: AssemblyPartInstance = {
@@ -1536,9 +1553,13 @@ export class KernelStore {
 
   exportR3F(): void {
     if (!this.state.assembly.active) return;
-    import("./exportR3F").then(({ downloadR3FExport }) => {
-      downloadR3FExport(this.state.assembly.document);
-    });
+    import("./exportR3F")
+      .then(({ downloadR3FExport }) => {
+        downloadR3FExport(this.state.assembly.document);
+      })
+      .catch((err) => {
+        console.error("fielddraft: R3F export failed", err);
+      });
   }
 
   async publishProject(): Promise<string | null> {
@@ -1906,12 +1927,8 @@ export class KernelStore {
     return true;
   }
 
-  /** K7.22 UX-fix (2): commit-style setter for a feature's world-
-   *  space translate. Used by the viewport gizmo drag handler —
-   *  it keeps the store in sync with the kernel, triggers a worker
-   *  re-mesh and refreshes the features list so the outliner
-   *  highlight and the gizmo's own placeholder position both
-   *  follow the new translate. Returns `true` if anything changed. */
+  /** Add a box centred half a depth out along a picked face's normal —
+   *  the "pull a face out" shortcut wired to the viewport. */
   extrudeFace(
     point: [number, number, number],
     normal: [number, number, number],
@@ -1931,6 +1948,12 @@ export class KernelStore {
     this.notify();
   }
 
+  /** K7.22 UX-fix (2): commit-style setter for a feature's world-
+   *  space translate. Used by the viewport gizmo drag handler —
+   *  it keeps the store in sync with the kernel, triggers a worker
+   *  re-mesh and refreshes the features list so the outliner
+   *  highlight and the gizmo's own placeholder position both
+   *  follow the new translate. Returns `true` if anything changed. */
   setFeatureTranslate(id: number, x: number, y: number, z: number): boolean {
     if (!this.kernel.setFeatureTranslate(id, x, y, z)) return false;
     this.commit();

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
@@ -10,6 +10,15 @@ import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 
 function meta(kind: string) {
   return FEATURE_TYPE_META[kind] ?? { label: kind, glyph: "?" };
+}
+
+/** Shared HTML5 drag-start handler: stamps the payload onto the
+ *  dataTransfer and marks the drag as a copy. */
+function dragStartCopy(dragType: string | undefined, payload: string) {
+  return (e: DragEvent) => {
+    e.dataTransfer.setData(dragType ?? "fielddraft/feature", payload);
+    e.dataTransfer.effectAllowed = "copy";
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -47,10 +56,7 @@ export function FeatureButton({
       disabled={disabled}
       onClick={onClick}
       draggable={draggable}
-      onDragStart={draggable ? (e) => {
-        e.dataTransfer.setData(dragType ?? "fielddraft/feature", kind);
-        e.dataTransfer.effectAllowed = "copy";
-      } : undefined}
+      onDragStart={draggable ? dragStartCopy(dragType, kind) : undefined}
     >
       <span className="glyph" aria-hidden="true">{m.glyph}</span>
       <span className="tool-label">{labelOverride ?? m.label}</span>
@@ -138,10 +144,7 @@ export function FeatureDropdownButton({
         className={"tool primary" + (activeKey !== undefined ? " is-active" : "")}
         title={current.title ?? cm.label}
         draggable={draggable}
-        onDragStart={draggable ? (e) => {
-          e.dataTransfer.setData(dragType ?? "fielddraft/feature", current.key);
-          e.dataTransfer.effectAllowed = "copy";
-        } : undefined}
+        onDragStart={draggable ? dragStartCopy(dragType, current.key) : undefined}
         onClick={() => invoke(current.key)}
       >
         <span className="glyph" aria-hidden="true">{cm.glyph}</span>
@@ -174,10 +177,7 @@ export function FeatureDropdownButton({
                 className={"split-row" + (isActive ? " is-active" : "")}
                 title={item.title ?? im.label}
                 draggable={draggable}
-                onDragStart={draggable ? (e) => {
-                  e.dataTransfer.setData(dragType ?? "fielddraft/feature", item.key);
-                  e.dataTransfer.effectAllowed = "copy";
-                } : undefined}
+                onDragStart={draggable ? dragStartCopy(dragType, item.key) : undefined}
                 onClick={() => {
                   invoke(item.key);
                   setOpen(false);
@@ -244,17 +244,19 @@ const TRANSFORM_ITEMS: DropdownItem[] = [
   { key: "scale",     kind: "scale",     title: "Scale" },
 ];
 
-const SKETCH_TOOL_LABELS: Record<string, { label: string; glyph: string }> = {
-  sketch_point:     meta("sketch_point"),
-  sketch_line:      meta("sketch_line"),
-  sketch_rectangle: meta("sketch_rectangle"),
-  sketch_circle:    meta("sketch_circle"),
-  sketch_polygon:   meta("sketch_polygon"),
-  sketch_arc:       meta("sketch_arc"),
-  sketch_trim:      meta("sketch_trim"),
-  sketch_mirror:    meta("sketch_mirror"),
-  sketch_offset:    meta("sketch_offset"),
-};
+// Allowlist of sketch tools the toolbar renders, regardless of what the
+// kernel reports. FeatureButton resolves each one's label/glyph via meta().
+const SKETCH_TOOL_KEYS = new Set<string>([
+  "sketch_point",
+  "sketch_line",
+  "sketch_rectangle",
+  "sketch_circle",
+  "sketch_polygon",
+  "sketch_arc",
+  "sketch_trim",
+  "sketch_mirror",
+  "sketch_offset",
+]);
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 
@@ -315,8 +317,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
         <div className="group sketch-tool-row">
           {sketchToolTypes.map((type) => {
-            const label = SKETCH_TOOL_LABELS[type];
-            if (!label) return null;
+            if (!SKETCH_TOOL_KEYS.has(type)) return null;
             return (
               <FeatureButton
                 key={type}
