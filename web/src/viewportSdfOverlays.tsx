@@ -25,7 +25,6 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
-import { requestPresentKick } from "./presentKick";
 import type { BRepEdgeMode } from "./SettingsMenu";
 
 export const OVERLAY_LAYER = 1;
@@ -186,7 +185,6 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
-          requestPresentKick();
           invalidate();
         })
         .catch((err) => {
@@ -322,7 +320,6 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
-          requestPresentKick();
           invalidate();
         })
         .catch((err) => {

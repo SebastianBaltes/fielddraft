@@ -41,7 +41,6 @@ import {
   ReferenceMesh,
   PickHud,
   PerfProbe,
-  PresentKick,
 } from "./viewportOverlays";
 import { PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
@@ -416,15 +415,12 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
             // renderer/scene are ready never attach to the live scene and
             // stay invisible (planes, grid and mesh all missing on boot).
             // Mounting them only after `onCreated` guarantees they land in
-            // the ready scene. The WebGPU swapchain present-kick that fixes
-            // "blank until I resize the window" lives in <PresentKick>, which
-            // runs inside the render loop once the first frame is submitted.
+            // the ready scene.
             setCanvasReady(true);
           }}
         >
           {canvasReady && (
             <>
-              <PresentKick />
               <ClearColorSync />
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
