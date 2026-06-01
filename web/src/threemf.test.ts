@@ -82,7 +82,7 @@ describe("export3mfRoundtrip", () => {
     };
 
     const zip = export3mfRoundtrip(modelBytes, stash);
-    const reimported = import3mf(zip.buffer);
+    const reimported = import3mf(zip.buffer as ArrayBuffer);
 
     expect(reimported.meshes).toHaveLength(1);
     expect(reimported.meshes[0].positions.length).toBe(9);

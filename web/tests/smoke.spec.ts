@@ -1316,7 +1316,10 @@ test.describe("FieldDraft smoke", () => {
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-      const { importStep } = await import("/src/stepImport.ts");
+      // Vite dev-server URL resolved at runtime in the browser; typed as a
+      // non-literal specifier so tsc treats it as a dynamic import (any).
+      const stepModPath: string = "/src/stepImport.ts";
+      const { importStep } = await import(/* @vite-ignore */ stepModPath);
       const { positions, normals, indices } = await importStep(bytes);
       const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
       const nrmF32 = normals instanceof Float32Array ? normals : new Float32Array(normals);
@@ -1500,7 +1503,10 @@ test.describe("FieldDraft smoke", () => {
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-      const { importStep } = await import("/src/stepImport.ts");
+      // Vite dev-server URL resolved at runtime in the browser; typed as a
+      // non-literal specifier so tsc treats it as a dynamic import (any).
+      const stepModPath: string = "/src/stepImport.ts";
+      const { importStep } = await import(/* @vite-ignore */ stepModPath);
       const { positions, normals, indices } = await importStep(bytes);
       const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
       const nrmF32 = normals instanceof Float32Array ? normals : new Float32Array(normals);

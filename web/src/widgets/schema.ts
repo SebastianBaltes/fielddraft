@@ -98,6 +98,7 @@ export type WidgetKind =
   | "group"
   | "tabs"
   | "expandable"
+  | "material_preset"
   | "unknown";
 
 export type UiHint = "horizontal_enum" | "opposite_direction" | "slider" | "color";
@@ -708,6 +709,7 @@ export function validateParamValue(
     case "group":
     case "tabs":
     case "expandable":
+    case "material_preset":
     case "unknown":
       return null;
   }

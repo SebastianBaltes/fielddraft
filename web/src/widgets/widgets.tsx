@@ -36,7 +36,6 @@ import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
 import {
   ANGLE_UNITS,
-  LENGTH_UNITS,
   type AngleUnit,
   type EnumVariant,
   type LengthUnit,

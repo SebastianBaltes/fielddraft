@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import type { WebGPURenderer } from "three/webgpu";
 import { useKernelStore } from "./store";
 import {
   initVmPipeline,
@@ -88,7 +89,7 @@ function showGpuError(err: unknown): void {
 }
 
 function renderOverlayLayer(
-  wgpuRenderer: THREE.WebGPURenderer,
+  wgpuRenderer: WebGPURenderer,
   scene: THREE.Scene,
   camera: THREE.Camera,
   renderSdf: () => void,
@@ -165,7 +166,7 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
 
       showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
-      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      const wgpu = renderer as unknown as WebGPURenderer;
       compileVmPipeline(pipeline, wgpu, camera)
         .then(() => {
           // Ignore a compile that finished for a pipeline we've since
@@ -201,7 +202,7 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
 
     if (!readyRef.current || compilingRef.current) return;
 
-    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderVmFrame(pipeline, wgpuRenderer, camera),
@@ -287,7 +288,7 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
 
       showCompilationStatus("Compiling shader…");
       compilingRef.current = true;
-      const wgpu = renderer as unknown as THREE.WebGPURenderer;
+      const wgpu = renderer as unknown as WebGPURenderer;
       compileDeferredPipeline(pipeline, wgpu, camera)
         .then(() => {
           // Ignore a compile that finished for a pipeline we've since
@@ -328,7 +329,7 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
 
     if (!readyRef.current || compilingRef.current) return;
 
-    const wgpuRenderer = renderer as unknown as THREE.WebGPURenderer;
+    const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderDeferredFrame(pipeline, wgpuRenderer, camera),
