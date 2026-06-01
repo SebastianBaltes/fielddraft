@@ -756,13 +756,11 @@ impl FeatureCall {
 pub struct Document {
     pub schema_version: u32,
     pub name: String,
-    /// In-memory feature spine. Not serialized — the wire format
-    /// uses `feature_calls` exclusively. On deserialize the kernel
-    /// rehydrates this from `feature_calls` via `FeatureRegistry::regenerate`.
-    #[serde(skip_serializing, default)]
-    pub features: Vec<Feature>,
-    /// Canonical wire form: each entry is a typed function call
-    /// that the kernel can replay into the `features` spine.
+    /// Canonical wire form and single source of truth: each entry is
+    /// a typed function call. DL-61 C2b dissolved the old in-memory
+    /// `features` spine — the kernel now decodes these calls into a
+    /// kernel-side `DecodedFeature` IR at regeneration time, so the
+    /// protocol document carries nothing but the calls.
     #[serde(default)]
     pub feature_calls: Vec<FeatureCall>,
     /// Monotonic counter that seeds the next [`FeatureId`].
@@ -786,7 +784,6 @@ impl Default for Document {
         Self {
             schema_version: SCHEMA_VERSION,
             name: "Untitled".to_string(),
-            features: Vec::new(),
             feature_calls: Vec::new(),
             next_feature_id: 1,
             variables: std::collections::BTreeMap::new(),
@@ -814,7 +811,7 @@ mod tests {
     fn default_document_is_empty() {
         let doc = Document::default();
         assert_eq!(doc.schema_version, SCHEMA_VERSION);
-        assert!(doc.features.is_empty());
+        assert!(doc.feature_calls.is_empty());
         assert_eq!(doc.next_feature_id, 1);
     }
 
@@ -847,7 +844,6 @@ mod tests {
         assert_eq!(parsed.schema_version, doc.schema_version);
         assert_eq!(parsed.name, doc.name);
         assert_eq!(parsed.next_feature_id, doc.next_feature_id);
-        assert!(parsed.features.is_empty());
         assert_eq!(parsed.feature_calls, doc.feature_calls);
         assert_eq!(parsed.feature_calls.len(), 1);
         assert_eq!(parsed.feature_calls[0].id, id);
@@ -894,7 +890,6 @@ mod tests {
         assert_eq!(parsed.name, doc.name);
         assert_eq!(parsed.next_feature_id, doc.next_feature_id);
         assert_eq!(parsed.feature_calls, doc.feature_calls);
-        assert!(parsed.features.is_empty());
     }
 
     #[test]

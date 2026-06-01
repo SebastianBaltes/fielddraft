@@ -54,7 +54,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use fielddraft_protocol::{Document, FeatureId};
+use fielddraft_protocol::FeatureId;
+
+use crate::csg::DecodedFeature;
 
 /// Parsed form of a `q…(…)` query string. Three variants match the
 /// README's "query minimum" vocabulary.
@@ -271,11 +273,11 @@ pub enum QueryElementKind {
 /// [`Document::features`]; if so, emit its contributor set as a
 /// match. The result is deterministic for a given document state,
 /// which is what the [`QueryCache`] relies on.
-pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
+pub fn evaluate_query(features: &[DecodedFeature], expr: &QueryExpr) -> QueryResult {
     match expr {
         QueryExpr::CreatedBy(id) => QueryResult {
             kind: QueryElementKind::Set,
-            matches: if feature_exists(document, id) {
+            matches: if feature_exists(features, id) {
                 vec![vec![id.clone()]]
             } else {
                 Vec::new()
@@ -283,7 +285,7 @@ pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
         },
         QueryExpr::FaceOf(id) => QueryResult {
             kind: QueryElementKind::Face,
-            matches: if feature_exists(document, id) {
+            matches: if feature_exists(features, id) {
                 vec![vec![id.clone()]]
             } else {
                 Vec::new()
@@ -291,7 +293,7 @@ pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
         },
         QueryExpr::EdgeBetween(a, b) => QueryResult {
             kind: QueryElementKind::Edge,
-            matches: if feature_exists(document, a) && feature_exists(document, b) {
+            matches: if feature_exists(features, a) && feature_exists(features, b) {
                 vec![vec![a.clone(), b.clone()]]
             } else {
                 Vec::new()
@@ -300,7 +302,7 @@ pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
         QueryExpr::AllRegions(id) | QueryExpr::Region(id, _) | QueryExpr::Regions(id, _) => {
             QueryResult {
                 kind: QueryElementKind::Face,
-                matches: if feature_exists(document, id) {
+                matches: if feature_exists(features, id) {
                     vec![vec![id.clone()]]
                 } else {
                     Vec::new()
@@ -310,8 +312,8 @@ pub fn evaluate_query(document: &Document, expr: &QueryExpr) -> QueryResult {
     }
 }
 
-fn feature_exists(document: &Document, id: &FeatureId) -> bool {
-    document.features.iter().any(|f| &f.id == id)
+fn feature_exists(features: &[DecodedFeature], id: &FeatureId) -> bool {
+    features.iter().any(|f| &f.id == id)
 }
 
 /// Version-keyed memoisation layer for query evaluation.
@@ -375,12 +377,12 @@ impl QueryCache {
     /// the previous failure.
     pub fn get_or_evaluate(
         &mut self,
-        document: &Document,
+        features: &[DecodedFeature],
         expr_str: &str,
     ) -> Result<&QueryResult, QueryParseError> {
         if !self.entries.contains_key(expr_str) {
             let expr = parse_query(expr_str)?;
-            let result = evaluate_query(document, &expr);
+            let result = evaluate_query(features, &expr);
             self.entries.insert(expr_str.to_string(), result);
         }
         Ok(&self.entries[expr_str])
@@ -396,8 +398,8 @@ mod tests {
         FeatureId::from_u32(n)
     }
 
-    fn box_feature(n: u32) -> Feature {
-        Feature {
+    fn box_feature(n: u32) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: id(n),
             name: format!("Box {n}"),
             op: BoolOp::Union,
@@ -414,21 +416,11 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
-    fn doc_with_features(features: Vec<Feature>) -> Document {
-        let max = features.iter().fold(0_u32, |acc, f| {
-            f.id.as_u32_if_flat().map(|n| acc.max(n)).unwrap_or(acc)
-        });
-        Document {
-            schema_version: fielddraft_protocol::SCHEMA_VERSION,
-            name: "queries test".to_string(),
-            features,
-            feature_calls: Vec::new(),
-            next_feature_id: max + 1,
-            variables: std::collections::BTreeMap::new(),
-        }
+    fn doc_with_features(features: Vec<DecodedFeature>) -> Vec<DecodedFeature> {
+        features
     }
 
     // ─── parse_query ──────────────────────────────────────────
@@ -567,7 +559,7 @@ mod tests {
         assert_eq!(cache.len(), 1);
 
         // Simulate a mutation that removes feature 1.
-        doc.features.clear();
+        doc.clear();
         cache.set_version(1);
         assert_eq!(cache.len(), 0);
 

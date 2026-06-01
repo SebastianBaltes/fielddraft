@@ -468,19 +468,6 @@ impl Kernel {
         self.redo.clear();
     }
 
-    /// Rebuild the decoded runtime IR (`self.decoded`) from the current
-    /// `document.features`. Cheap, 1:1, same order. Called at the top of
-    /// every remesh and after every regeneration so all geometry
-    /// consumers see a fresh open IR.
-    fn refresh_decoded(&mut self) {
-        self.decoded = self
-            .document
-            .features
-            .iter()
-            .map(DecodedFeature::from_feature)
-            .collect();
-    }
-
     fn rebuild_packed(&mut self) {
         // DL-61 C2b: `feature_calls` is the single source of truth.
         // Every mutator edits a call's params (or the call list) and
@@ -511,7 +498,10 @@ impl Kernel {
     /// correctly re-meshes the two bodies that changed LOD and
     /// leaves the rest untouched.
     fn rebuild_mesh_internal(&mut self) {
-        self.refresh_decoded();
+        // DL-61 C2b: `self.decoded` is produced solely by
+        // `bootstrap_features_from_calls`; every path that changes
+        // `feature_calls` (mutators, undo/redo, load) re-bootstraps
+        // before re-meshing, so the IR is already current here.
         let partitions = partition(&self.decoded);
 
         let mut previous: std::collections::HashMap<FeatureId, Body> =
@@ -547,7 +537,7 @@ impl Kernel {
                     let new_transforms: Vec<fielddraft_protocol::Transform> = part
                         .feature_indices
                         .iter()
-                        .map(|&i| self.document.features[i].transform)
+                        .map(|&i| self.decoded[i].transform)
                         .collect();
                     if let Some(delta) = detect_uniform_translation(
                         &prev.last_mesh_transforms,
@@ -575,7 +565,7 @@ impl Kernel {
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
-                    .map(|&i| self.document.features[i].transform)
+                    .map(|&i| self.decoded[i].transform)
                     .collect();
                 prev.feature_indices = part.feature_indices;
                 prev.aabb = part.aabb;
@@ -595,7 +585,7 @@ impl Kernel {
                 let transforms: Vec<fielddraft_protocol::Transform> = part
                     .feature_indices
                     .iter()
-                    .map(|&i| self.document.features[i].transform)
+                    .map(|&i| self.decoded[i].transform)
                     .collect();
                 let compiled = self.compile_sdf_for(&part.feature_indices);
                 new_bodies.push(Body {
@@ -704,11 +694,10 @@ impl Kernel {
     /// Walk the current bodies and return the stable id of the one
     /// that owns `feature_id`, if any. O(bodies × features_per_body).
     fn body_containing_feature(&self, feature_id: &FeatureId) -> Option<FeatureId> {
-        // Translate the FeatureId to an index into the document's
+        // Translate the FeatureId to an index into the decoded
         // feature list first, then search the bodies for that index.
         let idx = self
-            .document
-            .features
+            .decoded
             .iter()
             .position(|f| &f.id == feature_id)?;
         self.bodies
@@ -725,47 +714,6 @@ impl Kernel {
         }
     }
 
-    fn kind_label(prim: &Primitive) -> &'static str {
-        match prim {
-            Primitive::Box { .. } => "box",
-            Primitive::Sphere { .. } => "sphere",
-            Primitive::Cylinder { .. } => "cylinder",
-            Primitive::Extrude { .. } => "extrude",
-            Primitive::Revolve { .. } => "revolve",
-            Primitive::Gyroid { .. } => "gyroid",
-            Primitive::Torus { .. } => "torus",
-            Primitive::Thread { .. } => "thread",
-            Primitive::Cone { .. } => "cone",
-            Primitive::Capsule { .. } => "capsule",
-            Primitive::HexPrism { .. } => "hex_prism",
-            Primitive::ImportedMesh { .. } => "imported_mesh",
-            Primitive::Ellipsoid { .. } => "ellipsoid",
-        }
-    }
-
-    /// K6b.3a: for a primitive-backed call the spine primitive is
-    /// authoritative, but future non-primitive spine-backed
-    /// features (like extrude, which currently lowers to a
-    /// `Primitive::Box` placeholder) want the original call type
-    /// to leak through to the UI. Prefer the call's `type_name`
-    /// for anything that isn't a plain primitive kind.
-    fn kind_label_for_call(
-        type_name: &str,
-        prim: &Primitive,
-    ) -> &'static str {
-        match type_name {
-            "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid" => Self::kind_label(prim),
-            "imported_mesh" => "imported_mesh",
-            "extrude" => "extrude",
-            // K8.9: hole lowers to Primitive::Cylinder but must
-            // keep its own outliner label so the row renders
-            // "Hole" glyphs/colours instead of the cylinder one.
-            "hole" => "hole",
-            "gyroid" => "gyroid",
-            "fillet_edge" => "fillet_edge",
-            _ => Self::static_kind_name(type_name),
-        }
-    }
 
     fn static_kind_name(type_name: &str) -> &'static str {
         match type_name {
@@ -961,28 +909,18 @@ impl Kernel {
             serde_json::from_str(json).map_err(|e| JsError::new(&e.to_string()))?;
         self.document = document;
 
-        // K4.5.4d: if the loaded document uses the Feature-as-
-        // Function wire form (`feature_calls` populated, `features`
-        // empty), bootstrap the spine by running the calls through
-        // the feature registry. Legacy K1 documents with populated
-        // `features` keep their current loading behaviour
-        // unchanged — the K4.5.4c dual-write hook in
-        // `rebuild_packed` below still derives `feature_calls`
-        // from `features` in that case. Any error from the
-        // registry walk is surfaced as a load failure (fail-stop
-        // semantics per §4.6).
-        if self.document.features.is_empty()
-            && !self.document.feature_calls.is_empty()
-        {
-            self.bootstrap_features_from_calls()
-                .map_err(|e| JsError::new(&format!("feature regeneration failed: {e}")))?;
-        }
+        // DL-61 C2b: `feature_calls` is the sole wire form, so a load
+        // always rebuilds the decoded spine by replaying the calls
+        // through the feature registry. Any registry error surfaces
+        // as a load failure (fail-stop per §4.6).
+        self.bootstrap_features_from_calls()
+            .map_err(|e| JsError::new(&format!("feature regeneration failed: {e}")))?;
 
         self.rebuild_packed();
         // Loading is a fresh start: history is irrelevant.
         self.undo.clear();
         self.redo.clear();
-        Ok(self.document.features.len())
+        Ok(self.decoded.len())
     }
 
     /// K4.5.4d internal helper. Takes the current
@@ -1005,17 +943,22 @@ impl Kernel {
     fn bootstrap_features_from_calls(&mut self) -> Result<(), features::FeatureError> {
         let registry = features::FeatureRegistry::with_builtins();
         let calls = std::mem::take(&mut self.document.feature_calls);
-        self.document.features.clear();
         let rollback = self.rollback_after;
-        let result = {
+        // DL-61 C2b: regeneration accumulates the spine in the
+        // Context (the Document no longer holds it). We lower that
+        // accumulator into the `DecodedFeature` IR here — the sole
+        // producer of `self.decoded`. On a fail-stop error the
+        // partial spine is still lowered so the caller can render
+        // what regenerated before the failing call.
+        let (result, spine) = {
             let mut ctx = features::Context::new(&mut self.document);
             let r = registry.regenerate(&mut ctx, &calls, rollback);
             // K10.4: capture edge fillets collected during regen.
-            self.edge_fillets = ctx.edge_fillets;
-            r
+            self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
+            (r, std::mem::take(&mut ctx.features))
         };
         self.document.feature_calls = calls;
-        self.refresh_decoded();
+        self.decoded = spine.iter().map(DecodedFeature::from_feature).collect();
         result
     }
 
@@ -1026,7 +969,7 @@ impl Kernel {
 
     #[wasm_bindgen(js_name = featureCount)]
     pub fn feature_count(&self) -> usize {
-        self.document.features.len()
+        self.decoded.len()
     }
 
     // ── outliner queries ──────────────────────────────────────────────
@@ -1113,16 +1056,19 @@ impl Kernel {
         for (idx, call) in self.document.feature_calls.iter().enumerate() {
             let rb = self.rollback_after.is_some_and(|ra| idx >= ra);
             if let Some(spine) = self
-                .document
-                .features
+                .decoded
                 .iter()
                 .find(|f| f.id == call.id)
             {
+                // DL-61 C2b: for a spine-backed call the call's
+                // `type_name` already determines the outliner kind
+                // (the decoded feature carries a lowered `node`, not a
+                // `Primitive`), so we label straight off the type name.
                 summaries.push(FeatureSummary {
                     id: spine.id.clone(),
                     name: spine.name.clone(),
                     op: Self::op_label(spine.op),
-                    kind: Self::kind_label_for_call(&call.type_name, &spine.primitive),
+                    kind: Self::static_kind_name(&call.type_name),
                     translate: spine.transform.translate,
                     rotation: spine.transform.rotation,
                     scale: spine.transform.scale,
@@ -1162,7 +1108,7 @@ impl Kernel {
                     let target_id = call.params.get("target_id")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as u32;
-                    let target_name = self.document.features.iter()
+                    let target_name = self.decoded.iter()
                         .find(|f| f.id.as_u32_if_flat() == Some(target_id))
                         .map(|f| f.name.as_str())
                         .unwrap_or("?");
@@ -1551,7 +1497,7 @@ impl Kernel {
         spacing_mm: f32,
     ) -> Result<u32, JsError> {
         let source_fid = FeatureId::from_u32(source_id);
-        if !self.document.features.iter().any(|f| f.id == source_fid) {
+        if !self.decoded.iter().any(|f| f.id == source_fid) {
             return Err(JsError::new(&format!(
                 "source feature {source_id} not found on the spine"
             )));
@@ -1583,7 +1529,7 @@ impl Kernel {
         angle_deg: f32,
     ) -> Result<u32, JsError> {
         let source_fid = FeatureId::from_u32(source_id);
-        if !self.document.features.iter().any(|f| f.id == source_fid) {
+        if !self.decoded.iter().any(|f| f.id == source_fid) {
             return Err(JsError::new(&format!(
                 "source feature {source_id} not found on the spine"
             )));
@@ -1613,7 +1559,7 @@ impl Kernel {
         point_z: f32,
     ) -> Result<u32, JsError> {
         let source_fid = FeatureId::from_u32(source_id);
-        if !self.document.features.iter().any(|f| f.id == source_fid) {
+        if !self.decoded.iter().any(|f| f.id == source_fid) {
             return Err(JsError::new(&format!(
                 "source feature {source_id} not found on the spine"
             )));
@@ -1809,7 +1755,7 @@ impl Kernel {
     /// Empty scenes return all-zero extents.
     #[wasm_bindgen(js_name = sceneAabb)]
     pub fn scene_aabb(&self) -> Result<String, JsError> {
-        let tree = csg::CsgNode::from_features(&self.document.features)
+        let tree = csg::CsgNode::from_decoded(&self.decoded)
             .apply_edge_fillets(&self.edge_fillets);
         let bb = tree.aabb();
         let size = bb.size();
@@ -1883,13 +1829,11 @@ impl Kernel {
         } else {
             Some(index as usize)
         };
-        self.document.features.clear();
         if self.bootstrap_features_from_calls().is_err() {
-            // Rolling to this position left the spine unbuildable. Revert to the
-            // previous rollback position and rebuild so we never render a torn,
-            // half-built spine (document.features was just cleared above).
+            // Rolling to this position left the spine unbuildable.
+            // Revert to the previous rollback position and rebuild so
+            // we never render a torn, half-built spine.
             self.rollback_after = prev;
-            self.document.features.clear();
             let _ = self.bootstrap_features_from_calls();
         }
         self.rebuild_packed();
@@ -2068,7 +2012,7 @@ impl Kernel {
         params: serde_json::Value,
     ) -> bool {
         let target = FeatureId::from_u32(target_id);
-        if !self.document.features.iter().any(|f| f.id == target) {
+        if !self.decoded.iter().any(|f| f.id == target) {
             return false;
         }
 
@@ -2285,6 +2229,10 @@ impl Kernel {
         if let Some(prev) = self.undo.pop() {
             let current = std::mem::replace(&mut self.document, prev);
             self.redo.push(current);
+            // DL-61 C2b: snapshots carry only `feature_calls`, so the
+            // decoded spine must be regenerated from the restored
+            // call list before re-meshing.
+            let _ = self.bootstrap_features_from_calls();
             self.rebuild_packed();
             true
         } else {
@@ -2296,6 +2244,7 @@ impl Kernel {
         if let Some(next) = self.redo.pop() {
             let current = std::mem::replace(&mut self.document, next);
             self.undo.push(current);
+            let _ = self.bootstrap_features_from_calls();
             self.rebuild_packed();
             true
         } else {
@@ -2898,7 +2847,7 @@ impl Kernel {
         dy: f32,
         dz: f32,
     ) -> String {
-        let csg = CsgNode::from_features(&self.document.features)
+        let csg = CsgNode::from_decoded(&self.decoded)
             .apply_edge_fillets(&self.edge_fillets);
         let bounded = BoundedCsg::from_csg(&csg);
         let params = RaycastParams::default();
@@ -2960,8 +2909,8 @@ mod tests {
     // features directly, so they import it explicitly here.
     use fielddraft_protocol::Feature;
 
-    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
@@ -2975,11 +2924,11 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
-    fn sphere_feature(id: u32, op: BoolOp, center: [f32; 3], r: f32) -> Feature {
-        Feature {
+    fn sphere_feature(id: u32, op: BoolOp, center: [f32; 3], r: f32) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op,
@@ -2993,7 +2942,7 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
     // ─── primitive SDFs ──────────────────────────────────────────────
@@ -3110,8 +3059,8 @@ mod tests {
         assert_eq!(k.document.feature_calls[1].type_name, "sketch");
 
         // The primitive spine still has the box.
-        assert_eq!(k.document.features.len(), 1);
-        assert_eq!(k.document.features[0].id.as_u32_if_flat(), Some(box_id));
+        assert_eq!(k.decoded.len(), 1);
+        assert_eq!(k.decoded[0].id.as_u32_if_flat(), Some(box_id));
 
         // listFeatures reports both rows with the right kinds.
         let list_json = k.list_features().unwrap();
@@ -3240,8 +3189,8 @@ mod tests {
             .iter()
             .any(|c| c.type_name == "sketch"));
         // And the primitive spine still has the original box.
-        assert_eq!(k.document.features.len(), 1);
-        assert_eq!(k.document.features[0].id.as_u32_if_flat(), Some(box_id));
+        assert_eq!(k.decoded.len(), 1);
+        assert_eq!(k.decoded[0].id.as_u32_if_flat(), Some(box_id));
     }
 
     // Error-path tests for `add_sketch` and `get_sketch_sub_calls`
@@ -3283,14 +3232,13 @@ mod tests {
 
         // One primitive on the spine — the extrude.
         // (Sketches don't push onto `features`.)
-        assert_eq!(k.document.features.len(), 1);
+        assert_eq!(k.decoded.len(), 1);
         let extrude_spine = k
-            .document
-            .features
+            .decoded
             .iter()
             .find(|f| f.id.as_u32_if_flat() == Some(extrude_id))
             .expect("extrude spine entry");
-        match &extrude_spine.primitive {
+        match extrude_spine.export_primitive().expect("extrude primitive") {
             Primitive::Extrude {
                 sketch,
                 half_depth_z,
@@ -3335,10 +3283,9 @@ mod tests {
             .unwrap();
         k.add_extrude(sketch_id, 4.0, BoolOp::TAG_DIFFERENCE, 0.0).unwrap();
         let extrude_spine = k
-            .document
-            .features
+            .decoded
             .iter()
-            .find(|f| matches!(f.primitive, Primitive::Extrude { .. }))
+            .find(|f| matches!(f.export_primitive(), Some(Primitive::Extrude { .. })))
             .expect("extrude spine entry");
         assert_eq!(extrude_spine.op, BoolOp::Difference);
     }
@@ -3375,7 +3322,7 @@ mod tests {
         assert!(kinds.contains(&"linear_pattern"));
 
         // The spine has 3 entries: the box + two clones.
-        assert_eq!(k.document.features.len(), 3);
+        assert_eq!(k.decoded.len(), 3);
     }
 
     // ─── K7.5: editable feature params ──────────────────────────
@@ -3415,10 +3362,10 @@ mod tests {
 
         // The spine feature must carry the new extents, and the
         // feature id stays stable.
-        assert_eq!(k.document.features.len(), 1);
-        let feat = &k.document.features[0];
+        assert_eq!(k.decoded.len(), 1);
+        let feat = &k.decoded[0];
         assert_eq!(feat.id.as_u32_if_flat(), Some(id));
-        match &feat.primitive {
+        match feat.export_primitive().expect("box primitive") {
             Primitive::Box { half_extents, .. } => {
                 assert!((half_extents[0] - 25.0).abs() < 1e-5);
                 assert!((half_extents[1] - 15.0).abs() < 1e-5);
@@ -3531,7 +3478,7 @@ mod tests {
             k.document.feature_calls.iter().any(|c| c.id == FeatureId::from_u32(hole_id)),
             "hole call present before remove"
         );
-        let hole_spine_pre = k.document.features.iter().filter(|f| {
+        let hole_spine_pre = k.decoded.iter().filter(|f| {
             let fid = FeatureId::from_u32(hole_id);
             f.id == fid || feature_id_is_descendant_of(&f.id, &fid)
         }).count();
@@ -3545,7 +3492,7 @@ mod tests {
             !k.document.feature_calls.iter().any(|c| c.id == FeatureId::from_u32(hole_id)),
             "hole call was removed"
         );
-        let hole_spine_post = k.document.features.iter().filter(|f| {
+        let hole_spine_post = k.decoded.iter().filter(|f| {
             let fid = FeatureId::from_u32(hole_id);
             f.id == fid || feature_id_is_descendant_of(&f.id, &fid)
         }).count();
@@ -3553,7 +3500,7 @@ mod tests {
 
         // The base box is untouched.
         assert!(
-            k.document.features.iter().any(|f| f.id == FeatureId::from_u32(box_id)),
+            k.decoded.iter().any(|f| f.id == FeatureId::from_u32(box_id)),
             "unrelated box remains"
         );
     }
@@ -3628,9 +3575,9 @@ mod tests {
         let id = k
             .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
             .unwrap();
-        assert_eq!(k.document.features[0].op, BoolOp::Union);
+        assert_eq!(k.decoded[0].op, BoolOp::Union);
         k.set_feature_op(id, BoolOp::TAG_DIFFERENCE).unwrap();
-        assert_eq!(k.document.features[0].op, BoolOp::Difference);
+        assert_eq!(k.decoded[0].op, BoolOp::Difference);
     }
 
     #[test]
@@ -4213,13 +4160,12 @@ mod tests {
     /// and break the length equality. Locks that every call-first
     /// mutator leaves the spine consistent with the call list.
     fn assert_spine_matches_calls(k: &Kernel) {
-        let doc = &k.document;
         assert_eq!(
-            doc.features.len(),
-            doc.feature_calls.len(),
+            k.decoded.len(),
+            k.document.feature_calls.len(),
             "spine length diverged from feature_calls",
         );
-        for (f, c) in doc.features.iter().zip(&doc.feature_calls) {
+        for (f, c) in k.decoded.iter().zip(&k.document.feature_calls) {
             assert_eq!(f.id, c.id, "spine id drifted from its feature_call");
         }
     }
@@ -4303,8 +4249,7 @@ mod tests {
         k.set_feature_op(id_cyl, BoolOp::TAG_DIFFERENCE).unwrap();
         assert_spine_matches_calls(&k);
         let cyl_call_idx = k
-            .document
-            .features
+            .decoded
             .iter()
             .position(|f| f.id == FeatureId::from_u32(id_cyl))
             .unwrap();
@@ -4316,12 +4261,12 @@ mod tests {
         // Mutation 4: reorder the cylinder to the front.
         assert!(k.reorder_feature(id_cyl, 0));
         assert_spine_matches_calls(&k);
-        assert_eq!(k.document.features[0].id, FeatureId::from_u32(id_cyl));
+        assert_eq!(k.decoded[0].id, FeatureId::from_u32(id_cyl));
 
         // Mutation 5: remove the box.
         assert!(k.remove_feature(id_box));
         assert_spine_matches_calls(&k);
-        assert_eq!(k.document.features.len(), 2);
+        assert_eq!(k.decoded.len(), 2);
 
         // Mutation 6: full transform write on the sphere.
         assert!(k.set_feature_transform(
@@ -4421,20 +4366,20 @@ mod tests {
         }"#;
 
         k.load_json(json).unwrap();
-        assert_eq!(k.document.features.len(), 2);
+        assert_eq!(k.decoded.len(), 2);
 
-        let box_f = &k.document.features[0];
+        let box_f = &k.decoded[0];
         assert_eq!(box_f.name, "Base");
         assert!(matches!(
-            box_f.primitive,
-            Primitive::Box { half_extents, .. } if half_extents == [5.0, 5.0, 5.0]
+            box_f.export_primitive(),
+            Some(Primitive::Box { half_extents, .. }) if half_extents == [5.0, 5.0, 5.0]
         ));
 
-        let sphere_f = &k.document.features[1];
+        let sphere_f = &k.decoded[1];
         assert_eq!(sphere_f.name, "Hole");
         assert!(matches!(
-            sphere_f.primitive,
-            Primitive::Sphere { radius, .. } if radius == 3.0
+            sphere_f.export_primitive(),
+            Some(Primitive::Sphere { radius, .. }) if radius == 3.0
         ));
         assert_eq!(sphere_f.transform.translate, [20.0, 0.0, 0.0]);
         assert_eq!(sphere_f.op, BoolOp::Difference);
@@ -4481,9 +4426,9 @@ mod tests {
 
         let mut k2 = Kernel::new();
         k2.load_json(&bootstrap_json).unwrap();
-        assert_eq!(k2.document.features.len(), 1);
+        assert_eq!(k2.decoded.len(), 1);
 
-        let loaded = &k2.document.features[0];
+        let loaded = &k2.decoded[0];
         assert_eq!(loaded.transform.translate, [100.0, 200.0, 300.0]);
         assert!((loaded.transform.rotation[0]).abs() < 1e-6);
         assert!((loaded.transform.rotation[1]).abs() < 1e-6);
@@ -4536,7 +4481,7 @@ mod tests {
             0.0,
         )
         .unwrap();
-        let original_features = k1.document.features.clone();
+        let original_features = k1.decoded.clone();
 
         // Zero out `features` and reload.
         let json = k1.to_json().unwrap();
@@ -4546,17 +4491,17 @@ mod tests {
 
         let mut k2 = Kernel::new();
         k2.load_json(&bootstrap_json).unwrap();
-        assert_eq!(k2.document.features.len(), 3);
+        assert_eq!(k2.decoded.len(), 3);
 
         // Every reloaded feature should match its pre-bootstrap
         // counterpart byte for byte.
         for (original, loaded) in
-            original_features.iter().zip(k2.document.features.iter())
+            original_features.iter().zip(k2.decoded.iter())
         {
             assert_eq!(loaded.id, original.id);
             assert_eq!(loaded.name, original.name);
             assert_eq!(loaded.op, original.op);
-            assert_eq!(loaded.primitive, original.primitive);
+            assert_eq!(loaded.export_primitive(), original.export_primitive());
             assert_eq!(loaded.transform.translate, original.transform.translate);
             assert_eq!(loaded.transform.rotation, original.transform.rotation);
             assert_eq!(loaded.transform.scale, original.transform.scale);
@@ -4658,7 +4603,7 @@ mod tests {
         assert!(k1.set_feature_transform(
             box_id, 1.0, 2.0, 3.0, 0.0, 0.0, s, c, 1.75, 1.75, 1.75,
         ));
-        let original_features = k1.document.features.clone();
+        let original_features = k1.decoded.clone();
 
         // Save through the kernel and reality-check that the
         // wire form doesn't carry the spine.
@@ -4669,14 +4614,14 @@ mod tests {
         // Load into a fresh kernel and verify the spine.
         let mut k2 = Kernel::new();
         k2.load_json(&json).unwrap();
-        assert_eq!(k2.document.features.len(), 2);
+        assert_eq!(k2.decoded.len(), 2);
         for (original, loaded) in
-            original_features.iter().zip(k2.document.features.iter())
+            original_features.iter().zip(k2.decoded.iter())
         {
             assert_eq!(loaded.id, original.id);
             assert_eq!(loaded.name, original.name);
             assert_eq!(loaded.op, original.op);
-            assert_eq!(loaded.primitive, original.primitive);
+            assert_eq!(loaded.export_primitive(), original.export_primitive());
             assert_eq!(loaded.transform.translate, original.transform.translate);
             assert_eq!(loaded.transform.rotation, original.transform.rotation);
             assert_eq!(loaded.transform.scale, original.transform.scale);
@@ -4721,14 +4666,14 @@ mod tests {
         let mut k = Kernel::new();
         let _box1 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0,0.0,0.0, 20.0,20.0,20.0).unwrap();
         let box2 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 10.0,0.0,0.0, 15.0,15.0,15.0).unwrap();
-        assert_eq!(k.document.features.len(), 2);
-        assert_eq!(k.document.features[0].op, BoolOp::Union);
-        assert_eq!(k.document.features[1].op, BoolOp::Union);
+        assert_eq!(k.decoded.len(), 2);
+        assert_eq!(k.decoded[0].op, BoolOp::Union);
+        assert_eq!(k.decoded[1].op, BoolOp::Union);
 
         let bool_id = k.add_boolean().unwrap();
         // Initially Union with empty tools — no spine change
-        assert_eq!(k.document.features[0].op, BoolOp::Union);
-        assert_eq!(k.document.features[1].op, BoolOp::Union);
+        assert_eq!(k.decoded[0].op, BoolOp::Union);
+        assert_eq!(k.decoded[1].op, BoolOp::Union);
 
         // Set tools to box2 + operation to Subtract (simulates tab switch)
         let params = serde_json::json!({
@@ -4739,8 +4684,8 @@ mod tests {
         });
         k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
         // box2 should now be Difference
-        assert_eq!(k.document.features[0].op, BoolOp::Union, "box1 stays Union");
-        assert_eq!(k.document.features[1].op, BoolOp::Difference, "box2 is Difference after Subtract");
+        assert_eq!(k.decoded[0].op, BoolOp::Union, "box1 stays Union");
+        assert_eq!(k.decoded[1].op, BoolOp::Difference, "box2 is Difference after Subtract");
 
         // Switch tab to Union
         let params = serde_json::json!({
@@ -4750,7 +4695,7 @@ mod tests {
             "keep_tools": false,
         });
         k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
-        assert_eq!(k.document.features[1].op, BoolOp::Union, "box2 reverts to Union");
+        assert_eq!(k.decoded[1].op, BoolOp::Union, "box2 reverts to Union");
 
         // Switch tab to Intersect
         let params = serde_json::json!({
@@ -4760,7 +4705,7 @@ mod tests {
             "keep_tools": false,
         });
         k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
-        assert_eq!(k.document.features[1].op, BoolOp::Intersect, "box2 is Intersect");
+        assert_eq!(k.decoded[1].op, BoolOp::Intersect, "box2 is Intersect");
     }
 
     #[test]
@@ -4784,10 +4729,10 @@ mod tests {
         });
         k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
 
-        assert_eq!(k.document.features[1].op, BoolOp::Difference);
+        assert_eq!(k.decoded[1].op, BoolOp::Difference);
         assert_eq!(k.body_count(), 1, "box and sphere-diff share one body");
 
-        let tree = csg::CsgNode::from_features(&k.document.features);
+        let tree = csg::CsgNode::from_decoded(&k.decoded);
         let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
         // sphere center [30,0,0] radius 40 → extends x=-10..70
         assert!(sdf([-40.0, 0.0, 0.0]) < 0.0, "inside box, outside sphere: stays solid");
@@ -4801,7 +4746,7 @@ mod tests {
     #[test]
     fn body_brep_counts_box_is_watertight_cube() {
         let mut k = Kernel::new();
-        k.document.features = vec![box_feature(
+        k.decoded = vec![box_feature(
             1,
             BoolOp::Union,
             [0.0, 0.0, 0.0],
@@ -4823,7 +4768,7 @@ mod tests {
     #[test]
     fn body_brep_cache_is_lazy_and_reused() {
         let mut k = Kernel::new();
-        k.document.features = vec![box_feature(
+        k.decoded = vec![box_feature(
             1,
             BoolOp::Union,
             [0.0, 0.0, 0.0],
@@ -4856,7 +4801,7 @@ mod tests {
     #[test]
     fn body_brep_invalidated_on_remesh() {
         let mut k = Kernel::new();
-        k.document.features = vec![box_feature(
+        k.decoded = vec![box_feature(
             1,
             BoolOp::Union,
             [0.0, 0.0, 0.0],
@@ -4868,10 +4813,7 @@ mod tests {
 
         // Grow the box → geometry hash changes → full remesh → cache
         // must be cleared so the next query re-weaves.
-        k.document.features[0].primitive = Primitive::Box {
-            center: [0.0, 0.0, 0.0],
-            half_extents: [2.0, 2.0, 2.0],
-        };
+        k.decoded[0] = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
         k.rebuild_mesh_internal();
         assert!(
             k.bodies[0].brep.is_none(),
@@ -4883,7 +4825,7 @@ mod tests {
     fn body_brep_never_panics_on_smooth_and_csg_bodies() {
         // (1) Lone sphere: smooth, no sharp features → must not panic.
         let mut k = Kernel::new();
-        k.document.features = vec![sphere_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], 1.0)];
+        k.decoded = vec![sphere_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], 1.0)];
         k.rebuild_mesh_internal();
         let json = k.body_brep_counts(0);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -4893,7 +4835,7 @@ mod tests {
         // (2) A CSG body (box minus an overlapping sphere) must also
         // weave without panicking.
         let mut k2 = Kernel::new();
-        k2.document.features = vec![
+        k2.decoded = vec![
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
             sphere_feature(2, BoolOp::Difference, [2.0, 2.0, 2.0], 1.5),
         ];
@@ -4950,7 +4892,7 @@ mod tests {
     #[test]
     fn body_step_export_box_is_valid_advanced_brep() {
         let mut k = Kernel::new();
-        k.document.features = vec![box_feature(
+        k.decoded = vec![box_feature(
             1,
             BoolOp::Union,
             [0.0, 0.0, 0.0],
@@ -4991,10 +4933,23 @@ mod tests {
     fn body_step_export_twisted_box_refs_resolve() {
         // A twisted box yields curved NURBS edges; the STEP graph must
         // still be referentially complete.
-        let mut feat = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
-        feat.twist_rate = 0.3;
+        let feat = DecodedFeature::from_feature(&Feature {
+            id: FeatureId::from_u32(1),
+            name: "Box 1".into(),
+            op: BoolOp::Union,
+            primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.3,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
+        });
         let mut k = Kernel::new();
-        k.document.features = vec![feat];
+        k.decoded = vec![feat];
         k.rebuild_mesh_internal();
         assert_eq!(k.body_count(), 1);
 
@@ -5043,10 +4998,7 @@ mod tests {
     fn move_reuses_local_brep_cache() {
         use body::{compute_body_placement, hash_body_local_payload, Body};
         let features: Vec<DecodedFeature> =
-            vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]
-                .iter()
-                .map(DecodedFeature::from_feature)
-                .collect();
+            vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
         let parts = body::partition(&features);
         assert_eq!(parts.len(), 1);
         let part = &parts[0];
@@ -5097,7 +5049,7 @@ mod tests {
     #[test]
     fn step_world_equivalence_under_move() {
         let mut at_origin = Kernel::new();
-        at_origin.document.features =
+        at_origin.decoded =
             vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
         at_origin.rebuild_mesh_internal();
         let step0 = at_origin.body_step_export(0);
@@ -5106,7 +5058,7 @@ mod tests {
         let mut moved = Kernel::new();
         let mut feat = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         feat.transform.translate = [10.0, 20.0, -5.0];
-        moved.document.features = vec![feat];
+        moved.decoded = vec![feat];
         moved.rebuild_mesh_internal();
         let step1 = moved.body_step_export(0);
         let pts1 = step_cartesian_points(&step1);

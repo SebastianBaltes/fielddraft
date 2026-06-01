@@ -125,6 +125,14 @@ impl std::error::Error for FeatureError {}
 /// execution.
 pub struct Context<'a> {
     pub document: &'a mut Document,
+    /// DL-61 C2b: the feature spine accumulator. Each `execute`
+    /// pushes its [`SpineFeature`] entries here (and the transform/
+    /// boolean/pattern features mutate earlier entries in place); the
+    /// kernel lowers the finished list into its `DecodedFeature` IR
+    /// once regeneration completes. The protocol [`Document`] no
+    /// longer carries a `features` field — `feature_calls` is the
+    /// sole persisted form.
+    pub features: Vec<SpineFeature>,
     /// K6b.1: solved sketch state per sketch feature id.
     pub sketches: HashMap<FeatureId, crate::sketch_features::SketchData>,
     /// K10.4: edge fillets collected during regen, applied as a
@@ -136,6 +144,7 @@ impl<'a> Context<'a> {
     pub fn new(document: &'a mut Document) -> Self {
         Self {
             document,
+            features: Vec::new(),
             sketches: HashMap::new(),
             edge_fillets: Vec::new(),
         }
@@ -358,7 +367,7 @@ fn push_primitive(
     let name = optional_display_name(def, || format!("{type_label} {id}"));
     let rotation = optional_rotation(def);
     let scale = optional_scale(def);
-    ctx.document.features.push(SpineFeature {
+    ctx.features.push(SpineFeature {
         id: id.clone(),
         name,
         op,
@@ -1055,7 +1064,7 @@ impl FeatureKind for SweepFeature {
 
         let name = optional_display_name(def, || format!("Sweep {id}"));
 
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.child("0"),
             name,
             op: d.operation,
@@ -1149,7 +1158,7 @@ fn find_target(
     feature: &'static str,
 ) -> Result<usize, FeatureError> {
     let target = FeatureId::from_u32(target_id);
-    ctx.document.features.iter().position(|f| f.id == target)
+    ctx.features.iter().position(|f| f.id == target)
         .ok_or_else(|| FeatureError::InvalidParameter {
             feature,
             name: "target_id",
@@ -1208,7 +1217,7 @@ impl FeatureKind for TranslateFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let idx = find_target(ctx, read_target_id(def), "translate")?;
-        ctx.document.features[idx].transform.translate =
+        ctx.features[idx].transform.translate =
             read_vec3(def, "translate", [0.0, 0.0, 0.0]);
         Ok(())
     }
@@ -1236,7 +1245,7 @@ impl FeatureKind for RotateFeature {
     ) -> Result<(), FeatureError> {
         let euler = read_vec3(def, "rotation", [0.0, 0.0, 0.0]);
         let idx = find_target(ctx, read_target_id(def), "rotate")?;
-        ctx.document.features[idx].transform.rotation =
+        ctx.features[idx].transform.rotation =
             euler_xyz_to_quat(euler[0], euler[1], euler[2]);
         Ok(())
     }
@@ -1264,7 +1273,7 @@ impl FeatureKind for ScaleFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let idx = find_target(ctx, read_target_id(def), "scale")?;
-        ctx.document.features[idx].transform.scale =
+        ctx.features[idx].transform.scale =
             read_vec3(def, "scale", [1.0, 1.0, 1.0]);
         Ok(())
     }
@@ -1435,7 +1444,7 @@ impl FeatureKind for ImportedMeshFeature {
             base_rotation
         };
 
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.clone(),
             name,
             op: d.op,
@@ -1559,7 +1568,7 @@ impl FeatureKind for GyroidFeature {
             })
             .collect();
 
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.child("0"),
             name,
             op,
@@ -1648,7 +1657,7 @@ impl FeatureKind for HoleFeature {
         // stray `cylinder` FeatureCall to be synthesised from
         // the derived primitive. Same pattern the K8.0 pattern
         // features use for their spine clones.
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.child("0"),
             name,
             op: BoolOp::Difference,
@@ -1893,7 +1902,7 @@ impl FeatureKind for ExtrudeFeature {
             }
         };
 
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.clone(),
             name,
             op: d.operation,
@@ -1993,7 +2002,7 @@ impl FeatureKind for RevolveFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
-        ctx.document.features.push(SpineFeature {
+        ctx.features.push(SpineFeature {
             id: id.clone(),
             name,
             op: d.operation,
@@ -2122,7 +2131,6 @@ impl FeatureKind for LinearPatternFeature {
         // Look up the source spine feature by its flat id.
         let source_fid = FeatureId::from_u32(d.source);
         let source_feature = ctx
-            .document
             .features
             .iter()
             .find(|f| f.id == source_fid)
@@ -2152,7 +2160,7 @@ impl FeatureKind for LinearPatternFeature {
                 source_feature.transform.translate[1] + offset[1],
                 source_feature.transform.translate[2] + offset[2],
             ];
-            ctx.document.features.push(clone);
+            ctx.features.push(clone);
         }
 
         Ok(())
@@ -2241,7 +2249,6 @@ impl FeatureKind for CircularPatternFeature {
 
         let source_fid = FeatureId::from_u32(d.source);
         let source_feature = ctx
-            .document
             .features
             .iter()
             .find(|f| f.id == source_fid)
@@ -2280,7 +2287,7 @@ impl FeatureKind for CircularPatternFeature {
             clone.transform.translate = new_translate;
             clone.transform.rotation =
                 crate::quat_multiply(q_delta, source_feature.transform.rotation);
-            ctx.document.features.push(clone);
+            ctx.features.push(clone);
         }
 
         Ok(())
@@ -2349,7 +2356,6 @@ impl FeatureKind for MirrorFeature {
 
         let source_fid = FeatureId::from_u32(d.source);
         let source_feature = ctx
-            .document
             .features
             .iter()
             .find(|f| f.id == source_fid)
@@ -2377,7 +2383,7 @@ impl FeatureKind for MirrorFeature {
         clone.id = id.child("1");
         clone.name = format!("{} mirror", source_feature.name);
         clone.transform.translate = reflected;
-        ctx.document.features.push(clone);
+        ctx.features.push(clone);
 
         Ok(())
     }
@@ -2557,12 +2563,11 @@ impl FeatureKind for BooleanFeature {
         // seeds a BodyPartition. Subsequent tools get the selected
         // op so they attach to that body via AABB overlap.
         let first_tool_pos = ctx
-            .document
             .features
             .iter()
             .position(|f| tool_ids.contains(&f.id));
 
-        for (idx, feature) in ctx.document.features.iter_mut().enumerate() {
+        for (idx, feature) in ctx.features.iter_mut().enumerate() {
             if !tool_ids.contains(&feature.id) {
                 continue;
             }
@@ -2811,8 +2816,8 @@ mod tests {
         );
         registry.regenerate(&mut ctx, &[call], None).unwrap();
 
-        assert_eq!(doc.features.len(), 1);
-        let f = &doc.features[0];
+        assert_eq!(ctx.features.len(), 1);
+        let f = &ctx.features[0];
         assert_eq!(f.id, id(1));
         assert_eq!(f.op, BoolOp::Union);
         assert_eq!(f.transform.translate, [100.0, 0.0, 0.0]);
@@ -2848,20 +2853,20 @@ mod tests {
         ];
         registry.regenerate(&mut ctx, &calls, None).unwrap();
 
-        assert_eq!(doc.features.len(), 2);
+        assert_eq!(ctx.features.len(), 2);
         assert!(matches!(
-            doc.features[0].primitive,
+            ctx.features[0].primitive,
             Primitive::Sphere { radius, .. } if radius == 5.0
         ));
         assert!(matches!(
-            doc.features[1].primitive,
+            ctx.features[1].primitive,
             Primitive::Cylinder {
                 radius,
                 half_height,
                 ..
             } if radius == 2.0 && half_height == 10.0
         ));
-        assert_eq!(doc.features[1].op, BoolOp::Difference);
+        assert_eq!(ctx.features[1].op, BoolOp::Difference);
     }
 
     #[test]
@@ -2875,7 +2880,7 @@ mod tests {
             err,
             FeatureError::UnknownFeatureType("not_a_feature".into())
         );
-        assert!(doc.features.is_empty());
+        assert!(ctx.features.is_empty());
     }
 
     #[test]
@@ -2893,7 +2898,7 @@ mod tests {
                 name: "half_extents"
             }
         );
-        assert!(doc.features.is_empty());
+        assert!(ctx.features.is_empty());
     }
 
     #[test]
@@ -2961,12 +2966,12 @@ mod tests {
             }
         ));
         assert_eq!(
-            doc.features.len(),
+            ctx.features.len(),
             1,
             "fail-stop: only the sphere should have landed"
         );
         assert!(matches!(
-            doc.features[0].primitive,
+            ctx.features[0].primitive,
             Primitive::Sphere { .. }
         ));
     }
@@ -3329,7 +3334,10 @@ mod tests {
         // structurally identical. That's the guarantee K4.5 is
         // built on: *the new execution layer is a faithful proxy
         // for the old one, with zero behaviour drift*.
+        // DL-61 C2b: the spine no longer lives on the Document, so
+        // the "legacy" reference list is built in a local Vec here.
         let mut legacy_doc = Document::default();
+        let mut legacy: Vec<SpineFeature> = Vec::new();
         for (kind, params) in [
             ("box", ([10.0, 10.0, 10.0], [0.0, 0.0, 0.0], BoolOp::Union)),
             (
@@ -3339,7 +3347,7 @@ mod tests {
         ] {
             let id = legacy_doc.allocate_id();
             let (half, translate, op) = params;
-            legacy_doc.features.push(SpineFeature {
+            legacy.push(SpineFeature {
                 id: id.clone(),
                 name: format!("Box {id}"),
                 op,
@@ -3393,7 +3401,7 @@ mod tests {
         // The `next_feature_id` counter differs (the registry path
         // never called `allocate_id`), so compare the feature lists
         // directly rather than the whole document.
-        assert_eq!(legacy_doc.features, registry_doc.features);
+        assert_eq!(legacy, ctx.features);
     }
 
     // ─── K4.5.4f: Length / Angle / Query / generic enum ───────
@@ -3632,8 +3640,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(doc.features.len(), 1);
-        let f = &doc.features[0];
+        assert_eq!(ctx.features.len(), 1);
+        let f = &ctx.features[0];
         assert_eq!(f.id, id(1));
         assert_eq!(f.op, BoolOp::Union);
         match &f.primitive {
@@ -3662,7 +3670,7 @@ mod tests {
             "profile_half_y": 1.0,
         });
         feature.execute(&mut ctx, &id(1), &def).unwrap();
-        let f = &doc.features[0];
+        let f = &ctx.features[0];
         match &f.primitive {
             Primitive::Box { half_extents, .. } => {
                 assert!((half_extents[2] - 25.0).abs() < 1e-5);
@@ -3685,7 +3693,7 @@ mod tests {
             "center": [100.0, 50.0, 0.0],
         });
         feature.execute(&mut ctx, &id(7), &def).unwrap();
-        let f = &doc.features[0];
+        let f = &ctx.features[0];
         assert_eq!(f.op, BoolOp::Difference);
         match &f.primitive {
             Primitive::Box { center, half_extents } => {
@@ -3750,8 +3758,8 @@ mod tests {
             extrude_def("qCreatedBy(sketch_1)", 12.0, 3.0, 4.0),
         )];
         registry.regenerate(&mut ctx, &calls, None).unwrap();
-        assert_eq!(doc.features.len(), 1);
-        match &doc.features[0].primitive {
+        assert_eq!(ctx.features.len(), 1);
+        match &ctx.features[0].primitive {
             Primitive::Box { half_extents, .. } => {
                 assert_eq!(*half_extents, [3.0, 4.0, 6.0]);
             }
@@ -3798,8 +3806,8 @@ mod tests {
 
         registry.regenerate(&mut ctx, &calls, None).unwrap();
 
-        assert_eq!(doc.features.len(), COUNT as usize);
-        for (i, f) in doc.features.iter().enumerate() {
+        assert_eq!(ctx.features.len(), COUNT as usize);
+        for (i, f) in ctx.features.iter().enumerate() {
             let expected_depth = ((i as u32 + 1) as f32) * 5.0;
             let expected_center_x = (i as f32) * SPACING_MM;
             match &f.primitive {
@@ -3872,8 +3880,8 @@ mod tests {
             .unwrap();
 
         // Source (1) + three clones = four spine entries.
-        assert_eq!(doc.features.len(), 4);
-        let source = doc
+        assert_eq!(ctx.features.len(), 4);
+        let source = ctx
             .features
             .iter()
             .find(|f| f.id == box_id)
@@ -3884,7 +3892,7 @@ mod tests {
         // increments along +X.
         for i in 1..4_u32 {
             let clone_id = pattern_id.child(i.to_string());
-            let clone = doc
+            let clone = ctx
                 .features
                 .iter()
                 .find(|f| f.id == clone_id)
@@ -3934,7 +3942,7 @@ mod tests {
             )
             .unwrap();
         // Just the source box — no clones added.
-        assert_eq!(doc.features.len(), 1);
+        assert_eq!(ctx.features.len(), 1);
     }
 
     #[test]
@@ -3971,7 +3979,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let clone = &doc.features[1];
+        let clone = &ctx.features[1];
         // Unit (3,4,0) = (0.6, 0.8, 0). Offset at i=1 is 10 mm
         // along that direction → (6, 8, 0).
         assert!((clone.transform.translate[0] - 6.0).abs() < 1e-4);
@@ -4046,7 +4054,7 @@ mod tests {
             .unwrap();
 
         // 1 source + 3 clones.
-        assert_eq!(doc.features.len(), 4);
+        assert_eq!(ctx.features.len(), 4);
         let expectations = [
             (1_u32, [0.0, 0.0, -10.0]),
             (2_u32, [-10.0, 0.0, 0.0]),
@@ -4054,7 +4062,7 @@ mod tests {
         ];
         for (i, expected) in expectations {
             let clone_id = id(2).child(i.to_string());
-            let clone = doc
+            let clone = ctx
                 .features
                 .iter()
                 .find(|f| f.id == clone_id)
@@ -4104,7 +4112,7 @@ mod tests {
             )
             .unwrap();
         // No clones — just the source.
-        assert_eq!(doc.features.len(), 1);
+        assert_eq!(ctx.features.len(), 1);
     }
 
     #[test]
@@ -4148,7 +4156,7 @@ mod tests {
         // the pivot. Offset (10-5, 0, 2-0) = (5, 0, 2). 90°
         // CCW around +Y maps (x, y, z) → (z, y, -x) = (2, 0, -5).
         // Plus pivot: (7, 0, -5).
-        let clone = &doc.features[1];
+        let clone = &ctx.features[1];
         assert!((clone.transform.translate[0] - 7.0).abs() < 1e-4);
         assert!((clone.transform.translate[1] - 0.0).abs() < 1e-4);
         assert!((clone.transform.translate[2] + 5.0).abs() < 1e-4);
@@ -4211,8 +4219,8 @@ mod tests {
             }),
         );
         registry.regenerate(&mut ctx, &[call], None).unwrap();
-        assert_eq!(doc.features.len(), 1);
-        let f = &doc.features[0];
+        assert_eq!(ctx.features.len(), 1);
+        let f = &ctx.features[0];
         match &f.primitive {
             Primitive::Cylinder { radius, .. } => {
                 // width(50) / 5 / 2 (hole → radius) = 5
@@ -4262,8 +4270,8 @@ mod tests {
             }),
         );
         registry.regenerate(&mut ctx, &[call], None).unwrap();
-        assert_eq!(doc.features.len(), 1);
-        let f = &doc.features[0];
+        assert_eq!(ctx.features.len(), 1);
+        let f = &ctx.features[0];
         // Spine entry uses the hierarchical child id `1/0` so
         // sync_feature_calls skips it.
         assert_eq!(f.id, id(1).child("0"));
@@ -4335,8 +4343,8 @@ mod tests {
             .regenerate(&mut ctx, &[box_call, sphere_call], None)
             .unwrap();
         // Only the sphere made it onto the spine.
-        assert_eq!(doc.features.len(), 1);
-        assert_eq!(doc.features[0].id, id(2));
+        assert_eq!(ctx.features.len(), 1);
+        assert_eq!(ctx.features[0].id, id(2));
     }
 
     // ─── K8.2: mirror ─────────────────────────────────────────
@@ -4372,9 +4380,9 @@ mod tests {
             )
             .unwrap();
         // Source + one mirrored clone.
-        assert_eq!(doc.features.len(), 2);
-        assert_eq!(doc.features[0].transform.translate, [10.0, 5.0, -3.0]);
-        assert_eq!(doc.features[1].transform.translate, [-10.0, 5.0, -3.0]);
+        assert_eq!(ctx.features.len(), 2);
+        assert_eq!(ctx.features[0].transform.translate, [10.0, 5.0, -3.0]);
+        assert_eq!(ctx.features[1].transform.translate, [-10.0, 5.0, -3.0]);
     }
 
     #[test]
@@ -4409,7 +4417,7 @@ mod tests {
             )
             .unwrap();
         // Reflected through x=5: 20 → -10.
-        let t = doc.features[1].transform.translate;
+        let t = ctx.features[1].transform.translate;
         assert!((t[0] - (-10.0)).abs() < 1e-5);
         assert!(t[1].abs() < 1e-5);
         assert!(t[2].abs() < 1e-5);
@@ -4446,7 +4454,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let t = doc.features[1].transform.translate;
+        let t = ctx.features[1].transform.translate;
         assert!((t[0] - (-7.0)).abs() < 1e-5);
     }
 
@@ -4535,7 +4543,7 @@ mod tests {
             .regenerate(&mut ctx, &[sketch_call, extrude_call], None)
             .unwrap();
 
-        let extrude_feature = doc
+        let extrude_feature = ctx
             .features
             .iter()
             .find(|f| f.id == extrude_id)
@@ -4596,7 +4604,7 @@ mod tests {
             .regenerate(&mut ctx, &[sketch_call, extrude_call], None)
             .unwrap();
 
-        let extrude_feature = doc
+        let extrude_feature = ctx
             .features
             .iter()
             .find(|f| f.id == extrude_id)
@@ -4662,7 +4670,7 @@ mod tests {
             .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
             .unwrap();
 
-        let revolve_feature = doc
+        let revolve_feature = ctx
             .features
             .iter()
             .find(|f| f.id == revolve_id)
@@ -4722,7 +4730,7 @@ mod tests {
                 &extrude_def("qCreatedBy(sketch_999)", 10.0, 3.0, 4.0),
             )
             .unwrap();
-        let f = &doc.features[0];
+        let f = &ctx.features[0];
         if let Primitive::Box { half_extents, .. } = &f.primitive {
             assert_eq!(*half_extents, [3.0, 4.0, 5.0]);
         } else {
@@ -4837,7 +4845,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let extrude_feature = doc
+        let extrude_feature = ctx
             .features
             .iter()
             .find(|f| f.id == extrude_id)
