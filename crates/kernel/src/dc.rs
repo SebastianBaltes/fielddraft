@@ -21,9 +21,9 @@ use std::collections::HashMap;
 ///     entry per vertex.
 ///   * `indices` — flat `u32` triangle list.
 ///   * `classifications` — one `u8` per vertex:
-///       0 = off-surface (should never appear once we've filtered the
-///           DC output), 1 = face, 2 = edge, 3 = vertex. Matches the
-///       [`ProxyElement::tag`] contract.
+///     0 = off-surface (should never appear once we've filtered the
+///     DC output), 1 = face, 2 = edge, 3 = vertex. Matches the
+///     [`ProxyElement::tag`] contract.
 ///   * `contributors` — flat `u32` array, `MAX_CONTRIBUTORS` slots per
 ///     vertex. Unused slots are set to `u32::MAX`. Readers walk the
 ///     stride and stop at the sentinel.
@@ -151,6 +151,8 @@ fn simplify_planar_faces(mesh: &mut Mesh) {
     }
 
     let mut final_indices = Vec::with_capacity(mesh.indices.len());
+    // indexes both keep[t] and mesh.indices[t*3..]; not a single-slice loop
+    #[allow(clippy::needless_range_loop)]
     for t in 0..tc {
         if keep[t] {
             final_indices.extend_from_slice(&mesh.indices[t * 3..t * 3 + 3]);
@@ -275,7 +277,7 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
 
     let mut regions = Vec::new();
 
-    for (_, tris) in &tri_groups {
+    for tris in tri_groups.values() {
         if tris.len() < 2 {
             continue;
         }
@@ -300,7 +302,7 @@ fn find_planar_regions(mesh: &Mesh) -> Vec<PlanarRegion> {
             if !loops.is_empty() {
                 // Largest loop is outer boundary, rest are holes.
                 let mut sorted = loops;
-                sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+                sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
                 let boundary = sorted.remove(0);
                 regions.push(PlanarRegion {
                     normal: n,
@@ -878,6 +880,8 @@ fn simplify_developable_faces(
     }
 
     let mut final_indices = Vec::with_capacity(mesh.indices.len());
+    // indexes both keep[t] and mesh.indices[t*3..]; not a single-slice loop
+    #[allow(clippy::needless_range_loop)]
     for t in 0..tc {
         if keep[t] {
             final_indices.extend_from_slice(&mesh.indices[t * 3..t * 3 + 3]);
@@ -977,6 +981,8 @@ fn fix_feature_normals(mesh: &mut Mesh) {
 
     let mut needs = vec![false; vc];
     let mut any = false;
+    // indexes both mesh.classifications[v] (read) and needs[v] (write)
+    #[allow(clippy::needless_range_loop)]
     for v in 0..vc {
         if mesh.classifications[v] >= 2 {
             needs[v] = true;

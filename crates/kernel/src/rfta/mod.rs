@@ -299,6 +299,9 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         normals_out.extend_from_slice(&n);
 
         let (_, cs) = node.evaluate(p, contributor_eps, EvalMode::Visual);
+        // Mesh-level proxy works at feature granularity; the per-face
+        // sub-ids stay in the analytic B-Rep path.
+        let cs = cs.feature_collapsed();
         let mut element = cs.element();
         if element == crate::csg::ProxyElement::None {
             element = crate::csg::ProxyElement::Face;
@@ -307,9 +310,7 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
         for slot in 0..MAX_CONTRIBUTORS {
             if slot < slice.len() {
-                contribs[slot] = slice[slot]
-                    .as_u32_or_root()
-                    .unwrap_or(CONTRIBUTOR_SENTINEL);
+                contribs[slot] = slice[slot].feature_id();
             }
         }
         classifications.push(element.tag());

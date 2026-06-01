@@ -324,11 +324,7 @@ fn walk_chain(
     let mut chain = vec![start];
     let mut current = start;
 
-    loop {
-        let neighbors = match adj.get(&current) {
-            Some(n) => n,
-            None => break,
-        };
+    while let Some(neighbors) = adj.get(&current) {
         let next = neighbors.iter().find(|&&n| {
             let ek = if current < n { (current, n) } else { (n, current) };
             !visited_edges.contains(&ek)

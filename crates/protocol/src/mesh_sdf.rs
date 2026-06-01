@@ -775,8 +775,8 @@ fn build_bvh(_tris: &[f32], bboxes: &[f32], tri_count: usize) -> (Vec<BvhNode>, 
         // Compute AABB for this range
         let mut aabb_min = [f32::INFINITY; 3];
         let mut aabb_max = [f32::NEG_INFINITY; 3];
-        for i in start..end {
-            let t = tri_order[i] as usize;
+        for &tri in &tri_order[start..end] {
+            let t = tri as usize;
             let bb = t * 6;
             for a in 0..3 {
                 aabb_min[a] = aabb_min[a].min(bboxes[bb + a]);

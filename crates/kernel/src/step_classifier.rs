@@ -127,11 +127,7 @@ pub fn classify_one_feature(f: &Feature) -> ClassifiedFeature {
     } else if !degradations.is_empty() {
         StepSupport::Degraded(degradations)
     } else {
-        match prim_support {
-            StepSupport::Hard => StepSupport::Hard,
-            StepSupport::Degraded(reasons) => StepSupport::Degraded(reasons),
-            other => other,
-        }
+        prim_support
     };
 
     ClassifiedFeature {

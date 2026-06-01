@@ -344,6 +344,7 @@ struct PrimitiveModifiers {
     shell_thickness: f32,
 }
 
+#[allow(clippy::too_many_arguments)] // geometry helper; param-struct refactor out of scope
 fn push_primitive(
     ctx: &mut Context<'_>,
     id: &FeatureId,
@@ -1142,8 +1143,8 @@ fn read_target_id(params: &Value) -> u32 {
     params.get("target_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32
 }
 
-fn find_target<'a>(
-    ctx: &'a mut Context<'_>,
+fn find_target(
+    ctx: &mut Context<'_>,
     target_id: u32,
     feature: &'static str,
 ) -> Result<usize, FeatureError> {
@@ -1831,17 +1832,17 @@ impl FeatureKind for ExtrudeFeature {
         // resolved-but-empty, no-resolve-use-fallback.
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
         let mut sketch_was_found_but_empty = false;
-        if let Ok(expr) = crate::queries::parse_query(d.profiles.as_str()) {
-            if let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr {
-                if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
-                    let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
-                        &sketch_data.sub_calls,
-                    );
-                    if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
-                        resolved_sketch = Some(sketch2d);
-                    } else {
-                        sketch_was_found_but_empty = true;
-                    }
+        if let Ok(crate::queries::QueryExpr::CreatedBy(sketch_id)) =
+            crate::queries::parse_query(d.profiles.as_str())
+        {
+            if let Some(sketch_data) = ctx.sketches.get(&sketch_id) {
+                let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
+                    &sketch_data.sub_calls,
+                );
+                if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
+                    resolved_sketch = Some(sketch2d);
+                } else {
+                    sketch_was_found_but_empty = true;
                 }
             }
         }
@@ -3789,7 +3790,7 @@ mod tests {
                         "profile_half_x": 5.0,
                         "profile_half_y": 5.0,
                         "center": [(i as f32) * SPACING_MM, 0.0, 0.0],
-                        "operation": if i == 0 { "union" } else { "union" },
+                        "operation": "union",
                     }),
                 )
             })
@@ -4058,6 +4059,8 @@ mod tests {
                 .iter()
                 .find(|f| f.id == clone_id)
                 .unwrap_or_else(|| panic!("missing clone {i}"));
+            // indexes both translate[k] and expected[k]; k also used in messages
+            #[allow(clippy::needless_range_loop)]
             for k in 0..3 {
                 assert!(
                     (clone.transform.translate[k] - expected[k]).abs() < 1e-4,
@@ -4776,7 +4779,7 @@ mod tests {
             ],
             None,
         );
-        let err = result.err().expect("extrude must fail on empty sketch with zero fallback");
+        let err = result.expect_err("extrude must fail on empty sketch with zero fallback");
         match err {
             FeatureError::InvalidParameter { name, message, .. } => {
                 assert_eq!(name, "profiles");

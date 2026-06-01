@@ -1,0 +1,860 @@
+//! B-Rep extraction, **Phase 3: edge & vertex extraction + phantom filter**.
+//!
+//! Implements the analytic feature extraction described in
+//! `docs/GEOMETRY-KERNEL-CONCEPT.md` ("Phase 3: Kanten- und
+//! Vertex-Extraktion"). Phase 1 ([`crate::brep::octree`]) hands us
+//! classified leaf cells; this phase turns each
+//!
+//! - **`Edge` cell** (exactly 2 colliding branches) → an [`EdgePoint`]: a
+//!   point on the intersection line of the two branch tangent planes, plus
+//!   the edge tangent and the canonical branch signature, and
+//! - **`Vertex` cell** (≥3 colliding branches) → a [`crate::brep::Vertex`]:
+//!   the least-squares intersection point of all branch tangent planes.
+//!
+//! Each candidate is run through a **phantom filter** (concept lines
+//! 235–241): the resolved point is re-evaluated against the field and kept
+//! only if it lies on the surface (`|f| < ε_phantom`); medial-axis
+//! (`f ≪ 0`) and external Voronoi-trench (`f ≫ 0`) candidates are dropped.
+//!
+//! This phase does **not** chain points into edges or fit splines — that is
+//! C.4 (edge walker) and C.5 (spline fitting).
+//!
+//! ## Per-branch sample points (design decision, see DL-4)
+//!
+//! To get a clean tangent plane for each colliding branch we need a start
+//! point that lies unambiguously in that branch's Voronoi region — *not* on
+//! the fault, where two branches are simultaneously active and the normal is
+//! ambiguous. We sample the cell's 8 corners + centre with
+//! [`crate::csg::EvalMode::Logical`]; a sample "belongs" to branch `X` when
+//! its contributor slice contains `X`. Per branch we pick the candidate
+//! whose contributor slice contains `X` with the **smallest `|f|`** (closest
+//! to the surface) and prefer samples where `X` is the *sole* contributor
+//! (cleanest tangent), then project it via Phase 2. A branch with no clean
+//! start point makes the whole cell non-extractable (we emit nothing — never
+//! a phantom).
+
+use nalgebra::{Matrix3, Vector3};
+
+use crate::brep::octree::{surface_gradient, CellClass, Octree, OctreeCell};
+use crate::brep::projection::{project_to_surface, ProjectedPoint};
+use crate::brep::Vertex;
+use crate::bvh::BoundedCsg;
+use crate::csg::{BranchId, EvalMode};
+
+/// Surface-distance tolerance for the Newton projection (Phase 2). Tight —
+/// this is the convergence criterion of the projection itself, not the
+/// phantom test.
+const PROJECT_EPS: f32 = 1e-6;
+
+/// Iteration cap for the Newton projection. Euclidean fields converge in one
+/// step, warped fields in 2–4; 16 is a generous hang-guard (see DL-8).
+const PROJECT_MAX_ITER: usize = 16;
+
+/// Tangent-magnitude floor below which `n_a × n_b` is treated as degenerate
+/// (parallel / tangential normals → no well-defined edge direction).
+const TINY_TANGENT: f32 = 1e-6;
+
+/// Determinant / singular-value floor for the 3×3 plane-intersection solves.
+const TINY_DET: f32 = 1e-9;
+
+/// Factor relating the phantom tolerance to the cell diagonal: a candidate
+/// survives when `|f(p)| < PHANTOM_EPS_FACTOR · diag`. See DL-5 for why the
+/// phantom tolerance is cell-relative (not the tight `PROJECT_EPS`).
+const PHANTOM_EPS_FACTOR: f32 = 0.25;
+
+/// Outer-refinement iteration cap for warped (curved) faces (see DL-38). The
+/// initial one-shot linear/LSQ solve only first-order-approximates a curved
+/// edge/vertex because the tangent planes are taken away from the true
+/// feature; each refinement step re-anchors those planes near the current
+/// estimate and re-solves. Euclidean (planar) faces converge in 0 extra
+/// steps; warped fields in 2–4. The cap is a hang-guard.
+const REFINE_MAX_ITER: usize = 8;
+
+/// Convergence criterion for the outer refinement: the estimate is accepted
+/// once it lies on every contributing surface to within this absolute
+/// surface-distance tolerance (logical field value `|f|`). Looser than the
+/// tight per-branch `PROJECT_EPS` because the linear solve places a point on
+/// the *intersection of tangent planes*, which only equals the curved edge in
+/// the limit; this is the residual we drive the outer loop against.
+const REFINE_EPS: f32 = 1e-4;
+
+/// Hard acceptance gate on the final surface distance of an extracted
+/// edge/vertex point (see DL-38). The tangent-plane intersection is a
+/// first-order construction, so on a strongly-curved (warped) feature the
+/// refined residual can stall above `REFINE_EPS` for some cells. Rather than
+/// emit an off-surface point we **drop** any cell whose final residual exceeds
+/// this gate. Each topological edge/vertex is covered by many octree cells, so
+/// dropping the worst ones still leaves clean covers (12 edges / 8 vertices)
+/// while guaranteeing every returned point lies on the warped surface. The
+/// value is well inside the phantom tolerance and tight enough for downstream
+/// edge-walking / weaving.
+const ACCEPT_EPS: f32 = 1e-3;
+
+/// One extracted edge sample: a point on the surface edge, the edge tangent
+/// there, and the canonical `(BranchId, BranchId)` signature of the two
+/// colliding branches. The raw Phase-3 product for one `Edge` cell, in `f64`
+/// to match the B-Rep geometry types. NOT yet chained or fitted (C.4/C.5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgePoint {
+    pub position: [f64; 3],
+    pub tangent: [f64; 3],
+    /// The two colliding branches, canonically sorted (`.0 <= .1`).
+    pub signature: (BranchId, BranchId),
+}
+
+// ─── per-branch sampling ──────────────────────────────────────────────────
+
+/// The 8 corners + centre of a cell, as `[f32; 3]` probe points.
+fn probe_points(cell: &OctreeCell) -> [[f32; 3]; 9] {
+    let a = cell.aabb;
+    let mut pts = [[0.0f32; 3]; 9];
+    for (i, slot) in pts.iter_mut().enumerate().take(8) {
+        let x = if i & 1 == 0 { a.min[0] } else { a.max[0] };
+        let y = if i & 2 == 0 { a.min[1] } else { a.max[1] };
+        let z = if i & 4 == 0 { a.min[2] } else { a.max[2] };
+        *slot = [x, y, z];
+    }
+    pts[8] = cell.center();
+    pts
+}
+
+/// Find a clean start point for `branch` inside `cell` and project it.
+///
+/// A probe point is a candidate for `branch` iff its `Logical` contributor
+/// slice contains `branch`. Among candidates we prefer those where `branch`
+/// is the *sole* contributor (cleanest tangent, away from the fault); within
+/// each preference class we take the smallest `|f|` (closest to the surface,
+/// best Newton seed). Returns the projected `(point, normal)` or `None` if no
+/// candidate exists or the projection diverges.
+fn project_branch(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    branch: BranchId,
+) -> Option<ProjectedPoint> {
+    let diag = {
+        let s = cell.aabb.size();
+        (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
+    };
+    let eps = diag * 0.5;
+
+    let mut best: Option<([f32; 3], bool, f32)> = None; // (point, sole, |f|)
+    for p in probe_points(cell) {
+        let (f, contributors) = body.evaluate(p, eps, EvalMode::Logical);
+        let slice = contributors.as_slice();
+        if !slice.contains(&branch) {
+            continue;
+        }
+        let sole = slice.len() == 1;
+        let fabs = f.abs();
+        let better = match best {
+            None => true,
+            // Sole-contributor candidates beat shared ones outright.
+            Some((_, best_sole, best_fabs)) => match (sole, best_sole) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => fabs < best_fabs,
+            },
+        };
+        if better {
+            best = Some((p, sole, fabs));
+        }
+    }
+
+    let (start, _, _) = best?;
+    project_to_surface(body, start, PROJECT_EPS, PROJECT_MAX_ITER)
+}
+
+/// Re-project `branch` from a seed *near* `p`, nudged into `branch`'s Voronoi
+/// region, so the resulting tangent plane is anchored at the true feature
+/// rather than at a far cell corner (see DL-38).
+///
+/// `p` is the current edge/vertex estimate (on or very near the fault between
+/// the colliding branches). Each direction in `dirs` lies in `branch`'s
+/// tangent plane and points away from the fault, so stepping a small `delta`
+/// along ±`dir` lands inside `branch`'s region. We probe ±each direction,
+/// keep the seed where `branch` actually contributes (prefer sole-contributor,
+/// then smallest `|f|`), and Newton-project from it.
+///
+/// Returns `None` if no nudge lands in the branch's region or the projection
+/// diverges — the caller then keeps the previous estimate.
+fn reproject_branch_near(
+    body: &BoundedCsg,
+    branch: BranchId,
+    p: [f32; 3],
+    dirs: &[Vector3<f32>],
+    delta: f32,
+) -> Option<ProjectedPoint> {
+    let eps = delta.max(1e-4);
+    let mut best_seed: Option<([f32; 3], bool, f32)> = None;
+    for dir in dirs {
+        let dir_len = dir.norm();
+        if dir_len < TINY_TANGENT {
+            continue;
+        }
+        let step = dir * (delta / dir_len);
+        for sign in [1.0f32, -1.0] {
+            let seed = [
+                p[0] + sign * step[0],
+                p[1] + sign * step[1],
+                p[2] + sign * step[2],
+            ];
+            let (f, contributors) = body.evaluate(seed, eps, EvalMode::Logical);
+            let slice = contributors.as_slice();
+            if !slice.contains(&branch) {
+                continue;
+            }
+            let sole = slice.len() == 1;
+            let fabs = f.abs();
+            let better = match best_seed {
+                None => true,
+                Some((_, bsole, bf)) => match (sole, bsole) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => fabs < bf,
+                },
+            };
+            if better {
+                best_seed = Some((seed, sole, fabs));
+            }
+        }
+    }
+
+    // No nudge landed in the branch's region (very thin region / huge
+    // curvature): project `p` itself as a last resort.
+    let seed = best_seed.map(|(s, _, _)| s).unwrap_or(p);
+    project_to_surface(body, seed, PROJECT_EPS, PROJECT_MAX_ITER)
+}
+
+// ─── phantom filter ─────────────────────────────────────────────────────────
+
+/// Phantom filter: keep a candidate point only if it lies on the surface.
+/// `|f(p)| < eps_phantom` → real surface feature; `f ≪ 0` (medial axis) and
+/// `f ≫ 0` (external Voronoi trench) are rejected. `eps_phantom` is chosen
+/// cell-relative by the callers (see DL-5).
+fn passes_phantom_filter(body: &BoundedCsg, p: [f32; 3], eps_phantom: f32) -> bool {
+    let (f, _) = surface_gradient(body, p);
+    f.abs() < eps_phantom
+}
+
+/// Cell diagonal length (f32).
+fn cell_diag(cell: &OctreeCell) -> f32 {
+    let s = cell.aabb.size();
+    (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
+}
+
+// ─── edge extraction ─────────────────────────────────────────────────────────
+
+/// Surface-distance residual of an edge/vertex estimate: the magnitude of the
+/// logical field. On a true edge/vertex every contributing branch is
+/// simultaneously zero, so the logical (hard min/max) value is zero; off the
+/// feature it is the signed distance to the nearest active surface. This is
+/// exactly the acceptance quantity from the concept's phantom test and the
+/// quantity the outer refinement drives to zero.
+fn edge_residual(body: &BoundedCsg, p: [f32; 3]) -> f32 {
+    surface_gradient(body, p).0.abs()
+}
+
+/// Solve the 3×3 system placing a point on the intersection line of two
+/// tangent planes, with the free in-line DOF pinned to `anchor` along the
+/// edge tangent `t = n_a × n_b`:
+///
+/// ```text
+///   n_a · x = n_a · p_A
+///   n_b · x = n_b · p_B
+///   t   · x = t   · anchor
+/// ```
+///
+/// Returns `(point, unit_tangent)` or `None` for parallel normals / a
+/// singular system.
+fn solve_edge_point(
+    pa: &ProjectedPoint,
+    pb: &ProjectedPoint,
+    anchor: [f32; 3],
+) -> Option<([f32; 3], Vector3<f32>)> {
+    let na = Vector3::new(pa.normal[0], pa.normal[1], pa.normal[2]);
+    let nb = Vector3::new(pb.normal[0], pb.normal[1], pb.normal[2]);
+
+    let t = na.cross(&nb);
+    let t_len = t.norm();
+    if t_len < TINY_TANGENT {
+        // Parallel / tangential normals → no well-defined edge (should have
+        // been merged by G1 preprocessing).
+        return None;
+    }
+    let t = t / t_len;
+
+    let av = Vector3::new(anchor[0], anchor[1], anchor[2]);
+    let pav = Vector3::new(pa.position[0], pa.position[1], pa.position[2]);
+    let pbv = Vector3::new(pb.position[0], pb.position[1], pb.position[2]);
+
+    let m = Matrix3::from_rows(&[na.transpose(), nb.transpose(), t.transpose()]);
+    let rhs = Vector3::new(na.dot(&pav), nb.dot(&pbv), t.dot(&av));
+
+    if m.determinant().abs() < TINY_DET {
+        return None;
+    }
+    let x = m.try_inverse()? * rhs;
+    Some(([x[0], x[1], x[2]], t))
+}
+
+/// Extract the edge point for one `Edge` cell (exactly 2 colliding branches).
+///
+/// Returns `None` when the cell is not an extractable edge: wrong class /
+/// branch count, no clean per-branch start point, degenerate tangent
+/// (parallel normals), a singular plane-intersection system, or a failed
+/// phantom test.
+pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePoint> {
+    if cell.class != CellClass::Edge || cell.branches.len() != 2 {
+        return None;
+    }
+    let ba = cell.branches[0];
+    let bb = cell.branches[1];
+
+    // Initial per-branch tangent planes from clean cell-corner seeds.
+    let mut pa = project_branch(body, cell, ba)?;
+    let mut pb = project_branch(body, cell, bb)?;
+
+    let c = cell.center();
+    let diag = cell_diag(cell);
+
+    // Initial one-shot solve, anchored at the cell centre (DL-38).
+    let (mut p_edge, mut t) = solve_edge_point(&pa, &pb, c)?;
+
+    // Outer refinement for warped (curved) faces: re-anchor each branch's
+    // tangent plane near the current estimate and re-solve, anchoring the
+    // free in-tangent DOF at the current point (not the cell centre) so the
+    // line moves along the curved edge toward it. Planar faces are detected
+    // as already-converged on the first residual check and skip the loop.
+    let delta = diag * 0.25;
+    for _ in 0..REFINE_MAX_ITER {
+        if edge_residual(body, p_edge) < REFINE_EPS {
+            break;
+        }
+        // Re-project each branch from a seed nudged into its region near p.
+        // The in-plane "away from fault" directions are ±(t × n_i), built
+        // from the most recent branch normals.
+        let n_a_cur = Vector3::new(pa.normal[0], pa.normal[1], pa.normal[2]);
+        let n_b_cur = Vector3::new(pb.normal[0], pb.normal[1], pb.normal[2]);
+        let dir_a = t.cross(&n_a_cur);
+        let dir_b = t.cross(&n_b_cur);
+        let Some(ra) = reproject_branch_near(body, ba, p_edge, &[dir_a], delta) else {
+            break;
+        };
+        let Some(rb) = reproject_branch_near(body, bb, p_edge, &[dir_b], delta) else {
+            break;
+        };
+        let Some((p_new, t_new)) = solve_edge_point(&ra, &rb, p_edge) else {
+            break;
+        };
+        pa = ra;
+        pb = rb;
+        p_edge = p_new;
+        t = t_new;
+    }
+
+    // Hard acceptance gate (DL-38): drop cells whose refined point still lies
+    // off the warped surface rather than emit an inaccurate edge point.
+    if edge_residual(body, p_edge) >= ACCEPT_EPS {
+        return None;
+    }
+
+    // Phantom filter (cell-relative tolerance, DL-5).
+    let eps_phantom = diag * PHANTOM_EPS_FACTOR;
+    if !passes_phantom_filter(body, p_edge, eps_phantom) {
+        return None;
+    }
+
+    let signature = if ba.as_u32() <= bb.as_u32() {
+        (ba, bb)
+    } else {
+        (bb, ba)
+    };
+
+    Some(EdgePoint {
+        position: [p_edge[0] as f64, p_edge[1] as f64, p_edge[2] as f64],
+        tangent: [t[0] as f64, t[1] as f64, t[2] as f64],
+        signature,
+    })
+}
+
+// ─── vertex extraction ───────────────────────────────────────────────────────
+
+/// The coordinate axis least aligned with `n` (smallest `|n·e_i|`), used to
+/// build an in-tangent-plane direction that never degenerates: removing `n`'s
+/// component from this axis yields a non-zero vector for any unit `n`.
+fn least_aligned_axis(n: Vector3<f32>) -> Vector3<f32> {
+    let ax = n[0].abs();
+    let ay = n[1].abs();
+    let az = n[2].abs();
+    if ax <= ay && ax <= az {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else if ay <= az {
+        Vector3::new(0.0, 1.0, 0.0)
+    } else {
+        Vector3::new(0.0, 0.0, 1.0)
+    }
+}
+
+/// Least-squares intersection point of a set of tangent planes
+/// `n_i · x = n_i · p_i`, via the 3×3 normal equations
+/// `(Σ n_i n_iᵀ) x = Σ n_i (n_i · p_i)`, factorised by SVD for a robust
+/// rank-deficiency guard (see DL-6). Returns `None` if the system does not
+/// pin a unique point.
+fn solve_vertex_point(planes: &[(BranchId, ProjectedPoint)]) -> Option<[f32; 3]> {
+    let mut ata = Matrix3::zeros();
+    let mut atb = Vector3::zeros();
+    for (_, proj) in planes {
+        let n = Vector3::new(proj.normal[0], proj.normal[1], proj.normal[2]);
+        let pv = Vector3::new(proj.position[0], proj.position[1], proj.position[2]);
+        let d = n.dot(&pv);
+        ata += n * n.transpose();
+        atb += n * d;
+    }
+    let svd = ata.svd(true, true);
+    if svd.singular_values[2] < TINY_DET {
+        return None;
+    }
+    let x = svd.solve(&atb, TINY_DET).ok()?;
+    Some([x[0], x[1], x[2]])
+}
+
+/// Extract the vertex for one `Vertex` cell (≥3 colliding branches).
+///
+/// Solves the over-determined system `n_i · x = n_i · p_i` for all branches
+/// `i` in the least-squares sense via the 3×3 normal equations
+/// `(Σ n_i n_iᵀ) x = Σ n_i (n_i · p_i)`, factorised by SVD for a robust
+/// singularity guard (see DL-6). Returns `None` when fewer than 3 branches
+/// project cleanly, the normal-equation matrix is rank-deficient, or the
+/// phantom test fails.
+pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
+    if cell.class != CellClass::Vertex || cell.branches.len() < 3 {
+        return None;
+    }
+
+    // Initial per-branch tangent planes from clean cell-corner seeds.
+    let mut planes: Vec<(BranchId, ProjectedPoint)> = Vec::with_capacity(cell.branches.len());
+    for &branch in &cell.branches {
+        if let Some(proj) = project_branch(body, cell, branch) {
+            planes.push((branch, proj));
+        }
+    }
+    if planes.len() < 3 {
+        return None;
+    }
+
+    // Initial one-shot LSQ solve.
+    let mut p_vert = solve_vertex_point(&planes)?;
+
+    // Outer refinement for warped (curved) faces (see DL-38): re-anchor each
+    // branch's tangent plane near the current vertex estimate and re-solve.
+    // Planar faces are detected as already-converged on the first residual
+    // check and skip the loop.
+    let diag = cell_diag(cell);
+    let delta = diag * 0.25;
+    for _ in 0..REFINE_MAX_ITER {
+        if edge_residual(body, p_vert) < REFINE_EPS {
+            break;
+        }
+        let mut next: Vec<(BranchId, ProjectedPoint)> = Vec::with_capacity(planes.len());
+        for (branch, proj) in &planes {
+            let n = Vector3::new(proj.normal[0], proj.normal[1], proj.normal[2]);
+            // A vertex has no single edge tangent, so explore the branch's
+            // whole tangent plane: build an orthonormal in-plane basis (u, v)
+            // and probe ±u and ±v to find the seed that lands cleanly in this
+            // branch's region near the vertex.
+            let axis = least_aligned_axis(n);
+            let u = (axis - n * n.dot(&axis)).normalize();
+            let v = n.cross(&u);
+            match reproject_branch_near(body, *branch, p_vert, &[u, v], delta) {
+                Some(r) => next.push((*branch, r)),
+                None => next.push((*branch, *proj)),
+            }
+        }
+        let Some(p_new) = solve_vertex_point(&next) else {
+            break;
+        };
+        planes = next;
+        p_vert = p_new;
+    }
+
+    // Hard acceptance gate (DL-38): drop cells whose refined point still lies
+    // off the warped surface rather than emit an inaccurate vertex.
+    if edge_residual(body, p_vert) >= ACCEPT_EPS {
+        return None;
+    }
+
+    // Phantom filter (cell-relative tolerance, DL-5).
+    let eps_phantom = diag * PHANTOM_EPS_FACTOR;
+    if !passes_phantom_filter(body, p_vert, eps_phantom) {
+        return None;
+    }
+
+    Some(Vertex::new(
+        [p_vert[0] as f64, p_vert[1] as f64, p_vert[2] as f64],
+        cell.branches.clone(),
+    ))
+}
+
+// ─── whole-octree convenience ─────────────────────────────────────────────────
+
+/// Extract every edge point and vertex from an [`Octree`]. Walks all `Edge`
+/// and `Vertex` leaf cells, runs Phase 2 + Phase 3 on each, and returns the
+/// surviving `(edge points, vertices)`. Non-extractable cells (no clean start
+/// point, degenerate geometry, failed phantom test) are silently skipped.
+pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, Vec<Vertex>) {
+    let edges = octree
+        .edge_cells()
+        .filter_map(|cell| extract_edge_point(body, cell))
+        .collect();
+    let vertices = octree
+        .vertex_cells()
+        .filter_map(|cell| extract_vertex(body, cell))
+        .collect();
+    (edges, vertices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::csg::{Aabb, CsgNode};
+    use fielddraft_protocol::{FeatureId, Primitive};
+    use std::collections::HashSet;
+
+    fn box_body(half: [f32; 3]) -> BoundedCsg {
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: half,
+            },
+        };
+        BoundedCsg::from_csg(&csg)
+    }
+
+    /// Is a unit vector axis-aligned (one component ≈ ±1, others ≈ 0)?
+    fn is_axis_aligned(v: [f64; 3], tol: f64) -> bool {
+        let mut near_one = 0;
+        let mut near_zero = 0;
+        for c in v {
+            if (c.abs() - 1.0).abs() < tol {
+                near_one += 1;
+            } else if c.abs() < tol {
+                near_zero += 1;
+            }
+        }
+        near_one == 1 && near_zero == 2
+    }
+
+    #[test]
+    fn box_edge_points_lie_on_surface_with_axis_tangents() {
+        let body = box_body([1.0, 1.0, 1.0]);
+        let octree = Octree::build(&body, 0.25);
+
+        let mut count = 0;
+        let mut signatures = HashSet::new();
+        for cell in octree.edge_cells() {
+            if let Some(ep) = extract_edge_point(&body, cell) {
+                count += 1;
+                // On the surface.
+                let p = [
+                    ep.position[0] as f32,
+                    ep.position[1] as f32,
+                    ep.position[2] as f32,
+                ];
+                let (f, _) = surface_gradient(&body, p);
+                assert!(
+                    f.abs() < 1e-3,
+                    "edge point off surface: f = {f}, p = {:?}",
+                    ep.position
+                );
+                // Box edges run along an axis → axis-aligned tangent.
+                assert!(
+                    is_axis_aligned(ep.tangent, 1e-3),
+                    "edge tangent not axis-aligned: {:?}",
+                    ep.tangent
+                );
+                signatures.insert((ep.signature.0.as_u32(), ep.signature.1.as_u32()));
+            }
+        }
+        assert!(count > 0, "no edge points extracted");
+        // Resolution-robust: a cube has exactly 12 edge signatures.
+        assert_eq!(
+            signatures.len(),
+            12,
+            "expected 12 cube edges, got {signatures:?}"
+        );
+    }
+
+    #[test]
+    fn box_vertices_at_corners_with_three_branches() {
+        let body = box_body([1.0, 1.0, 1.0]);
+        let octree = Octree::build(&body, 0.25);
+
+        // Collect one extracted vertex per distinct branch triple.
+        let mut by_branches: std::collections::HashMap<Vec<u32>, [f64; 3]> =
+            std::collections::HashMap::new();
+        for cell in octree.vertex_cells() {
+            if let Some(v) = extract_vertex(&body, cell) {
+                assert!(
+                    v.branches.len() >= 3,
+                    "vertex with <3 branches: {:?}",
+                    v.branches
+                );
+                let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
+                by_branches.insert(key, v.position);
+            }
+        }
+
+        // 8 cube corners.
+        assert_eq!(by_branches.len(), 8, "expected 8 cube corners");
+
+        // Each extracted vertex sits at a (±1, ±1, ±1) corner.
+        let mut corners = HashSet::new();
+        for pos in by_branches.values() {
+            for c in *pos {
+                assert!(
+                    (c.abs() - 1.0).abs() < 1e-2,
+                    "vertex not at corner: {pos:?}"
+                );
+            }
+            let signs = (
+                pos[0].signum() as i32,
+                pos[1].signum() as i32,
+                pos[2].signum() as i32,
+            );
+            corners.insert(signs);
+        }
+        assert_eq!(corners.len(), 8, "expected 8 distinct corner positions");
+    }
+
+    #[test]
+    fn extract_features_convenience() {
+        let body = box_body([1.0, 1.0, 1.0]);
+        let octree = Octree::build(&body, 0.25);
+        let (edges, vertices) = extract_features(&body, &octree);
+
+        let edge_sigs: HashSet<_> = edges
+            .iter()
+            .map(|e| (e.signature.0.as_u32(), e.signature.1.as_u32()))
+            .collect();
+        let vert_sets: HashSet<Vec<u32>> = vertices
+            .iter()
+            .map(|v| v.branches.iter().map(|b| b.as_u32()).collect())
+            .collect();
+        assert_eq!(edge_sigs.len(), 12, "12 cube edges");
+        assert_eq!(vert_sets.len(), 8, "8 cube corners");
+    }
+
+    #[test]
+    fn phantom_filter_rejects_off_surface_keeps_on_surface() {
+        let body = box_body([1.0, 1.0, 1.0]);
+        let eps_phantom = 0.1;
+
+        // On-surface point: the +X face centre (f ≈ 0) → kept.
+        assert!(
+            passes_phantom_filter(&body, [1.0, 0.0, 0.0], eps_phantom),
+            "on-surface point should pass"
+        );
+
+        // Deep interior point (f ≈ -1, medial-axis-like) → rejected.
+        assert!(
+            !passes_phantom_filter(&body, [0.0, 0.0, 0.0], eps_phantom),
+            "deep interior point should be rejected"
+        );
+
+        // Far exterior point (f ≫ 0, external trench) → rejected.
+        assert!(
+            !passes_phantom_filter(&body, [5.0, 5.0, 5.0], eps_phantom),
+            "far exterior point should be rejected"
+        );
+    }
+
+    #[test]
+    fn non_edge_cell_yields_none() {
+        let body = box_body([1.0, 1.0, 1.0]);
+        let face_cell = OctreeCell {
+            aabb: Aabb {
+                min: [0.9, -0.1, -0.1],
+                max: [1.1, 0.1, 0.1],
+            },
+            class: CellClass::Face,
+            branches: vec![BranchId(1 << 4)],
+        };
+        assert!(extract_edge_point(&body, &face_cell).is_none());
+        assert!(extract_vertex(&body, &face_cell).is_none());
+    }
+
+    #[test]
+    fn difference_body_internal_collision_is_filtered() {
+        // A box with a smaller box subtracted: the subtraction creates real
+        // edges on the surface, but interior branch ties (e.g. where the
+        // cutter's planes meet deep inside material) must be phantom-filtered.
+        // We assert every surviving edge point lies on the actual surface.
+        let outer = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [1.0, 1.0, 1.0],
+            },
+        };
+        let cutter = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [0.6, 0.6, 0.0],
+                half_extents: [0.6, 0.6, 2.0],
+            },
+        };
+        let csg = CsgNode::Difference(Box::new(outer), Box::new(cutter));
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.25);
+        let (edges, vertices) = extract_features(&body, &octree);
+
+        // Every surviving feature point must actually lie on the surface.
+        for e in &edges {
+            let p = [
+                e.position[0] as f32,
+                e.position[1] as f32,
+                e.position[2] as f32,
+            ];
+            let (f, _) = surface_gradient(&body, p);
+            assert!(
+                f.abs() < 5e-2,
+                "edge phantom slipped through: f = {f}, p = {:?}",
+                e.position
+            );
+        }
+        for v in &vertices {
+            let p = [
+                v.position[0] as f32,
+                v.position[1] as f32,
+                v.position[2] as f32,
+            ];
+            let (f, _) = surface_gradient(&body, p);
+            assert!(
+                f.abs() < 5e-2,
+                "vertex phantom slipped through: f = {f}, p = {:?}",
+                v.position
+            );
+        }
+    }
+
+    // ─── D.3: domain warps (twist / bend) ──────────────────────────────────
+
+    /// Box twisted around the local Y axis at `rate` rad/mm (DL-38 fixtures).
+    fn twisted_box(half: [f32; 3], rate: f32) -> BoundedCsg {
+        let leaf = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: half,
+            },
+        };
+        BoundedCsg::from_csg(&CsgNode::Twist(Box::new(leaf), rate))
+    }
+
+    /// Box bent in the XY plane along X at `rate` rad/mm.
+    fn bent_box(half: [f32; 3], rate: f32) -> BoundedCsg {
+        let leaf = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: half,
+            },
+        };
+        BoundedCsg::from_csg(&CsgNode::Bend(Box::new(leaf), rate))
+    }
+
+    /// Is a unit vector? (extracted edge tangents must be normalised).
+    fn is_unit(v: [f64; 3], tol: f64) -> bool {
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        (len - 1.0).abs() < tol
+    }
+
+    /// Run extraction on `body` and assert the full B-Rep topology survives a
+    /// smooth domain warp: every extracted edge/vertex point lies on the warped
+    /// surface (`|f| < ACCEPT_EPS_TEST`), edge tangents are unit, and the
+    /// extraction finds exactly 12 distinct edge signatures + 8 vertex
+    /// branch-sets (a warped cube is still combinatorially a cube).
+    ///
+    /// `ACCEPT_EPS_TEST` is `5e-3`: a small slack over the `ACCEPT_EPS = 1e-3`
+    /// extractor gate to absorb the f32 re-evaluation round-off in the assert
+    /// itself. Justified in DL-38.
+    fn assert_warped_cube_topology(body: &BoundedCsg, min_cell: f32) {
+        const ACCEPT_EPS_TEST: f32 = 5e-3;
+        let octree = Octree::build(body, min_cell);
+        let (edges, vertices) = extract_features(body, &octree);
+
+        let mut edge_sigs = HashSet::new();
+        for e in &edges {
+            let p = [
+                e.position[0] as f32,
+                e.position[1] as f32,
+                e.position[2] as f32,
+            ];
+            let (f, _) = surface_gradient(body, p);
+            assert!(
+                f.abs() < ACCEPT_EPS_TEST,
+                "warped edge point off surface: f = {f}, p = {:?}",
+                e.position
+            );
+            assert!(
+                is_unit(e.tangent, 1e-4),
+                "edge tangent not unit: {:?}",
+                e.tangent
+            );
+            edge_sigs.insert((e.signature.0.as_u32(), e.signature.1.as_u32()));
+        }
+
+        let mut vert_sets = HashSet::new();
+        for v in &vertices {
+            let p = [
+                v.position[0] as f32,
+                v.position[1] as f32,
+                v.position[2] as f32,
+            ];
+            let (f, _) = surface_gradient(body, p);
+            assert!(
+                f.abs() < ACCEPT_EPS_TEST,
+                "warped vertex off surface: f = {f}, p = {:?}",
+                v.position
+            );
+            assert!(
+                v.branches.len() >= 3,
+                "vertex with <3 branches: {:?}",
+                v.branches
+            );
+            let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
+            vert_sets.insert(key);
+        }
+
+        assert_eq!(
+            edge_sigs.len(),
+            12,
+            "expected 12 warped-cube edges, got {edge_sigs:?}"
+        );
+        assert_eq!(
+            vert_sets.len(),
+            8,
+            "expected 8 warped-cube corners, got {vert_sets:?}"
+        );
+    }
+
+    #[test]
+    fn twisted_cube_extracts_correct_brep_edges() {
+        // A visibly-warped 2×2×2 cube: 0.2 rad/mm ≈ 11.5°/mm twist.
+        assert_warped_cube_topology(&twisted_box([1.0, 1.0, 1.0], 0.2), 0.25);
+    }
+
+    #[test]
+    fn strongly_twisted_cube_extracts_correct_brep_edges() {
+        // Stronger twist (0.4 rad/mm ≈ 23°/mm): the one-shot solve was off by
+        // up to ~0.067 here (see DL-38) — refinement + gate must recover it.
+        assert_warped_cube_topology(&twisted_box([1.0, 1.0, 1.0], 0.4), 0.25);
+    }
+
+    #[test]
+    fn bent_cube_extracts_correct_brep_edges() {
+        // Bend variant of the same acceptance criterion.
+        assert_warped_cube_topology(&bent_box([1.0, 1.0, 1.0], 0.3), 0.25);
+    }
+}

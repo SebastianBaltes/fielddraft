@@ -423,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a parsed literal test value, not PI
     fn literal_number_resolves_to_itself() {
         let vars = BTreeMap::new();
         assert_eq!(resolve_formula("=42", &vars).unwrap(), 42.0);

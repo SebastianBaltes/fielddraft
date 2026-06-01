@@ -5,8 +5,10 @@
 //! exposed to JavaScript through a zero-copy pointer interface.
 
 pub mod body;
+pub mod brep;
 pub mod bvh;
 pub mod csg;
+pub mod sdf_dual;
 pub mod dc;
 pub mod mdc;
 pub mod rfta;
@@ -175,6 +177,37 @@ pub fn world_to_local(t: &Transform, p_world: [f32; 3]) -> [f32; 3] {
     ];
     let p = quat_inverse_rotate(t.rotation, p);
     [p[0] / t.scale[0], p[1] / t.scale[1], p[2] / t.scale[2]]
+}
+
+/// Invert a rigid + **uniform-scale** [`Transform`]. The body placement
+/// (see [`body::Body::placement`]) is restricted to this class precisely
+/// so its inverse exists as another `Transform`: `compose(t, inverse(t))`
+/// and `compose(inverse(t), t)` both round-trip to identity.
+///
+/// For a transform `T(p) = s·R·p + t`, the inverse is
+/// `T⁻¹(q) = (1/s)·R⁻¹·(q − t) = R⁻¹·(q/s) − R⁻¹·(t/s)`, which is again
+/// an affine transform with rotation `R⁻¹` (the quaternion conjugate),
+/// scale `1/s` and translation `−R⁻¹·(t/s)`. The input's scale is read as
+/// uniform via [`Transform::min_scale`]; callers that build the placement
+/// guarantee uniformity, so non-uniform residue never reaches here.
+pub fn inverse(t: &Transform) -> Transform {
+    let s = t.min_scale();
+    let inv_s = if s.abs() < 1e-12 { 0.0 } else { 1.0 / s };
+    // Conjugate of a unit quaternion (x, y, z, w) is (−x, −y, −z, w).
+    let inv_rot = [-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]];
+    // −R⁻¹·(t/s): scale the translation, rotate by the inverse rotation,
+    // negate. `quat_rotate(inv_rot, ·)` applies R⁻¹.
+    let scaled = [
+        t.translate[0] * inv_s,
+        t.translate[1] * inv_s,
+        t.translate[2] * inv_s,
+    ];
+    let rotated = quat_rotate(inv_rot, scaled);
+    Transform {
+        translate: [-rotated[0], -rotated[1], -rotated[2]],
+        rotation: inv_rot,
+        scale: [inv_s, inv_s, inv_s],
+    }
 }
 
 /// SDF of a single primitive at world point `p`.
@@ -669,6 +702,7 @@ impl Kernel {
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
                 prev.topology = None;
+                prev.brep = None;
                 new_bodies.push(prev);
             } else {
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
@@ -692,6 +726,10 @@ impl Kernel {
                     last_mesh_transforms: transforms,
                     compiled_sdf: Some(compiled),
                     topology: None,
+                    // Recomputed lazily on the first `ensure_brep`; the
+                    // weave needs it, the mesh path does not.
+                    placement: fielddraft_protocol::Transform::IDENTITY,
+                    brep: None,
                 });
             }
         }
@@ -785,7 +823,7 @@ impl Kernel {
             .position(|f| &f.id == feature_id)?;
         self.bodies
             .iter()
-            .find(|b| b.feature_indices.iter().any(|&i| i == idx))
+            .find(|b| b.feature_indices.contains(&idx))
             .map(|b| b.id.clone())
     }
 
@@ -1507,6 +1545,7 @@ impl Kernel {
 
     /// K10.6: add a fillet_edge feature from detected edge data.
     #[wasm_bindgen(js_name = addFilletEdge)]
+    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_fillet_edge(
         &mut self,
         feature_a: u32,
@@ -1633,6 +1672,7 @@ impl Kernel {
     /// pivot. `angle_deg` is the full sweep (360° for a
     /// closed ring). Returns the new pattern feature id.
     #[wasm_bindgen(js_name = addCircularPattern)]
+    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_circular_pattern(
         &mut self,
         source_id: u32,
@@ -1664,6 +1704,7 @@ impl Kernel {
     /// source feature through a plane defined by a point and a
     /// normal. Returns the new mirror feature id.
     #[wasm_bindgen(js_name = addMirror)]
+    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_mirror(
         &mut self,
         source_id: u32,
@@ -1996,6 +2037,7 @@ impl Kernel {
     ///   - cylinder → (radius, half_height, _)
     ///   - thread   → (nominal_radius, pitch, depth)  half_height defaults to 5
     #[wasm_bindgen(js_name = addPrimitive)]
+    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_primitive(
         &mut self,
         kind: u32,
@@ -2161,7 +2203,7 @@ impl Kernel {
             return false;
         }
 
-        let should_merge = self.document.feature_calls.last().map_or(false, |c| {
+        let should_merge = self.document.feature_calls.last().is_some_and(|c| {
             c.type_name == type_name
                 && !c.suppressed
                 && c.params.get("target_id")
@@ -2251,6 +2293,7 @@ impl Kernel {
 
     /// Replace the full transform (translate, quaternion, scale).
     #[wasm_bindgen(js_name = setFeatureTransform)]
+    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn set_feature_transform(
         &mut self,
         id: u32,
@@ -2805,6 +2848,75 @@ impl Kernel {
         serde_json::to_string(topo).unwrap_or_else(|_| "{}".into())
     }
 
+    // ── Per-body *feature-based* B-Rep (sharp topology) ──────────
+
+    /// Counts of the body's feature-based B-Rep entities as a JSON
+    /// object: `{"vertices","edges","faces","shells","solids",
+    /// "watertight"}`. `watertight` reflects the body's single outer
+    /// shell's `is_closed` flag.
+    ///
+    /// This is the **real** B-Rep topology (sharp corners / edges /
+    /// trimmed faces from the analytic weave), distinct from
+    /// `bodyTopologyJson`, which is the mesh-derived topology used by
+    /// the viewport overlays. The B-Rep is woven lazily on first call
+    /// and cached on the body, so this query is cheap on repeat
+    /// (DL-30). Smooth-only bodies (e.g. a lone sphere) carry no sharp
+    /// features and legitimately report zero/near-zero counts —
+    /// feature-based B-Rep captures sharp topology only (DL-29).
+    #[wasm_bindgen(js_name = bodyBrepCounts)]
+    pub fn body_brep_counts(&mut self, i: usize) -> String {
+        // Split the borrow: `ensure_brep` needs `&mut bodies[i]` and
+        // `&document.features` simultaneously, which a method on the
+        // whole `Kernel` can't express without aliasing.
+        let brep = self.bodies[i].ensure_brep(&self.document.features);
+        let watertight = brep.shells.first().map(|s| s.is_closed).unwrap_or(false);
+        serde_json::json!({
+            "vertices": brep.vertex_count(),
+            "edges": brep.edge_count(),
+            "faces": brep.face_count(),
+            "shells": brep.shell_count(),
+            "solids": brep.solid_count(),
+            "watertight": watertight,
+        })
+        .to_string()
+    }
+
+    /// Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
+    /// (STEP) AP214 advanced-B-Rep file. Reuses the same lazily-woven,
+    /// cached B-Rep as [`Kernel::body_brep_counts`]; the returned
+    /// string is a complete `.step` document ready to download. The
+    /// product name is derived from the body's stable feature id.
+    #[wasm_bindgen(js_name = bodyStepExport)]
+    pub fn body_step_export(&mut self, i: usize) -> String {
+        let product_name = format!("body_{}", self.bodies[i].id);
+        self.bodies[i].ensure_brep(&self.document.features);
+        let placement = self.bodies[i].placement;
+        let brep = self.bodies[i].brep_cached().expect("woven above");
+        crate::brep::step_export::export_step_placed(brep, &placement, &product_name)
+    }
+
+    /// Serialise *every* body's feature-based B-Rep into ONE ISO-10303-21
+    /// (STEP) AP214 file, each body a separate `MANIFOLD_SOLID_BREP` solid
+    /// in a single shape representation (DL-53: bodies stay separate). Each
+    /// body's B-Rep is lazily woven and cached exactly as in
+    /// [`Kernel::body_step_export`]; the returned string is a complete
+    /// `.step` document ready to download.
+    #[wasm_bindgen(js_name = sceneStepExport)]
+    pub fn scene_step_export(&mut self) -> String {
+        // Weave every body first (mutates each body's cache), then borrow the
+        // breps immutably for export — two passes so the mutable `ensure_brep`
+        // borrows don't overlap the shared-slice borrow.
+        for i in 0..self.bodies.len() {
+            self.bodies[i].ensure_brep(&self.document.features);
+        }
+        let breps: Vec<(&crate::brep::BRep, fielddraft_protocol::Transform)> = self
+            .bodies
+            .iter()
+            .map(|b| (b.brep_cached().expect("woven above"), b.placement))
+            .collect();
+        crate::brep::step_export::export_step_scene_placed(&breps, "scene")
+    }
+
     /// Number of `u32` slots reserved per vertex in the per-body
     /// contributor flat buffer. Matches `csg::MAX_CONTRIBUTORS`.
     #[wasm_bindgen(js_name = meshContributorStride)]
@@ -2997,17 +3109,9 @@ impl Kernel {
                     if i > 0 {
                         contributors.push(',');
                     }
-                    let flat = match id.as_u32_if_flat() {
-                        Some(n) => n,
-                        None => {
-                            let mut root = id;
-                            while let Some(parent) = root.parent() {
-                                root = parent;
-                            }
-                            root.as_u32_if_flat().unwrap_or(0)
-                        }
-                    };
-                    contributors.push_str(&flat.to_string());
+                    // BranchId packs feature << SUB_BITS | sub into a
+                    // single u32 — emit it directly.
+                    contributors.push_str(&id.as_u32().to_string());
                 }
                 contributors.push(']');
                 format!(
@@ -3328,7 +3432,6 @@ mod tests {
 
     // ─── K6b.3a: sketch commit path ─────────────────────────────────
 
-    #[test]
     // ─── K8.10: variables ─────────────────────────────────────
 
     #[test]
@@ -3989,8 +4092,11 @@ mod tests {
         let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
         assert!(json.contains("\"hit\":true"), "{json}");
         assert!(json.contains("\"element\":\"face\""), "{json}");
+        // Contributor ids are packed BranchIds (feature << SUB_BITS |
+        // sub). The box +Y (top) face is sub-index 2.
+        let expected = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id), 2).as_u32();
         assert!(
-            json.contains(&format!("\"contributors\":[{id}]")),
+            json.contains(&format!("\"contributors\":[{expected}]")),
             "{json}"
         );
     }
@@ -4392,8 +4498,10 @@ mod tests {
         // directly, not the mesh — raycast from above hits the box.
         let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
         assert!(json.contains("\"hit\":true"), "{json}");
+        // Packed BranchId for box A's +Y (top) face, sub-index 2.
+        let expected_a = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id_a), 2).as_u32();
         assert!(
-            json.contains(&format!("\"contributors\":[{id_a}]")),
+            json.contains(&format!("\"contributors\":[{expected_a}]")),
             "{json}"
         );
 
@@ -5013,7 +5121,7 @@ mod tests {
     #[test]
     fn boolean_tab_switch_changes_tool_op() {
         let mut k = Kernel::new();
-        let box1 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0,0.0,0.0, 20.0,20.0,20.0).unwrap();
+        let _box1 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0,0.0,0.0, 20.0,20.0,20.0).unwrap();
         let box2 = k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 10.0,0.0,0.0, 15.0,15.0,15.0).unwrap();
         assert_eq!(k.document.features.len(), 2);
         assert_eq!(k.document.features[0].op, BoolOp::Union);
@@ -5087,5 +5195,357 @@ mod tests {
         assert!(sdf([0.0, 0.0, 0.0]) > 0.0, "box center inside sphere: carved out");
         assert!(sdf([35.0, 0.0, 0.0]) > 0.0, "deep in sphere overlap: carved out");
         assert!(sdf([80.0, 0.0, 0.0]) > 0.0, "outside both: exterior");
+    }
+
+    // ─── Feature-based B-Rep topology API + lazy cache ──────────────
+
+    #[test]
+    fn body_brep_counts_box_is_watertight_cube() {
+        let mut k = Kernel::new();
+        k.document.features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )];
+        k.rebuild_mesh_internal();
+        assert_eq!(k.body_count(), 1);
+
+        let json = k.body_brep_counts(0);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["vertices"], 8, "box B-Rep has 8 corners");
+        assert_eq!(v["edges"], 12, "box B-Rep has 12 edges");
+        assert_eq!(v["faces"], 6, "box B-Rep has 6 faces");
+        assert_eq!(v["shells"], 1);
+        assert_eq!(v["solids"], 1);
+        assert_eq!(v["watertight"], true, "box outer shell is closed");
+    }
+
+    #[test]
+    fn body_brep_cache_is_lazy_and_reused() {
+        let mut k = Kernel::new();
+        k.document.features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )];
+        k.rebuild_mesh_internal();
+
+        // Lazy: not woven until first query.
+        assert!(
+            k.bodies[0].brep.is_none(),
+            "B-Rep must not be eagerly built during remesh"
+        );
+
+        let first = k.body_brep_counts(0);
+        assert!(
+            k.bodies[0].brep.is_some(),
+            "first query must populate the cache"
+        );
+
+        let cached = k.bodies[0].brep.clone();
+        let second = k.body_brep_counts(0);
+        assert_eq!(first, second, "repeat query returns identical counts");
+        assert_eq!(
+            cached,
+            k.bodies[0].brep,
+            "second query must reuse the cache, not re-weave"
+        );
+    }
+
+    #[test]
+    fn body_brep_invalidated_on_remesh() {
+        let mut k = Kernel::new();
+        k.document.features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )];
+        k.rebuild_mesh_internal();
+        let _ = k.body_brep_counts(0);
+        assert!(k.bodies[0].brep.is_some());
+
+        // Grow the box → geometry hash changes → full remesh → cache
+        // must be cleared so the next query re-weaves.
+        k.document.features[0].primitive = Primitive::Box {
+            center: [0.0, 0.0, 0.0],
+            half_extents: [2.0, 2.0, 2.0],
+        };
+        k.rebuild_mesh_internal();
+        assert!(
+            k.bodies[0].brep.is_none(),
+            "remesh must invalidate the cached B-Rep"
+        );
+    }
+
+    #[test]
+    fn body_brep_never_panics_on_smooth_and_csg_bodies() {
+        // (1) Lone sphere: smooth, no sharp features → must not panic.
+        let mut k = Kernel::new();
+        k.document.features = vec![sphere_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], 1.0)];
+        k.rebuild_mesh_internal();
+        let json = k.body_brep_counts(0);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v["vertices"].is_number());
+        assert!(v["faces"].is_number());
+
+        // (2) A CSG body (box minus an overlapping sphere) must also
+        // weave without panicking.
+        let mut k2 = Kernel::new();
+        k2.document.features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
+            sphere_feature(2, BoolOp::Difference, [2.0, 2.0, 2.0], 1.5),
+        ];
+        k2.rebuild_mesh_internal();
+        assert_eq!(k2.body_count(), 1, "box and carving sphere share one body");
+        let json2 = k2.body_brep_counts(0);
+        let v2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        assert!(v2["edges"].is_number());
+        assert!(v2["shells"].is_number());
+    }
+
+    // ─── STEP (AP214) export ────────────────────────────────────────
+
+    /// Collect every defined `#N=` id and every referenced `#N` id from a
+    /// STEP document.
+    fn step_defined_and_referenced(
+        step: &str,
+    ) -> (
+        std::collections::HashSet<usize>,
+        std::collections::HashSet<usize>,
+    ) {
+        let mut defined = std::collections::HashSet::new();
+        let mut referenced = std::collections::HashSet::new();
+        for line in step.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix('#') {
+                if let Some(eq) = rest.find('=') {
+                    if let Ok(id) = rest[..eq].parse::<usize>() {
+                        assert!(defined.insert(id), "#{id} defined twice");
+                        let body = &rest[eq + 1..];
+                        let bytes = body.as_bytes();
+                        let mut i = 0;
+                        while i < bytes.len() {
+                            if bytes[i] == b'#' {
+                                let mut j = i + 1;
+                                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                                    j += 1;
+                                }
+                                if j > i + 1 {
+                                    referenced.insert(body[i + 1..j].parse::<usize>().unwrap());
+                                }
+                                i = j;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (defined, referenced)
+    }
+
+    #[test]
+    fn body_step_export_box_is_valid_advanced_brep() {
+        let mut k = Kernel::new();
+        k.document.features = vec![box_feature(
+            1,
+            BoolOp::Union,
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )];
+        k.rebuild_mesh_internal();
+        assert_eq!(k.body_count(), 1);
+
+        let step = k.body_step_export(0);
+        assert!(step.starts_with("ISO-10303-21;"));
+        assert!(step.trim_end().ends_with("END-ISO-10303-21;"));
+        assert_eq!(step.matches("HEADER;").count(), 1);
+        assert_eq!(step.matches("DATA;").count(), 1);
+        assert!(step.contains("FILE_SCHEMA(("));
+
+        let count = |name: &str| {
+            step.lines()
+                .filter(|l| {
+                    l.find('=')
+                        .map(|e| l[e + 1..].trim_start().starts_with(&format!("{name}(")))
+                        .unwrap_or(false)
+                })
+                .count()
+        };
+        assert_eq!(count("MANIFOLD_SOLID_BREP"), 1);
+        assert_eq!(count("CLOSED_SHELL"), 1);
+        assert_eq!(count("ADVANCED_FACE"), 6);
+        assert_eq!(count("PLANE"), 6);
+        assert_eq!(count("VERTEX_POINT"), 8);
+        assert_eq!(count("EDGE_CURVE"), 12);
+
+        let (defined, referenced) = step_defined_and_referenced(&step);
+        let missing: Vec<usize> = referenced.difference(&defined).copied().collect();
+        assert!(missing.is_empty(), "dangling references: {missing:?}");
+    }
+
+    #[test]
+    fn body_step_export_twisted_box_refs_resolve() {
+        // A twisted box yields curved NURBS edges; the STEP graph must
+        // still be referentially complete.
+        let mut feat = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        feat.twist_rate = 0.3;
+        let mut k = Kernel::new();
+        k.document.features = vec![feat];
+        k.rebuild_mesh_internal();
+        assert_eq!(k.body_count(), 1);
+
+        let step = k.body_step_export(0);
+        let (defined, referenced) = step_defined_and_referenced(&step);
+        let missing: Vec<usize> = referenced.difference(&defined).copied().collect();
+        assert!(missing.is_empty(), "dangling references: {missing:?}");
+        assert!(step.contains("B_SPLINE_CURVE_WITH_KNOTS"));
+    }
+
+    // ─── DL-50 correction: body-local weave + placement fold-back ─────────
+
+    /// `inverse(t)` must round-trip a rigid + uniform-scale transform:
+    /// `compose(t, inverse(t)) ≈ compose(inverse(t), t) ≈ IDENTITY`.
+    #[test]
+    fn inverse_transform_round_trips() {
+        let s2 = std::f32::consts::FRAC_1_SQRT_2; // sin/cos of 45° = 90° half-angle
+        let t = Transform {
+            translate: [3.0, -2.0, 5.0],
+            rotation: [0.0, s2, 0.0, s2], // 90° about Y
+            scale: [2.0, 2.0, 2.0],
+        };
+        let approx_identity = |c: &Transform| {
+            let close = |a: [f32; 3], b: [f32; 3]| {
+                (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4)
+            };
+            close(c.translate, [0.0, 0.0, 0.0])
+                && close(c.scale, [1.0, 1.0, 1.0])
+                // identity quat is (0,0,0,±1)
+                && c.rotation[0].abs() < 1e-4
+                && c.rotation[1].abs() < 1e-4
+                && c.rotation[2].abs() < 1e-4
+                && (c.rotation[3].abs() - 1.0).abs() < 1e-4
+        };
+        let inv = inverse(&t);
+        assert!(approx_identity(&compose_transforms(&t, &inv)), "t∘t⁻¹ ≠ I");
+        assert!(approx_identity(&compose_transforms(&inv, &t)), "t⁻¹∘t ≠ I");
+    }
+
+    /// Headline reuse test: a pure body move must NOT re-weave. We weave a
+    /// body, capture the cached B-Rep's address and the placement-invariant
+    /// local key, then translate every feature by a delta and re-`ensure_brep`.
+    /// The local key is unchanged and the cached B-Rep is the *same allocation*
+    /// (pointer identity), proving the weave did not run again.
+    #[test]
+    fn move_reuses_local_brep_cache() {
+        use body::{compute_body_placement, hash_body_local_payload, Body};
+        let features = vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
+        let parts = body::partition(&features);
+        assert_eq!(parts.len(), 1);
+        let part = &parts[0];
+
+        let mut bdy = Body {
+            id: part.seed_id(&features),
+            feature_indices: part.feature_indices.clone(),
+            aabb: part.aabb,
+            payload_hash: 0,
+            geometry_hash: 0,
+            transform_hash: 0,
+            mesh_resolution: 0,
+            mesh: Mesh::default(),
+            version: 1,
+            transform_delta: None,
+            last_mesh_transforms: Vec::new(),
+            compiled_sdf: None,
+            topology: None,
+            placement: Transform::IDENTITY,
+            brep: None,
+        };
+
+        bdy.ensure_brep(&features);
+        let key0 = hash_body_local_payload(&features, &bdy.feature_indices, &bdy.placement);
+        let ptr0 = bdy.brep_cached().unwrap() as *const _;
+
+        // Move the body: translate the (only) feature by a delta. The body's
+        // feature_indices stay the same; only the transform shifts.
+        let mut moved = features.clone();
+        moved[0].transform.translate = [10.0, -4.0, 7.0];
+
+        // Placement now reflects the move (cheap, every call).
+        let placement_moved = compute_body_placement(&moved, &bdy.feature_indices);
+        assert_eq!(placement_moved.translate, [10.0, -4.0, 7.0]);
+        let key1 = hash_body_local_payload(&moved, &bdy.feature_indices, &placement_moved);
+        assert_eq!(key0, key1, "pure move must NOT change the local cache key");
+
+        bdy.ensure_brep(&moved);
+        let ptr1 = bdy.brep_cached().unwrap() as *const _;
+        assert_eq!(ptr0, ptr1, "pure move must reuse the cached B-Rep (no re-weave)");
+        assert_eq!(bdy.placement.translate, [10.0, -4.0, 7.0], "placement updated");
+    }
+
+    /// World-equivalence: exporting a body placed at transform `T` yields the
+    /// same world coordinates as the identity-placed body shifted by `T`.
+    /// Concretely: a box at the origin and the same box translated by `D`
+    /// export CARTESIAN_POINTs that differ by exactly `D` (the local weave +
+    /// placement fold-back reproduces the old world-space STEP).
+    #[test]
+    fn step_world_equivalence_under_move() {
+        let mut at_origin = Kernel::new();
+        at_origin.document.features =
+            vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
+        at_origin.rebuild_mesh_internal();
+        let step0 = at_origin.body_step_export(0);
+        let pts0 = step_cartesian_points(&step0);
+
+        let mut moved = Kernel::new();
+        let mut feat = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        feat.transform.translate = [10.0, 20.0, -5.0];
+        moved.document.features = vec![feat];
+        moved.rebuild_mesh_internal();
+        let step1 = moved.body_step_export(0);
+        let pts1 = step_cartesian_points(&step1);
+
+        // Same number of emitted points (de-dup is geometry-driven and the
+        // geometry is identical up to a rigid shift).
+        assert!(!pts0.is_empty(), "box must emit CARTESIAN_POINTs");
+        assert_eq!(
+            pts0.len(),
+            pts1.len(),
+            "a move must not change the point count"
+        );
+        // Every origin point + delta must appear in the moved set: the local
+        // weave + placement fold-back reproduces the old world-space STEP.
+        let d = [10.0_f64, 20.0, -5.0];
+        for p in &pts0 {
+            let shifted = [p[0] + d[0], p[1] + d[1], p[2] + d[2]];
+            assert!(
+                pts1.iter().any(|q| (0..3).all(|i| (q[i] - shifted[i]).abs() < 1e-5)),
+                "moved STEP missing shifted point {shifted:?}"
+            );
+        }
+    }
+
+    /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.
+    fn step_cartesian_points(step: &str) -> Vec<[f64; 3]> {
+        let mut out = Vec::new();
+        for line in step.lines() {
+            if let Some(idx) = line.find("CARTESIAN_POINT('',(") {
+                let rest = &line[idx + "CARTESIAN_POINT('',(".len()..];
+                if let Some(end) = rest.find(')') {
+                    let nums: Vec<f64> = rest[..end]
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<f64>().ok())
+                        .collect();
+                    if nums.len() == 3 {
+                        out.push([nums[0], nums[1], nums[2]]);
+                    }
+                }
+            }
+        }
+        out
     }
 }

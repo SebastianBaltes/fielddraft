@@ -7,8 +7,7 @@
 //! as LineSegments.
 
 use crate::bvh::BoundedCsg;
-use crate::csg::EvalMode;
-use fielddraft_protocol::FeatureId;
+use crate::csg::{BranchId, EvalMode};
 
 /// One detected B-Rep edge segment.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -38,7 +37,7 @@ pub fn detect_edges(
     }
 
     // Evaluate contributors at each mesh vertex.
-    let mut vertex_contributors: Vec<Option<FeatureId>> = Vec::with_capacity(vertex_count);
+    let mut vertex_contributors: Vec<Option<BranchId>> = Vec::with_capacity(vertex_count);
     for i in 0..vertex_count {
         let p = [
             positions[i * 3],
@@ -83,8 +82,8 @@ pub fn detect_edges(
                             positions[b * 3 + 1],
                             positions[b * 3 + 2],
                         ],
-                        contributor_a: fa.to_string(),
-                        contributor_b: fb.to_string(),
+                        contributor_a: fa.as_u32().to_string(),
+                        contributor_b: fb.as_u32().to_string(),
                     });
                 }
                 _ => {}
@@ -100,7 +99,7 @@ mod tests {
     use super::*;
     use crate::csg::CsgNode;
     use crate::dc;
-    use fielddraft_protocol::{BoolOp, Feature, Primitive, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     #[test]
     fn box_difference_produces_edges_at_junction() {
