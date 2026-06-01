@@ -126,11 +126,13 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
+  const matFeaturesRef = useRef<unknown>(null);
 
   useEffect(() => {
     pipelineRef.current = initVmPipeline();
     volumeFpRef.current = "";
     dataFpRef.current = "";
+    matFeaturesRef.current = null;
     compilingRef.current = false;
     readyRef.current = false;
     showCompilationStatus("Initializing…");
@@ -196,8 +198,16 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
       dataFpRef.current = structFp + dataFp;
     }
 
-    const vmMaterials = resolveMaterials(k, store.getState().features);
-    applyMaterials(pipeline, vmMaterials, count);
+    // Materials only change when the feature list changes (any edit commits a
+    // fresh array) or when geometry rebuilt/updated this frame. Gate the
+    // resolve+GPU upload behind that so a static scene doesn't re-upload the
+    // material buffer every frame.
+    const featuresArr = store.getState().features;
+    if (featuresArr !== matFeaturesRef.current || needsCompile || needsDataUpdate) {
+      const vmMaterials = resolveMaterials(k, featuresArr);
+      applyMaterials(pipeline, vmMaterials, count);
+      matFeaturesRef.current = featuresArr;
+    }
     pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
@@ -229,11 +239,15 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
   const dataFpRef = useRef("");
   const compilingRef = useRef(false);
   const readyRef = useRef(false);
+  const matFeaturesRef = useRef<unknown>(null);
+  const selectionRef = useRef<unknown>(null);
 
   useEffect(() => {
     pipelineRef.current = initDeferredPipeline(1, 1);
     structFpRef.current = "";
     dataFpRef.current = "";
+    matFeaturesRef.current = null;
+    selectionRef.current = null;
     compilingRef.current = false;
     readyRef.current = false;
     showCompilationStatus("Initializing…");
@@ -316,15 +330,26 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
 
 
     const storeState = store.getState();
-    const materials = resolveMaterials(k, storeState.features);
-    applyMaterials(pipeline, materials, count);
 
-    const selection = storeState.selection;
-    const selectedBodies = new Set<number>();
-    for (let i = 0; i < count; i++) {
-      if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+    // Re-resolve + re-upload materials only when the feature list changed or
+    // geometry rebuilt/updated this frame — not on every static frame.
+    if (storeState.features !== matFeaturesRef.current || needsRebuild || needsDataUpdate) {
+      const materials = resolveMaterials(k, storeState.features);
+      applyMaterials(pipeline, materials, count);
+      matFeaturesRef.current = storeState.features;
     }
-    updateDeferredSelection(pipeline, selectedBodies);
+
+    // Selection likewise only changes via a fresh selection Set (or when the
+    // body set rebuilt).
+    const selection = storeState.selection;
+    if (selection !== selectionRef.current || needsRebuild) {
+      const selectedBodies = new Set<number>();
+      for (let i = 0; i < count; i++) {
+        if (selection.has(k.bodySeedFeatureId(i))) selectedBodies.add(i);
+      }
+      updateDeferredSelection(pipeline, selectedBodies);
+      selectionRef.current = selection;
+    }
     pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;

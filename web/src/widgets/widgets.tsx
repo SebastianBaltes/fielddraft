@@ -34,6 +34,7 @@ import {
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
+import { formatQueryDisplay } from "../queryLabels";
 import {
   ANGLE_UNITS,
   type AngleUnit,
@@ -856,29 +857,6 @@ export function GroupHeader({
  * dialog's definition via `onChange`. The widget then drops its
  * focus automatically.
  */
-const QUERY_DISPLAY_LABELS: Record<string, string> = {
-  "qCreatedBy(origin_plane_xy)": "XY Plane",
-  "qCreatedBy(origin_plane_xz)": "XZ Plane",
-  "qCreatedBy(origin_plane_yz)": "YZ Plane",
-};
-
-function formatQueryDisplay(
-  raw: string,
-  featureNames?: Map<number, string>,
-): string {
-  if (QUERY_DISPLAY_LABELS[raw]) return QUERY_DISPLAY_LABELS[raw];
-  const match = raw.match(/^qCreatedBy\((.+)\)$/);
-  if (match) {
-    const inner = match[1];
-    if (featureNames) {
-      const id = Number(inner);
-      if (!Number.isNaN(id) && featureNames.has(id))
-        return featureNames.get(id)!;
-    }
-    return inner.replace(/_/g, " ");
-  }
-  return raw;
-}
 
 export function QueryWidget({
   label,
