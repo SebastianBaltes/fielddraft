@@ -584,6 +584,100 @@ pub enum CsgNode {
 }
 
 impl CsgNode {
+    /// DL-61 Stage A: build a single feature's leaf subtree (primitive →
+    /// Transform → optional Twist/Bend/Displace/Shell wrappers) plus its
+    /// resolved blend parameters. Behavior-neutral extraction from
+    /// `from_features`; in DL-61 Stage B this becomes the Feature→node decoder.
+    fn build_leaf_node(f: &Feature) -> (CsgNode, f32, BlendMode) {
+        // K7.3: Primitive::Extrude lowers directly to a
+        // CsgNode::Extrude that the K4 mesher knows how
+        // to walk. Every other primitive stays in the
+        // CsgNode::Leaf wrapper path so the existing
+        // BoundedCsg builder keeps working unchanged.
+        let node = match &f.primitive {
+            Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center,
+            } => {
+                // Fold the extrude's own `center` into a
+                // pre-rotation translation so the
+                // canonical `CsgNode::Extrude` slab sits
+                // at the origin of the local frame. The
+                // outer `CsgNode::Transform` then applies
+                // the feature's own transform on top.
+                let centered = Self::Extrude {
+                    id: f.id.clone(),
+                    sketch: Box::new(sketch.clone()),
+                    half_height: *half_depth_z,
+                };
+                // Shift by `center` via an inner
+                // Transform so the extrude SDF sees local
+                // coordinates centred on its own origin.
+                if *center == [0.0, 0.0, 0.0] {
+                    centered
+                } else {
+                    Self::Transform(
+                        Transform {
+                            translate: *center,
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        Box::new(centered),
+                    )
+                }
+            }
+            // K8.4: same lowering dance as Extrude, but the
+            // payload is CsgNode::Revolve and the sketch is
+            // interpreted in (r, y) rather than (x, y).
+            Primitive::Revolve { sketch, center } => {
+                let centered = Self::Revolve {
+                    id: f.id.clone(),
+                    sketch: Box::new(sketch.clone()),
+                };
+                if *center == [0.0, 0.0, 0.0] {
+                    centered
+                } else {
+                    Self::Transform(
+                        Transform {
+                            translate: *center,
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        Box::new(centered),
+                    )
+                }
+            }
+            _ => Self::Leaf {
+                id: f.id.clone(),
+                primitive: f.primitive.clone(),
+            },
+        };
+        let mut leaf: CsgNode = Self::Transform(f.transform, Box::new(node));
+        if f.twist_rate != 0.0 {
+            leaf = Self::Twist(Box::new(leaf), f.twist_rate);
+        }
+        if f.bend_rate != 0.0 {
+            leaf = Self::Bend(Box::new(leaf), f.bend_rate);
+        }
+        if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
+            leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
+        }
+        if f.shell_thickness > 0.0 {
+            leaf = Self::Shell(Box::new(leaf), f.shell_thickness);
+        }
+        // Blend selection: fillet (blend_radius) wins over
+        // chamfer (chamfer_size) when both are set.
+        let (blend_r, blend_mode) = if f.blend_radius > 0.0 {
+            (f.blend_radius, BlendMode::Fillet)
+        } else if f.chamfer_size > 0.0 {
+            (f.chamfer_size, BlendMode::Chamfer)
+        } else {
+            (0.0, BlendMode::Fillet)
+        };
+        (leaf, blend_r, blend_mode)
+    }
+
     /// Fold a linear feature spine into a binary CSG tree.
     ///
     /// The first feature seeds the accumulator regardless of its op
@@ -598,92 +692,7 @@ impl CsgNode {
     pub fn from_features(features: &[Feature]) -> Self {
         let mut acc = Self::Empty;
         for f in features {
-            // K7.3: Primitive::Extrude lowers directly to a
-            // CsgNode::Extrude that the K4 mesher knows how
-            // to walk. Every other primitive stays in the
-            // CsgNode::Leaf wrapper path so the existing
-            // BoundedCsg builder keeps working unchanged.
-            let node = match &f.primitive {
-                Primitive::Extrude {
-                    sketch,
-                    half_depth_z,
-                    center,
-                } => {
-                    // Fold the extrude's own `center` into a
-                    // pre-rotation translation so the
-                    // canonical `CsgNode::Extrude` slab sits
-                    // at the origin of the local frame. The
-                    // outer `CsgNode::Transform` then applies
-                    // the feature's own transform on top.
-                    let centered = Self::Extrude {
-                        id: f.id.clone(),
-                        sketch: Box::new(sketch.clone()),
-                        half_height: *half_depth_z,
-                    };
-                    // Shift by `center` via an inner
-                    // Transform so the extrude SDF sees local
-                    // coordinates centred on its own origin.
-                    if *center == [0.0, 0.0, 0.0] {
-                        centered
-                    } else {
-                        Self::Transform(
-                            Transform {
-                                translate: *center,
-                                rotation: [0.0, 0.0, 0.0, 1.0],
-                                scale: [1.0, 1.0, 1.0],
-                            },
-                            Box::new(centered),
-                        )
-                    }
-                }
-                // K8.4: same lowering dance as Extrude, but the
-                // payload is CsgNode::Revolve and the sketch is
-                // interpreted in (r, y) rather than (x, y).
-                Primitive::Revolve { sketch, center } => {
-                    let centered = Self::Revolve {
-                        id: f.id.clone(),
-                        sketch: Box::new(sketch.clone()),
-                    };
-                    if *center == [0.0, 0.0, 0.0] {
-                        centered
-                    } else {
-                        Self::Transform(
-                            Transform {
-                                translate: *center,
-                                rotation: [0.0, 0.0, 0.0, 1.0],
-                                scale: [1.0, 1.0, 1.0],
-                            },
-                            Box::new(centered),
-                        )
-                    }
-                }
-                _ => Self::Leaf {
-                    id: f.id.clone(),
-                    primitive: f.primitive.clone(),
-                },
-            };
-            let mut leaf: CsgNode = Self::Transform(f.transform, Box::new(node));
-            if f.twist_rate != 0.0 {
-                leaf = Self::Twist(Box::new(leaf), f.twist_rate);
-            }
-            if f.bend_rate != 0.0 {
-                leaf = Self::Bend(Box::new(leaf), f.bend_rate);
-            }
-            if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
-                leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
-            }
-            if f.shell_thickness > 0.0 {
-                leaf = Self::Shell(Box::new(leaf), f.shell_thickness);
-            }
-            // Blend selection: fillet (blend_radius) wins over
-            // chamfer (chamfer_size) when both are set.
-            let (blend_r, blend_mode) = if f.blend_radius > 0.0 {
-                (f.blend_radius, BlendMode::Fillet)
-            } else if f.chamfer_size > 0.0 {
-                (f.chamfer_size, BlendMode::Chamfer)
-            } else {
-                (0.0, BlendMode::Fillet)
-            };
+            let (leaf, blend_r, blend_mode) = Self::build_leaf_node(f);
             acc = if !f.target_ids.is_empty() && !matches!(acc, Self::Empty) {
                 wrap_targeted(acc, &f.target_ids, leaf, f.op, blend_r, blend_mode)
             } else {
