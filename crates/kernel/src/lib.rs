@@ -38,7 +38,7 @@ use csg::{CsgNode, DecodedFeature};
 use dc::Mesh;
 use raycast::{raycast, RaycastParams};
 use features::quat_to_euler_xyz;
-use fielddraft_protocol::{BoolOp, Document, Feature, FeatureId, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, Document, FeatureId, Primitive, Transform};
 use wasm_bindgen::prelude::*;
 
 /// Default voxel grid resolution for the *active* body — the one the
@@ -328,6 +328,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
 /// deletions across spine clones produced by Pattern/Mirror/Hole
 /// execute paths, which live under hierarchical child ids such as
 /// `fillet_7.mask_0` or `linear_pattern_3.1`.
+#[cfg(test)]
 fn feature_id_is_descendant_of(child: &FeatureId, ancestor: &FeatureId) -> bool {
     let mut cur = child.parent();
     while let Some(p) = cur {
@@ -337,6 +338,42 @@ fn feature_id_is_descendant_of(child: &FeatureId, ancestor: &FeatureId) -> bool 
         cur = p.parent();
     }
     false
+}
+
+/// Read a 3-element float vector out of a `FeatureCall` params
+/// object, falling back to `default` when the key is absent or
+/// malformed. Used by the call-first transform mutators to detect
+/// no-op edits against the current wire value.
+fn json_vec3(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: [f32; 3],
+) -> [f32; 3] {
+    match params.get(key).and_then(|v| v.as_array()) {
+        Some(a) if a.len() == 3 => [
+            a[0].as_f64().unwrap_or(default[0] as f64) as f32,
+            a[1].as_f64().unwrap_or(default[1] as f64) as f32,
+            a[2].as_f64().unwrap_or(default[2] as f64) as f32,
+        ],
+        _ => default,
+    }
+}
+
+/// Quaternion sibling of [`json_vec3`] (default identity rotation).
+fn json_vec4(
+    params: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    default: [f32; 4],
+) -> [f32; 4] {
+    match params.get(key).and_then(|v| v.as_array()) {
+        Some(a) if a.len() == 4 => [
+            a[0].as_f64().unwrap_or(default[0] as f64) as f32,
+            a[1].as_f64().unwrap_or(default[1] as f64) as f32,
+            a[2].as_f64().unwrap_or(default[2] as f64) as f32,
+            a[3].as_f64().unwrap_or(default[3] as f64) as f32,
+        ],
+        _ => default,
+    }
 }
 
 // ─── wasm-bindgen surface ────────────────────────────────────────────────
@@ -445,15 +482,12 @@ impl Kernel {
     }
 
     fn rebuild_packed(&mut self) {
-        // K4.5.4c dual-write: rebuild the K4.5 Feature-as-Function
-        // `feature_calls` mirror after every mutation that ran
-        // through `rebuild_packed`. Every public mutator funnels
-        // through this call (add / remove / nudge /
-        // set_feature_{translate,transform,op} / reorder / undo /
-        // redo / load_json), so the invariant "`features` and
-        // `feature_calls` are in sync after any mutation returns"
-        // holds automatically without instrumenting each path.
-        self.document.sync_feature_calls();
+        // DL-61 C2b: `feature_calls` is the single source of truth.
+        // Every mutator edits a call's params (or the call list) and
+        // re-derives the `features` spine via
+        // `bootstrap_features_from_calls`, so there is no reverse
+        // sync any more — `rebuild_packed` just re-meshes the
+        // current document.
         self.rebuild_mesh_internal();
     }
 
@@ -811,6 +845,50 @@ impl Kernel {
             BoolOp::Difference => Ok("difference"),
             BoolOp::Intersect => Ok("intersect"),
         }
+    }
+
+    /// DL-61 C2b call-first core: locate a top-level `FeatureCall`
+    /// by id, hand its params object to `edit`, and — if the edit
+    /// reports a real change — snapshot, re-derive the spine via
+    /// `bootstrap_features_from_calls`, and re-mesh. Returns false
+    /// when no call matches the id or the edit was a no-op (no
+    /// snapshot is taken in either case). On a regeneration error
+    /// the snapshot is rolled back so a bad edit never leaves a
+    /// torn document.
+    ///
+    /// This replaces the old "poke `document.features` + reverse
+    /// sync" flow: `feature_calls` is authoritative, so transform/op
+    /// edits write into the call's params and the spine falls out of
+    /// a normal regeneration.
+    fn edit_feature_call_params(
+        &mut self,
+        id: FeatureId,
+        edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> bool,
+    ) -> bool {
+        let Some(idx) = self
+            .document
+            .feature_calls
+            .iter()
+            .position(|c| c.id == id)
+        else {
+            return false;
+        };
+        let mut params = self.document.feature_calls[idx]
+            .params
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        if !edit(&mut params) {
+            return false;
+        }
+        self.snapshot();
+        self.document.feature_calls[idx].params = serde_json::Value::Object(params);
+        if self.bootstrap_features_from_calls().is_err() {
+            self.undo();
+            return false;
+        }
+        self.rebuild_packed();
+        true
     }
 
     fn push_feature_call(
@@ -1876,84 +1954,54 @@ impl Kernel {
         p1: f32,
         p2: f32,
     ) -> Result<u32, JsError> {
-        let primitive = match kind {
-            Primitive::KIND_BOX => Primitive::Box {
-                center: [0.0, 0.0, 0.0],
-                half_extents: [p0, p1, p2],
-            },
-            Primitive::KIND_SPHERE => Primitive::Sphere {
-                center: [0.0, 0.0, 0.0],
-                radius: p0,
-            },
-            Primitive::KIND_CYLINDER => Primitive::Cylinder {
-                center: [0.0, 0.0, 0.0],
-                radius: p0,
-                half_height: p1,
-            },
-            Primitive::KIND_TORUS => Primitive::Torus {
-                center: [0.0, 0.0, 0.0],
-                major_radius: p0,
-                minor_radius: p1,
-            },
-            Primitive::KIND_THREAD => Primitive::Thread {
-                nominal_radius: p0,
-                pitch: p1,
-                depth: p2,
-                half_height: 5.0,
-            },
-            Primitive::KIND_CONE => Primitive::Cone {
-                r_bottom: p0,
-                r_top: p1,
-                half_height: p2,
-            },
-            Primitive::KIND_CAPSULE => Primitive::Capsule {
-                radius: p0,
-                half_height: p1,
-            },
-            Primitive::KIND_HEX_PRISM => Primitive::HexPrism {
-                apothem: p0,
-                half_height: p1,
-            },
-            Primitive::KIND_ELLIPSOID => Primitive::Ellipsoid {
-                radii: [p0, p1, p2],
-            },
+        // DL-61 C2b: addPrimitive is call-first — it builds the
+        // primitive's `FeatureCall` directly (the same wire shape the
+        // matching `FeatureKind::execute` parses) and regenerates the
+        // spine via `push_feature_call`. The per-kind `params` keys
+        // mirror each primitive `Def`'s field names exactly.
+        let op_wire = Self::op_wire_name(op)?;
+        let (type_name, mut params) = match kind {
+            Primitive::KIND_BOX => (
+                "box",
+                serde_json::json!({ "half_extents": [p0, p1, p2] }),
+            ),
+            Primitive::KIND_SPHERE => ("sphere", serde_json::json!({ "radius": p0 })),
+            Primitive::KIND_CYLINDER => (
+                "cylinder",
+                serde_json::json!({ "radius": p0, "half_height": p1 }),
+            ),
+            Primitive::KIND_TORUS => (
+                "torus",
+                serde_json::json!({ "major_radius": p0, "minor_radius": p1 }),
+            ),
+            Primitive::KIND_THREAD => (
+                "thread",
+                serde_json::json!({
+                    "nominal_radius": p0, "pitch": p1, "depth": p2, "half_height": 5.0,
+                }),
+            ),
+            Primitive::KIND_CONE => (
+                "cone",
+                serde_json::json!({ "r_bottom": p0, "r_top": p1, "half_height": p2 }),
+            ),
+            Primitive::KIND_CAPSULE => (
+                "capsule",
+                serde_json::json!({ "radius": p0, "half_height": p1 }),
+            ),
+            Primitive::KIND_HEX_PRISM => (
+                "hex_prism",
+                serde_json::json!({ "apothem": p0, "half_height": p1 }),
+            ),
+            Primitive::KIND_ELLIPSOID => {
+                ("ellipsoid", serde_json::json!({ "radii": [p0, p1, p2] }))
+            }
             other => return Err(JsError::new(&format!("invalid primitive kind: {other}"))),
         };
-        let bool_op = Self::parse_op(op)?;
-
-        self.snapshot();
-        let id = self.document.allocate_id();
-        let name = format!("{} {}", primitive.default_name(), id);
-        let transform = Transform {
-            translate: [tx, ty, tz],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            scale: [1.0, 1.0, 1.0],
-        };
-        // K4.5.1 still issues flat-numeric FeatureIds, so the shim
-        // call at the bottom is guaranteed to succeed. When the
-        // Feature Registry starts issuing prefix-style ids in a
-        // later slice, `addPrimitive` will need to move to a
-        // String return value.
-        let flat_u32 = id
-            .as_u32_if_flat()
-            .expect("K4.5.1 still issues flat-numeric feature ids");
-        self.document.features.push(Feature {
-            id,
-            name,
-            op: bool_op,
-            primitive,
-            transform,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
-        self.rebuild_packed();
-        Ok(flat_u32)
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("translate".into(), serde_json::json!([tx, ty, tz]));
+            obj.insert("op".into(), serde_json::json!(op_wire));
+        }
+        self.push_feature_call(type_name, params)
     }
 
     /// Replace the translate component of a feature's transform.
@@ -1966,15 +2014,13 @@ impl Kernel {
         tz: f32,
     ) -> bool {
         let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        let Some(idx) = pos else { return false };
-        if self.document.features[idx].transform.translate == [tx, ty, tz] {
-            return false;
-        }
-        self.snapshot();
-        self.document.features[idx].transform.translate = [tx, ty, tz];
-        self.rebuild_packed();
-        true
+        self.edit_feature_call_params(id, |p| {
+            if json_vec3(p, "translate", [0.0, 0.0, 0.0]) == [tx, ty, tz] {
+                return false;
+            }
+            p.insert("translate".into(), serde_json::json!([tx, ty, tz]));
+            true
+        })
     }
 
     /// K7.21h: replace the rotation component of a feature's transform.
@@ -1989,34 +2035,30 @@ impl Kernel {
         rw: f32,
     ) -> bool {
         let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        let Some(idx) = pos else { return false };
         let rot = [rx, ry, rz, rw];
-        if self.document.features[idx].transform.rotation == rot {
-            return false;
-        }
-        self.snapshot();
-        self.document.features[idx].transform.rotation = rot;
-        self.rebuild_packed();
-        true
+        self.edit_feature_call_params(id, |p| {
+            if json_vec4(p, "rotation", [0.0, 0.0, 0.0, 1.0]) == rot {
+                return false;
+            }
+            p.insert("rotation".into(), serde_json::json!(rot));
+            true
+        })
     }
 
     #[wasm_bindgen(js_name = setFeatureScale)]
     pub fn set_feature_scale(&mut self, id: u32, sx: f32, sy: f32, sz: f32) -> bool {
         let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        let Some(idx) = pos else { return false };
-        let cur = self.document.features[idx].transform.scale;
-        if (cur[0] - sx).abs() < 1e-7
-            && (cur[1] - sy).abs() < 1e-7
-            && (cur[2] - sz).abs() < 1e-7
-        {
-            return false;
-        }
-        self.snapshot();
-        self.document.features[idx].transform.scale = [sx, sy, sz];
-        self.rebuild_packed();
-        true
+        self.edit_feature_call_params(id, |p| {
+            let cur = json_vec3(p, "scale", [1.0, 1.0, 1.0]);
+            if (cur[0] - sx).abs() < 1e-7
+                && (cur[1] - sy).abs() < 1e-7
+                && (cur[2] - sz).abs() < 1e-7
+            {
+                return false;
+            }
+            p.insert("scale".into(), serde_json::json!([sx, sy, sz]));
+            true
+        })
     }
 
     fn apply_gizmo_feature(
@@ -2103,19 +2145,18 @@ impl Kernel {
     /// keyboard nudging.
     #[wasm_bindgen(js_name = nudgeFeature)]
     pub fn nudge_feature(&mut self, id: u32, dx: f32, dy: f32, dz: f32) -> bool {
-        let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        let Some(idx) = pos else { return false };
         if dx == 0.0 && dy == 0.0 && dz == 0.0 {
             return false;
         }
-        self.snapshot();
-        let t = &mut self.document.features[idx].transform;
-        t.translate[0] += dx;
-        t.translate[1] += dy;
-        t.translate[2] += dz;
-        self.rebuild_packed();
-        true
+        let id = FeatureId::from_u32(id);
+        self.edit_feature_call_params(id, |p| {
+            let cur = json_vec3(p, "translate", [0.0, 0.0, 0.0]);
+            p.insert(
+                "translate".into(),
+                serde_json::json!([cur[0] + dx, cur[1] + dy, cur[2] + dz]),
+            );
+            true
+        })
     }
 
     /// Replace the full transform (translate, quaternion, scale).
@@ -2136,20 +2177,21 @@ impl Kernel {
         sz: f32,
     ) -> bool {
         let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        let Some(idx) = pos else { return false };
-        let new = Transform {
-            translate: [tx, ty, tz],
-            rotation: [qx, qy, qz, qw],
-            scale: [sx, sy, sz],
-        };
-        if self.document.features[idx].transform == new {
-            return false;
-        }
-        self.snapshot();
-        self.document.features[idx].transform = new;
-        self.rebuild_packed();
-        true
+        self.edit_feature_call_params(id, |p| {
+            let t = json_vec3(p, "translate", [0.0, 0.0, 0.0]);
+            let r = json_vec4(p, "rotation", [0.0, 0.0, 0.0, 1.0]);
+            let s = json_vec3(p, "scale", [1.0, 1.0, 1.0]);
+            if t == [tx, ty, tz]
+                && r == [qx, qy, qz, qw]
+                && s == [sx, sy, sz]
+            {
+                return false;
+            }
+            p.insert("translate".into(), serde_json::json!([tx, ty, tz]));
+            p.insert("rotation".into(), serde_json::json!([qx, qy, qz, qw]));
+            p.insert("scale".into(), serde_json::json!([sx, sy, sz]));
+            true
+        })
     }
 
     /// Remove the feature with the given id. Returns true if anything
@@ -2158,41 +2200,27 @@ impl Kernel {
     pub fn remove_feature(&mut self, id: u32) -> bool {
         let target_id = FeatureId::from_u32(id);
 
-        // Post-K4.5.4e, `feature_calls` is authoritative for non-spine
-        // feature types (hole, sketch, extrude, gyroid, pattern,
-        // mirror, …). Their spine entries — when they exist at all —
-        // live under a hierarchical child id such as `42.0`, so the
-        // old "scan features by flat id" loop missed them entirely
-        // and left the delete button visually inert for roughly
-        // half the feature types in the registry. The correct
-        // path here is: find the match in *either* storage, then
-        // cascade-remove from both (including any descendant spine
-        // clones produced by Pattern/Mirror/Hole execute paths).
-        let call_pos = self
+        // DL-61 C2b: `feature_calls` is authoritative, so a delete is
+        // just "drop the call and regenerate". The spine (including
+        // any descendant clones a Pattern/Mirror/Hole execute path
+        // would have produced) falls out of the regeneration — no
+        // cascade bookkeeping needed.
+        let Some(idx) = self
             .document
             .feature_calls
             .iter()
-            .position(|c| c.id == target_id);
-        let spine_hit = self.document.features.iter().any(|f| {
-            f.id == target_id || feature_id_is_descendant_of(&f.id, &target_id)
-        });
-
-        if call_pos.is_none() && !spine_hit {
+            .position(|c| c.id == target_id)
+        else {
             return false;
-        }
+        };
 
         self.snapshot();
-
-        if let Some(idx) = call_pos {
-            self.document.feature_calls.remove(idx);
-        }
-        // Cascade-remove spine features whose id matches the target
-        // or is any descendant of it. `retain` preserves document
-        // order for the survivors.
-        self.document.features.retain(|f| {
-            f.id != target_id && !feature_id_is_descendant_of(&f.id, &target_id)
-        });
-
+        self.document.feature_calls.remove(idx);
+        // A dangling dependent (e.g. a gizmo transform call that
+        // targeted the removed feature) can make regeneration error
+        // out; tolerate it like `set_rollback_index` rather than
+        // refusing the delete.
+        let _ = self.bootstrap_features_from_calls();
         self.rebuild_packed();
         true
     }
@@ -2200,41 +2228,33 @@ impl Kernel {
     /// Change the boolean op of an existing feature.
     #[wasm_bindgen(js_name = setFeatureOp)]
     pub fn set_feature_op(&mut self, id: u32, op: u32) -> Result<bool, JsError> {
-        let bool_op = Self::parse_op(op)?;
+        let wire = Self::op_wire_name(op)?;
         let id = FeatureId::from_u32(id);
-        let pos = self.document.features.iter().position(|f| f.id == id);
-        if let Some(idx) = pos {
-            if self.document.features[idx].op == bool_op {
-                return Ok(false);
+        Ok(self.edit_feature_call_params(id, |p| {
+            if p.get("op").and_then(|v| v.as_str()) == Some(wire) {
+                return false;
             }
-            self.snapshot();
-            self.document.features[idx].op = bool_op;
-            let wire = Self::op_label(bool_op);
-            if let Some(call) = self.document.feature_calls.iter_mut().find(|c| c.id == id) {
-                if let Some(obj) = call.params.as_object_mut() {
-                    obj.insert("op".to_string(), serde_json::json!(wire));
-                }
-            }
-            self.rebuild_packed();
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+            p.insert("op".into(), serde_json::json!(wire));
+            true
+        }))
     }
 
     /// Move a feature to a new index. Indices clamp into bounds.
     #[wasm_bindgen(js_name = reorderFeature)]
     pub fn reorder_feature(&mut self, id: u32, target_index: usize) -> bool {
         let id = FeatureId::from_u32(id);
-        let from = self.document.features.iter().position(|f| f.id == id);
+        let from = self.document.feature_calls.iter().position(|c| c.id == id);
         let Some(from) = from else { return false };
-        let to = target_index.min(self.document.features.len().saturating_sub(1));
+        let to = target_index.min(self.document.feature_calls.len().saturating_sub(1));
         if from == to {
             return false;
         }
         self.snapshot();
-        let f = self.document.features.remove(from);
-        self.document.features.insert(to, f);
+        let call = self.document.feature_calls.remove(from);
+        self.document.feature_calls.insert(to, call);
+        // Reordering changes Boolean/regeneration order, so re-derive
+        // the spine from the new call order.
+        let _ = self.bootstrap_features_from_calls();
         self.rebuild_packed();
         true
     }
@@ -2934,6 +2954,11 @@ impl Default for Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // DL-61 C2b: `Feature` is no longer part of the production
+    // surface (the kernel runs on call-first `feature_calls` +
+    // `DecodedFeature`), but the test fixtures still build spine
+    // features directly, so they import it explicitly here.
+    use fielddraft_protocol::Feature;
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
         Feature {
@@ -4179,26 +4204,23 @@ mod tests {
         assert_eq!(k.mesh_version(), after);
     }
 
-    // ─── K4.5.4c: Document.feature_calls dual-write invariant ─
+    // ─── DL-61 C2b: feature_calls is the single source of truth ─
 
-    /// Helper: assert that `document.feature_calls` is a
-    /// byte-identical projection of `document.features` via
-    /// `FeatureCall::from_spine_feature`. The dual-write hook in
-    /// `rebuild_packed` is supposed to hold this invariant after
-    /// every mutation.
-    fn assert_feature_calls_match_spine(k: &Kernel) {
+    /// Helper: with `feature_calls` authoritative and the spine
+    /// derived from it, assert the regenerated spine lines up 1:1
+    /// with the calls. Valid for the primitive-only documents these
+    /// tests build — a Pattern/Mirror would add child spine entries
+    /// and break the length equality. Locks that every call-first
+    /// mutator leaves the spine consistent with the call list.
+    fn assert_spine_matches_calls(k: &Kernel) {
         let doc = &k.document;
         assert_eq!(
-            doc.feature_calls.len(),
             doc.features.len(),
-            "feature_calls length diverged from features",
+            doc.feature_calls.len(),
+            "spine length diverged from feature_calls",
         );
-        for (i, f) in doc.features.iter().enumerate() {
-            let expected = fielddraft_protocol::FeatureCall::from_spine_feature(f);
-            assert_eq!(
-                doc.feature_calls[i], expected,
-                "feature_calls[{i}] drifted from its spine feature",
-            );
+        for (f, c) in doc.features.iter().zip(&doc.feature_calls) {
+            assert_eq!(f.id, c.id, "spine id drifted from its feature_call");
         }
     }
 
@@ -4220,7 +4242,7 @@ mod tests {
             .unwrap();
         assert_eq!(k.document.feature_calls.len(), 1);
         assert_eq!(k.document.feature_calls[0].type_name, "box");
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
     }
 
     #[test]
@@ -4262,12 +4284,12 @@ mod tests {
                 0.0,
             )
             .unwrap();
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         // Mutation 1: translate the box — feature_calls[0].params
         // must pick up the new translate.
         assert!(k.set_feature_translate(id_box, 10.0, 20.0, 30.0));
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
         assert_eq!(
             k.document.feature_calls[0].params["translate"],
             serde_json::json!([10.0, 20.0, 30.0])
@@ -4275,11 +4297,11 @@ mod tests {
 
         // Mutation 2: nudge the sphere.
         assert!(k.nudge_feature(id_sphere, 1.0, 2.0, 3.0));
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         // Mutation 3: change the cylinder's op.
         k.set_feature_op(id_cyl, BoolOp::TAG_DIFFERENCE).unwrap();
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
         let cyl_call_idx = k
             .document
             .features
@@ -4293,19 +4315,19 @@ mod tests {
 
         // Mutation 4: reorder the cylinder to the front.
         assert!(k.reorder_feature(id_cyl, 0));
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
         assert_eq!(k.document.features[0].id, FeatureId::from_u32(id_cyl));
 
         // Mutation 5: remove the box.
         assert!(k.remove_feature(id_box));
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
         assert_eq!(k.document.features.len(), 2);
 
         // Mutation 6: full transform write on the sphere.
         assert!(k.set_feature_transform(
             id_sphere, 7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0
         ));
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
     }
 
     #[test]
@@ -4325,7 +4347,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         k.add_primitive(
             Primitive::KIND_SPHERE,
@@ -4339,52 +4361,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(k.document.feature_calls.len(), 2);
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         assert!(k.undo());
         assert_eq!(k.document.feature_calls.len(), 1);
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         assert!(k.redo());
         assert_eq!(k.document.feature_calls.len(), 2);
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
 
         // A mutation after an undo/redo cycle also stays in sync.
         assert!(k.nudge_feature(1, 1.0, 0.0, 0.0));
-        assert_feature_calls_match_spine(&k);
-    }
-
-    #[test]
-    fn load_json_rebuilds_feature_calls_from_features() {
-        // Loading a legacy K1 JSON (no feature_calls field) goes
-        // through `rebuild_packed`, which calls
-        // `sync_feature_calls`, so the mirror is populated before
-        // the loaded document is exposed to any caller.
-        let mut k = Kernel::new();
-        let legacy = r#"{
-            "schema_version": 2,
-            "name": "legacy",
-            "features": [{
-                "id": 1,
-                "name": "Base",
-                "op": "union",
-                "primitive": {
-                    "kind": "box",
-                    "center": [0, 0, 0],
-                    "half_extents": [5, 5, 5]
-                },
-                "transform": {
-                    "translate": [0, 0, 0],
-                    "rotation": [0, 0, 0, 1],
-                    "scale": 1
-                }
-            }],
-            "next_feature_id": 2
-        }"#;
-        k.load_json(legacy).unwrap();
-        assert_eq!(k.document.features.len(), 1);
-        assert_eq!(k.document.feature_calls.len(), 1);
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
     }
 
     // ─── K4.5.4d: bootstrap from feature_calls ─────────────────
@@ -4454,7 +4443,7 @@ mod tests {
         // — the dual-write hook rebuilds them from the freshly
         // regenerated features, which is a round-trip no-op thanks
         // to the lossless primitive execute impls.
-        assert_feature_calls_match_spine(&k);
+        assert_spine_matches_calls(&k);
     }
 
     #[test]
@@ -4572,7 +4561,7 @@ mod tests {
             assert_eq!(loaded.transform.rotation, original.transform.rotation);
             assert_eq!(loaded.transform.scale, original.transform.scale);
         }
-        assert_feature_calls_match_spine(&k2);
+        assert_spine_matches_calls(&k2);
     }
 
     #[test]
@@ -4692,7 +4681,7 @@ mod tests {
             assert_eq!(loaded.transform.rotation, original.transform.rotation);
             assert_eq!(loaded.transform.scale, original.transform.scale);
         }
-        assert_feature_calls_match_spine(&k2);
+        assert_spine_matches_calls(&k2);
         // And the meshing pipeline woke up — rebuild_packed ran
         // on load, so the mesh has real geometry.
         assert!(k2.mesh_vertex_count() > 0);
