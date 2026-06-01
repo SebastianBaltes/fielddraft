@@ -2,6 +2,8 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_kernel_free: (a: number, b: number) => void;
+export const fdOpCommit: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const installScriptRunner: (a: any) => void;
 export const kernel_activeBodyId: (a: number) => number;
 export const kernel_addBoolean: (a: number) => [number, number, number];
 export const kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
@@ -107,9 +109,11 @@ export const kernel_undo: (a: number) => number;
 export const kernel_undoDepth: (a: number) => number;
 export const kernel_upsertScript: (a: number, b: number, c: number) => [number, number, number];
 export const wasmVersion: () => [number, number];
-export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __externref_table_dealloc: (a: number) => void;
 export const __wbindgen_start: () => void;

@@ -532,6 +532,24 @@ export class Kernel {
 }
 
 /**
+ * Commit one built-in op into the live script scratch; returns the
+ * created-feature handle ids as a JSON array.
+ */
+export function fdOpCommit(id: string, type_name: string, params_json: string): string;
+
+/**
+ * Install the worker's JS `build()` driver as the script runner for
+ * this realm. The Rust→JS half of `fd.op*`: when `regenerate`
+ * reaches a [`super::ScriptFeature`] it calls `run(scriptId,
+ * instanceId, paramsJson)`, which the worker implements by running
+ * the matching compiled `build()` in the determinism sandbox. A
+ * thrown JS error becomes [`super::ScriptError::JsRun`] and
+ * fail-stops the regeneration. Installed once at worker boot — the
+ * runner persists in the `thread_local` across rebuilds.
+ */
+export function installScriptRunner(run: Function): void;
+
+/**
  * The app version this WASM binary was stamped with at build time
  * (see `build.rs`). The web app compares it against `__APP_VERSION__`
  * on boot to catch a stale kernel module. Returns "dev" when built
@@ -544,6 +562,8 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_kernel_free: (a: number, b: number) => void;
+    readonly fdOpCommit: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly installScriptRunner: (a: any) => void;
     readonly kernel_activeBodyId: (a: number) => number;
     readonly kernel_addBoolean: (a: number) => [number, number, number];
     readonly kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
@@ -649,10 +669,12 @@ export interface InitOutput {
     readonly kernel_undoDepth: (a: number) => number;
     readonly kernel_upsertScript: (a: number, b: number, c: number) => [number, number, number];
     readonly wasmVersion: () => [number, number];
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }

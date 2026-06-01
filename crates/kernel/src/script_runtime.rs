@@ -226,10 +226,16 @@ pub fn commit_builtin(
 /// sandbox and re-enters via [`commit_builtin_global`]); in native
 /// tests it's a Rust stub that drives commits directly.
 ///
+/// The three arguments are `(script_id, instance_id, params_json)`:
+/// `script_id` selects which `build()` to run (= the script-type id),
+/// `instance_id` is the feature-call id this instance was placed under
+/// (so `build()` can derive collision-free sub-op ids like `"10.a"`),
+/// and `params_json` is the variable-resolved `def`.
+///
 /// Not `Send` — on wasm it captures a `js_sys::Function`, and the whole
 /// runtime is single-threaded — so it lives in a `thread_local`, never
 /// in the `Send + Sync` feature registry.
-pub type ScriptRunFn = Box<dyn Fn(&str, &str) -> Result<(), ScriptError>>;
+pub type ScriptRunFn = Box<dyn Fn(&str, &str, &str) -> Result<(), ScriptError>>;
 
 thread_local! {
     /// The script runner for the current regenerate pass. Installed by
@@ -256,11 +262,15 @@ pub fn clear_runner() {
 /// script-to-script composition (`fd.call`) recurses in pure JS sharing
 /// the live scratch (§2.4), and the re-entrant `fd.op*` commits go
 /// through the *separate* [`SCRATCH`] thread-local — disjoint borrows.
-pub fn run_script(script_id: &str, params_json: &str) -> Result<(), ScriptError> {
+pub fn run_script(
+    script_id: &str,
+    instance_id: &str,
+    params_json: &str,
+) -> Result<(), ScriptError> {
     RUNNER.with(|cell| {
         let borrow = cell.borrow();
         let runner = borrow.as_ref().ok_or(ScriptError::NoRunner)?;
-        runner(script_id, params_json)
+        runner(script_id, instance_id, params_json)
     })
 }
 
@@ -318,7 +328,7 @@ impl crate::features::FeatureKind for ScriptFeature {
     fn execute(
         &self,
         ctx: &mut Context<'_>,
-        _id: &FeatureId,
+        id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
         // Hand the in-flight accumulator to the script as its live
@@ -334,7 +344,7 @@ impl crate::features::FeatureKind for ScriptFeature {
         enter(scratch);
 
         let params_json = serde_json::to_string(def).unwrap_or_else(|_| "{}".to_string());
-        let result = run_script(&self.id, &params_json);
+        let result = run_script(&self.id, &id.to_string(), &params_json);
 
         let scratch = exit();
         ctx.features = scratch.features;
@@ -367,6 +377,40 @@ mod wasm_exports {
         let handles = super::commit_builtin_global(id, type_name, params_json)
             .map_err(|e| JsError::new(&e.to_string()))?;
         serde_json::to_string(&handles).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Install the worker's JS `build()` driver as the script runner for
+    /// this realm. The Rust→JS half of `fd.op*`: when `regenerate`
+    /// reaches a [`super::ScriptFeature`] it calls `run(scriptId,
+    /// instanceId, paramsJson)`, which the worker implements by running
+    /// the matching compiled `build()` in the determinism sandbox. A
+    /// thrown JS error becomes [`super::ScriptError::JsRun`] and
+    /// fail-stops the regeneration. Installed once at worker boot — the
+    /// runner persists in the `thread_local` across rebuilds.
+    #[wasm_bindgen(js_name = installScriptRunner)]
+    pub fn install_script_runner(run: js_sys::Function) {
+        super::set_runner(Box::new(
+            move |script_id: &str, instance_id: &str, params_json: &str| {
+                run.call3(
+                    &JsValue::NULL,
+                    &JsValue::from_str(script_id),
+                    &JsValue::from_str(instance_id),
+                    &JsValue::from_str(params_json),
+                )
+                .map(|_| ())
+                .map_err(|e| super::ScriptError::JsRun(js_error_message(&e)))
+            },
+        ));
+    }
+
+    /// Best-effort extraction of a readable message from a thrown JS
+    /// value (an `Error` instance gives its `.message`; anything else
+    /// falls back to its debug form).
+    fn js_error_message(value: &JsValue) -> String {
+        value
+            .dyn_ref::<js_sys::Error>()
+            .map(|err| String::from(err.message()))
+            .unwrap_or_else(|| format!("{value:?}"))
     }
 }
 
@@ -509,7 +553,7 @@ mod tests {
     #[test]
     fn script_feature_commits_its_build_geometry() {
         // The runner simulates a build() that emits two primitives.
-        let runner: ScriptRunFn = Box::new(|_script_id, _params| {
+        let runner: ScriptRunFn = Box::new(|_script_id, _instance_id, _params| {
             commit_builtin_global("10.a", "box", &box_params().to_string())?;
             commit_builtin_global(
                 "10.b",
@@ -530,7 +574,7 @@ mod tests {
     fn script_sees_geometry_from_earlier_features() {
         // A native box precedes the script; the script's build() must
         // observe it in the live scratch (created-by-earlier-operation).
-        let runner: ScriptRunFn = Box::new(|_id, _params| {
+        let runner: ScriptRunFn = Box::new(|_script_id, _instance_id, _params| {
             let seen = with_scratch(|s| s.features.len())?;
             assert_eq!(seen, 1, "the prior box is visible to build()");
             commit_builtin_global("9.boss", "box", &box_params().to_string())?;
@@ -548,6 +592,26 @@ mod tests {
         let spine = regenerate_with_script("counterbore", runner, &calls).unwrap();
         assert_eq!(spine.len(), 2);
         assert_eq!(spine[1].id.to_string(), "9.boss");
+    }
+
+    #[test]
+    fn script_receives_its_instance_id() {
+        // build() needs the feature-call id it was placed under to derive
+        // collision-free sub-op ids; the runner must be handed it.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen_id = Rc::new(RefCell::new(String::new()));
+        let captured = Rc::clone(&seen_id);
+        let runner: ScriptRunFn = Box::new(move |_script_id, instance_id, _params| {
+            *captured.borrow_mut() = instance_id.to_string();
+            commit_builtin_global(&format!("{instance_id}.a"), "box", &box_params().to_string())?;
+            Ok(())
+        });
+        let spine =
+            regenerate_with_script("counterbore", runner, &[script_call("counterbore", "42")])
+                .unwrap();
+        assert_eq!(*seen_id.borrow(), "42");
+        assert_eq!(spine[0].id.to_string(), "42.a");
     }
 
     #[test]

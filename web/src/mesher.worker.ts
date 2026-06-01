@@ -35,9 +35,15 @@
  * rebuild.
  */
 
-// eslint-disable-next-line import/no-unresolved
-import initWasm, { Kernel as WasmKernel } from "./wasm/fielddraft_kernel.js";
+import initWasm, {
+  Kernel as WasmKernel,
+  // eslint-disable-next-line import/no-unresolved
+  fdOpCommit,
+  // eslint-disable-next-line import/no-unresolved
+  installScriptRunner,
+} from "./wasm/fielddraft_kernel.js";
 import { MESH_CONTRIBUTOR_STRIDE } from "./kernel";
+import { makeScriptHost, type ScriptRecordLite } from "./workerScriptHost";
 import {
   freezeGlobals,
   hashDocumentJson,
@@ -108,6 +114,14 @@ let readyPromise: Promise<ReadyKernel> | null = null;
  */
 let innerApi: FdInnerApi | null = null;
 
+/**
+ * The FieldSkript build host (S2c). Compiles each document's script
+ * `build()` bodies and runs the matching one when the kernel's
+ * `regenerate` reaches a scripted feature. Installed once at boot as the
+ * wasm script runner; its `build()` table is refreshed per rebuild.
+ */
+let scriptHost: ReturnType<typeof makeScriptHost> | null = null;
+
 async function ensureKernel(): Promise<ReadyKernel> {
   if (!readyPromise) {
     readyPromise = (async () => {
@@ -137,6 +151,20 @@ async function ensureKernel(): Promise<ReadyKernel> {
       const sandboxScope = self as unknown as SandboxScope;
       freezeGlobals(sandboxScope);
       innerApi = installInnerApi(sandboxScope);
+
+      // FieldSkript S2c: stand up the build host and register it as the
+      // kernel's script runner. From here on a `loadJson` whose document
+      // contains script features drives `build()` back through here
+      // synchronously via the Rust `installScriptRunner` import. The
+      // runner persists for the worker's lifetime; only its compiled
+      // `build()` table is refreshed per rebuild (`scriptHost.sync`).
+      scriptHost = makeScriptHost({
+        commit: (id, typeName, defJson) =>
+          JSON.parse(fdOpCommit(id, typeName, defJson)) as string[],
+      });
+      installScriptRunner((scriptId: string, instanceId: string, paramsJson: string) =>
+        scriptHost!.run(scriptId, instanceId, paramsJson),
+      );
 
       return { kernel, memory: exports.memory };
     })();
@@ -221,6 +249,30 @@ function snapshotBodies(
   return { bodies, transfers };
 }
 
+/**
+ * Extract the document's FieldSkript records (id + compiled body) so the
+ * build host can refresh its `build()` table before regeneration runs.
+ * Tolerant of malformed JSON / a script-free document: a parse failure
+ * or missing `scripts` yields an empty list, and the rebuild proceeds as
+ * a pure-built-in document.
+ */
+function scriptRecordsFrom(documentJson: string): ScriptRecordLite[] {
+  try {
+    const doc = JSON.parse(documentJson) as {
+      scripts?: { id?: unknown; compiledJs?: unknown }[];
+    };
+    if (!Array.isArray(doc.scripts)) return [];
+    return doc.scripts
+      .filter(
+        (s): s is { id: string; compiledJs: string } =>
+          typeof s?.id === "string" && typeof s?.compiledJs === "string",
+      )
+      .map((s) => ({ id: s.id, compiledJs: s.compiledJs }));
+  } catch {
+    return [];
+  }
+}
+
 async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
   const { kernel, memory } = await ensureKernel();
 
@@ -235,6 +287,11 @@ async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {
     self as unknown as SandboxScope,
     hashDocumentJson(msg.documentJson),
   );
+
+  // FieldSkript S2c: refresh the build host's compiled-`build()` table
+  // from this document's scripts *before* loading, so the regeneration
+  // `loadJson` triggers can call back into the right bodies.
+  scriptHost?.sync(scriptRecordsFrom(msg.documentJson));
 
   // Load the document — this triggers the worker kernel's own
   // `rebuild_mesh_internal`, which walks the partition pass and
