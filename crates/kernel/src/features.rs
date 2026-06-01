@@ -29,21 +29,20 @@
 //!
 //! ## Naming note
 //!
-//! The trait is called `FeatureKind`, not `Feature`, to dodge the
-//! collision with [`fielddraft_protocol::Feature`] — the protocol
-//! struct still represents one entry in the spine and will morph
-//! into `FeatureCall` in step 4 (`Vec<FeatureCall>` as the canonical
-//! serialisation form). When that rename lands the trait can be
-//! renamed to `Feature` in the same commit.
+//! The trait is called `FeatureKind`, not `Feature`. The fat
+//! `protocol::Feature` spine struct it once collided with is gone
+//! (DL-61 C2b): the wire form is `Vec<FeatureCall>` and the decoded
+//! runtime form is [`crate::csg::DecodedFeature`]. Each `FeatureKind`
+//! lowers a `FeatureCall` into one or more `DecodedFeature`s.
 
 use std::collections::HashMap;
 use std::fmt;
 
 use serde_json::Value;
 
-use fielddraft_protocol::{
-    BoolOp, Document, Feature as SpineFeature, FeatureId, MultiQuery, Primitive, Transform,
-};
+use fielddraft_protocol::{BoolOp, Document, FeatureId, MultiQuery, Primitive, Transform};
+
+use crate::csg::{DecodedFeature, PrimitiveModifiers};
 
 /// Derive macro that generates `TYPE_NAME`, `type_name()`,
 /// `schema_json()` and `parse()` helpers on a feature definition
@@ -125,14 +124,13 @@ impl std::error::Error for FeatureError {}
 /// execution.
 pub struct Context<'a> {
     pub document: &'a mut Document,
-    /// DL-61 C2b: the feature spine accumulator. Each `execute`
-    /// pushes its [`SpineFeature`] entries here (and the transform/
+    /// DL-61 C2b: the decoded feature spine accumulator. Each `execute`
+    /// pushes its [`DecodedFeature`] entries here (and the transform/
     /// boolean/pattern features mutate earlier entries in place); the
-    /// kernel lowers the finished list into its `DecodedFeature` IR
-    /// once regeneration completes. The protocol [`Document`] no
-    /// longer carries a `features` field — `feature_calls` is the
-    /// sole persisted form.
-    pub features: Vec<SpineFeature>,
+    /// kernel consumes the finished list directly once regeneration
+    /// completes. The protocol [`Document`] no longer carries a
+    /// `features` field — `feature_calls` is the sole persisted form.
+    pub features: Vec<DecodedFeature>,
     /// K6b.1: solved sketch state per sketch feature id.
     pub sketches: HashMap<FeatureId, crate::sketch_features::SketchData>,
     /// K10.4: edge fillets collected during regen, applied as a
@@ -332,8 +330,8 @@ impl FeatureRegistry {
 // `FeatureSchema` derive from `fielddraft-features-macros`
 // (K4.5.3), so each `execute` body shrinks to a two-step recipe:
 // parse the definition JSON into the typed `{Box,Sphere,Cylinder}
-// Def` struct, then assemble a `SpineFeature` record and push it
-// onto the document.
+// Def` struct, then lower it into a `DecodedFeature` (via
+// `DecodedFeature::from_parts`) and push it onto the spine.
 //
 // The display name still has to be assembled at runtime because
 // it depends on the `FeatureId` that's passed into `execute` —
@@ -341,17 +339,6 @@ impl FeatureRegistry {
 // it can't capture closures over the id. That one extra line at
 // the top of each execute function is the only hand-written
 // parameter logic that remains in these three built-ins.
-
-/// Shared fields for domain-warp / material modifiers that every primitive carries.
-struct PrimitiveModifiers {
-    blend_radius: f32,
-    chamfer_size: f32,
-    twist_rate: f32,
-    bend_rate: f32,
-    displace_depth: f32,
-    displace_freq: f32,
-    shell_thickness: f32,
-}
 
 #[allow(clippy::too_many_arguments)] // geometry helper; param-struct refactor out of scope
 fn push_primitive(
@@ -367,21 +354,15 @@ fn push_primitive(
     let name = optional_display_name(def, || format!("{type_label} {id}"));
     let rotation = optional_rotation(def);
     let scale = optional_scale(def);
-    ctx.features.push(SpineFeature {
-        id: id.clone(),
+    ctx.features.push(DecodedFeature::from_parts(
+        id.clone(),
         name,
         op,
         primitive,
-        transform: Transform { translate, rotation, scale },
-        blend_radius: mods.blend_radius,
-        chamfer_size: mods.chamfer_size,
-        twist_rate: mods.twist_rate,
-        bend_rate: mods.bend_rate,
-        displace_depth: mods.displace_depth,
-        displace_freq: mods.displace_freq,
-        shell_thickness: mods.shell_thickness,
-        target_ids: vec![],
-    });
+        Transform { translate, rotation, scale },
+        mods,
+        vec![],
+    ));
 }
 
 /// `box` — K1 axis-aligned box primitive.
@@ -1064,29 +1045,23 @@ impl FeatureKind for SweepFeature {
 
         let name = optional_display_name(def, || format!("Sweep {id}"));
 
-        ctx.features.push(SpineFeature {
-            id: id.child("0"),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.child("0"),
             name,
-            op: d.operation,
-            primitive: Primitive::Extrude {
+            d.operation,
+            Primitive::Extrude {
                 sketch,
                 half_depth_z: length_mm / 2.0,
                 center: d.center,
             },
-            transform: Transform {
+            Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
                 scale: [1.0, 1.0, 1.0],
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
         Ok(())
     }
 }
@@ -1444,27 +1419,21 @@ impl FeatureKind for ImportedMeshFeature {
             base_rotation
         };
 
-        ctx.features.push(SpineFeature {
-            id: id.clone(),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.clone(),
             name,
-            op: d.op,
-            primitive: Primitive::ImportedMesh {
+            d.op,
+            Primitive::ImportedMesh {
                 mesh: Box::new(mesh),
             },
-            transform: Transform {
+            Transform {
                 translate: d.translate,
                 rotation,
                 scale,
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
         Ok(())
     }
 }
@@ -1568,28 +1537,30 @@ impl FeatureKind for GyroidFeature {
             })
             .collect();
 
-        ctx.features.push(SpineFeature {
-            id: id.child("0"),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.child("0"),
             name,
             op,
-            primitive: Primitive::Gyroid {
+            Primitive::Gyroid {
                 cell_size: cell_mm,
                 thickness: thick_mm,
             },
-            transform: Transform {
+            Transform {
                 translate: d.translate,
                 rotation,
                 scale,
             },
-            blend_radius: d.blend_radius.to_mm(),
-            chamfer_size: d.chamfer_size.to_mm(),
-            twist_rate: d.twist_rate,
-            bend_rate: d.bend_rate,
-            displace_depth: d.displace_depth.to_mm(),
-            displace_freq: d.displace_freq,
-            shell_thickness: d.shell_thickness.to_mm(),
+            PrimitiveModifiers {
+                blend_radius: d.blend_radius.to_mm(),
+                chamfer_size: d.chamfer_size.to_mm(),
+                twist_rate: d.twist_rate,
+                bend_rate: d.bend_rate,
+                displace_depth: d.displace_depth.to_mm(),
+                displace_freq: d.displace_freq,
+                shell_thickness: d.shell_thickness.to_mm(),
+            },
             target_ids,
-        });
+        ));
         Ok(())
     }
 }
@@ -1657,29 +1628,23 @@ impl FeatureKind for HoleFeature {
         // stray `cylinder` FeatureCall to be synthesised from
         // the derived primitive. Same pattern the K8.0 pattern
         // features use for their spine clones.
-        ctx.features.push(SpineFeature {
-            id: id.child("0"),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.child("0"),
             name,
-            op: BoolOp::Difference,
-            primitive: Primitive::Cylinder {
+            BoolOp::Difference,
+            Primitive::Cylinder {
                 center: [0.0, 0.0, 0.0],
                 radius: diameter_mm / 2.0,
                 half_height: depth_mm / 2.0,
             },
-            transform: Transform {
+            Transform {
                 translate: d.translate,
                 rotation,
                 scale,
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
         Ok(())
     }
 }
@@ -1902,25 +1867,19 @@ impl FeatureKind for ExtrudeFeature {
             }
         };
 
-        ctx.features.push(SpineFeature {
-            id: id.clone(),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.clone(),
             name,
-            op: d.operation,
+            d.operation,
             primitive,
-            transform: Transform {
+            Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
                 scale,
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
         Ok(())
     }
 }
@@ -1929,7 +1888,7 @@ impl FeatureKind for ExtrudeFeature {
 //
 // Twin of ExtrudeFeature — consumes a sketch profile, but sweeps
 // it around the local Y axis instead of translating it along Z.
-// Lowers to Primitive::Revolve, which csg.rs::from_features
+// Lowers to Primitive::Revolve, which DecodedFeature::from_parts
 // wraps in a CsgNode::Revolve. The sketch is interpreted in
 // (r, y) coordinates: `x` becomes the radial distance from
 // the Y axis. Authoring convention is `x ≥ 0`; a sketch that
@@ -2002,28 +1961,22 @@ impl FeatureKind for RevolveFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
-        ctx.features.push(SpineFeature {
-            id: id.clone(),
+        ctx.features.push(DecodedFeature::from_parts(
+            id.clone(),
             name,
-            op: d.operation,
-            primitive: Primitive::Revolve {
+            d.operation,
+            Primitive::Revolve {
                 sketch,
                 center: d.center,
             },
-            transform: Transform {
+            Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation,
                 scale,
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
         Ok(())
     }
 }
@@ -2821,7 +2774,7 @@ mod tests {
         assert_eq!(f.id, id(1));
         assert_eq!(f.op, BoolOp::Union);
         assert_eq!(f.transform.translate, [100.0, 0.0, 0.0]);
-        match &f.primitive {
+        match &f.export_primitive().expect("box primitive") {
             Primitive::Box {
                 center,
                 half_extents,
@@ -2855,16 +2808,16 @@ mod tests {
 
         assert_eq!(ctx.features.len(), 2);
         assert!(matches!(
-            ctx.features[0].primitive,
-            Primitive::Sphere { radius, .. } if radius == 5.0
+            ctx.features[0].export_primitive(),
+            Some(Primitive::Sphere { radius, .. }) if radius == 5.0
         ));
         assert!(matches!(
-            ctx.features[1].primitive,
-            Primitive::Cylinder {
+            ctx.features[1].export_primitive(),
+            Some(Primitive::Cylinder {
                 radius,
                 half_height,
                 ..
-            } if radius == 2.0 && half_height == 10.0
+            }) if radius == 2.0 && half_height == 10.0
         ));
         assert_eq!(ctx.features[1].op, BoolOp::Difference);
     }
@@ -2971,8 +2924,8 @@ mod tests {
             "fail-stop: only the sphere should have landed"
         );
         assert!(matches!(
-            ctx.features[0].primitive,
-            Primitive::Sphere { .. }
+            ctx.features[0].export_primitive(),
+            Some(Primitive::Sphere { .. })
         ));
     }
 
@@ -3337,7 +3290,7 @@ mod tests {
         // DL-61 C2b: the spine no longer lives on the Document, so
         // the "legacy" reference list is built in a local Vec here.
         let mut legacy_doc = Document::default();
-        let mut legacy: Vec<SpineFeature> = Vec::new();
+        let mut legacy: Vec<DecodedFeature> = Vec::new();
         for (kind, params) in [
             ("box", ([10.0, 10.0, 10.0], [0.0, 0.0, 0.0], BoolOp::Union)),
             (
@@ -3347,28 +3300,22 @@ mod tests {
         ] {
             let id = legacy_doc.allocate_id();
             let (half, translate, op) = params;
-            legacy.push(SpineFeature {
-                id: id.clone(),
-                name: format!("Box {id}"),
+            legacy.push(DecodedFeature::from_parts(
+                id.clone(),
+                format!("Box {id}"),
                 op,
-                primitive: Primitive::Box {
+                Primitive::Box {
                     center: [0.0; 3],
                     half_extents: half,
                 },
-                transform: Transform {
+                Transform {
                     translate,
                     rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: [1.0, 1.0, 1.0],
                 },
-                blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-            });
+                PrimitiveModifiers::NONE,
+                vec![],
+            ));
             let _ = kind;
         }
 
@@ -3644,7 +3591,7 @@ mod tests {
         let f = &ctx.features[0];
         assert_eq!(f.id, id(1));
         assert_eq!(f.op, BoolOp::Union);
-        match &f.primitive {
+        match &f.export_primitive().expect("primitive") {
             Primitive::Box { center, half_extents } => {
                 assert_eq!(*center, [0.0, 0.0, 0.0]);
                 // profile_half_x / profile_half_y carry through
@@ -3671,7 +3618,7 @@ mod tests {
         });
         feature.execute(&mut ctx, &id(1), &def).unwrap();
         let f = &ctx.features[0];
-        match &f.primitive {
+        match &f.export_primitive().expect("primitive") {
             Primitive::Box { half_extents, .. } => {
                 assert!((half_extents[2] - 25.0).abs() < 1e-5);
             }
@@ -3695,7 +3642,7 @@ mod tests {
         feature.execute(&mut ctx, &id(7), &def).unwrap();
         let f = &ctx.features[0];
         assert_eq!(f.op, BoolOp::Difference);
-        match &f.primitive {
+        match &f.export_primitive().expect("primitive") {
             Primitive::Box { center, half_extents } => {
                 assert_eq!(*center, [100.0, 50.0, 0.0]);
                 assert_eq!(half_extents[2], 5.0);
@@ -3759,7 +3706,7 @@ mod tests {
         )];
         registry.regenerate(&mut ctx, &calls, None).unwrap();
         assert_eq!(ctx.features.len(), 1);
-        match &ctx.features[0].primitive {
+        match &ctx.features[0].export_primitive().expect("primitive") {
             Primitive::Box { half_extents, .. } => {
                 assert_eq!(*half_extents, [3.0, 4.0, 6.0]);
             }
@@ -3810,7 +3757,7 @@ mod tests {
         for (i, f) in ctx.features.iter().enumerate() {
             let expected_depth = ((i as u32 + 1) as f32) * 5.0;
             let expected_center_x = (i as f32) * SPACING_MM;
-            match &f.primitive {
+            match &f.export_primitive().expect("primitive") {
                 Primitive::Box { center, half_extents } => {
                     assert_eq!(*center, [expected_center_x, 0.0, 0.0]);
                     assert!(
@@ -3900,8 +3847,12 @@ mod tests {
             let expected_x = 20.0_f32 * i as f32;
             assert!((clone.transform.translate[0] - expected_x).abs() < 1e-5);
             // Primitive payload is cloned verbatim.
-            if let (Primitive::Box { half_extents, .. }, Primitive::Box { half_extents: src_he, .. }) =
-                (&clone.primitive, &source.primitive)
+            let clone_prim = clone.export_primitive();
+            let source_prim = source.export_primitive();
+            if let (
+                Some(Primitive::Box { half_extents, .. }),
+                Some(Primitive::Box { half_extents: src_he, .. }),
+            ) = (&clone_prim, &source_prim)
             {
                 assert_eq!(half_extents, src_he);
             } else {
@@ -4221,7 +4172,7 @@ mod tests {
         registry.regenerate(&mut ctx, &[call], None).unwrap();
         assert_eq!(ctx.features.len(), 1);
         let f = &ctx.features[0];
-        match &f.primitive {
+        match &f.export_primitive().expect("primitive") {
             Primitive::Cylinder { radius, .. } => {
                 // width(50) / 5 / 2 (hole → radius) = 5
                 assert!((*radius - 5.0).abs() < 1e-5);
@@ -4278,7 +4229,7 @@ mod tests {
         assert!(f.id.parent().is_some());
         assert_eq!(f.op, BoolOp::Difference);
         assert_eq!(f.transform.translate, [10.0, 0.0, 0.0]);
-        match &f.primitive {
+        match &f.export_primitive().expect("primitive") {
             Primitive::Cylinder {
                 center,
                 radius,
@@ -4551,7 +4502,7 @@ mod tests {
         // K7.3: the extrude now lowers to a real
         // Primitive::Extrude carrying the Sketch2d profile
         // rather than a rectangular Box stand-in.
-        match &extrude_feature.primitive {
+        match &extrude_feature.export_primitive().expect("primitive") {
             Primitive::Extrude {
                 sketch,
                 half_depth_z,
@@ -4612,7 +4563,7 @@ mod tests {
         // K7.3: circle sketch no longer lowers to its bounding
         // box — Primitive::Extrude carries the full Sketch2d,
         // so the downstream mesher gets a real cylinder.
-        match &extrude_feature.primitive {
+        match &extrude_feature.export_primitive().expect("primitive") {
             Primitive::Extrude { sketch, .. } => {
                 assert!(matches!(
                     sketch,
@@ -4675,7 +4626,7 @@ mod tests {
             .iter()
             .find(|f| f.id == revolve_id)
             .expect("revolve spine entry");
-        match &revolve_feature.primitive {
+        match &revolve_feature.export_primitive().expect("primitive") {
             Primitive::Revolve { sketch, center } => {
                 assert_eq!(*center, [0.0, 0.0, 0.0]);
                 let aabb = sketch.aabb();
@@ -4731,7 +4682,7 @@ mod tests {
             )
             .unwrap();
         let f = &ctx.features[0];
-        if let Primitive::Box { half_extents, .. } = &f.primitive {
+        if let Primitive::Box { half_extents, .. } = &f.export_primitive().expect("primitive") {
             assert_eq!(*half_extents, [3.0, 4.0, 5.0]);
         } else {
             panic!("expected Primitive::Box");
@@ -4850,7 +4801,7 @@ mod tests {
             .iter()
             .find(|f| f.id == extrude_id)
             .expect("extrude spine entry");
-        if let Primitive::Box { half_extents, .. } = &extrude_feature.primitive {
+        if let Primitive::Box { half_extents, .. } = &extrude_feature.export_primitive().expect("primitive") {
             assert!((half_extents[0] - 2.5).abs() < 1e-5);
             assert!((half_extents[1] - 2.5).abs() < 1e-5);
         } else {

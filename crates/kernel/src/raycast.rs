@@ -131,54 +131,42 @@ pub fn raycast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::{BranchId, CsgNode};
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{BranchId, CsgNode, DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn bounded(features: &[Feature]) -> BoundedCsg {
-        BoundedCsg::from_csg(&CsgNode::from_features(features))
+    fn bounded(features: &[DecodedFeature]) -> BoundedCsg {
+        BoundedCsg::from_csg(&CsgNode::from_decoded(features))
     }
 
-    fn box_feature(id: u32, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
+    fn box_feature(id: u32, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
+            BoolOp::Union,
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Cyl {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Cylinder {
+    fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Cyl {id}"),
+            BoolOp::Union,
+            Primitive::Cylinder {
                 center,
                 radius,
                 half_height,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]
@@ -194,22 +182,16 @@ mod tests {
         assert!(hit.is_none());
     }
 
-    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
+            BoolOp::Union,
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]

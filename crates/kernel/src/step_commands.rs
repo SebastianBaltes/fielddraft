@@ -304,34 +304,26 @@ fn prim_to_wire(prim: &Sketch2dPrimitive) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId};
+    use crate::csg::PrimitiveModifiers;
+    use fielddraft_protocol::{BoolOp, FeatureId};
 
-    /// Test adapter: production `build_step_commands` takes decoded
-    /// features, but tests build fat `Feature`s to poke modifier fields.
-    /// Shadowing the glob-imported `super::build_step_commands` keeps the
-    /// call sites unchanged.
-    fn build_step_commands(features: &[Feature]) -> Value {
-        let decoded: Vec<DecodedFeature> =
-            features.iter().map(DecodedFeature::from_feature).collect();
-        super::build_step_commands(&decoded)
+    /// Build a single test feature, decoding into the open IR with
+    /// explicit modifiers so a test can exercise a blended/warped
+    /// primitive without a fat builder struct.
+    fn make_feature_mods(name: &str, prim: Primitive, mods: PrimitiveModifiers) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            name.into(),
+            BoolOp::Union,
+            prim,
+            Transform::IDENTITY,
+            mods,
+            vec![],
+        )
     }
 
-    fn make_feature(name: &str, prim: Primitive) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(1),
-            name: name.into(),
-            op: BoolOp::Union,
-            primitive: prim,
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn make_feature(name: &str, prim: Primitive) -> DecodedFeature {
+        make_feature_mods(name, prim, PrimitiveModifiers::NONE)
     }
 
     #[test]
@@ -410,11 +402,14 @@ mod tests {
             center: [0.0; 3],
             half_extents: [5.0; 3],
         });
-        let mut f2 = make_feature("Twisted", Primitive::Box {
-            center: [0.0; 3],
-            half_extents: [5.0; 3],
-        });
-        f2.twist_rate = 0.1;
+        let f2 = make_feature_mods(
+            "Twisted",
+            Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [5.0; 3],
+            },
+            PrimitiveModifiers { twist_rate: 0.1, ..PrimitiveModifiers::NONE },
+        );
         let f3 = make_feature("Sphere", Primitive::Sphere {
             center: [0.0; 3],
             radius: 2.0,
@@ -567,11 +562,14 @@ mod tests {
 
     #[test]
     fn degraded_features_still_export() {
-        let mut f = make_feature("Box", Primitive::Box {
-            center: [0.0; 3],
-            half_extents: [5.0; 3],
-        });
-        f.blend_radius = 2.0; // Degraded, but still exportable
+        let f = make_feature_mods(
+            "Box",
+            Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [5.0; 3],
+            },
+            PrimitiveModifiers { blend_radius: 2.0, ..PrimitiveModifiers::NONE }, // Degraded, but still exportable
+        );
         let cmds = build_step_commands(&[f]);
         let arr = cmds.as_array().unwrap();
         assert_eq!(arr.len(), 1);

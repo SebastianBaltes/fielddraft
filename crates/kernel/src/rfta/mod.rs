@@ -430,30 +430,24 @@ fn tangent_points_to_arrays(tps: &[TangentPoint]) -> (Vec<[f32; 3]>, Vec<[f32; 3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::CsgNode;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn make_feature(id: u32, prim: Primitive) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: String::new(),
-            op: BoolOp::Union,
-            primitive: prim,
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn make_feature(id: u32, prim: Primitive) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            String::new(),
+            BoolOp::Union,
+            prim,
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn bounded_sphere(center: [f32; 3], radius: f32) -> crate::bvh::BoundedCsg {
         let f = make_feature(1, Primitive::Sphere { center, radius });
-        let csg = CsgNode::from_features(&[f]);
+        let csg = CsgNode::from_decoded(&[f]);
         crate::bvh::BoundedCsg::from_csg(&csg)
     }
 
@@ -469,7 +463,7 @@ mod tests {
     #[test]
     fn rfta_sphere_vertices_near_surface() {
         let f = make_feature(1, Primitive::Sphere { center: [0.0; 3], radius: 20.0 });
-        let csg = CsgNode::from_features(&[f]);
+        let csg = CsgNode::from_decoded(&[f]);
         let node = crate::bvh::BoundedCsg::from_csg(&csg);
         let mesh = reach_for_the_arcs(&node, 4);
         let mut max_err = 0.0_f32;
@@ -496,7 +490,7 @@ mod tests {
         // display resolution must still terminate quickly (internal sampling
         // is capped) and produce a non-trivial mesh.
         let f = make_feature(1, Primitive::Box { center: [0.0; 3], half_extents: [50.0, 50.0, 50.0] });
-        let csg = CsgNode::from_features(&[f]);
+        let csg = CsgNode::from_decoded(&[f]);
         let node = crate::bvh::BoundedCsg::from_csg(&csg);
         let mesh = reach_for_the_arcs(&node, 64);
         assert!(mesh.triangle_count() > 100, "box produced too few triangles");
@@ -511,9 +505,9 @@ mod tests {
 
     #[test]
     fn rfta_differs_from_mdc() {
-        let f = make_feature(1, Primitive::Sphere { center: [0.0; 3], radius: 20.0 });
-        let prim = f.primitive.clone();
-        let csg = CsgNode::from_features(&[f]);
+        let prim = Primitive::Sphere { center: [0.0; 3], radius: 20.0 };
+        let f = make_feature(1, prim.clone());
+        let csg = CsgNode::from_decoded(&[f]);
         let node = crate::bvh::BoundedCsg::from_csg(&csg);
         let prims: std::collections::HashMap<u32, &Primitive> =
             [(1, &prim)].into_iter().collect();

@@ -897,7 +897,8 @@ pub fn sdf_gradient_mode(node: &BoundedCsg, p: [f32; 3], mode: EvalMode) -> (f32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, HalfSpace, Primitive, Transform};
+    use crate::csg::{DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
 
     #[test]
     fn sphere_gradient_matches_analytical() {
@@ -973,22 +974,16 @@ mod tests {
         name: &str,
         op: BoolOp,
         primitive: Primitive,
-    ) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: name.into(),
+    ) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            name.into(),
             op,
             primitive,
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]
@@ -1016,7 +1011,7 @@ mod tests {
                 },
             ),
         ];
-        let csg = CsgNode::from_features(&features);
+        let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);
         let p = [5.0_f32, 3.0, 2.0];
         let (d_dual, grad_dual) = sdf_gradient(&bvh, p);
@@ -1075,7 +1070,7 @@ mod tests {
                 half_height: 10.0,
             },
         )];
-        let csg = CsgNode::from_features(&features);
+        let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);
         for p in [
             [3.0f32, 0.0, 0.0],
@@ -1311,27 +1306,21 @@ mod tests {
         }
 
         fn extrude_node(sketch: Sketch2d, half_height: f32, transform: Transform) -> BoundedCsg {
-            use crate::csg::CsgNode;
-            let feature = Feature {
-                id: FeatureId::from_u32(1),
-                name: "Extrude".into(),
-                op: BoolOp::Union,
-                primitive: Primitive::Extrude {
+            use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+            let feature = DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Extrude".into(),
+                BoolOp::Union,
+                Primitive::Extrude {
                     sketch,
                     half_depth_z: half_height,
                     center: [0.0, 0.0, 0.0],
                 },
                 transform,
-                blend_radius: 0.0,
-                chamfer_size: 0.0,
-                twist_rate: 0.0,
-                bend_rate: 0.0,
-                displace_depth: 0.0,
-                displace_freq: 0.0,
-                shell_thickness: 0.0,
-                target_ids: vec![],
-            };
-            let csg = CsgNode::from_features(&[feature]);
+                PrimitiveModifiers::NONE,
+                vec![],
+            );
+            let csg = CsgNode::from_decoded(&[feature]);
             BoundedCsg::from_csg(&csg)
         }
 
@@ -1401,25 +1390,19 @@ mod tests {
                 center: [10.0, 0.0],
                 radius: 2.0,
             });
-            let feature = Feature {
-                id: FeatureId::from_u32(1),
-                name: "Revolve".into(),
-                op: BoolOp::Union,
-                primitive: Primitive::Revolve {
+            let feature = DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Revolve".into(),
+                BoolOp::Union,
+                Primitive::Revolve {
                     sketch: profile,
                     center: [0.0, 0.0, 0.0],
                 },
-                transform: Transform::IDENTITY,
-                blend_radius: 0.0,
-                chamfer_size: 0.0,
-                twist_rate: 0.0,
-                bend_rate: 0.0,
-                displace_depth: 0.0,
-                displace_freq: 0.0,
-                shell_thickness: 0.0,
-                target_ids: vec![],
-            };
-            let csg = CsgNode::from_features(&[feature]);
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            );
+            let csg = CsgNode::from_decoded(&[feature]);
             let node = BoundedCsg::from_csg(&csg);
             let mode = EvalMode::Logical;
             // Points off the revolve axis, away from the tube's medial

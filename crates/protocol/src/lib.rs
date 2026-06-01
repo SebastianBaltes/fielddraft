@@ -631,68 +631,6 @@ impl Default for Transform {
     }
 }
 
-/// One node in the feature spine. At M2 the spine is linear; later
-/// milestones (Pattern, Group, Mirror) will introduce nested children
-/// that share the same `Feature` envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Feature {
-    pub id: FeatureId,
-    pub name: String,
-    pub op: BoolOp,
-    pub primitive: Primitive,
-    /// Affine placement of the primitive in world space.
-    /// `#[serde(default)]` lets us roll forward older documents that
-    /// predate transforms — they load with identity placement.
-    #[serde(default)]
-    pub transform: Transform,
-    /// K10.1: per-junction blend radius in mm. When > 0 the CSG
-    /// tree builder (`CsgNode::from_features`) uses
-    /// `SmoothUnion`/`SmoothDifference` instead of the hard
-    /// variants for this feature's Boolean junction. Zero (the
-    /// default) keeps the classic sharp edges.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub blend_radius: f32,
-    /// K11.1: twist rate in radians per mm around the local Y
-    /// axis. When non-zero, `CsgNode::from_features` wraps
-    /// this feature's leaf in a `CsgNode::Twist` before folding
-    /// it into the accumulator. Zero = no twist.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub twist_rate: f32,
-    /// K11.2: bend rate in radians per mm in the XY plane along
-    /// the X axis. Same domain-warp approach as twist_rate.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub bend_rate: f32,
-    /// K11.3: displacement depth in mm. When > 0 the CSG builder
-    /// wraps the leaf in `CsgNode::Displace`. Zero = smooth surface.
-    /// K10.2: chamfer size in mm. When > 0 and `blend_radius` is
-    /// 0, `from_features` uses the chamfer blend formula (flat
-    /// 45° cut) instead of the fillet. Mutually exclusive with
-    /// `blend_radius` at the UX level; if both are set the fillet
-    /// wins.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub chamfer_size: f32,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub displace_depth: f32,
-    /// K11.3: displacement spatial frequency (cycles/mm).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub displace_freq: f32,
-    /// Shell thickness in mm. When > 0, from_features wraps the
-    /// leaf in CsgNode::Shell, turning the solid into a thin
-    /// wall of this thickness.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub shell_thickness: f32,
-    /// Explicit body-targeting: when non-empty, the partitioner
-    /// attaches this feature only to bodies that contain one of
-    /// these feature IDs, instead of using AABB overlap.
-    /// Used by Gyroid (infinite AABB) and future lattice prims.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub target_ids: Vec<FeatureId>,
-}
-
-fn is_zero(v: &f32) -> bool {
-    *v == 0.0
-}
-
 /// One entry in the K4.5 Feature-as-Function feature tree.
 ///
 /// The canonical §4.6 JSON wire format for every mutation a user

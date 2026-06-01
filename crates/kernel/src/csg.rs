@@ -1,8 +1,8 @@
 //! CSG abstract syntax tree.
 //!
 //! K1 introduces the CSG graph as a sibling representation of the
-//! existing linear feature spine. `CsgNode::from_features` folds a
-//! `Feature` list into a binary tree whose `sdf` evaluator is
+//! existing linear feature spine. `CsgNode::from_decoded` folds a
+//! [`DecodedFeature`] list into a binary tree whose `sdf` evaluator is
 //! mathematically identical to evaluating the linear feature spine
 //! op-by-op — the
 //! tree is just a richer form that later kernel slices (provenance,
@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use fielddraft_protocol::{BoolOp, Feature, FeatureId, HalfSpace, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
 
 use crate::sketch2d::Sketch2d;
 use crate::{quat_rotate, sdf_primitive, world_to_local};
@@ -586,8 +586,8 @@ pub enum CsgNode {
 
 /// DL-61 Stage B: the decoded runtime IR of one feature.
 ///
-/// Where the fat `protocol::Feature` is a field-union over every
-/// built-in, `DecodedFeature` is the **open** form both built-ins and
+/// Where the retired fat-feature spine struct was a field-union over
+/// every built-in, `DecodedFeature` is the **open** form both built-ins and
 /// (future) FieldSkript converge on: a per-feature geometry subtree
 /// (`node`) plus the universals every feature has — identity, combine
 /// semantics (`op` + junction blend), targeting, and a separable
@@ -620,40 +620,76 @@ pub struct DecodedFeature {
     pub node: CsgNode,
 }
 
+/// Domain-warp / shell / blend modifiers a primitive feature can carry.
+/// [`DecodedFeature::from_parts`] lowers the warps into the node tree
+/// (Twist/Bend/Displace/Shell) and resolves the junction blend
+/// (`blend_radius`/`chamfer_size`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PrimitiveModifiers {
+    pub blend_radius: f32,
+    pub chamfer_size: f32,
+    pub twist_rate: f32,
+    pub bend_rate: f32,
+    pub displace_depth: f32,
+    pub displace_freq: f32,
+    pub shell_thickness: f32,
+}
+
+impl PrimitiveModifiers {
+    /// A plain hard-boolean primitive with no warps or blend.
+    pub const NONE: Self = Self {
+        blend_radius: 0.0,
+        chamfer_size: 0.0,
+        twist_rate: 0.0,
+        bend_rate: 0.0,
+        displace_depth: 0.0,
+        displace_freq: 0.0,
+        shell_thickness: 0.0,
+    };
+}
+
 impl DecodedFeature {
-    /// Decode a fat `Feature` into the open IR. Behaviour-preserving
-    /// successor of the old `build_leaf_node`: the primitive (with the
-    /// extrude/revolve self-centering folded in) is wrapped in its
-    /// domain-warp/shell modifiers in the **local** frame, and the
-    /// feature's own `transform` is kept separate as the placement.
+    /// Build a decoded feature from its flat construction parameters and
+    /// lower it into the open IR. The primitive (with the extrude/revolve
+    /// self-centering folded in) is wrapped in its domain-warp/shell
+    /// modifiers in the **local** frame; `transform` is kept separate as
+    /// the placement; the junction blend resolves with fillet
+    /// (`blend_radius`) winning over chamfer (`chamfer_size`).
     ///
-    /// Note: the old `from_features` applied the modifiers *outside* the
-    /// placement (`Twist(Transform(t, prim))`); here they sit *inside*
-    /// (`Transform(t, Twist(prim))`). This is observationally identical —
-    /// modifiers are only ever set on identity-transform features — and
-    /// matches the intended model where modifiers act in the local frame.
-    pub fn from_feature(f: &Feature) -> Self {
+    /// This is the single lowering boundary from the flat feature
+    /// parameter set to the open IR — built-ins call it from their
+    /// `execute`, tests build fixtures with it.
+    #[allow(clippy::too_many_arguments)] // geometry constructor; mods already bundled
+    pub fn from_parts(
+        id: FeatureId,
+        name: String,
+        op: BoolOp,
+        primitive: Primitive,
+        transform: Transform,
+        mods: PrimitiveModifiers,
+        target_ids: Vec<FeatureId>,
+    ) -> Self {
         // K7.3 / K8.4: Extrude/Revolve lower to their dedicated nodes,
         // with the primitive's own `center` folded into an inner
         // Transform so the slab/profile sits at the local origin. Every
         // other primitive stays in the Leaf wrapper.
-        let prim_node = match &f.primitive {
+        let prim_node = match primitive {
             Primitive::Extrude {
-                sketch,
+                ref sketch,
                 half_depth_z,
                 center,
             } => {
                 let centered = CsgNode::Extrude {
-                    id: f.id.clone(),
+                    id: id.clone(),
                     sketch: Box::new(sketch.clone()),
-                    half_height: *half_depth_z,
+                    half_height: half_depth_z,
                 };
-                if *center == [0.0, 0.0, 0.0] {
+                if center == [0.0, 0.0, 0.0] {
                     centered
                 } else {
                     CsgNode::Transform(
                         Transform {
-                            translate: *center,
+                            translate: center,
                             rotation: [0.0, 0.0, 0.0, 1.0],
                             scale: [1.0, 1.0, 1.0],
                         },
@@ -661,17 +697,17 @@ impl DecodedFeature {
                     )
                 }
             }
-            Primitive::Revolve { sketch, center } => {
+            Primitive::Revolve { ref sketch, center } => {
                 let centered = CsgNode::Revolve {
-                    id: f.id.clone(),
+                    id: id.clone(),
                     sketch: Box::new(sketch.clone()),
                 };
-                if *center == [0.0, 0.0, 0.0] {
+                if center == [0.0, 0.0, 0.0] {
                     centered
                 } else {
                     CsgNode::Transform(
                         Transform {
-                            translate: *center,
+                            translate: center,
                             rotation: [0.0, 0.0, 0.0, 1.0],
                             scale: [1.0, 1.0, 1.0],
                         },
@@ -679,41 +715,41 @@ impl DecodedFeature {
                     )
                 }
             }
-            _ => CsgNode::Leaf {
-                id: f.id.clone(),
-                primitive: f.primitive.clone(),
+            other => CsgNode::Leaf {
+                id: id.clone(),
+                primitive: other,
             },
         };
         let mut node = prim_node;
-        if f.twist_rate != 0.0 {
-            node = CsgNode::Twist(Box::new(node), f.twist_rate);
+        if mods.twist_rate != 0.0 {
+            node = CsgNode::Twist(Box::new(node), mods.twist_rate);
         }
-        if f.bend_rate != 0.0 {
-            node = CsgNode::Bend(Box::new(node), f.bend_rate);
+        if mods.bend_rate != 0.0 {
+            node = CsgNode::Bend(Box::new(node), mods.bend_rate);
         }
-        if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
-            node = CsgNode::Displace(Box::new(node), f.displace_depth, f.displace_freq);
+        if mods.displace_depth != 0.0 && mods.displace_freq != 0.0 {
+            node = CsgNode::Displace(Box::new(node), mods.displace_depth, mods.displace_freq);
         }
-        if f.shell_thickness > 0.0 {
-            node = CsgNode::Shell(Box::new(node), f.shell_thickness);
+        if mods.shell_thickness > 0.0 {
+            node = CsgNode::Shell(Box::new(node), mods.shell_thickness);
         }
         // Blend selection: fillet (blend_radius) wins over chamfer
         // (chamfer_size) when both are set.
-        let (blend_radius, blend_mode) = if f.blend_radius > 0.0 {
-            (f.blend_radius, BlendMode::Fillet)
-        } else if f.chamfer_size > 0.0 {
-            (f.chamfer_size, BlendMode::Chamfer)
+        let (blend_radius, blend_mode) = if mods.blend_radius > 0.0 {
+            (mods.blend_radius, BlendMode::Fillet)
+        } else if mods.chamfer_size > 0.0 {
+            (mods.chamfer_size, BlendMode::Chamfer)
         } else {
             (0.0, BlendMode::Fillet)
         };
         DecodedFeature {
-            id: f.id.clone(),
-            name: f.name.clone(),
-            op: f.op,
+            id,
+            name,
+            op,
             blend_radius,
             blend_mode,
-            target_ids: f.target_ids.clone(),
-            transform: f.transform,
+            target_ids,
+            transform,
             node,
         }
     }
@@ -820,15 +856,6 @@ impl CsgNode {
             };
         }
         acc
-    }
-
-    /// Decode a fat `Feature` spine, then fold it. Thin adapter over
-    /// [`DecodedFeature::from_feature`] + [`CsgNode::from_decoded`] kept
-    /// for the many call sites that still hold `protocol::Feature`s.
-    pub fn from_features(features: &[Feature]) -> Self {
-        let decoded: Vec<DecodedFeature> =
-            features.iter().map(DecodedFeature::from_feature).collect();
-        Self::from_decoded(&decoded)
     }
 
     pub fn apply_edge_fillets(self, fillets: &[EdgeFillet]) -> Self {
@@ -1843,7 +1870,7 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
 mod tests {
     use super::*;
     use fielddraft_protocol::{
-        BoolOp, Feature, FeatureId, Primitive, Sketch2d as ProtoSketch2d,
+        BoolOp, FeatureId, Primitive, Sketch2d as ProtoSketch2d,
         Sketch2dPrimitive as ProtoSketch2dPrimitive, Transform,
     };
 
@@ -1860,26 +1887,20 @@ mod tests {
             center: [0.0, 0.0],
             radius: 5.0,
         });
-        let features = vec![Feature {
-            id: FeatureId::from_u32(1),
-            name: "extrude".to_string(),
-            op: BoolOp::Union,
-            primitive: Primitive::Extrude {
+        let features = vec![DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "extrude".to_string(),
+            BoolOp::Union,
+            Primitive::Extrude {
                 sketch: circle_sketch,
                 half_depth_z: 3.0,
                 center: [0.0, 0.0, 0.0],
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }];
-        let csg = CsgNode::from_features(&features);
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )];
+        let csg = CsgNode::from_decoded(&features);
         // Inside at the origin.
         assert!(csg.sdf([0.0, 0.0, 0.0], EvalMode::Logical) < 0.0);
         // On the cylindrical surface at (5, 0, 0).
@@ -1895,30 +1916,24 @@ mod tests {
         assert!((aabb.max[2] - 3.0).abs() < 1e-5);
     }
 
-    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box {
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]
     fn empty_tree_has_infinite_sdf_and_empty_aabb() {
-        let tree = CsgNode::from_features(&[]);
+        let tree = CsgNode::from_decoded(&[]);
         assert!(tree.sdf([0.0, 0.0, 0.0], EvalMode::Logical).is_infinite());
         assert!(tree.aabb().is_empty());
     }
@@ -1931,7 +1946,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         // Direct geometric SDF of a box with half-extents [10,10,10] at
         // the origin: negative inside, 0 on the +X face, positive outside.
         let expected = [
@@ -1949,26 +1964,20 @@ mod tests {
     fn tree_sdf_matches_linear_fold_for_difference() {
         let features = vec![
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            Feature {
-                id: FeatureId::from_u32(2),
-                name: "hole".into(),
-                op: BoolOp::Difference,
-                primitive: Primitive::Sphere {
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(2),
+                "hole".into(),
+                BoolOp::Difference,
+                Primitive::Sphere {
                     center: [0.0, 0.0, 0.0],
                     radius: 3.0,
                 },
-                transform: Transform::IDENTITY,
-                blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-            },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            ),
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         // Box half [10,10,10] at origin MINUS sphere radius 3 at origin.
         // Solid SDF = max(box_sdf, -sphere_sdf); values precomputed.
         let expected = [
@@ -1989,7 +1998,7 @@ mod tests {
 
     #[test]
     fn aabb_of_box_matches_half_extents() {
-        let tree = CsgNode::from_features(&[box_feature(
+        let tree = CsgNode::from_decoded(&[box_feature(
             1,
             BoolOp::Union,
             [0.0, 0.0, 0.0],
@@ -2006,51 +2015,39 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
-        let bb = CsgNode::from_features(&features).aabb();
+        let bb = CsgNode::from_decoded(&features).aabb();
         assert_eq!(bb.min, [-5.0, -5.0, -5.0]);
         assert_eq!(bb.max, [25.0, 5.0, 5.0]);
     }
 
     // ─── provenance / evaluate ─────────────────────────────────────
 
-    fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Cyl {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Cylinder {
+    fn cyl_feature(id: u32, center: [f32; 3], radius: f32, half_height: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Cyl {id}"),
+            BoolOp::Union,
+            Primitive::Cylinder {
                 center,
                 radius,
                 half_height,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
+            BoolOp::Union,
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     /// Tiny convenience used in the contributor-equality assertions:
@@ -2074,7 +2071,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "point should sit on box top, got d={d}");
         assert_eq!(c.element(), ProxyElement::Face);
@@ -2092,7 +2089,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
@@ -2113,7 +2110,7 @@ mod tests {
             box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             box_feature(3, BoolOp::Union, [10.0, 20.0, 0.0], [10.0, 10.0, 10.0]),
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         // All three boxes meet at (10, 10, 10).
         let (d, c) = tree.evaluate([10.0, 10.0, 10.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4);
@@ -2143,7 +2140,7 @@ mod tests {
                 f
             },
         ];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         // (10, 0, 4) is on the box's +x face (x=10) AND on the
         // sphere's surface (distance from (10,0,0) = 4).
         let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5, EvalMode::Logical);
@@ -2196,7 +2193,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
-        let tree = CsgNode::from_features(&features);
+        let tree = CsgNode::from_decoded(&features);
         let (d, c) = tree.evaluate([0.0, 0.0, 5.0], 0.5, EvalMode::Logical);
         assert!(d < 0.0);
         // +Z face is sub-index 4.
@@ -2402,26 +2399,20 @@ mod tests {
     fn difference_aabb_stays_with_left_operand() {
         let features = vec![
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            Feature {
-                id: FeatureId::from_u32(2),
-                name: "hole".into(),
-                op: BoolOp::Difference,
-                primitive: Primitive::Sphere {
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(2),
+                "hole".into(),
+                BoolOp::Difference,
+                Primitive::Sphere {
                     center: [0.0, 0.0, 0.0],
                     radius: 3.0,
                 },
-                transform: Transform::IDENTITY,
-                blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-            },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            ),
         ];
-        let bb = CsgNode::from_features(&features).aabb();
+        let bb = CsgNode::from_decoded(&features).aabb();
         assert_eq!(bb.min, [-10.0, -10.0, -10.0]);
         assert_eq!(bb.max, [10.0, 10.0, 10.0]);
     }
@@ -2669,56 +2660,38 @@ mod tests {
 
     #[test]
     fn targeted_intersect_only_wraps_target_subtree() {
-        let sphere = Feature {
-            id: FeatureId::from_u32(1),
-            name: "Sphere".into(),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center: [0.0; 3], radius: 10.0 },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        };
-        let cube = Feature {
-            id: FeatureId::from_u32(2),
-            name: "Box".into(),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
+        let sphere = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Sphere".into(),
+            BoolOp::Union,
+            Primitive::Sphere { center: [0.0; 3], radius: 10.0 },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        let cube = DecodedFeature::from_parts(
+            FeatureId::from_u32(2),
+            "Box".into(),
+            BoolOp::Union,
+            Primitive::Box {
                 center: [15.0, 0.0, 0.0],
                 half_extents: [5.0; 3],
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        };
-        let gyroid = Feature {
-            id: FeatureId::from_u32(3),
-            name: "Gyroid".into(),
-            op: BoolOp::Intersect,
-            primitive: Primitive::Gyroid { cell_size: 5.0, thickness: 1.0 },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![FeatureId::from_u32(1)],
-        };
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        let gyroid = DecodedFeature::from_parts(
+            FeatureId::from_u32(3),
+            "Gyroid".into(),
+            BoolOp::Intersect,
+            Primitive::Gyroid { cell_size: 5.0, thickness: 1.0 },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![FeatureId::from_u32(1)],
+        );
 
-        let csg = CsgNode::from_features(&[sphere, cube, gyroid]);
+        let csg = CsgNode::from_decoded(&[sphere, cube, gyroid]);
 
         // Centre of the cube (15,0,0) must remain inside —
         // the Gyroid targets only the Sphere, not the Box.

@@ -392,31 +392,26 @@ impl QueryCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::PrimitiveModifiers;
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
     fn id(n: u32) -> FeatureId {
         FeatureId::from_u32(n)
     }
 
     fn box_feature(n: u32) -> DecodedFeature {
-        DecodedFeature::from_feature(&Feature {
-            id: id(n),
-            name: format!("Box {n}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
+        DecodedFeature::from_parts(
+            id(n),
+            format!("Box {n}"),
+            BoolOp::Union,
+            Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [1.0, 1.0, 1.0],
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        })
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn doc_with_features(features: Vec<DecodedFeature>) -> Vec<DecodedFeature> {

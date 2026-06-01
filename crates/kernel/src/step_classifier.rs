@@ -228,34 +228,26 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, MeshSdf, Transform};
+    use crate::csg::PrimitiveModifiers;
+    use fielddraft_protocol::{BoolOp, FeatureId, MeshSdf, Transform};
 
-    /// Test adapter: the production `classify` now takes decoded features,
-    /// but the tests build fat `Feature`s (so they can poke modifier
-    /// fields). This local shadow decodes them first. Shadowing the
-    /// glob-imported `super::classify` keeps every call site unchanged.
-    fn classify(features: &[Feature]) -> StepReport {
-        let decoded: Vec<DecodedFeature> =
-            features.iter().map(DecodedFeature::from_feature).collect();
-        super::classify(&decoded)
+    /// Decode a single test feature into the open IR with explicit
+    /// modifiers (blend/twist/shell/…), so a test can exercise a
+    /// degraded or warped primitive without a fat builder struct.
+    fn make_feature_mods(name: &str, prim: Primitive, mods: PrimitiveModifiers) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            name.into(),
+            BoolOp::Union,
+            prim,
+            Transform::IDENTITY,
+            mods,
+            vec![],
+        )
     }
 
-    fn make_feature(name: &str, prim: Primitive) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(1),
-            name: name.into(),
-            op: BoolOp::Union,
-            primitive: prim,
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn make_feature(name: &str, prim: Primitive) -> DecodedFeature {
+        make_feature_mods(name, prim, PrimitiveModifiers::NONE)
     }
 
     #[test]
@@ -292,11 +284,14 @@ mod tests {
 
     #[test]
     fn blend_radius_degrades_hard_primitive() {
-        let mut f = make_feature("Box", Primitive::Box {
-            center: [0.0; 3],
-            half_extents: [10.0; 3],
-        });
-        f.blend_radius = 2.0;
+        let f = make_feature_mods(
+            "Box",
+            Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [10.0; 3],
+            },
+            PrimitiveModifiers { blend_radius: 2.0, ..PrimitiveModifiers::NONE },
+        );
         let r = classify(&[f]);
         assert_eq!(r.degraded_count(), 1);
         assert_eq!(r.hard_count(), 0);
@@ -304,35 +299,47 @@ mod tests {
 
     #[test]
     fn twist_excludes_hard_primitive() {
-        let mut f = make_feature("Box", Primitive::Box {
-            center: [0.0; 3],
-            half_extents: [10.0; 3],
-        });
-        f.twist_rate = 0.1;
+        let f = make_feature_mods(
+            "Box",
+            Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [10.0; 3],
+            },
+            PrimitiveModifiers { twist_rate: 0.1, ..PrimitiveModifiers::NONE },
+        );
         let r = classify(&[f]);
         assert_eq!(r.excluded_count(), 1);
     }
 
     #[test]
     fn bend_excludes_hard_primitive() {
-        let mut f = make_feature("Cyl", Primitive::Cylinder {
-            center: [0.0; 3],
-            radius: 5.0,
-            half_height: 10.0,
-        });
-        f.bend_rate = 0.05;
+        let f = make_feature_mods(
+            "Cyl",
+            Primitive::Cylinder {
+                center: [0.0; 3],
+                radius: 5.0,
+                half_height: 10.0,
+            },
+            PrimitiveModifiers { bend_rate: 0.05, ..PrimitiveModifiers::NONE },
+        );
         let r = classify(&[f]);
         assert_eq!(r.excluded_count(), 1);
     }
 
     #[test]
     fn displacement_excludes() {
-        let mut f = make_feature("Box", Primitive::Box {
-            center: [0.0; 3],
-            half_extents: [10.0; 3],
-        });
-        f.displace_depth = 0.5;
-        f.displace_freq = 2.0;
+        let f = make_feature_mods(
+            "Box",
+            Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [10.0; 3],
+            },
+            PrimitiveModifiers {
+                displace_depth: 0.5,
+                displace_freq: 2.0,
+                ..PrimitiveModifiers::NONE
+            },
+        );
         let r = classify(&[f]);
         assert_eq!(r.excluded_count(), 1);
     }
@@ -356,12 +363,15 @@ mod tests {
             cell_size: 5.0,
             thickness: 1.0,
         });
-        let mut degraded = make_feature("Cyl", Primitive::Cylinder {
-            center: [0.0; 3],
-            radius: 5.0,
-            half_height: 10.0,
-        });
-        degraded.blend_radius = 1.5;
+        let degraded = make_feature_mods(
+            "Cyl",
+            Primitive::Cylinder {
+                center: [0.0; 3],
+                radius: 5.0,
+                half_height: 10.0,
+            },
+            PrimitiveModifiers { blend_radius: 1.5, ..PrimitiveModifiers::NONE },
+        );
 
         let r = classify(&[hard, excluded, degraded]);
         assert_eq!(r.hard_count(), 1);

@@ -829,45 +829,34 @@ pub fn build_bounded_with_primitives(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{Feature, Transform};
+    use crate::csg::PrimitiveModifiers;
+    use fielddraft_protocol::Transform;
 
     fn box_feat(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
-        DecodedFeature::from_feature(&Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box {
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        })
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn sphere_feat(id: u32, op: BoolOp, center: [f32; 3], radius: f32) -> DecodedFeature {
-        DecodedFeature::from_feature(&Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
             op,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        })
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]
@@ -982,25 +971,21 @@ mod tests {
         assert_ne!(h0, hash_body_payload(&diff, &[0]));
     }
 
-    fn box_feature_raw(id: u32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
+    /// A unit box decoded with explicit modifiers, so the modifier-field
+    /// tests can exercise each warp/blend without a fat builder struct.
+    fn box_feat_mods(id: u32, mods: PrimitiveModifiers) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
+            BoolOp::Union,
+            Primitive::Box {
                 center: [0.0; 3],
                 half_extents: [5.0; 3],
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            mods,
+            vec![],
+        )
     }
 
     #[test]
@@ -1069,36 +1054,28 @@ mod tests {
 
     #[test]
     fn hash_changes_when_modifier_fields_change() {
-        let base = DecodedFeature::from_feature(&box_feature_raw(1));
+        let base = box_feat_mods(1, PrimitiveModifiers::NONE);
         let h0 = hash_body_payload(std::slice::from_ref(&base), &[0]);
 
         // Each variant alters the decoded geometry node (or the junction
         // blend), so the payload hash must move. Displacement only
         // registers a node when BOTH depth and freq are non-zero, so it
         // is exercised as a pair rather than per-field.
-        let mut variants: Vec<Feature> = Vec::new();
-        let mut f = box_feature_raw(1);
-        f.blend_radius = 1.5;
-        variants.push(f);
-        let mut f = box_feature_raw(1);
-        f.chamfer_size = 1.5;
-        variants.push(f);
-        let mut f = box_feature_raw(1);
-        f.twist_rate = 1.5;
-        variants.push(f);
-        let mut f = box_feature_raw(1);
-        f.bend_rate = 1.5;
-        variants.push(f);
-        let mut f = box_feature_raw(1);
-        f.displace_depth = 1.5;
-        f.displace_freq = 1.5;
-        variants.push(f);
-        let mut f = box_feature_raw(1);
-        f.shell_thickness = 1.5;
-        variants.push(f);
+        let variants = vec![
+            PrimitiveModifiers { blend_radius: 1.5, ..PrimitiveModifiers::NONE },
+            PrimitiveModifiers { chamfer_size: 1.5, ..PrimitiveModifiers::NONE },
+            PrimitiveModifiers { twist_rate: 1.5, ..PrimitiveModifiers::NONE },
+            PrimitiveModifiers { bend_rate: 1.5, ..PrimitiveModifiers::NONE },
+            PrimitiveModifiers {
+                displace_depth: 1.5,
+                displace_freq: 1.5,
+                ..PrimitiveModifiers::NONE
+            },
+            PrimitiveModifiers { shell_thickness: 1.5, ..PrimitiveModifiers::NONE },
+        ];
 
-        for f in variants {
-            let modified = DecodedFeature::from_feature(&f);
+        for mods in variants {
+            let modified = box_feat_mods(1, mods);
             let h1 = hash_body_payload(&[modified], &[0]);
             assert_ne!(h0, h1, "hash must change when a modifier changes");
         }

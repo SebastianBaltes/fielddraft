@@ -1137,82 +1137,65 @@ fn capsule_aabb(p0: [f32; 3], p1: [f32; 3], radius: f32) -> Aabb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box {
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn translated_box_feature(id: u32, translate: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("TBox {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
+    fn translated_box_feature(id: u32, translate: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("TBox {id}"),
+            BoolOp::Union,
+            Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: half,
             },
-            transform: Transform {
+            Transform {
                 translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0, 1.0, 1.0],
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
+            BoolOp::Union,
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     #[test]
     fn empty_tree_has_empty_aabb_and_infinite_sdf() {
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&[]));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[]));
         assert!(bvh.aabb().is_empty());
         assert!(bvh.sdf([0.0, 0.0, 0.0], EvalMode::Logical).is_infinite());
     }
 
     #[test]
     fn leaf_world_transform_is_folded_from_csg_transform_wrapper() {
-        // CsgNode::from_features wraps each feature in Transform(t, Leaf).
+        // CsgNode::from_decoded wraps each feature in Transform(t, Leaf).
         // After BoundedCsg::from_csg the wrapper is gone and the
         // leaf's stored world_transform equals the feature's own
         // transform.
@@ -1221,7 +1204,7 @@ mod tests {
             [10.0, 20.0, 30.0],
             [5.0, 5.0, 5.0],
         )];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         match &bvh {
             BoundedCsg::Leaf {
                 id, world_transform, aabb, ..
@@ -1241,7 +1224,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let bb = bvh.aabb();
         assert_eq!(bb.min, [-5.0, -5.0, -5.0]);
         assert_eq!(bb.max, [25.0, 5.0, 5.0]);
@@ -1267,7 +1250,7 @@ mod tests {
                 [5.0, 5.0, 5.0],
             ),
         ];
-        let csg = CsgNode::from_features(&features);
+        let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);
         let samples = [
             [0.0, 0.0, 0.0],
@@ -1299,7 +1282,7 @@ mod tests {
                 f
             },
         ];
-        let csg = CsgNode::from_features(&features);
+        let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);
         // A point on the box's +x face well away from the sphere →
         // only the box contributes.
@@ -1323,7 +1306,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             box_feature(2, BoolOp::Union, [500.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
         ];
-        let csg = CsgNode::from_features(&features);
+        let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);
         let p = [5.0, 0.0, 0.0];
         let a = bvh.sdf(p, EvalMode::Visual);

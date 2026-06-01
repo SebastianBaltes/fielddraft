@@ -751,7 +751,7 @@ impl Kernel {
         // K8.5: honour a user-set `name` in the call's params
         // so rename through `replaceFeatureCallParams` sticks
         // for feature types that don't have a spine-level
-        // `SpineFeature.name` (sketches, patterns).
+        // `DecodedFeature.name` (sketches, patterns).
         if let Some(name) = call.params.get("name").and_then(|v| v.as_str()) {
             if !name.is_empty() {
                 return name.to_string();
@@ -944,12 +944,11 @@ impl Kernel {
         let registry = features::FeatureRegistry::with_builtins();
         let calls = std::mem::take(&mut self.document.feature_calls);
         let rollback = self.rollback_after;
-        // DL-61 C2b: regeneration accumulates the spine in the
-        // Context (the Document no longer holds it). We lower that
-        // accumulator into the `DecodedFeature` IR here — the sole
-        // producer of `self.decoded`. On a fail-stop error the
-        // partial spine is still lowered so the caller can render
-        // what regenerated before the failing call.
+        // DL-61 C2b: regeneration accumulates the decoded spine in the
+        // Context (the Document no longer holds it) and we move it out as
+        // `self.decoded` — the sole producer of the IR. On a fail-stop
+        // error the partial spine is still captured so the caller can
+        // render what regenerated before the failing call.
         let (result, spine) = {
             let mut ctx = features::Context::new(&mut self.document);
             let r = registry.regenerate(&mut ctx, &calls, rollback);
@@ -958,7 +957,7 @@ impl Kernel {
             (r, std::mem::take(&mut ctx.features))
         };
         self.document.feature_calls = calls;
-        self.decoded = spine.iter().map(DecodedFeature::from_feature).collect();
+        self.decoded = spine;
         result
     }
 
@@ -2906,43 +2905,31 @@ mod tests {
     // DL-61 C2b: `Feature` is no longer part of the production
     // surface (the kernel runs on call-first `feature_calls` +
     // `DecodedFeature`), but the test fixtures still build spine
-    // features directly, so they import it explicitly here.
-    use fielddraft_protocol::Feature;
+    // features directly, so they decode through `from_parts` here.
+    use crate::csg::PrimitiveModifiers;
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
-        DecodedFeature::from_feature(&Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box { center, half_extents: half },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        })
+            Primitive::Box { center, half_extents: half },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn sphere_feature(id: u32, op: BoolOp, center: [f32; 3], r: f32) -> DecodedFeature {
-        DecodedFeature::from_feature(&Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
             op,
-            primitive: Primitive::Sphere { center, radius: r },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        })
+            Primitive::Sphere { center, radius: r },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     // ─── primitive SDFs ──────────────────────────────────────────────
@@ -3456,7 +3443,7 @@ mod tests {
 
     /// Regression for the "delete button silently does nothing"
     /// bug reported in UX testing 2026-04-13. `Hole` is a
-    /// non-spine feature type that pushes its `SpineFeature` under a
+    /// non-spine feature type that pushes its `DecodedFeature` under a
     /// hierarchical child id (`<hole>.0`), so the old scan-by-flat-id
     /// loop in `remove_feature` couldn't match and returned false for
     /// every hole. Every feature the outliner shows must be
@@ -4933,21 +4920,15 @@ mod tests {
     fn body_step_export_twisted_box_refs_resolve() {
         // A twisted box yields curved NURBS edges; the STEP graph must
         // still be referentially complete.
-        let feat = DecodedFeature::from_feature(&Feature {
-            id: FeatureId::from_u32(1),
-            name: "Box 1".into(),
-            op: BoolOp::Union,
-            primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.3,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        });
+        let feat = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Box 1".into(),
+            BoolOp::Union,
+            Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+            Transform::IDENTITY,
+            PrimitiveModifiers { twist_rate: 0.3, ..PrimitiveModifiers::NONE },
+            vec![],
+        );
         let mut k = Kernel::new();
         k.decoded = vec![feat];
         k.rebuild_mesh_internal();

@@ -1074,46 +1074,34 @@ fn sdf_capsule_3d(p: [f32; 3], a: [f32; 3], b: [f32; 3], r: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::{CsgNode, EvalMode};
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{CsgNode, DecodedFeature, EvalMode, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box {
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
+            BoolOp::Union,
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn translated_feature(
@@ -1121,26 +1109,20 @@ mod tests {
         op: BoolOp,
         primitive: Primitive,
         translate: [f32; 3],
-    ) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("F{id}"),
+    ) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("F{id}"),
             op,
             primitive,
-            transform: Transform {
+            Transform {
                 translate,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0, 1.0, 1.0],
             },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn assert_sdf_match(bvh: &BoundedCsg, compiled: &CompiledSdf, points: &[[f32; 3]], tol: f32) {
@@ -1162,7 +1144,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1183,7 +1165,7 @@ mod tests {
             [5.0, -3.0, 7.0],
             [4.0, 4.0, 4.0],
         )];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [5.0, -3.0, 7.0],
@@ -1206,7 +1188,7 @@ mod tests {
             },
             [10.0, 20.0, 30.0],
         )];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [10.0, 20.0, 30.0],
@@ -1223,7 +1205,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             box_feature(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1246,7 +1228,7 @@ mod tests {
                 f
             },
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1282,7 +1264,7 @@ mod tests {
                 [0.0, 0.0, 0.0],
             ),
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1388,7 +1370,7 @@ mod tests {
             },
             box_feature(3, BoolOp::Union, [-30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1405,10 +1387,20 @@ mod tests {
 
     #[test]
     fn twist_warp() {
-        let mut f = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 20.0, 5.0]);
-        f.twist_rate = 0.03;
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Box 1".into(),
+            BoolOp::Union,
+            Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [5.0, 20.0, 5.0],
+            },
+            Transform::IDENTITY,
+            PrimitiveModifiers { twist_rate: 0.03, ..PrimitiveModifiers::NONE },
+            vec![],
+        );
         let features = vec![f];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1422,10 +1414,20 @@ mod tests {
 
     #[test]
     fn shell_operator() {
-        let mut f = sphere_feature(1, [0.0, 0.0, 0.0], 10.0);
-        f.shell_thickness = 1.0;
+        let f = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Sphere 1".into(),
+            BoolOp::Union,
+            Primitive::Sphere {
+                center: [0.0, 0.0, 0.0],
+                radius: 10.0,
+            },
+            Transform::IDENTITY,
+            PrimitiveModifiers { shell_thickness: 1.0, ..PrimitiveModifiers::NONE },
+            vec![],
+        );
         let features = vec![f];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         let points = [
             [0.0, 0.0, 0.0],
@@ -1438,7 +1440,7 @@ mod tests {
 
     #[test]
     fn empty_tree_compiles() {
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&[]));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&[]));
         let compiled = compile_body(&bvh);
         let d = eval_opcodes(&compiled.opcodes, [0.0, 0.0, 0.0]);
         assert!(d > 1e30);
@@ -1450,7 +1452,7 @@ mod tests {
             box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             sphere_feature(2, [0.0, 0.0, 0.0], 5.0),
         ];
-        let bvh = BoundedCsg::from_csg(&CsgNode::from_features(&features));
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
         // box: 1 tag + 13 payload = 14 (scale 1→3: +2)
         // sphere: 1 tag + 11 payload = 12 (scale 1→3: +2)

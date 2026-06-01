@@ -621,30 +621,24 @@ pub fn manifold_dc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::CsgNode;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn make_feature(id: u32, prim: Primitive) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: String::new(),
-            op: BoolOp::Union,
-            primitive: prim,
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn make_feature(id: u32, prim: Primitive) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            String::new(),
+            BoolOp::Union,
+            prim,
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn bounded_sphere(center: [f32; 3], radius: f32) -> crate::bvh::BoundedCsg {
         let f = make_feature(1, Primitive::Sphere { center, radius });
-        let csg = CsgNode::from_features(&[f]);
+        let csg = CsgNode::from_decoded(&[f]);
         crate::bvh::BoundedCsg::from_csg(&csg)
     }
 
@@ -656,7 +650,7 @@ mod tests {
                 half_extents: half,
             },
         );
-        let csg = CsgNode::from_features(&[f]);
+        let csg = CsgNode::from_decoded(&[f]);
         crate::bvh::BoundedCsg::from_csg(&csg)
     }
 

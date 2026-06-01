@@ -1079,45 +1079,34 @@ pub(crate) fn sdf_normal(node: &BoundedCsg, p: [f32; 3], eps: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+    use crate::csg::{DecodedFeature, PrimitiveModifiers};
+    use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
-    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center, radius },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Sphere {id}"),
+            BoolOp::Union,
+            Primitive::Sphere { center, radius },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
-    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Box {id}"),
+    fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Box {id}"),
             op,
-            primitive: Primitive::Box {
+            Primitive::Box {
                 center,
                 half_extents: half,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn cylinder_feature(
@@ -1126,26 +1115,20 @@ mod tests {
         center: [f32; 3],
         radius: f32,
         half_height: f32,
-    ) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Cyl {id}"),
+    ) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Cyl {id}"),
             op,
-            primitive: Primitive::Cylinder {
+            Primitive::Cylinder {
                 center,
                 radius,
                 half_height,
             },
-            transform: Transform::IDENTITY,
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )
     }
 
     fn tri_normal(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3]) -> [f32; 3] {
@@ -1164,8 +1147,8 @@ mod tests {
         }
     }
 
-    fn mesh_for(features: &[Feature], resolution: u32) -> Mesh {
-        let csg = crate::csg::CsgNode::from_features(features);
+    fn mesh_for(features: &[DecodedFeature], resolution: u32) -> Mesh {
+        let csg = crate::csg::CsgNode::from_decoded(features);
         let bounded = BoundedCsg::from_csg(&csg);
         dual_contour(&bounded, resolution)
     }
@@ -1191,7 +1174,7 @@ mod tests {
 
         // Every vertex should lie near the sphere surface (|sdf| small
         // relative to the cell size, which is ~20*2/24 ≈ 1.67).
-        let tree = crate::csg::CsgNode::from_features(&[sphere_feature(
+        let tree = crate::csg::CsgNode::from_decoded(&[sphere_feature(
             1,
             [0.0, 0.0, 0.0],
             20.0,
@@ -1367,7 +1350,7 @@ mod tests {
     fn k35a_box_face_vertices_lie_on_surface() {
         let half = [25.0, 25.0, 25.0];
         let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 16);
-        let tree = crate::csg::CsgNode::from_features(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
         let mut max_err = 0.0_f32;
         let mut face_count = 0usize;
         for v in 0..mesh.vertex_count() {
@@ -1393,7 +1376,7 @@ mod tests {
     #[test]
     fn k35a_sphere_face_vertices_lie_on_surface() {
         let mesh = mesh_for(&[sphere_feature(1, [0.0; 3], 20.0)], 24);
-        let tree = crate::csg::CsgNode::from_features(&[sphere_feature(1, [0.0; 3], 20.0)]);
+        let tree = crate::csg::CsgNode::from_decoded(&[sphere_feature(1, [0.0; 3], 20.0)]);
         let mut max_err = 0.0_f32;
         let mut face_count = 0usize;
         for v in 0..mesh.vertex_count() {
@@ -1420,7 +1403,7 @@ mod tests {
             cylinder_feature(1, BoolOp::Union, [0.0; 3], 15.0, 40.0),
         ];
         let mesh = mesh_for(&features, 24);
-        let tree = crate::csg::CsgNode::from_features(&features);
+        let tree = crate::csg::CsgNode::from_decoded(&features);
         let mut max_err = 0.0_f32;
         let mut face_count = 0usize;
         for v in 0..mesh.vertex_count() {
@@ -1445,7 +1428,7 @@ mod tests {
     fn k35a_hausdorff_distance_box() {
         let half = [30.0, 20.0, 15.0];
         let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 24);
-        let tree = crate::csg::CsgNode::from_features(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
         let mut hausdorff = 0.0_f32;
         for v in 0..mesh.vertex_count() {
             let p = [
@@ -1572,8 +1555,8 @@ mod tests {
         assert_eq!(tris.len(), 4, "L-shape should produce 4 triangles");
     }
 
-    fn mesh_for_with_primitives(features: &[Feature], resolution: u32) -> Mesh {
-        let csg = crate::csg::CsgNode::from_features(features);
+    fn mesh_for_with_primitives(features: &[DecodedFeature], resolution: u32) -> Mesh {
+        let csg = crate::csg::CsgNode::from_decoded(features);
         let prims = csg.leaf_primitives();
         let owned: std::collections::HashMap<u32, fielddraft_protocol::Primitive> =
             prims.into_iter().map(|(k, v)| (k, v.clone())).collect();
@@ -1701,7 +1684,7 @@ mod tests {
         // Every vertex must sit near the zero-level set of the CSG
         // (proves the mesher actually tracked the surface; the holes
         // are present because their SDF is negative inside the box).
-        let tree = crate::csg::CsgNode::from_features(&features);
+        let tree = crate::csg::CsgNode::from_decoded(&features);
         let mut off_surface = 0usize;
         for i in 0..mesh.vertex_count() {
             let p = [
@@ -1750,7 +1733,7 @@ mod tests {
     fn sparse_sphere_vertices_hug_surface() {
         let features = [sphere_feature(1, [0.0; 3], 20.0)];
         let mesh = mesh_for(&features, 128);
-        let tree = crate::csg::CsgNode::from_features(&features);
+        let tree = crate::csg::CsgNode::from_decoded(&features);
         let mut max_err = 0.0_f32;
         for i in 0..mesh.vertex_count() {
             let p = [
