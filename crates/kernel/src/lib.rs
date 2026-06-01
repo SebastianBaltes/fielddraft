@@ -28,6 +28,7 @@ pub mod step_commands;
 pub mod sdf_compiler;
 pub mod sketch2d;
 pub mod sketch_features;
+pub mod script_runtime;
 
 use body::{
     build_bounded_for_body, build_bounded_with_primitives, detect_uniform_translation,
