@@ -108,36 +108,8 @@ const CIRCLE_INLIER_FRACTION: f64 = 0.4;
 /// arc or a stray planar sub-cluster does. See DL-52.
 const CIRCLE_MAX_ANGULAR_GAP: f64 = std::f64::consts::PI / 2.0;
 
-// ─── small vector helpers (f64) ────────────────────────────────────────────
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let d = sub(a, b);
-    dot(d, d)
-}
-
-fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
-    dist2(a, b).sqrt()
-}
-
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-fn norm3(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
+// ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
+use super::vec3::{add as add3, dist, dist2, dot, norm as norm3, scale as scale3, sub};
 
 /// Centroid of a point set.
 fn centroid(pts: &[[f64; 3]]) -> [f64; 3] {

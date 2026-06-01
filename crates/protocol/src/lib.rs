@@ -13,6 +13,7 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+pub mod mc_tables;
 pub mod mesh_sdf;
 pub mod sketch2d;
 pub mod voxel_repair;

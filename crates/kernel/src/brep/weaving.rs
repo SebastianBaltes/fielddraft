@@ -43,15 +43,9 @@ use crate::csg::{primitive_halfspaces, BranchId};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
 use fielddraft_protocol::{HalfSpace, Transform};
 
-// ─── small vector helpers (f64) ─────────────────────────────────────────────
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
-}
+// ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
+use super::vec3::{add, normalize as unit, scale, sub};
+use super::vec3::norm;
 
 // ─── (1) Hermite → NURBS fitting ────────────────────────────────────────────
 
@@ -116,23 +110,6 @@ pub fn hermite_to_nurbs(samples: &[HermiteSample]) -> NurbsCurve {
         control_points,
         weights,
         knots,
-    }
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-fn unit(a: [f64; 3]) -> [f64; 3] {
-    let n = norm(a);
-    if n > 0.0 {
-        [a[0] / n, a[1] / n, a[2] / n]
-    } else {
-        a
     }
 }
 
