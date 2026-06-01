@@ -27,6 +27,7 @@ import {
   atomicOr,
   atomicStore,
   bitAnd,
+  depth,
   float,
   fract,
   instanceIndex,
@@ -47,6 +48,7 @@ import {
   vec2,
   vec3,
   vec4,
+  viewZToPerspectiveDepth,
   modelWorldMatrix,
   positionGeometry,
 } from "three/tsl";
@@ -221,6 +223,8 @@ export interface DeferredPipelineState {
   camPosUniform: ReturnType<typeof uniform>;
   viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
+  nearU: ReturnType<typeof uniform>;
+  farU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
   bodyTransparentMeshes: Map<number, THREE.Mesh[]>;
   bodyBackMeshes: Map<number, THREE.Mesh[]>;
@@ -321,6 +325,8 @@ function createShadeMaterial(
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
   showEdgesU: ReturnType<typeof uniform>,
+  nearU: ReturnType<typeof uniform>,
+  farU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
   const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
@@ -529,10 +535,24 @@ function createShadeMaterial(
       result.assign(vec4(color, alpha));
     });
 
+    // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
+    // "visible" mode. `shadePos` is the true raymarched (or opaque) surface
+    // point; reconstruct its perspective depth via the scene camera's view
+    // matrix + near/far (the shade quad itself is drawn with an ortho camera,
+    // so the rasterizer's own depth is meaningless here). Misses write the far
+    // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
+    // there renderOverlayLayer clears depth before drawing the edges.
+    If(hasHit.greaterThan(int(0)), () => {
+      const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z;
+      depth.assign(viewZToPerspectiveDepth(viewZ, nearU, farU)).toStack();
+    }).Else(() => {
+      depth.assign(float(1.0)).toStack();
+    });
+
     return result;
   })();
 
-  material.depthWrite = false;
+  material.depthWrite = true;
   material.depthTest = false;
   material.toneMapped = false;
   material.transparent = true;
@@ -583,6 +603,8 @@ export function initDeferredPipeline(
   const viewMatU = uniform(new THREE.Matrix4());
   const widthU = uniform(width);
   const showEdgesU = uniform(1);
+  const nearU = uniform(1);
+  const farU = uniform(4000);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
   const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
@@ -606,6 +628,8 @@ export function initDeferredPipeline(
     viewMatU,
     widthU,
     showEdgesU,
+    nearU,
+    farU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -640,6 +664,8 @@ export function initDeferredPipeline(
     viewMatU,
     widthU,
     showEdgesU,
+    nearU,
+    farU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -921,6 +947,8 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.viewMatU,
     state.widthU,
     state.showEdgesU,
+    state.nearU,
+    state.farU,
     state.volumeTextures,
   );
 
@@ -965,6 +993,9 @@ export function renderDeferredFrame(
   camera.getWorldPosition(_camWorldPos);
   state.camPosUniform.value.copy(_camWorldPos);
   state.viewMatU.value.copy(camera.matrixWorldInverse);
+  const persp = camera as THREE.PerspectiveCamera;
+  state.nearU.value = persp.near;
+  state.farU.value = persp.far;
 
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();

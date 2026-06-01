@@ -86,14 +86,15 @@ interface SceneProps {
   onPick: (result: PickResult | null) => void;
   renderMode: string;
   showEdges: boolean;
+  brepEdgeMode: BRepEdgeMode;
 }
-function Scene({ ndc, onPick, renderMode, showEdges }: SceneProps) {
+function Scene({ ndc, onPick, renderMode, showEdges, brepEdgeMode }: SceneProps) {
   const { store } = useKernelStore();
   if (!store) return null;
   return (
     <>
-      {renderMode === "sdf-vm" && <SdfVmOverlay showEdges={showEdges} />}
-      {renderMode === "sdf-deferred" && <SdfDeferredOverlay showEdges={showEdges} />}
+      {renderMode === "sdf-vm" && <SdfVmOverlay showEdges={showEdges} brepEdgeMode={brepEdgeMode} />}
+      {renderMode === "sdf-deferred" && <SdfDeferredOverlay showEdges={showEdges} brepEdgeMode={brepEdgeMode} />}
       {renderMode === "mesh" && <MeshPreview />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
@@ -434,7 +435,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
           {canvasReady && (
             <>
               <ClearColorSync />
-              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
+              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
               <BRepEdgeOverlay pick={pickResult} mode={brepEdgeMode} />
               <MateConnectorOverlay />

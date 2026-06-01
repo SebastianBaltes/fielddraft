@@ -24,6 +24,7 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
+import type { BRepEdgeMode } from "./SettingsMenu";
 
 export const OVERLAY_LAYER = 1;
 
@@ -92,6 +93,7 @@ function renderOverlayLayer(
   scene: THREE.Scene,
   camera: THREE.Camera,
   renderSdf: () => void,
+  occlude: boolean,
 ): void {
   wgpuRenderer.render(scene, camera);
   const prevAutoClear = (wgpuRenderer as any).autoClear;
@@ -102,7 +104,10 @@ function renderOverlayLayer(
   scene.background = null;
   const savedMask = camera.layers.mask;
   camera.layers.set(OVERLAY_LAYER);
-  wgpuRenderer.clearDepth();
+  // X-Ray/Hidden: wipe depth so overlay edges always draw on top. "Visible
+  // only" (occlude): keep the depth the SDF shade pass just wrote, so edges
+  // behind a face are depth-rejected.
+  if (!occlude) wgpuRenderer.clearDepth();
   wgpuRenderer.render(scene, camera);
   camera.layers.mask = savedMask;
   scene.background = savedBg;
@@ -115,7 +120,7 @@ function copyOpcodes(k: KernelLike, bodyIndex: number): Float32Array {
   return view.length > 0 ? view.slice() : new Float32Array(0);
 }
 
-export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
+export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const invalidate = useThree((s) => s.invalidate);
@@ -205,6 +210,7 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderVmFrame(pipeline, wgpuRenderer, camera),
+        brepEdgeMode === "visible",
       );
     } catch (err) {
       readyRef.current = false;
@@ -217,7 +223,7 @@ export function SdfVmOverlay({ showEdges }: { showEdges: boolean }) {
   return null;
 }
 
-export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
+export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
@@ -332,6 +338,7 @@ export function SdfDeferredOverlay({ showEdges }: { showEdges: boolean }) {
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderDeferredFrame(pipeline, wgpuRenderer, camera),
+        brepEdgeMode === "visible",
       );
     } catch (err) {
       console.error("SDF render error:", err);

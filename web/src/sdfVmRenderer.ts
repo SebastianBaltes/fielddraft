@@ -16,6 +16,7 @@ import {
   If,
   Loop,
   abs,
+  depth,
   float,
   fract,
   int,
@@ -29,6 +30,7 @@ import {
   uniform,
   vec3,
   vec4,
+  viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { pbrShade } from "./pbrShading";
@@ -91,6 +93,8 @@ export interface VmPipelineState {
   volumeBaseAttr: StorageBufferAttribute;
   volumeBaseBuf: ReturnType<typeof storage>;
   viewMatU: ReturnType<typeof uniform>;
+  nearU: ReturnType<typeof uniform>;
+  farU: ReturnType<typeof uniform>;
   showEdgesU: ReturnType<typeof uniform>;
 }
 
@@ -117,6 +121,8 @@ export function initVmPipeline(): VmPipelineState {
     invProjU: uniform(new THREE.Matrix4()),
     invViewU: uniform(new THREE.Matrix4()),
     viewMatU: uniform(new THREE.Matrix4()),
+    nearU: uniform(1),
+    farU: uniform(4000),
     showEdgesU: uniform(1),
   };
 }
@@ -235,6 +241,16 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
 
     If(hit.lessThan(float(0.5)), () => { Discard(); });
 
+    // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
+    // "visible" mode. `hitPos` is the true raymarched surface point;
+    // reconstruct its perspective depth via the scene camera's view matrix +
+    // near/far (the fullscreen quad is drawn with an ortho camera, so the
+    // rasterizer's own depth is meaningless). Misses already discarded above,
+    // so they never touch depth. Harmless in X-Ray/Hidden modes — there
+    // renderOverlayLayer clears depth before drawing the edges.
+    const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z;
+    depth.assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU)).toStack();
+
     // Normal via central differences
     const eps = float(NORMAL_EPS);
     const ex = vec3(eps, 0, 0);
@@ -305,7 +321,7 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
   })();
 
   material.side = THREE.DoubleSide;
-  material.depthWrite = false;
+  material.depthWrite = true;
   material.depthTest = false;
   material.toneMapped = false;
   material.transparent = true;
@@ -345,6 +361,8 @@ function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): voi
   state.invProjU.value.copy(cam.projectionMatrixInverse);
   state.invViewU.value.copy(cam.matrixWorldInverse).invert();
   state.viewMatU.value.copy(cam.matrixWorldInverse);
+  state.nearU.value = cam.near;
+  state.farU.value = cam.far;
 }
 
 // ── Dispose ─────────────────────────────────────────────────────────
