@@ -3,10 +3,10 @@
 //! which need degradation, and which must be excluded entirely.
 //!
 //! M14b — this is the foundation layer for the STEP export pipeline.
-//! The classifier walks the legacy `Feature` spine (which carries
-//! typed modifier fields like `blend_radius`, `twist_rate`, etc.)
-//! and produces a per-feature classification plus a human-readable
-//! degradation report.
+//! The classifier walks each feature's decoded geometry node
+//! ([`DecodedFeature`]): the leaf primitive plus any domain-warp/shell
+//! modifier wrappers, combined with the junction blend, decide the
+//! per-feature classification and a human-readable degradation report.
 //!
 //! Classification rules:
 //!
@@ -17,7 +17,9 @@
 //! | **Excluded** | Gyroid, Thread, ImportedMesh, Twist, Bend, Displacement |
 //! | **NonGeometric** | MateConnector, Sketch (consumed by extrude) |
 
-use fielddraft_protocol::{Feature, FeatureId, Primitive};
+use fielddraft_protocol::{FeatureId, Primitive};
+
+use crate::csg::{BlendMode, CsgNode, DecodedFeature};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepSupport {
@@ -82,13 +84,64 @@ impl StepReport {
     }
 }
 
-pub fn classify(features: &[Feature]) -> StepReport {
+pub fn classify(features: &[DecodedFeature]) -> StepReport {
     let features = features.iter().map(classify_one_feature).collect();
     StepReport { features }
 }
 
-pub fn classify_one_feature(f: &Feature) -> ClassifiedFeature {
-    let prim_support = classify_primitive(&f.primitive);
+/// Modifier wrappers present on a feature's local geometry node.
+struct NodeModifiers {
+    twist: bool,
+    bend: bool,
+    displace: bool,
+    shell: bool,
+}
+
+/// Peel the domain-warp/shell wrappers (and the extrude/revolve
+/// self-centering `Transform`) off a local geometry node, returning the
+/// innermost geometry node plus which modifiers were present.
+fn peel_modifiers(node: &CsgNode) -> (&CsgNode, NodeModifiers) {
+    let mut cur = node;
+    let mut mods = NodeModifiers {
+        twist: false,
+        bend: false,
+        displace: false,
+        shell: false,
+    };
+    loop {
+        match cur {
+            CsgNode::Twist(inner, _) => {
+                mods.twist = true;
+                cur = inner;
+            }
+            CsgNode::Bend(inner, _) => {
+                mods.bend = true;
+                cur = inner;
+            }
+            CsgNode::Displace(inner, _, _) => {
+                mods.displace = true;
+                cur = inner;
+            }
+            CsgNode::Shell(inner, _) => {
+                mods.shell = true;
+                cur = inner;
+            }
+            CsgNode::Transform(_, inner) => cur = inner,
+            _ => break,
+        }
+    }
+    (cur, mods)
+}
+
+pub fn classify_one_feature(f: &DecodedFeature) -> ClassifiedFeature {
+    let (geom, mods) = peel_modifiers(&f.node);
+    let prim_support = match geom {
+        CsgNode::Leaf { primitive, .. } => classify_primitive(primitive),
+        CsgNode::Extrude { .. } | CsgNode::Revolve { .. } => StepSupport::Hard,
+        // An arbitrary (e.g. future FieldSkript) node has no single
+        // primitive to map onto an OCCT shape.
+        _ => StepSupport::Excluded("composite feature node not representable in B-Rep".into()),
+    };
 
     if matches!(prim_support, StepSupport::NonGeometric | StepSupport::Excluded(_)) {
         return ClassifiedFeature {
@@ -101,24 +154,24 @@ pub fn classify_one_feature(f: &Feature) -> ClassifiedFeature {
     let mut degradations = Vec::new();
 
     if f.blend_radius > 0.0 {
-        degradations.push("smooth fillet → sharp edge".into());
+        match f.blend_mode {
+            BlendMode::Fillet => degradations.push("smooth fillet → sharp edge".into()),
+            BlendMode::Chamfer => degradations.push("chamfer → sharp edge".into()),
+        }
     }
-    if f.chamfer_size > 0.0 {
-        degradations.push("chamfer → sharp edge".into());
-    }
-    if f.shell_thickness > 0.0 {
+    if mods.shell {
         degradations.push("shell → excluded (no B-Rep equivalent)".into());
     }
 
     let mut excluded_reason = None;
 
-    if f.twist_rate != 0.0 {
+    if mods.twist {
         excluded_reason = Some("twist deformation not representable in B-Rep");
     }
-    if f.bend_rate != 0.0 {
+    if mods.bend {
         excluded_reason = Some("bend deformation not representable in B-Rep");
     }
-    if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
+    if mods.displace {
         excluded_reason = Some("procedural displacement not representable in B-Rep");
     }
 
@@ -175,7 +228,17 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, FeatureId, MeshSdf, Transform};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId, MeshSdf, Transform};
+
+    /// Test adapter: the production `classify` now takes decoded features,
+    /// but the tests build fat `Feature`s (so they can poke modifier
+    /// fields). This local shadow decodes them first. Shadowing the
+    /// glob-imported `super::classify` keeps every call site unchanged.
+    fn classify(features: &[Feature]) -> StepReport {
+        let decoded: Vec<DecodedFeature> =
+            features.iter().map(DecodedFeature::from_feature).collect();
+        super::classify(&decoded)
+    }
 
     fn make_feature(name: &str, prim: Primitive) -> Feature {
         Feature {

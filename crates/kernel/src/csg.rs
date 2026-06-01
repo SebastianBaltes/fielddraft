@@ -584,41 +584,74 @@ pub enum CsgNode {
     },
 }
 
-impl CsgNode {
-    /// DL-61 Stage A: build a single feature's leaf subtree (primitive →
-    /// Transform → optional Twist/Bend/Displace/Shell wrappers) plus its
-    /// resolved blend parameters. Behavior-neutral extraction from
-    /// `from_features`; in DL-61 Stage B this becomes the Feature→node decoder.
-    fn build_leaf_node(f: &Feature) -> (CsgNode, f32, BlendMode) {
-        // K7.3: Primitive::Extrude lowers directly to a
-        // CsgNode::Extrude that the K4 mesher knows how
-        // to walk. Every other primitive stays in the
-        // CsgNode::Leaf wrapper path so the existing
-        // BoundedCsg builder keeps working unchanged.
-        let node = match &f.primitive {
+/// DL-61 Stage B: the decoded runtime IR of one feature.
+///
+/// Where the fat `protocol::Feature` is a field-union over every
+/// built-in, `DecodedFeature` is the **open** form both built-ins and
+/// (future) FieldSkript converge on: a per-feature geometry subtree
+/// (`node`) plus the universals every feature has — identity, combine
+/// semantics (`op` + junction blend), targeting, and a separable
+/// `transform` placement.
+///
+/// `node` holds the feature's geometry in its **own local frame**
+/// (primitive, sketch lift, and any domain-warp/shell modifiers),
+/// *without* the outer placement. Keeping `transform` separate lets the
+/// body layer split the geometry hash from the transform hash (so a pure
+/// move reuses the woven B-Rep, DL-56) and extract per-body placement.
+/// The CSG fold re-applies the placement via [`DecodedFeature::placed_node`].
+///
+/// A FieldSkript feature emits `node` directly (it has no single
+/// `primitive`), so this struct never needs a new field per feature type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedFeature {
+    pub id: FeatureId,
+    pub name: String,
+    pub op: BoolOp,
+    /// Junction blend radius in mm; 0 = hard boolean. `blend_mode`
+    /// selects fillet vs. chamfer when this is > 0.
+    pub blend_radius: f32,
+    pub blend_mode: BlendMode,
+    /// Explicit body-targeting (see `body::partition`). Empty = AABB
+    /// overlap fallback.
+    pub target_ids: Vec<FeatureId>,
+    /// Separable affine placement of `node` in world space.
+    pub transform: Transform,
+    /// Geometry subtree in the feature's local frame (placement excluded).
+    pub node: CsgNode,
+}
+
+impl DecodedFeature {
+    /// Decode a fat `Feature` into the open IR. Behaviour-preserving
+    /// successor of the old `build_leaf_node`: the primitive (with the
+    /// extrude/revolve self-centering folded in) is wrapped in its
+    /// domain-warp/shell modifiers in the **local** frame, and the
+    /// feature's own `transform` is kept separate as the placement.
+    ///
+    /// Note: the old `from_features` applied the modifiers *outside* the
+    /// placement (`Twist(Transform(t, prim))`); here they sit *inside*
+    /// (`Transform(t, Twist(prim))`). This is observationally identical —
+    /// modifiers are only ever set on identity-transform features — and
+    /// matches the intended model where modifiers act in the local frame.
+    pub fn from_feature(f: &Feature) -> Self {
+        // K7.3 / K8.4: Extrude/Revolve lower to their dedicated nodes,
+        // with the primitive's own `center` folded into an inner
+        // Transform so the slab/profile sits at the local origin. Every
+        // other primitive stays in the Leaf wrapper.
+        let prim_node = match &f.primitive {
             Primitive::Extrude {
                 sketch,
                 half_depth_z,
                 center,
             } => {
-                // Fold the extrude's own `center` into a
-                // pre-rotation translation so the
-                // canonical `CsgNode::Extrude` slab sits
-                // at the origin of the local frame. The
-                // outer `CsgNode::Transform` then applies
-                // the feature's own transform on top.
-                let centered = Self::Extrude {
+                let centered = CsgNode::Extrude {
                     id: f.id.clone(),
                     sketch: Box::new(sketch.clone()),
                     half_height: *half_depth_z,
                 };
-                // Shift by `center` via an inner
-                // Transform so the extrude SDF sees local
-                // coordinates centred on its own origin.
                 if *center == [0.0, 0.0, 0.0] {
                     centered
                 } else {
-                    Self::Transform(
+                    CsgNode::Transform(
                         Transform {
                             translate: *center,
                             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -628,18 +661,15 @@ impl CsgNode {
                     )
                 }
             }
-            // K8.4: same lowering dance as Extrude, but the
-            // payload is CsgNode::Revolve and the sketch is
-            // interpreted in (r, y) rather than (x, y).
             Primitive::Revolve { sketch, center } => {
-                let centered = Self::Revolve {
+                let centered = CsgNode::Revolve {
                     id: f.id.clone(),
                     sketch: Box::new(sketch.clone()),
                 };
                 if *center == [0.0, 0.0, 0.0] {
                     centered
                 } else {
-                    Self::Transform(
+                    CsgNode::Transform(
                         Transform {
                             translate: *center,
                             rotation: [0.0, 0.0, 0.0, 1.0],
@@ -649,51 +679,129 @@ impl CsgNode {
                     )
                 }
             }
-            _ => Self::Leaf {
+            _ => CsgNode::Leaf {
                 id: f.id.clone(),
                 primitive: f.primitive.clone(),
             },
         };
-        let mut leaf: CsgNode = Self::Transform(f.transform, Box::new(node));
+        let mut node = prim_node;
         if f.twist_rate != 0.0 {
-            leaf = Self::Twist(Box::new(leaf), f.twist_rate);
+            node = CsgNode::Twist(Box::new(node), f.twist_rate);
         }
         if f.bend_rate != 0.0 {
-            leaf = Self::Bend(Box::new(leaf), f.bend_rate);
+            node = CsgNode::Bend(Box::new(node), f.bend_rate);
         }
         if f.displace_depth != 0.0 && f.displace_freq != 0.0 {
-            leaf = Self::Displace(Box::new(leaf), f.displace_depth, f.displace_freq);
+            node = CsgNode::Displace(Box::new(node), f.displace_depth, f.displace_freq);
         }
         if f.shell_thickness > 0.0 {
-            leaf = Self::Shell(Box::new(leaf), f.shell_thickness);
+            node = CsgNode::Shell(Box::new(node), f.shell_thickness);
         }
-        // Blend selection: fillet (blend_radius) wins over
-        // chamfer (chamfer_size) when both are set.
-        let (blend_r, blend_mode) = if f.blend_radius > 0.0 {
+        // Blend selection: fillet (blend_radius) wins over chamfer
+        // (chamfer_size) when both are set.
+        let (blend_radius, blend_mode) = if f.blend_radius > 0.0 {
             (f.blend_radius, BlendMode::Fillet)
         } else if f.chamfer_size > 0.0 {
             (f.chamfer_size, BlendMode::Chamfer)
         } else {
             (0.0, BlendMode::Fillet)
         };
-        (leaf, blend_r, blend_mode)
+        DecodedFeature {
+            id: f.id.clone(),
+            name: f.name.clone(),
+            op: f.op,
+            blend_radius,
+            blend_mode,
+            target_ids: f.target_ids.clone(),
+            transform: f.transform,
+            node,
+        }
     }
 
-    /// Fold a linear feature spine into a binary CSG tree.
+    /// The feature's geometry re-wrapped in its placement: the world-space
+    /// subtree the CSG fold combines.
+    pub fn placed_node(&self) -> CsgNode {
+        CsgNode::Transform(self.transform, Box::new(self.node.clone()))
+    }
+
+    /// Reconstruct this feature's export `Primitive` from the local
+    /// geometry node, peeling the domain-warp/shell modifiers. Sketch
+    /// lifts come back as `Primitive::Extrude`/`Revolve` with their
+    /// self-centering offset restored. `None` for composite (e.g. future
+    /// FieldSkript) nodes that have no single primitive. The placement
+    /// (`self.transform`) is applied separately by the caller.
+    pub fn export_primitive(&self) -> Option<Primitive> {
+        let mut cur = &self.node;
+        loop {
+            match cur {
+                CsgNode::Twist(inner, _)
+                | CsgNode::Bend(inner, _)
+                | CsgNode::Displace(inner, _, _)
+                | CsgNode::Shell(inner, _) => cur = inner,
+                CsgNode::Leaf { primitive, .. } => return Some(primitive.clone()),
+                CsgNode::Extrude {
+                    sketch,
+                    half_height,
+                    ..
+                } => {
+                    return Some(Primitive::Extrude {
+                        sketch: (**sketch).clone(),
+                        half_depth_z: *half_height,
+                        center: [0.0, 0.0, 0.0],
+                    })
+                }
+                CsgNode::Revolve { sketch, .. } => {
+                    return Some(Primitive::Revolve {
+                        sketch: (**sketch).clone(),
+                        center: [0.0, 0.0, 0.0],
+                    })
+                }
+                // The extrude/revolve self-centering Transform: restore
+                // its translate as the primitive's `center`.
+                CsgNode::Transform(t, inner) => match &**inner {
+                    CsgNode::Extrude {
+                        sketch,
+                        half_height,
+                        ..
+                    } => {
+                        return Some(Primitive::Extrude {
+                            sketch: (**sketch).clone(),
+                            half_depth_z: *half_height,
+                            center: t.translate,
+                        })
+                    }
+                    CsgNode::Revolve { sketch, .. } => {
+                        return Some(Primitive::Revolve {
+                            sketch: (**sketch).clone(),
+                            center: t.translate,
+                        })
+                    }
+                    _ => cur = inner,
+                },
+                _ => return None,
+            }
+        }
+    }
+}
+
+impl CsgNode {
+    /// Fold a decoded feature spine into a binary CSG tree.
     ///
     /// The first feature seeds the accumulator regardless of its op
     /// (the empty-space start means union/difference/intersection all
-    /// degenerate to
-    /// "take this feature as-is"). Each subsequent feature combines
-    /// with the accumulator via its own op.
+    /// degenerate to "take this feature as-is"). Each subsequent feature
+    /// combines with the accumulator via its own op, honouring per-feature
+    /// junction blend and explicit body-targeting.
     ///
     /// Each leaf inherits the feature's id as its `FeatureId`, so
     /// contributor analysis can always name the original outliner row
     /// that produced a face/edge/vertex.
-    pub fn from_features(features: &[Feature]) -> Self {
+    pub fn from_decoded(features: &[DecodedFeature]) -> Self {
         let mut acc = Self::Empty;
         for f in features {
-            let (leaf, blend_r, blend_mode) = Self::build_leaf_node(f);
+            let leaf = f.placed_node();
+            let blend_r = f.blend_radius;
+            let blend_mode = f.blend_mode;
             acc = if !f.target_ids.is_empty() && !matches!(acc, Self::Empty) {
                 wrap_targeted(acc, &f.target_ids, leaf, f.op, blend_r, blend_mode)
             } else {
@@ -712,6 +820,15 @@ impl CsgNode {
             };
         }
         acc
+    }
+
+    /// Decode a fat `Feature` spine, then fold it. Thin adapter over
+    /// [`DecodedFeature::from_feature`] + [`CsgNode::from_decoded`] kept
+    /// for the many call sites that still hold `protocol::Feature`s.
+    pub fn from_features(features: &[Feature]) -> Self {
+        let decoded: Vec<DecodedFeature> =
+            features.iter().map(DecodedFeature::from_feature).collect();
+        Self::from_decoded(&decoded)
     }
 
     pub fn apply_edge_fillets(self, fillets: &[EdgeFillet]) -> Self {

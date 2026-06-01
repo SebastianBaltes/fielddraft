@@ -13,15 +13,16 @@
 //! boolean needed). Subsequent features use union/difference/intersect
 //! to fold in.
 
-use fielddraft_protocol::{BoolOp, Feature, Primitive, Sketch2d, Sketch2dPrimitive, Transform};
+use fielddraft_protocol::{BoolOp, Primitive, Sketch2d, Sketch2dPrimitive, Transform};
 use serde_json::{json, Value};
 
+use crate::csg::DecodedFeature;
 use crate::step_classifier::{classify_one_feature, StepSupport};
 
 /// Build the StepCommand JSON array from the feature spine.
 /// Returns a `serde_json::Value` that is a JSON array of command objects
 /// matching the TypeScript `StepCommand` union in `occt.worker.ts`.
-pub fn build_step_commands(features: &[Feature]) -> Value {
+pub fn build_step_commands(features: &[DecodedFeature]) -> Value {
     let mut commands: Vec<Value> = Vec::new();
     let mut accumulator: Option<String> = None;
     let mut idx = 0u32;
@@ -33,8 +34,11 @@ pub fn build_step_commands(features: &[Feature]) -> Value {
             _ => continue,
         }
 
+        let Some(prim) = feat.export_primitive() else {
+            continue;
+        };
         let prim_handle = format!("prim_{idx}");
-        if let Some(cmd) = primitive_command(&prim_handle, &feat.primitive) {
+        if let Some(cmd) = primitive_command(&prim_handle, &prim) {
             commands.push(cmd);
         } else {
             continue;
@@ -300,7 +304,17 @@ fn prim_to_wire(prim: &Sketch2dPrimitive) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fielddraft_protocol::{BoolOp, FeatureId};
+    use fielddraft_protocol::{BoolOp, Feature, FeatureId};
+
+    /// Test adapter: production `build_step_commands` takes decoded
+    /// features, but tests build fat `Feature`s to poke modifier fields.
+    /// Shadowing the glob-imported `super::build_step_commands` keeps the
+    /// call sites unchanged.
+    fn build_step_commands(features: &[Feature]) -> Value {
+        let decoded: Vec<DecodedFeature> =
+            features.iter().map(DecodedFeature::from_feature).collect();
+        super::build_step_commands(&decoded)
+    }
 
     fn make_feature(name: &str, prim: Primitive) -> Feature {
         Feature {

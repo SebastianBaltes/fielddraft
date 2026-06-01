@@ -34,7 +34,7 @@ use body::{
     hash_body_payload, hash_body_payload_split, partition, Body,
 };
 use bvh::BoundedCsg;
-use csg::CsgNode;
+use csg::{CsgNode, DecodedFeature};
 use dc::Mesh;
 use raycast::{raycast, RaycastParams};
 use features::quat_to_euler_xyz;
@@ -365,6 +365,11 @@ struct FeatureSummary {
 #[wasm_bindgen]
 pub struct Kernel {
     document: Document,
+    /// DL-61: the decoded runtime IR, rebuilt from `document.features`
+    /// (1:1, same order) on every regeneration / remesh. The geometry
+    /// pipeline — partition, hashing, BVH/B-Rep weaving, STEP classify —
+    /// consumes this open form rather than the fat `Feature` spine.
+    decoded: Vec<DecodedFeature>,
     undo: Vec<Document>,
     redo: Vec<Document>,
     /// Multi-body mesh cache (K3 part 2). Each body has its own
@@ -426,6 +431,19 @@ impl Kernel {
         self.redo.clear();
     }
 
+    /// Rebuild the decoded runtime IR (`self.decoded`) from the current
+    /// `document.features`. Cheap, 1:1, same order. Called at the top of
+    /// every remesh and after every regeneration so all geometry
+    /// consumers see a fresh open IR.
+    fn refresh_decoded(&mut self) {
+        self.decoded = self
+            .document
+            .features
+            .iter()
+            .map(DecodedFeature::from_feature)
+            .collect();
+    }
+
     fn rebuild_packed(&mut self) {
         // K4.5.4c dual-write: rebuild the K4.5 Feature-as-Function
         // `feature_calls` mirror after every mutation that ran
@@ -459,7 +477,8 @@ impl Kernel {
     /// correctly re-meshes the two bodies that changed LOD and
     /// leaves the rest untouched.
     fn rebuild_mesh_internal(&mut self) {
-        let partitions = partition(&self.document.features);
+        self.refresh_decoded();
+        let partitions = partition(&self.decoded);
 
         let mut previous: std::collections::HashMap<FeatureId, Body> =
             std::mem::take(&mut self.bodies)
@@ -469,10 +488,10 @@ impl Kernel {
 
         let mut new_bodies: Vec<Body> = Vec::with_capacity(partitions.len());
         for part in partitions {
-            let id = part.seed_id(&self.document.features);
+            let id = part.seed_id(&self.decoded);
             let (geometry_hash, transform_hash) =
-                hash_body_payload_split(&self.document.features, &part.feature_indices);
-            let payload_hash = hash_body_payload(&self.document.features, &part.feature_indices);
+                hash_body_payload_split(&self.decoded, &part.feature_indices);
+            let payload_hash = hash_body_payload(&self.decoded, &part.feature_indices);
             let target_resolution = self.target_resolution_for(&id);
 
             if let Some(mut prev) = previous.remove(&id) {
@@ -583,14 +602,18 @@ impl Kernel {
         // Passthrough fast-path: a body consisting of a single ImportedMesh
         // feature is rendered directly from its triangles — no DC needed.
         if feature_indices.len() == 1 {
-            let f = &self.document.features[feature_indices[0]];
-            if let Primitive::ImportedMesh { mesh } = &f.primitive {
+            let f = &self.decoded[feature_indices[0]];
+            if let CsgNode::Leaf {
+                primitive: Primitive::ImportedMesh { mesh },
+                ..
+            } = &f.node
+            {
                 let cid = f.id.as_u32_or_root().unwrap_or(0);
                 return Self::mesh_from_imported(mesh, cid);
             }
         }
 
-        let (bounded, prims) = build_bounded_with_primitives(&self.document.features, feature_indices);
+        let (bounded, prims) = build_bounded_with_primitives(&self.decoded, feature_indices);
         let prim_refs: std::collections::HashMap<u32, &Primitive> =
             prims.iter().map(|(k, v)| (*k, v)).collect();
         match self.mesh_algorithm {
@@ -614,7 +637,7 @@ impl Kernel {
     }
 
     fn compile_sdf_for(&self, feature_indices: &[usize]) -> sdf_compiler::CompiledSdf {
-        let bounded = build_bounded_for_body(&self.document.features, feature_indices);
+        let bounded = build_bounded_for_body(&self.decoded, feature_indices);
         sdf_compiler::compile_body(&bounded)
     }
 
@@ -833,6 +856,7 @@ impl Kernel {
         let document = Document::default();
         let mut k = Self {
             document,
+            decoded: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             bodies: Vec::new(),
@@ -913,6 +937,7 @@ impl Kernel {
             r
         };
         self.document.feature_calls = calls;
+        self.refresh_decoded();
         result
     }
 
@@ -2348,13 +2373,13 @@ impl Kernel {
 
     #[wasm_bindgen(js_name = classifyForStep)]
     pub fn classify_for_step(&self) -> String {
-        let report = step_classifier::classify(&self.document.features);
+        let report = step_classifier::classify(&self.decoded);
         report.to_json().to_string()
     }
 
     #[wasm_bindgen(js_name = stepCommands)]
     pub fn step_commands(&self) -> String {
-        let cmds = step_commands::build_step_commands(&self.document.features);
+        let cmds = step_commands::build_step_commands(&self.decoded);
         cmds.to_string()
     }
 
@@ -2569,7 +2594,7 @@ impl Kernel {
     #[wasm_bindgen(js_name = bodyHybridInfoJson)]
     pub fn body_hybrid_info_json(&self, i: usize) -> String {
         let bounded = body::build_bounded_for_body(
-            &self.document.features,
+            &self.decoded,
             &self.bodies[i].feature_indices,
         );
         let info = bounded.classify_for_hybrid();
@@ -2595,7 +2620,7 @@ impl Kernel {
         // Split the borrow: `ensure_brep` needs `&mut bodies[i]` and
         // `&document.features` simultaneously, which a method on the
         // whole `Kernel` can't express without aliasing.
-        let brep = self.bodies[i].ensure_brep(&self.document.features);
+        let brep = self.bodies[i].ensure_brep(&self.decoded);
         let watertight = brep.shells.first().map(|s| s.is_closed).unwrap_or(false);
         serde_json::json!({
             "vertices": brep.vertex_count(),
@@ -2619,7 +2644,7 @@ impl Kernel {
     /// the same lazily-woven, cached B-Rep as the counts / STEP queries.
     #[wasm_bindgen(js_name = bodyBrepEdges)]
     pub fn body_brep_edges(&mut self, i: usize) -> String {
-        self.bodies[i].ensure_brep(&self.document.features);
+        self.bodies[i].ensure_brep(&self.decoded);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let s = placement.scale[0];
@@ -2652,7 +2677,7 @@ impl Kernel {
     #[wasm_bindgen(js_name = bodyStepExport)]
     pub fn body_step_export(&mut self, i: usize) -> String {
         let product_name = format!("body_{}", self.bodies[i].id);
-        self.bodies[i].ensure_brep(&self.document.features);
+        self.bodies[i].ensure_brep(&self.decoded);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         crate::brep::step_export::export_step_placed(brep, &placement, &product_name)
@@ -2670,7 +2695,7 @@ impl Kernel {
         // breps immutably for export — two passes so the mutable `ensure_brep`
         // borrows don't overlap the shared-slice borrow.
         for i in 0..self.bodies.len() {
-            self.bodies[i].ensure_brep(&self.document.features);
+            self.bodies[i].ensure_brep(&self.decoded);
         }
         let breps: Vec<(&crate::brep::BRep, fielddraft_protocol::Transform)> = self
             .bodies
@@ -5028,7 +5053,11 @@ mod tests {
     #[test]
     fn move_reuses_local_brep_cache() {
         use body::{compute_body_placement, hash_body_local_payload, Body};
-        let features = vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])];
+        let features: Vec<DecodedFeature> =
+            vec![box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]
+                .iter()
+                .map(DecodedFeature::from_feature)
+                .collect();
         let parts = body::partition(&features);
         assert_eq!(parts.len(), 1);
         let part = &parts[0];

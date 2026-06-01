@@ -18,13 +18,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
 use crate::brep::octree::Octree;
 use crate::brep::weaving::weave;
 use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, CsgNode};
+use crate::csg::{Aabb, BlendMode, CsgNode, DecodedFeature};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
 
@@ -58,7 +58,7 @@ impl BodyPartition {
     /// `u32::MAX` so a body that contains both a
     /// pre-existing primitive and some pattern clones still
     /// picks the primitive as its stable id.
-    pub fn seed_id(&self, features: &[Feature]) -> FeatureId {
+    pub fn seed_id(&self, features: &[DecodedFeature]) -> FeatureId {
         self.feature_indices
             .iter()
             .map(|&i| features[i].id.clone())
@@ -146,7 +146,7 @@ impl Body {
     /// or a huge body both get proportional sampling instead of an
     /// absolute default. The weave path is panic-safe — degenerate
     /// geometry yields a possibly-empty B-Rep rather than a crash.
-    pub fn ensure_brep(&mut self, features: &[Feature]) -> &BRep {
+    pub fn ensure_brep(&mut self, features: &[DecodedFeature]) -> &BRep {
         // Placement is cheap (O(features)) and recomputed on EVERY call,
         // OUTSIDE the stale-gated weave: a move changes only `placement`,
         // so consumers always see the current world pose without forcing
@@ -208,7 +208,7 @@ fn topology_min_cell_size(aabb: &Aabb) -> f32 {
 /// * **Difference / Intersection** — attached to bodies via
 ///   `target_ids` (preferred) or AABB overlap (fallback for
 ///   features without explicit targets).
-pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
+pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
     let mut groups: Vec<BodyPartition> = Vec::new();
     for (i, feature) in features.iter().enumerate() {
         let feat_aabb = feature_world_aabb(feature);
@@ -249,10 +249,10 @@ pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
     groups
 }
 
-/// World-space AABB of a single feature's primitive, transformed by
-/// its own `Transform`.
-fn feature_world_aabb(feature: &Feature) -> Aabb {
-    Aabb::of_primitive(&feature.primitive).transformed(&feature.transform)
+/// World-space AABB of a single feature: its local geometry AABB
+/// transformed by its placement.
+fn feature_world_aabb(feature: &DecodedFeature) -> Aabb {
+    feature.node.aabb().transformed(&feature.transform)
 }
 
 fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
@@ -277,7 +277,7 @@ fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
 /// but the split lets `rebuild_mesh_internal` detect pure-translation
 /// changes and apply them as a GPU matrix without a full remesh.
 pub fn hash_body_payload_split(
-    features: &[Feature],
+    features: &[DecodedFeature],
     indices: &[usize],
 ) -> (u64, u64) {
     let mut geo = DefaultHasher::new();
@@ -288,14 +288,11 @@ pub fn hash_body_payload_split(
         let f = &features[i];
         f.id.hash(&mut geo);
         f.op.tag().hash(&mut geo);
-        hash_primitive(&f.primitive, &mut geo);
+        // The local geometry node already encodes the primitive and
+        // every domain-warp/shell modifier, placement-free.
+        hash_node(&f.node, &mut geo);
         f.blend_radius.to_bits().hash(&mut geo);
-        f.chamfer_size.to_bits().hash(&mut geo);
-        f.twist_rate.to_bits().hash(&mut geo);
-        f.bend_rate.to_bits().hash(&mut geo);
-        f.displace_depth.to_bits().hash(&mut geo);
-        f.displace_freq.to_bits().hash(&mut geo);
-        f.shell_thickness.to_bits().hash(&mut geo);
+        hash_blend_mode(&f.blend_mode, &mut geo);
 
         f.id.hash(&mut xform);
         for v in f.transform.translate {
@@ -311,7 +308,7 @@ pub fn hash_body_payload_split(
     (geo.finish(), xform.finish())
 }
 
-pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
+pub fn hash_body_payload(features: &[DecodedFeature], indices: &[usize]) -> u64 {
     let (g, t) = hash_body_payload_split(features, indices);
     combine_hashes(g, t)
 }
@@ -328,7 +325,7 @@ pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
 /// under rigid + uniform scale, which is exactly the class extracted here,
 /// so the local frame keeps them analytic. An empty body falls back to
 /// [`Transform::IDENTITY`] (world weave).
-pub fn compute_body_placement(features: &[Feature], indices: &[usize]) -> Transform {
+pub fn compute_body_placement(features: &[DecodedFeature], indices: &[usize]) -> Transform {
     let Some(&anchor) = indices.first() else {
         return Transform::IDENTITY;
     };
@@ -351,7 +348,7 @@ pub fn compute_body_placement(features: &[Feature], indices: &[usize]) -> Transf
 /// delta, so the composed local transforms — and therefore this key —
 /// stay constant, letting [`Body::ensure_brep`] reuse the cached weave.
 pub fn hash_body_local_payload(
-    features: &[Feature],
+    features: &[DecodedFeature],
     indices: &[usize],
     placement: &Transform,
 ) -> u64 {
@@ -421,6 +418,138 @@ pub fn detect_uniform_translation(
         return None;
     }
     Some(d)
+}
+
+fn hash_blend_mode(mode: &BlendMode, hasher: &mut DefaultHasher) {
+    (match mode {
+        BlendMode::Fillet => 0u8,
+        BlendMode::Chamfer => 1u8,
+    })
+    .hash(hasher);
+}
+
+/// Structural hash of a feature's local geometry subtree. Placement-free
+/// (the outer transform is hashed separately in
+/// [`hash_body_payload_split`]), so a pure move leaves this unchanged.
+/// Covers primitives, the extrude/revolve self-centering, and every
+/// domain-warp/shell modifier.
+fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
+    match node {
+        CsgNode::Empty => 0u8.hash(hasher),
+        CsgNode::Leaf { id, primitive } => {
+            1u8.hash(hasher);
+            id.hash(hasher);
+            hash_primitive(primitive, hasher);
+        }
+        CsgNode::Transform(t, inner) => {
+            2u8.hash(hasher);
+            for v in t.translate {
+                v.to_bits().hash(hasher);
+            }
+            for v in t.rotation {
+                v.to_bits().hash(hasher);
+            }
+            for v in t.scale {
+                v.to_bits().hash(hasher);
+            }
+            hash_node(inner, hasher);
+        }
+        CsgNode::Union(a, b) => {
+            3u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+        }
+        CsgNode::Difference(a, b) => {
+            4u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+        }
+        CsgNode::Intersection(a, b) => {
+            5u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+        }
+        CsgNode::SmoothUnion(a, b, r, m) => {
+            6u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+            r.to_bits().hash(hasher);
+            hash_blend_mode(m, hasher);
+        }
+        CsgNode::SmoothDifference(a, b, r, m) => {
+            7u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+            r.to_bits().hash(hasher);
+            hash_blend_mode(m, hasher);
+        }
+        CsgNode::Twist(a, rate) => {
+            8u8.hash(hasher);
+            hash_node(a, hasher);
+            rate.to_bits().hash(hasher);
+        }
+        CsgNode::Bend(a, rate) => {
+            9u8.hash(hasher);
+            hash_node(a, hasher);
+            rate.to_bits().hash(hasher);
+        }
+        CsgNode::Displace(a, depth, freq) => {
+            10u8.hash(hasher);
+            hash_node(a, hasher);
+            depth.to_bits().hash(hasher);
+            freq.to_bits().hash(hasher);
+        }
+        CsgNode::Shell(a, thickness) => {
+            11u8.hash(hasher);
+            hash_node(a, hasher);
+            thickness.to_bits().hash(hasher);
+        }
+        CsgNode::Morph(a, b, t) => {
+            12u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+            t.to_bits().hash(hasher);
+        }
+        CsgNode::MaskedBlend {
+            a,
+            b,
+            mask_p0,
+            mask_p1,
+            mask_radius,
+            blend_radius,
+            blend_mode,
+            is_difference,
+        } => {
+            13u8.hash(hasher);
+            hash_node(a, hasher);
+            hash_node(b, hasher);
+            for v in mask_p0 {
+                v.to_bits().hash(hasher);
+            }
+            for v in mask_p1 {
+                v.to_bits().hash(hasher);
+            }
+            mask_radius.to_bits().hash(hasher);
+            blend_radius.to_bits().hash(hasher);
+            hash_blend_mode(blend_mode, hasher);
+            is_difference.hash(hasher);
+        }
+        CsgNode::Extrude {
+            id,
+            sketch,
+            half_height,
+        } => {
+            14u8.hash(hasher);
+            id.hash(hasher);
+            hash_sketch2d(sketch, hasher);
+            half_height.to_bits().hash(hasher);
+        }
+        CsgNode::Revolve { id, sketch } => {
+            15u8.hash(hasher);
+            id.hash(hasher);
+            hash_sketch2d(sketch, hasher);
+        }
+    }
 }
 
 fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
@@ -660,9 +789,9 @@ fn hash_sketch_segment(
 /// `Kernel::rebuild_bodies` and the raycaster's hot path can share
 /// the logic: take the body's subset of features, fold them into a
 /// `CsgNode` via `from_features`, then BVH-wrap.
-pub fn build_bounded_for_body(features: &[Feature], indices: &[usize]) -> BoundedCsg {
-    let sub: Vec<Feature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_features(&sub);
+pub fn build_bounded_for_body(features: &[DecodedFeature], indices: &[usize]) -> BoundedCsg {
+    let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
+    let csg = CsgNode::from_decoded(&sub);
     BoundedCsg::from_csg(&csg)
 }
 
@@ -674,21 +803,21 @@ pub fn build_bounded_for_body(features: &[Feature], indices: &[usize]) -> Bounde
 /// out placement-free. The mesh / raycast paths keep using the world-frame
 /// [`build_bounded_for_body`].
 pub fn build_bounded_for_body_local(
-    features: &[Feature],
+    features: &[DecodedFeature],
     indices: &[usize],
     placement: &Transform,
 ) -> BoundedCsg {
-    let sub: Vec<Feature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_features(&sub);
+    let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
+    let csg = CsgNode::from_decoded(&sub);
     BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
 }
 
 pub fn build_bounded_with_primitives(
-    features: &[Feature],
+    features: &[DecodedFeature],
     indices: &[usize],
 ) -> (BoundedCsg, std::collections::HashMap<u32, fielddraft_protocol::Primitive>) {
-    let sub: Vec<Feature> = indices.iter().map(|&i| features[i].clone()).collect();
-    let csg = CsgNode::from_features(&sub);
+    let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
+    let csg = CsgNode::from_decoded(&sub);
     let prims: std::collections::HashMap<u32, fielddraft_protocol::Primitive> = csg
         .leaf_primitives()
         .into_iter()
@@ -702,8 +831,8 @@ mod tests {
     use super::*;
     use fielddraft_protocol::{Feature, Transform};
 
-    fn box_feat(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> Feature {
-        Feature {
+    fn box_feat(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: FeatureId::from_u32(id),
             name: format!("Box {id}"),
             op,
@@ -720,11 +849,11 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
-    fn sphere_feat(id: u32, op: BoolOp, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
+    fn sphere_feat(id: u32, op: BoolOp, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op,
@@ -738,7 +867,7 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
     #[test]
@@ -853,18 +982,25 @@ mod tests {
         assert_ne!(h0, hash_body_payload(&diff, &[0]));
     }
 
-    fn with_modifier(mut f: Feature, field: &str, val: f32) -> Feature {
-        match field {
-            "blend_radius" => f.blend_radius = val,
-            "chamfer_size" => f.chamfer_size = val,
-            "twist_rate" => f.twist_rate = val,
-            "bend_rate" => f.bend_rate = val,
-            "displace_depth" => f.displace_depth = val,
-            "displace_freq" => f.displace_freq = val,
-            "shell_thickness" => f.shell_thickness = val,
-            _ => panic!("unknown field {field}"),
+    fn box_feature_raw(id: u32) -> Feature {
+        Feature {
+            id: FeatureId::from_u32(id),
+            name: format!("Box {id}"),
+            op: BoolOp::Union,
+            primitive: Primitive::Box {
+                center: [0.0; 3],
+                half_extents: [5.0; 3],
+            },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
         }
-        f
     }
 
     #[test]
@@ -933,21 +1069,38 @@ mod tests {
 
     #[test]
     fn hash_changes_when_modifier_fields_change() {
-        let base = box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
+        let base = DecodedFeature::from_feature(&box_feature_raw(1));
         let h0 = hash_body_payload(std::slice::from_ref(&base), &[0]);
 
-        for field in [
-            "blend_radius",
-            "chamfer_size",
-            "twist_rate",
-            "bend_rate",
-            "displace_depth",
-            "displace_freq",
-            "shell_thickness",
-        ] {
-            let modified = with_modifier(base.clone(), field, 1.5);
+        // Each variant alters the decoded geometry node (or the junction
+        // blend), so the payload hash must move. Displacement only
+        // registers a node when BOTH depth and freq are non-zero, so it
+        // is exercised as a pair rather than per-field.
+        let mut variants: Vec<Feature> = Vec::new();
+        let mut f = box_feature_raw(1);
+        f.blend_radius = 1.5;
+        variants.push(f);
+        let mut f = box_feature_raw(1);
+        f.chamfer_size = 1.5;
+        variants.push(f);
+        let mut f = box_feature_raw(1);
+        f.twist_rate = 1.5;
+        variants.push(f);
+        let mut f = box_feature_raw(1);
+        f.bend_rate = 1.5;
+        variants.push(f);
+        let mut f = box_feature_raw(1);
+        f.displace_depth = 1.5;
+        f.displace_freq = 1.5;
+        variants.push(f);
+        let mut f = box_feature_raw(1);
+        f.shell_thickness = 1.5;
+        variants.push(f);
+
+        for f in variants {
+            let modified = DecodedFeature::from_feature(&f);
             let h1 = hash_body_payload(&[modified], &[0]);
-            assert_ne!(h0, h1, "hash must change when {field} changes");
+            assert_ne!(h0, h1, "hash must change when a modifier changes");
         }
     }
 }

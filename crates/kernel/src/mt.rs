@@ -296,10 +296,11 @@ impl TetCtx<'_> {
 mod tests {
     use super::*;
     use crate::body::build_bounded_for_body;
+    use crate::csg::DecodedFeature;
     use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
-    fn sphere(id: u32, center: [f32; 3], radius: f32) -> Feature {
-        Feature {
+    fn sphere(id: u32, center: [f32; 3], radius: f32) -> DecodedFeature {
+        DecodedFeature::from_feature(&Feature {
             id: FeatureId::from_u32(id),
             name: format!("Sphere {id}"),
             op: BoolOp::Union,
@@ -313,7 +314,7 @@ mod tests {
             displace_freq: 0.0,
             shell_thickness: 0.0,
             target_ids: vec![],
-        }
+        })
     }
 
     #[test]
