@@ -194,6 +194,64 @@ mod tests {
         assert!(hit.is_none());
     }
 
+    fn sphere_feature(id: u32, center: [f32; 3], radius: f32) -> Feature {
+        Feature {
+            id: FeatureId::from_u32(id),
+            name: format!("Sphere {id}"),
+            op: BoolOp::Union,
+            primitive: Primitive::Sphere { center, radius },
+            transform: Transform::IDENTITY,
+            blend_radius: 0.0,
+            chamfer_size: 0.0,
+            twist_rate: 0.0,
+            bend_rate: 0.0,
+            displace_depth: 0.0,
+            displace_freq: 0.0,
+            shell_thickness: 0.0,
+            target_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn ray_hits_lone_sphere_as_face() {
+        let tree = bounded(&[sphere_feature(7, [0.0, 0.0, 0.0], 10.0)]);
+        let hit = raycast(
+            &tree,
+            [100.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            RaycastParams::default(),
+        )
+        .expect("sphere should be hit");
+        assert!((hit.point[0] - 10.0).abs() < 0.2, "hit at x={}", hit.point[0]);
+        assert_eq!(hit.element, ProxyElement::Face);
+        assert_eq!(
+            hit.contributors.as_slice(),
+            &[BranchId::from_feature_sub(&FeatureId::from_u32(7), 0)]
+        );
+    }
+
+    #[test]
+    fn ray_hits_sphere_beside_box() {
+        // Box at origin, sphere off to +X (spatially separate, like the
+        // reported scene). A ray coming from far +X must hit the sphere.
+        let tree = bounded(&[
+            box_feature(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            sphere_feature(2, [60.0, 0.0, 0.0], 10.0),
+        ]);
+        let hit = raycast(
+            &tree,
+            [200.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            RaycastParams::default(),
+        )
+        .expect("sphere beside the box should be hit");
+        assert!((hit.point[0] - 70.0).abs() < 0.3, "hit at x={}", hit.point[0]);
+        assert_eq!(
+            hit.contributors.as_slice(),
+            &[BranchId::from_feature_sub(&FeatureId::from_u32(2), 0)]
+        );
+    }
+
     #[test]
     fn ray_from_above_hits_box_top_as_face() {
         let tree =

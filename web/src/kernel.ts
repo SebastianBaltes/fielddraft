@@ -38,7 +38,13 @@ export interface PickHit {
   normal: [number, number, number];
   t: number;
   element: ProxyElement;
+  /** Flat root *feature* ids of the colliding branches — what selection,
+   *  query-picking and edge fillets map back to features in the tree. */
   contributors: number[];
+  /** Packed BranchIds (feature << SUB_BITS | sub) of the same branches, in
+   *  the same order. Used by the analytic B-Rep edge overlay to match a
+   *  hovered edge by its colliding-face signature. */
+  branches: number[];
 }
 export interface PickMiss {
   hit: false;

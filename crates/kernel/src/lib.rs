@@ -3031,26 +3031,30 @@ impl Kernel {
         match raycast(&bounded, [ox, oy, oz], [dx, dy, dz], params) {
             None => r#"{"hit":false}"#.to_string(),
             Some(hit) => {
-                // `contributors` is a small inline array; serialise as
-                // a JSON array of ids. Avoid serde_json::Value churn
-                // and just format manually — the schema is tiny and
-                // stable.
-                // Serialise contributor ids as bare integers to stay
-                // byte-compatible with the K2 frontend parser that
-                // expects `contributors: number[]`. For hierarchical
-                // ids, walk up to the root and use its numeric value.
+                // Two parallel arrays, both tiny and stable — hand-formatted
+                // to avoid serde_json::Value churn:
+                //   `contributors`: the flat root *feature* ids (sub-index
+                //     stripped). This is what selection, query-picking and
+                //     edge fillets consume — they map an id to a feature in
+                //     the tree, so they need the feature, not the face.
+                //   `branches`: the packed BranchIds (feature << SUB_BITS |
+                //     sub) in the same order. The analytic B-Rep edge overlay
+                //     matches a hovered edge by its colliding-face signature,
+                //     which is exactly these packed per-face ids.
                 let mut contributors = String::from("[");
+                let mut branches = String::from("[");
                 for (i, id) in hit.contributors.as_slice().iter().enumerate() {
                     if i > 0 {
                         contributors.push(',');
+                        branches.push(',');
                     }
-                    // BranchId packs feature << SUB_BITS | sub into a
-                    // single u32 — emit it directly.
-                    contributors.push_str(&id.as_u32().to_string());
+                    contributors.push_str(&id.feature_id().to_string());
+                    branches.push_str(&id.as_u32().to_string());
                 }
                 contributors.push(']');
+                branches.push(']');
                 format!(
-                    r#"{{"hit":true,"point":[{},{},{}],"normal":[{},{},{}],"t":{},"element":"{}","contributors":{}}}"#,
+                    r#"{{"hit":true,"point":[{},{},{}],"normal":[{},{},{}],"t":{},"element":"{}","contributors":{},"branches":{}}}"#,
                     hit.point[0],
                     hit.point[1],
                     hit.point[2],
@@ -3060,6 +3064,7 @@ impl Kernel {
                     hit.t,
                     hit.element.label(),
                     contributors,
+                    branches,
                 )
             }
         }
@@ -4027,13 +4032,41 @@ mod tests {
         let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
         assert!(json.contains("\"hit\":true"), "{json}");
         assert!(json.contains("\"element\":\"face\""), "{json}");
-        // Contributor ids are packed BranchIds (feature << SUB_BITS |
-        // sub). The box +Y (top) face is sub-index 2.
-        let expected = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id), 2).as_u32();
+        // `contributors` are flat feature ids (what selection consumes);
+        // `branches` carry the packed BranchId per face. The box +Y (top)
+        // face is sub-index 2.
         assert!(
-            json.contains(&format!("\"contributors\":[{expected}]")),
+            json.contains(&format!("\"contributors\":[{id}]")),
             "{json}"
         );
+        let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id), 2).as_u32();
+        assert!(
+            json.contains(&format!("\"branches\":[{branch}]")),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn pick_selects_sphere_by_flat_feature_id() {
+        // Regression: a sphere added beside a box must be pickable in the
+        // scene. `pick` reports the flat feature id in `contributors` so the
+        // frontend can select it; the curved face's packed branch lands in
+        // `branches`. (The sphere is a single sub-0 analytic face — SA-6.)
+        let mut k = Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        let sphere_id = k
+            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_UNION, 60.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+            .unwrap();
+        // Ray from far +X straight back hits the sphere first.
+        let json = k.pick(200.0, 0.0, 0.0, -1.0, 0.0, 0.0);
+        assert!(json.contains("\"hit\":true"), "{json}");
+        assert!(
+            json.contains(&format!("\"contributors\":[{sphere_id}]")),
+            "{json}"
+        );
+        let branch = csg::BranchId::from_feature_sub(&FeatureId::from_u32(sphere_id), 0).as_u32();
+        assert!(json.contains(&format!("\"branches\":[{branch}]")), "{json}");
     }
 
     #[test]
@@ -4433,10 +4466,15 @@ mod tests {
         // directly, not the mesh — raycast from above hits the box.
         let json = k.pick(0.0, 100.0, 0.0, 0.0, -1.0, 0.0);
         assert!(json.contains("\"hit\":true"), "{json}");
-        // Packed BranchId for box A's +Y (top) face, sub-index 2.
-        let expected_a = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id_a), 2).as_u32();
+        // Flat feature id for box A in `contributors`; packed BranchId for
+        // its +Y (top) face (sub-index 2) in `branches`.
         assert!(
-            json.contains(&format!("\"contributors\":[{expected_a}]")),
+            json.contains(&format!("\"contributors\":[{id_a}]")),
+            "{json}"
+        );
+        let branch_a = csg::BranchId::from_feature_sub(&FeatureId::from_u32(id_a), 2).as_u32();
+        assert!(
+            json.contains(&format!("\"branches\":[{branch_a}]")),
             "{json}"
         );
 

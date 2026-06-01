@@ -1145,7 +1145,34 @@ export function Outliner({ store, state }: OutlinerProps) {
  * belong to" is otherwise invisible.
  */
 function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; state: StoreState; collapsed: boolean; onToggle: () => void }) {
-  const bodies = state.meshedBodies;
+  // Source the part list straight from the kernel body list, not from
+  // `meshedBodies`: DC meshing (and thus `meshedBodies`) only runs in mesh
+  // render mode, so a body added while in an SDF mode would never show up as
+  // a part. `bodyCount()`/`bodySeedFeatureId()` reflect the partitioned
+  // bodies in every render mode. Triangle counts are only meaningful once a
+  // mesh exists, so they default to 0 in SDF modes. Keyed on `state.features`
+  // so it recomputes on every document edit (add/remove/move).
+  const bodies = useMemo(() => {
+    const k = store.kernel;
+    const n = k.bodyCount();
+    // Triangle counts live on the worker-meshed bodies (the main-thread
+    // kernel keeps empty meshes in worker mode); look them up by body id and
+    // fall back to 0 when no mesh exists yet (any SDF mode).
+    const triById = new Map<number, number>(
+      state.meshedBodies.map((b) => [b.id, Math.round(b.indices.length / 3)]),
+    );
+    const out: { id: number; seedId: number; triangleCount: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = k.bodyId(i);
+      out.push({
+        id,
+        seedId: k.bodySeedFeatureId(i),
+        triangleCount: triById.get(id) ?? 0,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, state.features, state.meshedBodies]);
   const highlighted = state.highlightedBodyIndex;
 
   const handlePartClick = (e: React.MouseEvent, index: number, seedFeature: FeatureSummary | undefined) => {
@@ -1190,9 +1217,9 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
               />
               <span className="kind">{kindGlyph(kind)}</span>
               <span className="name">{name}</span>
-              <span className="triangle-count">
-                {Math.round(body.indices.length / 3)}
-              </span>
+              {body.triangleCount > 0 && (
+                <span className="triangle-count">{body.triangleCount}</span>
+              )}
             </li>
           );
         })}

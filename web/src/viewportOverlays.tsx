@@ -463,13 +463,14 @@ export function BRepEdgeOverlay({ pick }: { pick: PickResult | null }) {
     setReady(true);
   }, [edges]);
 
-  // Match the hovered edge by signature: pick reports the colliding branches as
-  // `contributors`; an edge lights up when both of its signature branches are
-  // among them.
+  // Match the hovered edge by signature: pick reports the colliding faces as
+  // packed `branches`; an edge lights up when both of its signature branches
+  // are among them. (Selection uses the flat `contributors`; the edge's a/b
+  // are packed per-face ids, so they must be matched against `branches`.)
   const hoveredIdx = useMemo(() => {
     if (!pick || !pick.hit || pick.element !== "edge") return -1;
-    const c = pick.contributors;
-    return edges.findIndex((e) => c.includes(e.a) && c.includes(e.b));
+    const b = pick.branches;
+    return edges.findIndex((e) => b.includes(e.a) && b.includes(e.b));
   }, [pick, edges]);
 
   const [hoverReady, setHoverReady] = useState(false);
