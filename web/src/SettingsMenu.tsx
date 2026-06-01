@@ -7,6 +7,7 @@ const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
 const LS_SHOW_EDGES = "fielddraft.showEdges";
+const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
@@ -164,9 +165,15 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
 export type MeshAlgorithm = "mdc" | "rfta" | "mt";
+/** How the analytic B-Rep edge wireframe is drawn:
+ *   - "xray":    all edges, never occluded by faces (current default)
+ *   - "visible": only edges that are not hidden behind a face
+ *   - "none":    don't draw the B-Rep wireframe at all */
+export type BRepEdgeMode = "xray" | "visible" | "none";
 
 const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh"];
 const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta", "mt"];
+const VALID_BREP_EDGE_MODES: BRepEdgeMode[] = ["xray", "visible", "none"];
 
 export interface SettingsState {
   compact: boolean;
@@ -175,6 +182,7 @@ export interface SettingsState {
   renderMode: RenderMode;
   meshAlgorithm: MeshAlgorithm;
   showEdges: boolean;
+  brepEdgeMode: BRepEdgeMode;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -223,6 +231,7 @@ export function loadSettings(): SettingsState {
   let renderMode: RenderMode = "sdf-deferred";
   let meshAlgorithm: MeshAlgorithm = "mdc";
   let showEdges = true;
+  let brepEdgeMode: BRepEdgeMode = "xray";
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -236,10 +245,13 @@ export function loadSettings(): SettingsState {
       meshAlgorithm = rawAlgo as MeshAlgorithm;
     const rawEdges = localStorage.getItem(LS_SHOW_EDGES);
     if (rawEdges !== null) showEdges = rawEdges !== "false";
+    const rawBrepEdge = localStorage.getItem(LS_BREP_EDGE_MODE);
+    if (rawBrepEdge && VALID_BREP_EDGE_MODES.includes(rawBrepEdge as BRepEdgeMode))
+      brepEdgeMode = rawBrepEdge as BRepEdgeMode;
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -800,6 +812,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const setBRepEdgeMode = (mode: BRepEdgeMode) => {
+    const next = { ...settings, brepEdgeMode: mode };
+    saveSetting(LS_BREP_EDGE_MODE, mode);
+    onSettingsChange(next);
+  };
+
   const TABS: { key: SettingsTab; label: string }[] = [
     { key: "ui", label: "UI" },
     { key: "units", label: "Workspace Units" },
@@ -913,6 +931,20 @@ function SettingsDialog({
                 >
                   {settings.showEdges ? "On" : "Off"}
                 </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-brep-edges">
+                <span className="setting-label">B-Rep edges</span>
+                <select
+                  className="mode-select"
+                  value={settings.brepEdgeMode}
+                  data-testid="setting-brep-edges-select"
+                  onChange={(e) => setBRepEdgeMode(e.target.value as BRepEdgeMode)}
+                >
+                  <option value="xray">X-Ray</option>
+                  <option value="visible">Visible only</option>
+                  <option value="none">Hidden</option>
+                </select>
               </div>
             </>
           )}

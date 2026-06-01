@@ -281,7 +281,7 @@ export function App() {
       </header>
       {store && state ? <Toolbar store={store} state={state} /> : null}
       <main className="main">
-        <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} />
+        <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} />
         {store && state ? <Outliner store={store} state={state} /> : null}
       </main>
       {state?.loading ? (

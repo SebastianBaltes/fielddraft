@@ -42,6 +42,7 @@ function setup() {
     renderMode: "sdf-deferred",
     meshAlgorithm: "mdc",
     showEdges: true,
+    brepEdgeMode: "xray",
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -296,6 +297,7 @@ describe("loadSettings", () => {
       renderMode: "sdf-deferred",
       meshAlgorithm: "mdc",
       showEdges: true,
+      brepEdgeMode: "xray",
     });
   });
 
@@ -321,6 +323,7 @@ describe("loadSettings", () => {
       renderMode: "sdf-deferred",
       meshAlgorithm: "mdc",
       showEdges: true,
+      brepEdgeMode: "xray",
     });
   });
 

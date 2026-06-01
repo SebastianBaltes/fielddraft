@@ -18,6 +18,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
+import type { BRepEdgeMode } from "./SettingsMenu";
 import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
@@ -257,7 +258,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges }: { renderMode: string; showEdges: boolean }) {
+export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -435,7 +436,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
               <ClearColorSync />
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
               <ReferenceMesh />
-              <BRepEdgeOverlay pick={pickResult} />
+              <BRepEdgeOverlay pick={pickResult} mode={brepEdgeMode} />
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />

@@ -4,6 +4,7 @@ import { TransformControls as ThreeTransformControls } from "three/examples/jsm/
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import type { FeatureSummary, PickResult } from "./kernel";
+import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
@@ -388,7 +389,7 @@ function polylineToSegments(points: number[]): Float32Array {
  * Rendered on both the default layer (mesh render mode) and the overlay layer
  * (composited over the SDF render pass), so edges are visible in every mode.
  */
-export function BRepEdgeOverlay({ pick }: { pick: PickResult | null }) {
+export function BRepEdgeOverlay({ pick, mode }: { pick: PickResult | null; mode: BRepEdgeMode }) {
   const { store, state } = useKernelStore();
   const baseGeometryRef = useRef(new THREE.BufferGeometry());
   const hoverGeometryRef = useRef(new THREE.BufferGeometry());
@@ -407,6 +408,20 @@ export function BRepEdgeOverlay({ pick }: { pick: PickResult | null }) {
       depthWrite: false,
     }),
   );
+
+  // "visible" mode hides edges occluded by faces, so the line materials must
+  // depth-test. "xray" (default) and "none" keep depthTest off. Depth comes
+  // from the meshes in mesh render mode; the SDF overlays additionally write
+  // depth and skip the depth-clear in "visible" mode (see renderOverlayLayer).
+  useEffect(() => {
+    const depthTest = mode === "visible";
+    for (const m of [baseMaterialRef.current, hoverMaterialRef.current]) {
+      if (m.depthTest !== depthTest) {
+        m.depthTest = depthTest;
+        m.needsUpdate = true;
+      }
+    }
+  }, [mode]);
 
   // Body fingerprint (count + per-body id.version). Bumps on any geometry edit
   // and on a placement move (the body version increments), so the edge cache
@@ -496,7 +511,7 @@ export function BRepEdgeOverlay({ pick }: { pick: PickResult | null }) {
     };
   }, []);
 
-  if (!ready) return null;
+  if (mode === "none" || !ready) return null;
 
   return (
     <>
