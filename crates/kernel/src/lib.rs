@@ -971,6 +971,57 @@ impl Kernel {
         self.decoded.len()
     }
 
+    // ── FieldSkript records (S1) ──────────────────────────────────────
+    //
+    // Document-local, runtime-defined feature types. The kernel stores
+    // them as opaque data (`Document.scripts`) so they round-trip via
+    // `toJson`/`loadJson`; their `build()` bodies run web-side, so these
+    // accessors never touch the decoded spine or the mesh. Mutations
+    // snapshot for undo but skip `rebuild_packed` — no geometry changes.
+
+    /// List the document's FieldSkript records as a JSON array.
+    #[wasm_bindgen(js_name = listScripts)]
+    pub fn list_scripts(&self) -> Result<String, JsError> {
+        serde_json::to_string(&self.document.scripts)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Insert or replace a FieldSkript record (keyed by `id`). Takes
+    /// the serialised `FieldSkriptRecord` JSON; returns `true` when it
+    /// replaced an existing record, `false` when it inserted a new one.
+    #[wasm_bindgen(js_name = upsertScript)]
+    pub fn upsert_script(&mut self, json: &str) -> Result<bool, JsError> {
+        let record: fielddraft_protocol::FieldSkriptRecord =
+            serde_json::from_str(json).map_err(|e| JsError::new(&e.to_string()))?;
+        self.snapshot();
+        if let Some(slot) = self
+            .document
+            .scripts
+            .iter_mut()
+            .find(|r| r.id == record.id)
+        {
+            *slot = record;
+            Ok(true)
+        } else {
+            self.document.scripts.push(record);
+            Ok(false)
+        }
+    }
+
+    /// Remove a FieldSkript record by id. Returns `true` when a record
+    /// was removed.
+    #[wasm_bindgen(js_name = removeScript)]
+    pub fn remove_script(&mut self, id: &str) -> bool {
+        // Snapshot only on an actual change so a no-op remove doesn't
+        // pollute the undo stack.
+        if !self.document.scripts.iter().any(|r| r.id == id) {
+            return false;
+        }
+        self.snapshot();
+        self.document.scripts.retain(|r| r.id != id);
+        true
+    }
+
     // ── outliner queries ──────────────────────────────────────────────
 
     // ── K6a feature-schema lookup ────────────────────────────────────
@@ -4506,6 +4557,43 @@ mod tests {
         k.load_json(&json).unwrap();
         assert!(!k.can_undo());
         assert!(!k.can_redo());
+    }
+
+    // ─── FieldSkript S1: document-local script records ─────────
+
+    #[test]
+    fn script_crud_persists_in_document_json() {
+        let mut k = Kernel::new();
+        assert_eq!(k.list_scripts().unwrap(), "[]");
+
+        let rec = r#"{"id":"slot","name":"Slot","source":"// ts",
+            "compiledJs":"// js","schema":{"type":"slot","params":[]},"version":1}"#;
+        // First upsert inserts (returns false), second replaces (true).
+        assert!(!k.upsert_script(rec).unwrap());
+        let rec2 = r#"{"id":"slot","name":"Slot v2","source":"// ts2",
+            "compiledJs":"// js2","schema":{"type":"slot","params":[]},"version":2}"#;
+        assert!(k.upsert_script(rec2).unwrap());
+
+        let scripts: serde_json::Value =
+            serde_json::from_str(&k.list_scripts().unwrap()).unwrap();
+        assert_eq!(scripts.as_array().unwrap().len(), 1);
+        assert_eq!(scripts[0]["name"], "Slot v2");
+
+        // Records round-trip through the document JSON with the
+        // camelCase `compiledJs` key.
+        let json = k.to_json().unwrap();
+        assert!(json.contains("\"compiledJs\""), "{json}");
+        let mut k2 = Kernel::new();
+        k2.load_json(&json).unwrap();
+        let reloaded: serde_json::Value =
+            serde_json::from_str(&k2.list_scripts().unwrap()).unwrap();
+        assert_eq!(reloaded[0]["id"], "slot");
+        assert_eq!(reloaded[0]["version"], 2);
+
+        // Remove is idempotent: true once, false thereafter.
+        assert!(k2.remove_script("slot"));
+        assert!(!k2.remove_script("slot"));
+        assert_eq!(k2.list_scripts().unwrap(), "[]");
     }
 
     // ─── K4.5.4e: features-only wire form ──────────────────────

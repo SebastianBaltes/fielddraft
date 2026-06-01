@@ -2,11 +2,8 @@
 /* eslint-disable */
 
 /**
- * Owned by the JS side. Holds the canonical document, the packed
- * renderer buffer, and the undo/redo stacks. The packed buffer's
- * pointer is stable until any mutation that may grow the underlying
- * `Vec` (which can move it on reallocation) — JS callers must
- * re-acquire `primitivesPtr()` after every mutating call.
+ * Owned by the JS side. Holds the canonical document and the
+ * undo/redo stacks.
  */
 export class Kernel {
     free(): void;
@@ -238,7 +235,6 @@ export class Kernel {
      * source side instead.
      */
     duplicateFeature(id: number): number;
-    evalSdf(x: number, y: number, z: number): number;
     export3mf(): Uint8Array;
     /**
      * Export the current scene as an ASCII STL string.
@@ -263,7 +259,6 @@ export class Kernel {
      */
     exportStlBinary(): Uint8Array;
     featureCount(): number;
-    static featureStride(): number;
     /**
      * K7.5: return the current `params` JSON string for a
      * feature call by id. Used by the Outliner's
@@ -301,6 +296,10 @@ export class Kernel {
      * sketches never push onto the spine.
      */
     listFeatures(): string;
+    /**
+     * List the document's FieldSkript records as a JSON array.
+     */
+    listScripts(): string;
     /**
      * K8.13: list the connected inside-regions of a sketch.
      * Returns a JSON array of `{index, centroid, aabb, area}`
@@ -362,7 +361,6 @@ export class Kernel {
      * for the numerical scheme.
      */
     pick(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): string;
-    primitivesPtr(): number;
     redo(): boolean;
     redoDepth(): number;
     /**
@@ -370,6 +368,11 @@ export class Kernel {
      * was removed.
      */
     removeFeature(id: number): boolean;
+    /**
+     * Remove a FieldSkript record by id. Returns `true` when a record
+     * was removed.
+     */
+    removeScript(id: string): boolean;
     /**
      * K8.10: remove a document-level variable. No-op if the
      * name isn't in the table; returns `true` when it actually
@@ -520,6 +523,12 @@ export class Kernel {
     toJson(): string;
     undo(): boolean;
     undoDepth(): number;
+    /**
+     * Insert or replace a FieldSkript record (keyed by `id`). Takes
+     * the serialised `FieldSkriptRecord` JSON; returns `true` when it
+     * replaced an existing record, `false` when it inserted a new one.
+     */
+    upsertScript(json: string): boolean;
 }
 
 /**
@@ -584,17 +593,16 @@ export interface InitOutput {
     readonly kernel_clearActiveBodyId: (a: number) => number;
     readonly kernel_contextMeshResolution: (a: number) => number;
     readonly kernel_duplicateFeature: (a: number, b: number) => [number, number, number];
-    readonly kernel_evalSdf: (a: number, b: number, c: number, d: number) => number;
     readonly kernel_export3mf: (a: number) => [number, number];
     readonly kernel_exportStlAscii: (a: number) => [number, number];
     readonly kernel_exportStlBinary: (a: number) => [number, number];
     readonly kernel_featureCount: (a: number) => number;
-    readonly kernel_featureStride: () => number;
     readonly kernel_getFeatureCallParams: (a: number, b: number) => [number, number, number, number];
     readonly kernel_getRollbackIndex: (a: number) => number;
     readonly kernel_getSketchSubCalls: (a: number, b: number) => [number, number, number, number];
     readonly kernel_listFeatureTypes: (a: number) => [number, number, number, number];
     readonly kernel_listFeatures: (a: number) => [number, number, number, number];
+    readonly kernel_listScripts: (a: number) => [number, number, number, number];
     readonly kernel_listSketchRegions: (a: number, b: number, c: number) => [number, number, number, number];
     readonly kernel_listSketchToolTypes: (a: number) => [number, number, number, number];
     readonly kernel_listVariables: (a: number) => [number, number, number, number];
@@ -608,10 +616,10 @@ export interface InitOutput {
     readonly kernel_new: () => number;
     readonly kernel_nudgeFeature: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_pick: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly kernel_primitivesPtr: (a: number) => number;
     readonly kernel_redo: (a: number) => number;
     readonly kernel_redoDepth: (a: number) => number;
     readonly kernel_removeFeature: (a: number, b: number) => number;
+    readonly kernel_removeScript: (a: number, b: number, c: number) => number;
     readonly kernel_removeVariable: (a: number, b: number, c: number) => number;
     readonly kernel_reorderFeature: (a: number, b: number, c: number) => number;
     readonly kernel_replaceFeatureCallParams: (a: number, b: number, c: number, d: number) => [number, number];
@@ -639,6 +647,7 @@ export interface InitOutput {
     readonly kernel_toJson: (a: number) => [number, number, number, number];
     readonly kernel_undo: (a: number) => number;
     readonly kernel_undoDepth: (a: number) => number;
+    readonly kernel_upsertScript: (a: number, b: number, c: number) => [number, number, number];
     readonly wasmVersion: () => [number, number];
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

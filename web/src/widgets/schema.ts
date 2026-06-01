@@ -71,6 +71,10 @@ export interface RawFeatureParam {
   max_picks?: number;
   children?: RawFeatureParam[];
   driving_param?: string;
+  /** Initial value the dialog seeds for this param (derive: optional
+   *  fields with a `#[param(default = …)]`). Parsed into
+   *  {@link FeatureParamDescriptor.defaultValue}. */
+  default?: unknown;
 }
 
 export interface RawFeatureSchema {

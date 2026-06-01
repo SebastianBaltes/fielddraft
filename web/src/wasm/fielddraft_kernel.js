@@ -1,11 +1,8 @@
 /* @ts-self-types="./fielddraft_kernel.d.ts" */
 
 /**
- * Owned by the JS side. Holds the canonical document, the packed
- * renderer buffer, and the undo/redo stacks. The packed buffer's
- * pointer is stable until any mutation that may grow the underlying
- * `Vec` (which can move it on reallocation) — JS callers must
- * re-acquire `primitivesPtr()` after every mutating call.
+ * Owned by the JS side. Holds the canonical document and the
+ * undo/redo stacks.
  */
 export class Kernel {
     __destroy_into_raw() {
@@ -702,16 +699,6 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
-     * @param {number} x
-     * @param {number} y
-     * @param {number} z
-     * @returns {number}
-     */
-    evalSdf(x, y, z) {
-        const ret = wasm.kernel_evalSdf(this.__wbg_ptr, x, y, z);
-        return ret;
-    }
-    /**
      * @returns {Uint8Array}
      */
     export3mf() {
@@ -765,13 +752,6 @@ export class Kernel {
      */
     featureCount() {
         const ret = wasm.kernel_featureCount(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * @returns {number}
-     */
-    static featureStride() {
-        const ret = wasm.kernel_featureStride();
         return ret >>> 0;
     }
     /**
@@ -878,6 +858,28 @@ export class Kernel {
         let deferred2_1;
         try {
             const ret = wasm.kernel_listFeatures(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * List the document's FieldSkript records as a JSON array.
+     * @returns {string}
+     */
+    listScripts() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.kernel_listScripts(this.__wbg_ptr);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {
@@ -1078,13 +1080,6 @@ export class Kernel {
         }
     }
     /**
-     * @returns {number}
-     */
-    primitivesPtr() {
-        const ret = wasm.kernel_primitivesPtr(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
      * @returns {boolean}
      */
     redo() {
@@ -1106,6 +1101,18 @@ export class Kernel {
      */
     removeFeature(id) {
         const ret = wasm.kernel_removeFeature(this.__wbg_ptr, id);
+        return ret !== 0;
+    }
+    /**
+     * Remove a FieldSkript record by id. Returns `true` when a record
+     * was removed.
+     * @param {string} id
+     * @returns {boolean}
+     */
+    removeScript(id) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_removeScript(this.__wbg_ptr, ptr0, len0);
         return ret !== 0;
     }
     /**
@@ -1519,6 +1526,22 @@ export class Kernel {
     undoDepth() {
         const ret = wasm.kernel_undoDepth(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Insert or replace a FieldSkript record (keyed by `id`). Takes
+     * the serialised `FieldSkriptRecord` JSON; returns `true` when it
+     * replaced an existing record, `false` when it inserted a new one.
+     * @param {string} json
+     * @returns {boolean}
+     */
+    upsertScript(json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_upsertScript(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
 }
 if (Symbol.dispose) Kernel.prototype[Symbol.dispose] = Kernel.prototype.free;

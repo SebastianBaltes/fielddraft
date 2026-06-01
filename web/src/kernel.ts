@@ -11,6 +11,7 @@
 
 // eslint-disable-next-line import/no-unresolved
 import initWasm, { Kernel as WasmKernel, wasmVersion } from "./wasm/fielddraft_kernel.js";
+import type { FieldSkriptRecord } from "./fieldskript/record";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -1052,5 +1053,25 @@ export class Kernel {
 
   loadJson(json: string): number {
     return this.inner.loadJson(json);
+  }
+
+  // ── FieldSkript records (S1) ────────────────────────────────────────
+
+  /** List the document's FieldSkript records. */
+  listScripts(): FieldSkriptRecord[] {
+    return JSON.parse(this.inner.listScripts()) as FieldSkriptRecord[];
+  }
+
+  /**
+   * Insert or replace a FieldSkript record (keyed by `id`). Returns
+   * `true` when it replaced an existing record, `false` when inserted.
+   */
+  upsertScript(record: FieldSkriptRecord): boolean {
+    return this.guardMut(() => this.inner.upsertScript(JSON.stringify(record)));
+  }
+
+  /** Remove a FieldSkript record by id. Returns `true` when removed. */
+  removeScript(id: string): boolean {
+    return this.guardMut(() => this.inner.removeScript(id));
   }
 }

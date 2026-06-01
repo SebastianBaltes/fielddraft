@@ -689,6 +689,34 @@ impl FeatureCall {
     }
 }
 
+/// A runtime-defined "FieldSkript" feature type: a TypeScript
+/// function authored in the browser that emits geometry nodes.
+/// The protocol stores it as opaque data so it round-trips with
+/// the document; the kernel does not interpret it (execution is
+/// web-side). `id` doubles as the `FeatureCall::type_name` used to
+/// instantiate the script as a feature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldSkriptRecord {
+    /// Stable script-type id; equals the `type` of a FeatureCall
+    /// instantiating this script.
+    pub id: String,
+    /// Human-facing display name.
+    pub name: String,
+    /// TypeScript source (editor buffer).
+    pub source: String,
+    /// Transpiled JavaScript, produced at save time on the web side.
+    /// Empty until the transpiler lands (FieldSkript S2).
+    #[serde(rename = "compiledJs", default)]
+    pub compiled_js: String,
+    /// The RawFeatureSchema JSON extracted from the script's
+    /// `definition`, consumed verbatim by the web FeatureDialog.
+    #[serde(default)]
+    pub schema: serde_json::Value,
+    /// Bumped on every source change.
+    #[serde(default)]
+    pub version: u32,
+}
+
 /// Project document root.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -701,6 +729,12 @@ pub struct Document {
     /// protocol document carries nothing but the calls.
     #[serde(default)]
     pub feature_calls: Vec<FeatureCall>,
+    /// Document-local FieldSkript records (runtime-scriptable feature
+    /// types). Opaque to the kernel — they persist with the document
+    /// and are interpreted web-side. Skipped when empty so existing
+    /// fixtures round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<FieldSkriptRecord>,
     /// Monotonic counter that seeds the next [`FeatureId`].
     pub next_feature_id: u32,
     /// K8.10: document-level scalar variables. Keyed by
@@ -723,6 +757,7 @@ impl Default for Document {
             schema_version: SCHEMA_VERSION,
             name: "Untitled".to_string(),
             feature_calls: Vec::new(),
+            scripts: Vec::new(),
             next_feature_id: 1,
             variables: std::collections::BTreeMap::new(),
         }
@@ -810,6 +845,46 @@ mod tests {
             obj.contains_key("feature_calls"),
             "K4.5.4e must emit feature_calls: {wire}"
         );
+    }
+
+    // ─── FieldSkript scripts (opaque passthrough) ─────────────
+
+    #[test]
+    fn document_with_empty_scripts_omits_scripts_key() {
+        // The `scripts` field is `skip_serializing_if = "Vec::is_empty"`,
+        // so an empty default document must produce byte-identical wire
+        // forms to before FieldSkript landed — no `"scripts"` key at all.
+        let doc = Document::default();
+        let wire = serde_json::to_string(&doc).unwrap();
+        assert!(
+            !wire.contains("\"scripts\""),
+            "empty scripts must not appear on the wire: {wire}"
+        );
+    }
+
+    #[test]
+    fn document_round_trips_a_populated_script() {
+        let mut doc = Document::default();
+        doc.scripts.push(FieldSkriptRecord {
+            id: "my_script".to_string(),
+            name: "My Script".to_string(),
+            source: "export const definition = {};".to_string(),
+            compiled_js: "export const definition = {};".to_string(),
+            schema: serde_json::json!({ "params": [] }),
+            version: 3,
+        });
+
+        let wire = serde_json::to_string(&doc).unwrap();
+        // `compiled_js` is serialised under the camelCase key.
+        assert!(
+            wire.contains("\"compiledJs\""),
+            "compiled_js must serialise as compiledJs: {wire}"
+        );
+
+        let parsed: Document = serde_json::from_str(&wire).unwrap();
+        assert_eq!(parsed, doc);
+        assert_eq!(parsed.scripts.len(), 1);
+        assert_eq!(parsed.scripts[0].id, "my_script");
     }
 
     #[test]
