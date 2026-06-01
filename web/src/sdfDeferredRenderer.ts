@@ -21,7 +21,6 @@ import {
   Fn,
   If,
   Loop,
-  abs,
   atomicAdd,
   atomicLoad,
   atomicOr,
@@ -29,16 +28,13 @@ import {
   bitAnd,
   depth,
   float,
-  fract,
   instanceIndex,
   int,
   max,
   min,
-  mix,
   normalize,
   screenCoordinate,
   shiftRight,
-  smoothstep,
   storage,
   texture,
   uint,
@@ -54,9 +50,7 @@ import {
 } from "three/tsl";
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
-import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
-import { pbrShade } from "./pbrShading";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
@@ -65,21 +59,10 @@ import {
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
-  MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
-  MAT_ROUGHNESS, MAT_METALNESS,
-  MAT_EMISSIVE_R, MAT_EMISSIVE_G, MAT_EMISSIVE_B,
-  MAT_OPACITY, MAT_WIREFRAME,
   MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
-  WIREFRAME_GRID_SIZE,
-  WIREFRAME_GRID_THRESHOLD,
-  FRESNEL_EDGE_MIN,
-  FRESNEL_EDGE_MAX,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
-  EDGE_EPS,
-  EDGE_THRESH_MIN,
-  EDGE_THRESH_MAX,
-  EDGE_COLOR,
+  shadeSdfHit,
 } from "./sdfPipelineCommon";
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -460,78 +443,22 @@ function createShadeMaterial(
     const result = vec4(0, 0, 0, 0).toVar();
 
     If(hasHit.greaterThan(int(0)), () => {
-      const baseOff = int(offsetBuf.element(shadeBodyIdx.mul(2)));
-      const volBase = int(volumeBaseBuf.element(shadeBodyIdx));
-      const p = shadePos;
-      const eps = float(NORMAL_EPS);
-      const ex = vec3(eps, 0, 0);
-      const ey = vec3(0, eps, 0);
-      const ez = vec3(0, 0, eps);
-      const bi = shadeBodyIdx;
-      const n = normalize(vec3(
-        sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-          .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-        sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-          .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-        sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-          .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-      ));
-
-      const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
-      const viewDirWorld = normalize(camPosU.sub(p));
-      const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
-
-      const matBase = shadeBodyIdx.mul(MAT_STRIDE);
-      const cr = materialBuf.element(matBase.add(MAT_COLOR_R));
-      const cg = materialBuf.element(matBase.add(MAT_COLOR_G));
-      const cb = materialBuf.element(matBase.add(MAT_COLOR_B));
-      const baseColor = vec3(cr, cg, cb);
-      const roughness = materialBuf.element(matBase.add(MAT_ROUGHNESS));
-      const metalness = materialBuf.element(matBase.add(MAT_METALNESS));
-      const er = materialBuf.element(matBase.add(MAT_EMISSIVE_R));
-      const eg = materialBuf.element(matBase.add(MAT_EMISSIVE_G));
-      const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
-      const emissive = vec3(er, eg, eb);
-      const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
-
-      If(showEdgesU.greaterThan(float(0.5)), () => {
-        const edgeEps = float(EDGE_EPS);
-        const eex = vec3(edgeEps, 0, 0);
-        const eey = vec3(0, edgeEps, 0);
-        const eez = vec3(0, 0, edgeEps);
-        const edgeSum = abs(
-          sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-            .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-            .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-            .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-            .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-            .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        );
-        const edgeFactor = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
-        color.assign(mix(color, vec3(EDGE_COLOR), edgeFactor));
-      });
-
-      const sel = selectionBuf.element(shadeBodyIdx);
-      If(sel.greaterThan(float(0.5)), () => {
-        color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
-      });
-
-      const bodyOpacity = materialBuf.element(matBase.add(MAT_OPACITY));
-      const wf = materialBuf.element(matBase.add(MAT_WIREFRAME));
-      const alpha = bodyOpacity.toVar();
-      If(wf.greaterThan(float(0.5)), () => {
-        const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
-        const edgeFactor = smoothstep(float(FRESNEL_EDGE_MIN), float(FRESNEL_EDGE_MAX), fresnel);
-        const gridSize = float(WIREFRAME_GRID_SIZE);
-        const gx = min(fract(p.x.div(gridSize)), float(1).sub(fract(p.x.div(gridSize))));
-        const gy = min(fract(p.y.div(gridSize)), float(1).sub(fract(p.y.div(gridSize))));
-        const gz = min(fract(p.z.div(gridSize)), float(1).sub(fract(p.z.div(gridSize))));
-        const minGrid = min(gx, min(gy, gz));
-        const gridAlpha = float(1).sub(smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid));
-        alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
-      });
-
-      result.assign(vec4(color, alpha));
+      // Shade the hit (normal → PBR → edges → selection tint → wireframe) via
+      // the shared SDF pipeline. The view direction points from the shaded
+      // surface point back to the camera.
+      const viewDirWorld = normalize(camPosU.sub(shadePos));
+      result.assign(shadeSdfHit({
+        p: shadePos,
+        bi: shadeBodyIdx,
+        offsetBuf,
+        volumeBaseBuf,
+        materialBuf,
+        viewMatU,
+        viewDirWorld,
+        showEdgesU,
+        sdfEval,
+        selectionBuf,
+      }));
     });
 
     // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
