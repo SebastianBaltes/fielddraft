@@ -49,11 +49,11 @@ use std::collections::HashMap;
 
 use nalgebra::{Matrix3, SymmetricEigen, Vector3};
 
-use crate::brep::extraction::{extract_features, EdgePoint};
-use crate::brep::octree::Octree;
-use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
+use crate::brep::extraction::{extract_features, extract_vertex, EdgePoint};
+use crate::brep::octree::{CellClass, Octree, OctreeCell};
+use crate::brep::{BRep, Edge, EdgeGeometry, EdgeId, HermiteSample, Vertex, VertexId};
 use crate::bvh::BoundedCsg;
-use crate::csg::BranchId;
+use crate::csg::{Aabb, BranchId};
 
 /// A nearest-neighbour gap larger than `CHAIN_GAP_FACTOR ×` the median local
 /// spacing of the group ends the current chain and starts a new one. Three is
@@ -747,6 +747,10 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         crate::brep::weaving::branch_halfspace_map(body)
     };
 
+    // Dangling chain endpoints (no vertex snapped) recorded for the reflex-
+    // vertex reconstruction post-pass (DL-60 / Task #25).
+    let mut dangling: Vec<DanglingEnd> = Vec::new();
+
     for (&(sa, sb), pts) in &groups {
         // Collapse coincident edge points (DL-17) and get the characteristic
         // spacing of the distinct survivors.
@@ -813,17 +817,172 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
 
             let (start, end) = if is_loop { (None, None) } else { (start, end) };
 
-            brep.add_edge(Edge::new(
+            let eid = brep.add_edge(Edge::new(
                 EdgeGeometry::Hermite(chain.samples),
                 branch_a,
                 branch_b,
                 start,
                 end,
             ));
+
+            // Record endpoints that snapped to no vertex (and are not a closed
+            // loop). At a reflex corner the missing Phase-3 vertex leaves the
+            // three incident edges dangling here; the post-pass recovers it.
+            if !is_loop {
+                if start.is_none() {
+                    dangling.push(DanglingEnd { edge: eid, at_start: true, pos: first, spacing });
+                }
+                if end.is_none() {
+                    dangling.push(DanglingEnd { edge: eid, at_start: false, pos: last, spacing });
+                }
+            }
         }
     }
 
+    reconcile_dangling_endpoints(body, &mut brep, &dangling);
+
     brep
+}
+
+/// A chain endpoint that snapped to no vertex — input to the reflex-vertex
+/// reconstruction post-pass.
+struct DanglingEnd {
+    edge: EdgeId,
+    /// `true` if this is the edge's `start` endpoint, `false` for `end`.
+    at_start: bool,
+    pos: [f64; 3],
+    /// Characteristic sample spacing of the owning group (≈ the local octree
+    /// resolution), used to scale the clustering tolerance and synthetic cell.
+    spacing: f64,
+}
+
+/// Tolerance (as a multiple of local edge spacing) for matching a dangling end
+/// to a vertex or another dangling end. The edge-walk's per-group line fit can
+/// stop a few cells short of a corner (the corner region is a Vertex/Edge cell
+/// the fit's points avoid), so the slack is a handful of cells.
+const RECONCILE_TOL_FACTOR: f64 = 4.0;
+/// Synthetic reconstruction-cell half-size as a multiple of local edge
+/// spacing — wide enough that its corner probes reach into each incident
+/// face's region.
+const REFLEX_CELL_HALF_FACTOR: f32 = 3.0;
+
+/// Reconcile every dangling edge endpoint with a topological vertex (DL-60).
+///
+/// `build_wireframe`'s per-group [`snap_to_vertex`] uses each group's local
+/// spacing as its snap radius; an endpoint whose line-fit stopped a few cells
+/// short of a *convex* corner can fall just outside it, and a *reflex* corner
+/// has no extracted vertex to snap to at all (see below). Both leave the edge
+/// with a `None` endpoint, which forces `order_loops` onto its unordered
+/// fallback for every face that touches the gap. This pass closes both:
+///
+/// 1. **Re-snap to an existing vertex** — for each dangling end, the nearest
+///    vertex whose branch-set ⊇ the edge's signature within a generous radius.
+///    Branch-set containment (not distance alone) keeps the match topologically
+///    correct, so this is a clean consolidation, not a fuzzy nearest-point grab.
+///
+/// 2. **Reconstruct missing reflex corners** — the octree only tags a `Vertex`
+///    cell where ≥3 branches are simultaneously active at the apex. At a reflex
+///    (concave) corner the solid opens past 180°, so the third face is active
+///    only in a near-measure-zero sliver and the corner cell is mis-read as a
+///    2-branch `Edge`; the corner never enters the vertex set. We recover it
+///    from the topology that *was* detected: cluster the still-dangling ends and
+///    where ≥3 edges spanning ≥3 distinct branches meet, re-solve the analytic
+///    vertex from a synthetic `Vertex` cell there — reusing [`extract_vertex`]'s
+///    plane-intersection + refinement + acceptance gates, so a cluster that is
+///    not a real corner is rejected. Resolution-independent: the corner comes
+///    from the analytic face planes, not from finer sampling.
+fn reconcile_dangling_endpoints(body: &BoundedCsg, brep: &mut BRep, dangling: &[DanglingEnd]) {
+    // ── Stage 1: re-snap to an existing branch-compatible vertex ──────────────
+    let mut remaining: Vec<usize> = Vec::new();
+    for (k, d) in dangling.iter().enumerate() {
+        let (sa, sb) = brep.edges[d.edge.0 as usize].signature;
+        let tol = d.spacing * RECONCILE_TOL_FACTOR;
+        let mut best: Option<(VertexId, f64)> = None;
+        for (vi, v) in brep.vertices.iter().enumerate() {
+            if !(v.branches.contains(&sa) && v.branches.contains(&sb)) {
+                continue;
+            }
+            let dd = dist(d.pos, v.position);
+            if dd <= tol && best.is_none_or(|(_, bd)| dd < bd) {
+                best = Some((VertexId(vi as u32), dd));
+            }
+        }
+        match best {
+            Some((vid, _)) => set_endpoint(brep, d, vid),
+            None => remaining.push(k),
+        }
+    }
+
+    // ── Stage 2: reconstruct missing (reflex) corners from clusters ───────────
+    let mut used = vec![false; remaining.len()];
+    for a in 0..remaining.len() {
+        if used[a] {
+            continue;
+        }
+        let seed = &dangling[remaining[a]];
+        let tol = seed.spacing * RECONCILE_TOL_FACTOR;
+        let members: Vec<usize> = (a..remaining.len())
+            .filter(|&b| !used[b] && dist(seed.pos, dangling[remaining[b]].pos) <= tol)
+            .collect();
+        // A real corner joins ≥3 incident edges spanning ≥3 distinct branches.
+        if members.len() < 3 {
+            continue;
+        }
+        let mut branches: Vec<BranchId> = Vec::new();
+        for &b in &members {
+            let (sa, sb) = brep.edges[dangling[remaining[b]].edge.0 as usize].signature;
+            for br in [sa, sb] {
+                if !branches.contains(&br) {
+                    branches.push(br);
+                }
+            }
+        }
+        if branches.len() < 3 {
+            continue;
+        }
+        branches.sort_unstable_by_key(|b| b.as_u32());
+
+        // Centroid seed + local scale for the synthetic cell.
+        let mut sum = [0.0f64; 3];
+        let mut scale = 0.0f64;
+        for &b in &members {
+            let p = dangling[remaining[b]].pos;
+            sum[0] += p[0];
+            sum[1] += p[1];
+            sum[2] += p[2];
+            scale = scale.max(dangling[remaining[b]].spacing);
+        }
+        let n = members.len() as f64;
+        let center = [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32];
+        let h = scale as f32 * REFLEX_CELL_HALF_FACTOR;
+
+        let cell = OctreeCell {
+            aabb: Aabb {
+                min: [center[0] - h, center[1] - h, center[2] - h],
+                max: [center[0] + h, center[1] + h, center[2] + h],
+            },
+            class: CellClass::Vertex,
+            branches,
+        };
+        let Some(vertex) = extract_vertex(body, &cell) else {
+            continue;
+        };
+        let vid = brep.add_vertex(vertex);
+        for &b in &members {
+            used[b] = true;
+            set_endpoint(brep, &dangling[remaining[b]], vid);
+        }
+    }
+}
+
+/// Wire a dangling end's edge to `vid` on the recorded side.
+fn set_endpoint(brep: &mut BRep, d: &DanglingEnd, vid: VertexId) {
+    let e = &mut brep.edges[d.edge.0 as usize];
+    if d.at_start {
+        e.start = Some(vid);
+    } else {
+        e.end = Some(vid);
+    }
 }
 
 /// Snap a chain endpoint to the nearest candidate vertex within `tol`.

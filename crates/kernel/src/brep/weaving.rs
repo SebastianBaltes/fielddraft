@@ -1535,24 +1535,36 @@ mod tests {
         assert_watertight_solid(&brep);
 
         // Vertex count: an L-prism has 12 ideal corners (6 polygon corners ×
-        // top/bottom). Phase-3 extraction, however, never classifies a Vertex
-        // cell at the single *reflex* corner (1,1) — the three-branch collision
-        // there is not detected at this resolution — so 2 of the 12 corners
-        // (top + bottom of the reflex edge) are missing. This is an extraction
-        // (Phase-3) limitation, NOT an edge-walker / consolidation one: the 18
-        // edges are all present and the shell still closes (order_loop falls
-        // back to the unordered edge list for the two faces touching the
-        // reflex corner). Recorded as the achieved count rather than papered
-        // over (DL-51).
+        // top/bottom). The octree never classifies a Vertex cell at the single
+        // *reflex* corner (1,1) — the three-branch collision opens past 180° and
+        // is mis-read as a 2-branch Edge cell at this resolution. The reflex-
+        // vertex reconstruction post-pass (DL-60) recovers the two missing
+        // corners (top + bottom of the reflex edge) analytically from the three
+        // incident edges, so the full 12 corners are present and `order_loops`
+        // no longer needs its unordered fallback for the touching faces.
         assert_eq!(
             brep.vertex_count(),
-            10,
-            "10 of 12 corners; reflex corner (1,1) has no extracted vertex cell"
+            12,
+            "all 12 corners, incl. the reflex corner (1,1) recovered by DL-60"
         );
+
+        // The two recovered corners sit exactly at the reflex edge's ends
+        // (1,1,±1) — proof the reconstruction solves the analytic plane
+        // intersection, not merely the (cell-short) dangling-endpoint centroid.
+        for z in [-1.0, 1.0] {
+            let found = brep.vertices.iter().any(|v| {
+                (v.position[0] - 1.0).abs() < 1e-3
+                    && (v.position[1] - 1.0).abs() < 1e-3
+                    && (v.position[2] - z).abs() < 1e-3
+            });
+            assert!(found, "reflex corner (1,1,{z}) must be recovered analytically");
+        }
 
         // Every edge referenced by exactly two faces, all 8 faces analytic
         // planes (4+2 from the 6 walls split into the L's straight runs + 2
-        // caps). Each edge appears in exactly two face loops.
+        // caps). Each edge appears in exactly two face loops. With all 12
+        // corners present every face now orders into a proper ring — no
+        // `order_loops` unordered fallback is emitted (DL-60).
         for f in &brep.faces {
             assert!(
                 is_analytic_plane(f),
