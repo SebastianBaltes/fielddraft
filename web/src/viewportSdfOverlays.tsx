@@ -25,6 +25,7 @@ import {
   type DeferredPipelineState,
 } from "./sdfDeferredRenderer";
 import { resolveMaterials, applyMaterials } from "./materialBridge";
+import { requestPresentKick } from "./presentKick";
 import type { BRepEdgeMode } from "./SettingsMenu";
 
 export const OVERLAY_LAYER = 1;
@@ -74,31 +75,6 @@ function showCompilationStatus(text: string): void {
 function hideCompilationOverlay(): void {
   const overlay = document.getElementById("fd-shader-compiling");
   if (overlay) overlay.style.display = "none";
-}
-
-/**
- * Present nudge, fired the moment a shader compile finishes.
- *
- * On first boot the WebGPU swapchain comes up mis-configured: frames render
- * but never reach the screen until the canvas is resized (the "blank until I
- * resize the window" symptom). The one-shot nudge in `Viewport.onCreated`
- * fires ~2 rAF in — long before the multi-second shader compile completes —
- * so it reconfigures the swapchain *during* the blank compile window, before
- * any content frame is presented, and the fix is wasted.
- *
- * Re-applying the canvas size (`setSize` deletes the cached GPUCanvasContext,
- * forcing a reconfigure on the next render) right as `readyRef` flips true —
- * the instant before the first real content frame draws — reliably mirrors the
- * manual resize that the user confirms always works.
- */
-function nudgePresent(renderer: WebGPURenderer): void {
-  const canvas = renderer.domElement;
-  const parent = canvas?.parentElement;
-  if (parent) {
-    const { width, height } = parent.getBoundingClientRect();
-    if (width > 0 && height > 0) renderer.setSize(width, height, false);
-  }
-  window.dispatchEvent(new Event("resize"));
 }
 
 function showGpuError(err: unknown): void {
@@ -210,7 +186,7 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
-          nudgePresent(wgpu);
+          requestPresentKick();
           invalidate();
         })
         .catch((err) => {
@@ -346,7 +322,7 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
           compilingRef.current = false;
           readyRef.current = true;
           hideCompilationOverlay();
-          nudgePresent(wgpu);
+          requestPresentKick();
           invalidate();
         })
         .catch((err) => {

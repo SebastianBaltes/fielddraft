@@ -41,6 +41,7 @@ import {
   ReferenceMesh,
   PickHud,
   PerfProbe,
+  PresentKick,
 } from "./viewportOverlays";
 import { PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
@@ -409,35 +410,21 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
             }
             return renderer;
           }}
-          onCreated={(rootState) => {
+          onCreated={() => {
             // Gate the scene graph until the renderer is fully created.
             // With an async `gl` factory, children that commit before the
             // renderer/scene are ready never attach to the live scene and
             // stay invisible (planes, grid and mesh all missing on boot).
             // Mounting them only after `onCreated` guarantees they land in
-            // the ready scene.
+            // the ready scene. The WebGPU swapchain present-kick that fixes
+            // "blank until I resize the window" lives in <PresentKick>, which
+            // runs inside the render loop once the first frame is submitted.
             setCanvasReady(true);
-            // One-shot present nudge. On first boot the WebGPU swapchain
-            // can come up mis-configured: the scene renders but never
-            // reaches the screen until something resizes the canvas — the
-            // "blank until I resize the window" symptom. Re-apply the
-            // canvas size (reconfiguring the swapchain) and bounce a
-            // resize so R3F and the SDF overlays re-sync to the real
-            // viewport. Two animation frames in, after layout settled.
-            const nudge = () => {
-              const gl = rootState.gl;
-              const parent = gl.domElement.parentElement;
-              if (parent) {
-                const { width, height } = parent.getBoundingClientRect();
-                if (width > 0 && height > 0) gl.setSize(width, height, false);
-              }
-              window.dispatchEvent(new Event("resize"));
-            };
-            requestAnimationFrame(() => requestAnimationFrame(nudge));
           }}
         >
           {canvasReady && (
             <>
+              <PresentKick />
               <ClearColorSync />
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />

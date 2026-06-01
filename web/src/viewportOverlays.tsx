@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
@@ -9,6 +9,7 @@ import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
+import { consumePresentKick, requestPresentKick } from "./presentKick";
 
 export function findSingleSelectedFeature(state: StoreState | null | undefined): FeatureSummary | undefined {
   if (!state || state.selection.size !== 1) return undefined;
@@ -350,6 +351,59 @@ export function Invalidator({ ndc }: { ndc: { x: number; y: number; active: bool
     ndc.y,
     ndc.active,
   ]);
+
+  return null;
+}
+
+/**
+ * Unsticks the WebGPU swapchain so rendered frames actually reach the screen.
+ *
+ * On Linux/NVIDIA the freshly-configured swapchain renders + submits but never
+ * presents until its surface is reconfigured with a real pixel-size delta — the
+ * "blank until I resize the window" symptom, in *both* Mesh and SDF modes. A
+ * same-size reconfigure does nothing; only an actual dimension change works
+ * (see [[presentKick]]).
+ *
+ * We mirror the manual resize the user confirms always works: shrink the canvas
+ * backing buffer by 1px for two frames, then restore it. `updateStyle` stays
+ * false so the CSS box never changes (no layout shift, no scrollbar) — only the
+ * drawing buffer, a ~0.05% stretch that is imperceptible for the two frames it
+ * lasts. Fired once automatically a few frames after boot (covers Mesh and the
+ * SDF blank-during-compile window) and again whenever a shader compile finishes
+ * (covers freshly-presented SDF content), via `requestPresentKick`.
+ */
+export function PresentKick() {
+  const gl = useThree((s) => s.gl);
+  const restoreIn = useRef(0);
+  const bootFrames = useRef(0);
+
+  useFrame(() => {
+    const parent = gl.domElement?.parentElement;
+
+    // Restoring after a shrink: hold a couple of frames, then snap back to the
+    // true container size so the swapchain sees a genuine dimension change.
+    if (restoreIn.current > 0) {
+      restoreIn.current -= 1;
+      if (restoreIn.current === 0 && parent) {
+        const { width, height } = parent.getBoundingClientRect();
+        if (width > 0 && height > 0) gl.setSize(width, height, false);
+      }
+      return;
+    }
+
+    // One automatic kick shortly after boot, once the swapchain is configured
+    // and at least one frame has been submitted.
+    bootFrames.current += 1;
+    if (bootFrames.current === 3) requestPresentKick();
+
+    if (consumePresentKick() && parent) {
+      const { width, height } = parent.getBoundingClientRect();
+      if (width > 1 && height > 1) {
+        gl.setSize(width, height - 1, false);
+        restoreIn.current = 2;
+      }
+    }
+  });
 
   return null;
 }
