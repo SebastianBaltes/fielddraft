@@ -353,135 +353,169 @@ export function Invalidator({ ndc }: { ndc: { x: number; y: number; active: bool
   return null;
 }
 
-export function EdgeOverlay() {
-  const { store, state } = useKernelStore();
-  const geometryRef = useRef(new THREE.BufferGeometry());
-  const materialRef = useRef(
-    new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 1 }),
-  );
-  const cachedVersionRef = useRef(-1);
-  const [ready, setReady] = useState(false);
+/** One analytic B-Rep edge: a world-space line-segment chain plus its
+ *  canonical colliding-branch signature, used to match the hovered edge. */
+interface AnalyticEdge {
+  a: number;
+  b: number;
+  /** Flat `LineSegments` positions (pairs of points) for this edge. */
+  positions: Float32Array;
+}
 
+/** Build the per-edge `LineSegments` positions from a body-relative polyline. */
+function polylineToSegments(points: number[]): Float32Array {
+  const n = points.length / 3;
+  if (n < 2) return new Float32Array(0);
+  const seg = new Float32Array((n - 1) * 6);
+  for (let p = 0; p < n - 1; p++) {
+    seg[p * 6] = points[p * 3];
+    seg[p * 6 + 1] = points[p * 3 + 1];
+    seg[p * 6 + 2] = points[p * 3 + 2];
+    seg[p * 6 + 3] = points[(p + 1) * 3];
+    seg[p * 6 + 4] = points[(p + 1) * 3 + 1];
+    seg[p * 6 + 5] = points[(p + 1) * 3 + 2];
+  }
+  return seg;
+}
+
+/**
+ * Draws the analytic B-Rep edges (from the woven, cached kernel B-Rep — *not*
+ * the mesh) as a dark wireframe overlay, and highlights the edge the cursor is
+ * over. The hovered edge is matched by its colliding-branch signature against
+ * the `contributors` the kernel `pick` reports, so the same analytic edge that
+ * STEP export emits is the one that lights up.
+ *
+ * Rendered on both the default layer (mesh render mode) and the overlay layer
+ * (composited over the SDF render pass), so edges are visible in every mode.
+ */
+export function BRepEdgeOverlay({ pick }: { pick: PickResult | null }) {
+  const { store, state } = useKernelStore();
+  const baseGeometryRef = useRef(new THREE.BufferGeometry());
+  const hoverGeometryRef = useRef(new THREE.BufferGeometry());
+  const baseMaterialRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: 0x1e293b,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  const hoverMaterialRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: 0xf59e0b,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+
+  // Body fingerprint (count + per-body id.version). Bumps on any geometry edit
+  // and on a placement move (the body version increments), so the edge cache
+  // re-reads exactly when — and only when — the bodies actually change.
+  //
+  // Deliberately NOT driven by `meshedBodies`: DC meshing is enabled only in
+  // mesh render mode (App gates `setDcMeshingEnabled` on it), so in the default
+  // SDF modes `meshedBodies` is empty. The analytic B-Rep lives on the
+  // main-thread kernel regardless of render mode, so we read it straight from
+  // `bodyCount()` — that is what makes the edges appear in SDF modes too.
+  const bodyFingerprint = useMemo(() => {
+    if (!store) return "";
+    const n = store.kernel.bodyCount();
+    let fp = String(n);
+    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    return fp;
+  }, [store, state]);
+
+  const edges = useMemo<AnalyticEdge[]>(() => {
+    if (!store) return [];
+    const count = store.kernel.bodyCount();
+    const out: AnalyticEdge[] = [];
+    for (let i = 0; i < count; i++) {
+      let bodyEdges: { a: number; b: number; points: number[] }[];
+      try {
+        bodyEdges = store.kernel.bodyBrepEdges(i);
+      } catch {
+        continue;
+      }
+      for (const e of bodyEdges) {
+        const positions = polylineToSegments(e.points);
+        if (positions.length > 0) out.push({ a: e.a, b: e.b, positions });
+      }
+    }
+    return out;
+  }, [store, bodyFingerprint]);
+
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    if (!store || !state || state.meshedBodies.length === 0) {
+    if (edges.length === 0) {
       setReady(false);
       return;
     }
-    const version = store.kernel.meshVersion();
-    if (version === cachedVersionRef.current) return;
-    cachedVersionRef.current = version;
-    try {
-      const edges = store.kernel.detectEdges();
-      if (edges.length === 0) {
-        setReady(false);
-        return;
-      }
-      const positions = new Float32Array(edges.length * 6);
-      for (let i = 0; i < edges.length; i++) {
-        positions[i * 6] = edges[i].p0[0];
-        positions[i * 6 + 1] = edges[i].p0[1];
-        positions[i * 6 + 2] = edges[i].p0[2];
-        positions[i * 6 + 3] = edges[i].p1[0];
-        positions[i * 6 + 4] = edges[i].p1[1];
-        positions[i * 6 + 5] = edges[i].p1[2];
-      }
-      geometryRef.current.setAttribute(
-        "position",
-        new THREE.BufferAttribute(positions, 3),
-      );
-      geometryRef.current.computeBoundingSphere();
-      setReady(true);
-    } catch {
-      setReady(false);
+    let total = 0;
+    for (const e of edges) total += e.positions.length;
+    const merged = new Float32Array(total);
+    let off = 0;
+    for (const e of edges) {
+      merged.set(e.positions, off);
+      off += e.positions.length;
     }
-  }, [store, state?.meshedBodies]);
+    baseGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(merged, 3));
+    baseGeometryRef.current.computeBoundingSphere();
+    setReady(true);
+  }, [edges]);
+
+  // Match the hovered edge by signature: pick reports the colliding branches as
+  // `contributors`; an edge lights up when both of its signature branches are
+  // among them.
+  const hoveredIdx = useMemo(() => {
+    if (!pick || !pick.hit || pick.element !== "edge") return -1;
+    const c = pick.contributors;
+    return edges.findIndex((e) => c.includes(e.a) && c.includes(e.b));
+  }, [pick, edges]);
+
+  const [hoverReady, setHoverReady] = useState(false);
+  useEffect(() => {
+    if (hoveredIdx < 0 || hoveredIdx >= edges.length) {
+      setHoverReady(false);
+      return;
+    }
+    hoverGeometryRef.current.setAttribute(
+      "position",
+      new THREE.BufferAttribute(edges[hoveredIdx].positions, 3),
+    );
+    hoverGeometryRef.current.computeBoundingSphere();
+    setHoverReady(true);
+  }, [hoveredIdx, edges]);
 
   useEffect(() => {
     return () => {
-      geometryRef.current.dispose();
-      materialRef.current.dispose();
+      baseGeometryRef.current.dispose();
+      hoverGeometryRef.current.dispose();
+      baseMaterialRef.current.dispose();
+      hoverMaterialRef.current.dispose();
     };
   }, []);
 
   if (!ready) return null;
 
   return (
-    <lineSegments
-      ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.set(OVERLAY_LAYER); }}
-      geometry={geometryRef.current}
-      material={materialRef.current}
-      frustumCulled={false}
-    />
-  );
-}
-
-interface TopoEdgeJson {
-  points: number[];
-}
-interface BodyTopologyJson {
-  edges: TopoEdgeJson[];
-}
-
-export function BRepEdgeOverlay() {
-  const { store, state } = useKernelStore();
-  const geometryRef = useRef(new THREE.BufferGeometry());
-  const materialRef = useRef(
-    new THREE.LineBasicMaterial({ color: 0x111111, linewidth: 1 }),
-  );
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    if (!store || !state || state.meshedBodies.length === 0) {
-      setReady(false);
-      return;
-    }
-    try {
-      const segments: number[] = [];
-      for (const body of state.meshedBodies) {
-        const topo: BodyTopologyJson = JSON.parse(body.topologyJson);
-        for (const edge of topo.edges) {
-          const pts = edge.points;
-          const pointCount = pts.length / 3;
-          for (let p = 0; p < pointCount - 1; p++) {
-            segments.push(
-              pts[p * 3], pts[p * 3 + 1], pts[p * 3 + 2],
-              pts[(p + 1) * 3], pts[(p + 1) * 3 + 1], pts[(p + 1) * 3 + 2],
-            );
-          }
-        }
-      }
-      if (segments.length === 0) {
-        setReady(false);
-        return;
-      }
-      const positions = new Float32Array(segments);
-      geometryRef.current.setAttribute(
-        "position",
-        new THREE.BufferAttribute(positions, 3),
-      );
-      geometryRef.current.computeBoundingSphere();
-      setReady(true);
-    } catch {
-      setReady(false);
-    }
-  }, [store, state?.meshedBodies]);
-
-  useEffect(() => {
-    return () => {
-      geometryRef.current.dispose();
-      materialRef.current.dispose();
-    };
-  }, []);
-
-  if (!ready) return null;
-
-  return (
-    <lineSegments
-      ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.set(OVERLAY_LAYER); }}
-      geometry={geometryRef.current}
-      material={materialRef.current}
-      frustumCulled={false}
-    />
+    <>
+      <lineSegments
+        ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+        geometry={baseGeometryRef.current}
+        material={baseMaterialRef.current}
+        frustumCulled={false}
+        renderOrder={998}
+      />
+      {hoverReady && (
+        <lineSegments
+          ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          geometry={hoverGeometryRef.current}
+          material={hoverMaterialRef.current}
+          frustumCulled={false}
+          renderOrder={999}
+        />
+      )}
+    </>
   );
 }
 

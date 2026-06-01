@@ -350,6 +350,59 @@ export class Kernel {
         return ret !== 0;
     }
     /**
+     * Counts of the body's feature-based B-Rep entities as a JSON
+     * object: `{"vertices","edges","faces","shells","solids",
+     * "watertight"}`. `watertight` reflects the body's single outer
+     * shell's `is_closed` flag.
+     *
+     * This is the **real** B-Rep topology (sharp corners / edges /
+     * trimmed faces from the analytic weave). The B-Rep is woven
+     * lazily on first call and cached on the body, so this query is
+     * cheap on repeat (DL-30). Smooth-only bodies (e.g. a lone sphere)
+     * carry no sharp
+     * features and legitimately report zero/near-zero counts —
+     * feature-based B-Rep captures sharp topology only (DL-29).
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyBrepCounts(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyBrepCounts(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Per-body analytic B-Rep edges, sampled to **world-space** polylines for
+     * viewport rendering and hover. Returns a JSON array; each edge is
+     * `{"a":<branch u32>,"b":<branch u32>,"points":[x,y,z, x,y,z, …]}`, where
+     * `a`/`b` are the canonical colliding-branch signature. Those two ids are
+     * the same `as_u32()` branch values that [`Kernel::pick`] reports in its
+     * `contributors` array, so the frontend can match a hovered edge to its
+     * polyline. Points are sampled in the body-local frame and folded to world
+     * by the body's `placement` (DL-56), exactly like the STEP export. Reuses
+     * the same lazily-woven, cached B-Rep as the counts / STEP queries.
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyBrepEdges(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyBrepEdges(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @param {number} i
      * @returns {number}
      */
@@ -370,116 +423,6 @@ export class Kernel {
      */
     bodyCount() {
         const ret = wasm.kernel_bodyCount(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} edge
-     * @returns {number}
-     */
-    bodyEdgeContributorA(body, edge) {
-        const ret = wasm.kernel_bodyEdgeContributorA(this.__wbg_ptr, body, edge);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} edge
-     * @returns {number}
-     */
-    bodyEdgeContributorB(body, edge) {
-        const ret = wasm.kernel_bodyEdgeContributorB(this.__wbg_ptr, body, edge);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} i
-     * @returns {number}
-     */
-    bodyEdgeCount(i) {
-        const ret = wasm.kernel_bodyEdgeCount(this.__wbg_ptr, i);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} edge
-     * @returns {number}
-     */
-    bodyEdgePointCount(body, edge) {
-        const ret = wasm.kernel_bodyEdgePointCount(this.__wbg_ptr, body, edge);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} edge
-     * @returns {number}
-     */
-    bodyEdgePointsPtr(body, edge) {
-        const ret = wasm.kernel_bodyEdgePointsPtr(this.__wbg_ptr, body, edge);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {number}
-     */
-    bodyFaceArea(body, face) {
-        const ret = wasm.kernel_bodyFaceArea(this.__wbg_ptr, body, face);
-        return ret;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {Float32Array}
-     */
-    bodyFaceCentroid(body, face) {
-        const ret = wasm.kernel_bodyFaceCentroid(this.__wbg_ptr, body, face);
-        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {number}
-     */
-    bodyFaceContributor(body, face) {
-        const ret = wasm.kernel_bodyFaceContributor(this.__wbg_ptr, body, face);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} i
-     * @returns {number}
-     */
-    bodyFaceCount(i) {
-        const ret = wasm.kernel_bodyFaceCount(this.__wbg_ptr, i);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {Float32Array}
-     */
-    bodyFaceNormal(body, face) {
-        const ret = wasm.kernel_bodyFaceNormal(this.__wbg_ptr, body, face);
-        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {number}
-     */
-    bodyFaceTriangleCount(body, face) {
-        const ret = wasm.kernel_bodyFaceTriangleCount(this.__wbg_ptr, body, face);
-        return ret >>> 0;
-    }
-    /**
-     * @param {number} body
-     * @param {number} face
-     * @returns {number}
-     */
-    bodyFaceTrianglesPtr(body, face) {
-        const ret = wasm.kernel_bodyFaceTrianglesPtr(this.__wbg_ptr, body, face);
         return ret >>> 0;
     }
     /**
@@ -596,14 +539,19 @@ export class Kernel {
         return ret >>> 0;
     }
     /**
+     * Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
+     * (STEP) AP214 advanced-B-Rep file. Reuses the same lazily-woven,
+     * cached B-Rep as [`Kernel::body_brep_counts`]; the returned
+     * string is a complete `.step` document ready to download. The
+     * product name is derived from the body's stable feature id.
      * @param {number} i
      * @returns {string}
      */
-    bodyTopologyJson(i) {
+    bodyStepExport(i) {
         let deferred1_0;
         let deferred1_1;
         try {
-            const ret = wasm.kernel_bodyTopologyJson(this.__wbg_ptr, i);
+            const ret = wasm.kernel_bodyStepExport(this.__wbg_ptr, i);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);
@@ -732,30 +680,6 @@ export class Kernel {
     contextMeshResolution() {
         const ret = wasm.kernel_contextMeshResolution(this.__wbg_ptr);
         return ret >>> 0;
-    }
-    /**
-     * K10.6: detect B-Rep edges from the current mesh +
-     * contributor analysis. Returns a JSON array of edge
-     * segments with 3D coordinates + contributor IDs.
-     * @returns {string}
-     */
-    detectEdges() {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.kernel_detectEdges(this.__wbg_ptr);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
     }
     /**
      * K8.8: duplicate a feature call. Allocates a fresh id,
@@ -1274,6 +1198,27 @@ export class Kernel {
             return getStringFromWasm0(ptr1, len1);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Serialise *every* body's feature-based B-Rep into ONE ISO-10303-21
+     * (STEP) AP214 file, each body a separate `MANIFOLD_SOLID_BREP` solid
+     * in a single shape representation (DL-53: bodies stay separate). Each
+     * body's B-Rep is lazily woven and cached exactly as in
+     * [`Kernel::body_step_export`]; the returned string is a complete
+     * `.step` document ready to download.
+     * @returns {string}
+     */
+    sceneStepExport() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_sceneStepExport(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
     }
     /**

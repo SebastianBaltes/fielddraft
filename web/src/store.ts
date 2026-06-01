@@ -619,10 +619,6 @@ export class KernelStore {
         const d = this.kernel.bodyTransformDelta(i);
         transformDelta = [d[0], d[1], d[2]];
       }
-      let topologyJson = '{"faces":[],"edges":[]}';
-      try {
-        topologyJson = this.kernel.bodyTopologyJson(i);
-      } catch { /* may fail for imported meshes */ }
       out.push({
         id: this.kernel.bodyId(i),
         seedId: this.kernel.bodySeedFeatureId(i),
@@ -633,7 +629,6 @@ export class KernelStore {
         classifications: this.kernel.bodyClassificationsView(i).slice(),
         contributors: this.kernel.bodyContributorsView(i).slice(),
         transformDelta,
-        topologyJson,
       });
     }
     return out;

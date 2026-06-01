@@ -17,8 +17,6 @@ pub mod features;
 // K13: mesh_sdf moved to the protocol crate so
 // Primitive::ImportedMesh can carry it serialised.
 pub use fielddraft_protocol::mesh_sdf;
-pub mod edge_detect;
-pub mod topology;
 pub mod sketch_regions;
 pub mod queries;
 pub mod export;
@@ -701,7 +699,6 @@ impl Kernel {
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
-                prev.topology = None;
                 prev.brep = None;
                 new_bodies.push(prev);
             } else {
@@ -725,7 +722,6 @@ impl Kernel {
                     transform_delta: None,
                     last_mesh_transforms: transforms,
                     compiled_sdf: Some(compiled),
-                    topology: None,
                     // Recomputed lazily on the first `ensure_brep`; the
                     // weave needs it, the mesh path does not.
                     placement: fielddraft_protocol::Transform::IDENTITY,
@@ -1563,31 +1559,6 @@ impl Kernel {
             "mask_radius": mask_radius,
             "blend_radius": blend_radius,
         }))
-    }
-
-    /// K10.6: detect B-Rep edges from the current mesh +
-    /// contributor analysis. Returns a JSON array of edge
-    /// segments with 3D coordinates + contributor IDs.
-    #[wasm_bindgen(js_name = detectEdges)]
-    pub fn detect_edges_json(&self) -> Result<String, JsError> {
-        // Build the CSG tree with edge fillets applied.
-        let tree = csg::CsgNode::from_features(&self.document.features)
-            .apply_edge_fillets(&self.edge_fillets);
-        let bounded = bvh::BoundedCsg::from_csg(&tree);
-
-        // Collect edges from all bodies.
-        let mut all_edges = Vec::new();
-        for body in &self.bodies {
-            let edges = edge_detect::detect_edges(
-                &body.mesh.positions,
-                &body.mesh.indices,
-                &bounded,
-                0.5,
-            );
-            all_edges.extend(edges);
-        }
-        serde_json::to_string(&all_edges)
-            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// K8.13: list the connected inside-regions of a sketch.
@@ -2774,80 +2745,6 @@ impl Kernel {
         serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())
     }
 
-    // ── Per-body topology (faces + edges) ────────────────────
-
-    #[wasm_bindgen(js_name = bodyFaceCount)]
-    pub fn body_face_count(&mut self, i: usize) -> usize {
-        self.bodies[i].ensure_topology().faces.len()
-    }
-
-    #[wasm_bindgen(js_name = bodyEdgeCount)]
-    pub fn body_edge_count(&mut self, i: usize) -> usize {
-        self.bodies[i].ensure_topology().edges.len()
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceContributor)]
-    pub fn body_face_contributor(&mut self, body: usize, face: usize) -> u32 {
-        self.bodies[body].ensure_topology().faces[face].contributor
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceArea)]
-    pub fn body_face_area(&mut self, body: usize, face: usize) -> f32 {
-        self.bodies[body].ensure_topology().faces[face].area
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceCentroid)]
-    pub fn body_face_centroid(&mut self, body: usize, face: usize) -> Vec<f32> {
-        self.bodies[body].ensure_topology().faces[face].centroid.to_vec()
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceNormal)]
-    pub fn body_face_normal(&mut self, body: usize, face: usize) -> Vec<f32> {
-        self.bodies[body].ensure_topology().faces[face].normal.to_vec()
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceTriangleCount)]
-    pub fn body_face_triangle_count(&mut self, body: usize, face: usize) -> usize {
-        self.bodies[body].ensure_topology().faces[face].triangles.len()
-    }
-
-    #[wasm_bindgen(js_name = bodyFaceTrianglesPtr)]
-    pub fn body_face_triangles_ptr(&mut self, body: usize, face: usize) -> *const u32 {
-        self.bodies[body].ensure_topology();
-        self.bodies[body].topology.as_ref().unwrap().faces[face]
-            .triangles
-            .as_ptr()
-    }
-
-    #[wasm_bindgen(js_name = bodyEdgeContributorA)]
-    pub fn body_edge_contributor_a(&mut self, body: usize, edge: usize) -> u32 {
-        self.bodies[body].ensure_topology().edges[edge].contributor_a
-    }
-
-    #[wasm_bindgen(js_name = bodyEdgeContributorB)]
-    pub fn body_edge_contributor_b(&mut self, body: usize, edge: usize) -> u32 {
-        self.bodies[body].ensure_topology().edges[edge].contributor_b
-    }
-
-    #[wasm_bindgen(js_name = bodyEdgePointCount)]
-    pub fn body_edge_point_count(&mut self, body: usize, edge: usize) -> usize {
-        self.bodies[body].ensure_topology().edges[edge].points.len() / 3
-    }
-
-    #[wasm_bindgen(js_name = bodyEdgePointsPtr)]
-    pub fn body_edge_points_ptr(&mut self, body: usize, edge: usize) -> *const f32 {
-        self.bodies[body].ensure_topology();
-        self.bodies[body].topology.as_ref().unwrap().edges[edge]
-            .points
-            .as_ptr()
-    }
-
-    #[wasm_bindgen(js_name = bodyTopologyJson)]
-    pub fn body_topology_json(&mut self, i: usize) -> String {
-        let topo = self.bodies[i].ensure_topology();
-        serde_json::to_string(topo).unwrap_or_else(|_| "{}".into())
-    }
-
     // ── Per-body *feature-based* B-Rep (sharp topology) ──────────
 
     /// Counts of the body's feature-based B-Rep entities as a JSON
@@ -2856,11 +2753,10 @@ impl Kernel {
     /// shell's `is_closed` flag.
     ///
     /// This is the **real** B-Rep topology (sharp corners / edges /
-    /// trimmed faces from the analytic weave), distinct from
-    /// `bodyTopologyJson`, which is the mesh-derived topology used by
-    /// the viewport overlays. The B-Rep is woven lazily on first call
-    /// and cached on the body, so this query is cheap on repeat
-    /// (DL-30). Smooth-only bodies (e.g. a lone sphere) carry no sharp
+    /// trimmed faces from the analytic weave). The B-Rep is woven
+    /// lazily on first call and cached on the body, so this query is
+    /// cheap on repeat (DL-30). Smooth-only bodies (e.g. a lone sphere)
+    /// carry no sharp
     /// features and legitimately report zero/near-zero counts —
     /// feature-based B-Rep captures sharp topology only (DL-29).
     #[wasm_bindgen(js_name = bodyBrepCounts)]
@@ -2879,6 +2775,42 @@ impl Kernel {
             "watertight": watertight,
         })
         .to_string()
+    }
+
+    /// Per-body analytic B-Rep edges, sampled to **world-space** polylines for
+    /// viewport rendering and hover. Returns a JSON array; each edge is
+    /// `{"a":<branch u32>,"b":<branch u32>,"points":[x,y,z, x,y,z, …]}`, where
+    /// `a`/`b` are the canonical colliding-branch signature. Those two ids are
+    /// the same `as_u32()` branch values that [`Kernel::pick`] reports in its
+    /// `contributors` array, so the frontend can match a hovered edge to its
+    /// polyline. Points are sampled in the body-local frame and folded to world
+    /// by the body's `placement` (DL-56), exactly like the STEP export. Reuses
+    /// the same lazily-woven, cached B-Rep as the counts / STEP queries.
+    #[wasm_bindgen(js_name = bodyBrepEdges)]
+    pub fn body_brep_edges(&mut self, i: usize) -> String {
+        self.bodies[i].ensure_brep(&self.document.features);
+        let placement = self.bodies[i].placement;
+        let brep = self.bodies[i].brep_cached().expect("woven above");
+        let s = placement.scale[0];
+        let mut edges = Vec::with_capacity(brep.edges.len());
+        for edge in &brep.edges {
+            let local = crate::brep::edge_sampling::sample_edge(&edge.geometry);
+            let mut points: Vec<f32> = Vec::with_capacity(local.len() * 3);
+            for p in &local {
+                // world = R·(s·p) + t  (rigid + uniform scale placement).
+                let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
+                let r = quat_rotate(placement.rotation, scaled);
+                points.push(r[0] + placement.translate[0]);
+                points.push(r[1] + placement.translate[1]);
+                points.push(r[2] + placement.translate[2]);
+            }
+            edges.push(serde_json::json!({
+                "a": edge.signature.0.as_u32(),
+                "b": edge.signature.1.as_u32(),
+                "points": points,
+            }));
+        }
+        serde_json::Value::Array(edges).to_string()
     }
 
     /// Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
@@ -5461,7 +5393,6 @@ mod tests {
             transform_delta: None,
             last_mesh_transforms: Vec::new(),
             compiled_sdf: None,
-            topology: None,
             placement: Transform::IDENTITY,
             brep: None,
         };

@@ -30,7 +30,6 @@ import {
   SketchOverlay3D,
   SelectionTransformGizmo,
   Invalidator,
-  EdgeOverlay,
   BRepEdgeOverlay,
   MeshPreview,
   AssemblyParts,
@@ -391,8 +390,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
           <ClearColorSync />
           <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} />
           <ReferenceMesh />
-          <EdgeOverlay />
-          <BRepEdgeOverlay />
+          <BRepEdgeOverlay pick={pickResult} />
           <MateConnectorOverlay />
           <AssemblyParts />
           <WorldGrid />
