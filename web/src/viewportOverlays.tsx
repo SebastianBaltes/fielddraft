@@ -888,29 +888,17 @@ export function ReferenceMesh() {
   );
 }
 
+// Invisible pick-state probe. The on-screen face/edge id readout was a
+// debug overlay and is gone; this element stays in the DOM (visually
+// hidden) only as a programmatic hook for the hover-pick e2e smoke test.
 export function PickHud({ result }: { result: PickResult | null }) {
-  if (!result || !result.hit) {
-    return (
-      <div
-        className="pick-hud is-idle"
-        data-testid="fielddraft-pick-hud"
-        data-pick-hit="false"
-        aria-hidden="true"
-      />
-    );
-  }
-  const contributors = result.contributors.join(", ");
   return (
     <div
       className="pick-hud"
       data-testid="fielddraft-pick-hud"
-      data-pick-hit="true"
-      data-pick-element={result.element}
-      data-pick-contributors={contributors}
-    >
-      <span className="kind">{result.element}</span>
-      <span className="ids">{contributors}</span>
-    </div>
+      data-pick-hit={result?.hit ? "true" : "false"}
+      aria-hidden="true"
+    />
   );
 }
 
