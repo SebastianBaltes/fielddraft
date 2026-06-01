@@ -378,7 +378,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
-          frameloop="always"
+          frameloop="demand"
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
