@@ -10,6 +10,7 @@ import {
   type ErrorInfo,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -260,8 +261,25 @@ function handleSelectionClick(
 export function Viewport({ renderMode, showEdges }: { renderMode: string; showEdges: boolean }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const rendererRef = useRef<{ dispose(): void } | null>(null);
   const [webgpuError, setWebgpuError] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
+
+  // Free the WebGPU renderer (device, swapchain, all pipelines) when the page
+  // goes away. R3F unmount cleanup does NOT run on reload/navigation, so
+  // without this the GPU keeps the orphaned device + compiled pipelines alive.
+  // They accumulate across reloads and push shader compile from ~3 s to 30 s+.
+  // `pagehide` fires on both reload and bfcache navigation, unlike
+  // `beforeunload`. Disposing the renderer tears down its backend device,
+  // which releases everything hanging off it.
+  useEffect(() => {
+    const release = () => {
+      rendererRef.current?.dispose();
+      rendererRef.current = null;
+    };
+    window.addEventListener("pagehide", release);
+    return () => window.removeEventListener("pagehide", release);
+  }, []);
   const [ndc, setNdc] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
     y: 0,
@@ -374,6 +392,7 @@ export function Viewport({ renderMode, showEdges }: { renderMode: string; showEd
             });
             await renderer.init();
             (window as any).__threeRenderer = renderer;
+            rendererRef.current = renderer;
 
             const canvas = (props as any).canvas as HTMLCanvasElement;
             const parent = canvas.parentElement;
