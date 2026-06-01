@@ -56,25 +56,6 @@ pub const DEFAULT_MESH_RESOLUTION: u32 = 48;
 /// identifiable enough on screen to serve as background reference.
 pub const DEFAULT_CONTEXT_MESH_RESOLUTION: u32 = 24;
 
-/// Packed representation of one feature for the zero-copy bridge.
-///
-/// Layout (16 × f32, 64 bytes — exactly four `vec4f`s in a shader, with
-/// no field straddling a vec4 boundary):
-///
-///   vec4 0  [0..=3]   = (kind_tag, center.x, center.y, center.z)
-///   vec4 1  [4..=7]   = (param0, param1, param2, op_tag)
-///   vec4 2  [8..=11]  = (translate.x, translate.y, translate.z, scale)
-///   vec4 3  [12..=15] = (quat.x, quat.y, quat.z, quat.w)
-///
-/// Primitive parameters per kind:
-///   box      → param = half-extents xyz
-///   sphere   → param = (radius, 0, 0)
-///   cylinder → param = (radius, half_height, 0)
-///
-/// Op tags: 0 = union, 1 = difference, 2 = intersect.
-/// Kind tags: 0 = box, 1 = sphere, 2 = cylinder.
-pub const FEATURE_STRIDE: usize = 16;
-
 /// Maximum undo / redo depth. The whole document is snapshotted per
 /// edit, so depth × document-size ≈ memory cost. For M2 (small linear
 /// feature lists) 64 is plenty without being painful.
@@ -342,152 +323,6 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
     }
 }
 
-/// Apply one boolean op to the running accumulator.
-pub fn apply_op(acc: f32, di: f32, op: BoolOp) -> f32 {
-    match op {
-        BoolOp::Union => acc.min(di),
-        // SDF subtraction: max(a, -b). Pre-empty space (acc = +∞) means
-        // subtracting first does nothing, which matches Onshape's "the
-        // first feature must be additive" rule.
-        BoolOp::Difference => acc.max(-di),
-        BoolOp::Intersect => acc.max(di),
-    }
-}
-
-/// SDF of one transformed feature at a world-space point.
-pub fn sdf_feature(feature: &Feature, p_world: [f32; 3]) -> f32 {
-    let p_local = world_to_local(&feature.transform, p_world);
-    sdf_primitive(&feature.primitive, p_local) * feature.transform.min_scale()
-}
-
-/// Composite SDF of an entire feature spine.
-pub fn sdf_features(features: &[Feature], p: [f32; 3]) -> f32 {
-    let mut acc = f32::INFINITY;
-    for feature in features {
-        let di = sdf_feature(feature, p);
-        acc = apply_op(acc, di, feature.op);
-    }
-    acc
-}
-
-/// Pack one feature into a 16-float slot of the renderer buffer.
-pub fn pack_feature(feature: &Feature, out: &mut [f32; FEATURE_STRIDE]) {
-    *out = [0.0; FEATURE_STRIDE];
-    out[0] = feature.primitive.kind_tag() as f32;
-    match &feature.primitive {
-        Primitive::Box { center, half_extents } => {
-            out[1..4].copy_from_slice(center);
-            out[4..7].copy_from_slice(half_extents);
-        }
-        Primitive::Sphere { center, radius } => {
-            out[1..4].copy_from_slice(center);
-            out[4] = *radius;
-        }
-        Primitive::Cylinder { center, radius, half_height } => {
-            out[1..4].copy_from_slice(center);
-            out[4] = *radius;
-            out[5] = *half_height;
-        }
-        // K7.3: the old TSL raymarcher has no concept of
-        // sketch extrusions. Pack the AABB extents as a proxy
-        // box so the retired renderer at least draws something
-        // at the right place if it ever gets reactivated.
-        Primitive::Extrude {
-            sketch,
-            half_depth_z,
-            center,
-        } => {
-            let bb2 = sketch.aabb();
-            let half_x = if bb2.is_empty() {
-                0.0
-            } else {
-                0.5 * (bb2.max[0] - bb2.min[0])
-            };
-            let half_y = if bb2.is_empty() {
-                0.0
-            } else {
-                0.5 * (bb2.max[1] - bb2.min[1])
-            };
-            out[1..4].copy_from_slice(center);
-            out[4] = half_x;
-            out[5] = half_y;
-            out[6] = *half_depth_z;
-        }
-        // K8.4: same story as Extrude — the retired TSL
-        // raymarcher has no concept of revolves. Pack a proxy
-        // cylinder with the sketch's radial and vertical extents.
-        Primitive::Revolve { sketch, center } => {
-            let bb2 = sketch.aabb();
-            let (r_max, half_y) = if bb2.is_empty() {
-                (0.0, 0.0)
-            } else {
-                (
-                    bb2.max[0].abs().max(bb2.min[0].abs()),
-                    0.5 * (bb2.max[1] - bb2.min[1]),
-                )
-            };
-            out[1..4].copy_from_slice(center);
-            out[4] = r_max;
-            out[5] = half_y;
-        }
-        Primitive::Torus { center, major_radius, minor_radius } => {
-            out[1..4].copy_from_slice(center);
-            out[4] = *major_radius;
-            out[5] = *minor_radius;
-        }
-        Primitive::Gyroid { cell_size, thickness } => {
-            out[4] = *cell_size;
-            out[5] = *thickness;
-        }
-        Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
-            out[3] = *half_height;
-            out[4] = *nominal_radius;
-            out[5] = *pitch;
-            out[6] = *depth;
-        }
-        Primitive::Cone { r_bottom, r_top, half_height } => {
-            out[4] = *r_bottom;
-            out[5] = *r_top;
-            out[6] = *half_height;
-        }
-        Primitive::Capsule { radius, half_height } => {
-            out[4] = *radius;
-            out[5] = *half_height;
-        }
-        Primitive::HexPrism { apothem, half_height } => {
-            out[4] = *apothem;
-            out[5] = *half_height;
-        }
-        Primitive::ImportedMesh { mesh } => {
-            for i in 0..3 {
-                out[1 + i] = (mesh.aabb_min[i] + mesh.aabb_max[i]) * 0.5;
-            }
-        }
-        Primitive::Ellipsoid { radii } => {
-            out[4..7].copy_from_slice(radii);
-        }
-    }
-    out[7] = feature.op.tag() as f32;
-
-    let t = &feature.transform;
-    out[8..11].copy_from_slice(&t.translate);
-    out[11] = t.min_scale();
-    out[12..16].copy_from_slice(&t.rotation);
-}
-
-/// Pack an entire feature list to a flat `Vec<f32>`.
-pub fn pack_features(features: &[Feature]) -> Vec<f32> {
-    let mut buf = vec![0.0_f32; features.len() * FEATURE_STRIDE];
-    for (i, feature) in features.iter().enumerate() {
-        let slot: &mut [f32; FEATURE_STRIDE] =
-            (&mut buf[i * FEATURE_STRIDE..(i + 1) * FEATURE_STRIDE])
-                .try_into()
-                .unwrap();
-        pack_feature(feature, slot);
-    }
-    buf
-}
-
 /// Walk the parent chain of `child` and return `true` as soon as any
 /// ancestor equals `ancestor`. Used by `remove_feature` to cascade
 /// deletions across spine clones produced by Pattern/Mirror/Hole
@@ -525,15 +360,11 @@ struct FeatureSummary {
     rolled_back: bool,
 }
 
-/// Owned by the JS side. Holds the canonical document, the packed
-/// renderer buffer, and the undo/redo stacks. The packed buffer's
-/// pointer is stable until any mutation that may grow the underlying
-/// `Vec` (which can move it on reallocation) — JS callers must
-/// re-acquire `primitivesPtr()` after every mutating call.
+/// Owned by the JS side. Holds the canonical document and the
+/// undo/redo stacks.
 #[wasm_bindgen]
 pub struct Kernel {
     document: Document,
-    packed: Vec<f32>,
     undo: Vec<Document>,
     redo: Vec<Document>,
     /// Multi-body mesh cache (K3 part 2). Each body has its own
@@ -596,7 +427,6 @@ impl Kernel {
     }
 
     fn rebuild_packed(&mut self) {
-        self.packed = pack_features(&self.document.features);
         // K4.5.4c dual-write: rebuild the K4.5 Feature-as-Function
         // `feature_calls` mirror after every mutation that ran
         // through `rebuild_packed`. Every public mutator funnels
@@ -1001,10 +831,8 @@ impl Kernel {
         console_error_panic_hook::set_once();
 
         let document = Document::default();
-        let packed = pack_features(&document.features);
         let mut k = Self {
             document,
-            packed,
             undo: Vec::new(),
             redo: Vec::new(),
             bodies: Vec::new(),
@@ -1093,21 +921,9 @@ impl Kernel {
         serde_json::to_string(&self.document).map_err(|e| JsError::new(&e.to_string()))
     }
 
-    // ── packed buffer (zero-copy bridge) ──────────────────────────────
-
-    #[wasm_bindgen(js_name = primitivesPtr)]
-    pub fn primitives_ptr(&self) -> *const f32 {
-        self.packed.as_ptr()
-    }
-
     #[wasm_bindgen(js_name = featureCount)]
     pub fn feature_count(&self) -> usize {
         self.document.features.len()
-    }
-
-    #[wasm_bindgen(js_name = featureStride)]
-    pub fn feature_stride() -> usize {
-        FEATURE_STRIDE
     }
 
     // ── outliner queries ──────────────────────────────────────────────
@@ -3082,13 +2898,6 @@ impl Kernel {
             }
         }
     }
-
-    // ── debug helper ──────────────────────────────────────────────────
-
-    #[wasm_bindgen(js_name = evalSdf)]
-    pub fn eval_sdf(&self, x: f32, y: f32, z: f32) -> f32 {
-        sdf_features(&self.document.features, [x, y, z])
-    }
 }
 
 impl Default for Kernel {
@@ -3137,28 +2946,6 @@ mod tests {
         }
     }
 
-    fn transformed_sphere(id: u32, translate: [f32; 3], r: f32) -> Feature {
-        Feature {
-            id: FeatureId::from_u32(id),
-            name: format!("Sphere {id}"),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: r },
-            transform: Transform {
-                translate,
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
-            },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        }
-    }
-
     // ─── primitive SDFs ──────────────────────────────────────────────
 
     #[test]
@@ -3190,195 +2977,6 @@ mod tests {
         assert!((sdf_primitive(&c, [2.0, 0.0, 0.0])).abs() < 1e-5);
         assert!((sdf_primitive(&c, [0.0, 3.0, 0.0])).abs() < 1e-5);
         assert!(sdf_primitive(&c, [0.0, 0.0, 0.0]) < 0.0);
-    }
-
-    // ─── boolean ops on a feature spine ──────────────────────────────
-
-    #[test]
-    fn empty_features_are_empty_space() {
-        assert!(sdf_features(&[], [0.0, 0.0, 0.0]).is_infinite());
-    }
-
-    #[test]
-    fn union_of_two_spheres_is_their_min() {
-        let features = vec![
-            sphere_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], 5.0),
-            sphere_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], 5.0),
-        ];
-        // Inside first sphere.
-        assert!(sdf_features(&features, [0.0, 0.0, 0.0]) < 0.0);
-        // Inside second sphere.
-        assert!(sdf_features(&features, [20.0, 0.0, 0.0]) < 0.0);
-        // Halfway between (10, 0, 0) — outside both, distance ≈ 5.
-        assert!((sdf_features(&features, [10.0, 0.0, 0.0]) - 5.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn difference_carves_a_hole() {
-        // Big box minus a smaller centered box: the center is now outside.
-        let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(2, BoolOp::Difference, [0.0, 0.0, 0.0], [3.0, 3.0, 3.0]),
-        ];
-        // Center is inside the cavity → outside the body → SDF > 0.
-        assert!(sdf_features(&features, [0.0, 0.0, 0.0]) > 0.0);
-        // Edge of the outer box is still on the surface.
-        assert!((sdf_features(&features, [10.0, 0.0, 0.0])).abs() < 1e-4);
-        // A point well outside both is positive.
-        assert!(sdf_features(&features, [50.0, 0.0, 0.0]) > 0.0);
-    }
-
-    #[test]
-    fn intersect_keeps_only_overlap() {
-        // Two boxes overlapping in a cube of half-extent 5 around origin.
-        let features = vec![
-            box_feature(1, BoolOp::Union, [-2.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(2, BoolOp::Intersect, [2.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-        ];
-        // Origin is inside both → inside intersection.
-        assert!(sdf_features(&features, [0.0, 0.0, 0.0]) < 0.0);
-        // (−10, 0, 0): inside first, outside second → outside intersection.
-        assert!(sdf_features(&features, [-10.0, 0.0, 0.0]) > 0.0);
-        // (10, 0, 0): inside second, outside first → outside intersection.
-        assert!(sdf_features(&features, [10.0, 0.0, 0.0]) > 0.0);
-    }
-
-    // ─── packed buffer ───────────────────────────────────────────────
-
-    #[test]
-    fn pack_includes_op_tag_in_slot_seven() {
-        let mut slot = [0.0_f32; FEATURE_STRIDE];
-        let f = sphere_feature(1, BoolOp::Difference, [1.0, 2.0, 3.0], 4.0);
-        pack_feature(&f, &mut slot);
-        assert_eq!(slot[0], Primitive::KIND_SPHERE as f32);
-        assert_eq!(&slot[1..4], &[1.0, 2.0, 3.0]);
-        assert_eq!(slot[4], 4.0);
-        assert_eq!(slot[7], BoolOp::TAG_DIFFERENCE as f32);
-    }
-
-    #[test]
-    fn pack_writes_transform_into_tail() {
-        let mut slot = [0.0_f32; FEATURE_STRIDE];
-        let f = transformed_sphere(1, [10.0, 20.0, -5.0], 4.0);
-        pack_feature(&f, &mut slot);
-        // vec4 2: translate xyz + uniform scale
-        assert_eq!(&slot[8..11], &[10.0, 20.0, -5.0]);
-        assert_eq!(slot[11], 1.0);
-        // vec4 3: quaternion xyzw
-        assert_eq!(&slot[12..16], &[0.0, 0.0, 0.0, 1.0]);
-    }
-
-    // ─── transform-aware SDF ─────────────────────────────────────────
-
-    #[test]
-    fn translated_sphere_matches_origin_sphere() {
-        // A sphere translated to (50, 0, 0) should give exactly the same
-        // SDF at (55, 0, 0) as a sphere at the origin gives at (5, 0, 0).
-        let translated = transformed_sphere(1, [50.0, 0.0, 0.0], 5.0);
-        let at_origin = sphere_feature(2, BoolOp::Union, [0.0, 0.0, 0.0], 5.0);
-        let d_t = sdf_feature(&translated, [55.0, 0.0, 0.0]);
-        let d_o = sdf_feature(&at_origin, [5.0, 0.0, 0.0]);
-        assert!((d_t - d_o).abs() < 1e-5, "{d_t} vs {d_o}");
-        assert!(d_t.abs() < 1e-4, "should be on the surface");
-    }
-
-    #[test]
-    fn uniform_scale_preserves_distance_property() {
-        // A unit sphere scaled by 4 should behave like a radius-4 sphere.
-        let scaled = Feature {
-            id: FeatureId::from_u32(1),
-            name: "S".into(),
-            op: BoolOp::Union,
-            primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
-            transform: Transform {
-                translate: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [4.0, 4.0, 4.0],
-            },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        };
-        // On the (scaled) surface.
-        assert!(sdf_feature(&scaled, [4.0, 0.0, 0.0]).abs() < 1e-5);
-        // 2 units inside.
-        assert!((sdf_feature(&scaled, [2.0, 0.0, 0.0]) + 2.0).abs() < 1e-5);
-        // 2 units outside.
-        assert!((sdf_feature(&scaled, [6.0, 0.0, 0.0]) - 2.0).abs() < 1e-5);
-    }
-
-    #[test]
-    fn rotation_keeps_box_axis_aligned_to_local_frame() {
-        // A unit box rotated 90° about Z should still report distance 0
-        // at world point (0, 1, 0) — because in the rotated frame the
-        // box still extends ±1 in every axis.
-        // Quaternion for 90° about Z: (0, 0, sin45°, cos45°)
-        let s = (std::f32::consts::FRAC_PI_4).sin();
-        let c = (std::f32::consts::FRAC_PI_4).cos();
-        let f = Feature {
-            id: FeatureId::from_u32(1),
-            name: "B".into(),
-            op: BoolOp::Union,
-            primitive: Primitive::Box {
-                center: [0.0, 0.0, 0.0],
-                half_extents: [1.0, 1.0, 1.0],
-            },
-            transform: Transform {
-                translate: [0.0, 0.0, 0.0],
-                rotation: [0.0, 0.0, s, c],
-                scale: [1.0, 1.0, 1.0],
-            },
-            blend_radius: 0.0,
-            chamfer_size: 0.0,
-            twist_rate: 0.0,
-            bend_rate: 0.0,
-            displace_depth: 0.0,
-            displace_freq: 0.0,
-            shell_thickness: 0.0,
-            target_ids: vec![],
-        };
-        // Surface in any axis direction.
-        assert!((sdf_feature(&f, [1.0, 0.0, 0.0])).abs() < 1e-5);
-        assert!((sdf_feature(&f, [0.0, 1.0, 0.0])).abs() < 1e-5);
-        // Origin still inside.
-        assert!(sdf_feature(&f, [0.0, 0.0, 0.0]) < 0.0);
-    }
-
-    #[test]
-    fn translate_then_difference_carves_an_offset_hole() {
-        // A big box at origin with a translated subtractive sphere at
-        // its corner should have a hole biased toward that corner.
-        let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            transformed_sphere(2, [10.0, 10.0, 10.0], 5.0),
-        ];
-        // At the corner the carved sphere has scooped material away.
-        // Use Difference: replace second feature's op.
-        let mut features = features;
-        features[1].op = BoolOp::Difference;
-
-        // Right at the center of the carving sphere we are outside the
-        // remaining body.
-        assert!(sdf_features(&features, [10.0, 10.0, 10.0]) > 0.0);
-        // Origin of the box is still safely inside.
-        assert!(sdf_features(&features, [0.0, 0.0, 0.0]) < 0.0);
-    }
-
-    #[test]
-    fn pack_features_strides_correctly() {
-        let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 2.0, 3.0]),
-            sphere_feature(2, BoolOp::Difference, [10.0, 0.0, 0.0], 5.0),
-        ];
-        let buf = pack_features(&features);
-        assert_eq!(buf.len(), 2 * FEATURE_STRIDE);
-        assert_eq!(buf[FEATURE_STRIDE], Primitive::KIND_SPHERE as f32);
-        assert_eq!(buf[FEATURE_STRIDE + 7], BoolOp::TAG_DIFFERENCE as f32);
     }
 
     // ─── kernel mutations + undo/redo ────────────────────────────────
@@ -3975,14 +3573,14 @@ mod tests {
     }
 
     #[test]
-    fn set_feature_op_updates_packed_buffer() {
+    fn set_feature_op_updates_feature() {
         let mut k = Kernel::new();
         let id = k
             .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
             .unwrap();
-        assert_eq!(k.packed[7], BoolOp::TAG_UNION as f32);
+        assert_eq!(k.document.features[0].op, BoolOp::Union);
         k.set_feature_op(id, BoolOp::TAG_DIFFERENCE).unwrap();
-        assert_eq!(k.packed[7], BoolOp::TAG_DIFFERENCE as f32);
+        assert_eq!(k.document.features[0].op, BoolOp::Difference);
     }
 
     #[test]
@@ -5175,7 +4773,8 @@ mod tests {
         assert_eq!(k.document.features[1].op, BoolOp::Difference);
         assert_eq!(k.body_count(), 1, "box and sphere-diff share one body");
 
-        let sdf = |p: [f32; 3]| sdf_features(&k.document.features, p);
+        let tree = csg::CsgNode::from_features(&k.document.features);
+        let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
         // sphere center [30,0,0] radius 40 → extends x=-10..70
         assert!(sdf([-40.0, 0.0, 0.0]) < 0.0, "inside box, outside sphere: stays solid");
         assert!(sdf([0.0, 0.0, 0.0]) > 0.0, "box center inside sphere: carved out");

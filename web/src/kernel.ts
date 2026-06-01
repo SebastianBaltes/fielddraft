@@ -16,11 +16,6 @@ interface WasmExports {
   memory: WebAssembly.Memory;
 }
 
-/** 16 floats per feature in the packed buffer. Mirrors `FEATURE_STRIDE`
- *  in `crates/kernel/src/lib.rs`. Each feature occupies four `vec4f`s
- *  in shader land. */
-export const FEATURE_STRIDE = 16;
-
 /** Number of contributor id slots per mesh vertex. Mirrors
  *  `csg::MAX_CONTRIBUTORS` on the Rust side. */
 export const MESH_CONTRIBUTOR_STRIDE = 4;
@@ -222,19 +217,6 @@ export class Kernel {
   /** App version this kernel's WASM binary was stamped with at build time. */
   version(): string {
     return wasmVersion();
-  }
-
-  // ── packed buffer (zero-copy bridge) ────────────────────────────────
-
-  /**
-   * Re-acquire a view on the packed feature buffer. **Do not cache**
-   * across mutations — wasm-bindgen may grow the `memory` buffer, which
-   * invalidates any `Float32Array` aliasing it.
-   */
-  primitivesView(): Float32Array {
-    const ptr = this.inner.primitivesPtr();
-    const count = this.inner.featureCount();
-    return new Float32Array(this.memory.buffer, ptr, count * FEATURE_STRIDE);
   }
 
   featureCount(): number {
@@ -1070,11 +1052,5 @@ export class Kernel {
 
   loadJson(json: string): number {
     return this.inner.loadJson(json);
-  }
-
-  // ── debug helper ────────────────────────────────────────────────────
-
-  evalSdf(x: number, y: number, z: number): number {
-    return this.inner.evalSdf(x, y, z);
   }
 }

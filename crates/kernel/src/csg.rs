@@ -3,7 +3,8 @@
 //! K1 introduces the CSG graph as a sibling representation of the
 //! existing linear feature spine. `CsgNode::from_features` folds a
 //! `Feature` list into a binary tree whose `sdf` evaluator is
-//! mathematically identical to the linear `sdf_features` fold — the
+//! mathematically identical to evaluating the linear feature spine
+//! op-by-op — the
 //! tree is just a richer form that later kernel slices (provenance,
 //! BVH, multi-body isolation) will extend. For K1 the tree only exists
 //! so that the Dual Contouring mesher can traverse it polymorphically
@@ -681,8 +682,8 @@ impl CsgNode {
     /// Fold a linear feature spine into a binary CSG tree.
     ///
     /// The first feature seeds the accumulator regardless of its op
-    /// (exactly matching the `sdf_features` rule that the empty-space
-    /// start means union/difference/intersection all degenerate to
+    /// (the empty-space start means union/difference/intersection all
+    /// degenerate to
     /// "take this feature as-is"). Each subsequent feature combines
     /// with the accumulator via its own op.
     ///
@@ -872,7 +873,8 @@ impl CsgNode {
         }
     }
 
-    /// `sdf_features` when built from the same feature list.
+    /// Evaluate the signed distance to this CSG tree at `p`. Matches
+    /// an op-by-op fold of the same feature spine.
     ///
     /// `mode` is threaded through for future Ghost-Topology dual-path
     /// support (see [`EvalMode`]). Until K10 lands both modes return
@@ -1723,7 +1725,6 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdf_features;
     use fielddraft_protocol::{
         BoolOp, Feature, FeatureId, Primitive, Sketch2d as ProtoSketch2d,
         Sketch2dPrimitive as ProtoSketch2dPrimitive, Transform,
@@ -1814,10 +1815,16 @@ mod tests {
             [10.0, 10.0, 10.0],
         )];
         let tree = CsgNode::from_features(&features);
-        for &p in &[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [20.0, 0.0, 0.0]] {
+        // Direct geometric SDF of a box with half-extents [10,10,10] at
+        // the origin: negative inside, 0 on the +X face, positive outside.
+        let expected = [
+            ([0.0, 0.0, 0.0], -10.0),
+            ([10.0, 0.0, 0.0], 0.0),
+            ([20.0, 0.0, 0.0], 10.0),
+        ];
+        for &(p, want) in &expected {
             let a = tree.sdf(p, EvalMode::Logical);
-            let b = sdf_features(&features, p);
-            assert!((a - b).abs() < 1e-5, "{a} vs {b} at {p:?}");
+            assert!((a - want).abs() < 1e-4, "{a} vs {want} at {p:?}");
         }
     }
 
@@ -1845,19 +1852,20 @@ mod tests {
             },
         ];
         let tree = CsgNode::from_features(&features);
-        let samples = [
-            [0.0, 0.0, 0.0],
-            [5.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-            [-5.0, -5.0, -5.0],
-            [50.0, 0.0, 0.0],
+        // Box half [10,10,10] at origin MINUS sphere radius 3 at origin.
+        // Solid SDF = max(box_sdf, -sphere_sdf); values precomputed.
+        let expected = [
+            ([0.0, 0.0, 0.0], 3.0),
+            ([5.0, 0.0, 0.0], -2.0),
+            ([10.0, 0.0, 0.0], 0.0),
+            ([-5.0, -5.0, -5.0], -5.0),
+            ([50.0, 0.0, 0.0], 40.0),
         ];
-        for p in samples {
+        for (p, want) in expected {
             let a = tree.sdf(p, EvalMode::Logical);
-            let b = sdf_features(&features, p);
             assert!(
-                (a - b).abs() < 1e-4,
-                "tree {a} vs linear {b} at {p:?}",
+                (a - want).abs() < 1e-4,
+                "tree {a} vs expected {want} at {p:?}",
             );
         }
     }

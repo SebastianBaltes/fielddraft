@@ -437,10 +437,6 @@ export class KernelStore {
 
   getState = (): StoreState => this.state;
 
-  primitivesView(): Float32Array {
-    return this.kernel.primitivesView();
-  }
-
   private commit(nextSelection?: ReadonlySet<number>, nextAnchor?: number | null): void {
     const features = this.kernel.listFeatures();
     const rbRaw = this.kernel.getRollbackIndex();
