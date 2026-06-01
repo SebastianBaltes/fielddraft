@@ -963,12 +963,32 @@ export async function compileDeferredPipeline(
 
   if (device) device.pushErrorScope("validation");
 
-  await Promise.all([
-    renderer.compileAsync(state.opaqueScene, camera),
-    renderer.compileAsync(state.transparentScene, camera),
-    renderer.compileAsync(state.transparentBackScene, camera),
-    renderer.compileAsync(state.shadeScene, state.shadeCamera),
-  ]);
+  // `compileAsync` builds each pipeline keyed to the render target that is
+  // *currently set* on the renderer (its attachment formats are part of the
+  // pipeline cache key). `renderDeferredFrame` draws each scene into its own
+  // MRT render target, so we must precompile with the matching target bound —
+  // otherwise the cache key differs and the first real frame falls back to the
+  // SYNCHRONOUS `createRenderPipeline` path, compiling the heavy SDF shaders on
+  // the main thread / GPU process and freezing the whole browser. Bind the
+  // same target each pass uses, compile, then restore. Sequential (not
+  // `Promise.all`) because `setRenderTarget` is stateful on the renderer.
+  const prevTarget = renderer.getRenderTarget();
+
+  await renderer.computeAsync(state.clearNode);
+
+  renderer.setRenderTarget(state.opaqueRT);
+  await renderer.compileAsync(state.opaqueScene, camera);
+
+  renderer.setRenderTarget(state.transparentRT);
+  await renderer.compileAsync(state.transparentScene, camera);
+
+  renderer.setRenderTarget(state.transparentBackRT);
+  await renderer.compileAsync(state.transparentBackScene, camera);
+
+  renderer.setRenderTarget(null);
+  await renderer.compileAsync(state.shadeScene, state.shadeCamera);
+
+  renderer.setRenderTarget(prevTarget);
 
   if (device) {
     const err = await device.popErrorScope();
