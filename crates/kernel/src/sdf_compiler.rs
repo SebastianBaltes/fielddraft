@@ -805,10 +805,8 @@ pub fn eval_opcodes_with_volumes(
                     } else {
                         blend_min_eval(da, db, blend_r, mode)
                     }
-                } else if is_diff {
-                    da.max(-db)
                 } else {
-                    da.min(db)
+                    crate::csg::hard_combine(is_diff, da, db)
                 };
                 push_v!(result);
             }
