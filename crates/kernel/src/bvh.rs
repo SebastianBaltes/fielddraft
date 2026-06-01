@@ -26,9 +26,11 @@
 
 use serde::Serialize;
 
-use fielddraft_protocol::{Primitive, Transform};
+use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
-use crate::csg::{sdf_extrude, Aabb, BlendMode, Contributors, CsgNode, EvalMode, NodeId};
+use crate::csg::{
+    expand_evaluate_leaf, sdf_extrude, Aabb, BlendMode, BranchId, Contributors, CsgNode, EvalMode,
+};
 use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
 
@@ -66,7 +68,7 @@ pub struct HybridInfo {
 pub enum BoundedCsg {
     Empty,
     Leaf {
-        id: NodeId,
+        id: FeatureId,
         primitive: Primitive,
         /// Transform from the leaf's primitive frame to world space.
         /// Built by composing every `CsgNode::Transform` from the
@@ -137,7 +139,7 @@ pub enum BoundedCsg {
     /// accumulated [`CsgNode::Transform`] chain that led here —
     /// exactly like [`BoundedCsg::Leaf`].
     Extrude {
-        id: NodeId,
+        id: FeatureId,
         sketch: Box<BoundedSketch2d>,
         half_height: f32,
         world_transform: Transform,
@@ -147,7 +149,7 @@ pub enum BoundedCsg {
     /// collapse as [`BoundedCsg::Extrude`]; the query maps 3D to
     /// `(√(x² + z²), y)` before hitting the 2D tree.
     Revolve {
-        id: NodeId,
+        id: FeatureId,
         sketch: Box<BoundedSketch2d>,
         world_transform: Transform,
         aabb: Aabb,
@@ -182,6 +184,18 @@ impl BoundedCsg {
     /// `CsgNode::Transform` chains collapsed into each leaf.
     pub fn from_csg(csg: &CsgNode) -> Self {
         build(csg, &Transform::IDENTITY)
+    }
+
+    /// Fold a logical [`CsgNode`] into a BVH starting from an explicit
+    /// accumulated transform `carry` rather than identity. Every leaf's
+    /// `world_transform` is then `carry ∘ (the leaf's own transform
+    /// chain)`, and the SDF/AABBs are expressed in `carry`'s output
+    /// frame. Passing `carry = inverse(placement)` re-expresses a body in
+    /// its body-local frame so the woven B-Rep is placement-free (the
+    /// DL-50 correction); `from_csg` is the `carry = IDENTITY` special
+    /// case (world frame).
+    pub fn from_csg_with_carry(csg: &CsgNode, carry: &Transform) -> Self {
+        build(csg, carry)
     }
 
     /// World-space axis-aligned bounding box of this sub-tree.
@@ -451,8 +465,8 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let d = sdf_primitive(primitive, local) * world_transform.min_scale();
-                (d, Contributors::single(id.clone()))
+                let (d, c) = expand_evaluate_leaf(id, primitive, local, eps);
+                (d * world_transform.min_scale(), c)
             }
             BoundedCsg::Union { left, right, .. } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
@@ -582,9 +596,15 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let d2 = sketch.sdf([local[0], local[1]]);
+                // Per-segment identity (DL-46) + cap split (DL-50): the
+                // nearest sketch boundary group is folded into the
+                // contributor sub-id for wall faces, while points whose
+                // nearest surface is a top/bottom cap get a reserved cap
+                // sub-id so the weaver lifts them to their own plane.
+                let (d2, group) = sketch.sdf_with_edge([local[0], local[1]]);
                 let d = sdf_extrude(d2, local[2], *half_height) * world_transform.min_scale();
-                (d, Contributors::single(id.clone()))
+                let sub = crate::csg::extrude_contributor_sub(d2, local[2], *half_height, group);
+                (d, Contributors::single(BranchId::from_feature_sub(id, sub)))
             }
             BoundedCsg::Revolve {
                 id,
@@ -594,8 +614,9 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                let d = sketch.sdf([r, local[1]]) * world_transform.min_scale();
-                (d, Contributors::single(id.clone()))
+                let (d2, group) = sketch.sdf_with_edge([r, local[1]]);
+                let d = d2 * world_transform.min_scale();
+                (d, Contributors::single(BranchId::from_feature_sub(id, group)))
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
@@ -852,7 +873,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
 /// Distance from a point to the surface of an AABB. Zero if the point
 /// sits inside the box (the Lipschitz bound is trivial there); the
 /// usual `sqrt(Σ max(0, dist_i)²)` when outside.
-fn distance_point_to_aabb(p: [f32; 3], aabb: Aabb) -> f32 {
+pub(crate) fn distance_point_to_aabb(p: [f32; 3], aabb: Aabb) -> f32 {
     if aabb.is_empty() {
         return f32::INFINITY;
     }
@@ -1287,7 +1308,8 @@ mod tests {
         let (cb, cc) = csg.evaluate(p, 0.5, EvalMode::Logical);
         assert!((ba - cb).abs() < 1e-4);
         assert_eq!(ca.as_slice(), cc.as_slice());
-        assert_eq!(ca.as_slice(), &[FeatureId::from_u32(1)]);
+        // Box +X face is sub-index 0.
+        assert_eq!(ca.as_slice(), &[BranchId::from_feature_sub(&FeatureId::from_u32(1), 0)]);
     }
 
     #[test]
@@ -1363,10 +1385,18 @@ mod tests {
             half_height: 2.0,
         };
         let bvh = BoundedCsg::from_csg(&csg);
-        // Top face centre → surface, contributor = {7}, Face.
+        // Top cap centre → surface, single Face contributor. The cap is
+        // now a distinct branch (DL-50): the reserved top-cap sub-id, not
+        // the nearest wall group.
         let (d, c) = bvh.evaluate([0.0, 0.0, 2.0], 0.25, EvalMode::Logical);
         assert!(d.abs() < 1e-4);
-        assert_eq!(c.as_slice(), &[FeatureId::from_u32(7)]);
+        assert_eq!(
+            c.as_slice(),
+            &[BranchId::from_feature_sub(
+                &FeatureId::from_u32(7),
+                BranchId::EXTRUDE_CAP_TOP_SUB
+            )]
+        );
         assert_eq!(c.element(), ProxyElement::Face);
     }
 

@@ -11,47 +11,89 @@
 
 use serde::{Deserialize, Serialize};
 
-use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, Feature, FeatureId, HalfSpace, Primitive, Transform};
 
 use crate::sketch2d::Sketch2d;
 use crate::{quat_rotate, sdf_primitive, world_to_local};
 
-/// Stable identifier of a CSG leaf. Inherited from `FeatureId` so
-/// provenance survives outliner reorders, undo/redo and serialisation
-/// without a separate naming scheme (the README's TNP-solution).
-pub type NodeId = FeatureId;
-
-/// Maximum number of leaves that can simultaneously be "active" at a
-/// single SDF evaluation. Three is the theoretical lower bound for a
-/// `Vertex` of the B-Rep proxy (three faces meeting at a point); four
-/// leaves us headroom for near-degenerate configurations without ever
-/// forcing a heap allocation on the hot evaluate path.
-pub const MAX_CONTRIBUTORS: usize = 4;
-
-/// Small inline set of leaf ids that dominate a particular SDF
-/// evaluation within the provenance epsilon. Ordering inside the set
-/// is insertion order; duplicates are silently ignored.
+/// Stable identifier of a CSG branch — a primitive *sub-face* (a box
+/// face, a cylinder cap, a sketch segment), not just a whole feature.
 ///
-/// After K4.5.1 this is `Clone`-only rather than `Copy`, because
-/// [`FeatureId`] carries a heap pointer for hierarchical ids. The
-/// per-vertex allocation cost is still minimal for flat-numeric ids
-/// (SmolStr inlines strings ≤22 chars), but every caller that used
-/// to copy a Contributors now has to `.clone()` it explicitly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Packs a `FeatureId`'s flat numeric id into the high bits and a local
+/// sub-index into the low [`BranchId::SUB_BITS`] bits, so a single `u32`
+/// names "the +X face of feature 7" without a separate side table. The
+/// B-Rep substrate keys faces/edges off these ids; the sub-index lets a
+/// primitive's six faces (or a sketch's many segments) each get a
+/// distinct, Copy, hashable identity.
+///
+/// Being a plain `u32` newtype makes [`Contributors`] `Copy`, which the
+/// hot evaluate path relies on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct BranchId(pub u32);
+
+impl BranchId {
+    pub const SENTINEL: u32 = u32::MAX;
+    /// Bits reserved for the per-feature sub-index. 12 bits → 4096
+    /// sub-ids per feature (enough for sketch segments), leaving 20
+    /// bits ≈ 1M feature ids.
+    const SUB_BITS: u32 = 12;
+    const SUB_MASK: u32 = 0xFFF;
+
+    /// Reserved extrude-cap sub-ids (DL-50). The top/bottom caps of an
+    /// extrude are not sketch boundary groups, so they get distinct
+    /// sub-ids at the very top of the 12-bit range. Wall groups are
+    /// always small (`< edge_count ≪ 0xFFE`), so there is no collision.
+    pub const EXTRUDE_CAP_TOP_SUB: u32 = 0xFFF;
+    pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0xFFE;
+
+    /// Branch id for a whole feature (sub-index 0).
+    pub fn from_feature(id: &FeatureId) -> Self {
+        let base = id.as_u32_or_root().unwrap_or(0);
+        Self(base << Self::SUB_BITS)
+    }
+
+    /// Branch id for sub-face `sub` of feature `id`.
+    pub fn from_feature_sub(id: &FeatureId, sub: u32) -> Self {
+        let base = id.as_u32_or_root().unwrap_or(0);
+        Self((base << Self::SUB_BITS) | (sub & Self::SUB_MASK))
+    }
+
+    /// The flat feature id (sub-index stripped).
+    pub fn feature_id(self) -> u32 {
+        self.0 >> Self::SUB_BITS
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// Maximum number of branches that can simultaneously be "active" at a
+/// single SDF evaluation. A `Vertex` of the B-Rep proxy needs three
+/// (three faces meeting at a point); the per-face decomposition pushes
+/// the worst case higher (a box corner is three faces of one
+/// primitive), so we keep generous headroom while staying heap-free on
+/// the hot evaluate path.
+pub const MAX_CONTRIBUTORS: usize = 8;
+
+/// Small inline, `Copy` set of branch ids that dominate a particular
+/// SDF evaluation within the provenance epsilon. Ordering inside the
+/// set is insertion order; duplicates are silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Contributors {
-    ids: [NodeId; MAX_CONTRIBUTORS],
+    ids: [BranchId; MAX_CONTRIBUTORS],
     len: u8,
 }
 
 impl Contributors {
     pub fn empty() -> Self {
         Self {
-            ids: Default::default(),
+            ids: [BranchId::default(); MAX_CONTRIBUTORS],
             len: 0,
         }
     }
 
-    pub fn single(id: NodeId) -> Self {
+    pub fn single(id: BranchId) -> Self {
         let mut out = Self::empty();
         out.ids[0] = id;
         out.len = 1;
@@ -66,11 +108,11 @@ impl Contributors {
         self.len == 0
     }
 
-    pub fn as_slice(&self) -> &[NodeId] {
+    pub fn as_slice(&self) -> &[BranchId] {
         &self.ids[..self.len as usize]
     }
 
-    pub fn contains(&self, id: &NodeId) -> bool {
+    pub fn contains(&self, id: &BranchId) -> bool {
         self.as_slice().iter().any(|x| x == id)
     }
 
@@ -78,7 +120,7 @@ impl Contributors {
     /// past `MAX_CONTRIBUTORS` — extremely high multiplicities are a
     /// sign of numerical trouble (too large an epsilon), not real
     /// geometry, and we prefer a stable upper bound to a panic.
-    pub fn push(&mut self, id: NodeId) {
+    pub fn push(&mut self, id: BranchId) {
         if self.contains(&id) {
             return;
         }
@@ -89,16 +131,9 @@ impl Contributors {
     }
 
     pub fn extend(&mut self, other: Self) {
-        for id in other.into_iter_owned() {
+        for &id in other.as_slice() {
             self.push(id);
         }
-    }
-
-    /// Consume the set and yield its ids. Used by [`Contributors::extend`]
-    /// to move the inner ids into the target set without cloning.
-    fn into_iter_owned(self) -> impl Iterator<Item = NodeId> {
-        let len = self.len as usize;
-        self.ids.into_iter().take(len)
     }
 
     /// Classification of a mesh vertex or picking hit based on
@@ -110,6 +145,23 @@ impl Contributors {
             2 => ProxyElement::Edge,
             _ => ProxyElement::Vertex,
         }
+    }
+
+    /// Collapse to per-*feature* granularity: every contained branch is
+    /// reduced to its owning feature (sub-index dropped) and duplicates
+    /// merged. The analytic per-face decomposition stays in
+    /// [`expand_evaluate_leaf`]; the mesh-level proxy (DC/MDC/RFTA
+    /// classification + the flat contributor buffer + the topology
+    /// extractor) consumes this collapsed view, so a single box still
+    /// reads as one Face-classified contributor rather than splitting
+    /// into its six faces. The richer per-face ids are reserved for the
+    /// B-Rep weaver, which reads `evaluate` directly.
+    pub fn feature_collapsed(&self) -> Self {
+        let mut out = Self::empty();
+        for &b in self.as_slice() {
+            out.push(BranchId(b.feature_id() << BranchId::SUB_BITS));
+        }
+        out
     }
 }
 
@@ -424,7 +476,7 @@ impl Aabb {
 
 /// One node of the CSG graph. `Empty` is the identity element of union
 /// (SDF ≡ +∞, i.e. nothing exists), used as the seed of
-/// `from_features`. Each `Leaf` carries a stable [`NodeId`] that
+/// `from_features`. Each `Leaf` carries a stable [`FeatureId`] that
 /// propagates through the provenance-aware `evaluate` fold, so every
 /// surface hit can be traced back to the primitives that produced it.
 /// K10.2: how to blend the junction between two Boolean
@@ -440,7 +492,7 @@ pub enum BlendMode {
 pub enum CsgNode {
     Empty,
     Leaf {
-        id: NodeId,
+        id: FeatureId,
         primitive: Primitive,
     },
     Transform(Transform, Box<CsgNode>),
@@ -507,13 +559,13 @@ pub enum CsgNode {
     },
     /// Lift a 2D sketch into a 3D slab of `±half_height` along the
     /// local Z axis. The whole extruded region contributes a
-    /// single [`NodeId`] to the provenance set — sub-primitives
+    /// single [`FeatureId`] to the provenance set — sub-primitives
     /// inside the sketch don't get individual ids until the K5/K6
     /// sketcher gives them identities. Use the extrude's own `id`
     /// in the feature tree to trace back to the originating
     /// outliner entry.
     Extrude {
-        id: NodeId,
+        id: FeatureId,
         sketch: Box<Sketch2d>,
         half_height: f32,
     },
@@ -523,10 +575,10 @@ pub enum CsgNode {
     /// convention: sketch primitives should live at `x ≥ 0`;
     /// a primitive that crosses the axis of revolution produces
     /// a valid SDF but geometrically silly results (the axis
-    /// sweeps through the centre). Single [`NodeId`] in the
+    /// sweeps through the centre). Single [`FeatureId`] in the
     /// contributor set, same rationale as Extrude.
     Revolve {
-        id: NodeId,
+        id: FeatureId,
         sketch: Box<Sketch2d>,
     },
 }
@@ -540,7 +592,7 @@ impl CsgNode {
     /// "take this feature as-is"). Each subsequent feature combines
     /// with the accumulator via its own op.
     ///
-    /// Each leaf inherits the feature's id as its `NodeId`, so
+    /// Each leaf inherits the feature's id as its `FeatureId`, so
     /// contributor analysis can always name the original outliner row
     /// that produced a face/edge/vertex.
     pub fn from_features(features: &[Feature]) -> Self {
@@ -942,7 +994,7 @@ impl CsgNode {
         match self {
             CsgNode::Empty => (f32::INFINITY, Contributors::empty()),
             CsgNode::Leaf { id, primitive } => {
-                (sdf_primitive(primitive, p), Contributors::single(id.clone()))
+                expand_evaluate_leaf(id, primitive, p, eps)
             }
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
@@ -1072,12 +1124,22 @@ impl CsgNode {
                 sketch,
                 half_height,
             } => {
-                let d = sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height);
-                (d, Contributors::single(id.clone()))
+                // Per-segment identity (DL-46) + cap split (DL-50):
+                // the closest sketch boundary group becomes the
+                // contributor's sub-id for a wall face, but when the
+                // cap term `|z| − hh` dominates the 2D distance the
+                // nearest surface is a top/bottom cap, which gets a
+                // distinct reserved sub-id so the weaver can lift it
+                // to its own analytic plane.
+                let (d2, group) = sketch.sdf_with_edge([p[0], p[1]]);
+                let d = sdf_extrude(d2, p[2], *half_height);
+                let sub = extrude_contributor_sub(d2, p[2], *half_height, group);
+                (d, Contributors::single(BranchId::from_feature_sub(id, sub)))
             }
             CsgNode::Revolve { id, sketch } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
-                (sketch.sdf([r, p[1]]), Contributors::single(id.clone()))
+                let (d, group) = sketch.sdf_with_edge([r, p[1]]);
+                (d, Contributors::single(BranchId::from_feature_sub(id, group)))
             }
         }
     }
@@ -1201,6 +1263,26 @@ pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
     outside + inside
 }
 
+/// Decide the contributor sub-id for an extrude point (DL-50). The
+/// extrude SDF is `max(d2, |z| − hh)`; whichever term dominates names
+/// the nearest surface. When the cap term wins the point is closest to
+/// a top/bottom cap → a reserved cap sub-id; otherwise it is closest to
+/// a wall → the sketch boundary `group`. `z` and `half_height` are in
+/// the canonical (centred) local extrude frame, so the cap split is
+/// independent of placement.
+pub(crate) fn extrude_contributor_sub(d2: f32, z: f32, half_height: f32, group: u32) -> u32 {
+    let cap = z.abs() - half_height;
+    if cap > d2 {
+        if z >= 0.0 {
+            BranchId::EXTRUDE_CAP_TOP_SUB
+        } else {
+            BranchId::EXTRUDE_CAP_BOTTOM_SUB
+        }
+    } else {
+        group
+    }
+}
+
 /// K10.0: polynomial smooth minimum (IQ's cubic variant).
 /// `r` is the blend radius. When the two input distances are
 /// far apart (|da - db| >= r) the result degenerates to
@@ -1299,10 +1381,10 @@ fn find_matching_fillet<'a>(
     let left_ids = left.leaf_ids();
     let right_ids = right.leaf_ids();
     fillets.iter().find(|f| {
-        let a_in_left = left_ids.iter().any(|id| *id == f.feature_a);
-        let b_in_right = right_ids.iter().any(|id| *id == f.feature_b);
-        let a_in_right = right_ids.iter().any(|id| *id == f.feature_a);
-        let b_in_left = left_ids.iter().any(|id| *id == f.feature_b);
+        let a_in_left = left_ids.contains(&f.feature_a);
+        let b_in_right = right_ids.contains(&f.feature_b);
+        let a_in_right = right_ids.contains(&f.feature_a);
+        let b_in_left = left_ids.contains(&f.feature_b);
         (a_in_left && b_in_right) || (a_in_right && b_in_left)
     })
 }
@@ -1362,8 +1444,8 @@ pub(crate) fn blend_min(da: f32, db: f32, r: f32, mode: BlendMode) -> f32 {
 }
 
 pub(crate) fn chamfer_union(da: f32, db: f32, r: f32) -> f32 {
-    const SQRT_HALF: f32 = 0.707_106_8;
-    da.min(db).min((da + db - r) * SQRT_HALF)
+    use std::f32::consts::FRAC_1_SQRT_2;
+    da.min(db).min((da + db - r) * FRAC_1_SQRT_2)
 }
 
 /// Boolean-min fold with contributor propagation: within `eps` the
@@ -1403,6 +1485,214 @@ fn combine_max(
         (da, ca)
     } else {
         (db, cb)
+    }
+}
+
+/// One sub-face of a primitive's half-space decomposition: the local
+/// sub-index (matching the `sub` of [`BranchId::from_feature_sub`]) and the
+/// [`HalfSpace`] surface it lies on. The half-space is expressed in the
+/// primitive's *centred* local frame (i.e. after subtracting the primitive
+/// `center`, the same `lp` the SDF tie-break is evaluated at).
+#[derive(Debug, Clone)]
+pub(crate) struct HalfSpaceFace {
+    pub sub: u32,
+    pub half_space: HalfSpace,
+}
+
+/// Fixed-capacity (no-heap) result of [`primitive_halfspaces`]: the primitive
+/// `center` offset that maps the centred local frame to the leaf-local frame
+/// (`lp = p - center`), plus up to six [`HalfSpaceFace`]s.
+#[derive(Debug, Clone)]
+pub(crate) struct PrimitiveHalfSpaces {
+    // Consumed by the B-Rep weaver (SA-0b) to map the centred local
+    // frame back to leaf-local space; the hot SDF path subtracts
+    // `center` itself, so it is currently unread inside this crate.
+    #[allow(dead_code)]
+    pub center: [f32; 3],
+    faces: [HalfSpaceFace; 6],
+    len: usize,
+}
+
+impl PrimitiveHalfSpaces {
+    pub fn faces(&self) -> &[HalfSpaceFace] {
+        &self.faces[..self.len]
+    }
+}
+
+/// Enumerate the analytic half-space sub-faces of a primitive — the single
+/// **source of truth** for the per-face branch decomposition. Both
+/// [`expand_evaluate_leaf`] (the hot SDF path, for branch tie-breaking) and the
+/// B-Rep weaver consume this so the two never drift apart.
+///
+/// Each face's half-space is given in the primitive's centred local frame; the
+/// returned `center` is the offset to undo it (`lp = p - center`). Returns
+/// `None` for primitives with no closed-form half-space decomposition (Sphere
+/// is a single un-split surface, Torus/Gyroid/sketch sweeps have no per-face
+/// planar split here).
+///
+/// NOTE: keep in sync with [`expand_evaluate_leaf`] — `Box`/`Cylinder` consume
+/// this directly, so they cannot drift. `Cone` is enumerated here for the
+/// weaver (caps as planes, wall as [`HalfSpace::Cone`]) but its hot-path wall
+/// distance uses a *truncated*-cone formula (`r - r_at_y`) that differs from the
+/// infinite-apex [`HalfSpace::Cone`] SDF; the cube/analytic-plane weaving path
+/// is unaffected.
+pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpaces> {
+    let plane = |normal: [f32; 3], offset: f32| HalfSpace::Plane { normal, offset };
+    let mk = |center: [f32; 3], list: &[(u32, HalfSpace)]| {
+        let mut faces = std::array::from_fn(|_| HalfSpaceFace {
+            sub: 0,
+            half_space: HalfSpace::Sphere { radius: 0.0 },
+        });
+        for (slot, (sub, half_space)) in faces.iter_mut().zip(list.iter()) {
+            *slot = HalfSpaceFace {
+                sub: *sub,
+                half_space: half_space.clone(),
+            };
+        }
+        PrimitiveHalfSpaces { center, faces, len: list.len() }
+    };
+    match prim {
+        Primitive::Box { center, half_extents } => {
+            let [hx, hy, hz] = *half_extents;
+            Some(mk(
+                *center,
+                &[
+                    (0, plane([1.0, 0.0, 0.0], hx)),
+                    (1, plane([-1.0, 0.0, 0.0], hx)),
+                    (2, plane([0.0, 1.0, 0.0], hy)),
+                    (3, plane([0.0, -1.0, 0.0], hy)),
+                    (4, plane([0.0, 0.0, 1.0], hz)),
+                    (5, plane([0.0, 0.0, -1.0], hz)),
+                ],
+            ))
+        }
+        Primitive::Cylinder { center, radius, half_height } => Some(mk(
+            *center,
+            &[
+                (0, HalfSpace::InfiniteCylinder { radius: *radius }),
+                (1, plane([0.0, 1.0, 0.0], *half_height)),
+                (2, plane([0.0, -1.0, 0.0], *half_height)),
+            ],
+        )),
+        // A sphere is ONE closed analytic face (no edges, no caps): the whole
+        // surface is sub-0 (SA-6). The primitive `center` folds into the face
+        // transform exactly like the box/cylinder (DL-20).
+        Primitive::Sphere { center, radius } => {
+            Some(mk(*center, &[(0, HalfSpace::Sphere { radius: *radius })]))
+        }
+        // A torus is likewise ONE closed analytic face (no edges): same
+        // edgeless-closed-surface topology as the sphere, mapped to
+        // HalfSpace::Torus (→ TOROIDAL_SURFACE in STEP). SA-6.
+        Primitive::Torus { center, major_radius, minor_radius } => Some(mk(
+            *center,
+            &[(0, HalfSpace::Torus {
+                major_radius: *major_radius,
+                minor_radius: *minor_radius,
+            })],
+        )),
+        Primitive::Cone { r_bottom, r_top, half_height } => {
+            // Wall half-angle of the truncated cone (apex direction along Y).
+            let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan();
+            Some(mk(
+                [0.0, 0.0, 0.0],
+                &[
+                    (0, HalfSpace::Cone { half_angle }),
+                    (1, plane([0.0, 1.0, 0.0], *half_height)),
+                    (2, plane([0.0, -1.0, 0.0], *half_height)),
+                ],
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Evaluate a leaf primitive with half-space decomposition for branch
+/// tracking. Returns the original (L2-exact) SDF value but computes
+/// per-face BranchIds by projecting onto the half-space composition.
+pub(crate) fn expand_evaluate_leaf(
+    id: &FeatureId,
+    prim: &Primitive,
+    p: [f32; 3],
+    eps: f32,
+) -> (f32, Contributors) {
+    let d = sdf_primitive(prim, p);
+    match prim {
+        Primitive::Box { center, .. }
+        | Primitive::Cylinder { center, .. }
+        | Primitive::Sphere { center, .. }
+        | Primitive::Torus { center, .. } => {
+            // Box/Cylinder/Sphere/Torus consume `primitive_halfspaces` directly
+            // — single source of truth, no heap allocation. Sphere/Torus have a
+            // single face (len == 1), so the loop trivially tags sub 0 (SA-6).
+            let lp = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+            let hs = primitive_halfspaces(prim).expect("box/cylinder are enumerated");
+            let mut d_max = f32::NEG_INFINITY;
+            for f in hs.faces() {
+                d_max = d_max.max(sdf_halfspace(&f.half_space, lp));
+            }
+            let mut c = Contributors::empty();
+            for f in hs.faces() {
+                if (sdf_halfspace(&f.half_space, lp) - d_max).abs() <= eps {
+                    c.push(BranchId::from_feature_sub(id, f.sub));
+                }
+            }
+            (d, c)
+        }
+        Primitive::Cone { r_bottom, r_top, half_height } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let hh = *half_height;
+            let t = ((p[1] + hh) / (2.0 * hh)).clamp(0.0, 1.0);
+            let r_at_y = r_bottom * (1.0 - t) + r_top * t;
+            let d_wall = r - r_at_y;
+            let halves = [
+                (d_wall, 0u32),
+                (sdf_halfspace(&HalfSpace::Plane { normal: [0.0, 1.0, 0.0], offset: hh }, p), 1),
+                (sdf_halfspace(&HalfSpace::Plane { normal: [0.0, -1.0, 0.0], offset: hh }, p), 2),
+            ];
+            let d_max = halves.iter().fold(f32::NEG_INFINITY, |a, (v, _)| a.max(*v));
+            let mut c = Contributors::empty();
+            for &(di, sub) in &halves {
+                if (di - d_max).abs() <= eps {
+                    c.push(BranchId::from_feature_sub(id, sub));
+                }
+            }
+            (d, c)
+        }
+        _ => (d, Contributors::single(BranchId::from_feature(id))),
+    }
+}
+
+/// Signed distance to a single analytic [`HalfSpace`] surface, in the
+/// primitive's centred local frame.
+pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
+    match hs {
+        HalfSpace::Plane { normal, offset } => {
+            p[0] * normal[0] + p[1] * normal[1] + p[2] * normal[2] - offset
+        }
+        HalfSpace::InfiniteCylinder { radius } => {
+            (p[0] * p[0] + p[2] * p[2]).sqrt() - radius
+        }
+        HalfSpace::Sphere { radius } => {
+            (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - radius
+        }
+        HalfSpace::Cone { half_angle } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let (sin_a, cos_a) = half_angle.sin_cos();
+            r * cos_a - p[1].abs() * sin_a
+        }
+        HalfSpace::Torus { major_radius, minor_radius } => {
+            let r_xz = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let q0 = r_xz - major_radius;
+            (q0 * q0 + p[1] * p[1]).sqrt() - minor_radius
+        }
+        HalfSpace::Gyroid { cell_size, thickness } => {
+            let s = *cell_size;
+            let x = p[0] / s;
+            let y = p[1] / s;
+            let z = p[2] / s;
+            let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
+            (f.abs() - thickness) * s * 0.2887
+        }
     }
 }
 
@@ -1615,9 +1905,15 @@ mod tests {
     }
 
     /// Tiny convenience used in the contributor-equality assertions:
-    /// build a `Vec<FeatureId>` from a slice of bare `u32` literals.
-    fn ids(raw: &[u32]) -> Vec<FeatureId> {
-        raw.iter().copied().map(FeatureId::from_u32).collect()
+    /// build a `Vec<BranchId>` from `(feature, sub)` pairs. Sorted so
+    /// callers can compare against an order-independent expectation.
+    fn branches(raw: &[(u32, u32)]) -> Vec<BranchId> {
+        let mut v: Vec<BranchId> = raw
+            .iter()
+            .map(|&(f, sub)| BranchId::from_feature_sub(&FeatureId::from_u32(f), sub))
+            .collect();
+        v.sort_by_key(|b| b.as_u32());
+        v
     }
 
     #[test]
@@ -1633,7 +1929,8 @@ mod tests {
         let (d, c) = tree.evaluate([15.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "point should sit on box top, got d={d}");
         assert_eq!(c.element(), ProxyElement::Face);
-        assert_eq!(c.as_slice(), ids(&[1]).as_slice());
+        // Box +Y face is sub-index 2 (see `primitive_halfspaces`).
+        assert_eq!(c.as_slice(), branches(&[(1, 2)]).as_slice());
     }
 
     #[test]
@@ -1650,9 +1947,10 @@ mod tests {
         let (d, c) = tree.evaluate([10.0, 20.0, 0.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both surfaces, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
-        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
-        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
-        assert_eq!(got, ids(&[1, 2]));
+        let mut got: Vec<BranchId> = c.as_slice().to_vec();
+        got.sort_by_key(|b| b.as_u32());
+        // box +Y face (sub 2) meets cylinder lateral wall (sub 0).
+        assert_eq!(got, branches(&[(1, 2), (2, 0)]));
     }
 
     #[test]
@@ -1670,11 +1968,15 @@ mod tests {
         // All three boxes meet at (10, 10, 10).
         let (d, c) = tree.evaluate([10.0, 10.0, 10.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4);
+        // With per-face decomposition each box reports several of its
+        // own faces at the shared corner, so the multiplicity is well
+        // above three — still a Vertex. The provenance must name all
+        // three feature ids (sub-index stripped).
         assert_eq!(c.element(), ProxyElement::Vertex);
-        assert_eq!(c.len(), 3);
-        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
-        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
-        assert_eq!(got, ids(&[1, 2, 3]));
+        let mut feats: Vec<u32> = c.as_slice().iter().map(|b| b.feature_id()).collect();
+        feats.sort_unstable();
+        feats.dedup();
+        assert_eq!(feats, vec![1, 2, 3]);
     }
 
     #[test]
@@ -1698,16 +2000,47 @@ mod tests {
         let (d, c) = tree.evaluate([10.0, 0.0, 4.0], 0.5, EvalMode::Logical);
         assert!(d.abs() < 1e-4, "should lie on both boundaries, got d={d}");
         assert_eq!(c.element(), ProxyElement::Edge);
-        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
-        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
-        assert_eq!(got, ids(&[1, 2]));
+        let mut got: Vec<BranchId> = c.as_slice().to_vec();
+        got.sort_by_key(|b| b.as_u32());
+        // box +X face (sub 0) meets the sphere (un-split, sub 0).
+        assert_eq!(got, branches(&[(1, 0), (2, 0)]));
+    }
+
+    #[test]
+    fn expand_evaluate_leaf_box_face_and_edge_subfaces() {
+        // The B-Rep substrate: a single Box leaf, evaluated directly
+        // through `expand_evaluate_leaf`, must hand back the per-face
+        // BranchId(s) of the half-space decomposition.
+        let id = FeatureId::from_u32(1);
+        let prim = Primitive::Box {
+            center: [0.0, 0.0, 0.0],
+            half_extents: [10.0, 10.0, 10.0],
+        };
+        let eps = 0.25;
+
+        // +X face centre → exactly one contributor: the +X face (sub 0).
+        let (d, c) = expand_evaluate_leaf(&id, &prim, [10.0, 0.0, 0.0], eps);
+        assert!(d.abs() < 1e-4, "on +X face, got d={d}");
+        assert_eq!(c.element(), ProxyElement::Face);
+        assert_eq!(c.as_slice(), branches(&[(1, 0)]).as_slice());
+
+        // A point on the +X/+Y edge → the two adjoining face sub-ids
+        // (sub 0 = +X, sub 2 = +Y), in some order.
+        let (d, c) = expand_evaluate_leaf(&id, &prim, [10.0, 10.0, 0.0], eps);
+        assert!(d.abs() < 1e-4, "on +X/+Y edge, got d={d}");
+        assert_eq!(c.element(), ProxyElement::Edge);
+        let mut got: Vec<BranchId> = c.as_slice().to_vec();
+        got.sort_by_key(|b| b.as_u32());
+        assert_eq!(got, branches(&[(1, 0), (1, 2)]));
     }
 
     #[test]
     fn evaluate_far_from_surface_still_has_one_contributor() {
-        // Deep inside a single leaf — the dominant contributor is
-        // unambiguous, but provenance still records which leaf owns
-        // that slab of space.
+        // Inside a single leaf, nearer to one face than any other →
+        // the dominant contributor is the unambiguous nearest face
+        // (provenance still records which leaf owns that slab). A
+        // point off-centre (closer to +Z) avoids the box-centre tie
+        // where all six faces are equidistant.
         let features = vec![box_feature(
             1,
             BoolOp::Union,
@@ -1715,24 +2048,27 @@ mod tests {
             [10.0, 10.0, 10.0],
         )];
         let tree = CsgNode::from_features(&features);
-        let (d, c) = tree.evaluate([0.0, 0.0, 0.0], 0.5, EvalMode::Logical);
+        let (d, c) = tree.evaluate([0.0, 0.0, 5.0], 0.5, EvalMode::Logical);
         assert!(d < 0.0);
-        assert_eq!(c.as_slice(), ids(&[1]).as_slice());
+        // +Z face is sub-index 4.
+        assert_eq!(c.as_slice(), branches(&[(1, 4)]).as_slice());
     }
 
     #[test]
     fn contributors_push_dedupes_and_caps() {
+        let b = |n: u32| BranchId::from_feature(&FeatureId::from_u32(n));
         let mut c = Contributors::empty();
-        c.push(FeatureId::from_u32(1));
-        c.push(FeatureId::from_u32(2));
-        c.push(FeatureId::from_u32(1)); // dup
-        c.push(FeatureId::from_u32(3));
-        c.push(FeatureId::from_u32(4));
-        c.push(FeatureId::from_u32(5)); // over cap — silently dropped
+        // Eight distinct ids fill the set, with a dup and an overflow.
+        for n in [1u32, 2, 1, 3, 4, 5, 6, 7, 8, 9] {
+            c.push(b(n));
+        }
         assert_eq!(c.len(), MAX_CONTRIBUTORS);
-        let mut got: Vec<FeatureId> = c.as_slice().to_vec();
-        got.sort_by_key(|id| id.as_u32_if_flat().unwrap());
-        assert_eq!(got, ids(&[1, 2, 3, 4]));
+        let mut got: Vec<BranchId> = c.as_slice().to_vec();
+        got.sort_by_key(|x| x.as_u32());
+        assert_eq!(
+            got,
+            branches(&[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0)])
+        );
     }
 
     // ─── extrude / revolve ─────────────────────────────────────────
@@ -1818,8 +2154,39 @@ mod tests {
         };
         let (d, c) = extrude.evaluate([5.0, 0.0, 0.0], 0.5, EvalMode::Visual);
         assert!(d.abs() < 1e-4);
-        assert_eq!(c.as_slice(), ids(&[42]).as_slice());
+        assert_eq!(c.as_slice(), branches(&[(42, 0)]).as_slice());
         assert_eq!(c.element(), ProxyElement::Face);
+    }
+
+    #[test]
+    fn extrude_of_path_square_carries_per_segment_sub_ids() {
+        use crate::sketch2d::SketchSegment;
+        // Unit square as a 4-segment Path (CCW). Each side is its
+        // own G1 group: bottom=0, right=1, top=2, left=3.
+        let path = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
+                SketchSegment::Line { start: [1.0, -1.0], end: [1.0, 1.0] },
+                SketchSegment::Line { start: [1.0, 1.0], end: [-1.0, 1.0] },
+                SketchSegment::Line { start: [-1.0, 1.0], end: [-1.0, -1.0] },
+            ],
+            closed: true,
+        });
+        let fid = 9u32;
+        let extrude = CsgNode::Extrude {
+            id: FeatureId::from_u32(fid),
+            sketch: Box::new(path),
+            half_height: 3.0,
+        };
+        // A point well outside the +x (right) wall → group 1.
+        let (_, c) = extrude.evaluate([4.0, 0.0, 0.0], 0.5, EvalMode::Visual);
+        assert_eq!(c.as_slice(), branches(&[(fid, 1)]).as_slice());
+        // Well outside the bottom (-y) wall → group 0.
+        let (_, c) = extrude.evaluate([0.0, -4.0, 0.0], 0.5, EvalMode::Visual);
+        assert_eq!(c.as_slice(), branches(&[(fid, 0)]).as_slice());
+        // Well outside the top (+y) wall → group 2 — distinct sub-id.
+        let (_, c) = extrude.evaluate([0.0, 4.0, 0.0], 0.5, EvalMode::Visual);
+        assert_eq!(c.as_slice(), branches(&[(fid, 2)]).as_slice());
     }
 
     #[test]

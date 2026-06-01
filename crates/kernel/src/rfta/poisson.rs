@@ -58,7 +58,7 @@ pub fn reconstruct(
 
     let indices: Vec<u32> = idxs.to_vec();
 
-    if indices.len() % 3 != 0 {
+    if !indices.len().is_multiple_of(3) {
         return None;
     }
 

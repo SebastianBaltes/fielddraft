@@ -360,12 +360,30 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const lastSessionRef = useRef<SketchSessionState | null>(null);
   const projectedEdgesRef = useRef<ProjectedEdge[]>([]);
 
-  // K6b: project 3D B-Rep edges onto the sketch plane for snap targets.
+  // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
     if (!store) { projectedEdgesRef.current = []; return; }
     try {
-      const edges = store.kernel.detectEdges();
-      projectedEdgesRef.current = projectEdgesToSketchPlane(edges, session.planeQuery);
+      const segs: { p0: number[]; p1: number[] }[] = [];
+      const count = store.kernel.bodyCount();
+      for (let i = 0; i < count; i++) {
+        let bodyEdges: { a: number; b: number; points: number[] }[];
+        try {
+          bodyEdges = store.kernel.bodyBrepEdges(i);
+        } catch {
+          continue;
+        }
+        for (const e of bodyEdges) {
+          const n = e.points.length / 3;
+          for (let p = 0; p < n - 1; p++) {
+            segs.push({
+              p0: [e.points[p * 3], e.points[p * 3 + 1], e.points[p * 3 + 2]],
+              p1: [e.points[(p + 1) * 3], e.points[(p + 1) * 3 + 1], e.points[(p + 1) * 3 + 2]],
+            });
+          }
+        }
+      }
+      projectedEdgesRef.current = projectEdgesToSketchPlane(segs, session.planeQuery);
     } catch {
       projectedEdgesRef.current = [];
     }

@@ -513,6 +513,8 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
     a[q][q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
     a[p][q] = 0.0;
     a[q][p] = 0.0;
+    // r indexes a[r][p], a[p][r], a[r][q], a[q][r] — multi-position, not single-slice
+    #[allow(clippy::needless_range_loop)]
     for r in 0..3 {
         if r != p && r != q {
             let arp = a[r][p];
@@ -524,11 +526,11 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
         }
     }
 
-    for r in 0..3 {
-        let vrp = v[r][p];
-        let vrq = v[r][q];
-        v[r][p] = c * vrp - s * vrq;
-        v[r][q] = s * vrp + c * vrq;
+    for row in v.iter_mut().take(3) {
+        let vrp = row[p];
+        let vrq = row[q];
+        row[p] = c * vrp - s * vrq;
+        row[q] = s * vrp + c * vrq;
     }
 }
 
@@ -541,8 +543,8 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
 /// cycle index for MC edge e, or -1 if the edge has no sign change.
 fn compute_edge_cycles(case: u8) -> ([i8; 12], usize) {
     let mut parent = [0u8; 12];
-    for i in 0..12 {
-        parent[i] = i as u8;
+    for (i, p) in parent.iter_mut().enumerate() {
+        *p = i as u8;
     }
 
     fn find(parent: &mut [u8; 12], mut x: u8) -> u8 {
@@ -665,8 +667,8 @@ pub fn manifold_dc(
 
                 // Compute MC case index
                 let mut case = 0u8;
-                for v in 0..8 {
-                    if mc_corners[v] < 0.0 {
+                for (v, corner) in mc_corners.iter().enumerate() {
+                    if *corner < 0.0 {
                         case |= 1 << v;
                     }
                 }
@@ -751,6 +753,9 @@ pub fn manifold_dc(
                     let normal = sdf_normal(node, pos, normal_eps);
 
                     let (_, cs) = node.evaluate(pos, contributor_eps, EvalMode::Visual);
+                    // Mesh-level proxy works at feature granularity; the
+                    // per-face sub-ids stay in the analytic B-Rep path.
+                    let cs = cs.feature_collapsed();
                     let mut element = cs.element();
                     if element == ProxyElement::None {
                         element = ProxyElement::Face;
@@ -759,9 +764,7 @@ pub fn manifold_dc(
                     let mut contribs = [CONTRIBUTOR_SENTINEL; MAX_CONTRIBUTORS];
                     for slot in 0..MAX_CONTRIBUTORS {
                         if slot < slice.len() {
-                            contribs[slot] = slice[slot]
-                                .as_u32_or_root()
-                                .unwrap_or(CONTRIBUTOR_SENTINEL);
+                            contribs[slot] = slice[slot].feature_id();
                         }
                     }
 
@@ -790,6 +793,8 @@ pub fn manifold_dc(
 
     let mut indices: Vec<u32> = Vec::new();
 
+    // axis drives many match arms (geometry per axis), not just QUAD_CELLS indexing
+    #[allow(clippy::needless_range_loop)]
     for axis in 0..3usize {
         let (ei_max, _ej_max, _ek_max) = match axis {
             0 => (nx, ny + 1, nz + 1),

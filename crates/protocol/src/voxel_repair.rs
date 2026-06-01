@@ -235,6 +235,7 @@ fn vertex_pos(x: usize, y: usize, z: usize, origin: &[f32; 3], vs: f32) -> [f32;
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rasterize_triangle(
     v0: [f32; 3], v1: [f32; 3], v2: [f32; 3],
     origin: &[f32; 3], voxel_size: f32,

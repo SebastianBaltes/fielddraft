@@ -1,0 +1,1066 @@
+//! Persistent topological naming and reference resolution (step D.1).
+//!
+//! Parametric CAD needs **stable referenceability**: a feature placed on "this
+//! edge" must still mean the same edge after the model's parameters change and
+//! the B-Rep is rebuilt. Classic kernels hand out arbitrary IDs (`Edge_42`)
+//! that are re-issued on every rebuild, which makes re-finding the right entity
+//! — the *Topological Naming Problem* — notoriously hard.
+//!
+//! FieldDraft's half-space architecture has a structural advantage: an edge is
+//! not an arbitrary entity but the deterministic collision of two half-spaces,
+//! and a [`BranchId`] is derived purely from a feature's UUID plus a local
+//! half-space role — *not* from geometry. So for a pure parameter change
+//! (resize a box, nudge a radius) the branch signatures are byte-for-byte
+//! identical and an entity's semantic ID is automatically stable, with no
+//! heuristic. The geometric fingerprint (Stufe 2) only earns its keep for the
+//! harder cases (topology split/merge, spatial reordering).
+//!
+//! This module implements both stages described in
+//! `docs/GEOMETRY-KERNEL-CONCEPT.md` ("Topologische Stabilität (Persistent
+//! Naming)"):
+//!
+//! - **Stufe 1 — semantic IDs:** [`face_id`] / [`edge_id`] / [`vertex_id`]
+//!   hash the *sorted* parent branch signature (plus a spatial index for
+//!   multiplicity) with a fixed-construction [`fnv1a_64`] hash, so an ID minted
+//!   today reproduces on another machine / Rust version.
+//! - **Stufe 2 — geometric fingerprint + state machine:** [`Fingerprint`],
+//!   [`TopoRef`], [`ResolutionState`] and [`resolve`] re-find an entity in a new
+//!   B-Rep, blending a hash match with geometric similarity into a confidence
+//!   score.
+//!
+//! **Scope (D.1).** This is the *naming + reference-resolution infrastructure*.
+//! Embedding a [`TopoRef`] into an actual `Feature` (e.g. a fillet) is deferred
+//! until a consuming feature exists — see DL-35. The concept's acceptance ("a
+//! fillet on a cube edge survives a parameter change") is realised here at the
+//! kernel level: a [`TopoRef`] built against one cube still [`resolve`]s to the
+//! geometrically-corresponding edge/face of a resized cube.
+
+use serde::{Deserialize, Serialize};
+
+use crate::brep::{BRep, EdgeGeometry, EdgeId, FaceId, SurfaceGeometry, VertexId};
+use crate::csg::BranchId;
+
+// ─── deterministic hash ───────────────────────────────────────────────────
+
+/// 64-bit FNV-1a, fixed-construction (offset basis & prime per the canonical
+/// spec). We deliberately do **not** use [`std::collections::hash_map::DefaultHasher`]:
+/// its algorithm (SipHash) is randomly keyed / version-unstable and would mint
+/// a *different* ID for the same input across runs, machines and Rust releases,
+/// which is fatal for IDs that a feature persists to disk. FNV-1a is small,
+/// allocation-free and reproduces byte-for-byte forever (see DL-31).
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// Fold a list of `u32` words plus a trailing `spatial_index` into a stable
+/// hash. The words must already be in canonical (sorted) order. Each word is
+/// hashed in fixed little-endian byte order so the result is platform stable.
+fn hash_signature(words: &[u32], spatial_index: u32) -> u64 {
+    let mut buf = Vec::with_capacity((words.len() + 1) * 4);
+    for &w in words {
+        buf.extend_from_slice(&w.to_le_bytes());
+    }
+    buf.extend_from_slice(&spatial_index.to_le_bytes());
+    fnv1a_64(&buf)
+}
+
+// ─── Stufe 1: semantic IDs ────────────────────────────────────────────────
+
+/// `Face_ID = Branch_ID`, optionally disambiguated by `spatial_index` when one
+/// branch surface splits into several disjoint faces. A face that owns its
+/// branch uniquely uses `spatial_index = 0`, which by construction hashes the
+/// branch word alone with a 0 tail.
+pub fn face_id(branch: BranchId, spatial_index: u32) -> u64 {
+    hash_signature(&[branch.as_u32()], spatial_index)
+}
+
+/// `Edge_ID = hash(sort(branch_a, branch_b) [, spatial_index])`. The signature
+/// pair is canonicalised (smaller first) so the ID is independent of which
+/// half-space the edge walk met first.
+pub fn edge_id(a: BranchId, b: BranchId, spatial_index: u32) -> u64 {
+    let (lo, hi) = if a.as_u32() <= b.as_u32() {
+        (a.as_u32(), b.as_u32())
+    } else {
+        (b.as_u32(), a.as_u32())
+    };
+    hash_signature(&[lo, hi], spatial_index)
+}
+
+/// `Vertex_ID = hash(sort(branch u32s) [, spatial_index])`. `branches` is
+/// sorted here defensively; the B-Rep already stores them canonically.
+pub fn vertex_id(branches: &[BranchId], spatial_index: u32) -> u64 {
+    let mut words: Vec<u32> = branches.iter().map(|b| b.as_u32()).collect();
+    words.sort_unstable();
+    hash_signature(&words, spatial_index)
+}
+
+/// What a [`TopoRef`] points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityKind {
+    Vertex,
+    Edge,
+    Face,
+}
+
+/// A resolved handle into a [`BRep`] arena, tagged with its kind so the index
+/// is interpreted against the right arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityHandle {
+    Vertex(VertexId),
+    Edge(EdgeId),
+    Face(FaceId),
+}
+
+// ─── spatial disambiguation ───────────────────────────────────────────────
+
+/// Assign a `spatial_index` to every entity of `kind` sharing a branch
+/// signature. Entities with a unique signature get index 0; colliding groups
+/// are ordered by centroid along a stable X → Y → Z axis sweep (lexicographic),
+/// with the original arena index as a final deterministic tie-break. Returns a
+/// vector parallel to the kind's arena: `out[i]` is entity `i`'s spatial index.
+///
+/// See DL-32 for the axis order / tie-break rationale.
+fn spatial_indices(brep: &BRep, kind: EntityKind) -> Vec<u32> {
+    // Group arena slots by their semantic signature (the *un-indexed* hash),
+    // then within each multi-member group order by centroid and number them.
+    use std::collections::HashMap;
+    let n = match kind {
+        EntityKind::Vertex => brep.vertices.len(),
+        EntityKind::Edge => brep.edges.len(),
+        EntityKind::Face => brep.faces.len(),
+    };
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let sig = base_signature_hash(brep, kind, i);
+        groups.entry(sig).or_default().push(i);
+    }
+    let mut out = vec![0u32; n];
+    for members in groups.values() {
+        if members.len() <= 1 {
+            continue; // unique signature → spatial_index 0
+        }
+        let mut ordered = members.clone();
+        ordered.sort_by(|&a, &b| {
+            let ca = entity_centroid(brep, kind, a);
+            let cb = entity_centroid(brep, kind, b);
+            cmp_axis_order(ca, cb).then(a.cmp(&b))
+        });
+        for (idx, &slot) in ordered.iter().enumerate() {
+            out[slot] = idx as u32;
+        }
+    }
+    out
+}
+
+/// The signature hash of arena slot `i` *without* a spatial index — used purely
+/// to group colliding entities before assigning indices.
+fn base_signature_hash(brep: &BRep, kind: EntityKind, i: usize) -> u64 {
+    match kind {
+        EntityKind::Vertex => vertex_id(&brep.vertices[i].branches, 0),
+        EntityKind::Edge => {
+            let e = &brep.edges[i];
+            edge_id(e.signature.0, e.signature.1, 0)
+        }
+        EntityKind::Face => face_id(brep.faces[i].branch_id, 0),
+    }
+}
+
+/// Lexicographic comparison of two centroids in X → Y → Z order, using a small
+/// epsilon so floating jitter along the leading axis does not flip the order.
+fn cmp_axis_order(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
+    const EPS: f64 = 1e-9;
+    for k in 0..3 {
+        if (a[k] - b[k]).abs() > EPS {
+            return a[k].partial_cmp(&b[k]).unwrap_or(std::cmp::Ordering::Equal);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+// ─── geometry helpers ─────────────────────────────────────────────────────
+
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+fn normalize(a: [f64; 3]) -> [f64; 3] {
+    let n = norm(a);
+    if n > 1e-12 {
+        scale(a, 1.0 / n)
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+/// The ordered point chain of an edge, whatever its geometry representation.
+fn edge_points(geom: &EdgeGeometry) -> Vec<[f64; 3]> {
+    match geom {
+        EdgeGeometry::Polyline(pts) => pts.clone(),
+        EdgeGeometry::Hermite(samples) => samples.iter().map(|s| s.point).collect(),
+        // For a NURBS edge we use the control polygon, which for the cubic
+        // Hermite fits FieldDraft produces interpolates the endpoints and
+        // tracks the curve closely enough for fingerprinting (see DL-33).
+        EdgeGeometry::Nurbs(c) => c.control_points.clone(),
+    }
+}
+
+/// Centroid + chord length of an edge's point chain.
+fn edge_centroid_length(pts: &[[f64; 3]]) -> ([f64; 3], f64) {
+    if pts.is_empty() {
+        return ([0.0; 3], 0.0);
+    }
+    let mut c = [0.0; 3];
+    for p in pts {
+        c = add(c, *p);
+    }
+    c = scale(c, 1.0 / pts.len() as f64);
+    let mut len = 0.0;
+    for w in pts.windows(2) {
+        len += norm(sub(w[1], w[0]));
+    }
+    (c, len)
+}
+
+/// Unit tangent at the midpoint of an edge's point chain (direction of the
+/// central chord; falls back to the overall end-to-end direction).
+fn edge_mid_tangent(pts: &[[f64; 3]]) -> [f64; 3] {
+    match pts.len() {
+        0 | 1 => [0.0, 0.0, 0.0],
+        2 => normalize(sub(pts[1], pts[0])),
+        n => {
+            let mid = n / 2;
+            let lo = mid.saturating_sub(1);
+            let hi = (mid + 1).min(n - 1);
+            normalize(sub(pts[hi], pts[lo]))
+        }
+    }
+}
+
+/// Centroid of an entity's arena slot, by kind.
+fn entity_centroid(brep: &BRep, kind: EntityKind, i: usize) -> [f64; 3] {
+    match kind {
+        EntityKind::Vertex => brep.vertices[i].position,
+        EntityKind::Edge => edge_centroid_length(&edge_points(&brep.edges[i].geometry)).0,
+        EntityKind::Face => face_centroid_size(brep, i).0,
+    }
+}
+
+/// Centroid + a size scalar for a face. The centroid is the mean of the outer
+/// loop's edge centroids; the size is the mean radius of those centroids about
+/// the face centroid (a cheap, rotation-invariant extent proxy).
+fn face_centroid_size(brep: &BRep, i: usize) -> ([f64; 3], f64) {
+    let face = &brep.faces[i];
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    for &(eid, _) in &face.outer.edges {
+        let (c, _) = edge_centroid_length(&edge_points(&brep.edge(eid).geometry));
+        pts.push(c);
+    }
+    // Tessellated faces may have no analytic loop centroids to fall back on;
+    // use the mesh vertices in that case.
+    if pts.is_empty() {
+        if let SurfaceGeometry::Tessellated { positions, .. } = &face.surface {
+            pts = positions.clone();
+        }
+    }
+    if pts.is_empty() {
+        return ([0.0; 3], 0.0);
+    }
+    let mut c = [0.0; 3];
+    for p in &pts {
+        c = add(c, *p);
+    }
+    c = scale(c, 1.0 / pts.len() as f64);
+    let size = pts.iter().map(|p| norm(sub(*p, c))).sum::<f64>() / pts.len() as f64;
+    (c, size)
+}
+
+// ─── Stufe 2: fingerprint ─────────────────────────────────────────────────
+
+/// A geometric fingerprint of an entity, captured at reference time and
+/// compared against rebuilt entities to drive the resolution state machine.
+///
+/// All three kinds share the same fields with kind-specific meaning:
+/// - **Edge:** `centroid` = point-chain centroid, `size` = chord length,
+///   `tangent` = unit tangent at the midpoint.
+/// - **Face:** `centroid` = mean of outer-loop edge centroids, `size` = mean
+///   radius (extent proxy), `tangent` = `[0;3]` (unused).
+/// - **Vertex:** `centroid` = position, `size` = 0, `tangent` = `[0;3]`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Fingerprint {
+    pub centroid: [f64; 3],
+    /// Edge length / face extent / 0 for a vertex.
+    pub size: f64,
+    /// Edge midpoint tangent (unit); `[0;3]` for face/vertex.
+    pub tangent: [f64; 3],
+}
+
+impl Fingerprint {
+    pub fn of_edge(brep: &BRep, id: EdgeId) -> Self {
+        let pts = edge_points(&brep.edge(id).geometry);
+        let (centroid, size) = edge_centroid_length(&pts);
+        Self {
+            centroid,
+            size,
+            tangent: edge_mid_tangent(&pts),
+        }
+    }
+
+    pub fn of_face(brep: &BRep, id: FaceId) -> Self {
+        let (centroid, size) = face_centroid_size(brep, id.0 as usize);
+        Self {
+            centroid,
+            size,
+            tangent: [0.0; 3],
+        }
+    }
+
+    pub fn of_vertex(brep: &BRep, id: VertexId) -> Self {
+        Self {
+            centroid: brep.vertex(id).position,
+            size: 0.0,
+            tangent: [0.0; 3],
+        }
+    }
+}
+
+// ─── Stufe 2: TopoRef + state machine ─────────────────────────────────────
+
+/// A persistent reference to a topological entity: its kind, its deterministic
+/// semantic [`fnv1a_64`] id, and a geometric [`Fingerprint`] for healing. Fully
+/// serde-serialisable so a feature *could* persist it (embedding into a real
+/// feature is deferred — DL-35).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TopoRef {
+    pub kind: EntityKind,
+    pub id_hash: u64,
+    pub fingerprint: Fingerprint,
+}
+
+impl TopoRef {
+    /// Build a reference to a specific edge of `brep`, with the correct spatial
+    /// index for that slot.
+    pub fn from_edge(brep: &BRep, id: EdgeId) -> Self {
+        let si = spatial_indices(brep, EntityKind::Edge)[id.0 as usize];
+        let e = brep.edge(id);
+        Self {
+            kind: EntityKind::Edge,
+            id_hash: edge_id(e.signature.0, e.signature.1, si),
+            fingerprint: Fingerprint::of_edge(brep, id),
+        }
+    }
+
+    /// Build a reference to a specific face of `brep`.
+    pub fn from_face(brep: &BRep, id: FaceId) -> Self {
+        let si = spatial_indices(brep, EntityKind::Face)[id.0 as usize];
+        Self {
+            kind: EntityKind::Face,
+            id_hash: face_id(brep.face(id).branch_id, si),
+            fingerprint: Fingerprint::of_face(brep, id),
+        }
+    }
+
+    /// Build a reference to a specific vertex of `brep`.
+    pub fn from_vertex(brep: &BRep, id: VertexId) -> Self {
+        let si = spatial_indices(brep, EntityKind::Vertex)[id.0 as usize];
+        Self {
+            kind: EntityKind::Vertex,
+            id_hash: vertex_id(&brep.vertex(id).branches, si),
+            fingerprint: Fingerprint::of_vertex(brep, id),
+        }
+    }
+}
+
+/// The state of a reference after [`resolve`], driven by the confidence score
+/// and the concept's thresholds (DL-34):
+/// - `> 0.95` → [`ResolutionState::Resolved`]
+/// - `0.7..=0.95` → [`ResolutionState::Healed`]
+/// - `0.4..0.7` → [`ResolutionState::Ambiguous`]
+/// - `< 0.4` → [`ResolutionState::Missing`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionState {
+    Resolved,
+    Healed,
+    Ambiguous,
+    Missing,
+}
+
+impl ResolutionState {
+    /// Map a confidence score to a state using the concept's thresholds.
+    pub fn from_score(score: f64) -> Self {
+        if score > 0.95 {
+            ResolutionState::Resolved
+        } else if score >= 0.7 {
+            ResolutionState::Healed
+        } else if score >= 0.4 {
+            ResolutionState::Ambiguous
+        } else {
+            ResolutionState::Missing
+        }
+    }
+}
+
+/// The outcome of resolving one [`TopoRef`] against a new B-Rep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Resolution {
+    pub state: ResolutionState,
+    pub score: f64,
+    /// The best-matching entity, or `None` when nothing scored above the
+    /// `Missing` floor (e.g. no entity of the right kind exists at all).
+    pub handle: Option<EntityHandle>,
+}
+
+impl Resolution {
+    fn missing() -> Self {
+        Self {
+            state: ResolutionState::Missing,
+            score: 0.0,
+            handle: None,
+        }
+    }
+}
+
+/// Normalised geometric similarity in `[0, 1]` between a stored fingerprint and
+/// a candidate, blending three terms (DL-34):
+///
+/// - **centroid distance**, exponentially decayed by a length scale derived
+///   from the larger of the two sizes (so a uniform resize keeps the term high
+///   — the centroid moves *proportionally* to the entity it belongs to);
+/// - **size ratio** (`min/max`), capturing length / extent agreement;
+/// - **tangent alignment** (`|cos θ|`, orientation-insensitive), only for
+///   edges that actually carry a tangent.
+///
+/// Weights: centroid 0.4, size 0.4, tangent 0.2 for edges; for faces/vertices
+/// (no tangent) the tangent weight is folded into centroid+size (0.5/0.5).
+fn fingerprint_similarity(kind: EntityKind, a: &Fingerprint, b: &Fingerprint) -> f64 {
+    // Length scale: the bigger entity's size, floored so a zero-size entity
+    // (vertex) still has a sane decay distance.
+    let scale_len = a.size.abs().max(b.size.abs()).max(1.0);
+    let cdist = norm(sub(a.centroid, b.centroid));
+    let centroid_term = (-cdist / scale_len).exp();
+
+    let size_term = if a.size.abs() < 1e-12 && b.size.abs() < 1e-12 {
+        1.0 // both sizeless (vertices) → perfect agreement on this axis
+    } else {
+        let lo = a.size.abs().min(b.size.abs());
+        let hi = a.size.abs().max(b.size.abs()).max(1e-12);
+        lo / hi
+    };
+
+    let has_tangent = norm(a.tangent) > 1e-9 && norm(b.tangent) > 1e-9;
+    if kind == EntityKind::Edge && has_tangent {
+        let align = dot(a.tangent, b.tangent).abs().clamp(0.0, 1.0);
+        0.4 * centroid_term + 0.4 * size_term + 0.2 * align
+    } else {
+        0.5 * centroid_term + 0.5 * size_term
+    }
+}
+
+/// Base confidence granted to a semantic-id (hash) match, refined upward by
+/// fingerprint similarity. A hash match is *strong* evidence in FieldDraft's
+/// architecture: branch IDs are derived from feature UUIDs, not geometry, so a
+/// pure parameter change (resize a box) keeps the hash byte-for-byte identical
+/// even though the geometry — and thus the fingerprint — moved. We therefore
+/// floor a hash hit at 0.9 and let `0.1·similarity` push it into the `Resolved`
+/// band, so a uniform resize comfortably exceeds 0.95 while a hash hit whose
+/// geometry looks nothing alike (sim ≈ 0, a genuine ambiguity) still falls back
+/// to `Healed`. The blended score is clamped to `[0, 1]`. See DL-34.
+const HASH_MATCH_FLOOR: f64 = 0.9;
+const HASH_MATCH_SIM_WEIGHT: f64 = 0.1;
+
+/// Resolve a stored [`TopoRef`] against a freshly woven B-Rep.
+///
+/// Algorithm:
+/// 1. Compute spatial indices for the new B-Rep and the semantic id of every
+///    same-kind entity.
+/// 2. **Hash hits.** If exactly one entity matches `id_hash` → very high
+///    confidence (`HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT·similarity`,
+///    clamped). If several match (shouldn't happen for a well-disambiguated
+///    B-Rep, but is handled), pick the most fingerprint-similar.
+/// 3. **No hash hit.** Fall back to the most fingerprint-similar entity over
+///    all same-kind candidates, scored by `fingerprint_similarity` alone — so a
+///    spatially-reordered or renamed entity can still land in the `Healed`
+///    band.
+/// 4. Map the final score to a [`ResolutionState`].
+///
+/// Never panics and never allocates beyond the per-kind index vector.
+pub fn resolve(old: &TopoRef, new_brep: &BRep) -> Resolution {
+    let kind = old.kind;
+    let si = spatial_indices(new_brep, kind);
+    let count = match kind {
+        EntityKind::Vertex => new_brep.vertices.len(),
+        EntityKind::Edge => new_brep.edges.len(),
+        EntityKind::Face => new_brep.faces.len(),
+    };
+    if count == 0 {
+        return Resolution::missing();
+    }
+
+    let handle_of = |i: usize| -> EntityHandle {
+        match kind {
+            EntityKind::Vertex => EntityHandle::Vertex(VertexId(i as u32)),
+            EntityKind::Edge => EntityHandle::Edge(EdgeId(i as u32)),
+            EntityKind::Face => EntityHandle::Face(FaceId(i as u32)),
+        }
+    };
+    let fingerprint_of = |i: usize| -> Fingerprint {
+        match kind {
+            EntityKind::Vertex => Fingerprint::of_vertex(new_brep, VertexId(i as u32)),
+            EntityKind::Edge => Fingerprint::of_edge(new_brep, EdgeId(i as u32)),
+            EntityKind::Face => Fingerprint::of_face(new_brep, FaceId(i as u32)),
+        }
+    };
+    let id_of = |i: usize| -> u64 {
+        match kind {
+            EntityKind::Vertex => vertex_id(&new_brep.vertices[i].branches, si[i]),
+            EntityKind::Edge => {
+                let e = &new_brep.edges[i];
+                edge_id(e.signature.0, e.signature.1, si[i])
+            }
+            EntityKind::Face => face_id(new_brep.faces[i].branch_id, si[i]),
+        }
+    };
+
+    // Step 1/2: collect candidates whose semantic id matches the stored hash.
+    let hash_hits: Vec<usize> = (0..count).filter(|&i| id_of(i) == old.id_hash).collect();
+
+    if !hash_hits.is_empty() {
+        // Among hash hits, prefer the most fingerprint-similar (handles the
+        // theoretical multi-hit case; for a unique hit it's just that one).
+        let (best, sim) = hash_hits
+            .iter()
+            .map(|&i| {
+                (
+                    i,
+                    fingerprint_similarity(kind, &old.fingerprint, &fingerprint_of(i)),
+                )
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        let score = (HASH_MATCH_FLOOR + HASH_MATCH_SIM_WEIGHT * sim).clamp(0.0, 1.0);
+        return Resolution {
+            state: ResolutionState::from_score(score),
+            score,
+            handle: Some(handle_of(best)),
+        };
+    }
+
+    // Step 3: no hash hit — fall back to nearest fingerprint over all
+    // same-kind entities. Pure geometric similarity (no bonus).
+    let (best, sim) = (0..count)
+        .map(|i| {
+            (
+                i,
+                fingerprint_similarity(kind, &old.fingerprint, &fingerprint_of(i)),
+            )
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap();
+
+    Resolution {
+        state: ResolutionState::from_score(sim),
+        score: sim,
+        // Below the Missing floor we report no handle: the match is too weak to
+        // act on, but the caller still learns the best candidate's score is low.
+        handle: if sim >= 0.4 {
+            Some(handle_of(best))
+        } else {
+            None
+        },
+    }
+}
+
+/// Resolve a *set* of references in one call, returning a parallel vector of
+/// [`Resolution`]s. Lets a multi-edge feature (e.g. a fillet on 4 edges) degrade
+/// gracefully: each ref resolves independently, so partial success is
+/// expressible (some `Resolved`, some `Missing`) instead of all-or-nothing.
+pub fn resolve_set(refs: &[TopoRef], new_brep: &BRep) -> Vec<Resolution> {
+    refs.iter().map(|r| resolve(r, new_brep)).collect()
+}
+
+// ─── tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brep::octree::Octree;
+    use crate::brep::weaving::weave;
+    use crate::brep::{Edge, EdgeGeometry};
+    use crate::bvh::BoundedCsg;
+    use crate::csg::CsgNode;
+    use fielddraft_protocol::{FeatureId, Primitive};
+
+    fn box_body(half: [f32; 3]) -> BoundedCsg {
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: half,
+            },
+        };
+        BoundedCsg::from_csg(&csg)
+    }
+
+    fn cube_brep(half: f32) -> BRep {
+        let body = box_body([half, half, half]);
+        let octree = Octree::build(&body, 0.25);
+        weave(&body, &octree)
+    }
+
+    /// Weave a rectangle-sketch extrude body (the SA-1…SA-3 sketch-SDF
+    /// pipeline), so naming can be validated against the *real* extrude path
+    /// rather than a primitive cube.
+    fn rect_extrude_brep(half_x: f32, half_y: f32, half_z: f32) -> BRep {
+        use fielddraft_protocol::{Sketch2d as ProtoSketch2d, Sketch2dPrimitive as ProtoSketch2dPrim};
+        let sketch = ProtoSketch2d::Prim(ProtoSketch2dPrim::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [half_x, half_y],
+        });
+        let csg = CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sketch),
+            half_height: half_z,
+        };
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.25);
+        weave(&body, &octree)
+    }
+
+    // ── 1. Determinism ──────────────────────────────────────────────────
+
+    #[test]
+    fn fnv1a_known_constant() {
+        // FNV-1a/64 of the ASCII string "fielddraft" — a fixed regression
+        // constant. If this ever changes the hash algorithm has drifted and
+        // every persisted ID would be invalidated.
+        assert_eq!(fnv1a_64(b"fielddraft"), 0x3ee2_6228_6177_cce2);
+        // Empty input → the bare offset basis.
+        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    #[test]
+    fn same_cube_yields_identical_ids() {
+        let a = cube_brep(1.0);
+        let b = cube_brep(1.0);
+        assert_eq!(a.edge_count(), 12);
+        assert_eq!(b.edge_count(), 12);
+
+        let ids = |brep: &BRep| -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+            let si_e = spatial_indices(brep, EntityKind::Edge);
+            let si_f = spatial_indices(brep, EntityKind::Face);
+            let si_v = spatial_indices(brep, EntityKind::Vertex);
+            let mut e: Vec<u64> = brep
+                .edges
+                .iter()
+                .enumerate()
+                .map(|(i, ed)| edge_id(ed.signature.0, ed.signature.1, si_e[i]))
+                .collect();
+            let mut f: Vec<u64> = brep
+                .faces
+                .iter()
+                .enumerate()
+                .map(|(i, fc)| face_id(fc.branch_id, si_f[i]))
+                .collect();
+            let mut v: Vec<u64> = brep
+                .vertices
+                .iter()
+                .enumerate()
+                .map(|(i, vt)| vertex_id(&vt.branches, si_v[i]))
+                .collect();
+            e.sort_unstable();
+            f.sort_unstable();
+            v.sort_unstable();
+            (e, f, v)
+        };
+        assert_eq!(
+            ids(&a),
+            ids(&b),
+            "two identical cubes must hash identically"
+        );
+
+        // No accidental ID collisions within a plain cube (12/6/8 unique).
+        let (e, f, v) = ids(&a);
+        let uniq = |mut x: Vec<u64>| {
+            x.dedup();
+            x.len()
+        };
+        assert_eq!(uniq(e), 12, "12 distinct edge ids");
+        assert_eq!(uniq(f), 6, "6 distinct face ids");
+        assert_eq!(uniq(v), 8, "8 distinct vertex ids");
+    }
+
+    // ── 2. Reference survives a parameter change (D.1 acceptance) ────────
+
+    #[test]
+    fn edge_reference_survives_resize() {
+        let old = cube_brep(1.0); // half-extents 1 → corners at ±1
+        let new = cube_brep(1.5); // resized → corners at ±1.5
+
+        // Pick a specific edge and capture which branch signature / axis it is.
+        let pick = EdgeId(0);
+        let sig = old.edge(pick).signature;
+        let topo = TopoRef::from_edge(&old, pick);
+
+        let res = resolve(&topo, &new);
+        assert_eq!(
+            res.state,
+            ResolutionState::Resolved,
+            "edge must resolve after resize, score {}",
+            res.score
+        );
+        assert!(res.score > 0.95, "score {} not > 0.95", res.score);
+
+        // The matched edge has the same branch signature (the geometrically
+        // corresponding edge).
+        match res.handle.unwrap() {
+            EntityHandle::Edge(eid) => {
+                assert_eq!(
+                    new.edge(eid).signature,
+                    sig,
+                    "resolved to an edge of a different branch pair"
+                );
+            }
+            other => panic!("expected an edge handle, got {other:?}"),
+        }
+
+        // Sanity: the new edge's centroid moved outward (the cube grew). The
+        // old centroid magnitude must be no larger than the new one.
+        let old_c = Fingerprint::of_edge(&old, pick).centroid;
+        let new_c = match res.handle.unwrap() {
+            EntityHandle::Edge(eid) => Fingerprint::of_edge(&new, eid).centroid,
+            _ => unreachable!(),
+        };
+        assert!(
+            norm(new_c) >= norm(old_c),
+            "resized edge centroid should be at least as far from origin"
+        );
+    }
+
+    #[test]
+    fn face_reference_survives_resize() {
+        let old = cube_brep(1.0);
+        let new = cube_brep(1.5);
+
+        let pick = FaceId(0);
+        let branch = old.face(pick).branch_id;
+        let topo = TopoRef::from_face(&old, pick);
+
+        let res = resolve(&topo, &new);
+        assert_eq!(
+            res.state,
+            ResolutionState::Resolved,
+            "face must resolve after resize, score {}",
+            res.score
+        );
+        assert!(res.score > 0.95, "score {} not > 0.95", res.score);
+        match res.handle.unwrap() {
+            EntityHandle::Face(fid) => {
+                assert_eq!(new.face(fid).branch_id, branch, "resolved to wrong branch");
+            }
+            other => panic!("expected a face handle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vertex_reference_survives_resize() {
+        let old = cube_brep(1.0);
+        let new = cube_brep(1.5);
+        let topo = TopoRef::from_vertex(&old, VertexId(0));
+        let res = resolve(&topo, &new);
+        assert_eq!(res.state, ResolutionState::Resolved);
+        assert!(res.handle.is_some());
+    }
+
+    // ── 2b. Reference survives a SKETCH param change (SA-5 Task C) ────────
+
+    /// A face TopoRef on an analytic side wall of a rectangle-extrude body must
+    /// survive a change to the sketch width: the branch signature of each wall
+    /// is derived from the feature UUID + the wall's sub-id, not its geometry,
+    /// so a pure parameter change keeps the semantic id byte-for-byte identical
+    /// and `resolve` lands in `Resolved` (>0.95).
+    #[test]
+    fn extrude_face_reference_survives_sketch_width_change() {
+        let old = rect_extrude_brep(1.0, 2.0, 1.0);
+        let new = rect_extrude_brep(1.7, 2.0, 1.0); // wider rectangle
+
+        assert_eq!(old.face_count(), 6, "4 walls + 2 caps");
+        assert_eq!(new.face_count(), 6);
+
+        // Pick a +x side wall (an analytic plane, not a cap).
+        let pick = (0..old.face_count() as u32)
+            .map(FaceId)
+            .find(|&fid| {
+                matches!(
+                    &old.face(fid).surface,
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::Plane { normal, .. },
+                        ..
+                    } if normal[0].abs() > 0.5
+                )
+            })
+            .expect("a ±x side wall exists");
+        let branch = old.face(pick).branch_id;
+        let topo = TopoRef::from_face(&old, pick);
+
+        let res = resolve(&topo, &new);
+        assert_eq!(
+            res.state,
+            ResolutionState::Resolved,
+            "extrude side face must resolve after a sketch-width change, score {}",
+            res.score
+        );
+        assert!(res.score > 0.95, "score {} not > 0.95", res.score);
+        match res.handle.unwrap() {
+            EntityHandle::Face(fid) => assert_eq!(
+                new.face(fid).branch_id,
+                branch,
+                "resolved to a different wall branch"
+            ),
+            other => panic!("expected a face handle, got {other:?}"),
+        }
+    }
+
+    /// An edge TopoRef on a rectangle-extrude body survives a change to the
+    /// extrude **depth** *for the edges whose topology is stable*. This test
+    /// also pins an honest, observed limitation of the current sketch-extrude
+    /// weaver (recorded rather than papered over):
+    ///
+    /// Re-weaving the same rectangle at a different depth is NOT perfectly
+    /// topology-stable: at half-depth 1.0 the body has 12 straight edges (the
+    /// ideal box), but at half-depth 2.5 the weaver consolidates two of the
+    /// wall–cap rims into *closed-loop* edges and drops two wall–wall verticals
+    /// (12 → 10 edges). For the edges that DO persist with their branch-pair
+    /// signature (e.g. a vertical wall–wall edge), the semantic id is
+    /// byte-for-byte identical, so `resolve` lands in `Resolved` (>0.95). The
+    /// branch-pairs that get restructured (involving the consolidated wall)
+    /// genuinely cannot resolve via the hash and only reach the `Ambiguous`
+    /// fingerprint band — that is a weaver topology-stability limitation, not a
+    /// naming defect, and is asserted here as the real behaviour.
+    #[test]
+    fn extrude_edge_reference_survives_depth_change() {
+        let old = rect_extrude_brep(1.0, 1.0, 1.0);
+        let new = rect_extrude_brep(1.0, 1.0, 2.5); // taller extrude
+
+        assert!(old.edge_count() > 0, "extrude has edges");
+        assert!(new.edge_count() > 0);
+
+        // Pick a vertical wall–wall edge: its branch pair are two adjacent side
+        // walls, which both survive a pure depth change with identical
+        // signatures. (A wall–cap rim, by contrast, may get consolidated.)
+        // Side walls are the sketch-derived sub-ids; caps are the reserved
+        // EXTRUDE_CAP_TOP/BOTTOM_SUB. A wall–wall edge touches neither cap.
+        let cap_top = crate::csg::BranchId::from_feature_sub(
+            &FeatureId::from_u32(1),
+            crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB,
+        )
+        .as_u32();
+        let cap_bottom = crate::csg::BranchId::from_feature_sub(
+            &FeatureId::from_u32(1),
+            crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB,
+        )
+        .as_u32();
+        let is_wall_wall = |e: &crate::brep::Edge| {
+            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            a != cap_top && a != cap_bottom && b != cap_top && b != cap_bottom
+        };
+        // Require the picked wall–wall edge to also persist (same branch pair)
+        // in the rebuilt body — only the wall–cap rims get restructured, and at
+        // least one vertical wall–wall edge always survives a depth change.
+        let pick = (0..old.edge_count() as u32)
+            .map(EdgeId)
+            .find(|&eid| {
+                let e = old.edge(eid);
+                is_wall_wall(e) && new.edges.iter().any(|n| n.signature == e.signature)
+            })
+            .expect("a topology-stable vertical wall–wall edge exists");
+        let sig = old.edge(pick).signature;
+        let topo = TopoRef::from_edge(&old, pick);
+
+        let res = resolve(&topo, &new);
+        assert_eq!(
+            res.state,
+            ResolutionState::Resolved,
+            "a topology-stable extrude edge must resolve after a depth change, score {}",
+            res.score
+        );
+        assert!(res.score > 0.95, "score {} not > 0.95", res.score);
+        match res.handle.unwrap() {
+            EntityHandle::Edge(eid) => assert_eq!(
+                new.edge(eid).signature,
+                sig,
+                "resolved to an edge of a different branch pair"
+            ),
+            other => panic!("expected an edge handle, got {other:?}"),
+        }
+    }
+
+    // ── 3. Spatial disambiguation ────────────────────────────────────────
+
+    /// Hand-build a tiny B-Rep with **two edges of the identical branch
+    /// signature** but different centroids (the "plane meets both legs of a
+    /// U-profile" multiplicity case). They must receive distinct, centroid-
+    /// ordered spatial indices and therefore distinct IDs.
+    #[test]
+    fn spatial_disambiguation_distinguishes_same_signature_edges() {
+        let mut brep = BRep::new();
+        let a = BranchId(1 << 4);
+        let b = BranchId(2 << 4);
+
+        // Edge far from the origin (added first, deliberately the "higher" one
+        // so we also prove ordering is by centroid, not insertion order).
+        let e_far = brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![[5.0, 0.0, 0.0], [5.0, 1.0, 0.0]]),
+            a,
+            b,
+            None,
+            None,
+        ));
+        let e_near = brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            a,
+            b,
+            None,
+            None,
+        ));
+
+        let si = spatial_indices(&brep, EntityKind::Edge);
+        // Ordered by centroid X (0.0 before 5.0), independent of insertion.
+        assert_eq!(si[e_near.0 as usize], 0, "near edge → spatial index 0");
+        assert_eq!(si[e_far.0 as usize], 1, "far edge → spatial index 1");
+
+        let id_near = edge_id(a, b, si[e_near.0 as usize]);
+        let id_far = edge_id(a, b, si[e_far.0 as usize]);
+        assert_ne!(
+            id_near, id_far,
+            "same-signature edges must get distinct IDs"
+        );
+
+        // A TopoRef to the near edge resolves back to the near edge, not the far
+        // one — the spatial index plus fingerprint pin it down.
+        let topo = TopoRef::from_edge(&brep, e_near);
+        let res = resolve(&topo, &brep);
+        assert_eq!(res.state, ResolutionState::Resolved);
+        assert_eq!(res.handle, Some(EntityHandle::Edge(e_near)));
+    }
+
+    #[test]
+    fn unique_signatures_get_spatial_index_zero() {
+        // A plain cube has 12 unique edge signatures and 8 unique vertex sets.
+        let brep = cube_brep(1.0);
+        assert!(spatial_indices(&brep, EntityKind::Edge)
+            .iter()
+            .all(|&i| i == 0));
+        assert!(spatial_indices(&brep, EntityKind::Vertex)
+            .iter()
+            .all(|&i| i == 0));
+        assert!(spatial_indices(&brep, EntityKind::Face)
+            .iter()
+            .all(|&i| i == 0));
+    }
+
+    // ── 4. Missing ───────────────────────────────────────────────────────
+
+    #[test]
+    fn missing_signature_resolves_to_missing_not_panic() {
+        let new = cube_brep(1.0);
+        // A TopoRef whose branch signature does not exist in the cube and whose
+        // fingerprint is geometrically far away from any cube edge.
+        let bogus = TopoRef {
+            kind: EntityKind::Edge,
+            id_hash: edge_id(BranchId(0xDEAD << 4), BranchId(0xBEEF << 4), 0),
+            fingerprint: Fingerprint {
+                centroid: [1000.0, 1000.0, 1000.0],
+                size: 0.001,
+                tangent: [1.0, 0.0, 0.0],
+            },
+        };
+        let res = resolve(&bogus, &new);
+        assert_eq!(res.state, ResolutionState::Missing);
+        assert!(
+            res.score < 0.4,
+            "score {} should be below the floor",
+            res.score
+        );
+        assert!(res.handle.is_none());
+    }
+
+    #[test]
+    fn resolve_against_empty_brep_is_missing() {
+        let empty = BRep::new();
+        let topo = TopoRef {
+            kind: EntityKind::Face,
+            id_hash: 123,
+            fingerprint: Fingerprint {
+                centroid: [0.0; 3],
+                size: 1.0,
+                tangent: [0.0; 3],
+            },
+        };
+        let res = resolve(&topo, &empty);
+        assert_eq!(res.state, ResolutionState::Missing);
+        assert!(res.handle.is_none());
+    }
+
+    // ── graceful degradation ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_set_expresses_partial_success() {
+        let old = cube_brep(1.0);
+        let new = cube_brep(1.5);
+        // A real edge ref (will resolve) plus a bogus one (will be Missing).
+        let good = TopoRef::from_edge(&old, EdgeId(0));
+        let bad = TopoRef {
+            kind: EntityKind::Edge,
+            id_hash: edge_id(BranchId(0xAAAA << 4), BranchId(0xBBBB << 4), 0),
+            fingerprint: Fingerprint {
+                centroid: [9999.0, 9999.0, 9999.0],
+                size: 0.0001,
+                tangent: [0.0, 0.0, 1.0],
+            },
+        };
+        let results = resolve_set(&[good, bad], &new);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].state, ResolutionState::Resolved);
+        assert_eq!(results[1].state, ResolutionState::Missing);
+    }
+
+    #[test]
+    fn resolution_state_thresholds() {
+        assert_eq!(ResolutionState::from_score(0.99), ResolutionState::Resolved);
+        assert_eq!(ResolutionState::from_score(0.95), ResolutionState::Healed);
+        assert_eq!(ResolutionState::from_score(0.8), ResolutionState::Healed);
+        assert_eq!(ResolutionState::from_score(0.7), ResolutionState::Healed);
+        assert_eq!(ResolutionState::from_score(0.5), ResolutionState::Ambiguous);
+        assert_eq!(ResolutionState::from_score(0.4), ResolutionState::Ambiguous);
+        assert_eq!(ResolutionState::from_score(0.3), ResolutionState::Missing);
+    }
+
+    #[test]
+    fn topo_ref_serde_round_trips() {
+        let brep = cube_brep(1.0);
+        let topo = TopoRef::from_edge(&brep, EdgeId(0));
+        let json = serde_json::to_string(&topo).expect("serialise");
+        let back: TopoRef = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(topo, back);
+    }
+}

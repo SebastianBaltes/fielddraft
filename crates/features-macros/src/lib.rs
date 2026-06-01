@@ -59,9 +59,9 @@
 //!     widgets on it: `horizontal_enum` selects a segmented-tab
 //!     enum, `opposite_direction` turns a boolean into an inline
 //!     ±-flip button, `slider` turns an `f32` into a range slider.
-//!   The `bounds` / `visible_when` / `filter` keys from the §4.6
-//!   vocabulary are still emitted on the schema side but come
-//!   from hand-written fixtures rather than the derive for now.
+//!     The `bounds` / `visible_when` / `filter` keys from the §4.6
+//!     vocabulary are still emitted on the schema side but come
+//!     from hand-written fixtures rather than the derive for now.
 //! * **No `impl FeatureKind`.** The derive only emits schema /
 //!   parse helpers. Callers still write `FeatureKind` by hand,
 //!   just shorter — the execute body opens with

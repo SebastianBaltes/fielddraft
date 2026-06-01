@@ -265,6 +265,33 @@ fn prim_to_wire(prim: &Sketch2dPrimitive) -> Vec<f64> {
             }
             pts
         }
+        Sketch2dPrimitive::Path { segments, .. } => {
+            // Flatten the analytic segment chain into an outline
+            // polyline. Lines contribute their endpoints; curves are
+            // sampled at PATH_FLATTEN_SAMPLES steps. The hull/outline
+            // need not be exact, so flattening is acceptable here.
+            use fielddraft_protocol::sketch2d::{SketchSegment, PATH_FLATTEN_SAMPLES};
+            let mut pts = Vec::new();
+            for seg in segments {
+                let steps = match seg {
+                    SketchSegment::Line { .. } => 1,
+                    _ => PATH_FLATTEN_SAMPLES,
+                };
+                // Emit the segment start, then each subsequent sample
+                // up to (but not including) the next segment's start
+                // to avoid duplicate shared vertices.
+                let start_pt = seg.point_at(0.0);
+                pts.push(start_pt[0] as f64);
+                pts.push(start_pt[1] as f64);
+                for k in 1..steps {
+                    let t = k as f32 / steps as f32;
+                    let p = seg.point_at(t);
+                    pts.push(p[0] as f64);
+                    pts.push(p[1] as f64);
+                }
+            }
+            pts
+        }
     }
 }
 

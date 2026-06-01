@@ -57,7 +57,7 @@ use fielddraft_protocol::{FeatureCall, FeatureId, Query};
 use fielddraft_solver::{Constraint, ConstraintId, EntityId, Point2, SketchState};
 
 use crate::features::{Context, FeatureError, FeatureKind, FeatureSchema};
-use crate::sketch2d::{Sketch2d, Sketch2dPrimitive};
+use crate::sketch2d::{ellipse_quad_beziers, Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 // ─── K7.0: Context-side sketch handle ───────────────────────────
 
@@ -132,6 +132,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchPolygonTool));
         r.register(Box::new(SketchArcTool));
+        r.register(Box::new(SketchEllipseTool));
         r.register(Box::new(SketchTrimTool));
         r.register(Box::new(SketchMirrorTool));
         r.register(Box::new(SketchOffsetTool));
@@ -399,6 +400,51 @@ impl SketchToolKind for SketchArcTool {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = SketchArcDef::parse(def)?;
+        state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        Ok(())
+    }
+}
+
+/// `sketch_ellipse` — a closed ellipse (DL-49 Option B). Ellipses
+/// are first-class CAD primitives but not represented exactly: at
+/// construction time they decompose into a closed `Path` of
+/// tangent-continuous quadratic-Bézier segments (see
+/// [`ellipse_quad_beziers`]). Accuracy is the `segments` knob
+/// (`0` = auto from a 10 µm tolerance). G1-grouping collapses the
+/// whole loop into a single B-Rep edge.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_ellipse")]
+pub struct SketchEllipseDef {
+    pub center: [f32; 2],
+    pub radius_x: f32,
+    pub radius_y: f32,
+    /// CCW rotation of the major axis, radians.
+    #[param(default = 0.0)]
+    pub rotation: f32,
+    /// Number of Bézier segments; `0` selects an automatic count
+    /// from the build-time tolerance.
+    #[param(default = 0.0)]
+    pub segments: f32,
+}
+
+pub struct SketchEllipseTool;
+
+impl SketchToolKind for SketchEllipseTool {
+    fn type_name(&self) -> &'static str {
+        SketchEllipseDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchEllipseDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchEllipseDef::parse(def)?;
+        // Mirror the circle tool: register the centre point so the
+        // TS entity-id mirror stays aligned.
         state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
         Ok(())
     }
@@ -869,6 +915,35 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     sweep_angle: d.sweep_angle,
                 })
             }
+            "sketch_ellipse" => {
+                let d = match SketchEllipseDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                if d.radius_x <= 0.0 || d.radius_y <= 0.0 {
+                    continue;
+                }
+                // Option B: decompose into a closed Path of quadratic
+                // Béziers (G1-continuous ⇒ one B-Rep edge). 10 µm
+                // default tolerance; `segments` overrides the count.
+                let segs = ellipse_quad_beziers(
+                    d.center,
+                    d.radius_x,
+                    d.radius_y,
+                    d.rotation,
+                    0.0,
+                    std::f32::consts::TAU,
+                    d.segments.max(0.0) as u32,
+                    0.01,
+                );
+                if segs.is_empty() {
+                    continue;
+                }
+                Some(Sketch2dPrimitive::Path {
+                    segments: segs,
+                    closed: true,
+                })
+            }
             "sketch_polygon" => {
                 let d = match SketchPolygonDef::parse(&call.params) {
                     Ok(d) => d,
@@ -994,6 +1069,54 @@ fn mirror_prim(prim: &Sketch2dPrimitive, axis: u32) -> Sketch2dPrimitive {
                 radius: *radius,
                 start_angle: new_start,
                 sweep_angle: *sweep_angle,
+            }
+        }
+        Sketch2dPrimitive::Path { segments, closed } => Sketch2dPrimitive::Path {
+            segments: segments.iter().map(|s| mirror_segment(s, axis)).collect(),
+            closed: *closed,
+        },
+    }
+}
+
+/// Reflect a single sketch segment about the mirror axis. `axis
+/// == 0` flips Y (reflect across the X-axis), `axis == 1` flips X.
+/// Reflection reverses orientation, so an `Arc`'s sweep sign flips
+/// and its start angle maps accordingly (θ → −θ for axis 0, θ →
+/// π−θ for axis 1).
+fn mirror_segment(seg: &SketchSegment, axis: u32) -> SketchSegment {
+    let flip = |p: [f32; 2]| -> [f32; 2] {
+        if axis == 0 {
+            [p[0], -p[1]]
+        } else {
+            [-p[0], p[1]]
+        }
+    };
+    match seg {
+        SketchSegment::Line { start, end } => SketchSegment::Line {
+            start: flip(*start),
+            end: flip(*end),
+        },
+        SketchSegment::QuadBezier { p0, p1, p2 } => SketchSegment::QuadBezier {
+            p0: flip(*p0),
+            p1: flip(*p1),
+            p2: flip(*p2),
+        },
+        SketchSegment::Arc {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            let new_start = if axis == 0 {
+                -start_angle
+            } else {
+                std::f32::consts::PI - start_angle
+            };
+            SketchSegment::Arc {
+                center: flip(*center),
+                radius: *radius,
+                start_angle: new_start,
+                sweep_angle: -sweep_angle,
             }
         }
     }
@@ -1184,6 +1307,7 @@ mod tests {
                 "sketch_constraint_symmetric".to_string(),
                 "sketch_constraint_tangent".to_string(),
                 "sketch_constraint_vertical".to_string(),
+                "sketch_ellipse".to_string(),
                 "sketch_line".to_string(),
                 "sketch_mirror".to_string(),
                 "sketch_offset".to_string(),
@@ -1434,6 +1558,32 @@ mod tests {
         } else {
             panic!("expected circle primitive");
         }
+    }
+
+    #[test]
+    fn build_sketch2d_emits_an_ellipse_as_closed_quad_bezier_path() {
+        // DL-49 Option B: an ellipse lowers to a closed Path of
+        // quadratic Béziers, not an exact analytic primitive.
+        let calls = vec![FeatureCall::new(
+            "sketch_ellipse",
+            id(1),
+            json!({ "center": [0.0, 0.0], "radius_x": 10.0, "radius_y": 4.0 }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a closed Path primitive, got {sketch:?}");
+        };
+        assert!(*closed, "ellipse path must be closed");
+        assert!(segments.len() >= 4, "expected several segments");
+        assert!(segments
+            .iter()
+            .all(|s| matches!(s, SketchSegment::QuadBezier { .. })));
+        // Sign sanity, including the major axis (the seam line) which
+        // is the even-odd degeneracy that the seam-snap fixes.
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside");
+        assert!(sketch.sdf([8.0, 0.0]) < 0.0, "inside along major axis");
+        assert!(sketch.sdf([11.0, 0.0]) > 0.0, "outside past major axis");
+        assert!(sketch.sdf([0.0, 5.0]) > 0.0, "outside past minor axis");
     }
 
     #[test]

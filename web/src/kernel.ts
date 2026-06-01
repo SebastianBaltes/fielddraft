@@ -372,64 +372,21 @@ export class Kernel {
     return JSON.parse(this.inner.bodyHybridInfoJson(i));
   }
 
-  // ── Per-body topology (faces + edges) ────────────────────
+  // ── Per-body analytic B-Rep edges ────────────────────────
 
-  bodyFaceCount(i: number): number {
-    return this.inner.bodyFaceCount(i);
-  }
-
-  bodyEdgeCount(i: number): number {
-    return this.inner.bodyEdgeCount(i);
-  }
-
-  bodyFaceContributor(body: number, face: number): number {
-    return this.inner.bodyFaceContributor(body, face);
-  }
-
-  bodyFaceArea(body: number, face: number): number {
-    return this.inner.bodyFaceArea(body, face);
-  }
-
-  bodyFaceCentroid(body: number, face: number): [number, number, number] {
-    const v = this.inner.bodyFaceCentroid(body, face);
-    return [v[0], v[1], v[2]];
-  }
-
-  bodyFaceNormal(body: number, face: number): [number, number, number] {
-    const v = this.inner.bodyFaceNormal(body, face);
-    return [v[0], v[1], v[2]];
-  }
-
-  bodyFaceTriangleCount(body: number, face: number): number {
-    return this.inner.bodyFaceTriangleCount(body, face);
-  }
-
-  bodyFaceTrianglesView(body: number, face: number): Uint32Array {
-    const ptr = this.inner.bodyFaceTrianglesPtr(body, face);
-    const count = this.inner.bodyFaceTriangleCount(body, face);
-    return new Uint32Array(this.memory.buffer, ptr, count);
-  }
-
-  bodyEdgeContributorA(body: number, edge: number): number {
-    return this.inner.bodyEdgeContributorA(body, edge);
-  }
-
-  bodyEdgeContributorB(body: number, edge: number): number {
-    return this.inner.bodyEdgeContributorB(body, edge);
-  }
-
-  bodyEdgePointCount(body: number, edge: number): number {
-    return this.inner.bodyEdgePointCount(body, edge);
-  }
-
-  bodyEdgePointsView(body: number, edge: number): Float32Array {
-    const ptr = this.inner.bodyEdgePointsPtr(body, edge);
-    const count = this.inner.bodyEdgePointCount(body, edge);
-    return new Float32Array(this.memory.buffer, ptr, count * 3);
-  }
-
-  bodyTopologyJson(i: number): string {
-    return this.inner.bodyTopologyJson(i);
+  /**
+   * Analytic B-Rep edges of body `i`, each a world-space polyline plus its
+   * canonical colliding-branch signature `{a, b}`. The two ids match the
+   * `contributors` array {@link KernelHandle.pick} reports, so a hovered edge
+   * can be looked up by signature. Edges come straight from the woven
+   * (cached) B-Rep — independent of mesh resolution.
+   */
+  bodyBrepEdges(i: number): { a: number; b: number; points: number[] }[] {
+    return JSON.parse(this.inner.bodyBrepEdges(i)) as {
+      a: number;
+      b: number;
+      points: number[];
+    }[];
   }
 
   /**
@@ -993,16 +950,6 @@ export class Kernel {
       p1x, p1y, p1z,
       maskRadius, blendRadius,
     );
-  }
-
-  /** K10.6: detect B-Rep edges from the current mesh. */
-  detectEdges(): { p0: number[]; p1: number[]; contributor_a: string; contributor_b: string }[] {
-    return JSON.parse(this.inner.detectEdges()) as {
-      p0: number[];
-      p1: number[];
-      contributor_a: string;
-      contributor_b: string;
-    }[];
   }
 
   /** K9.1: overall scene AABB in mm. */

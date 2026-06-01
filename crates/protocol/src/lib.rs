@@ -17,7 +17,7 @@ pub mod mesh_sdf;
 pub mod sketch2d;
 pub mod voxel_repair;
 pub use mesh_sdf::{BakedVolume, MeshSdf};
-pub use sketch2d::{Aabb2, Sketch2d, Sketch2dPrimitive};
+pub use sketch2d::{Aabb2, Sketch2d, Sketch2dPrimitive, SketchSegment};
 
 /// Current on-disk / on-wire schema version for the project document.
 pub const SCHEMA_VERSION: u32 = 2;
@@ -321,6 +321,23 @@ pub enum Primitive {
         sketch: Sketch2d,
         center: [f32; 3],
     },
+}
+
+/// Analytic surface a primitive sub-face lies on. The B-Rep substrate
+/// decomposes box/cylinder/cone primitives into their per-face
+/// half-spaces (one [`crate::Primitive`] face → one `HalfSpace`) so each
+/// face carries a stable sub-index and an exact surface the weaver can
+/// attach to. Surfaces are expressed in the primitive's *centred* local
+/// frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HalfSpace {
+    Plane { normal: [f32; 3], offset: f32 },
+    InfiniteCylinder { radius: f32 },
+    Sphere { radius: f32 },
+    Cone { half_angle: f32 },
+    Torus { major_radius: f32, minor_radius: f32 },
+    Gyroid { cell_size: f32, thickness: f32 },
 }
 
 impl Primitive {
@@ -1622,7 +1639,7 @@ mod tests {
     #[test]
     fn length_wire_form_is_value_plus_unit() {
         let l = Length::mm(12.5);
-        let wire = serde_json::to_value(&l).unwrap();
+        let wire = serde_json::to_value(l).unwrap();
         assert_eq!(wire, serde_json::json!({"value": 12.5, "unit": "mm"}));
         let parsed: Length =
             serde_json::from_value(serde_json::json!({"value": 5.0, "unit": "cm"}))
@@ -1649,7 +1666,7 @@ mod tests {
     #[test]
     fn angle_wire_form_is_value_plus_unit() {
         let a = Angle::deg(90.0);
-        let wire = serde_json::to_value(&a).unwrap();
+        let wire = serde_json::to_value(a).unwrap();
         assert_eq!(wire, serde_json::json!({"value": 90.0, "unit": "deg"}));
         let parsed: Angle = serde_json::from_value(
             serde_json::json!({"value": 1.5, "unit": "rad"}),

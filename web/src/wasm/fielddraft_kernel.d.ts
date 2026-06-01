@@ -129,21 +129,36 @@ export class Kernel {
     applyGizmoRotate(target_id: number, rx: number, ry: number, rz: number, rw: number): boolean;
     applyGizmoScale(target_id: number, sx: number, sy: number, sz: number): boolean;
     applyGizmoTranslate(target_id: number, tx: number, ty: number, tz: number): boolean;
+    /**
+     * Counts of the body's feature-based B-Rep entities as a JSON
+     * object: `{"vertices","edges","faces","shells","solids",
+     * "watertight"}`. `watertight` reflects the body's single outer
+     * shell's `is_closed` flag.
+     *
+     * This is the **real** B-Rep topology (sharp corners / edges /
+     * trimmed faces from the analytic weave). The B-Rep is woven
+     * lazily on first call and cached on the body, so this query is
+     * cheap on repeat (DL-30). Smooth-only bodies (e.g. a lone sphere)
+     * carry no sharp
+     * features and legitimately report zero/near-zero counts —
+     * feature-based B-Rep captures sharp topology only (DL-29).
+     */
+    bodyBrepCounts(i: number): string;
+    /**
+     * Per-body analytic B-Rep edges, sampled to **world-space** polylines for
+     * viewport rendering and hover. Returns a JSON array; each edge is
+     * `{"a":<branch u32>,"b":<branch u32>,"points":[x,y,z, x,y,z, …]}`, where
+     * `a`/`b` are the canonical colliding-branch signature. Those two ids are
+     * the same `as_u32()` branch values that [`Kernel::pick`] reports in its
+     * `contributors` array, so the frontend can match a hovered edge to its
+     * polyline. Points are sampled in the body-local frame and folded to world
+     * by the body's `placement` (DL-56), exactly like the STEP export. Reuses
+     * the same lazily-woven, cached B-Rep as the counts / STEP queries.
+     */
+    bodyBrepEdges(i: number): string;
     bodyClassificationsPtr(i: number): number;
     bodyContributorsPtr(i: number): number;
     bodyCount(): number;
-    bodyEdgeContributorA(body: number, edge: number): number;
-    bodyEdgeContributorB(body: number, edge: number): number;
-    bodyEdgeCount(i: number): number;
-    bodyEdgePointCount(body: number, edge: number): number;
-    bodyEdgePointsPtr(body: number, edge: number): number;
-    bodyFaceArea(body: number, face: number): number;
-    bodyFaceCentroid(body: number, face: number): Float32Array;
-    bodyFaceContributor(body: number, face: number): number;
-    bodyFaceCount(i: number): number;
-    bodyFaceNormal(body: number, face: number): Float32Array;
-    bodyFaceTriangleCount(body: number, face: number): number;
-    bodyFaceTrianglesPtr(body: number, face: number): number;
     /**
      * K3.6: returns `true` when the i-th body has a pending
      * translation delta that the frontend should apply as a GPU
@@ -176,7 +191,14 @@ export class Kernel {
      * feature name even though `bodyId` is a unique hash.
      */
     bodySeedFeatureId(i: number): number;
-    bodyTopologyJson(i: number): string;
+    /**
+     * Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
+     * (STEP) AP214 advanced-B-Rep file. Reuses the same lazily-woven,
+     * cached B-Rep as [`Kernel::body_brep_counts`]; the returned
+     * string is a complete `.step` document ready to download. The
+     * product name is derived from the body's stable feature id.
+     */
+    bodyStepExport(i: number): string;
     /**
      * K3.6: returns a 3-element `Float32Array` [dx, dy, dz] for
      * the i-th body's pending translation delta. Panics if the
@@ -204,12 +226,6 @@ export class Kernel {
      */
     clearActiveBodyId(): boolean;
     contextMeshResolution(): number;
-    /**
-     * K10.6: detect B-Rep edges from the current mesh +
-     * contributor analysis. Returns a JSON array of edge
-     * segments with 3D coordinates + contributor IDs.
-     */
-    detectEdges(): string;
     /**
      * K8.8: duplicate a feature call. Allocates a fresh id,
      * clones the call's wire-form params, nudges any
@@ -395,6 +411,15 @@ export class Kernel {
      */
     sceneAabb(): string;
     /**
+     * Serialise *every* body's feature-based B-Rep into ONE ISO-10303-21
+     * (STEP) AP214 file, each body a separate `MANIFOLD_SOLID_BREP` solid
+     * in a single shape representation (DL-53: bodies stay separate). Each
+     * body's B-Rep is lazily woven and cached exactly as in
+     * [`Kernel::body_step_export`]; the returned string is a complete
+     * `.step` document ready to download.
+     */
+    sceneStepExport(): string;
+    /**
      * K6b.2: look up the FeatureSchema-generated JSON schema for
      * a sketch tool. Same contract as [`schema_for_type`] but
      * routes through the sketch-tool registry so the disjoint
@@ -528,21 +553,11 @@ export interface InitOutput {
     readonly kernel_applyGizmoRotate: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly kernel_applyGizmoScale: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_applyGizmoTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly kernel_bodyBrepCounts: (a: number, b: number) => [number, number];
+    readonly kernel_bodyBrepEdges: (a: number, b: number) => [number, number];
     readonly kernel_bodyClassificationsPtr: (a: number, b: number) => number;
     readonly kernel_bodyContributorsPtr: (a: number, b: number) => number;
     readonly kernel_bodyCount: (a: number) => number;
-    readonly kernel_bodyEdgeContributorA: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyEdgeContributorB: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyEdgeCount: (a: number, b: number) => number;
-    readonly kernel_bodyEdgePointCount: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyEdgePointsPtr: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyFaceArea: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyFaceCentroid: (a: number, b: number, c: number) => [number, number];
-    readonly kernel_bodyFaceContributor: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyFaceCount: (a: number, b: number) => number;
-    readonly kernel_bodyFaceNormal: (a: number, b: number, c: number) => [number, number];
-    readonly kernel_bodyFaceTriangleCount: (a: number, b: number, c: number) => number;
-    readonly kernel_bodyFaceTrianglesPtr: (a: number, b: number, c: number) => number;
     readonly kernel_bodyHasTransformDelta: (a: number, b: number) => number;
     readonly kernel_bodyHybridInfoJson: (a: number, b: number) => [number, number];
     readonly kernel_bodyId: (a: number, b: number) => number;
@@ -554,7 +569,7 @@ export interface InitOutput {
     readonly kernel_bodySdfOpcodesLen: (a: number, b: number) => number;
     readonly kernel_bodySdfOpcodesPtr: (a: number, b: number) => number;
     readonly kernel_bodySeedFeatureId: (a: number, b: number) => number;
-    readonly kernel_bodyTopologyJson: (a: number, b: number) => [number, number];
+    readonly kernel_bodyStepExport: (a: number, b: number) => [number, number];
     readonly kernel_bodyTransformDelta: (a: number, b: number) => [number, number];
     readonly kernel_bodyTriangleCount: (a: number, b: number) => number;
     readonly kernel_bodyVersion: (a: number, b: number) => number;
@@ -568,7 +583,6 @@ export interface InitOutput {
     readonly kernel_classifyForStep: (a: number) => [number, number];
     readonly kernel_clearActiveBodyId: (a: number) => number;
     readonly kernel_contextMeshResolution: (a: number) => number;
-    readonly kernel_detectEdges: (a: number) => [number, number, number, number];
     readonly kernel_duplicateFeature: (a: number, b: number) => [number, number, number];
     readonly kernel_evalSdf: (a: number, b: number, c: number, d: number) => number;
     readonly kernel_export3mf: (a: number) => [number, number];
@@ -603,6 +617,7 @@ export interface InitOutput {
     readonly kernel_replaceFeatureCallParams: (a: number, b: number, c: number, d: number) => [number, number];
     readonly kernel_replaceSketch: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly kernel_sceneAabb: (a: number) => [number, number, number, number];
+    readonly kernel_sceneStepExport: (a: number) => [number, number];
     readonly kernel_schemaForSketchToolType: (a: number, b: number, c: number) => [number, number, number, number];
     readonly kernel_schemaForType: (a: number, b: number, c: number) => [number, number, number, number];
     readonly kernel_setActiveBodyByFeature: (a: number, b: number) => number;

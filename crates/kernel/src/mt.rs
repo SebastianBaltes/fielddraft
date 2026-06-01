@@ -254,7 +254,7 @@ impl TetCtx<'_> {
         for slot in 0..MAX_CONTRIBUTORS {
             let c = slice
                 .get(slot)
-                .and_then(|id| id.as_u32_or_root())
+                .map(|id| id.feature_id())
                 .unwrap_or(CONTRIBUTOR_SENTINEL);
             self.mesh.contributors.push(c);
         }

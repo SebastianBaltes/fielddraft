@@ -82,8 +82,8 @@ impl ClosestPointBvh {
 
             let mut amin = [f32::INFINITY; 3];
             let mut amax = [f32::NEG_INFINITY; 3];
-            for i in start..end {
-                let t = order[i] as usize;
+            for &oi in &order[start..end] {
+                let t = oi as usize;
                 let bb = t * 6;
                 for a in 0..3 {
                     amin[a] = amin[a].min(bboxes[bb + a]);

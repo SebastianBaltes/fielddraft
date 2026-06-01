@@ -14,7 +14,7 @@ use fielddraft_protocol::{BakedVolume, Primitive, Transform};
 
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, BlendMode};
-use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
+use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive, SketchSegment};
 use crate::quat_rotate;
 
 // ── Opcode tags ────────────────────────────────────────────────────
@@ -135,25 +135,21 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             ..
         } => {
             emit_leaf_primitive(primitive, world_transform, ctx);
-            return;
         }
         BoundedCsg::Union { left, right, .. } => {
             emit_node(left, ctx);
             emit_node(right, ctx);
             ctx.opcodes.push(op(OP_UNION));
-            return;
         }
         BoundedCsg::Difference { left, right, .. } => {
             emit_node(left, ctx);
             emit_node(right, ctx);
             ctx.opcodes.push(op(OP_DIFFERENCE));
-            return;
         }
         BoundedCsg::Intersection { left, right, .. } => {
             emit_node(left, ctx);
             emit_node(right, ctx);
             ctx.opcodes.push(op(OP_INTERSECT));
-            return;
         }
         BoundedCsg::SmoothUnion {
             left,
@@ -168,7 +164,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(op(OP_SMOOTH_UNION));
             out.push(*radius);
             out.push(blend_mode_f32(*mode));
-            return;
         }
         BoundedCsg::SmoothDifference {
             left,
@@ -183,7 +178,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(op(OP_SMOOTH_DIFF));
             out.push(*radius);
             out.push(blend_mode_f32(*mode));
-            return;
         }
         BoundedCsg::Twist { inner, rate, .. } => {
             out.push(op(OP_WARP_PUSH));
@@ -191,7 +185,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(*rate);
             emit_node(inner, ctx);
             ctx.opcodes.push(op(OP_WARP_POP));
-            return;
         }
         BoundedCsg::Bend { inner, rate, .. } => {
             out.push(op(OP_WARP_PUSH));
@@ -199,7 +192,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(*rate);
             emit_node(inner, ctx);
             ctx.opcodes.push(op(OP_WARP_POP));
-            return;
         }
         BoundedCsg::Displace {
             inner, depth, freq, ..
@@ -209,7 +201,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(op(OP_DISPLACE_VAL));
             out.push(*depth);
             out.push(*freq);
-            return;
         }
         BoundedCsg::Shell {
             inner, thickness, ..
@@ -218,7 +209,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             let out = &mut ctx.opcodes;
             out.push(op(OP_SHELL));
             out.push(*thickness);
-            return;
         }
         BoundedCsg::Morph {
             left, right, t, ..
@@ -228,7 +218,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             let out = &mut ctx.opcodes;
             out.push(op(OP_MORPH));
             out.push(*t);
-            return;
         }
         BoundedCsg::MaskedBlend {
             left,
@@ -251,7 +240,6 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(*blend_radius);
             out.push(blend_mode_f32(*blend_mode));
             out.push(if *is_difference { 1.0 } else { 0.0 });
-            return;
         }
         BoundedCsg::Extrude {
             sketch,
@@ -493,7 +481,39 @@ fn emit_sketch_primitive(prim: &Sketch2dPrimitive, out: &mut Vec<f32>) {
             out.push(*start_angle);
             out.push(*sweep_angle);
         }
+        Sketch2dPrimitive::Path { segments, .. } => {
+            // DL-46 / DL-45: the GPU opcode stream stays curve-free.
+            // A Path is flattened into a polyline and emitted as
+            // OP_PRIM2D_POLY — the analytic segments are CPU/B-Rep
+            // only. The even-odd polygon SDF then signs the outline.
+            let verts = flatten_path_to_polyline(segments);
+            out.push(op(OP_PRIM2D_POLY));
+            out.push(verts.len() as f32);
+            for v in &verts {
+                out.extend_from_slice(v);
+            }
+        }
     }
+}
+
+/// Flatten a [`SketchSegment`] chain into a closed polyline (no
+/// duplicated shared vertices) for the curve-free GPU opcode path.
+/// Lines contribute their start vertex; curves are sampled at
+/// [`PATH_FLATTEN_SAMPLES`] steps.
+fn flatten_path_to_polyline(segments: &[SketchSegment]) -> Vec<[f32; 2]> {
+    use fielddraft_protocol::sketch2d::PATH_FLATTEN_SAMPLES;
+    let mut verts = Vec::new();
+    for seg in segments {
+        let steps = match seg {
+            SketchSegment::Line { .. } => 1,
+            _ => PATH_FLATTEN_SAMPLES,
+        };
+        for k in 0..steps {
+            let t = k as f32 / steps as f32;
+            verts.push(seg.point_at(t));
+        }
+    }
+    verts
 }
 
 // ── CPU interpreter (test mirror of the GPU shader) ────────────────
@@ -556,48 +576,48 @@ pub fn eval_opcodes_with_volumes(
         match tag {
             // ── 3D primitives ──────────────────────────────────
             OP_PRIM_BOX => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let he = rd3!();
                 push_v!(sdf_box_local(local, he) * scale);
             }
             OP_PRIM_SPHERE => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let r = rd!();
                 push_v!(sdf_sphere_local(local, r) * scale);
             }
             OP_PRIM_CYLINDER => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let r = rd!();
                 let hh = rd!();
                 push_v!(sdf_cylinder_local(local, r, hh) * scale);
             }
             OP_PRIM_TORUS => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let major = rd!();
                 let minor = rd!();
                 push_v!(sdf_torus_local(local, major, minor) * scale);
             }
             OP_PRIM_CONE => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let rb = rd!();
                 let rt = rd!();
                 let hh = rd!();
                 push_v!(sdf_cone_local(local, rb, rt, hh) * scale);
             }
             OP_PRIM_CAPSULE => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let r = rd!();
                 let hh = rd!();
                 push_v!(sdf_capsule_local(local, r, hh) * scale);
             }
             OP_PRIM_HEX_PRISM => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let ap = rd!();
                 let hh = rd!();
                 push_v!(sdf_hex_prism_local(local, ap, hh) * scale);
             }
             OP_PRIM_ELLIPSOID => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let radii = rd3!();
                 push_v!(sdf_ellipsoid_local(local, radii) * scale);
             }
@@ -606,13 +626,13 @@ pub fn eval_opcodes_with_volumes(
                 push_v!(v);
             }
             OP_PRIM_GYROID => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let cs = rd!();
                 let th = rd!();
                 push_v!(sdf_gyroid_local(local, cs, th) * scale);
             }
             OP_PRIM_THREAD => {
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let nr = rd!();
                 let pitch = rd!();
                 let depth = rd!();
@@ -795,7 +815,7 @@ pub fn eval_opcodes_with_volumes(
 
             OP_PRIM_TEX3D => {
                 let tex_idx = rd!() as usize;
-                let (local, scale) = read_transform_and_localise(&opcodes, &mut pc, pt);
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
                 let aabb_min = rd3!();
                 let aabb_max = rd3!();
                 if let Some(vol) = volumes.get(tex_idx) {

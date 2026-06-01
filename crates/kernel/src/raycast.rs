@@ -131,7 +131,7 @@ pub fn raycast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::CsgNode;
+    use crate::csg::{BranchId, CsgNode};
     use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
     fn bounded(features: &[Feature]) -> BoundedCsg {
@@ -208,7 +208,11 @@ mod tests {
         // Surface eps default is 0.05 mm, hit should be at y≈10.
         assert!((hit.point[1] - 10.0).abs() < 0.2, "hit at y={}", hit.point[1]);
         assert_eq!(hit.element, ProxyElement::Face);
-        assert_eq!(hit.contributors.as_slice(), &[FeatureId::from_u32(1)]);
+        // Box +Y (top) face is sub-index 2.
+        assert_eq!(
+            hit.contributors.as_slice(),
+            &[BranchId::from_feature_sub(&FeatureId::from_u32(1), 2)]
+        );
     }
 
     #[test]
@@ -247,7 +251,11 @@ mod tests {
             "expected cap at y≈30, got {}",
             hit.point[1],
         );
-        assert_eq!(hit.contributors.as_slice(), &[FeatureId::from_u32(2)]);
+        // Cylinder top cap (+Y plane) is sub-index 1.
+        assert_eq!(
+            hit.contributors.as_slice(),
+            &[BranchId::from_feature_sub(&FeatureId::from_u32(2), 1)]
+        );
         assert_eq!(hit.element, ProxyElement::Face);
     }
 

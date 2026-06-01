@@ -13,6 +13,9 @@ dist-ssr/
 /crates/kernel/pkg/
 /web/src/wasm/
 
+# Agent worktrees / scratch
+/.claude/
+
 # Editor / OS
 .DS_Store
 *.log

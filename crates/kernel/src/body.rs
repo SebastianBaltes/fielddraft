@@ -18,13 +18,15 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive};
+use fielddraft_protocol::{BoolOp, Feature, FeatureId, Primitive, Transform};
 
+use crate::brep::octree::Octree;
+use crate::brep::weaving::weave;
+use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, CsgNode};
 use crate::dc::Mesh;
 use crate::sdf_compiler::CompiledSdf;
-use crate::topology::BodyTopology;
 
 /// One partitioned body as seen by the [`partition`] pass — just the
 /// feature indices and the accumulated world AABB, without any
@@ -103,18 +105,98 @@ pub struct Body {
     /// Compiled SDF opcode buffer for GPU raymarching. Recompiled
     /// whenever the body's geometry changes (payload_hash differs).
     pub compiled_sdf: Option<CompiledSdf>,
-    /// Lazily computed B-Rep topology (faces + edges) from mesh
-    /// classifications. Invalidated on mesh rebuild.
-    pub topology: Option<BodyTopology>,
+    /// Rigid + uniform-scale **placement** of this body, recomputed on
+    /// every [`Body::ensure_brep`] from the body's anchor feature
+    /// (`feature_indices[0]`, the seed Union that started the body —
+    /// see [`partition`]). The woven [`Body::brep`] lives in the
+    /// body-LOCAL frame (placement removed); consumers (STEP export,
+    /// world picking) compose this placement back in to obtain world
+    /// geometry. A pure move changes only `placement` and therefore
+    /// reuses the cached local weave (DL-50 correction).
+    ///
+    /// Runtime-only — `Body` is not serialised (bodies are ephemeral
+    /// runtime partitions, not document entities), so there is no
+    /// serde concern here.
+    pub placement: Transform,
+    /// Lazily computed *feature-based* B-Rep (sharp face/edge/vertex
+    /// structure woven from the analytic half-space decomposition,
+    /// not the mesh).
+    ///
+    /// Woven in the **body-local** frame: the build carry is seeded
+    /// with `inverse(placement)`, so octree vertex positions and
+    /// analytic face `Transform`s come out placement-free (DL-50
+    /// correction). Keyed on [`hash_body_local_payload`] — the
+    /// geometry plus the *relative* arrangement of features, with
+    /// placement divided out — so a pure move (which only shifts
+    /// `placement`) leaves the key unchanged and reuses the cache.
+    /// The key makes the cache self-healing: a stale hash forces a
+    /// re-weave even when the lazy `brep = None` invalidation is
+    /// bypassed (e.g. the affine pure-translation fast-path in
+    /// `rebuild_bodies`).
+    pub brep: Option<(u64, BRep)>,
 }
 
 impl Body {
-    pub fn ensure_topology(&mut self) -> &BodyTopology {
-        if self.topology.is_none() {
-            self.topology = Some(crate::topology::extract_topology(&self.mesh));
+    /// Return the body's feature-based B-Rep, weaving it on first
+    /// access and caching the result. Subsequent calls reuse the
+    /// cache until the next remesh clears it (see [`Body::brep`]).
+    ///
+    /// The octree resolution is **body-relative**: `min_cell_size`
+    /// scales with the body's largest AABB extent (DL-28), so a tiny
+    /// or a huge body both get proportional sampling instead of an
+    /// absolute default. The weave path is panic-safe — degenerate
+    /// geometry yields a possibly-empty B-Rep rather than a crash.
+    pub fn ensure_brep(&mut self, features: &[Feature]) -> &BRep {
+        // Placement is cheap (O(features)) and recomputed on EVERY call,
+        // OUTSIDE the stale-gated weave: a move changes only `placement`,
+        // so consumers always see the current world pose without forcing
+        // a re-weave (DL-50 correction).
+        self.placement = compute_body_placement(features, &self.feature_indices);
+
+        // Re-weave only when the placement-INVARIANT local key changes —
+        // i.e. geometry or the *relative* arrangement of features moved.
+        // A pure body move leaves this key untouched and reuses the cache.
+        let key = hash_body_local_payload(features, &self.feature_indices, &self.placement);
+        let stale = !matches!(&self.brep, Some((k, _)) if *k == key);
+        if stale {
+            // Weave in the body-local frame: seed the build carry with
+            // `inverse(placement)` so vertices + analytic face transforms
+            // come out placement-free. The octree's `min_cell` is derived
+            // from the body AABB extent, which is placement-invariant
+            // under rigid + uniform scale, so the local sampling matches.
+            let bounded =
+                build_bounded_for_body_local(features, &self.feature_indices, &self.placement);
+            let min_cell = topology_min_cell_size(&self.aabb);
+            let octree = Octree::build(&bounded, min_cell);
+            self.brep = Some((key, weave(&bounded, &octree)));
         }
-        self.topology.as_ref().unwrap()
+        &self.brep.as_ref().unwrap().1
     }
+
+    /// Borrow the already-woven B-Rep without re-weaving, or `None` if
+    /// [`Body::ensure_brep`] has never run (or the cache was invalidated).
+    /// Lets a caller weave a batch of bodies first, then borrow them all
+    /// immutably at once (e.g. multi-body STEP export).
+    pub fn brep_cached(&self) -> Option<&BRep> {
+        self.brep.as_ref().map(|(_, b)| b)
+    }
+}
+
+/// Octree `min_cell_size` for a body's B-Rep weave, derived from its
+/// world AABB (DL-28). We target ~32 cells across the body's largest
+/// extent, then clamp to `[1e-3, 10.0]` mm so a degenerate (zero-size)
+/// or astronomically large body can never drive the octree to its
+/// `max_depth` cap and hang. An empty AABB falls back to the floor.
+fn topology_min_cell_size(aabb: &Aabb) -> f32 {
+    const DIVISOR: f32 = 32.0;
+    const FLOOR: f32 = 1e-3;
+    const CEIL: f32 = 10.0;
+    if aabb.is_empty() {
+        return FLOOR;
+    }
+    let size = aabb.size();
+    let largest = size[0].max(size[1]).max(size[2]);
+    (largest / DIVISOR).clamp(FLOOR, CEIL)
 }
 
 /// Walk the feature spine once and return one [`BodyPartition`] per
@@ -140,6 +222,8 @@ pub fn partition(features: &[Feature]) -> Vec<BodyPartition> {
             }
             BoolOp::Difference | BoolOp::Intersect => {
                 if !feature.target_ids.is_empty() {
+                    // indexed element is both read and mutated; iter_mut rewrite is risky
+                    #[allow(clippy::needless_range_loop)]
                     for idx in 0..groups.len() {
                         let matches = groups[idx].feature_indices.iter().any(|&fi| {
                             let root = features[fi].id.root_ancestor();
@@ -230,6 +314,66 @@ pub fn hash_body_payload_split(
 pub fn hash_body_payload(features: &[Feature], indices: &[usize]) -> u64 {
     let (g, t) = hash_body_payload_split(features, indices);
     combine_hashes(g, t)
+}
+
+/// Compute a body's rigid + uniform-scale **placement** from its anchor
+/// feature (`indices[0]`, the seed Union that started the body — see
+/// [`partition`]). The placement is the anchor transform's rotation +
+/// translation + a single uniform scale (taken as [`Transform::min_scale`]).
+///
+/// If the anchor carries a non-uniform scale, only its uniform component
+/// is folded into the placement; the residual non-uniform part stays in
+/// the body-local weave (where arbitrary affine is fine for the SDF). The
+/// woven analytic surfaces (cylinder/cone/sphere/torus) are only closed
+/// under rigid + uniform scale, which is exactly the class extracted here,
+/// so the local frame keeps them analytic. An empty body falls back to
+/// [`Transform::IDENTITY`] (world weave).
+pub fn compute_body_placement(features: &[Feature], indices: &[usize]) -> Transform {
+    let Some(&anchor) = indices.first() else {
+        return Transform::IDENTITY;
+    };
+    let t = &features[anchor].transform;
+    let s = t.min_scale();
+    Transform {
+        translate: t.translate,
+        rotation: t.rotation,
+        scale: [s, s, s],
+    }
+}
+
+/// Placement-invariant cache key for a body's local B-Rep weave.
+///
+/// Hashes the geometry portion (primitive params, boolean op, modifiers —
+/// identical to [`hash_body_payload_split`]'s geometry hash) plus the
+/// *relative* arrangement of features: each feature's transform
+/// re-expressed as `inverse(placement) ∘ feature.transform`. A pure body
+/// move shifts `placement` and every `feature.transform` by the same
+/// delta, so the composed local transforms — and therefore this key —
+/// stay constant, letting [`Body::ensure_brep`] reuse the cached weave.
+pub fn hash_body_local_payload(
+    features: &[Feature],
+    indices: &[usize],
+    placement: &Transform,
+) -> u64 {
+    let (geo, _) = hash_body_payload_split(features, indices);
+    let inv = crate::inverse(placement);
+    let mut local = DefaultHasher::new();
+    indices.len().hash(&mut local);
+    for &i in indices {
+        let f = &features[i];
+        f.id.hash(&mut local);
+        let lt = crate::compose_transforms(&inv, &f.transform);
+        for v in lt.translate {
+            v.to_bits().hash(&mut local);
+        }
+        for v in lt.rotation {
+            v.to_bits().hash(&mut local);
+        }
+        for v in lt.scale {
+            v.to_bits().hash(&mut local);
+        }
+    }
+    combine_hashes(geo, local.finish())
 }
 
 fn combine_hashes(geometry: u64, transform: u64) -> u64 {
@@ -441,6 +585,14 @@ fn hash_sketch2d(
                     start_angle.to_bits().hash(hasher);
                     sweep_angle.to_bits().hash(hasher);
                 }
+                Sketch2dPrimitive::Path { segments, closed } => {
+                    4u8.hash(hasher);
+                    closed.hash(hasher);
+                    segments.len().hash(hasher);
+                    for seg in segments {
+                        hash_sketch_segment(seg, hasher);
+                    }
+                }
             }
         }
         Sketch2d::Union(a, b) => {
@@ -466,6 +618,43 @@ fn hash_sketch2d(
     }
 }
 
+fn hash_sketch_segment(
+    seg: &fielddraft_protocol::SketchSegment,
+    hasher: &mut DefaultHasher,
+) {
+    use fielddraft_protocol::SketchSegment;
+    let hash_pt = |pt: &[f32; 2], h: &mut DefaultHasher| {
+        for v in pt {
+            v.to_bits().hash(h);
+        }
+    };
+    match seg {
+        SketchSegment::Line { start, end } => {
+            0u8.hash(hasher);
+            hash_pt(start, hasher);
+            hash_pt(end, hasher);
+        }
+        SketchSegment::QuadBezier { p0, p1, p2 } => {
+            1u8.hash(hasher);
+            hash_pt(p0, hasher);
+            hash_pt(p1, hasher);
+            hash_pt(p2, hasher);
+        }
+        SketchSegment::Arc {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            2u8.hash(hasher);
+            hash_pt(center, hasher);
+            radius.to_bits().hash(hasher);
+            start_angle.to_bits().hash(hasher);
+            sweep_angle.to_bits().hash(hasher);
+        }
+    }
+}
+
 /// Build the `BoundedCsg` that the mesher and raycaster actually
 /// query for a given body. Extracted as a free function so both
 /// `Kernel::rebuild_bodies` and the raycaster's hot path can share
@@ -475,6 +664,23 @@ pub fn build_bounded_for_body(features: &[Feature], indices: &[usize]) -> Bounde
     let sub: Vec<Feature> = indices.iter().map(|&i| features[i].clone()).collect();
     let csg = CsgNode::from_features(&sub);
     BoundedCsg::from_csg(&csg)
+}
+
+/// Like [`build_bounded_for_body`], but builds the `BoundedCsg` in the
+/// body-LOCAL frame by seeding the transform carry with
+/// `inverse(placement)`. Used only by the B-Rep weave (DL-50): every
+/// leaf's `world_transform` becomes `placement⁻¹ ∘ feature.transform`,
+/// so the octree samples the local SDF and analytic faces + vertices come
+/// out placement-free. The mesh / raycast paths keep using the world-frame
+/// [`build_bounded_for_body`].
+pub fn build_bounded_for_body_local(
+    features: &[Feature],
+    indices: &[usize],
+    placement: &Transform,
+) -> BoundedCsg {
+    let sub: Vec<Feature> = indices.iter().map(|&i| features[i].clone()).collect();
+    let csg = CsgNode::from_features(&sub);
+    BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
 }
 
 pub fn build_bounded_with_primitives(
@@ -728,7 +934,7 @@ mod tests {
     #[test]
     fn hash_changes_when_modifier_fields_change() {
         let base = box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]);
-        let h0 = hash_body_payload(&[base.clone()], &[0]);
+        let h0 = hash_body_payload(std::slice::from_ref(&base), &[0]);
 
         for field in [
             "blend_radius",

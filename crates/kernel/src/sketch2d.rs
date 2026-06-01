@@ -12,7 +12,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub use fielddraft_protocol::sketch2d::{
-    distance_point_to_aabb2, Aabb2, Sketch2d, Sketch2dPrimitive,
+    distance_point_to_aabb2, ellipse_quad_beziers, Aabb2, Sketch2d, Sketch2dPrimitive,
+    SketchSegment,
 };
 
 /// BVH-wrapped mirror of [`Sketch2d`]. Every node carries its
@@ -145,6 +146,65 @@ impl BoundedSketch2d {
             Self::Offset { inner, distance, .. } => inner.sdf(p) - distance,
         }
     }
+
+    /// Total number of boundary branches across the whole sketch
+    /// tree. Boolean children's branch ids are concatenated, so the
+    /// right child's ids start after the left child's count. This
+    /// is what the 3D contributor sub-id offset keys off.
+    pub fn edge_count(&self) -> u32 {
+        match self {
+            Self::Empty => 0,
+            Self::Prim { primitive, .. } => primitive.edge_count(),
+            Self::Union { left, right, .. }
+            | Self::Difference { left, right, .. }
+            | Self::Intersection { left, right, .. } => left.edge_count() + right.edge_count(),
+            Self::Offset { inner, .. } => inner.edge_count(),
+        }
+    }
+
+    /// SDF value and globally-unique branch index across the sketch
+    /// tree. Right-child branch indices are offset by the left
+    /// child's [`Self::edge_count`]. On the medial axis (`dl == dr`)
+    /// the tie breaks to the left child for determinism (DL-32).
+    /// Mirrors [`Sketch2d::sdf_with_edge`] up to f32 rounding.
+    pub fn sdf_with_edge(&self, p: [f32; 2]) -> (f32, u32) {
+        match self {
+            Self::Empty => (f32::INFINITY, 0),
+            Self::Prim { primitive, .. } => primitive.sdf_with_edge(p),
+            Self::Union { left, right, .. } => {
+                let (dl, el) = left.sdf_with_edge(p);
+                let (dr, er) = right.sdf_with_edge(p);
+                if dl <= dr {
+                    (dl, el)
+                } else {
+                    (dr, er + left.edge_count())
+                }
+            }
+            Self::Difference { left, right, .. } => {
+                let (dl, el) = left.sdf_with_edge(p);
+                let (dr, er) = right.sdf_with_edge(p);
+                let neg_dr = -dr;
+                if dl >= neg_dr {
+                    (dl, el)
+                } else {
+                    (neg_dr, er + left.edge_count())
+                }
+            }
+            Self::Intersection { left, right, .. } => {
+                let (dl, el) = left.sdf_with_edge(p);
+                let (dr, er) = right.sdf_with_edge(p);
+                if dl >= dr {
+                    (dl, el)
+                } else {
+                    (dr, er + left.edge_count())
+                }
+            }
+            Self::Offset { inner, distance, .. } => {
+                let (d, e) = inner.sdf_with_edge(p);
+                (d - distance, e)
+            }
+        }
+    }
 }
 
 // ── Contour extraction via Marching Squares ─────────────────────
@@ -214,6 +274,11 @@ enum EdgeKey {
     V(usize, usize),
 }
 
+/// March-squares output: list of edge-pair segments plus the
+/// interpolated crossing point for each edge key.
+type MarchSquaresResult = (Vec<(EdgeKey, EdgeKey)>, HashMap<EdgeKey, [f32; 2]>);
+
+#[allow(clippy::too_many_arguments)] // grid-marching helper; flat scalar grid params
 fn march_squares(
     sketch: &BoundedSketch2d,
     values: &[f32],
@@ -223,7 +288,7 @@ fn march_squares(
     y0: f32,
     dx: f32,
     dy: f32,
-) -> (Vec<(EdgeKey, EdgeKey)>, HashMap<EdgeKey, [f32; 2]>) {
+) -> MarchSquaresResult {
     let mut segments: Vec<(EdgeKey, EdgeKey)> = Vec::new();
     let mut pts: HashMap<EdgeKey, [f32; 2]> = HashMap::new();
 
@@ -479,9 +544,8 @@ fn classify_contours(mut contours: Vec<Vec<[f32; 2]>>) -> Vec<ContourData> {
     // Ensure winding: outers CCW (positive area), holes CW (negative area)
     for i in 0..n {
         let sa = signed_area(&contours[i]);
-        if depth[i] % 2 == 0 && sa < 0.0 {
-            contours[i].reverse();
-        } else if depth[i] % 2 == 1 && sa > 0.0 {
+        // outers (even depth) must be CCW (sa>0); holes (odd depth) must be CW (sa<0)
+        if (depth[i].is_multiple_of(2) && sa < 0.0) || (depth[i] % 2 == 1 && sa > 0.0) {
             contours[i].reverse();
         }
     }
@@ -489,7 +553,7 @@ fn classify_contours(mut contours: Vec<Vec<[f32; 2]>>) -> Vec<ContourData> {
     // Collect outers and attach their direct-child holes
     let mut results: Vec<ContourData> = Vec::new();
     for i in 0..n {
-        if depth[i] % 2 == 0 {
+        if depth[i].is_multiple_of(2) {
             let holes: Vec<Vec<[f32; 2]>> = (0..n)
                 .filter(|&j| parent[j] == Some(i) && depth[j] % 2 == 1)
                 .map(|j| contours[j].clone())
@@ -624,5 +688,77 @@ mod tests {
         let expected = std::f32::consts::PI * radius * radius;
         let rel_error = (area - expected).abs() / expected;
         assert!(rel_error < 0.05, "area {area} vs expected {expected}, error {rel_error}");
+    }
+
+    // ─── per-segment edge identity ─────────────────────────────────
+
+    fn path_square() -> Sketch2d {
+        // Unit square as a 4-segment Path (CCW): bottom, right,
+        // top, left → groups 0,1,2,3.
+        Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
+                SketchSegment::Line { start: [1.0, -1.0], end: [1.0, 1.0] },
+                SketchSegment::Line { start: [1.0, 1.0], end: [-1.0, 1.0] },
+                SketchSegment::Line { start: [-1.0, 1.0], end: [-1.0, -1.0] },
+            ],
+            closed: true,
+        })
+    }
+
+    #[test]
+    fn bounded_path_square_edge_count_is_four() {
+        let bounded = BoundedSketch2d::from_sketch(&path_square());
+        assert_eq!(bounded.edge_count(), 4);
+    }
+
+    #[test]
+    fn bounded_path_square_nearest_group_classification() {
+        let bounded = BoundedSketch2d::from_sketch(&path_square());
+        // Clearly outside each wall → that wall's group id.
+        assert_eq!(bounded.sdf_with_edge([0.0, -3.0]).1, 0, "bottom");
+        assert_eq!(bounded.sdf_with_edge([3.0, 0.0]).1, 1, "right");
+        assert_eq!(bounded.sdf_with_edge([0.0, 3.0]).1, 2, "top");
+        assert_eq!(bounded.sdf_with_edge([-3.0, 0.0]).1, 3, "left");
+    }
+
+    #[test]
+    fn bounded_path_square_corner_tie_break_deterministic() {
+        // On the medial diagonal past the (1,-1) corner the bottom
+        // (group 0) and right (group 1) edges are equidistant; the
+        // tie must break to the lower segment index (0), stably.
+        let bounded = BoundedSketch2d::from_sketch(&path_square());
+        for _ in 0..8 {
+            assert_eq!(bounded.sdf_with_edge([3.0, -3.0]).1, 0);
+        }
+    }
+
+    #[test]
+    fn bounded_path_sdf_matches_naive_tree() {
+        let sketch = path_square();
+        let bounded = BoundedSketch2d::from_sketch(&sketch);
+        for (px, py) in [(0.0, 0.0), (0.9, 0.0), (3.0, 0.0), (0.0, 2.0)] {
+            let a = sketch.sdf([px, py]);
+            let b = bounded.sdf([px, py]);
+            assert!((a - b).abs() < 1e-4, "{a} != {b}");
+        }
+    }
+
+    #[test]
+    fn difference_tree_offsets_right_child_groups() {
+        // A square Path (4 groups) minus a circle (1 group). The
+        // circle's group id must be offset past the square's count.
+        let square = path_square();
+        let hole = Sketch2d::Prim(Sketch2dPrimitive::Circle {
+            center: [0.0, 0.0],
+            radius: 0.3,
+        });
+        let tree = Sketch2d::Difference(Box::new(square), Box::new(hole));
+        let bounded = BoundedSketch2d::from_sketch(&tree);
+        assert_eq!(bounded.edge_count(), 5);
+        // Just outside the hole boundary (inside the square) the
+        // nearest boundary is the circle → group 4 (offset by 4).
+        let (_, e) = bounded.sdf_with_edge([0.25, 0.0]);
+        assert_eq!(e, 4, "hole edge id offset past square's 4 groups");
     }
 }
