@@ -9,6 +9,7 @@ const LS_RENDER_MODE = "fielddraft.renderMode";
 const LS_SHOW_EDGES = "fielddraft.showEdges";
 const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
+const LS_FRAME_LOOP = "fielddraft.frameLoop";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -165,6 +166,13 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 export type ThemeChoice = "light" | "dark";
 export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
 export type MeshAlgorithm = "mdc" | "rfta" | "mt";
+/** R3F render scheduling:
+ *   - "demand": render only when something invalidates the canvas (default,
+ *               idle GPU when the scene is static)
+ *   - "always": render every animation frame regardless of changes — a
+ *               diagnostic crutch: if a view only updates correctly in
+ *               "always", its "demand" path is missing an invalidate trigger. */
+export type FrameLoopMode = "demand" | "always";
 /** How the analytic B-Rep edge wireframe is drawn:
  *   - "xray":    all edges, never occluded by faces (current default)
  *   - "visible": only edges that are not hidden behind a face
@@ -183,6 +191,7 @@ export interface SettingsState {
   meshAlgorithm: MeshAlgorithm;
   showEdges: boolean;
   brepEdgeMode: BRepEdgeMode;
+  frameLoop: FrameLoopMode;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -232,6 +241,7 @@ export function loadSettings(): SettingsState {
   let meshAlgorithm: MeshAlgorithm = "mdc";
   let showEdges = true;
   let brepEdgeMode: BRepEdgeMode = "xray";
+  let frameLoop: FrameLoopMode = "demand";
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -248,10 +258,13 @@ export function loadSettings(): SettingsState {
     const rawBrepEdge = localStorage.getItem(LS_BREP_EDGE_MODE);
     if (rawBrepEdge && VALID_BREP_EDGE_MODES.includes(rawBrepEdge as BRepEdgeMode))
       brepEdgeMode = rawBrepEdge as BRepEdgeMode;
+    const rawFrameLoop = localStorage.getItem(LS_FRAME_LOOP);
+    if (rawFrameLoop === "always" || rawFrameLoop === "demand")
+      frameLoop = rawFrameLoop;
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -818,6 +831,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const setFrameLoop = (mode: FrameLoopMode) => {
+    const next = { ...settings, frameLoop: mode };
+    saveSetting(LS_FRAME_LOOP, mode);
+    onSettingsChange(next);
+  };
+
   const TABS: { key: SettingsTab; label: string }[] = [
     { key: "ui", label: "UI" },
     { key: "units", label: "Workspace Units" },
@@ -946,6 +965,30 @@ function SettingsDialog({
                   <option value="visible">Visible only</option>
                   <option value="none">Hidden</option>
                 </select>
+              </div>
+
+              <div className="setting-row" data-testid="setting-frame-loop">
+                <span className="setting-label">Render loop</span>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={"seg" + (settings.frameLoop === "demand" ? " is-active" : "")}
+                    data-testid="setting-frame-loop-demand"
+                    title="Render only when the scene changes (idle GPU when static)"
+                    onClick={() => setFrameLoop("demand")}
+                  >
+                    On demand
+                  </button>
+                  <button
+                    type="button"
+                    className={"seg" + (settings.frameLoop === "always" ? " is-active" : "")}
+                    data-testid="setting-frame-loop-always"
+                    title="Render every frame — diagnostic: if a view only updates here, its on-demand invalidate is missing"
+                    onClick={() => setFrameLoop("always")}
+                  >
+                    Always
+                  </button>
+                </div>
               </div>
             </>
           )}

@@ -18,7 +18,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
-import type { BRepEdgeMode } from "./SettingsMenu";
+import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
 import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
@@ -259,7 +259,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
+export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -378,7 +378,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
-          frameloop="demand"
+          frameloop={frameLoop}
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
