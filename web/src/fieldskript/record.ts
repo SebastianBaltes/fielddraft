@@ -1,5 +1,5 @@
 /**
- * FieldSkript record + persistence model (S1).
+ * FieldSkript record + persistence model (S1/S2).
  *
  * A {@link FieldSkriptRecord} is the document-local, serializable form
  * of a runtime-defined feature type. It mirrors the Rust
@@ -7,16 +7,20 @@
  * matches the serde rename) so it round-trips through the kernel's
  * `toJson`/`loadJson` inside `Document.scripts` with no translation.
  *
- * Author → schema → record → persist. At save time `source` is
- * transpiled to the CommonJS `compiledJs` the worker build host runs
- * (S2); the transpiler is injected ({@link Transpiler}) and defaults to
- * sucrase — see `./transpile`. Transpilation happens once here, never
- * during regeneration.
+ * **Save pipeline: `source → transpile → evalDefinition → schema`.** At
+ * save time the editor's TypeScript/ESM `source` is transpiled once to
+ * the CommonJS `compiledJs` the worker build host runs (S2); that same
+ * compiled body is then evaluated top-level to read its `definition`
+ * export ({@link evalDefinition}), which lowers to the
+ * `RawFeatureSchema` the FeatureDialog consumes. The transpiler is
+ * injected ({@link Transpiler}) and defaults to sucrase — see
+ * `./transpile`. Transpilation happens once here, never during
+ * regeneration.
  */
 
 import type { RawFeatureSchema } from "../widgets/schema";
-import type { FeatureDefinition } from "./dsl";
 import { buildSchema } from "./dsl";
+import { evalDefinition } from "./evalDefinition";
 import { type Transpiler, sucraseTranspiler } from "./transpile";
 
 /**
@@ -41,16 +45,9 @@ export interface FieldSkriptRecord {
 export interface CreateRecordInput {
   /** Stable script-type id (also the FeatureCall `type`). */
   id: string;
-  /** Source buffer. */
+  /** Source buffer. The `definition` and schema are derived from it. */
   source: string;
-  /**
-   * The evaluated `definition` export of the script. In S1 callers
-   * pass it directly (the DSL is imported in tests / a controlled
-   * eval); the save-time `transpile → eval → definition` pipeline is
-   * wired when the transpiler decision is made.
-   */
-  definition: FeatureDefinition;
-  /** Overrides the display name; defaults to `definition.name`. */
+  /** Overrides the display name; defaults to the derived `definition.name`. */
   name?: string;
   /** Transpiler to compile `source`; defaults to {@link sucraseTranspiler}. */
   transpile?: Transpiler;
@@ -58,36 +55,41 @@ export interface CreateRecordInput {
 
 /**
  * Build a fresh {@link FieldSkriptRecord} (version 1) from a script's
- * source and evaluated definition.
+ * source: transpile to CommonJS, evaluate to read its `definition`
+ * export, then lower that to the schema.
  */
 export function createRecord(input: CreateRecordInput): FieldSkriptRecord {
   const transpile = input.transpile ?? sucraseTranspiler;
+  const compiledJs = transpile(input.source);
+  const definition = evalDefinition(compiledJs);
   return {
     id: input.id,
-    name: input.name ?? input.definition.name,
+    name: input.name ?? definition.name,
     source: input.source,
-    compiledJs: transpile(input.source),
-    schema: buildSchema(input.definition, input.id),
+    compiledJs,
+    schema: buildSchema(definition, input.id),
     version: 1,
   };
 }
 
 /**
  * Produce the next version of a record after a source edit: recompiles
- * and re-extracts the schema, bumps `version`. Pure — returns a new
- * record, leaving the input untouched.
+ * and re-extracts the schema from the new source, bumps `version`.
+ * Pure — returns a new record, leaving the input untouched.
  */
 export function reviseRecord(
   prev: FieldSkriptRecord,
-  input: { source: string; definition: FeatureDefinition; name?: string; transpile?: Transpiler },
+  input: { source: string; name?: string; transpile?: Transpiler },
 ): FieldSkriptRecord {
   const transpile = input.transpile ?? sucraseTranspiler;
+  const compiledJs = transpile(input.source);
+  const definition = evalDefinition(compiledJs);
   return {
     id: prev.id,
-    name: input.name ?? input.definition.name,
+    name: input.name ?? definition.name,
     source: input.source,
-    compiledJs: transpile(input.source),
-    schema: buildSchema(input.definition, prev.id),
+    compiledJs,
+    schema: buildSchema(definition, prev.id),
     version: prev.version + 1,
   };
 }

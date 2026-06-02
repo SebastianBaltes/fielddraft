@@ -545,8 +545,8 @@ verallgemeinert.
 |---|---|---|
 | **S0** | DL-61 Stufe A/B: `Feature`→`DecodedFeature{node}`, Ops emittieren Knoten | DL-61 |
 | **S1** | `fielddraft.d.ts` + Param-DSL (`fd.feature`, `length/bool/enum/query/group`) → Schema-JSON; FieldSkript-Record + dokument-lokale Persistenz | `schema.ts`, FeatureDialog |
-| **S2** | Rust-Treiber-Callback (§2): `js_run_script_feature`-Import; Context aus dem Loop-Borrow lösen (`RefCell`/Handle, §2.6); `fd_op_commit` (mutiert Context) + `fd_eval_builtin` (pure) | §4.6 Dual-API, K4.5.8 |
-| **S2b** | Query-Brücke `fd_resolve_query` gegen lebenden Context (read-only, lazy Weave); Sub-Feature-Trampolin (`fd.call`: Skript→Skript JS-Rekursion, Skript→Built-in via eval+commit) | S2, `queries.rs` |
+| **S2** ✅ | Rust-Treiber-Callback (§2): `js_run_script_feature`-Import; Context aus dem Loop-Borrow lösen (`RefCell`/Handle, §2.6); `fd_op_commit` (mutiert Context) + `fd_eval_builtin` (pure). Save-Pipeline `source → transpile(sucrase) → evalDefinition → Schema` verdrahtet (§8). | §4.6 Dual-API, K4.5.8 |
+| **S2b** | **Trampolin ✅** (`fd.call`: Skript→Skript JS-Rekursion + Zyklus-/Tiefen-Guard, Skript→Built-in via commit — `makeScriptHost`). **Offen:** Query-Brücke `fd_resolve_query` gegen lebenden Context (read-only, lazy Weave) — die *architektonische* Hälfte (Element-Auflösung + Weave-Timing #6). | S2, `queries.rs` |
 | **S3** | Query-Ausbau: `evaluateQuery` Feature- → B-Rep-Element-Ebene; `createdBy/geometry/bodyType/adjacent/nearestTo`; Context-Integration | `queries.rs`, Naming DL-31… |
 | **S4** | Monaco-Editor + TS-Service + `extraLib`; CRUD-Panel; Live-Preview | `fieldscript.ts`-Vorbild |
 | **S5** | Härtung (QuickJS), geteilte Bibliothek über Backend, Versionierung | `server/` |

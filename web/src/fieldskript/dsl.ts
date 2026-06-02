@@ -411,3 +411,14 @@ export const fd = {
   group,
   visibleWhen,
 } as const;
+
+/**
+ * The `fielddraft` module object a transpiled script resolves at
+ * save-time definition extraction: the authoring surface only (no
+ * geometry `fd.op*` — `build()` is not run when we just read the
+ * `definition` export). Mirrors both `import { fd }` and
+ * `import { length }` styles.
+ */
+export function authoringModule(): Record<string, unknown> {
+  return { feature, length, angle, real, bool, str, vec2, vec3, enumParam, query, group, visibleWhen, fd };
+}

@@ -76,14 +76,30 @@ describe("buildFdModule", () => {
     expect(typeof fd.length).toBe("function");
   });
 
-  it("fails loudly on the not-yet-implemented query / call surface", () => {
+  it("fails loudly on the not-yet-implemented query surface", () => {
     const fd = buildFdModule(recordingDeps()).fd as {
-      call: () => void;
       q: { createdBy: () => void; evaluate: () => void };
     };
-    expect(() => fd.call()).toThrow(/later FieldSkript stage/);
     expect(() => fd.q.createdBy()).toThrow(/S3 query system/);
     expect(() => fd.q.evaluate()).toThrow(/S3 query system/);
+  });
+
+  it("fd.call default resolves a built-in via commit", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps).fd as {
+      call: (...a: unknown[]) => { id: string };
+    };
+    const handle = fd.call({ _brand: "fd.Context" }, makeBuildId("3.b"), "box", {
+      half_extents: [1, 1, 1],
+    });
+    expect(deps.calls).toEqual([
+      {
+        id: "3.b",
+        type: "box",
+        def: JSON.stringify({ half_extents: [1, 1, 1] }),
+      },
+    ]);
+    expect(handle.id).toBe("3.b");
   });
 });
 
@@ -162,6 +178,79 @@ describe("makeScriptHost", () => {
     host.sync([{ id: "s", compiledJs: script }]);
     host.run("s", "1", "");
     expect(JSON.parse(deps.calls[0].def)).toEqual({ got: {} });
+  });
+
+  it("fd.call commits a built-in (script → built-in)", () => {
+    const deps = recordingDeps();
+    const host = makeScriptHost(deps);
+    const script = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.call(context, id.sub("b"), "box", { half_extents: [1, 1, 1] });
+      };
+    `;
+    host.sync([{ id: "caller", compiledJs: script }]);
+    host.run("caller", "1", "{}");
+    expect(deps.calls).toHaveLength(1);
+    expect(deps.calls[0]).toMatchObject({ id: "1.b", type: "box" });
+  });
+
+  it("fd.call recurses into another script in pure JS (script → script)", () => {
+    const deps = recordingDeps();
+    const host = makeScriptHost(deps);
+    const leaf = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.opBox(context, id.sub("box"), { half_extents: [def.w, 1, 1] });
+      };
+    `;
+    const caller = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.call(context, id.sub("inner"), "leaf", { w: def.w });
+      };
+    `;
+    host.sync([
+      { id: "leaf", compiledJs: leaf },
+      { id: "caller", compiledJs: caller },
+    ]);
+    host.run("caller", "5", JSON.stringify({ w: 3 }));
+    expect(deps.calls).toHaveLength(1);
+    expect(deps.calls[0]).toMatchObject({ id: "5.inner.box", type: "box" });
+    expect(JSON.parse(deps.calls[0].def).half_extents).toEqual([3, 1, 1]);
+  });
+
+  it("detects a self-cycle (A → A)", () => {
+    const host = makeScriptHost(recordingDeps());
+    const self = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.call(context, id.sub("again"), "self", def);
+      };
+    `;
+    host.sync([{ id: "self", compiledJs: self }]);
+    expect(() => host.run("self", "1", "{}")).toThrow(/cycle/);
+  });
+
+  it("detects mutual recursion (A → B → A)", () => {
+    const host = makeScriptHost(recordingDeps());
+    const a = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.call(context, id.sub("b"), "b", def);
+      };
+    `;
+    const b = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        fd.call(context, id.sub("a"), "a", def);
+      };
+    `;
+    host.sync([
+      { id: "a", compiledJs: a },
+      { id: "b", compiledJs: b },
+    ]);
+    expect(() => host.run("a", "1", "{}")).toThrow(/cycle/);
   });
 });
 

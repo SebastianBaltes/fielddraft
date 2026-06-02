@@ -71,6 +71,21 @@ export type BuildFn = (
 ) => void;
 
 /**
+ * Resolve+run a sub-feature call (script→script recursion or
+ * script→built-in commit). This is the runtime form of the §2.4
+ * trampoline: given a target `type`, it either runs another compiled
+ * `build()` recursively in pure JS (sharing `context`) or commits a
+ * built-in op. The host injects the full capability; {@link buildFdModule}
+ * carries a built-ins-only default.
+ */
+export type CallFn = (
+  context: BuildContext,
+  id: BuildId,
+  type: string,
+  def: Record<string, unknown>,
+) => OpHandle;
+
+/**
  * The single capability the host needs from the kernel: commit one
  * built-in op into the live regeneration scratch and return the ids of
  * the feature(s) it created. In the worker this wraps the wasm
@@ -108,10 +123,20 @@ export function makeBuildId(id: string): BuildId {
  * Compose the `fielddraft` module a `build()` imports: the S1 authoring
  * builders (so a script's top-level `fd.feature(...)` still evaluates)
  * plus the S2 `fd.op*` geometry surface bound to `deps.commit`. `fd.q`
- * and `fd.call` are declared but fail loudly — they are later stages
- * (S2b query bridge / S3) and must not silently no-op.
+ * is declared but fails loudly — it is a later stage (S3 query system)
+ * and must not silently no-op.
+ *
+ * `fd.call` is the §2.4 sub-feature trampoline. When the host injects a
+ * full `call` capability ({@link makeScriptHost}) it resolves both
+ * script→script recursion and script→built-in commits. The bare
+ * default here handles **built-ins only** — at this level there is no
+ * script registry to recurse into — so script→script composition
+ * requires the host-injected capability.
  */
-export function buildFdModule(deps: ScriptHostDeps): Record<string, unknown> {
+export function buildFdModule(
+  deps: ScriptHostDeps,
+  call?: CallFn,
+): Record<string, unknown> {
   const ops: Record<string, (c: BuildContext, id: BuildId, def: Record<string, unknown>) => OpHandle> = {};
   for (const [op, typeName] of Object.entries(OP_TO_BUILTIN)) {
     ops[op] = (_context, id, def) => {
@@ -122,6 +147,15 @@ export function buildFdModule(deps: ScriptHostDeps): Record<string, unknown> {
 
   const laterStage = (what: string, stage: string) => () => {
     throw new Error(`${what} is a later FieldSkript stage (${stage})`);
+  };
+
+  // The bare default resolves built-ins only: with no script registry at
+  // this level it cannot recurse into another `build()`, so it just
+  // commits `type` as a built-in op (the kernel rejects unknown types).
+  // Script→script composition needs the host-injected `call`.
+  const defaultCall: CallFn = (_context, id, type, def) => {
+    const handles = deps.commit(String(id), type, JSON.stringify(def ?? {}));
+    return { id: handles[0] ?? String(id) };
   };
 
   const fd = {
@@ -142,7 +176,7 @@ export function buildFdModule(deps: ScriptHostDeps): Record<string, unknown> {
       createdBy: laterStage("fd.q.createdBy", "S3 query system"),
       evaluate: laterStage("fd.q.evaluate", "S3 query system"),
     },
-    call: laterStage("fd.call", "S2b sub-feature trampoline"),
+    call: call ?? defaultCall,
   };
   // Mirror the authoring named exports so both `import { fd }` and
   // `import { length }` resolve, exactly like the real package (§4).
@@ -216,8 +250,46 @@ export function makeScriptHost(deps: ScriptHostDeps): {
   sync(scripts: ScriptRecordLite[]): void;
   run(scriptId: string, instanceId: string, paramsJson: string): void;
 } {
-  const fdModule = buildFdModule(deps);
   const builds = new Map<string, BuildFn>();
+
+  // The §2.4 call stack: the chain of script types currently executing,
+  // shared by `run` (top-level) and `fd.call` (re-entrant). Recursion is
+  // detected by membership, runaway composition by depth — both
+  // deterministic since execution is synchronous and single-threaded.
+  const callStack: string[] = [];
+  const MAX_CALL_DEPTH = 64;
+
+  // The full trampoline. A registered script type recurses into its
+  // `build()` **in pure JS** sharing the same `context` — no wasm
+  // boundary crossing for orchestration; only the inner `fd.op*` commits
+  // cross, as usual. An unregistered type is treated as a built-in op and
+  // committed (the kernel rejects unknown types). The guard runs before
+  // the recursive descent so cycles and overflow throw deterministically.
+  const call: CallFn = (context, id, type, def) => {
+    const build = builds.get(type);
+    if (build) {
+      if (callStack.includes(type)) {
+        throw new Error(
+          `FieldSkript call cycle: ${[...callStack, type].join(" -> ")}`,
+        );
+      }
+      if (callStack.length >= MAX_CALL_DEPTH) {
+        throw new Error(`FieldSkript call depth ${MAX_CALL_DEPTH} exceeded`);
+      }
+      callStack.push(type);
+      try {
+        build(context, id, def ?? {});
+      } finally {
+        callStack.pop();
+      }
+      return { id: String(id) };
+    }
+    // Not a registered script → treat as a built-in op.
+    const handles = deps.commit(String(id), type, JSON.stringify(def ?? {}));
+    return { id: handles[0] ?? String(id) };
+  };
+
+  const fdModule = buildFdModule(deps, call);
 
   return {
     sync(scripts) {
@@ -232,10 +304,18 @@ export function makeScriptHost(deps: ScriptHostDeps): {
       if (!build) {
         throw new Error(`no compiled build() for FieldSkript "${scriptId}"`);
       }
+      // `run` participates in the same cycle guard as `fd.call`, so a
+      // top-level script that `fd.call`s itself (or via a cycle back to
+      // itself) is caught just like a nested one.
       const context: BuildContext = { _brand: "fd.Context" };
       const id = makeBuildId(instanceId);
       const def = paramsJson ? (JSON.parse(paramsJson) as Record<string, unknown>) : {};
-      build(context, id, def);
+      callStack.push(scriptId);
+      try {
+        build(context, id, def);
+      } finally {
+        callStack.pop();
+      }
     },
   };
 }
