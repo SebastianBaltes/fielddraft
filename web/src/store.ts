@@ -200,9 +200,15 @@ export interface StoreState {
    *  in this set are visible. Persisted to localStorage. */
   hiddenDatums: ReadonlySet<string>;
   highlightedBodyIndex: number | null;
-  /** S4: FieldSkript editor modal open flag. UI-only, never
-   *  persisted to the document. */
-  scriptEditorOpen: boolean;
+  /** FT-W: active workspace tab. "part" = the CAD editor
+   *  (Viewport + Outliner + Toolbar), "script" = the FieldSkript
+   *  IDE. UI-only, never persisted to the document. */
+  activeTab: "part" | "script";
+  /** FT-W: lightweight per-script-type meta the Part toolbar renders
+   *  as one button each (glyph = icon, label = name). Recomputed from
+   *  the kernel's `listScripts()` on every commit so newly saved /
+   *  deleted scripts appear or vanish immediately. */
+  scriptTypes: { id: string; name: string; icon: string }[];
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -398,7 +404,8 @@ export class KernelStore {
       hiddenDatums: loadHiddenDatumsFromStorage(),
       highlightedBodyIndex: null,
       rollbackIndex: initFeatures.length,
-      scriptEditorOpen: false,
+      activeTab: "part",
+      scriptTypes: this.snapshotScriptTypes(),
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -481,7 +488,8 @@ export class KernelStore {
       hiddenDatums: this.state.hiddenDatums,
       highlightedBodyIndex: this.state.highlightedBodyIndex,
       rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
-      scriptEditorOpen: this.state.scriptEditorOpen,
+      activeTab: this.state.activeTab,
+      scriptTypes: this.snapshotScriptTypes(),
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -644,6 +652,17 @@ export class KernelStore {
       });
     }
     return out;
+  }
+
+  /**
+   * FT-W: derive the Part toolbar's script-button meta from the
+   * kernel's FieldSkript records. Lightweight {id,name,icon} only —
+   * recomputed on every commit so saves/deletes surface immediately.
+   */
+  private snapshotScriptTypes(): { id: string; name: string; icon: string }[] {
+    return this.kernel
+      .listScripts()
+      .map((r) => ({ id: r.id, name: r.name, icon: r.icon }));
   }
 
   /**
@@ -2468,17 +2487,11 @@ export class KernelStore {
 
   // ── S4: FieldSkript editor + record CRUD ──────────────────────
 
-  /** S4: open the FieldSkript editor modal. */
-  openScriptEditor(): void {
-    if (this.state.scriptEditorOpen) return;
-    this.patch({ scriptEditorOpen: true });
-    this.notify();
-  }
-
-  /** S4: close the FieldSkript editor modal. */
-  closeScriptEditor(): void {
-    if (!this.state.scriptEditorOpen) return;
-    this.patch({ scriptEditorOpen: false });
+  /** FT-W: switch the active workspace tab ("part" ↔ "script").
+   *  No-op (no notify) when already on the requested tab. */
+  setActiveTab(tab: "part" | "script"): void {
+    if (this.state.activeTab === tab) return;
+    this.patch({ activeTab: tab });
     this.notify();
   }
 

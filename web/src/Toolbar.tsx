@@ -394,18 +394,26 @@ export function Toolbar({ store, state }: ToolbarProps) {
         )}
       </div>
 
-      <div className="group">
-        <button
-          type="button"
-          className="tool"
-          title="FieldSkript editor"
-          data-testid="open-fieldskript-editor"
-          onClick={() => store.openScriptEditor()}
-        >
-          <span className="glyph" aria-hidden="true">ƒ</span>
-          <span className="tool-label">Script</span>
-        </button>
-      </div>
+      {/* FT-W: one button per saved FieldSkript — glyph = the script's
+          icon, label = its name. Clicking instantiates the script into
+          the part. The "Feature Script" bottom tab opens the IDE. */}
+      {state.scriptTypes.length > 0 && (
+        <div className="group">
+          {state.scriptTypes.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className="tool"
+              title={`Insert ${t.name}`}
+              data-testid={`add-script-${t.id}`}
+              onClick={() => store.insertScriptInstance(t.id)}
+            >
+              <span className="glyph" aria-hidden="true">{t.icon}</span>
+              <span className="tool-label">{t.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -66,6 +66,10 @@ function configureTypeScriptOnce(): void {
 export interface ScriptEditorHandle {
   getValue(): string;
   setValue(value: string): void;
+  /** Force a relayout — needed after the host transitions from
+   *  display:none back into view (automaticLayout can't measure a
+   *  hidden container). */
+  layout(): void;
   dispose(): void;
 }
 
@@ -105,6 +109,7 @@ export function createScriptEditor(
   return {
     getValue: () => editor.getValue(),
     setValue: (value: string) => editor.setValue(value),
+    layout: () => editor.layout(),
     dispose: () => {
       sub.dispose();
       editor.dispose();

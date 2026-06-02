@@ -100,6 +100,7 @@ function makeStore(): { store: KernelStore; kernel: FakeKernel } {
 const VALID_SOURCE = `import { fd } from "fielddraft";
 export const definition = fd.feature({
   name: "Widget",
+  icon: "⬡",
   parameters: [fd.length("size", { default: 20 })],
 });
 export default function build() {}`;
@@ -192,26 +193,51 @@ describe("KernelStore — FieldSkript CRUD", () => {
   });
 });
 
-describe("KernelStore — script editor state", () => {
-  it("open/close flip scriptEditorOpen and notify subscribers", () => {
+describe("KernelStore — workspace tabs", () => {
+  it("setActiveTab flips activeTab part↔script and notifies", () => {
     const { store } = makeStore();
     let notifications = 0;
     store.subscribe(() => {
       notifications += 1;
     });
 
-    expect(store.getState().scriptEditorOpen).toBe(false);
+    expect(store.getState().activeTab).toBe("part");
 
-    store.openScriptEditor();
-    expect(store.getState().scriptEditorOpen).toBe(true);
+    store.setActiveTab("script");
+    expect(store.getState().activeTab).toBe("script");
     expect(notifications).toBe(1);
 
-    // Idempotent: opening again is a no-op (no extra notify).
-    store.openScriptEditor();
+    // Idempotent: setting the same tab is a no-op (no extra notify).
+    store.setActiveTab("script");
     expect(notifications).toBe(1);
 
-    store.closeScriptEditor();
-    expect(store.getState().scriptEditorOpen).toBe(false);
+    store.setActiveTab("part");
+    expect(store.getState().activeTab).toBe("part");
     expect(notifications).toBe(2);
+  });
+});
+
+describe("KernelStore — script-type toolbar meta", () => {
+  it("saveScript surfaces the new script in state.scriptTypes", () => {
+    const { store } = makeStore();
+    expect(store.getState().scriptTypes).toHaveLength(0);
+
+    const result = store.saveScript({ source: VALID_SOURCE });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const types = store.getState().scriptTypes;
+    expect(types).toEqual([{ id: "widget", name: "Widget", icon: "⬡" }]);
+  });
+
+  it("deleteScript removes the script from state.scriptTypes", () => {
+    const { store } = makeStore();
+    const saved = store.saveScript({ source: VALID_SOURCE });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    expect(store.getState().scriptTypes).toHaveLength(1);
+
+    store.deleteScript(saved.record.id);
+    expect(store.getState().scriptTypes).toHaveLength(0);
   });
 });

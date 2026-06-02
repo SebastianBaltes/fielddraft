@@ -113,11 +113,13 @@ declare module "fielddraft" {
 
   export interface FeatureSpec {
     name: string;
+    icon?: string;
     nameTemplate?: string;
     parameters: Param[];
   }
   export interface FeatureDefinition {
     readonly name: string;
+    readonly icon?: string;
     readonly nameTemplate?: string;
     readonly parameters: Param[];
   }

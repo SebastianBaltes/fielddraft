@@ -702,6 +702,9 @@ pub struct FieldSkriptRecord {
     pub id: String,
     /// Human-facing display name.
     pub name: String,
+    /// Display glyph for the feature button (Unicode now, image later).
+    #[serde(default)]
+    pub icon: String,
     /// TypeScript source (editor buffer).
     pub source: String,
     /// Transpiled JavaScript, produced at save time on the web side.
@@ -868,6 +871,7 @@ mod tests {
         doc.scripts.push(FieldSkriptRecord {
             id: "my_script".to_string(),
             name: "My Script".to_string(),
+            icon: "⬡".to_string(),
             source: "export const definition = {};".to_string(),
             compiled_js: "export const definition = {};".to_string(),
             schema: serde_json::json!({ "params": [] }),
@@ -885,6 +889,7 @@ mod tests {
         assert_eq!(parsed, doc);
         assert_eq!(parsed.scripts.len(), 1);
         assert_eq!(parsed.scripts[0].id, "my_script");
+        assert_eq!(parsed.scripts[0].icon, "⬡");
     }
 
     #[test]

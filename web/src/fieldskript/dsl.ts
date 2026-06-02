@@ -342,6 +342,8 @@ export function visibleWhen<T>(
 export interface FeatureSpec {
   /** Display name of the feature type. */
   name: string;
+  /** Unicode glyph shown on the Part toolbar button (e.g. "⬡"). */
+  icon?: string;
   /** Naming template for inserted instances (e.g. "Counterbore (#d)"). */
   nameTemplate?: string;
   /** Declared parameters, in dialog order. */
@@ -355,6 +357,7 @@ export interface FeatureSpec {
  */
 export interface FeatureDefinition {
   readonly name: string;
+  readonly icon?: string;
   readonly nameTemplate?: string;
   readonly parameters: Param[];
 }
@@ -363,6 +366,7 @@ export interface FeatureDefinition {
 export function feature(spec: FeatureSpec): FeatureDefinition {
   return {
     name: spec.name,
+    icon: spec.icon,
     nameTemplate: spec.nameTemplate,
     parameters: spec.parameters,
   };

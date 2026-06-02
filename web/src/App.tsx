@@ -3,6 +3,7 @@ import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
 import { FieldSkriptEditor } from "./FieldSkriptEditor";
+import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
@@ -280,11 +281,22 @@ export function App() {
           )}
         </div>
       </header>
-      {store && state ? <Toolbar store={store} state={state} /> : null}
-      <main className="main">
-        <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} />
-        {store && state ? <Outliner store={store} state={state} /> : null}
-      </main>
+      {/* FT-W: both workspaces stay mounted; we toggle visibility with
+          the `hidden` attr so the Viewport's GPU context and Monaco are
+          never torn down on a tab switch. The topbar is always visible. */}
+      <div className="fd-workspace" hidden={state?.activeTab === "script"}>
+        {store && state ? <Toolbar store={store} state={state} /> : null}
+        <main className="main">
+          <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} />
+          {store && state ? <Outliner store={store} state={state} /> : null}
+        </main>
+      </div>
+      <div className="fd-workspace fd-script-workspace" hidden={state?.activeTab !== "script"}>
+        {store && state ? (
+          <FieldSkriptEditor store={store} state={state} visible={state.activeTab === "script"} />
+        ) : null}
+      </div>
+      {store && state ? <BottomTabs store={store} state={state} /> : null}
       {state?.loading ? (
         <div className="fd-loading-overlay">
           <div className="fd-loading-dialog">
@@ -293,7 +305,6 @@ export function App() {
           </div>
         </div>
       ) : null}
-      {store && state ? <FieldSkriptEditor store={store} state={state} /> : null}
       {showHelp ? (
         <div
           className="fd-help-overlay"

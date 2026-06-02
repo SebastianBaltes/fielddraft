@@ -32,6 +32,8 @@ export interface FieldSkriptRecord {
   id: string;
   /** Human-facing display name. */
   name: string;
+  /** Unicode glyph shown on the Part toolbar button. Defaults to "ƒ". */
+  icon: string;
   /** TypeScript source (editor buffer). */
   source: string;
   /** Transpiled JavaScript, produced at save time. */
@@ -65,6 +67,7 @@ export function createRecord(input: CreateRecordInput): FieldSkriptRecord {
   return {
     id: input.id,
     name: input.name ?? definition.name,
+    icon: definition.icon ?? "ƒ",
     source: input.source,
     compiledJs,
     schema: buildSchema(definition, input.id),
@@ -87,6 +90,7 @@ export function reviseRecord(
   return {
     id: prev.id,
     name: input.name ?? definition.name,
+    icon: definition.icon ?? "ƒ",
     source: input.source,
     compiledJs,
     schema: buildSchema(definition, prev.id),

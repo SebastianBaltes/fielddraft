@@ -3704,6 +3704,7 @@ mod tests {
         serde_json::to_string(&serde_json::json!({
             "id": id,
             "name": "Widget",
+            "icon": "ƒ",
             "source": "",
             "compiledJs": "",
             "schema": schema,

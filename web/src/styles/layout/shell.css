@@ -99,10 +99,28 @@
     }
   }
 
-  & > .main {
+  /* FT-W: tabbed inner area. Each workspace fills the space between the
+     topbar and the bottom tab strip; the inactive one is `hidden`. */
+  & > .fd-workspace {
     flex: 1;
     min-height: 0;
     display: flex;
+    flex-direction: column;
+
+    &[hidden] {
+      display: none;
+    }
+
+    & > .main {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+    }
+  }
+
+  & > .fd-script-workspace {
+    /* The de-modal'd editor fills the whole inner area. */
+    overflow: hidden;
   }
 }
 
