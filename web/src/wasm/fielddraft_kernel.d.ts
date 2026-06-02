@@ -39,9 +39,11 @@ export class Kernel {
      */
     addExtrude(sketch_id: number, depth_mm: number, op: number, tz: number): number;
     /**
-     * K10.6: add a fillet_edge feature from detected edge data.
+     * DL-61: add a fillet_edge feature selecting an edge by query
+     * (e.g. `qEdge(<id_hash>)`). The mask tube and feature pair are
+     * derived from the resolved edge during regeneration.
      */
-    addFilletEdge(feature_a: number, feature_b: number, p0x: number, p0y: number, p0z: number, p1x: number, p1y: number, p1z: number, mask_radius: number, blend_radius: number): number;
+    addFilletEdge(edge: string, blend_radius: number): number;
     /**
      * K11.0: append a `gyroid` feature call. `cell_size_mm` is
      * the cell period, `thickness_mm` the wall half-thickness.
@@ -647,7 +649,7 @@ export interface InitOutput {
     readonly kernel_addBoolean: (a: number) => [number, number, number];
     readonly kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly kernel_addExtrude: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly kernel_addFilletEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
+    readonly kernel_addFilletEdge: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addGyroid: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addHole: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addImportedMesh: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];

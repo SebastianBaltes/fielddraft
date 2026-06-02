@@ -482,8 +482,7 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
         BoundedCsg::MaskedBlend {
             left,
             right,
-            mask_p0,
-            mask_p1,
+            mask_polyline,
             mask_radius,
             blend_radius,
             blend_mode,
@@ -505,7 +504,7 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
                     // Use f32 for the mask check (real parts only)
                     let p_real = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
                     let mask_d =
-                        crate::csg::sdf_capsule_3d(p_real, *mask_p0, *mask_p1, *mask_radius);
+                        crate::csg::sdf_polyline_tube(p_real, mask_polyline, *mask_radius);
                     if mask_d < 0.0 {
                         let r = D3::from(*blend_radius as f64);
                         if *is_difference {

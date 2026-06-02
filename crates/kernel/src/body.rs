@@ -594,8 +594,7 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
         CsgNode::MaskedBlend {
             a,
             b,
-            mask_p0,
-            mask_p1,
+            mask_polyline,
             mask_radius,
             blend_radius,
             blend_mode,
@@ -604,11 +603,11 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             13u8.hash(hasher);
             hash_node(a, hasher);
             hash_node(b, hasher);
-            for v in mask_p0 {
-                v.to_bits().hash(hasher);
-            }
-            for v in mask_p1 {
-                v.to_bits().hash(hasher);
+            mask_polyline.len().hash(hasher);
+            for pt in mask_polyline {
+                for v in pt {
+                    v.to_bits().hash(hasher);
+                }
             }
             mask_radius.to_bits().hash(hasher);
             blend_radius.to_bits().hash(hasher);

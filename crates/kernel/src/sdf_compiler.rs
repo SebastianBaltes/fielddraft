@@ -67,7 +67,7 @@ pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
-pub const OP_MASKED_BLEND: u32   = 0x40; // +10: p0(3)+p1(3)+mask_r+blend_r+mode+is_diff
+pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
 
 pub const OP_END: u32            = 0xFF;
 
@@ -222,8 +222,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
         BoundedCsg::MaskedBlend {
             left,
             right,
-            mask_p0,
-            mask_p1,
+            mask_polyline,
             mask_radius,
             blend_radius,
             blend_mode,
@@ -234,8 +233,12 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             emit_node(right, ctx);
             let out = &mut ctx.opcodes;
             out.push(op(OP_MASKED_BLEND));
-            out.extend_from_slice(mask_p0);
-            out.extend_from_slice(mask_p1);
+            // Count-prefixed polyline: n then n×[x,y,z]. A 1-point
+            // polyline is a sphere, 2 points a single capsule, etc.
+            out.push(mask_polyline.len() as f32);
+            for pt in mask_polyline {
+                out.extend_from_slice(pt);
+            }
             out.push(*mask_radius);
             out.push(*blend_radius);
             out.push(blend_mode_f32(*blend_mode));
@@ -790,15 +793,18 @@ pub fn eval_opcodes_with_volumes(
 
             // ── Masked blend ───────────────────────────────────
             OP_MASKED_BLEND => {
-                let p0 = rd3!();
-                let p1 = rd3!();
+                let n = rd!() as usize;
+                let mut polyline: Vec<[f32; 3]> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    polyline.push(rd3!());
+                }
                 let mask_r = rd!();
                 let blend_r = rd!();
                 let mode = rd!();
                 let is_diff = rd!() > 0.5;
                 let db = pop_v!();
                 let da = pop_v!();
-                let mask_d = sdf_capsule_3d(pt, p0, p1, mask_r);
+                let mask_d = crate::csg::sdf_polyline_tube(pt, &polyline, mask_r);
                 let result = if mask_d < 0.0 {
                     if is_diff {
                         -blend_min_eval(-da, db, blend_r, mode)
@@ -1052,21 +1058,6 @@ fn blend_min_eval(a: f32, b: f32, r: f32, mode: f32) -> f32 {
         // Chamfer
         a.min(b).min((a + b - r) * std::f32::consts::FRAC_1_SQRT_2)
     }
-}
-
-fn sdf_capsule_3d(p: [f32; 3], a: [f32; 3], b: [f32; 3], r: f32) -> f32 {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-    let dot_ab = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-    let t = if dot_ab > 0.0 {
-        ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / dot_ab).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let dx = ap[0] - ab[0] * t;
-    let dy = ap[1] - ab[1] * t;
-    let dz = ap[2] - ab[2] * t;
-    (dx * dx + dy * dy + dz * dz).sqrt() - r
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

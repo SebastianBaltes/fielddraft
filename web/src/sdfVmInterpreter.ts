@@ -358,18 +358,46 @@ export function buildVmSdfEvalFn(
         ptz.assign(0);
 
       }).ElseIf(tag.equal(int(OP_MASKED_BLEND)), () => {
-        const p0x = rd(), p0y = rd(), p0z = rd();
-        const p1x = rd(), p1y = rd(), p1z = rd();
+        // DL-61: count-prefixed polyline tube. Read `n` points, then the
+        // mask SDF is the min over capsules along consecutive segments
+        // (a 2-point polyline reduces to the single-capsule case; a
+        // 1-point polyline is a sphere).
+        const n = rd().toVar();
+        const firstX = rd().toVar(), firstY = rd().toVar(), firstZ = rd().toVar();
+        const prevX = float(firstX).toVar();
+        const prevY = float(firstY).toVar();
+        const prevZ = float(firstZ).toVar();
+        const maskD = float(1e30).toVar();
+        // Single-point polyline → sphere at the first point (radius added
+        // below once maskR is read). Handle via a zero-length capsule.
+        If(n.lessThanEqual(int(1)), () => {
+          maskD.assign(
+            sqrt(
+              ptx.sub(firstX).mul(ptx.sub(firstX))
+                .add(pty.sub(firstY).mul(pty.sub(firstY)))
+                .add(ptz.sub(firstZ).mul(ptz.sub(firstZ))),
+            ),
+          );
+        });
+        Loop(n.sub(1), () => {
+          const cx = rd().toVar(), cy = rd().toVar(), cz = rd().toVar();
+          const segD = sdfCapsule3dFn({
+            p: vec3(ptx, pty, ptz),
+            a: vec3(prevX, prevY, prevZ),
+            b: vec3(cx, cy, cz),
+            r: 0.0,
+          });
+          maskD.assign(min(maskD, segD));
+          prevX.assign(cx);
+          prevY.assign(cy);
+          prevZ.assign(cz);
+        });
         const maskR = rd(), blendR = rd(), mode = rd();
         const isDiff = rd();
         const db = popV(), da = popV();
-        const maskD = sdfCapsule3dFn({
-          p: vec3(ptx, pty, ptz),
-          a: vec3(p0x, p0y, p0z),
-          b: vec3(p1x, p1y, p1z),
-          r: maskR,
-        });
-        const tMask = float(0).step(maskD);
+        // Subtract the tube radius (sdfCapsule3dFn above used r=0, so maskD
+        // is the unsigned distance to the polyline; the tube is `dist - r`).
+        const tMask = float(0).step(maskD.sub(maskR));
         const uSmooth = blendMinFn({ a: da, b: db, r: blendR, mode });
         const uSharp = min(da, db);
         const dSmooth = blendMinFn({ a: da.negate(), b: db, r: blendR, mode }).negate();

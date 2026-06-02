@@ -1521,24 +1521,17 @@ impl Kernel {
         serde_json::to_string(&self.mate_connectors).map_err(|e| JsError::new(&e.to_string()))
     }
 
-    /// K10.6: add a fillet_edge feature from detected edge data.
+    /// DL-61: add a fillet_edge feature selecting an edge by query
+    /// (e.g. `qEdge(<id_hash>)`). The mask tube and feature pair are
+    /// derived from the resolved edge during regeneration.
     #[wasm_bindgen(js_name = addFilletEdge)]
-    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_fillet_edge(
         &mut self,
-        feature_a: u32,
-        feature_b: u32,
-        p0x: f32, p0y: f32, p0z: f32,
-        p1x: f32, p1y: f32, p1z: f32,
-        mask_radius: f32,
+        edge: String,
         blend_radius: f32,
     ) -> Result<u32, JsError> {
         self.push_feature_call("fillet_edge", serde_json::json!({
-            "feature_a": feature_a as f32,
-            "feature_b": feature_b as f32,
-            "mask_p0": [p0x, p0y, p0z],
-            "mask_p1": [p1x, p1y, p1z],
-            "mask_radius": mask_radius,
+            "edge": edge,
             "blend_radius": blend_radius,
         }))
     }

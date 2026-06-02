@@ -160,8 +160,7 @@ pub enum BoundedCsg {
     MaskedBlend {
         left: Box<BoundedCsg>,
         right: Box<BoundedCsg>,
-        mask_p0: [f32; 3],
-        mask_p1: [f32; 3],
+        mask_polyline: Vec<[f32; 3]>,
         mask_radius: f32,
         blend_radius: f32,
         blend_mode: BlendMode,
@@ -387,8 +386,7 @@ impl BoundedCsg {
             BoundedCsg::MaskedBlend {
                 left,
                 right,
-                mask_p0,
-                mask_p1,
+                mask_polyline,
                 mask_radius,
                 blend_radius,
                 blend_mode,
@@ -402,7 +400,7 @@ impl BoundedCsg {
                         if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
                     }
                     EvalMode::Visual => {
-                        let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
                         if mask_d < 0.0 {
                             if *is_difference {
                                 -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
@@ -548,8 +546,7 @@ impl BoundedCsg {
             BoundedCsg::MaskedBlend {
                 left,
                 right,
-                mask_p0,
-                mask_p1,
+                mask_polyline,
                 mask_radius,
                 blend_radius,
                 blend_mode,
@@ -568,7 +565,7 @@ impl BoundedCsg {
                         }
                     }
                     EvalMode::Visual => {
-                        let mask_d = crate::csg::sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        let mask_d = crate::csg::sdf_polyline_tube(p, mask_polyline, *mask_radius);
                         if mask_d < 0.0 {
                             let d = if *is_difference {
                                 -crate::csg::blend_min(-da, db_raw, *blend_radius, *blend_mode)
@@ -790,8 +787,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
         CsgNode::MaskedBlend {
             a,
             b,
-            mask_p0,
-            mask_p1,
+            mask_polyline,
             mask_radius,
             blend_radius,
             blend_mode,
@@ -803,8 +799,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             BoundedCsg::MaskedBlend {
                 left: Box::new(left),
                 right: Box::new(right),
-                mask_p0: *mask_p0,
-                mask_p1: *mask_p1,
+                mask_polyline: mask_polyline.clone(),
                 mask_radius: *mask_radius,
                 blend_radius: *blend_radius,
                 blend_mode: *blend_mode,
@@ -981,12 +976,12 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
             classify_walk(left, info, role);
             classify_walk(right, info, "skip");
         }
-        BoundedCsg::MaskedBlend { left, right, mask_p0, mask_p1, mask_radius, blend_radius, is_difference, .. } => {
+        BoundedCsg::MaskedBlend { left, right, mask_polyline, mask_radius, blend_radius, is_difference, .. } => {
             info.is_union_only = false;
-            let capsule_aabb = capsule_aabb(*mask_p0, *mask_p1, *mask_radius).expanded(*blend_radius);
+            let tube_aabb = polyline_tube_aabb(mask_polyline, *mask_radius).expanded(*blend_radius);
             let overlap = Aabb::intersect(
                 Aabb::intersect(left.aabb(), right.aabb()),
-                capsule_aabb,
+                tube_aabb,
             );
             if !overlap.is_empty() {
                 info.sdf_regions.push(SdfRegionInfo {
@@ -1132,6 +1127,16 @@ fn capsule_aabb(p0: [f32; 3], p1: [f32; 3], radius: f32) -> Aabb {
             p0[2].max(p1[2]) + radius,
         ],
     }
+}
+
+/// AABB of a polyline-tube mask: the union of the per-point spheres of
+/// `radius`. Empty for an empty polyline.
+fn polyline_tube_aabb(polyline: &[[f32; 3]], radius: f32) -> Aabb {
+    let mut acc = Aabb::EMPTY;
+    for pt in polyline {
+        acc = Aabb::union(acc, capsule_aabb(*pt, *pt, radius));
+    }
+    acc
 }
 
 #[cfg(test)]

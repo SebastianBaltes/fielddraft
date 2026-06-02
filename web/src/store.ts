@@ -1215,61 +1215,26 @@ export class KernelStore {
     return id;
   }
 
-  /** K10.6: add a fillet_edge feature at a detected edge. */
-  addFilletAtEdge(
-    featureA: number,
-    featureB: number,
-    p0: [number, number, number],
-    p1: [number, number, number],
-    radius = 5,
-  ): number | null {
+  /**
+   * DL-61: add a `fillet_edge` feature selecting an edge by query
+   * (e.g. `qEdge(<idHash>)`). The feature pair and the SMin mask tube are
+   * derived from the resolved edge during regeneration.
+   *
+   * No ghost-edge reorder workaround is needed any more: fillets emit no
+   * DecodedFeatures, so `brep_cache.ensure` always weaves the UN-filleted
+   * geometry — every fillet's edge query therefore resolves against the
+   * original edges regardless of fillet order.
+   */
+  addFilletAtEdge(edgeQuery: string, radius = 3): number | null {
     let id: number;
     try {
-      id = this.kernel.addFilletEdge(
-        featureA,
-        featureB,
-        p0[0], p0[1], p0[2],
-        p1[0], p1[1], p1[2],
-        radius * 2,
-        radius,
-      );
+      id = this.kernel.addFilletEdge(edgeQuery, radius);
     } catch (err) {
       console.error("fielddraft: addFilletAtEdge failed", err);
       this.setTransientError(formatKernelError(err, "Fillet failed"));
       return null;
     }
     this.commit(new Set([id]), id);
-
-    // K10 ghost-edge rollback: if there are older fillet_edge features
-    // that touch the same contributors, reorder this fillet before the
-    // earliest one. This ensures the new fillet applies to the original
-    // edge geometry rather than the already-smoothed surface.
-    try {
-      const features = this.state.features;
-      const newIdx = features.findIndex((f) => f.id === id);
-      if (newIdx >= 0) {
-        let earliestFilletIdx = newIdx;
-        for (let i = 0; i < newIdx; i++) {
-          const f = features[i];
-          if (f.kind === "fillet_edge") {
-            const params = this.kernel.getFeatureCallParams(f.id);
-            const fa = params?.feature_a as number | undefined;
-            const fb = params?.feature_b as number | undefined;
-            if ((fa === featureA || fa === featureB) && (fb === featureA || fb === featureB)) {
-              earliestFilletIdx = i;
-              break;
-            }
-          }
-        }
-        if (earliestFilletIdx < newIdx) {
-          this.kernel.reorderFeature(id, earliestFilletIdx);
-          this.commit(new Set([id]), id);
-        }
-      }
-    } catch {
-      // Rollback is best-effort; don't break the fillet creation.
-    }
-
     return id;
   }
 

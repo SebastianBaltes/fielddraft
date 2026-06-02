@@ -86,21 +86,17 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
-     * K10.6: add a fillet_edge feature from detected edge data.
-     * @param {number} feature_a
-     * @param {number} feature_b
-     * @param {number} p0x
-     * @param {number} p0y
-     * @param {number} p0z
-     * @param {number} p1x
-     * @param {number} p1y
-     * @param {number} p1z
-     * @param {number} mask_radius
+     * DL-61: add a fillet_edge feature selecting an edge by query
+     * (e.g. `qEdge(<id_hash>)`). The mask tube and feature pair are
+     * derived from the resolved edge during regeneration.
+     * @param {string} edge
      * @param {number} blend_radius
      * @returns {number}
      */
-    addFilletEdge(feature_a, feature_b, p0x, p0y, p0z, p1x, p1y, p1z, mask_radius, blend_radius) {
-        const ret = wasm.kernel_addFilletEdge(this.__wbg_ptr, feature_a, feature_b, p0x, p0y, p0z, p1x, p1y, p1z, mask_radius, blend_radius);
+    addFilletEdge(edge, blend_radius) {
+        const ptr0 = passStringToWasm0(edge, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addFilletEdge(this.__wbg_ptr, ptr0, len0, blend_radius);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

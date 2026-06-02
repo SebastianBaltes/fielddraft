@@ -1060,21 +1060,9 @@ export class Kernel {
     }
   }
 
-  /** K10.6: add a fillet at a detected edge. */
-  addFilletEdge(
-    featureA: number,
-    featureB: number,
-    p0x: number, p0y: number, p0z: number,
-    p1x: number, p1y: number, p1z: number,
-    maskRadius: number,
-    blendRadius: number,
-  ): number {
-    return this.inner.addFilletEdge(
-      featureA, featureB,
-      p0x, p0y, p0z,
-      p1x, p1y, p1z,
-      maskRadius, blendRadius,
-    );
+  /** DL-61: add a fillet selecting an edge by query (e.g. `qEdge(<idHash>)`). */
+  addFilletEdge(edge: string, blendRadius: number): number {
+    return this.inner.addFilletEdge(edge, blendRadius);
   }
 
   /** K9.1: overall scene AABB in mm. */

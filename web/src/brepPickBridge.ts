@@ -40,3 +40,12 @@ export function setHoveredElementOfKind(
 export function getHoveredElement(): PickedElement | null {
   return slots.face ?? slots.vertex ?? slots.edge ?? null;
 }
+
+/** The hovered element of a specific kind, or `null`. Used by pickers that
+ * only accept one kind (e.g. the fillet tool wants the EDGE under the
+ * cursor, even when a face in front would otherwise win the merge). */
+export function getHoveredElementOfKind(
+  kind: ElementKind,
+): PickedElement | null {
+  return slots[kind];
+}

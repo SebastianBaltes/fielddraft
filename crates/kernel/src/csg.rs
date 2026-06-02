@@ -538,9 +538,9 @@ pub enum CsgNode {
     /// `|sdf(p)| - thickness`. Turns a solid body into a
     /// thin-walled shell of uniform thickness.
     Shell(Box<CsgNode>, f32),
-    /// K10.3: spatially-masked blend. Evaluates `a` and `b` at
-    /// every point, then checks a capsule mask SDF (defined by
-    /// `mask_p0`, `mask_p1`, `mask_radius`). Inside the mask:
+    /// K10.3 / DL-61: spatially-masked blend. Evaluates `a` and `b` at
+    /// every point, then checks a polyline-tube mask SDF (defined by
+    /// `mask_polyline`, `mask_radius`). Inside the mask:
     /// smooth blend with `blend_radius` and `blend_mode`.
     /// Outside: hard `min` (union) or `max` (difference) based
     /// on `is_difference`. Allows per-edge fillet selection.
@@ -551,8 +551,9 @@ pub enum CsgNode {
     MaskedBlend {
         a: Box<CsgNode>,
         b: Box<CsgNode>,
-        mask_p0: [f32; 3],
-        mask_p1: [f32; 3],
+        /// Polyline of the queried edge (in CSG/world eval space). The
+        /// mask is the union of capsules along each consecutive segment.
+        mask_polyline: Vec<[f32; 3]>,
         mask_radius: f32,
         blend_radius: f32,
         blend_mode: BlendMode,
@@ -870,8 +871,7 @@ impl CsgNode {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
                         b: Box::new(b),
-                        mask_p0: f.mask_p0,
-                        mask_p1: f.mask_p1,
+                        mask_polyline: f.mask_polyline.clone(),
                         mask_radius: f.mask_radius,
                         blend_radius: f.blend_radius,
                         blend_mode: f.blend_mode,
@@ -888,8 +888,7 @@ impl CsgNode {
                     CsgNode::MaskedBlend {
                         a: Box::new(a),
                         b: Box::new(b),
-                        mask_p0: f.mask_p0,
-                        mask_p1: f.mask_p1,
+                        mask_polyline: f.mask_polyline.clone(),
                         mask_radius: f.mask_radius,
                         blend_radius: f.blend_radius,
                         blend_mode: f.blend_mode,
@@ -1081,8 +1080,7 @@ impl CsgNode {
             CsgNode::MaskedBlend {
                 a,
                 b,
-                mask_p0,
-                mask_p1,
+                mask_polyline,
                 mask_radius,
                 blend_radius,
                 blend_mode,
@@ -1093,7 +1091,7 @@ impl CsgNode {
                 match mode {
                     EvalMode::Logical => hard_combine(*is_difference, da, db_raw),
                     EvalMode::Visual => {
-                        let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
                         if mask_d < 0.0 {
                             if *is_difference {
                                 -blend_min(-da, db_raw, *blend_radius, *blend_mode)
@@ -1233,8 +1231,7 @@ impl CsgNode {
             CsgNode::MaskedBlend {
                 a,
                 b,
-                mask_p0,
-                mask_p1,
+                mask_polyline,
                 mask_radius,
                 blend_radius,
                 blend_mode,
@@ -1252,7 +1249,7 @@ impl CsgNode {
                         }
                     }
                     EvalMode::Visual => {
-                        let mask_d = sdf_capsule_3d(p, *mask_p0, *mask_p1, *mask_radius);
+                        let mask_d = sdf_polyline_tube(p, mask_polyline, *mask_radius);
                         if mask_d < 0.0 {
                             let d = if *is_difference {
                                 -blend_min(-da, db_raw, *blend_radius, *blend_mode)
@@ -1542,20 +1539,21 @@ fn find_matching_fillet<'a>(
     })
 }
 
-/// K10.4: per-edge fillet specification. Identifies a Boolean
-/// junction by the feature IDs of its two operands and places
-/// a capsule mask along the edge.
+/// K10.4 / DL-61: per-edge fillet specification. Identifies a Boolean
+/// junction by the feature IDs of its two operands (derived from the
+/// queried edge's branch-pair signature) and places a polyline-tube mask
+/// along the edge's actual geometry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeFillet {
     /// Feature id of the "left" operand at the junction.
     pub feature_a: FeatureId,
     /// Feature id of the "right" operand.
     pub feature_b: FeatureId,
-    /// Capsule start point (world space).
-    pub mask_p0: [f32; 3],
-    /// Capsule end point.
-    pub mask_p1: [f32; 3],
-    /// Capsule radius — how far the mask extends from the edge.
+    /// The queried edge's polyline in CSG/world eval space. The mask is
+    /// the union of capsules along consecutive segments.
+    pub mask_polyline: Vec<[f32; 3]>,
+    /// Mask radius — how far the tube extends from the edge. Derived
+    /// from `blend_radius` (see `FILLET_MASK_SCALE`), not a user param.
     pub mask_radius: f32,
     /// Blend radius for the fillet.
     pub blend_radius: f32,
@@ -1584,6 +1582,26 @@ pub(crate) fn sdf_capsule_3d(
     let dy = pa[1] - ba[1] * h;
     let dz = pa[2] - ba[2] * h;
     (dx * dx + dy * dy + dz * dz).sqrt() - radius
+}
+
+/// DL-61: polyline-tube SDF for spatial masks. The mask is the union
+/// (min) of [`sdf_capsule_3d`] over each consecutive segment of
+/// `polyline`. Degenerate cases:
+/// - `len >= 2` → min over segments (a 2-point polyline reduces exactly
+///   to a single capsule).
+/// - `len == 1` → a zero-length capsule, i.e. a sphere of `radius` at
+///   that point.
+/// - empty → `+INFINITY` (the mask is never active, so the MaskedBlend
+///   falls through to the hard combine everywhere).
+pub(crate) fn sdf_polyline_tube(p: [f32; 3], polyline: &[[f32; 3]], radius: f32) -> f32 {
+    match polyline.len() {
+        0 => f32::INFINITY,
+        1 => sdf_capsule_3d(p, polyline[0], polyline[0], radius),
+        _ => polyline
+            .windows(2)
+            .map(|seg| sdf_capsule_3d(p, seg[0], seg[1], radius))
+            .fold(f32::INFINITY, f32::min),
+    }
 }
 
 /// K10.2: chamfer union — linear 45° cut instead of a rounded
@@ -2483,8 +2501,7 @@ mod tests {
         let masked = CsgNode::MaskedBlend {
             a: Box::new(a.clone()),
             b: Box::new(b.clone()),
-            mask_p0: [10.0, -15.0, 0.0],
-            mask_p1: [10.0, 15.0, 0.0],
+            mask_polyline: vec![[10.0, -15.0, 0.0], [10.0, 15.0, 0.0]],
             mask_radius: 5.0,
             blend_radius: 4.0,
             blend_mode: super::BlendMode::Fillet,
@@ -2517,6 +2534,47 @@ mod tests {
     }
 
     #[test]
+    fn polyline_tube_two_points_equals_single_capsule() {
+        // The reduction invariant: a 2-point polyline tube is exactly the
+        // single-capsule SDF over those endpoints.
+        let p0 = [10.0, -15.0, 0.0];
+        let p1 = [10.0, 15.0, 0.0];
+        let r = 5.0;
+        let poly = [p0, p1];
+        for p in [
+            [10.0, 0.0, 8.0],
+            [0.0, 0.0, 0.0],
+            [12.0, 3.0, -4.0],
+            [10.0, 20.0, 0.0],
+            [-30.0, 0.0, 0.0],
+        ] {
+            let tube = sdf_polyline_tube(p, &poly, r);
+            let cap = sdf_capsule_3d(p, p0, p1, r);
+            assert!(
+                (tube - cap).abs() < 1e-6,
+                "tube {tube} != capsule {cap} at {p:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn polyline_tube_degenerate_cases() {
+        let r = 4.0;
+        // Single point → sphere of radius r at that point.
+        let one = [[2.0, 0.0, 0.0]];
+        assert!((sdf_polyline_tube([2.0, 0.0, 0.0], &one, r) - (-r)).abs() < 1e-6);
+        assert!((sdf_polyline_tube([2.0 + r, 0.0, 0.0], &one, r)).abs() < 1e-6);
+        // Empty → never active (mask falls through to the hard combine).
+        assert_eq!(sdf_polyline_tube([0.0, 0.0, 0.0], &[], r), f32::INFINITY);
+        // A 3-point polyline tube is the min over both segments.
+        let three = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]];
+        let p = [10.0, 5.0, 0.0]; // closest to the 2nd segment
+        let expect = sdf_capsule_3d(p, three[1], three[2], r)
+            .min(sdf_capsule_3d(p, three[0], three[1], r));
+        assert!((sdf_polyline_tube(p, &three, r) - expect).abs() < 1e-6);
+    }
+
+    #[test]
     fn apply_edge_fillets_replaces_matching_junction() {
         let a = CsgNode::Leaf {
             id: FeatureId::from_u32(1),
@@ -2536,8 +2594,7 @@ mod tests {
         let fillets = vec![EdgeFillet {
             feature_a: FeatureId::from_u32(1),
             feature_b: FeatureId::from_u32(2),
-            mask_p0: [5.0, -15.0, 0.0],
-            mask_p1: [5.0, 15.0, 0.0],
+            mask_polyline: vec![[5.0, -15.0, 0.0], [5.0, 15.0, 0.0]],
             mask_radius: 5.0,
             blend_radius: 3.0,
             blend_mode: BlendMode::Fillet,
@@ -2570,8 +2627,7 @@ mod tests {
         let fillets = vec![EdgeFillet {
             feature_a: FeatureId::from_u32(3),
             feature_b: FeatureId::from_u32(4),
-            mask_p0: [0.0; 3],
-            mask_p1: [0.0, 10.0, 0.0],
+            mask_polyline: vec![[0.0; 3], [0.0, 10.0, 0.0]],
             mask_radius: 5.0,
             blend_radius: 3.0,
             blend_mode: BlendMode::Fillet,
@@ -2609,8 +2665,10 @@ mod tests {
             .map(|i| EdgeFillet {
                 feature_a: FeatureId::from_u32(1),
                 feature_b: FeatureId::from_u32(i),
-                mask_p0: [(i as f32 - 3.5) * 20.0, -55.0, 0.0],
-                mask_p1: [(i as f32 - 3.5) * 20.0, 55.0, 0.0],
+                mask_polyline: vec![
+                    [(i as f32 - 3.5) * 20.0, -55.0, 0.0],
+                    [(i as f32 - 3.5) * 20.0, 55.0, 0.0],
+                ],
                 mask_radius: 8.0,
                 blend_radius: 2.0,
                 blend_mode: BlendMode::Fillet,

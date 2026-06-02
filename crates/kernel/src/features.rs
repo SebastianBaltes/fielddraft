@@ -228,6 +228,109 @@ impl<'a> Context<'a> {
         }
         self.resolve_face_frame(expr)
     }
+
+    /// DL-61: resolve an edge-yielding query into per-edge fillet inputs:
+    /// `(feature_a, feature_b, world-space polyline)`.
+    ///
+    /// COORDINATE SPACE: the woven B-Reps are **body-local** (DL-56); the
+    /// paired `placement` maps body-local → world. The CSG tree that the
+    /// MaskedBlend lives in evaluates in **world** space — every leaf is
+    /// wrapped in `CsgNode::Transform(feature.transform, …)` by
+    /// [`from_decoded`](crate::csg::CsgNode::from_decoded), and a feature's
+    /// `transform` is its world placement. So the mask must sit on the
+    /// edge in world space: we apply `placement` (rotate·scale + translate,
+    /// same math as [`crate::sketch_features::face_plane_frame`]) to every
+    /// polyline point. The non-identity-placement test proves this — with
+    /// identity placement a missing transform would pass undetected.
+    ///
+    /// The feature pair comes from the edge's branch-pair `signature`:
+    /// each [`BranchId`](crate::csg::BranchId)'s `feature_id()` is exactly
+    /// the junction operand id [`find_matching_fillet`] keys on.
+    pub fn resolve_fillet_edges(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Vec<(FeatureId, FeatureId, Vec<[f32; 3]>)> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{EdgeGeometry, EdgeId};
+
+        let woven = self.brep_cache.ensure(&self.features);
+        let mut out = Vec::new();
+        for (brep, placement) in woven {
+            for i in 0..brep.edges.len() {
+                let id = EdgeId(i as u32);
+                let edge = brep.edge(id);
+                // Match the edge against the query. `qEdge(hash)` matches
+                // by id_hash; `qEdgeBetween(a, b)` matches by the (unordered)
+                // signature feature pair. Reuse the existing hashing /
+                // signature logic rather than duplicating it.
+                let hit = match expr {
+                    crate::queries::QueryExpr::Edge(hash) => {
+                        TopoRef::from_edge(brep, id).id_hash == *hash
+                    }
+                    crate::queries::QueryExpr::EdgeBetween(a, b) => {
+                        let s0 = edge.signature.0.feature_id();
+                        let s1 = edge.signature.1.feature_id();
+                        let fa = a.as_u32_or_root();
+                        let fb = b.as_u32_or_root();
+                        matches!((fa, fb), (Some(fa), Some(fb))
+                            if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                    }
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+
+                // Extract the body-local polyline from the edge geometry.
+                let local: Vec<[f32; 3]> = match &edge.geometry {
+                    EdgeGeometry::Polyline(pts) => {
+                        pts.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()
+                    }
+                    EdgeGeometry::Hermite(samples) => samples
+                        .iter()
+                        .map(|s| [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32])
+                        .collect(),
+                    // First approximation: use the NURBS control polygon.
+                    // Control points bound the curve and give a tube that
+                    // safely encloses it; exact arc-length sampling is a
+                    // later refinement.
+                    EdgeGeometry::Nurbs(curve) => curve
+                        .control_points
+                        .iter()
+                        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+                        .collect(),
+                };
+
+                // Body-local → world via the placement.
+                let world: Vec<[f32; 3]> = local
+                    .iter()
+                    .map(|p| place_point(placement, *p))
+                    .collect();
+
+                let feature_a = FeatureId::from_u32(edge.signature.0.feature_id());
+                let feature_b = FeatureId::from_u32(edge.signature.1.feature_id());
+                out.push((feature_a, feature_b, world));
+            }
+        }
+        out
+    }
+}
+
+/// Apply a body `placement` (rotate·scale then translate) to a point.
+/// Mirrors the centroid mapping in
+/// [`crate::sketch_features::face_plane_frame`].
+fn place_point(placement: &fielddraft_protocol::Transform, p: [f32; 3]) -> [f32; 3] {
+    let scaled = [
+        p[0] * placement.scale[0],
+        p[1] * placement.scale[1],
+        p[2] * placement.scale[2],
+    ];
+    let r = crate::quat_rotate(placement.rotation, scaled);
+    [
+        r[0] + placement.translate[0],
+        r[1] + placement.translate[1],
+        r[2] + placement.translate[2],
+    ]
 }
 
 /// The behaviour of one feature type.
@@ -1392,21 +1495,20 @@ impl FeatureKind for ScaleFeature {
 // it modifies the tree shape by replacing Union/Difference
 // nodes with MaskedBlend where the edge specification matches.
 
-/// `fillet_edge` — per-edge fillet with spatial mask.
+/// DL-61: the mask tube radius as a multiple of the blend radius. The
+/// tube must enclose the full ~`blend_radius` perpendicular reach of the
+/// smooth blend without bleeding into neighbouring edges. Tunable.
+pub const FILLET_MASK_SCALE: f32 = 1.5;
+
+/// `fillet_edge` — per-edge fillet selected by an edge query. The edge's
+/// branch-pair signature yields the feature pair at the junction; its
+/// polyline becomes the SMin mask tube.
 #[derive(FeatureSchema)]
 #[schema(type = "fillet_edge")]
 pub struct FilletEdgeDef {
-    /// Flat-numeric id of the first feature at the junction.
-    pub feature_a: f32,
-    /// Flat-numeric id of the second feature.
-    pub feature_b: f32,
-    /// Capsule start [x, y, z].
-    pub mask_p0: [f32; 3],
-    /// Capsule end [x, y, z].
-    pub mask_p1: [f32; 3],
-    /// Capsule radius.
-    #[param(default = 10.0)]
-    pub mask_radius: f32,
+    /// The edge to fillet (e.g. `qEdge(<id_hash>)`).
+    #[param(name = "Edge", entity_filter = "EDGE")]
+    pub edge: ::fielddraft_protocol::Query,
     /// Fillet blend radius.
     #[param(default = 5.0)]
     pub blend_radius: f32,
@@ -1437,22 +1539,32 @@ impl FeatureKind for FilletEdgeFeature {
                 message: format!("must be >= 0, got {}", d.blend_radius),
             });
         }
-        if d.mask_radius < 0.0 {
+        let expr = crate::queries::parse_query(d.edge.as_str()).map_err(|e| {
+            FeatureError::InvalidParameter {
+                feature: FilletEdgeDef::TYPE_NAME,
+                name: "edge",
+                message: format!("could not parse edge query: {e}"),
+            }
+        })?;
+        let resolved = ctx.resolve_fillet_edges(&expr);
+        if resolved.is_empty() {
             return Err(FeatureError::InvalidParameter {
                 feature: FilletEdgeDef::TYPE_NAME,
-                name: "mask_radius",
-                message: format!("must be >= 0, got {}", d.mask_radius),
+                name: "edge",
+                message: "edge query resolved to no edge".to_string(),
             });
         }
-        ctx.edge_fillets.push(crate::csg::EdgeFillet {
-            feature_a: FeatureId::from_u32(d.feature_a as u32),
-            feature_b: FeatureId::from_u32(d.feature_b as u32),
-            mask_p0: d.mask_p0,
-            mask_p1: d.mask_p1,
-            mask_radius: d.mask_radius,
-            blend_radius: d.blend_radius,
-            blend_mode: crate::csg::BlendMode::Fillet,
-        });
+        let mask_radius = d.blend_radius * FILLET_MASK_SCALE;
+        for (feature_a, feature_b, mask_polyline) in resolved {
+            ctx.edge_fillets.push(crate::csg::EdgeFillet {
+                feature_a,
+                feature_b,
+                mask_polyline,
+                mask_radius,
+                blend_radius: d.blend_radius,
+                blend_mode: crate::csg::BlendMode::Fillet,
+            });
+        }
         Ok(())
     }
 }
@@ -5178,5 +5290,265 @@ mod tests {
             + (shifted[1] - mc_origin[1]).powi(2))
         .sqrt();
         assert!((in_plane_shift - 3.0).abs() < 1e-2, "offset magnitude 3, got {in_plane_shift}");
+    }
+
+    // ─── DL-61: fillet edge query → SMin polyline tube ──────────────
+
+    /// A box `box` feature with a translate (folds into the body
+    /// placement when it's the anchor) and a small +Z step box on top.
+    fn box_call_translated(n: u32, half: f32, translate: [f32; 3]) -> FeatureCall {
+        FeatureCall::new(
+            "box",
+            id(n),
+            json!({
+                "half_extents": [half, half, half],
+                "translate": translate,
+            }),
+        )
+    }
+
+    /// Build a base box (anchor, union) and a smaller box SUBTRACTED from
+    /// it. Union features each seed their own body (bodies stay separate),
+    /// so a Difference that overlaps body 1 is what keeps both features in
+    /// a single woven brep — yielding real feature-1×feature-2 edges (the
+    /// rim of the cut) plus a Difference junction in the CSG tree for the
+    /// fillet to match. Returns one such edge's `qEdge` id_hash and the
+    /// world-space mid-span point of its polyline.
+    fn step_geometry(
+        registry: &FeatureRegistry,
+        ctx: &mut Context<'_>,
+        anchor_translate: [f32; 3],
+    ) -> (u64, [f32; 3]) {
+        registry
+            .regenerate(
+                ctx,
+                &[
+                    box_call_translated(1, 10.0, anchor_translate),
+                    // Smaller box poking out the +Z top, subtracted: spans
+                    // z=[5,15] (overlaps box 1's [-10,10]) so its cut rim at
+                    // z≈10 is a feature-1×feature-2 edge in one body.
+                    FeatureCall::new(
+                        "box",
+                        id(2),
+                        json!({
+                            "half_extents": [5.0, 5.0, 5.0],
+                            "center": [0.0, 0.0, 10.0],
+                            "translate": anchor_translate,
+                            "op": "difference",
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+
+        let woven = crate::body::weave_all(&ctx.features);
+        assert_eq!(woven.len(), 1, "one connected body");
+        let (brep, placement) = &woven[0];
+
+        // Find an edge whose signature mixes feature 1 and feature 2.
+        use crate::brep::naming::TopoRef;
+        use crate::brep::EdgeId;
+        let mut found = None;
+        for i in 0..brep.edges.len() {
+            let e = brep.edge(EdgeId(i as u32));
+            let s0 = e.signature.0.feature_id();
+            let s1 = e.signature.1.feature_id();
+            if (s0 == 1 && s1 == 2) || (s0 == 2 && s1 == 1) {
+                let hash = TopoRef::from_edge(brep, EdgeId(i as u32)).id_hash;
+                // Mid-span world point of the edge polyline.
+                let pts: Vec<[f32; 3]> = match &e.geometry {
+                    crate::brep::EdgeGeometry::Polyline(p) => {
+                        p.iter().map(|q| [q[0] as f32, q[1] as f32, q[2] as f32]).collect()
+                    }
+                    crate::brep::EdgeGeometry::Hermite(s) => s
+                        .iter()
+                        .map(|h| [h.point[0] as f32, h.point[1] as f32, h.point[2] as f32])
+                        .collect(),
+                    crate::brep::EdgeGeometry::Nurbs(c) => c
+                        .control_points
+                        .iter()
+                        .map(|q| [q[0] as f32, q[1] as f32, q[2] as f32])
+                        .collect(),
+                };
+                let mid_local = pts[pts.len() / 2];
+                // local → world via placement (same math as the resolver).
+                let mid_world = super::place_point(placement, mid_local);
+                found = Some((hash, mid_world));
+                break;
+            }
+        }
+        found.expect("a feature-1×feature-2 edge exists at the step")
+    }
+
+    /// At the edge mid-span, just outside both surfaces, the filleted
+    /// (Visual) SDF must be strictly LESS than the un-filleted hard `min`
+    /// (smin pulls the surface outward to round the corner); far away the
+    /// SDF is unchanged. With identity placement.
+    #[test]
+    fn fillet_edge_query_rounds_the_edge_identity_placement() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let (edge_hash, mid_world) = step_geometry(&registry, &mut ctx, [0.0, 0.0, 0.0]);
+
+        // Apply the fillet via the edge query.
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "fillet_edge",
+                    id(3),
+                    json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": 3.0 }),
+                )],
+                None,
+            )
+            .unwrap();
+        assert_eq!(ctx.edge_fillets.len(), 1, "one fillet pushed");
+        assert_eq!(ctx.edge_fillets[0].feature_a.as_u32_or_root(), Some(1));
+        assert_eq!(ctx.edge_fillets[0].feature_b.as_u32_or_root(), Some(2));
+
+        let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+        assert!(
+            matches!(filleted, crate::csg::CsgNode::MaskedBlend { .. })
+                || count_masked_blends(&filleted) >= 1,
+            "the matching junction became a MaskedBlend",
+        );
+
+        assert_rounded_at_edge(&hard, &filleted, mid_world);
+    }
+
+    /// The decisive coordinate-space test: a NON-identity body placement.
+    /// An identity-only test cannot catch a missing placement transform;
+    /// this one fails unless the polyline is mapped local→world.
+    #[test]
+    fn fillet_edge_query_rounds_the_edge_nonidentity_placement() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        // Translate the whole body so its placement != IDENTITY.
+        let (edge_hash, mid_world) = step_geometry(&registry, &mut ctx, [100.0, -40.0, 7.0]);
+
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "fillet_edge",
+                    id(3),
+                    json!({ "edge": format!("qEdge({edge_hash})"), "blend_radius": 3.0 }),
+                )],
+                None,
+            )
+            .unwrap();
+        assert_eq!(ctx.edge_fillets.len(), 1);
+
+        // Discriminator: the stored polyline must be in WORLD space —
+        // every point shifted by the body placement (~+100 in x). Without
+        // applying `placement` it would sit at the body-local origin and
+        // this would fail (and the near-edge probe below would find no
+        // perturbation).
+        let poly = &ctx.edge_fillets[0].mask_polyline;
+        assert!(
+            poly.iter().all(|p| p[0] > 90.0),
+            "polyline must be world-space (x≈+100), got {poly:?}",
+        );
+
+        let hard = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let filleted = hard.clone().apply_edge_fillets(&ctx.edge_fillets);
+        assert_rounded_at_edge(&hard, &filleted, mid_world);
+    }
+
+    #[test]
+    fn fillet_edge_query_resolving_nothing_is_a_hard_error() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "fillet_edge",
+                    id(2),
+                    json!({ "edge": "qEdge(999999)", "blend_radius": 3.0 }),
+                )],
+                None,
+            )
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("edge"), "error mentions the edge param: {err:?}");
+    }
+
+    fn count_masked_blends(node: &crate::csg::CsgNode) -> usize {
+        use crate::csg::CsgNode;
+        match node {
+            CsgNode::MaskedBlend { a, b, .. } => {
+                1 + count_masked_blends(a) + count_masked_blends(b)
+            }
+            CsgNode::Union(a, b)
+            | CsgNode::Difference(a, b)
+            | CsgNode::Intersection(a, b)
+            | CsgNode::SmoothUnion(a, b, _, _)
+            | CsgNode::SmoothDifference(a, b, _, _)
+            | CsgNode::Morph(a, b, _) => count_masked_blends(a) + count_masked_blends(b),
+            CsgNode::Transform(_, i)
+            | CsgNode::Twist(i, _)
+            | CsgNode::Bend(i, _)
+            | CsgNode::Shell(i, _)
+            | CsgNode::Displace(i, _, _) => count_masked_blends(i),
+            _ => 0,
+        }
+    }
+
+    /// Assert the fillet rounds the corner near `mid_world`. The blend
+    /// perturbs the SDF only inside the mask tube — so on a dense probe
+    /// cloud around the edge mid-span at least one point must read
+    /// SIGNIFICANTLY different from the un-filleted hard combine (the
+    /// direction depends on union vs difference: a union fillet pushes the
+    /// surface outward / more negative, a difference fillet fills the
+    /// concave corner / more positive). Crucially, far from the edge the
+    /// two SDFs must AGREE — that is what proves the polyline sits ON the
+    /// queried edge (in the right coordinate space) rather than drifting
+    /// off into empty space (which would leave the near-edge unchanged and
+    /// pass only the trivial far-field check).
+    fn assert_rounded_at_edge(
+        hard: &crate::csg::CsgNode,
+        filleted: &crate::csg::CsgNode,
+        mid_world: [f32; 3],
+    ) {
+        use crate::csg::EvalMode;
+        let r = 2.0_f32;
+        let mut max_delta = 0.0_f32;
+        for ix in -2..=2 {
+            for iy in -2..=2 {
+                for iz in -2..=2 {
+                    let p = [
+                        mid_world[0] + ix as f32 * r * 0.5,
+                        mid_world[1] + iy as f32 * r * 0.5,
+                        mid_world[2] + iz as f32 * r * 0.5,
+                    ];
+                    let dh = hard.sdf(p, EvalMode::Visual);
+                    let df = filleted.sdf(p, EvalMode::Visual);
+                    max_delta = max_delta.max((df - dh).abs());
+                }
+            }
+        }
+        assert!(
+            max_delta > 0.05,
+            "fillet must perturb the SDF near the edge at {mid_world:?} (max |Δ| = {max_delta})",
+        );
+
+        // Far from the edge → identical (mask inactive). A polyline in the
+        // wrong space would make THIS the only place the blend fires, so
+        // pairing it with the near-edge perturbation above pins the space.
+        let far = [mid_world[0] + 80.0, mid_world[1] + 80.0, mid_world[2] + 80.0];
+        let dh_far = hard.sdf(far, EvalMode::Visual);
+        let df_far = filleted.sdf(far, EvalMode::Visual);
+        assert!(
+            (dh_far - df_far).abs() < 1e-3,
+            "far from the edge the SDF is unchanged: hard {dh_far} vs filleted {df_far}",
+        );
     }
 }

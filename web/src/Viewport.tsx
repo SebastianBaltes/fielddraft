@@ -48,8 +48,8 @@ import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { getPublishedPickCamera } from "./pickCameraBridge";
-import { getHoveredElement } from "./brepPickBridge";
-import { mapPickToQuery, filterAllows } from "./elementQuery";
+import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
+import { mapPickToQuery, filterAllows, elementQueryString } from "./elementQuery";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -240,25 +240,19 @@ function handleMateClick(
 }
 
 function handleFilletClick(
-  store: { addFilletAtEdge(a: number, b: number, min: number[], max: number[], r: number): void; showTransientError(msg: string): void },
-  click: PickResult | null,
+  store: { addFilletAtEdge(edgeQuery: string, r?: number): void; showTransientError(msg: string): void },
+  _click: PickResult | null,
 ): void {
-  if (!click?.hit) return;
-  if (click.contributors.length < 2) {
-    store.showTransientError("Fillet requires an edge between two features — click where two bodies meet.");
+  // DL-61: a fillet selects a B-Rep EDGE by query. Use the edge the
+  // overlay published to the pick bridge and emit `qEdge(<idHash>)` for it
+  // — the same element-query path the mate/sketch face clicks use.
+  const edge = getHoveredElementOfKind("edge");
+  const query = edge ? elementQueryString(edge) : null;
+  if (!query) {
+    store.showTransientError("Fillet needs an edge — hover a B-Rep edge and click.");
     return;
   }
-  const a = click.contributors[0];
-  const b = click.contributors[1];
-  if (a > 0 && b > 0) {
-    const pt = click.point;
-    store.addFilletAtEdge(
-      a, b,
-      [pt[0] - 20, pt[1] - 20, pt[2] - 20],
-      [pt[0] + 20, pt[1] + 20, pt[2] + 20],
-      3,
-    );
-  }
+  store.addFilletAtEdge(query);
 }
 
 type MeasurePoints = { a: [number, number, number]; b?: [number, number, number] } | null;
