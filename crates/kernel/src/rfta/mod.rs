@@ -323,6 +323,7 @@ pub fn reach_for_the_arcs(node: &BoundedCsg, resolution: u32) -> Mesh {
         indices: trimmed_indices,
         classifications,
         contributors,
+        face_index: Vec::new(),
     }
 }
 

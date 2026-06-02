@@ -47,6 +47,77 @@ export interface PickMiss {
 }
 export type PickResult = PickHit | PickMiss;
 
+/** Sentinel written into a mesh triangle's face tag when no B-Rep face could
+ *  be correlated (= `u32::MAX`). Mirrors `face_export::FACE_INDEX_SENTINEL`. */
+export const FACE_INDEX_SENTINEL = 0xffffffff;
+
+/** Rigid + uniform-scale placement of a body. B-Reps are stored body-LOCAL
+ *  (DL-56); world coordinates are obtained by composing this placement back in
+ *  via {@link localToWorld}. */
+export interface Placement {
+  translate: [number, number, number];
+  /** Unit quaternion `(x, y, z, w)`. */
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+}
+
+/** One selectable B-Rep face of a body, in the body-LOCAL frame. `faceIndex`
+ *  indexes the same ordering as the per-triangle face tags
+ *  ({@link KernelHandle.bodyFaceIndexView}). `idHash` is the
+ *  regeneration-stable `TopoRef` id as a decimal string (a `u64` is unsafe as a
+ *  JS number). */
+export interface BRepFace {
+  faceIndex: number;
+  idHash: string;
+  kind: "face";
+  /** Packed BranchId (feature << SUB_BITS | sub) this face lies on. */
+  branchId: number;
+  /** Flat feature id (sub stripped). */
+  featureId: number;
+  surfaceKind: "plane" | "cylinder" | "sphere" | "cone" | "torus" | "tessellated";
+  centroidLocal: [number, number, number];
+  normalLocal: [number, number, number];
+}
+
+/** One selectable B-Rep vertex of a body, in the body-LOCAL frame. `idHash` is
+ *  the stable `TopoRef` vertex id as a decimal string. */
+export interface BRepVertex {
+  vertexIndex: number;
+  idHash: string;
+  kind: "vertex";
+  positionLocal: [number, number, number];
+  /** Packed BranchIds of the ≥3 branch surfaces colliding at this vertex. */
+  branches: number[];
+}
+
+/** Compose a body placement back onto a body-local point to get world
+ *  coordinates: `world = R·(s·p) + t`. The placement scale is uniform under
+ *  the rigid + uniform-scale restriction (DL-56), but this helper applies each
+ *  component independently so a (defensively) non-uniform scale still works. */
+export function localToWorld(
+  p: [number, number, number],
+  pl: Placement,
+): [number, number, number] {
+  // s·p
+  const s: [number, number, number] = [
+    p[0] * pl.scale[0],
+    p[1] * pl.scale[1],
+    p[2] * pl.scale[2],
+  ];
+  // R·(s·p) — quaternion rotation of a vector.
+  const [qx, qy, qz, qw] = pl.rotation;
+  const tx = 2 * (qy * s[2] - qz * s[1]);
+  const ty = 2 * (qz * s[0] - qx * s[2]);
+  const tz = 2 * (qx * s[1] - qy * s[0]);
+  const r: [number, number, number] = [
+    s[0] + qw * tx + qy * tz - qz * ty,
+    s[1] + qw * ty + qz * tx - qx * tz,
+    s[2] + qw * tz + qx * ty - qy * tx,
+  ];
+  // + t
+  return [r[0] + pl.translate[0], r[1] + pl.translate[1], r[2] + pl.translate[2]];
+}
+
 /** Numeric tags for primitive kinds. Mirror `Primitive::KIND_*` in protocol. */
 export const PrimitiveKind = {
   Box: 0,
@@ -376,6 +447,48 @@ export class Kernel {
       b: number;
       points: number[];
     }[];
+  }
+
+  // ── Per-body selectable B-Rep faces / vertices (Brocken A) ────────
+
+  /**
+   * Selectable B-Rep faces of body `i`, in the body-LOCAL frame. `faceIndex`
+   * matches the per-triangle face tags from {@link bodyFaceIndexView}, so a
+   * hovered/clicked triangle resolves to one of these. Fold {@link
+   * bodyPlacement} in via {@link localToWorld} for world coordinates.
+   */
+  bodyBrepFaces(i: number): BRepFace[] {
+    return JSON.parse(this.inner.bodyBrepFaces(i)) as BRepFace[];
+  }
+
+  /**
+   * Selectable B-Rep vertices (sharp corners) of body `i`, body-LOCAL.
+   */
+  bodyBrepVertices(i: number): BRepVertex[] {
+    return JSON.parse(this.inner.bodyBrepVertices(i)) as BRepVertex[];
+  }
+
+  /**
+   * Rigid + uniform-scale placement of body `i`. B-Reps stay body-local and an
+   * affine transform never invalidates them; compose this back in with {@link
+   * localToWorld} to get world geometry.
+   */
+  bodyPlacement(i: number): Placement {
+    return JSON.parse(this.inner.bodyPlacement(i)) as Placement;
+  }
+
+  /**
+   * Per-**triangle** B-Rep face tags of body `i`: one `u32` per mesh triangle
+   * (length = triangle count) giving the arena index of the {@link BRepFace}
+   * that triangle lies on (matching `faceIndex`), or {@link
+   * FACE_INDEX_SENTINEL} when unresolved. Index this with a hovered triangle id
+   * to resolve its stable face. Returns an empty view for an un-tagged body.
+   */
+  bodyFaceIndexView(i: number): Uint32Array {
+    const ptr = this.inner.bodyFaceIndexPtr(i);
+    const len = this.inner.bodyFaceIndexLen(i);
+    if (!ptr || len === 0) return new Uint32Array(0);
+    return new Uint32Array(this.memory.buffer, ptr, len);
   }
 
   /**

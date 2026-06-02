@@ -27,6 +27,7 @@
 pub mod edge_sampling;
 pub mod edge_walker;
 pub mod extraction;
+pub mod face_export;
 pub mod naming;
 pub mod octree;
 pub mod projection;

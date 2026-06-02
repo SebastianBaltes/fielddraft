@@ -153,9 +153,52 @@ export class Kernel {
      * the same lazily-woven, cached B-Rep as the counts / STEP queries.
      */
     bodyBrepEdges(i: number): string;
+    /**
+     * Per-body feature-based B-Rep **faces**, in the body-LOCAL frame, as a
+     * JSON array — one entry per `brep.faces[k]` (Brocken A1). Each entry:
+     * `{"faceIndex","idHash","kind":"face","branchId","featureId",
+     * "surfaceKind","centroidLocal":[x,y,z],"normalLocal":[x,y,z]}`.
+     *
+     * `idHash` is the regeneration-stable [`crate::brep::naming::TopoRef`]
+     * id (FNV-1a over the sorted branch signature + spatial index),
+     * serialised as a **decimal string** because a `u64` is unsafe as a JS
+     * `Number`. `faceIndex` indexes the same ordering as the per-vertex
+     * `face_index` mesh tags (`body_face_index_ptr`), so a hovered triangle's
+     * tag selects this entry. Geometry stays body-local; the caller folds the
+     * body `placement` (`bodyPlacement`) in for world coordinates.
+     */
+    bodyBrepFaces(i: number): string;
+    /**
+     * Per-body feature-based B-Rep **vertices**, in the body-LOCAL frame, as a
+     * JSON array — one entry per `brep.vertices[k]` (Brocken A1). Each entry:
+     * `{"vertexIndex","idHash","kind":"vertex","positionLocal":[x,y,z],
+     * "branches":[<u32 packed>, …]}`. `idHash` is the stable
+     * [`crate::brep::naming::TopoRef`] vertex id as a decimal string.
+     */
+    bodyBrepVertices(i: number): string;
     bodyClassificationsPtr(i: number): number;
     bodyContributorsPtr(i: number): number;
     bodyCount(): number;
+    /**
+     * Length of the per-triangle face-index buffer (`bodyFaceIndexPtr`).
+     * Equals `bodyTriangleCount` for a tagged mesh, or 0 when the body carries
+     * no face tags.
+     */
+    bodyFaceIndexLen(i: number): number;
+    /**
+     * Pointer to the per-**triangle** B-Rep **face index** buffer (Brocken
+     * A3): one `u32` per mesh triangle giving the arena index of the B-Rep
+     * face that triangle lies on (same ordering as `bodyBrepFaces`), or
+     * `u32::MAX` when unresolved. Length is `bodyTriangleCount` (==
+     * `bodyIndexCount / 3`). A hovered/clicked triangle resolves to its stable
+     * face by indexing this buffer with the triangle id. Per-triangle (not
+     * per-vertex) because planar simplification leaves flat faces with only
+     * shared boundary vertices, so vertices can't be uniquely owned by a face
+     * — triangle centroids always can. Populated during the mesh rebuild; an
+     * un-tagged body (e.g. a passthrough imported mesh) exposes an empty
+     * buffer (null pointer, length 0).
+     */
+    bodyFaceIndexPtr(i: number): number;
     /**
      * K3.6: returns `true` when the i-th body has a pending
      * translation delta that the frontend should apply as a GPU
@@ -177,6 +220,16 @@ export class Kernel {
     bodyIndexCount(i: number): number;
     bodyIndicesPtr(i: number): number;
     bodyNormalsPtr(i: number): number;
+    /**
+     * The body's rigid + uniform-scale **placement** as JSON
+     * `{"translate":[x,y,z],"rotation":[x,y,z,w],"scale":[sx,sy,sz]}`
+     * (Brocken A2). B-Reps stay body-LOCAL and an affine transform never
+     * invalidates them; the frontend composes this placement back in
+     * (`localToWorld`) to obtain world coordinates. `placement` is recomputed
+     * lazily on the first `ensure_brep`, so we weave first to guarantee it is
+     * current.
+     */
+    bodyPlacement(i: number): string;
     bodyPositionsPtr(i: number): number;
     bodySdfAabb(i: number): Float32Array;
     bodySdfOpcodesLen(i: number): number;
@@ -595,15 +648,20 @@ export interface InitOutput {
     readonly kernel_applyGizmoTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_bodyBrepCounts: (a: number, b: number) => [number, number];
     readonly kernel_bodyBrepEdges: (a: number, b: number) => [number, number];
+    readonly kernel_bodyBrepFaces: (a: number, b: number) => [number, number];
+    readonly kernel_bodyBrepVertices: (a: number, b: number) => [number, number];
     readonly kernel_bodyClassificationsPtr: (a: number, b: number) => number;
     readonly kernel_bodyContributorsPtr: (a: number, b: number) => number;
     readonly kernel_bodyCount: (a: number) => number;
+    readonly kernel_bodyFaceIndexLen: (a: number, b: number) => number;
+    readonly kernel_bodyFaceIndexPtr: (a: number, b: number) => number;
     readonly kernel_bodyHasTransformDelta: (a: number, b: number) => number;
     readonly kernel_bodyHybridInfoJson: (a: number, b: number) => [number, number];
     readonly kernel_bodyId: (a: number, b: number) => number;
     readonly kernel_bodyIndexCount: (a: number, b: number) => number;
     readonly kernel_bodyIndicesPtr: (a: number, b: number) => number;
     readonly kernel_bodyNormalsPtr: (a: number, b: number) => number;
+    readonly kernel_bodyPlacement: (a: number, b: number) => [number, number];
     readonly kernel_bodyPositionsPtr: (a: number, b: number) => number;
     readonly kernel_bodySdfAabb: (a: number, b: number) => [number, number];
     readonly kernel_bodySdfOpcodesLen: (a: number, b: number) => number;

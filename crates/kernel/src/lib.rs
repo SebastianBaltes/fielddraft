@@ -611,6 +611,34 @@ impl Kernel {
         }
 
         self.bodies = new_bodies;
+
+        // Brocken A (A3): tag every freshly-built mesh with per-vertex B-Rep
+        // FACE IDENTITY so a hovered/clicked triangle resolves to a stable
+        // face. Bodies carried through the affine fast-path keep their old
+        // (already-tagged) mesh untouched — their `face_index` is still valid
+        // because correlation is body-LOCAL and a pure move doesn't change
+        // which face a vertex sits on. We therefore only (re)tag meshes whose
+        // `face_index` is missing/out-of-sync, weaving the B-Rep once and
+        // sharing the cache with the later face/vertex exports.
+        for i in 0..self.bodies.len() {
+            let tc = self.bodies[i].mesh.triangle_count();
+            if tc == 0 || self.bodies[i].mesh.face_index.len() == tc {
+                continue;
+            }
+            self.bodies[i].ensure_brep(&self.decoded);
+            let placement = self.bodies[i].placement;
+            let brep = self.bodies[i].brep_cached().expect("woven above");
+            let tags = crate::brep::face_export::correlate_mesh_faces(
+                brep,
+                &self.bodies[i].mesh.positions,
+                &self.bodies[i].mesh.normals,
+                &self.bodies[i].mesh.indices,
+                &self.bodies[i].mesh.contributors,
+                &placement,
+            );
+            self.bodies[i].mesh.face_index = tags;
+        }
+
         self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
@@ -658,7 +686,7 @@ impl Kernel {
         for v in 0..vert_count {
             contributors[v * csg::MAX_CONTRIBUTORS] = contributor_id;
         }
-        Mesh { positions, normals, indices, classifications, contributors }
+        Mesh { positions, normals, indices, classifications, contributors, face_index: Vec::new() }
     }
 
     fn compile_sdf_for(&self, feature_indices: &[usize]) -> sdf_compiler::CompiledSdf {
@@ -2699,6 +2727,114 @@ impl Kernel {
             }));
         }
         serde_json::Value::Array(edges).to_string()
+    }
+
+    /// Per-body feature-based B-Rep **faces**, in the body-LOCAL frame, as a
+    /// JSON array — one entry per `brep.faces[k]` (Brocken A1). Each entry:
+    /// `{"faceIndex","idHash","kind":"face","branchId","featureId",
+    /// "surfaceKind","centroidLocal":[x,y,z],"normalLocal":[x,y,z]}`.
+    ///
+    /// `idHash` is the regeneration-stable [`crate::brep::naming::TopoRef`]
+    /// id (FNV-1a over the sorted branch signature + spatial index),
+    /// serialised as a **decimal string** because a `u64` is unsafe as a JS
+    /// `Number`. `faceIndex` indexes the same ordering as the per-vertex
+    /// `face_index` mesh tags (`body_face_index_ptr`), so a hovered triangle's
+    /// tag selects this entry. Geometry stays body-local; the caller folds the
+    /// body `placement` (`bodyPlacement`) in for world coordinates.
+    #[wasm_bindgen(js_name = bodyBrepFaces)]
+    pub fn body_brep_faces(&mut self, i: usize) -> String {
+        use crate::brep::face_export::{face_centroid_normal_local, surface_kind};
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+
+        self.bodies[i].ensure_brep(&self.decoded);
+        let brep = self.bodies[i].brep_cached().expect("woven above");
+        let mut faces = Vec::with_capacity(brep.faces.len());
+        for (k, face) in brep.faces.iter().enumerate() {
+            let id_hash = TopoRef::from_face(brep, FaceId(k as u32)).id_hash;
+            let (centroid, normal) = face_centroid_normal_local(brep, FaceId(k as u32));
+            faces.push(serde_json::json!({
+                "faceIndex": k,
+                "idHash": id_hash.to_string(),
+                "kind": "face",
+                "branchId": face.branch_id.as_u32(),
+                "featureId": face.branch_id.feature_id(),
+                "surfaceKind": surface_kind(&face.surface),
+                "centroidLocal": centroid,
+                "normalLocal": normal,
+            }));
+        }
+        serde_json::Value::Array(faces).to_string()
+    }
+
+    /// Per-body feature-based B-Rep **vertices**, in the body-LOCAL frame, as a
+    /// JSON array — one entry per `brep.vertices[k]` (Brocken A1). Each entry:
+    /// `{"vertexIndex","idHash","kind":"vertex","positionLocal":[x,y,z],
+    /// "branches":[<u32 packed>, …]}`. `idHash` is the stable
+    /// [`crate::brep::naming::TopoRef`] vertex id as a decimal string.
+    #[wasm_bindgen(js_name = bodyBrepVertices)]
+    pub fn body_brep_vertices(&mut self, i: usize) -> String {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::VertexId;
+
+        self.bodies[i].ensure_brep(&self.decoded);
+        let brep = self.bodies[i].brep_cached().expect("woven above");
+        let mut verts = Vec::with_capacity(brep.vertices.len());
+        for (k, vertex) in brep.vertices.iter().enumerate() {
+            let id_hash = TopoRef::from_vertex(brep, VertexId(k as u32)).id_hash;
+            let branches: Vec<u32> = vertex.branches.iter().map(|b| b.as_u32()).collect();
+            verts.push(serde_json::json!({
+                "vertexIndex": k,
+                "idHash": id_hash.to_string(),
+                "kind": "vertex",
+                "positionLocal": vertex.position,
+                "branches": branches,
+            }));
+        }
+        serde_json::Value::Array(verts).to_string()
+    }
+
+    /// The body's rigid + uniform-scale **placement** as JSON
+    /// `{"translate":[x,y,z],"rotation":[x,y,z,w],"scale":[sx,sy,sz]}`
+    /// (Brocken A2). B-Reps stay body-LOCAL and an affine transform never
+    /// invalidates them; the frontend composes this placement back in
+    /// (`localToWorld`) to obtain world coordinates. `placement` is recomputed
+    /// lazily on the first `ensure_brep`, so we weave first to guarantee it is
+    /// current.
+    #[wasm_bindgen(js_name = bodyPlacement)]
+    pub fn body_placement(&mut self, i: usize) -> String {
+        self.bodies[i].ensure_brep(&self.decoded);
+        let p = self.bodies[i].placement;
+        serde_json::json!({
+            "translate": p.translate,
+            "rotation": p.rotation,
+            "scale": p.scale,
+        })
+        .to_string()
+    }
+
+    /// Pointer to the per-**triangle** B-Rep **face index** buffer (Brocken
+    /// A3): one `u32` per mesh triangle giving the arena index of the B-Rep
+    /// face that triangle lies on (same ordering as `bodyBrepFaces`), or
+    /// `u32::MAX` when unresolved. Length is `bodyTriangleCount` (==
+    /// `bodyIndexCount / 3`). A hovered/clicked triangle resolves to its stable
+    /// face by indexing this buffer with the triangle id. Per-triangle (not
+    /// per-vertex) because planar simplification leaves flat faces with only
+    /// shared boundary vertices, so vertices can't be uniquely owned by a face
+    /// — triangle centroids always can. Populated during the mesh rebuild; an
+    /// un-tagged body (e.g. a passthrough imported mesh) exposes an empty
+    /// buffer (null pointer, length 0).
+    #[wasm_bindgen(js_name = bodyFaceIndexPtr)]
+    pub fn body_face_index_ptr(&self, i: usize) -> *const u32 {
+        self.bodies[i].mesh.face_index.as_ptr()
+    }
+
+    /// Length of the per-triangle face-index buffer (`bodyFaceIndexPtr`).
+    /// Equals `bodyTriangleCount` for a tagged mesh, or 0 when the body carries
+    /// no face tags.
+    #[wasm_bindgen(js_name = bodyFaceIndexLen)]
+    pub fn body_face_index_len(&self, i: usize) -> usize {
+        self.bodies[i].mesh.face_index.len()
     }
 
     /// Serialise body `i`'s feature-based B-Rep as an ISO-10303-21
@@ -4854,7 +4990,12 @@ mod tests {
     }
 
     #[test]
-    fn body_brep_cache_is_lazy_and_reused() {
+    fn body_brep_woven_during_remesh_and_reused() {
+        // Brocken A: the mesh path now weaves the B-Rep eagerly during remesh
+        // to tag render triangles with their face identity (the user wants the
+        // B-Rep present at render time). The weave is cached and keyed on the
+        // body-local payload, so subsequent queries reuse it without
+        // re-weaving.
         let mut k = Kernel::new();
         k.decoded = vec![box_feature(
             1,
@@ -4864,30 +5005,25 @@ mod tests {
         )];
         k.rebuild_mesh_internal();
 
-        // Lazy: not woven until first query.
-        assert!(
-            k.bodies[0].brep.is_none(),
-            "B-Rep must not be eagerly built during remesh"
-        );
-
-        let first = k.body_brep_counts(0);
+        // Eagerly woven for face tagging.
         assert!(
             k.bodies[0].brep.is_some(),
-            "first query must populate the cache"
+            "B-Rep is woven during remesh for mesh face tagging"
         );
 
         let cached = k.bodies[0].brep.clone();
+        let first = k.body_brep_counts(0);
         let second = k.body_brep_counts(0);
         assert_eq!(first, second, "repeat query returns identical counts");
         assert_eq!(
             cached,
             k.bodies[0].brep,
-            "second query must reuse the cache, not re-weave"
+            "queries reuse the cache woven at remesh, not re-weave"
         );
     }
 
     #[test]
-    fn body_brep_invalidated_on_remesh() {
+    fn body_brep_reflects_new_geometry_after_remesh() {
         let mut k = Kernel::new();
         k.decoded = vec![box_feature(
             1,
@@ -4896,16 +5032,19 @@ mod tests {
             [1.0, 1.0, 1.0],
         )];
         k.rebuild_mesh_internal();
-        let _ = k.body_brep_counts(0);
-        assert!(k.bodies[0].brep.is_some());
+        let key_before = k.bodies[0].brep.as_ref().map(|(key, _)| *key);
+        assert!(key_before.is_some(), "B-Rep woven at remesh");
 
-        // Grow the box → geometry hash changes → full remesh → cache
-        // must be cleared so the next query re-weaves.
+        // Grow the box → geometry hash changes → full remesh re-weaves the
+        // B-Rep under a new payload key (the cache self-heals on geometry
+        // change rather than being lazily None'd).
         k.decoded[0] = box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
         k.rebuild_mesh_internal();
-        assert!(
-            k.bodies[0].brep.is_none(),
-            "remesh must invalidate the cached B-Rep"
+        let key_after = k.bodies[0].brep.as_ref().map(|(key, _)| *key);
+        assert!(key_after.is_some(), "B-Rep re-woven at remesh");
+        assert_ne!(
+            key_before, key_after,
+            "geometry change must re-weave the B-Rep under a new key"
         );
     }
 
@@ -5163,6 +5302,193 @@ mod tests {
                 "moved STEP missing shifted point {shifted:?}"
             );
         }
+    }
+
+    // ─── Brocken A: B-Rep face/vertex exports + mesh face tagging ────
+
+    /// Parse a `serde_json::Value` array returned by a `bodyBrep*` export.
+    fn parse_json_array(s: &str) -> Vec<serde_json::Value> {
+        match serde_json::from_str::<serde_json::Value>(s).unwrap() {
+            serde_json::Value::Array(a) => a,
+            other => panic!("expected JSON array, got {other:?}"),
+        }
+    }
+
+    /// A unit cube body driven through the full add/rebuild pipeline.
+    fn box_kernel(half: f32) -> Kernel {
+        let mut k = Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, half, half, half)
+            .unwrap();
+        k
+    }
+
+    #[test]
+    fn brocken_a_box_faces_six_distinct_planes() {
+        let mut k = box_kernel(25.0);
+        let faces = parse_json_array(&k.body_brep_faces(0));
+        assert_eq!(faces.len(), 6, "a box B-Rep has 6 faces");
+
+        let mut id_hashes = std::collections::HashSet::new();
+        for f in &faces {
+            assert_eq!(f["kind"], "face");
+            assert_eq!(f["surfaceKind"], "plane");
+            // idHash is a decimal string that parses to a u64.
+            let hash_str = f["idHash"].as_str().expect("idHash is a string");
+            let parsed: u64 = hash_str.parse().expect("idHash parses to u64");
+            assert_ne!(parsed, 0);
+            id_hashes.insert(hash_str.to_string());
+
+            // Each face centroid sits on a ±25 box side (one coord at ±25).
+            let c = f["centroidLocal"].as_array().unwrap();
+            let coords: Vec<f64> = c.iter().map(|v| v.as_f64().unwrap()).collect();
+            let on_side = coords.iter().any(|&v| (v.abs() - 25.0).abs() < 1.0);
+            assert!(on_side, "centroid {coords:?} should lie on a ±25 box side");
+
+            // Normal is unit-length and axis-aligned for a box.
+            let n = f["normalLocal"].as_array().unwrap();
+            let nv: Vec<f64> = n.iter().map(|v| v.as_f64().unwrap()).collect();
+            let len = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-6, "normal {nv:?} not unit length");
+        }
+        assert_eq!(id_hashes.len(), 6, "all 6 face idHashes must be distinct");
+    }
+
+    #[test]
+    fn brocken_a_box_vertices_eight_distinct() {
+        let mut k = box_kernel(25.0);
+        let verts = parse_json_array(&k.body_brep_vertices(0));
+        assert_eq!(verts.len(), 8, "a box B-Rep has 8 corner vertices");
+
+        let mut id_hashes = std::collections::HashSet::new();
+        for v in &verts {
+            assert_eq!(v["kind"], "vertex");
+            let hash_str = v["idHash"].as_str().expect("idHash is a string");
+            let _: u64 = hash_str.parse().expect("idHash parses to u64");
+            id_hashes.insert(hash_str.to_string());
+
+            // Corner sits at (±25, ±25, ±25).
+            let p = v["positionLocal"].as_array().unwrap();
+            for coord in p {
+                let c = coord.as_f64().unwrap();
+                assert!((c.abs() - 25.0).abs() < 1.0, "corner coord {c} not ±25");
+            }
+            // At least 3 colliding branches at a box corner.
+            assert!(v["branches"].as_array().unwrap().len() >= 3);
+        }
+        assert_eq!(id_hashes.len(), 8, "all 8 vertex idHashes must be distinct");
+    }
+
+    #[test]
+    fn brocken_a_placement_round_trips() {
+        let mut k = box_kernel(10.0);
+        let p: serde_json::Value =
+            serde_json::from_str(&k.body_placement(0)).unwrap();
+        // Identity placement for an origin box: zero translate, identity quat,
+        // unit scale.
+        let t = p["translate"].as_array().unwrap();
+        assert_eq!(t.iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>(), vec![0.0, 0.0, 0.0]);
+        let r = p["rotation"].as_array().unwrap();
+        assert_eq!(r.iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>(), vec![0.0, 0.0, 0.0, 1.0]);
+        let s = p["scale"].as_array().unwrap();
+        for v in s {
+            assert!((v.as_f64().unwrap() - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn brocken_a_face_idhash_stable_across_resize() {
+        // The whole point of TopoRef: a non-topological parameter change
+        // (resize) leaves face idHashes byte-for-byte identical, because they
+        // derive from branch signatures, not geometry.
+        let mut k_small = box_kernel(10.0);
+        let mut k_big = box_kernel(40.0);
+
+        let collect = |k: &mut Kernel| -> std::collections::BTreeSet<String> {
+            parse_json_array(&k.body_brep_faces(0))
+                .iter()
+                .map(|f| f["idHash"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let small = collect(&mut k_small);
+        let big = collect(&mut k_big);
+        assert_eq!(small, big, "resize must not change face idHashes");
+    }
+
+    #[test]
+    fn brocken_a_mesh_face_index_partitions_box() {
+        let k = box_kernel(25.0);
+        // add_primitive already ran the rebuild + per-triangle face tagging.
+        let tc = k.body_triangle_count(0);
+        assert!(tc > 0, "box must produce a non-empty mesh");
+
+        let face_index = k.bodies[0].mesh.face_index.clone();
+        assert_eq!(face_index.len(), tc, "one face tag per mesh triangle");
+
+        // Every triangle resolves to a valid face index < 6, no sentinels on a
+        // clean box, and all 6 faces are represented (the tags partition the
+        // mesh by side).
+        let mut distinct = std::collections::HashSet::new();
+        for &fi in &face_index {
+            assert_ne!(
+                fi,
+                crate::brep::face_export::FACE_INDEX_SENTINEL,
+                "no sentinels on a clean box",
+            );
+            assert!(fi < 6, "face_index {fi} must be < 6 for a box");
+            distinct.insert(fi);
+        }
+        assert_eq!(distinct.len(), 6, "the 6 face tags must partition the mesh");
+
+        // Triangles clearly INTERIOR to one flat side (one centroid coord at
+        // ±25, the other two well within the face, away from shared edges)
+        // must all carry that side's single face tag. Corner/edge triangles
+        // straddle two faces and are legitimately ambiguous, so we exclude
+        // them. All 6 sides must be represented among the interior triangles.
+        let positions = &k.bodies[0].mesh.positions;
+        let indices = &k.bodies[0].mesh.indices;
+        let mut side_tag: std::collections::HashMap<(usize, i8), u32> =
+            std::collections::HashMap::new();
+        for t in 0..tc {
+            let mut c = [0.0f32; 3];
+            for j in 0..3 {
+                let vi = indices[t * 3 + j] as usize;
+                c[0] += positions[vi * 3];
+                c[1] += positions[vi * 3 + 1];
+                c[2] += positions[vi * 3 + 2];
+            }
+            c = [c[0] / 3.0, c[1] / 3.0, c[2] / 3.0];
+            // A face-interior triangle has exactly ONE axis pinned to ±25 and
+            // the other two safely inside (|coord| < 20), away from any shared
+            // edge. Count pinned axes and inside axes.
+            let mut pinned_axis: Option<usize> = None;
+            let mut pinned_count = 0;
+            let mut inside_count = 0;
+            for axis in 0..3 {
+                if (c[axis].abs() - 25.0).abs() < 0.5 {
+                    pinned_axis = Some(axis);
+                    pinned_count += 1;
+                } else if c[axis].abs() < 20.0 {
+                    inside_count += 1;
+                }
+            }
+            if pinned_count != 1 || inside_count != 2 {
+                continue; // corner / edge / off-face triangle
+            }
+            let axis = pinned_axis.unwrap();
+            let sign = if c[axis] >= 0.0 { 1i8 } else { -1i8 };
+            let key = (axis, sign);
+            let tag = face_index[t];
+            match side_tag.get(&key) {
+                None => {
+                    side_tag.insert(key, tag);
+                }
+                Some(&existing) => assert_eq!(
+                    existing, tag,
+                    "interior triangles on side {key:?} share a face tag",
+                ),
+            }
+        }
+        assert_eq!(side_tag.len(), 6, "all 6 box sides must be represented");
     }
 
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.

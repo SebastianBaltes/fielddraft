@@ -290,6 +290,7 @@ mod tests {
             indices: vec![0, 1, 2],
             classifications: vec![0; 3],
             contributors: vec![],
+            face_index: vec![],
         }
     }
 
@@ -302,6 +303,7 @@ mod tests {
             indices: vec![0, 1, 2, 0, 2, 3],
             classifications: vec![0; 4],
             contributors: vec![],
+            face_index: vec![],
         }
     }
 
@@ -378,6 +380,7 @@ mod tests {
             indices: vec![],
             classifications: vec![],
             contributors: vec![],
+            face_index: vec![],
         };
         let real = one_triangle();
         let xml = model_xml(&[&empty, &real]);

@@ -27,6 +27,17 @@ use std::collections::HashMap;
 ///   * `contributors` — flat `u32` array, `MAX_CONTRIBUTORS` slots per
 ///     vertex. Unused slots are set to `u32::MAX`. Readers walk the
 ///     stride and stop at the sentinel.
+///   * `face_index` — one `u32` per **triangle** (length `indices.len()/3`):
+///     the arena index of the B-Rep [`crate::brep::Face`] that triangle lies
+///     on (same ordering as the `bodyBrepFaces` export), or
+///     [`crate::brep::face_export::FACE_INDEX_SENTINEL`] when no analytic face
+///     could be correlated. Per-triangle (not per-vertex) because planar
+///     simplification leaves flat faces with only boundary-ring vertices, so a
+///     vertex can't be uniquely owned by one face — but a triangle centroid
+///     always is. Populated post-mesh by
+///     [`crate::brep::face_export::correlate_mesh_faces`]; left empty by the
+///     bare DC pass (which has no B-Rep). This is the per-triangle face
+///     identity that drives viewport face selection (Brocken A).
 #[derive(Debug, Default, Clone)]
 pub struct Mesh {
     pub positions: Vec<f32>,
@@ -34,6 +45,7 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     pub classifications: Vec<u8>,
     pub contributors: Vec<u32>,
+    pub face_index: Vec<u32>,
 }
 
 impl Mesh {
@@ -932,6 +944,10 @@ fn compact_mesh(mesh: &mut Mesh) {
     mesh.normals = new_nor;
     mesh.classifications = new_cls;
     mesh.contributors = new_ctr;
+    // `face_index` is per-TRIANGLE and populated only after all simplification
+    // (which is where compaction runs), so there is nothing to carry here. The
+    // compaction passes never reorder or drop triangles, only remap vertex
+    // indices, so a later-populated per-triangle tag stays valid regardless.
 }
 
 /// K3.5 Phase A: Newton-project every Face-classified vertex onto the

@@ -613,6 +613,8 @@ pub fn manifold_dc(
         indices,
         classifications,
         contributors,
+        // Correlated to B-Rep faces post-mesh; the bare DC pass has no B-Rep.
+        face_index: Vec::new(),
     }
 }
 

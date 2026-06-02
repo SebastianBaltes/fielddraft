@@ -400,6 +400,55 @@ export class Kernel {
         }
     }
     /**
+     * Per-body feature-based B-Rep **faces**, in the body-LOCAL frame, as a
+     * JSON array — one entry per `brep.faces[k]` (Brocken A1). Each entry:
+     * `{"faceIndex","idHash","kind":"face","branchId","featureId",
+     * "surfaceKind","centroidLocal":[x,y,z],"normalLocal":[x,y,z]}`.
+     *
+     * `idHash` is the regeneration-stable [`crate::brep::naming::TopoRef`]
+     * id (FNV-1a over the sorted branch signature + spatial index),
+     * serialised as a **decimal string** because a `u64` is unsafe as a JS
+     * `Number`. `faceIndex` indexes the same ordering as the per-vertex
+     * `face_index` mesh tags (`body_face_index_ptr`), so a hovered triangle's
+     * tag selects this entry. Geometry stays body-local; the caller folds the
+     * body `placement` (`bodyPlacement`) in for world coordinates.
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyBrepFaces(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyBrepFaces(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Per-body feature-based B-Rep **vertices**, in the body-LOCAL frame, as a
+     * JSON array — one entry per `brep.vertices[k]` (Brocken A1). Each entry:
+     * `{"vertexIndex","idHash","kind":"vertex","positionLocal":[x,y,z],
+     * "branches":[<u32 packed>, …]}`. `idHash` is the stable
+     * [`crate::brep::naming::TopoRef`] vertex id as a decimal string.
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyBrepVertices(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyBrepVertices(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @param {number} i
      * @returns {number}
      */
@@ -420,6 +469,36 @@ export class Kernel {
      */
     bodyCount() {
         const ret = wasm.kernel_bodyCount(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Length of the per-triangle face-index buffer (`bodyFaceIndexPtr`).
+     * Equals `bodyTriangleCount` for a tagged mesh, or 0 when the body carries
+     * no face tags.
+     * @param {number} i
+     * @returns {number}
+     */
+    bodyFaceIndexLen(i) {
+        const ret = wasm.kernel_bodyFaceIndexLen(this.__wbg_ptr, i);
+        return ret >>> 0;
+    }
+    /**
+     * Pointer to the per-**triangle** B-Rep **face index** buffer (Brocken
+     * A3): one `u32` per mesh triangle giving the arena index of the B-Rep
+     * face that triangle lies on (same ordering as `bodyBrepFaces`), or
+     * `u32::MAX` when unresolved. Length is `bodyTriangleCount` (==
+     * `bodyIndexCount / 3`). A hovered/clicked triangle resolves to its stable
+     * face by indexing this buffer with the triangle id. Per-triangle (not
+     * per-vertex) because planar simplification leaves flat faces with only
+     * shared boundary vertices, so vertices can't be uniquely owned by a face
+     * — triangle centroids always can. Populated during the mesh rebuild; an
+     * un-tagged body (e.g. a passthrough imported mesh) exposes an empty
+     * buffer (null pointer, length 0).
+     * @param {number} i
+     * @returns {number}
+     */
+    bodyFaceIndexPtr(i) {
+        const ret = wasm.kernel_bodyFaceIndexPtr(this.__wbg_ptr, i);
         return ret >>> 0;
     }
     /**
@@ -488,6 +567,29 @@ export class Kernel {
     bodyNormalsPtr(i) {
         const ret = wasm.kernel_bodyNormalsPtr(this.__wbg_ptr, i);
         return ret >>> 0;
+    }
+    /**
+     * The body's rigid + uniform-scale **placement** as JSON
+     * `{"translate":[x,y,z],"rotation":[x,y,z,w],"scale":[sx,sy,sz]}`
+     * (Brocken A2). B-Reps stay body-LOCAL and an affine transform never
+     * invalidates them; the frontend composes this placement back in
+     * (`localToWorld`) to obtain world coordinates. `placement` is recomputed
+     * lazily on the first `ensure_brep`, so we weave first to guarantee it is
+     * current.
+     * @param {number} i
+     * @returns {string}
+     */
+    bodyPlacement(i) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.kernel_bodyPlacement(this.__wbg_ptr, i);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * @param {number} i
