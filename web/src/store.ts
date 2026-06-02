@@ -46,6 +46,11 @@ import {
   type IKTarget,
 } from "./assembly";
 import { executeScript } from "./fieldscript";
+import {
+  createRecord,
+  reviseRecord,
+  type FieldSkriptRecord,
+} from "./fieldskript/record";
 import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
 import {
   type MeshOverlayData,
@@ -194,6 +199,9 @@ export interface StoreState {
    *  in this set are visible. Persisted to localStorage. */
   hiddenDatums: ReadonlySet<string>;
   highlightedBodyIndex: number | null;
+  /** S4: FieldSkript editor modal open flag. UI-only, never
+   *  persisted to the document. */
+  scriptEditorOpen: boolean;
 }
 
 /** K7.22 UX-fix (2): one folder entry in the outliner grouping
@@ -389,6 +397,7 @@ export class KernelStore {
       hiddenDatums: loadHiddenDatumsFromStorage(),
       highlightedBodyIndex: null,
       rollbackIndex: initFeatures.length,
+      scriptEditorOpen: false,
     };
 
     // Bring up the mesher worker. On success, disable sync meshing
@@ -471,6 +480,7 @@ export class KernelStore {
       hiddenDatums: this.state.hiddenDatums,
       highlightedBodyIndex: this.state.highlightedBodyIndex,
       rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
+      scriptEditorOpen: this.state.scriptEditorOpen,
     };
     // Drop selection entries pointing at deleted features.
     if (this.state.selection.size > 0) {
@@ -2453,6 +2463,101 @@ export class KernelStore {
   downloadObj(filename = "fielddraft.obj"): void {
     if (!canTriggerDownload()) return;
     triggerDownload(buildObjExportText(this.state.meshedBodies), "text/plain", filename);
+  }
+
+  // ── S4: FieldSkript editor + record CRUD ──────────────────────
+
+  /** S4: open the FieldSkript editor modal. */
+  openScriptEditor(): void {
+    if (this.state.scriptEditorOpen) return;
+    this.patch({ scriptEditorOpen: true });
+    this.notify();
+  }
+
+  /** S4: close the FieldSkript editor modal. */
+  closeScriptEditor(): void {
+    if (!this.state.scriptEditorOpen) return;
+    this.patch({ scriptEditorOpen: false });
+    this.notify();
+  }
+
+  /** S4: the document's FieldSkript records (ground truth in the
+   *  kernel's `Document.scripts`). */
+  listScripts(): FieldSkriptRecord[] {
+    return this.kernel.listScripts();
+  }
+
+  /**
+   * S4: save a FieldSkript record. With an `id` matching an existing
+   * record this revises it (version bumps); otherwise it creates a
+   * fresh record. The id for a new record is derived deterministically
+   * from the display name (slugged, de-duped against existing ids) so
+   * repeated saves never collide and never depend on wall-clock time.
+   *
+   * The whole transpile → eval → schema pipeline lives inside
+   * {@link createRecord}/{@link reviseRecord} and THROWS on malformed
+   * source, so we wrap it and surface the message instead of letting it
+   * escape. On success the record is upserted into the kernel and the
+   * standard commit path runs so autosave persists the new document and
+   * the worker re-syncs scripts on the next rebuild.
+   */
+  saveScript(input: { id?: string; source: string; name?: string }):
+    | { ok: true; record: FieldSkriptRecord }
+    | { ok: false; error: string } {
+    const existing = this.kernel.listScripts();
+    let record: FieldSkriptRecord;
+    try {
+      if (input.id) {
+        const prev = existing.find((r) => r.id === input.id);
+        record = prev
+          ? reviseRecord(prev, { source: input.source, name: input.name })
+          : createRecord({ id: input.id, source: input.source, name: input.name });
+      } else {
+        // No id yet: build the record once with a placeholder id, then
+        // re-key it from the derived display name (slugged + deduped).
+        // `createRecord` derives `name` from `definition.name`, so this
+        // is the first point the real name is known. The schema's `type`
+        // field must track the id (it equals the FeatureCall `type`).
+        const placeholder = `script_${existing.length + 1}`;
+        const built = createRecord({
+          id: placeholder,
+          source: input.source,
+          name: input.name,
+        });
+        const id = this.deriveScriptId(built.name, existing);
+        record =
+          id === built.id
+            ? built
+            : { ...built, id, schema: { ...built.schema, type: id } };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e instanceof Error ? e.message : e) };
+    }
+    this.kernel.upsertScript(record);
+    this.commit();
+    return { ok: true, record };
+  }
+
+  /** S4: delete a FieldSkript record by id and commit. */
+  deleteScript(id: string): void {
+    this.kernel.removeScript(id);
+    this.commit();
+  }
+
+  /** Derive a stable, deterministic script id from a name (or a
+   *  positional fallback), slugged and de-duped against the existing
+   *  records. No Date.now/Math.random — repeated saves are stable. */
+  private deriveScriptId(
+    name: string | undefined,
+    existing: readonly FieldSkriptRecord[],
+  ): string {
+    const taken = new Set(existing.map((r) => r.id));
+    const slug = (name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    const base = slug.length > 0 ? slug : `script_${existing.length + 1}`;
+    if (!taken.has(base)) return base;
+    let n = 2;
+    while (taken.has(`${base}_${n}`)) n += 1;
+    return `${base}_${n}`;
   }
 
   commitSketch(): number | null {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
+import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
@@ -292,6 +293,7 @@ export function App() {
           </div>
         </div>
       ) : null}
+      {store && state ? <FieldSkriptEditor store={store} state={state} /> : null}
       {showHelp ? (
         <div
           className="fd-help-overlay"

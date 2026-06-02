@@ -393,6 +393,19 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <FeatureButton kind="imported_mesh" title="Convert reference mesh to solid" testId="convert-to-solid" onClick={() => store.convertReferenceToSolid()} label="Solid" />
         )}
       </div>
+
+      <div className="group">
+        <button
+          type="button"
+          className="tool"
+          title="FieldSkript editor"
+          data-testid="open-fieldskript-editor"
+          onClick={() => store.openScriptEditor()}
+        >
+          <span className="glyph" aria-hidden="true">ƒ</span>
+          <span className="tool-label">Script</span>
+        </button>
+      </div>
     </div>
   );
 }
