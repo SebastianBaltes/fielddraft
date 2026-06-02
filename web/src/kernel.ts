@@ -61,6 +61,19 @@ export interface Placement {
   scale: [number, number, number];
 }
 
+/** One analytic B-Rep edge of a body: a world-space polyline plus its
+ *  canonical colliding-branch signature `{a, b}` (packed BranchIds) and the
+ *  stable `TopoRef` edge id as a decimal string. `idHash` becomes available
+ *  once the kernel exports it (Brocken B-K); until the wasm is regenerated it
+ *  may be absent at runtime, so consumers must treat a missing `idHash` as
+ *  "edge not yet selectable". */
+export interface BRepEdge {
+  a: number;
+  b: number;
+  points: number[];
+  idHash: string;
+}
+
 /** One selectable B-Rep face of a body, in the body-LOCAL frame. `faceIndex`
  *  indexes the same ordering as the per-triangle face tags
  *  ({@link KernelHandle.bodyFaceIndexView}). `idHash` is the
@@ -441,12 +454,8 @@ export class Kernel {
    * can be looked up by signature. Edges come straight from the woven
    * (cached) B-Rep — independent of mesh resolution.
    */
-  bodyBrepEdges(i: number): { a: number; b: number; points: number[] }[] {
-    return JSON.parse(this.inner.bodyBrepEdges(i)) as {
-      a: number;
-      b: number;
-      points: number[];
-    }[];
+  bodyBrepEdges(i: number): BRepEdge[] {
+    return JSON.parse(this.inner.bodyBrepEdges(i)) as BRepEdge[];
   }
 
   // ── Per-body selectable B-Rep faces / vertices (Brocken A) ────────

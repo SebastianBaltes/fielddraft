@@ -33,6 +33,7 @@ import {
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
+  BRepSelectionOverlay,
   MeshPreview,
   AssemblyParts,
   MateConnectorOverlay,
@@ -47,6 +48,8 @@ import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { getPublishedPickCamera } from "./pickCameraBridge";
+import { getHoveredElement } from "./brepPickBridge";
+import { mapPickToQuery, filterAllows } from "./elementQuery";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -152,9 +155,39 @@ function pickAtMouse(
   return store.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
 }
 
+/**
+ * Convert a viewport click into the query string the active picker wants.
+ *
+ * Element-level first: if a B-Rep face/edge/vertex is currently hovered
+ * (published to `brepPickBridge` by the overlays) and the picker's
+ * `entityFilter` allows that kind, emit the element query (`qFace`/`qEdge`/
+ * `qVertex` — built in one place by `mapPickToQuery`). Otherwise fall back
+ * to feature-level `qCreatedBy` (extrude/boolean and other body/feature
+ * pickers), but only when the filter doesn't restrict to element kinds the
+ * click didn't hit.
+ */
 function tryQueryPick(click: PickResult | null): boolean {
   const picker = getActiveQueryPicker();
-  if (!picker || !click?.hit || click.contributors.length === 0) return false;
+  if (!picker) return false;
+
+  const hovered = getHoveredElement();
+  if (hovered) {
+    const query = mapPickToQuery(hovered, picker.entityFilter);
+    if (query) return picker.onPick(query);
+  }
+
+  // Feature-level fallback. Skip it when the picker restricts to element
+  // kinds (face/edge/vertex) — a body-level qCreatedBy would violate the
+  // filter — unless no filter is set (undefined → anything goes).
+  const filter = picker.entityFilter;
+  const elementOnly =
+    filter !== undefined &&
+    (filterAllows("face", filter) ||
+      filterAllows("edge", filter) ||
+      filterAllows("vertex", filter));
+  if (elementOnly) return false;
+
+  if (!click?.hit || click.contributors.length === 0) return false;
   const contributor = click.contributors[0];
   if (contributor <= 0) return false;
   return picker.onPick(`qCreatedBy(${contributor})`);
@@ -442,6 +475,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
               <BRepEdgeOverlay pick={pickResult} mode={brepEdgeMode} />
+              <BRepSelectionOverlay ndc={ndc} />
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />

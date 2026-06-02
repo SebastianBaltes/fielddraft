@@ -177,6 +177,13 @@ export function buildFdModule(
   const idOf = (t: OpHandle | string): string =>
     typeof t === "string" ? t : t.id;
 
+  // Element-query addressing: a raw string is taken as the decimal id_hash,
+  // a `QueryHandle` yields its `.idHash`. This is the element-level analogue
+  // of `idOf` — `fd.q.face/edge/vertex` address one specific B-Rep element by
+  // its stable id_hash (the FROZEN `qFace/qEdge/qVertex` contract).
+  const idHashOf = (h: QueryHandle | string): string =>
+    typeof h === "string" ? h : h.idHash;
+
   const q = {
     createdBy: (target: OpHandle | string): QueryHandle[] =>
       resolve(`qCreatedBy(${idOf(target)})`),
@@ -184,6 +191,15 @@ export function buildFdModule(
       resolve(`qFaceOf(${idOf(target)})`),
     edgeBetween: (a: OpHandle | string, b: OpHandle | string): QueryHandle[] =>
       resolve(`qEdgeBetween(${idOf(a)}, ${idOf(b)})`),
+    /** Address one face by its stable decimal id_hash. */
+    face: (h: QueryHandle | string): QueryHandle[] =>
+      resolve(`qFace(${idHashOf(h)})`),
+    /** Address one edge by its stable decimal id_hash. */
+    edge: (h: QueryHandle | string): QueryHandle[] =>
+      resolve(`qEdge(${idHashOf(h)})`),
+    /** Address one vertex by its stable decimal id_hash. */
+    vertex: (h: QueryHandle | string): QueryHandle[] =>
+      resolve(`qVertex(${idHashOf(h)})`),
     evaluate: (query: string): QueryHandle[] => resolve(query),
   };
 

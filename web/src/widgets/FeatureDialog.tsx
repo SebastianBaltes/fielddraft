@@ -482,6 +482,7 @@ function WidgetFor({
           required={param.required}
           error={error}
           onChange={emit}
+          entityFilter={param.entityFilter}
         />
       );
     case "multi_query":
@@ -492,6 +493,7 @@ function WidgetFor({
           required={param.required}
           error={error}
           onChange={emit}
+          entityFilter={param.entityFilter}
         />
       );
     case "group":

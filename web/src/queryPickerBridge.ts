@@ -34,6 +34,14 @@ export interface ActivePicker {
    *  indicates the pick was consumed and the Viewport should
    *  suppress its default selection behaviour for this click. */
   onPick: (query: string) => boolean;
+  /** The owning query param's `entityFilter` (e.g. `"FACE"`,
+   *  `"EDGE"`, `"VERTEX"`, `"BODY"`), or undefined for no
+   *  restriction. The viewport uses this to decide which B-Rep
+   *  element kinds are hoverable / pickable and which canonical
+   *  element-query string a pick emits (see `elementQuery.ts`).
+   *  `"BODY"` (or an empty filter that resolves to no element
+   *  kinds) falls back to feature-level `qCreatedBy`. */
+  entityFilter?: string;
 }
 
 let active: ActivePicker | null = null;

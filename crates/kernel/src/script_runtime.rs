@@ -414,6 +414,11 @@ pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
         | crate::queries::QueryExpr::Region(f, _)
         | crate::queries::QueryExpr::Regions(f, _) => vec![f.to_string()],
         crate::queries::QueryExpr::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
+        // id_hash-addressed element queries address a concrete element
+        // directly; they carry no contributor FeatureId input.
+        crate::queries::QueryExpr::Face(_)
+        | crate::queries::QueryExpr::Edge(_)
+        | crate::queries::QueryExpr::Vertex(_) => Vec::new(),
     };
 
     let refs = with_scratch(|s| {

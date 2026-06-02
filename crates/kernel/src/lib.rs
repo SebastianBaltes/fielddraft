@@ -2695,21 +2695,29 @@ impl Kernel {
 
     /// Per-body analytic B-Rep edges, sampled to **world-space** polylines for
     /// viewport rendering and hover. Returns a JSON array; each edge is
-    /// `{"a":<branch u32>,"b":<branch u32>,"points":[x,y,z, x,y,z, …]}`, where
-    /// `a`/`b` are the canonical colliding-branch signature. Those two ids are
+    /// `{"a":<branch u32>,"b":<branch u32>,"idHash":<decimal string>,
+    /// "points":[x,y,z, x,y,z, …]}`, where `a`/`b` are the canonical
+    /// colliding-branch signature. Those two ids are
     /// the same `as_u32()` branch values that [`Kernel::pick`] reports in its
     /// `contributors` array, so the frontend can match a hovered edge to its
-    /// polyline. Points are sampled in the body-local frame and folded to world
+    /// polyline. `idHash` is the regeneration-stable
+    /// [`crate::brep::naming::TopoRef`] edge id (decimal string, like the
+    /// faces/vertices exports), so a click on an edge can emit
+    /// `qEdge(<idHash>)`. Points are sampled in the body-local frame and folded to world
     /// by the body's `placement` (DL-56), exactly like the STEP export. Reuses
     /// the same lazily-woven, cached B-Rep as the counts / STEP queries.
     #[wasm_bindgen(js_name = bodyBrepEdges)]
     pub fn body_brep_edges(&mut self, i: usize) -> String {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::EdgeId;
+
         self.bodies[i].ensure_brep(&self.decoded);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let s = placement.scale[0];
         let mut edges = Vec::with_capacity(brep.edges.len());
-        for edge in &brep.edges {
+        for (k, edge) in brep.edges.iter().enumerate() {
+            let id_hash = TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash;
             let local = crate::brep::edge_sampling::sample_edge(&edge.geometry);
             let mut points: Vec<f32> = Vec::with_capacity(local.len() * 3);
             for p in &local {
@@ -2723,6 +2731,7 @@ impl Kernel {
             edges.push(serde_json::json!({
                 "a": edge.signature.0.as_u32(),
                 "b": edge.signature.1.as_u32(),
+                "idHash": id_hash.to_string(),
                 "points": points,
             }));
         }
@@ -5489,6 +5498,29 @@ mod tests {
             }
         }
         assert_eq!(side_tag.len(), 6, "all 6 box sides must be represented");
+    }
+
+    #[test]
+    fn brocken_br_edges_carry_parseable_id_hash() {
+        // Brocken B-R: bodyBrepEdges now emits a decimal `idHash` per edge
+        // (alongside a/b/points), so a clicked edge can emit qEdge(<idHash>).
+        let mut k = box_kernel(25.0);
+        let edges = parse_json_array(&k.body_brep_edges(0));
+        assert_eq!(edges.len(), 12, "a box B-Rep has 12 edges");
+
+        let mut id_hashes = std::collections::HashSet::new();
+        for e in &edges {
+            // Existing fields still present.
+            assert!(e["a"].is_number());
+            assert!(e["b"].is_number());
+            assert!(e["points"].is_array());
+            // New field: a decimal string that parses to a u64.
+            let hash_str = e["idHash"].as_str().expect("idHash is a string");
+            let parsed: u64 = hash_str.parse().expect("idHash parses to u64");
+            assert_ne!(parsed, 0);
+            id_hashes.insert(hash_str.to_string());
+        }
+        assert_eq!(id_hashes.len(), 12, "all 12 edge idHashes must be distinct");
     }
 
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.

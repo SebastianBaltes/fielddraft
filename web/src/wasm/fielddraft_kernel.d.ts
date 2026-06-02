@@ -144,11 +144,15 @@ export class Kernel {
     /**
      * Per-body analytic B-Rep edges, sampled to **world-space** polylines for
      * viewport rendering and hover. Returns a JSON array; each edge is
-     * `{"a":<branch u32>,"b":<branch u32>,"points":[x,y,z, x,y,z, …]}`, where
-     * `a`/`b` are the canonical colliding-branch signature. Those two ids are
+     * `{"a":<branch u32>,"b":<branch u32>,"idHash":<decimal string>,
+     * "points":[x,y,z, x,y,z, …]}`, where `a`/`b` are the canonical
+     * colliding-branch signature. Those two ids are
      * the same `as_u32()` branch values that [`Kernel::pick`] reports in its
      * `contributors` array, so the frontend can match a hovered edge to its
-     * polyline. Points are sampled in the body-local frame and folded to world
+     * polyline. `idHash` is the regeneration-stable
+     * [`crate::brep::naming::TopoRef`] edge id (decimal string, like the
+     * faces/vertices exports), so a click on an edge can emit
+     * `qEdge(<idHash>)`. Points are sampled in the body-local frame and folded to world
      * by the body's `placement` (DL-56), exactly like the STEP export. Reuses
      * the same lazily-woven, cached B-Rep as the counts / STEP queries.
      */

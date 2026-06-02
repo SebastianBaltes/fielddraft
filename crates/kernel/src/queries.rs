@@ -83,6 +83,18 @@ pub enum QueryExpr {
     Region(FeatureId, u32),
     /// K8.13: `qRegions(sketch_id, [indices])` — a subset of regions.
     Regions(FeatureId, Vec<u32>),
+    /// `qFace(id_hash)` — the single B-Rep face whose stable
+    /// [`TopoRef::id_hash`](crate::brep::naming::TopoRef) equals the
+    /// given value. This is the id_hash-addressed form the UI emits
+    /// when a user clicks exactly ONE face, and that a feature stores
+    /// to reference it across regenerations.
+    Face(u64),
+    /// `qEdge(id_hash)` — the single B-Rep edge addressed by its
+    /// stable id_hash.
+    Edge(u64),
+    /// `qVertex(id_hash)` — the single B-Rep vertex addressed by its
+    /// stable id_hash.
+    Vertex(u64),
 }
 
 impl fmt::Display for QueryExpr {
@@ -97,6 +109,9 @@ impl fmt::Display for QueryExpr {
                 let list = indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
                 write!(f, "qRegions({id}, [{list}])")
             }
+            QueryExpr::Face(h) => write!(f, "qFace({h})"),
+            QueryExpr::Edge(h) => write!(f, "qEdge({h})"),
+            QueryExpr::Vertex(h) => write!(f, "qVertex({h})"),
         }
     }
 }
@@ -115,6 +130,9 @@ pub enum QueryParseError {
     MalformedArguments(&'static str),
     /// One of the `FeatureId` arguments failed to parse.
     InvalidFeatureId(String),
+    /// An id_hash argument (`qFace`/`qEdge`/`qVertex`) was not a valid
+    /// `u64` decimal. Carries the offending token.
+    InvalidIdHash(String),
 }
 
 impl fmt::Display for QueryParseError {
@@ -128,6 +146,9 @@ impl fmt::Display for QueryParseError {
             }
             QueryParseError::InvalidFeatureId(raw) => {
                 write!(f, "invalid feature id in query: `{raw}`")
+            }
+            QueryParseError::InvalidIdHash(raw) => {
+                write!(f, "invalid id_hash in query: `{raw}`")
             }
         }
     }
@@ -204,6 +225,18 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
             }
             Ok(QueryExpr::Regions(id, indices))
         }
+        "qFace" => Ok(QueryExpr::Face(expect_one_id_hash(
+            &args,
+            "qFace expects one id_hash",
+        )?)),
+        "qEdge" => Ok(QueryExpr::Edge(expect_one_id_hash(
+            &args,
+            "qEdge expects one id_hash",
+        )?)),
+        "qVertex" => Ok(QueryExpr::Vertex(expect_one_id_hash(
+            &args,
+            "qVertex expects one id_hash",
+        )?)),
         other => Err(QueryParseError::UnknownQuery(other.to_string())),
     }
 }
@@ -231,6 +264,21 @@ fn expect_two_ids(
 fn parse_feature_id(raw: &str) -> Result<FeatureId, QueryParseError> {
     raw.parse::<FeatureId>()
         .map_err(|_| QueryParseError::InvalidFeatureId(raw.to_string()))
+}
+
+/// Parse the single argument of a `qFace`/`qEdge`/`qVertex` query as a
+/// `u64` id_hash. Parsed as `u64` (not `i64`) because an id_hash is a
+/// full 64-bit FNV-1a value that routinely exceeds `i64::MAX`.
+fn expect_one_id_hash(
+    args: &[&str],
+    message: &'static str,
+) -> Result<u64, QueryParseError> {
+    if args.len() != 1 {
+        return Err(QueryParseError::MalformedArguments(message));
+    }
+    args[0]
+        .parse::<u64>()
+        .map_err(|_| QueryParseError::InvalidIdHash(args[0].to_string()))
 }
 
 /// The high-level result of evaluating a query. Carries the
@@ -309,6 +357,22 @@ pub fn evaluate_query(features: &[DecodedFeature], expr: &QueryExpr) -> QueryRes
                 },
             }
         }
+        // id_hash-addressed element queries are resolved against the
+        // woven solid by `resolve_query_topo`, not at the feature level:
+        // an id_hash carries no contributor FeatureId set on its own. The
+        // classification hint still travels so callers know the kind.
+        QueryExpr::Face(_) => QueryResult {
+            kind: QueryElementKind::Face,
+            matches: Vec::new(),
+        },
+        QueryExpr::Edge(_) => QueryResult {
+            kind: QueryElementKind::Edge,
+            matches: Vec::new(),
+        },
+        QueryExpr::Vertex(_) => QueryResult {
+            kind: QueryElementKind::Set,
+            matches: Vec::new(),
+        },
     }
 }
 
@@ -358,7 +422,7 @@ pub fn resolve_query_topo(
     expr: &QueryExpr,
 ) -> Vec<crate::brep::naming::TopoRef> {
     use crate::brep::naming::TopoRef;
-    use crate::brep::{EdgeId, FaceId};
+    use crate::brep::{EdgeId, FaceId, VertexId};
 
     let mut out: Vec<TopoRef> = Vec::new();
 
@@ -387,6 +451,45 @@ pub fn resolve_query_topo(
                     // Unordered pair match: {s0, s1} == {fa, fb}.
                     if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa) {
                         out.push(TopoRef::from_edge(brep, EdgeId(i as u32)));
+                    }
+                }
+            }
+        }
+        // id_hash-addressed single-element queries: scan the relevant
+        // entity kind and return the TopoRef whose stable id_hash equals
+        // the queried value. This IS the regeneration-stable rebinding —
+        // an id_hash is branch-derived, so a stored `qFace(h)` re-resolves
+        // to the same face after a non-topological edit (resize). Normally
+        // exactly one match; empty if the element no longer exists (e.g.
+        // after a topological edit). NOTE: fingerprint-based HEALING for
+        // the ambiguous/missing case is deferred (decision #3 "Kern jetzt")
+        // — id_hash hash-hit only for now.
+        QueryExpr::Face(hash) => {
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    let r = TopoRef::from_face(brep, FaceId(i as u32));
+                    if r.id_hash == *hash {
+                        out.push(r);
+                    }
+                }
+            }
+        }
+        QueryExpr::Edge(hash) => {
+            for brep in breps {
+                for i in 0..brep.edges.len() {
+                    let r = TopoRef::from_edge(brep, EdgeId(i as u32));
+                    if r.id_hash == *hash {
+                        out.push(r);
+                    }
+                }
+            }
+        }
+        QueryExpr::Vertex(hash) => {
+            for brep in breps {
+                for i in 0..brep.vertices.len() {
+                    let r = TopoRef::from_vertex(brep, VertexId(i as u32));
+                    if r.id_hash == *hash {
+                        out.push(r);
                     }
                 }
             }
@@ -569,10 +672,56 @@ mod tests {
             "qCreatedBy(1)",
             "qFaceOf(42)",
             "qEdgeBetween(1, 2)",
+            "qFace(12345)",
+            "qEdge(67890)",
+            "qVertex(42)",
         ] {
             let parsed = parse_query(raw).unwrap();
             assert_eq!(parsed.to_string(), raw);
         }
+    }
+
+    // ─── id_hash-addressed element queries (parse) ─────────────
+
+    #[test]
+    fn parses_face_with_id_hash() {
+        assert_eq!(parse_query("qFace(12345)").unwrap(), QueryExpr::Face(12345));
+    }
+
+    #[test]
+    fn parses_edge_with_id_hash() {
+        assert_eq!(parse_query("qEdge(12345)").unwrap(), QueryExpr::Edge(12345));
+    }
+
+    #[test]
+    fn parses_vertex_with_id_hash() {
+        assert_eq!(
+            parse_query("qVertex(12345)").unwrap(),
+            QueryExpr::Vertex(12345)
+        );
+    }
+
+    #[test]
+    fn parses_id_hash_beyond_i64_range() {
+        // A real id_hash is a full u64 FNV-1a value and routinely exceeds
+        // i64::MAX — it must parse as a u64, not silently fail.
+        let big = u64::MAX;
+        assert_eq!(
+            parse_query(&format!("qFace({big})")).unwrap(),
+            QueryExpr::Face(big)
+        );
+    }
+
+    #[test]
+    fn rejects_non_numeric_id_hash() {
+        let err = parse_query("qFace(abc)").unwrap_err();
+        assert!(matches!(err, QueryParseError::InvalidIdHash(_)));
+    }
+
+    #[test]
+    fn rejects_wrong_arity_for_face() {
+        let err = parse_query("qFace(1, 2)").unwrap_err();
+        assert!(matches!(err, QueryParseError::MalformedArguments(_)));
     }
 
     // ─── evaluate_query ───────────────────────────────────────
@@ -758,6 +907,29 @@ mod tests {
         refs.windows(2).all(|w| w[0].id_hash <= w[1].id_hash)
     }
 
+    /// A real woven cube B-Rep (6 faces, 12 edges, 8 vertices) at the given
+    /// half-extent — mirrors the naming.rs / lib.rs `box_kernel` helpers so
+    /// the id_hash-stability test is exercised against actual branch-derived
+    /// ids, not the synthetic plane faces above.
+    fn cube_brep(half: f32) -> BRep {
+        use crate::brep::octree::Octree;
+        use crate::brep::weaving::weave;
+        use crate::bvh::BoundedCsg;
+        use crate::csg::CsgNode;
+        use fielddraft_protocol::Primitive;
+
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [half, half, half],
+            },
+        };
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.25);
+        weave(&body, &octree)
+    }
+
     #[test]
     fn resolve_created_by_returns_faces_of_feature() {
         // Feature 5 owns 6 faces (a box), feature 6 owns 1.
@@ -837,5 +1009,85 @@ mod tests {
         let first = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(5)));
         let second = resolve_query_topo(&[brep], &QueryExpr::CreatedBy(id(5)));
         assert_eq!(first, second, "two calls give identical output");
+    }
+
+    // ─── id_hash-addressed element queries (resolve) ──────────
+
+    #[test]
+    fn resolve_face_by_id_hash_picks_exactly_that_face() {
+        let brep = cube_brep(10.0);
+        assert_eq!(brep.face_count(), 6, "a box has 6 faces");
+
+        // Capture one specific face's id_hash, then address it directly.
+        let pick = crate::brep::FaceId(2);
+        let want = TopoRef::from_face(&brep, pick);
+
+        let refs = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Face(want.id_hash));
+        assert_eq!(refs.len(), 1, "id_hash addresses exactly one face, not 6");
+        assert_eq!(refs[0].kind, EntityKind::Face);
+        assert_eq!(refs[0].id_hash, want.id_hash);
+        assert_eq!(refs[0], want, "the resolved face is the one we addressed");
+    }
+
+    #[test]
+    fn resolve_edge_by_id_hash_picks_exactly_that_edge() {
+        let brep = cube_brep(10.0);
+        assert_eq!(brep.edge_count(), 12);
+        let want = TopoRef::from_edge(&brep, crate::brep::EdgeId(5));
+        let refs = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Edge(want.id_hash));
+        assert_eq!(refs.len(), 1, "id_hash addresses exactly one edge");
+        assert_eq!(refs[0].kind, EntityKind::Edge);
+        assert_eq!(refs[0], want);
+    }
+
+    #[test]
+    fn resolve_vertex_by_id_hash_picks_exactly_that_vertex() {
+        let brep = cube_brep(10.0);
+        assert_eq!(brep.vertex_count(), 8);
+        let want = TopoRef::from_vertex(&brep, crate::brep::VertexId(3));
+        let refs =
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Vertex(want.id_hash));
+        assert_eq!(refs.len(), 1, "id_hash addresses exactly one vertex");
+        assert_eq!(refs[0].kind, EntityKind::Vertex);
+        assert_eq!(refs[0], want);
+    }
+
+    #[test]
+    fn resolve_face_id_hash_survives_resize() {
+        // STABILITY: an id_hash is branch-derived, not geometry-derived, so a
+        // stored qFace(h) from a 10mm box re-resolves to the corresponding
+        // face of a 40mm box (a pure parameter change is topology-stable).
+        let small = cube_brep(10.0);
+        let big = cube_brep(40.0);
+
+        let pick = crate::brep::FaceId(2);
+        let want = TopoRef::from_face(&small, pick);
+
+        let refs = resolve_query_topo(std::slice::from_ref(&big), &QueryExpr::Face(want.id_hash));
+        assert_eq!(
+            refs.len(),
+            1,
+            "the 10mm-box face id_hash still addresses exactly one face on the 40mm box"
+        );
+        assert_eq!(refs[0].id_hash, want.id_hash, "id_hash is regeneration-stable");
+        // The matched face on the big box has the same branch as the small one.
+        let big_branch = big.face(crate::brep::FaceId(2)).branch_id;
+        let _ = big_branch; // (ordering may differ; id_hash equality is the contract)
+    }
+
+    #[test]
+    fn resolve_nonexistent_id_hash_is_empty() {
+        let brep = cube_brep(10.0);
+        // A hash that belongs to no element of any kind.
+        let bogus = 0xDEAD_BEEF_DEAD_BEEFu64;
+        assert!(
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Face(bogus)).is_empty()
+        );
+        assert!(
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Edge(bogus)).is_empty()
+        );
+        assert!(
+            resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::Vertex(bogus)).is_empty()
+        );
     }
 }

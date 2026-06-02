@@ -864,7 +864,8 @@ export function QueryWidget({
   onChange,
   error,
   required,
-}: WidgetProps<string>) {
+  entityFilter,
+}: WidgetProps<string> & { entityFilter?: string }) {
   const id = useId();
   const [text, setText] = useState<string>(value);
   const [focused, setFocused] = useState(false);
@@ -901,8 +902,8 @@ export function QueryWidget({
   // torn down on unmount or when another widget claims focus.
   useEffect(() => {
     if (!active) return;
-    return registerQueryPicker({ ownerId: id, onPick });
-  }, [active, id, onPick]);
+    return registerQueryPicker({ ownerId: id, onPick, entityFilter });
+  }, [active, id, onPick, entityFilter]);
 
   // Auto-activate on an empty required field so a freshly-opened
   // dialog already has the viewport click focus on its primary
@@ -914,12 +915,12 @@ export function QueryWidget({
   useEffect(() => {
     if (autoArmed && value === "" && !active && !getActiveQueryPicker()) {
       setAutoArmed(false);
-      registerQueryPicker({ ownerId: id, onPick });
+      registerQueryPicker({ ownerId: id, onPick, entityFilter });
     }
-  }, [autoArmed, value, active, id, onPick]);
+  }, [autoArmed, value, active, id, onPick, entityFilter]);
 
   const activate = () => {
-    registerQueryPicker({ ownerId: id, onPick });
+    registerQueryPicker({ ownerId: id, onPick, entityFilter });
   };
 
   const commitText = () => {
@@ -982,7 +983,8 @@ export function MultiQueryWidget({
   onChange,
   error,
   required,
-}: WidgetProps<string>) {
+  entityFilter,
+}: WidgetProps<string> & { entityFilter?: string }) {
   const id = useId();
   const { state } = useKernelStore();
   const featureNames = useMemo(() => {
@@ -1018,8 +1020,9 @@ export function MultiQueryWidget({
     return registerQueryPicker({
       ownerId: id,
       onPick: (q: string) => onPickRef.current(q),
+      entityFilter,
     });
-  }, [active, id]);
+  }, [active, id, entityFilter]);
 
   const [autoArmed, setAutoArmed] = useState<boolean>(
     Boolean(required) && value === "",
@@ -1030,14 +1033,16 @@ export function MultiQueryWidget({
       registerQueryPicker({
         ownerId: id,
         onPick: (q: string) => onPickRef.current(q),
+        entityFilter,
       });
     }
-  }, [autoArmed, value, active, id]);
+  }, [autoArmed, value, active, id, entityFilter]);
 
   const activate = () => {
     registerQueryPicker({
       ownerId: id,
       onPick: (q: string) => onPickRef.current(q),
+      entityFilter,
     });
   };
 

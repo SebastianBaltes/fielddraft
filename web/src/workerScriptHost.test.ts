@@ -140,6 +140,46 @@ describe("buildFdModule", () => {
     expect(deps.queries).toEqual(["qEdgeBetween(1, 2)"]);
   });
 
+  it("fd.q.face builds qFace(<idHash>) from a raw id_hash and a QueryHandle", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { face: (h: unknown) => QueryHandle[] };
+    };
+    fd.q.face("12345");
+    fd.q.face({ kind: "face", idHash: "678", contributors: [] });
+    expect(deps.queries).toEqual(["qFace(12345)", "qFace(678)"]);
+  });
+
+  it("fd.q.edge builds qEdge(<idHash>) from a raw id_hash and a QueryHandle", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { edge: (h: unknown) => QueryHandle[] };
+    };
+    fd.q.edge("42");
+    fd.q.edge({ kind: "edge", idHash: "99", contributors: [] });
+    expect(deps.queries).toEqual(["qEdge(42)", "qEdge(99)"]);
+  });
+
+  it("fd.q.vertex builds qVertex(<idHash>) from a raw id_hash and a QueryHandle", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { vertex: (h: unknown) => QueryHandle[] };
+    };
+    fd.q.vertex("7");
+    fd.q.vertex({ kind: "vertex", idHash: "8", contributors: [] });
+    expect(deps.queries).toEqual(["qVertex(7)", "qVertex(8)"]);
+  });
+
+  it("fd.q.face passes the resolver result through unchanged", () => {
+    const resolved: QueryHandle[] = [
+      { kind: "face", idHash: "5", contributors: [] },
+    ];
+    const fd = buildFdModule(recordingDeps(), undefined, () => resolved).fd as {
+      q: { face: (h: unknown) => QueryHandle[] };
+    };
+    expect(fd.q.face("5")).toBe(resolved);
+  });
+
   it("fd.q.evaluate passes the raw canonical string through unchanged", () => {
     const deps = recordingDeps();
     const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {

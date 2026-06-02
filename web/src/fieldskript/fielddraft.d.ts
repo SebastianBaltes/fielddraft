@@ -190,6 +190,16 @@ declare module "fielddraft" {
       createdBy(target: OpHandle | string): QueryHandle[];
       faceOf(target: OpHandle | string): QueryHandle[];
       edgeBetween(a: OpHandle | string, b: OpHandle | string): QueryHandle[];
+      /**
+       * Address one specific face by its stable decimal id_hash — the
+       * value carried by a `QueryHandle.idHash` (e.g. emitted by a
+       * viewport pick). Builds `qFace(<idHash>)`.
+       */
+      face(h: QueryHandle | string): QueryHandle[];
+      /** Address one specific edge by id_hash → `qEdge(<idHash>)`. */
+      edge(h: QueryHandle | string): QueryHandle[];
+      /** Address one specific vertex by id_hash → `qVertex(<idHash>)`. */
+      vertex(h: QueryHandle | string): QueryHandle[];
       evaluate(query: string): QueryHandle[];
     };
 
