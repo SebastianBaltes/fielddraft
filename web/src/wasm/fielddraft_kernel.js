@@ -212,19 +212,18 @@ export class Kernel {
     }
     /**
      * K8.2: append a `mirror` feature call that reflects the
-     * source feature through a plane defined by a point and a
-     * normal. Returns the new mirror feature id.
+     * source feature through a plane. `plane` is a face/datum
+     * query (e.g. `qFace(<hash>)` or `origin_plane_xy`) whose
+     * world-space frame supplies the mirror plane. Returns the
+     * new mirror feature id.
      * @param {number} source_id
-     * @param {number} normal_x
-     * @param {number} normal_y
-     * @param {number} normal_z
-     * @param {number} point_x
-     * @param {number} point_y
-     * @param {number} point_z
+     * @param {string} plane
      * @returns {number}
      */
-    addMirror(source_id, normal_x, normal_y, normal_z, point_x, point_y, point_z) {
-        const ret = wasm.kernel_addMirror(this.__wbg_ptr, source_id, normal_x, normal_y, normal_z, point_x, point_y, point_z);
+    addMirror(source_id, plane) {
+        const ptr0 = passStringToWasm0(plane, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addMirror(this.__wbg_ptr, source_id, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

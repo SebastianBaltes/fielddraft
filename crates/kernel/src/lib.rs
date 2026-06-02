@@ -1613,7 +1613,7 @@ impl Kernel {
             )));
         }
         self.push_feature_call("linear_pattern", serde_json::json!({
-            "source": source_id,
+            "source": format!("qCreatedBy({source_id})"),
             "direction": [dx, dy, dz],
             "count": count as f32,
             "spacing": { "value": spacing_mm, "unit": "mm" },
@@ -1645,7 +1645,7 @@ impl Kernel {
             )));
         }
         self.push_feature_call("circular_pattern", serde_json::json!({
-            "source": source_id,
+            "source": format!("qCreatedBy({source_id})"),
             "axis": [axis_x, axis_y, axis_z],
             "center": [center_x, center_y, center_z],
             "count": count as f32,
@@ -1654,19 +1654,15 @@ impl Kernel {
     }
 
     /// K8.2: append a `mirror` feature call that reflects the
-    /// source feature through a plane defined by a point and a
-    /// normal. Returns the new mirror feature id.
+    /// source feature through a plane. `plane` is a face/datum
+    /// query (e.g. `qFace(<hash>)` or `origin_plane_xy`) whose
+    /// world-space frame supplies the mirror plane. Returns the
+    /// new mirror feature id.
     #[wasm_bindgen(js_name = addMirror)]
-    #[allow(clippy::too_many_arguments)] // wasm-bindgen geometry API; flat scalar params
     pub fn add_mirror(
         &mut self,
         source_id: u32,
-        normal_x: f32,
-        normal_y: f32,
-        normal_z: f32,
-        point_x: f32,
-        point_y: f32,
-        point_z: f32,
+        plane: &str,
     ) -> Result<u32, JsError> {
         let source_fid = FeatureId::from_u32(source_id);
         if !self.decoded.iter().any(|f| f.id == source_fid) {
@@ -1675,9 +1671,8 @@ impl Kernel {
             )));
         }
         self.push_feature_call("mirror", serde_json::json!({
-            "source": source_id,
-            "plane_normal": [normal_x, normal_y, normal_z],
-            "plane_point": [point_x, point_y, point_z],
+            "source": format!("qCreatedBy({source_id})"),
+            "plane": plane,
         }))
     }
 

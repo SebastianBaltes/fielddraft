@@ -743,18 +743,12 @@ export class Kernel {
   }
 
   /** K8.2: append a mirror feature that reflects `sourceId`
-   *  through a plane defined by normal `(nx, ny, nz)` and a
-   *  point `(px, py, pz)`. Returns the new mirror feature id. */
-  addMirror(
-    sourceId: number,
-    nx: number,
-    ny: number,
-    nz: number,
-    px: number,
-    py: number,
-    pz: number,
-  ): number {
-    return this.inner.addMirror(sourceId, nx, ny, nz, px, py, pz);
+   *  through a plane. `plane` is a face/datum query (e.g.
+   *  `qFace(<hash>)` or `origin_plane_xy`) whose world-space
+   *  frame supplies the mirror plane. Returns the new mirror
+   *  feature id. */
+  addMirror(sourceId: number, plane: string): number {
+    return this.inner.addMirror(sourceId, plane);
   }
 
   /** K8.9: append a hole feature — a parametric cylinder

@@ -1032,23 +1032,11 @@ impl FeatureKind for SketchFeature {
                 message: format!("could not parse plane query: {e}"),
             }
         })?;
-        let frame = if let crate::queries::QueryExpr::CreatedBy(d) = &expr {
-            if let Some(datum) = datum_plane_frame(d) {
-                datum
-            } else {
-                ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
-                    feature: SketchFeature::TYPE_NAME,
-                    name: "plane",
-                    message: "plane query resolved to no datum and no face".to_string(),
-                })?
-            }
-        } else {
-            ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
-                feature: SketchFeature::TYPE_NAME,
-                name: "plane",
-                message: "plane query resolved to no face".to_string(),
-            })?
-        };
+        let frame = ctx.resolve_plane_frame(&expr).ok_or(FeatureError::InvalidParameter {
+            feature: SketchFeature::TYPE_NAME,
+            name: "plane",
+            message: "plane query resolved to no datum and no face".to_string(),
+        })?;
 
         let mut state = SketchState::with_origin();
         self.tools.apply_all(&mut state, &parsed.sub_calls)?;

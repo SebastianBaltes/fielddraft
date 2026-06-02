@@ -210,6 +210,24 @@ impl<'a> Context<'a> {
         }
         None
     }
+
+    /// Resolve a *plane* query to a world-space [`SketchFrame`],
+    /// accepting both the well-known datum planes
+    /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
+    /// Datum planes short-circuit before touching the woven B-Rep;
+    /// everything else defers to [`Context::resolve_face_frame`].
+    /// Returns `None` when the query resolves to neither.
+    pub fn resolve_plane_frame(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch_features::SketchFrame> {
+        if let crate::queries::QueryExpr::CreatedBy(d) = expr {
+            if let Some(datum) = crate::sketch_features::datum_plane_frame(d) {
+                return Some(datum);
+            }
+        }
+        self.resolve_face_frame(expr)
+    }
 }
 
 /// The behaviour of one feature type.
@@ -1567,7 +1585,7 @@ impl FeatureKind for ImportedMeshFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "gyroid")]
 pub struct GyroidDef {
-    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""))]
+    #[param(name = "Bodies", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: ::fielddraft_protocol::MultiQuery,
     /// Distance between repeating cells in mm.
     pub cell_size: ::fielddraft_protocol::Length,
@@ -2138,16 +2156,55 @@ impl FeatureKind for RevolveFeature {
 //   walks `document.features` by id, and pattern children
 //   are siblings of the pattern feature itself, not under it.
 
+/// Resolve a `source` MultiQuery (a list of `qCreatedBy(id)` exprs)
+/// into the set of source feature ids it references. Mirrors the
+/// resolution path in [`BooleanFeature::execute`], but goes through
+/// [`crate::queries::parse_query`] so malformed query strings surface
+/// as a clean [`FeatureError::InvalidParameter`] rather than silently
+/// dropping out. Order is preserved and duplicates are kept out.
+fn resolve_source_feature_ids(
+    mq: &MultiQuery,
+    feature: &'static str,
+) -> Result<Vec<FeatureId>, FeatureError> {
+    use crate::queries::QueryExpr;
+    let mut ids: Vec<FeatureId> = Vec::new();
+    for q in mq.queries() {
+        let expr = crate::queries::parse_query(q).map_err(|e| {
+            FeatureError::InvalidParameter {
+                feature,
+                name: "source",
+                message: format!("could not parse source query `{q}`: {e}"),
+            }
+        })?;
+        match expr {
+            QueryExpr::CreatedBy(id) | QueryExpr::FaceOf(id) => {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            other => {
+                return Err(FeatureError::InvalidParameter {
+                    feature,
+                    name: "source",
+                    message: format!(
+                        "source must reference a body via qCreatedBy(id); got `{other}`"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(ids)
+}
+
 /// `linear_pattern` — replicate a source feature along a
 /// direction vector.
 #[derive(FeatureSchema)]
 #[schema(type = "linear_pattern")]
 pub struct LinearPatternDef {
-    /// Flat-numeric id of the feature to replicate. Any other
-    /// id shape currently errors out via the `Generic`
-    /// fallback — the K4.5.1 flat-id scheme is still the
-    /// only in-flight numbering.
-    pub source: u32,
+    /// Bodies to replicate, as a list of `qCreatedBy(id)` queries.
+    /// Each referenced source feature is replicated independently.
+    #[param(name = "Source", entity_filter = "BODY")]
+    pub source: ::fielddraft_protocol::MultiQuery,
     /// Direction vector in local frame. Doesn't have to be
     /// normalised — the executor divides by its length at
     /// apply time.
@@ -2212,39 +2269,53 @@ impl FeatureKind for LinearPatternFeature {
         }
         let unit = [dx / len, dy / len, dz / len];
 
-        // Look up the source spine feature by its flat id.
-        let source_fid = FeatureId::from_u32(d.source);
-        let source_feature = ctx
-            .features
-            .iter()
-            .find(|f| f.id == source_fid)
-            .ok_or(FeatureError::MissingParameter {
+        // Resolve the source bodies from the query list.
+        let source_ids =
+            resolve_source_feature_ids(&d.source, LinearPatternDef::TYPE_NAME)?;
+        if source_ids.is_empty() {
+            return Err(FeatureError::InvalidParameter {
                 feature: LinearPatternDef::TYPE_NAME,
                 name: "source",
-            })?
-            .clone();
+                message: "must reference at least one source body".to_string(),
+            });
+        }
 
-        // Emit `count - 1` offset copies. `i = 0` would be the
-        // source itself, which is already on the spine.
-        // Clones carry hierarchical child ids under the
-        // pattern — `sync_feature_calls` drops those via its
-        // parent filter so the wire form stays authoritative.
-        for i in 1..count {
-            let i_f = i as f32;
-            let offset = [
-                unit[0] * spacing_mm * i_f,
-                unit[1] * spacing_mm * i_f,
-                unit[2] * spacing_mm * i_f,
-            ];
-            let mut clone = source_feature.clone();
-            clone.id = id.child(i.to_string());
-            clone.name = format!("{} {}", source_feature.name, i);
-            clone.transform.translate = [
-                source_feature.transform.translate[0] + offset[0],
-                source_feature.transform.translate[1] + offset[1],
-                source_feature.transform.translate[2] + offset[2],
-            ];
-            ctx.features.push(clone);
+        // Replicate every referenced source body independently.
+        for source_fid in &source_ids {
+            let source_feature = ctx
+                .features
+                .iter()
+                .find(|f| &f.id == source_fid)
+                .ok_or(FeatureError::MissingParameter {
+                    feature: LinearPatternDef::TYPE_NAME,
+                    name: "source",
+                })?
+                .clone();
+
+            // Emit `count - 1` offset copies. `i = 0` would be the
+            // source itself, which is already on the spine.
+            // Clones carry hierarchical child ids under the
+            // pattern, namespaced by the source feature id so
+            // multiple sources don't collide — `sync_feature_calls`
+            // drops those via its parent filter so the wire form
+            // stays authoritative.
+            for i in 1..count {
+                let i_f = i as f32;
+                let offset = [
+                    unit[0] * spacing_mm * i_f,
+                    unit[1] * spacing_mm * i_f,
+                    unit[2] * spacing_mm * i_f,
+                ];
+                let mut clone = source_feature.clone();
+                clone.id = id.child(format!("{source_fid}_{i}"));
+                clone.name = format!("{} {}", source_feature.name, i);
+                clone.transform.translate = [
+                    source_feature.transform.translate[0] + offset[0],
+                    source_feature.transform.translate[1] + offset[1],
+                    source_feature.transform.translate[2] + offset[2],
+                ];
+                ctx.features.push(clone);
+            }
         }
 
         Ok(())
@@ -2277,7 +2348,10 @@ impl FeatureKind for LinearPatternFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "circular_pattern")]
 pub struct CircularPatternDef {
-    pub source: u32,
+    /// Bodies to replicate, as a list of `qCreatedBy(id)` queries.
+    /// Each referenced source feature is replicated independently.
+    #[param(name = "Source", entity_filter = "BODY")]
+    pub source: ::fielddraft_protocol::MultiQuery,
     /// Rotation axis in local frame. The executor normalises
     /// it; a zero vector errors out.
     pub axis: [f32; 3],
@@ -2331,47 +2405,58 @@ impl FeatureKind for CircularPatternFeature {
         }
         let unit = [ax / axis_len, ay / axis_len, az / axis_len];
 
-        let source_fid = FeatureId::from_u32(d.source);
-        let source_feature = ctx
-            .features
-            .iter()
-            .find(|f| f.id == source_fid)
-            .ok_or(FeatureError::MissingParameter {
+        let source_ids =
+            resolve_source_feature_ids(&d.source, CircularPatternDef::TYPE_NAME)?;
+        if source_ids.is_empty() {
+            return Err(FeatureError::InvalidParameter {
                 feature: CircularPatternDef::TYPE_NAME,
                 name: "source",
-            })?
-            .clone();
+                message: "must reference at least one source body".to_string(),
+            });
+        }
 
         // Per-instance angle step.
         let step_rad =
             (d.angle_deg / count as f32) * std::f32::consts::PI / 180.0;
 
-        for i in 1..count {
-            let theta = step_rad * i as f32;
-            let half = theta * 0.5;
-            let s = half.sin();
-            let q_delta = [unit[0] * s, unit[1] * s, unit[2] * s, half.cos()];
+        for source_fid in &source_ids {
+            let source_feature = ctx
+                .features
+                .iter()
+                .find(|f| &f.id == source_fid)
+                .ok_or(FeatureError::MissingParameter {
+                    feature: CircularPatternDef::TYPE_NAME,
+                    name: "source",
+                })?
+                .clone();
 
-            // Rotate the source translate around the pivot.
-            let offset = [
-                source_feature.transform.translate[0] - d.center[0],
-                source_feature.transform.translate[1] - d.center[1],
-                source_feature.transform.translate[2] - d.center[2],
-            ];
-            let rotated = crate::quat_rotate(q_delta, offset);
-            let new_translate = [
-                rotated[0] + d.center[0],
-                rotated[1] + d.center[1],
-                rotated[2] + d.center[2],
-            ];
+            for i in 1..count {
+                let theta = step_rad * i as f32;
+                let half = theta * 0.5;
+                let s = half.sin();
+                let q_delta = [unit[0] * s, unit[1] * s, unit[2] * s, half.cos()];
 
-            let mut clone = source_feature.clone();
-            clone.id = id.child(i.to_string());
-            clone.name = format!("{} {}", source_feature.name, i);
-            clone.transform.translate = new_translate;
-            clone.transform.rotation =
-                crate::quat_multiply(q_delta, source_feature.transform.rotation);
-            ctx.features.push(clone);
+                // Rotate the source translate around the pivot.
+                let offset = [
+                    source_feature.transform.translate[0] - d.center[0],
+                    source_feature.transform.translate[1] - d.center[1],
+                    source_feature.transform.translate[2] - d.center[2],
+                ];
+                let rotated = crate::quat_rotate(q_delta, offset);
+                let new_translate = [
+                    rotated[0] + d.center[0],
+                    rotated[1] + d.center[1],
+                    rotated[2] + d.center[2],
+                ];
+
+                let mut clone = source_feature.clone();
+                clone.id = id.child(format!("{source_fid}_{i}"));
+                clone.name = format!("{} {}", source_feature.name, i);
+                clone.transform.translate = new_translate;
+                clone.transform.rotation =
+                    crate::quat_multiply(q_delta, source_feature.transform.rotation);
+                ctx.features.push(clone);
+            }
         }
 
         Ok(())
@@ -2395,15 +2480,15 @@ impl FeatureKind for CircularPatternFeature {
 #[derive(FeatureSchema)]
 #[schema(type = "mirror")]
 pub struct MirrorDef {
-    pub source: u32,
-    /// Plane normal in local frame. The executor normalises it;
-    /// a zero vector errors out.
-    pub plane_normal: [f32; 3],
-    /// A point the plane passes through. Defaults to the origin
-    /// so the default is "mirror through the YZ / XZ / XY plane"
-    /// depending on the normal axis picked by the caller.
-    #[param(default = [0.0, 0.0, 0.0])]
-    pub plane_point: [f32; 3],
+    /// Bodies to mirror, as a list of `qCreatedBy(id)` queries.
+    /// Each referenced source feature is mirrored independently.
+    #[param(name = "Source", entity_filter = "BODY")]
+    pub source: ::fielddraft_protocol::MultiQuery,
+    /// Mirror plane, given as a face/datum query (e.g. `qFace(<hash>)`
+    /// or `origin_plane_xy`). Its world-space frame supplies both the
+    /// plane normal and a point on the plane.
+    #[param(name = "Plane", entity_filter = "FACE")]
+    pub plane: ::fielddraft_protocol::Query,
 }
 
 pub struct MirrorFeature;
@@ -2425,49 +2510,67 @@ impl FeatureKind for MirrorFeature {
     ) -> Result<(), FeatureError> {
         let d = MirrorDef::parse(def)?;
 
-        let nx = d.plane_normal[0];
-        let ny = d.plane_normal[1];
-        let nz = d.plane_normal[2];
-        let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
-        if nlen < 1e-6 {
+        // Resolve the mirror plane from the face/datum query. Its
+        // world-space frame gives both the plane normal and a point
+        // on the plane.
+        let plane_expr = crate::queries::parse_query(d.plane.as_str()).map_err(|e| {
+            FeatureError::InvalidParameter {
+                feature: MirrorDef::TYPE_NAME,
+                name: "plane",
+                message: format!("could not parse plane query: {e}"),
+            }
+        })?;
+        let frame = ctx.resolve_plane_frame(&plane_expr).ok_or(
+            FeatureError::InvalidParameter {
+                feature: MirrorDef::TYPE_NAME,
+                name: "plane",
+                message: "plane query resolved to no datum and no face".to_string(),
+            },
+        )?;
+        let n = frame.normal;
+        let plane_point = frame.origin;
+
+        let source_ids =
+            resolve_source_feature_ids(&d.source, MirrorDef::TYPE_NAME)?;
+        if source_ids.is_empty() {
             return Err(FeatureError::InvalidParameter {
                 feature: MirrorDef::TYPE_NAME,
-                name: "plane_normal",
-                message: "must be a non-zero vector".to_string(),
+                name: "source",
+                message: "must reference at least one source body".to_string(),
             });
         }
-        let n = [nx / nlen, ny / nlen, nz / nlen];
 
-        let source_fid = FeatureId::from_u32(d.source);
-        let source_feature = ctx
-            .features
-            .iter()
-            .find(|f| f.id == source_fid)
-            .ok_or(FeatureError::MissingParameter {
-                feature: MirrorDef::TYPE_NAME,
-                name: "source",
-            })?
-            .clone();
+        for source_fid in &source_ids {
+            let source_feature = ctx
+                .features
+                .iter()
+                .find(|f| &f.id == source_fid)
+                .ok_or(FeatureError::MissingParameter {
+                    feature: MirrorDef::TYPE_NAME,
+                    name: "source",
+                })?
+                .clone();
 
-        // Reflect p through the plane: p' = p - 2 * ((p - p0) · n) * n
-        let p = source_feature.transform.translate;
-        let rel = [
-            p[0] - d.plane_point[0],
-            p[1] - d.plane_point[1],
-            p[2] - d.plane_point[2],
-        ];
-        let dot = rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2];
-        let reflected = [
-            p[0] - 2.0 * dot * n[0],
-            p[1] - 2.0 * dot * n[1],
-            p[2] - 2.0 * dot * n[2],
-        ];
+            // Reflect p through the plane: p' = p - 2 * ((p - p0) · n) * n
+            let p = source_feature.transform.translate;
+            let rel = [
+                p[0] - plane_point[0],
+                p[1] - plane_point[1],
+                p[2] - plane_point[2],
+            ];
+            let dot = rel[0] * n[0] + rel[1] * n[1] + rel[2] * n[2];
+            let reflected = [
+                p[0] - 2.0 * dot * n[0],
+                p[1] - 2.0 * dot * n[1],
+                p[2] - 2.0 * dot * n[2],
+            ];
 
-        let mut clone = source_feature.clone();
-        clone.id = id.child("1");
-        clone.name = format!("{} mirror", source_feature.name);
-        clone.transform.translate = reflected;
-        ctx.features.push(clone);
+            let mut clone = source_feature.clone();
+            clone.id = id.child(format!("{source_fid}_1"));
+            clone.name = format!("{} mirror", source_feature.name);
+            clone.transform.translate = reflected;
+            ctx.features.push(clone);
+        }
 
         Ok(())
     }
@@ -2563,9 +2666,9 @@ fn positive_f32(
 pub struct BooleanDef {
     #[param(name = "Operation", default = "Union".to_string())]
     pub operation: String,
-    #[param(name = "Tools")]
+    #[param(name = "Tools", entity_filter = "BODY")]
     pub tools: MultiQuery,
-    #[param(name = "Targets", default = MultiQuery::new(""))]
+    #[param(name = "Targets", default = MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: MultiQuery,
     #[param(name = "Keep tools", default = false)]
     pub keep_tools: bool,
@@ -3947,7 +4050,7 @@ mod tests {
             "linear_pattern",
             pattern_id.clone(),
             json!({
-                "source": 1,
+                "source": "qCreatedBy(1)",
                 "direction": [1.0, 0.0, 0.0],
                 "count": 4,
                 "spacing": { "value": 20.0, "unit": "mm" }
@@ -3966,10 +4069,10 @@ mod tests {
             .expect("source box");
         assert_eq!(source.transform.translate, [0.0, 0.0, 0.0]);
 
-        // Clones live at pattern_id/1, /2, /3 with 20 mm
-        // increments along +X.
+        // Clones live at pattern_id/1_1, /1_2, /1_3 (namespaced by
+        // the source feature id) with 20 mm increments along +X.
         for i in 1..4_u32 {
-            let clone_id = pattern_id.child(i.to_string());
+            let clone_id = pattern_id.child(format!("1_{i}"));
             let clone = ctx
                 .features
                 .iter()
@@ -4013,7 +4116,7 @@ mod tests {
                         "linear_pattern",
                         id(2),
                         json!({
-                            "source": 1,
+                            "source": "qCreatedBy(1)",
                             "direction": [1.0, 0.0, 0.0],
                             "count": 1,
                             "spacing": { "value": 20.0, "unit": "mm" }
@@ -4048,7 +4151,7 @@ mod tests {
                         "linear_pattern",
                         id(2),
                         json!({
-                            "source": 1,
+                            "source": "qCreatedBy(1)",
                             // Non-unit vector — the executor
                             // must normalise so spacing still
                             // lands at 10 mm, not 10 × √3 mm.
@@ -4081,7 +4184,7 @@ mod tests {
                     "linear_pattern",
                     id(1),
                     json!({
-                        "source": 999,
+                        "source": "qCreatedBy(999)",
                         "direction": [1.0, 0.0, 0.0],
                         "count": 3,
                         "spacing": { "value": 20.0, "unit": "mm" }
@@ -4124,7 +4227,7 @@ mod tests {
             "circular_pattern",
             id(2),
             json!({
-                "source": 1,
+                "source": "qCreatedBy(1)",
                 "axis": [0.0, 1.0, 0.0],
                 "center": [0.0, 0.0, 0.0],
                 "count": 4,
@@ -4143,7 +4246,7 @@ mod tests {
             (3_u32, [0.0, 0.0, 10.0]),
         ];
         for (i, expected) in expectations {
-            let clone_id = id(2).child(i.to_string());
+            let clone_id = id(2).child(format!("1_{i}"));
             let clone = ctx
                 .features
                 .iter()
@@ -4184,7 +4287,7 @@ mod tests {
                         "circular_pattern",
                         id(2),
                         json!({
-                            "source": 1,
+                            "source": "qCreatedBy(1)",
                             "axis": [0.0, 1.0, 0.0],
                             "count": 1,
                         }),
@@ -4222,7 +4325,7 @@ mod tests {
                         "circular_pattern",
                         id(2),
                         json!({
-                            "source": 1,
+                            "source": "qCreatedBy(1)",
                             "axis": [0.0, 1.0, 0.0],
                             "center": [5.0, 0.0, 0.0],
                             "count": 2,
@@ -4262,7 +4365,7 @@ mod tests {
                         "circular_pattern",
                         id(2),
                         json!({
-                            "source": 1,
+                            "source": "qCreatedBy(1)",
                             "axis": [0.0, 0.0, 0.0],
                             "count": 4
                         }),
@@ -4453,8 +4556,9 @@ mod tests {
                         "mirror",
                         id(2),
                         json!({
-                            "source": 1,
-                            "plane_normal": [1.0, 0.0, 0.0]
+                            "source": "qCreatedBy(1)",
+                            // YZ datum plane: normal +X through origin.
+                            "plane": "qCreatedBy(origin_plane_yz)"
                         }),
                     ),
                 ],
@@ -4468,17 +4572,47 @@ mod tests {
     }
 
     #[test]
-    fn mirror_respects_non_origin_plane_point() {
+    fn mirror_through_a_real_face_uses_its_offset_plane() {
+        // The plane query can address a real B-Rep face, not just a
+        // datum. A box centred at origin (half 5) has a +X face at
+        // x = 5; mirroring a body at x = 20 through that face lands
+        // it at x = -10 (reflection is sign-of-normal independent).
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
+
+        // Box 1 supplies the mirror plane; weave it to learn the
+        // id_hash of its +X face (the face with the largest centroid x).
+        let plane_box = FeatureCall::new(
+            "box",
+            id(1),
+            json!({ "half_extents": [5.0, 5.0, 5.0], "op": "union" }),
+        );
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&plane_box), None)
+            .unwrap();
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, _placement) = &woven[0];
+        let plus_x = (0..brep.face_count())
+            .map(|i| crate::brep::FaceId(i as u32))
+            .max_by(|&a, &b| {
+                let ca = crate::brep::naming::Fingerprint::of_face(brep, a).centroid[0];
+                let cb = crate::brep::naming::Fingerprint::of_face(brep, b).centroid[0];
+                ca.partial_cmp(&cb).unwrap()
+            })
+            .expect("a box face");
+        let face_hash = crate::brep::naming::TopoRef::from_face(brep, plus_x).id_hash;
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
         registry
             .regenerate(
-                &mut ctx,
+                &mut ctx2,
                 &[
+                    plane_box.clone(),
                     FeatureCall::new(
                         "box",
-                        id(1),
+                        id(2),
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
                             "translate": [20.0, 0.0, 0.0],
@@ -4487,61 +4621,32 @@ mod tests {
                     ),
                     FeatureCall::new(
                         "mirror",
-                        id(2),
+                        id(3),
                         json!({
-                            "source": 1,
-                            "plane_normal": [1.0, 0.0, 0.0],
-                            "plane_point": [5.0, 0.0, 0.0]
+                            "source": "qCreatedBy(2)",
+                            "plane": format!("qFace({face_hash})"),
                         }),
                     ),
                 ],
                 None,
             )
             .unwrap();
-        // Reflected through x=5: 20 → -10.
-        let t = ctx.features[1].transform.translate;
-        assert!((t[0] - (-10.0)).abs() < 1e-5);
-        assert!(t[1].abs() < 1e-5);
-        assert!(t[2].abs() < 1e-5);
+        // The mirrored clone of box 2 (at x=20) reflects through x=5
+        // to x=-10.
+        let clone = ctx2
+            .features
+            .iter()
+            .find(|f| f.id == id(3).child("2_1"))
+            .expect("mirror clone");
+        assert!((clone.transform.translate[0] - (-10.0)).abs() < 1e-4);
+        assert!(clone.transform.translate[1].abs() < 1e-4);
+        assert!(clone.transform.translate[2].abs() < 1e-4);
     }
 
     #[test]
-    fn mirror_normalises_the_plane_normal() {
-        // A non-unit normal must not scale the reflection.
-        let registry = FeatureRegistry::with_builtins();
-        let mut doc = empty_ctx();
-        let mut ctx = Context::new(&mut doc);
-        registry
-            .regenerate(
-                &mut ctx,
-                &[
-                    FeatureCall::new(
-                        "box",
-                        id(1),
-                        json!({
-                            "half_extents": [1.0, 1.0, 1.0],
-                            "translate": [7.0, 0.0, 0.0],
-                            "op": "union"
-                        }),
-                    ),
-                    FeatureCall::new(
-                        "mirror",
-                        id(2),
-                        json!({
-                            "source": 1,
-                            "plane_normal": [9.0, 0.0, 0.0]
-                        }),
-                    ),
-                ],
-                None,
-            )
-            .unwrap();
-        let t = ctx.features[1].transform.translate;
-        assert!((t[0] - (-7.0)).abs() < 1e-5);
-    }
-
-    #[test]
-    fn mirror_errors_on_zero_normal() {
+    fn mirror_errors_on_unresolvable_plane() {
+        // A plane query that resolves to neither a datum nor a real
+        // face is a clean InvalidParameter on `plane`.
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -4558,8 +4663,9 @@ mod tests {
                         "mirror",
                         id(2),
                         json!({
-                            "source": 1,
-                            "plane_normal": [0.0, 0.0, 0.0]
+                            "source": "qCreatedBy(1)",
+                            // No feature 999, so no face frame.
+                            "plane": "qFace(999)"
                         }),
                     ),
                 ],
@@ -4570,7 +4676,7 @@ mod tests {
             err,
             FeatureError::InvalidParameter {
                 feature: "mirror",
-                name: "plane_normal",
+                name: "plane",
                 ..
             }
         ));

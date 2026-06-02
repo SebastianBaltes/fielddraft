@@ -78,10 +78,12 @@ export class Kernel {
     addMaterial(): number;
     /**
      * K8.2: append a `mirror` feature call that reflects the
-     * source feature through a plane defined by a point and a
-     * normal. Returns the new mirror feature id.
+     * source feature through a plane. `plane` is a face/datum
+     * query (e.g. `qFace(<hash>)` or `origin_plane_xy`) whose
+     * world-space frame supplies the mirror plane. Returns the
+     * new mirror feature id.
      */
-    addMirror(source_id: number, normal_x: number, normal_y: number, normal_z: number, point_x: number, point_y: number, point_z: number): number;
+    addMirror(source_id: number, plane: string): number;
     /**
      * Append a primitive feature.
      *
@@ -652,7 +654,7 @@ export interface InitOutput {
     readonly kernel_addLinearPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly kernel_addMateConnector: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_addMaterial: (a: number) => [number, number, number];
-    readonly kernel_addMirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+    readonly kernel_addMirror: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];

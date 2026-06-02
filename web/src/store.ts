@@ -2200,7 +2200,7 @@ export class KernelStore {
     }
     let id: number;
     try {
-      id = this.kernel.addMirror(source.id, 1, 0, 0, 0, 0, 0);
+      id = this.kernel.addMirror(source.id, "origin_plane_yz");
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addMirror failed", err);
