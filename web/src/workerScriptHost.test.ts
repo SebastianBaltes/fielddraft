@@ -5,18 +5,32 @@ import {
   compileBuild,
   makeScriptHost,
   type ScriptHostDeps,
+  type QueryHandle,
 } from "./workerScriptHost";
 
-/** A fake `commit` that records every op and returns a deterministic handle. */
+/**
+ * A fake `commit`/`resolveQuery` pair that records every call. `commit`
+ * returns a deterministic handle; `resolveQuery` records the canonical
+ * query string and yields a fixed handle list so passthrough is testable.
+ */
 function recordingDeps(): ScriptHostDeps & {
   calls: { id: string; type: string; def: string }[];
+  queries: string[];
 } {
   const calls: { id: string; type: string; def: string }[] = [];
+  const queries: string[] = [];
   return {
     calls,
+    queries,
     commit(id, type, defJson) {
       calls.push({ id, type, def: defJson });
       return [id];
+    },
+    resolveQuery(query) {
+      queries.push(query);
+      return [
+        { kind: "face", idHash: "42", contributors: [query] },
+      ] satisfies QueryHandle[];
     },
   };
 }
@@ -76,12 +90,66 @@ describe("buildFdModule", () => {
     expect(typeof fd.length).toBe("function");
   });
 
-  it("fails loudly on the not-yet-implemented query surface", () => {
+  it("fd.q throws when no resolver is injected (bare default)", () => {
+    // No third arg → the bare default resolver, which must not no-op.
     const fd = buildFdModule(recordingDeps()).fd as {
-      q: { createdBy: () => void; evaluate: () => void };
+      q: { createdBy: (t: string) => unknown };
     };
-    expect(() => fd.q.createdBy()).toThrow(/S3 query system/);
-    expect(() => fd.q.evaluate()).toThrow(/S3 query system/);
+    expect(() => fd.q.createdBy("3.a")).toThrow(
+      /requires the kernel query resolver/,
+    );
+  });
+
+  it("fd.q.createdBy builds qCreatedBy(<id>) and passes the resolver result through", () => {
+    const deps = recordingDeps();
+    const resolved: QueryHandle[] = [
+      { kind: "edge", idHash: "7", contributors: ["3.a"] },
+    ];
+    const fd = buildFdModule(deps, undefined, () => resolved).fd as {
+      q: { createdBy: (t: unknown) => QueryHandle[] };
+    };
+    const out = fd.q.createdBy({ id: "3.a" });
+    expect(out).toBe(resolved);
+  });
+
+  it("fd.q.createdBy emits the exact canonical string for a handle and a raw id", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { createdBy: (t: unknown) => QueryHandle[] };
+    };
+    fd.q.createdBy({ id: "3.a" });
+    fd.q.createdBy("9.boss");
+    expect(deps.queries).toEqual(["qCreatedBy(3.a)", "qCreatedBy(9.boss)"]);
+  });
+
+  it("fd.q.faceOf builds qFaceOf(<id>)", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { faceOf: (t: unknown) => QueryHandle[] };
+    };
+    fd.q.faceOf({ id: "12" });
+    expect(deps.queries).toEqual(["qFaceOf(12)"]);
+  });
+
+  it("fd.q.edgeBetween builds the two-arg qEdgeBetween(a, b)", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { edgeBetween: (a: unknown, b: unknown) => QueryHandle[] };
+    };
+    fd.q.edgeBetween({ id: "1" }, "2");
+    expect(deps.queries).toEqual(["qEdgeBetween(1, 2)"]);
+  });
+
+  it("fd.q.evaluate passes the raw canonical string through unchanged", () => {
+    const deps = recordingDeps();
+    const fd = buildFdModule(deps, undefined, deps.resolveQuery).fd as {
+      q: { evaluate: (q: string) => QueryHandle[] };
+    };
+    const out = fd.q.evaluate("qFaceOf(3) && qCreatedBy(7)");
+    expect(deps.queries).toEqual(["qFaceOf(3) && qCreatedBy(7)"]);
+    expect(out).toEqual([
+      { kind: "face", idHash: "42", contributors: ["qFaceOf(3) && qCreatedBy(7)"] },
+    ]);
   });
 
   it("fd.call default resolves a built-in via commit", () => {
@@ -118,6 +186,24 @@ describe("compileBuild", () => {
     expect(() => compileBuild(bad, buildFdModule(recordingDeps()))).toThrow(
       /only import "fielddraft"/,
     );
+  });
+
+  it("a build() can query the geometry it just emitted via fd.q", () => {
+    const deps = recordingDeps();
+    const script = `
+      const { fd } = require("fielddraft");
+      module.exports.default = function build(context, id, def) {
+        const box = fd.opBox(context, id.sub("a"), { half_extents: [1, 1, 1] });
+        const faces = fd.q.createdBy(box);
+        fd.opBox(context, id.sub("b"), { picked: faces.length });
+      };
+    `;
+    const build = compileBuild(script, buildFdModule(deps, undefined, deps.resolveQuery));
+    build({ _brand: "fd.Context" }, makeBuildId("7"), {});
+    // The query was reached with the box's committed id (handle.id === "7.a").
+    expect(deps.queries).toEqual(["qCreatedBy(7.a)"]);
+    // …and the resolved handles flowed back into the second op's def.
+    expect(JSON.parse(deps.calls[1].def)).toEqual({ picked: 1 });
   });
 
   it("rejects a body with no callable default export", () => {
@@ -258,6 +344,7 @@ describe("fd.op handle from real commit shape", () => {
   it("returns the first created handle id", () => {
     const deps: ScriptHostDeps = {
       commit: vi.fn(() => ["9.boss", "9.boss.fillet"]),
+      resolveQuery: vi.fn(() => []),
     };
     const fd = buildFdModule(deps).fd as Record<string, (...a: unknown[]) => { id: string }>;
     const handle = fd.opBox({}, makeBuildId("9"), {});

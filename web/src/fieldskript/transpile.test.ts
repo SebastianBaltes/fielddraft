@@ -37,6 +37,7 @@ describe("sucraseTranspiler", () => {
         calls.push({ id, type, def: defJson });
         return [id];
       },
+      resolveQuery: () => [],
     };
     const build = compileBuild(sucraseTranspiler(SOURCE), buildFdModule(deps));
     build({ _brand: "fd.Context" }, makeBuildId("12"), { width: 7 });

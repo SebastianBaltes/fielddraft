@@ -1580,6 +1580,37 @@ export function fdOpCommit(id, type_name, params_json) {
 }
 
 /**
+ * Resolve a `fd.q` query against the live script scratch; returns a
+ * JSON array of element handles (`{ kind, idHash, contributors }`).
+ * The read-side re-entry of the live context (S3): the worker calls
+ * this synchronously from `build()` while `regenerate` is on the
+ * stack. A malformed query or a query outside a `build()` span
+ * becomes a thrown JS error.
+ * @param {string} query
+ * @returns {string}
+ */
+export function fdResolveQuery(query) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.fdResolveQuery(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Install the worker's JS `build()` driver as the script runner for
  * this realm. The Rust→JS half of `fd.op*`: when `regenerate`
  * reaches a [`super::ScriptFeature`] it calls `run(scriptId,

@@ -538,6 +538,16 @@ export class Kernel {
 export function fdOpCommit(id: string, type_name: string, params_json: string): string;
 
 /**
+ * Resolve a `fd.q` query against the live script scratch; returns a
+ * JSON array of element handles (`{ kind, idHash, contributors }`).
+ * The read-side re-entry of the live context (S3): the worker calls
+ * this synchronously from `build()` while `regenerate` is on the
+ * stack. A malformed query or a query outside a `build()` span
+ * becomes a thrown JS error.
+ */
+export function fdResolveQuery(query: string): string;
+
+/**
  * Install the worker's JS `build()` driver as the script runner for
  * this realm. The Rust→JS half of `fd.op*`: when `regenerate`
  * reaches a [`super::ScriptFeature`] it calls `run(scriptId,
@@ -563,6 +573,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_kernel_free: (a: number, b: number) => void;
     readonly fdOpCommit: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly fdResolveQuery: (a: number, b: number) => [number, number, number, number];
     readonly installScriptRunner: (a: any) => void;
     readonly kernel_activeBodyId: (a: number) => number;
     readonly kernel_addBoolean: (a: number) => [number, number, number];

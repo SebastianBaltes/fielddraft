@@ -40,10 +40,16 @@ import initWasm, {
   // eslint-disable-next-line import/no-unresolved
   fdOpCommit,
   // eslint-disable-next-line import/no-unresolved
+  fdResolveQuery,
+  // eslint-disable-next-line import/no-unresolved
   installScriptRunner,
 } from "./wasm/fielddraft_kernel.js";
 import { MESH_CONTRIBUTOR_STRIDE } from "./kernel";
-import { makeScriptHost, type ScriptRecordLite } from "./workerScriptHost";
+import {
+  makeScriptHost,
+  type ScriptRecordLite,
+  type QueryHandle,
+} from "./workerScriptHost";
 import {
   freezeGlobals,
   hashDocumentJson,
@@ -161,6 +167,12 @@ async function ensureKernel(): Promise<ReadyKernel> {
       scriptHost = makeScriptHost({
         commit: (id, typeName, defJson) =>
           JSON.parse(fdOpCommit(id, typeName, defJson)) as string[],
+        // FieldSkript S3: resolve a canonical query string against the live
+        // regeneration geometry (lazily woven B-Rep), returning the matched
+        // element handles. Mirrors the `fdOpCommit` re-entry — a synchronous
+        // wasm call while `regenerate` is on the stack.
+        resolveQuery: (query) =>
+          JSON.parse(fdResolveQuery(query)) as QueryHandle[],
       });
       installScriptRunner((scriptId: string, instanceId: string, paramsJson: string) =>
         scriptHost!.run(scriptId, instanceId, paramsJson),

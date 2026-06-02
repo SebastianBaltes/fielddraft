@@ -26,7 +26,7 @@ Namen. Die API heißt `fd.*`, nicht `featureScript.*`. „Feature Studio" → **
 |---|---|---|
 | **Dual-API** (Regeneration-Worker) | `web/src/workerSandbox.ts`, `outerApi.ts`, `workerRpc.ts` | Inner-API `globalThis.fd` injiziert, Outer-API-RPC steht; nur Probe-Methoden (`version`/`log`/`ping`/`echo`). Feature-Dispatch = geplanter Slice **K4.5.8** |
 | **Determinismus-Sandbox** | `workerSandbox.ts` | `freezeGlobals` (kein `fetch`/Timer, `Date.now→0`), `reseedRandom` (mulberry32, doc-hash-seeded) — fertig |
-| **Query-Minimum** | `crates/kernel/src/queries.rs` | `QueryExpr {CreatedBy, FaceOf, EdgeBetween}`, Parser, **Evaluator (Feature-Ebene)**, `QueryCache` (versions-keyed). Noch **nicht** in `Context` verdrahtet, noch **keine** B-Rep-Element-Auflösung |
+| **Query-Minimum** | `crates/kernel/src/queries.rs` | `QueryExpr {CreatedBy, FaceOf, EdgeBetween}`, Parser, Evaluator (Feature-Ebene) **+ `resolve_query_topo` (B-Rep-Element-Ebene, S3 ✅)**, `QueryCache`. Über `RegenScratch`/`fdResolveQuery` an den lebenden Context verdrahtet |
 | **Query-Wert-Typ** | `crates/protocol/src/lib.rs` (`Query`, `MultiQuery`) | als Parameter-Typ im Schema-Macro vorhanden |
 | **Schema-getriebene Dialoge** | `crates/features-macros` → `web/src/widgets/schema.ts` → `FeatureDialog` | Built-ins erzeugen Schema-JSON (Compile-Zeit), UI rendert **generisch**. FieldSkript erzeugt **dasselbe** Schema-JSON zur Laufzeit |
 | **Knoten-IR + Provenienz** | `csg.rs` (`CsgNode`, `BranchId`), Naming (DL-31…DL-60) | offene kompositionelle IR + stabile FNV-1a-IDs — das Substrat, das ein robustes Query-System braucht |
@@ -546,8 +546,8 @@ verallgemeinert.
 | **S0** | DL-61 Stufe A/B: `Feature`→`DecodedFeature{node}`, Ops emittieren Knoten | DL-61 |
 | **S1** | `fielddraft.d.ts` + Param-DSL (`fd.feature`, `length/bool/enum/query/group`) → Schema-JSON; FieldSkript-Record + dokument-lokale Persistenz | `schema.ts`, FeatureDialog |
 | **S2** ✅ | Rust-Treiber-Callback (§2): `js_run_script_feature`-Import; Context aus dem Loop-Borrow lösen (`RefCell`/Handle, §2.6); `fd_op_commit` (mutiert Context) + `fd_eval_builtin` (pure). Save-Pipeline `source → transpile(sucrase) → evalDefinition → Schema` verdrahtet (§8). | §4.6 Dual-API, K4.5.8 |
-| **S2b** | **Trampolin ✅** (`fd.call`: Skript→Skript JS-Rekursion + Zyklus-/Tiefen-Guard, Skript→Built-in via commit — `makeScriptHost`). **Offen:** Query-Brücke `fd_resolve_query` gegen lebenden Context (read-only, lazy Weave) — die *architektonische* Hälfte (Element-Auflösung + Weave-Timing #6). | S2, `queries.rs` |
-| **S3** | Query-Ausbau: `evaluateQuery` Feature- → B-Rep-Element-Ebene; `createdBy/geometry/bodyType/adjacent/nearestTo`; Context-Integration | `queries.rs`, Naming DL-31… |
+| **S2b** ✅ | **Trampolin** (`fd.call`: Skript→Skript JS-Rekursion + Zyklus-/Tiefen-Guard, Skript→Built-in via commit — `makeScriptHost`). **Query-Brücke** `fdResolveQuery` gegen den lebenden Context: `RegenScratch` ist jetzt der volle Lese+Schreib-Context (lazy `brep_cache`, per-commit invalidiert), `resolve_query_global` webt lazy-on-query und löst zu B-Rep-Elementen auf; `fd.q.*` im Worker verdrahtet. | S2, `queries.rs`, `script_runtime.rs` |
+| **S3** ✅ (Kern) | Query-Ausbau Feature- → **B-Rep-Element-Ebene**: `resolve_query_topo(breps, expr) → Vec<TopoRef>` (`createdBy/faceOf` → Faces, `edgeBetween` → Edges, stabile `id_hash` via `naming::TopoRef::from_*`). JS-`QueryHandle{kind,idHash,contributors}`. **Später:** `adjacent/nearestTo`/räumliche Operatoren, hierarchische IDs, Sketch-Region-Auflösung gegen den Solid. | `queries.rs`, Naming DL-31… |
 | **S4** | Monaco-Editor + TS-Service + `extraLib`; CRUD-Panel; Live-Preview | `fieldscript.ts`-Vorbild |
 | **S5** | Härtung (QuickJS), geteilte Bibliothek über Backend, Versionierung | `server/` |
 
@@ -559,13 +559,18 @@ verallgemeinert.
    Begründung 95 % native Ausführungen / 99 % Skript-Typen. `fd.op*` mutiert den **Context**
    (nicht das Document) — Soundness über Zustands-Trennung + Single-Writer-Borrows (§2.2/2.6),
    nicht über Mutationsverbot.
-6. **Weave-Timing:** B-Rep lazy-on-query weben (§2.2) — pro Op, pro Query, oder gebatcht? Messen,
-   sobald Query-after-Create-Skripte real sind.
+6. ~~**Weave-Timing:**~~ **ENTSCHIEDEN (2026-06-02, User): lazy-on-query, memoisiert, per-commit
+   invalidiert.** `RegenScratch.brep_cache` webt erst, wenn eine Query den B-Rep braucht
+   (`ensure_breps`), cached ihn inhalts-gekeyt (wie `Body::ensure_brep`) und verwirft ihn bei
+   jedem `commit_builtin`. Einzige Variante, die kein Weben verschwendet **und** Query-after-Create
+   trägt. Begründung des Users: Dirty-Tracking + Lazy-Eval auf der richtigen Ebene.
 2. ~~**Built-ins doppeln?**~~ **ENTSCHIEDEN (2026-06-01, User): NEIN.** Built-ins bleiben in Rust
    und werden **nicht** als FieldSkript reimplementiert. FieldSkript ist für Komposit-/Custom-
    Features; die 25 nativen Built-ins bleiben der schnelle Rust-Pfad (`FeatureKind::execute`).
    Kein Dogfooding-Zwang, kein zweiter Pfad für dieselbe Geometrie.
-3. **Query-Tiefe:** Wie weit treiben wir Adjazenz/räumliche Queries in S3 vs. später?
+3. **Query-Tiefe:** S3-Kern (`createdBy/faceOf/edgeBetween` → Face/Edge/Vertex) ✅. **Offen für
+   später:** Adjazenz/räumliche Operatoren (`adjacent/nearestTo`), hierarchische IDs, Sketch-Region-
+   Auflösung gegen den gewebten Solid — staffeln, sobald ein Op sie konsumiert.
 4. ~~**Transpiler:** esbuild-wasm vs. sucrase.~~ **ENTSCHIEDEN (2026-06-02, User): sucrase.**
    `web/src/fieldskript/transpile.ts` (`transforms: ['typescript','imports']`) erzeugt beim
    Speichern CommonJS (`require("fielddraft")` + `module.exports.default = build`), das der

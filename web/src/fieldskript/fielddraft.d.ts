@@ -156,6 +156,15 @@ declare module "fielddraft" {
     readonly id: string;
   }
 
+  /** A resolved B-Rep element handle returned by `fd.q.*`. */
+  export interface QueryHandle {
+    readonly kind: "face" | "edge" | "vertex";
+    /** Stable element id (u64) as a decimal string. */
+    readonly idHash: string;
+    /** Feature ids that the query referenced. */
+    readonly contributors: readonly string[];
+  }
+
   /** The `fd.*` namespace a script imports. */
   export const fd: {
     feature: typeof feature;
@@ -171,10 +180,17 @@ declare module "fielddraft" {
     group: typeof group;
     visibleWhen: typeof visibleWhen;
 
-    /** Lazy query builders + evaluation (S2/S3). */
+    /**
+     * Element queries (S3). Each method builds a canonical query string
+     * and resolves it against the live regeneration geometry, returning
+     * the matched B-Rep element handles. `evaluate` takes a raw canonical
+     * query for forms not yet sugared.
+     */
     readonly q: {
-      createdBy(id: Id, kind: EntityType): Query;
-      evaluate(context: Context, q: Query): OpHandle[];
+      createdBy(target: OpHandle | string): QueryHandle[];
+      faceOf(target: OpHandle | string): QueryHandle[];
+      edgeBetween(a: OpHandle | string, b: OpHandle | string): QueryHandle[];
+      evaluate(query: string): QueryHandle[];
     };
 
     // Geometry-emission ops resolve in S2; declared for author types.

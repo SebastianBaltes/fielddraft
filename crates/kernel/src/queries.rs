@@ -316,6 +316,95 @@ fn feature_exists(features: &[DecodedFeature], id: &FeatureId) -> bool {
     features.iter().any(|f| &f.id == id)
 }
 
+// ─── element-level resolution (S3) ────────────────────────────────
+
+/// Resolve a query against woven B-Reps to concrete B-Rep element
+/// handles (Face/Edge/Vertex) with regeneration-stable id hashes.
+///
+/// Element-level counterpart to [`evaluate_query`] (which stays at the
+/// feature level, emitting contributor sets). Where `evaluate_query`
+/// answers "does feature `f` exist and what owns the match", this drops
+/// down onto the live solid and returns the actual faces/edges the
+/// feature produced, as [`TopoRef`](crate::brep::naming::TopoRef)
+/// handles whose `id_hash` survives a re-weave (the persistent-naming
+/// guarantee from `brep::naming`).
+///
+/// Semantics — a [`BranchId`](crate::csg::BranchId) is mapped back to
+/// its flat feature id via [`BranchId::feature_id`], compared against
+/// the query's [`FeatureId::as_u32_or_root`]:
+/// - `CreatedBy(f)` / `FaceOf(f)`: every [`Face`](crate::brep::Face)
+///   whose `branch_id.feature_id() == f` → [`TopoRef::from_face`]. The
+///   two are kept as distinct records of intent even though they
+///   resolve identically today (CreatedBy may later widen to the
+///   edges/vertices touching `f`).
+/// - `EdgeBetween(a, b)`: every [`Edge`](crate::brep::Edge) whose two
+///   `signature` branches map to exactly the unordered pair `{a, b}` →
+///   [`TopoRef::from_edge`].
+/// - `AllRegions/Region/Regions`: sketch-region queries (K8.13). These
+///   resolve against **sketch** data, not the woven solid, so there is
+///   nothing to find in a `BRep` — they return `Vec::new()`.
+///
+/// Spanning multiple B-Reps (one per body partition) is supported: the
+/// arenas are walked per-brep and the union returned. Output is sorted
+/// by `id_hash` (then by kind) so the result is deterministic across
+/// calls and across body iteration order.
+///
+/// A query feature id that is not flat-or-root (`as_u32_or_root()` is
+/// `None`) matches nothing — hierarchical clone ids aren't yet mapped
+/// to branch feature ids here (follow-up alongside hierarchical query
+/// support).
+pub fn resolve_query_topo(
+    breps: &[crate::brep::BRep],
+    expr: &QueryExpr,
+) -> Vec<crate::brep::naming::TopoRef> {
+    use crate::brep::naming::TopoRef;
+    use crate::brep::{EdgeId, FaceId};
+
+    let mut out: Vec<TopoRef> = Vec::new();
+
+    match expr {
+        QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => {
+            let Some(target) = f.as_u32_or_root() else {
+                return Vec::new();
+            };
+            for brep in breps {
+                for i in 0..brep.faces.len() {
+                    if brep.faces[i].branch_id.feature_id() == target {
+                        out.push(TopoRef::from_face(brep, FaceId(i as u32)));
+                    }
+                }
+            }
+        }
+        QueryExpr::EdgeBetween(a, b) => {
+            let (Some(fa), Some(fb)) = (a.as_u32_or_root(), b.as_u32_or_root()) else {
+                return Vec::new();
+            };
+            for brep in breps {
+                for i in 0..brep.edges.len() {
+                    let sig = brep.edges[i].signature;
+                    let s0 = sig.0.feature_id();
+                    let s1 = sig.1.feature_id();
+                    // Unordered pair match: {s0, s1} == {fa, fb}.
+                    if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa) {
+                        out.push(TopoRef::from_edge(brep, EdgeId(i as u32)));
+                    }
+                }
+            }
+        }
+        // Sketch-region queries resolve against sketch data, not the
+        // woven solid; there is no B-Rep element to hand back.
+        QueryExpr::AllRegions(_) | QueryExpr::Region(_, _) | QueryExpr::Regions(_, _) => {}
+    }
+
+    // Deterministic order: by id_hash, then kind as a stable tie-break.
+    out.sort_by(|x, y| {
+        x.id_hash
+            .cmp(&y.id_hash)
+            .then((x.kind as u8).cmp(&(y.kind as u8)))
+    });
+    out
+}
+
 /// Version-keyed memoisation layer for query evaluation.
 ///
 /// Callers pair the cache with a **context version** — typically
@@ -605,5 +694,148 @@ mod tests {
         assert_eq!(cache.version(), 7);
         cache.set_version(7);
         assert_eq!(cache.version(), 7);
+    }
+
+    // ─── resolve_query_topo (element-level, S3) ───────────────
+
+    use crate::brep::naming::{EntityKind, TopoRef};
+    use crate::brep::{BRep, Edge, EdgeGeometry, Face, Loop, SurfaceGeometry};
+    use crate::csg::BranchId;
+    use fielddraft_protocol::HalfSpace;
+
+    /// A trivial analytic plane face on `branch`, with an empty outer
+    /// loop (a fully closed analytic surface — enough for naming, which
+    /// only consults `branch_id` + the face centroid).
+    fn plane_face(branch: BranchId) -> Face {
+        Face {
+            branch_id: branch,
+            surface: SurfaceGeometry::Analytic {
+                surface: HalfSpace::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    offset: 0.0,
+                },
+                transform: Transform::IDENTITY,
+            },
+            outer: Loop::default(),
+            inner: Vec::new(),
+        }
+    }
+
+    /// Build a B-Rep with the given per-feature face counts plus a few
+    /// edges, exercising distinct branch ids. `face_feats[i]` faces are
+    /// minted for feature id `i+1`; the edges connect the listed
+    /// feature pairs.
+    fn synthetic_brep(
+        face_feats: &[(u32, usize)],
+        edge_pairs: &[(u32, u32)],
+    ) -> BRep {
+        let mut brep = BRep::new();
+        for &(feat, count) in face_feats {
+            for sub in 0..count {
+                let branch =
+                    BranchId::from_feature_sub(&FeatureId::from_u32(feat), sub as u32);
+                brep.add_face(plane_face(branch));
+            }
+        }
+        for (k, &(a, b)) in edge_pairs.iter().enumerate() {
+            let ba = BranchId::from_feature(&FeatureId::from_u32(a));
+            let bb = BranchId::from_feature(&FeatureId::from_u32(b));
+            // Distinct geometry per edge so spatial disambiguation gives
+            // each a unique id even when signatures collide.
+            let y = k as f64;
+            brep.add_edge(Edge::new(
+                EdgeGeometry::Polyline(vec![[0.0, y, 0.0], [1.0, y, 0.0]]),
+                ba,
+                bb,
+                None,
+                None,
+            ));
+        }
+        brep
+    }
+
+    fn is_sorted_by_hash(refs: &[TopoRef]) -> bool {
+        refs.windows(2).all(|w| w[0].id_hash <= w[1].id_hash)
+    }
+
+    #[test]
+    fn resolve_created_by_returns_faces_of_feature() {
+        // Feature 5 owns 6 faces (a box), feature 6 owns 1.
+        let brep = synthetic_brep(&[(5, 6), (6, 1)], &[]);
+        let refs = resolve_query_topo(&[brep], &QueryExpr::CreatedBy(id(5)));
+        assert_eq!(refs.len(), 6, "all six faces of feature 5");
+        assert!(refs.iter().all(|r| r.kind == EntityKind::Face));
+        assert!(is_sorted_by_hash(&refs), "sorted by id_hash");
+    }
+
+    #[test]
+    fn resolve_face_of_matches_created_by_set() {
+        let brep = synthetic_brep(&[(5, 6), (6, 1)], &[]);
+        let created = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(5)));
+        let faces = resolve_query_topo(&[brep], &QueryExpr::FaceOf(id(5)));
+        assert_eq!(created, faces, "FaceOf == CreatedBy at the face level today");
+    }
+
+    #[test]
+    fn resolve_created_by_nonmatching_feature_is_empty() {
+        let brep = synthetic_brep(&[(5, 6)], &[]);
+        let refs = resolve_query_topo(&[brep], &QueryExpr::CreatedBy(id(999)));
+        assert!(refs.is_empty(), "no faces own feature 999");
+    }
+
+    #[test]
+    fn resolve_edge_between_returns_the_ab_edges() {
+        // One 1–2 edge, one 1–3 edge, one 2–3 edge.
+        let brep = synthetic_brep(&[(1, 1), (2, 1), (3, 1)], &[(1, 2), (1, 3), (2, 3)]);
+        let refs = resolve_query_topo(&[brep], &QueryExpr::EdgeBetween(id(1), id(2)));
+        assert_eq!(refs.len(), 1, "exactly the 1–2 edge");
+        assert_eq!(refs[0].kind, EntityKind::Edge);
+    }
+
+    #[test]
+    fn resolve_edge_between_is_unordered() {
+        let brep = synthetic_brep(&[(1, 1), (2, 1)], &[(1, 2)]);
+        let ab = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::EdgeBetween(id(1), id(2)));
+        let ba = resolve_query_topo(&[brep], &QueryExpr::EdgeBetween(id(2), id(1)));
+        assert_eq!(ab, ba, "{{a,b}} edge match is order-independent");
+        assert_eq!(ab.len(), 1);
+    }
+
+    #[test]
+    fn resolve_edge_between_nonmatching_pair_is_empty() {
+        let brep = synthetic_brep(&[(1, 1), (2, 1)], &[(1, 2)]);
+        let refs = resolve_query_topo(&[brep], &QueryExpr::EdgeBetween(id(1), id(7)));
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn resolve_region_queries_return_empty() {
+        let brep = synthetic_brep(&[(5, 6)], &[]);
+        for expr in [
+            QueryExpr::AllRegions(id(5)),
+            QueryExpr::Region(id(5), 0),
+            QueryExpr::Regions(id(5), vec![0, 1]),
+        ] {
+            assert!(
+                resolve_query_topo(std::slice::from_ref(&brep), &expr).is_empty(),
+                "region queries resolve against sketch data, not the solid"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_spans_multiple_breps() {
+        let a = synthetic_brep(&[(5, 3)], &[]);
+        let b = synthetic_brep(&[(5, 2)], &[]);
+        let refs = resolve_query_topo(&[a, b], &QueryExpr::CreatedBy(id(5)));
+        assert_eq!(refs.len(), 5, "faces from both bodies' B-Reps");
+    }
+
+    #[test]
+    fn resolve_is_deterministic() {
+        let brep = synthetic_brep(&[(5, 6), (6, 2)], &[(5, 6)]);
+        let first = resolve_query_topo(std::slice::from_ref(&brep), &QueryExpr::CreatedBy(id(5)));
+        let second = resolve_query_topo(&[brep], &QueryExpr::CreatedBy(id(5)));
+        assert_eq!(first, second, "two calls give identical output");
     }
 }

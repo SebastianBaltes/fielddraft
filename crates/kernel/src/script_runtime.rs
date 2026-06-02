@@ -59,12 +59,74 @@ pub struct RegenScratch {
     pub sketches: HashMap<FeatureId, SketchData>,
     /// Edge fillets collected for the post-processing pass.
     pub edge_fillets: Vec<EdgeFillet>,
+    /// Lazily woven B-Reps of the in-flight geometry, one per body
+    /// partition. Keyed on a content hash of `features`; a commit that
+    /// changes `features` invalidates it (next query re-weaves). `None`
+    /// until the first [`RegenScratch::ensure_breps`] call, and reset to
+    /// `None` by every successful [`commit_builtin`].
+    ///
+    /// This is the read side of the live context (S3): a script's `fd.q`
+    /// resolves element-level queries against these woven solids while
+    /// `build()` is still running, mirroring [`Body::ensure_brep`]'s
+    /// content-keyed laziness but at scratch (whole-document) granularity.
+    brep_cache: Option<(u64, Vec<crate::brep::BRep>)>,
 }
 
 impl RegenScratch {
     /// An empty scratch — the starting point of a fresh script run.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return the lazily woven B-Reps of the in-flight geometry, one per
+    /// body partition, weaving them on first access (or after a commit
+    /// invalidated the cache) and caching the result.
+    ///
+    /// The cache key is a content hash of the current `features` spine
+    /// ([`body::hash_body_payload`] over every feature). A commit that
+    /// appends or mutates a feature changes the key and forces a
+    /// re-weave; a pure read re-uses the cache. `commit_builtin` also
+    /// clears the cache explicitly, so the key-mismatch path is a
+    /// belt-and-braces safety net rather than the primary invalidation.
+    ///
+    /// Each body is built via the canonical partition→`Body`→`ensure_brep`
+    /// recipe (the same path `Kernel::rebuild_bodies` uses), so the woven
+    /// element structure — and therefore the stable id hashes a query
+    /// returns — matches what a persisted regeneration would produce.
+    pub fn ensure_breps(&mut self) -> &[crate::brep::BRep] {
+        use crate::body::{hash_body_payload, partition, Body};
+        use fielddraft_protocol::Transform;
+
+        let all: Vec<usize> = (0..self.features.len()).collect();
+        let key = hash_body_payload(&self.features, &all);
+
+        let fresh = !matches!(&self.brep_cache, Some((k, _)) if *k == key);
+        if fresh {
+            let parts = partition(&self.features);
+            let mut breps = Vec::with_capacity(parts.len());
+            for part in &parts {
+                let mut body = Body {
+                    id: part.seed_id(&self.features),
+                    feature_indices: part.feature_indices.clone(),
+                    aabb: part.aabb,
+                    payload_hash: 0,
+                    geometry_hash: 0,
+                    transform_hash: 0,
+                    mesh_resolution: 0,
+                    mesh: crate::dc::Mesh::default(),
+                    version: 1,
+                    transform_delta: None,
+                    last_mesh_transforms: Vec::new(),
+                    compiled_sdf: None,
+                    placement: Transform::IDENTITY,
+                    brep: None,
+                };
+                body.ensure_brep(&self.features);
+                breps.push(body.brep.expect("ensure_brep populates the cache").1);
+            }
+            self.brep_cache = Some((key, breps));
+        }
+        &self.brep_cache.as_ref().unwrap().1
     }
 }
 
@@ -94,6 +156,9 @@ pub enum ScriptError {
     NoRunner,
     /// The JS `build()` threw. Carries the JS-side message.
     JsRun(String),
+    /// A `fd.q` query string didn't parse. Carries the parser's message
+    /// (the read-side counterpart to [`ScriptError::BadParams`]).
+    BadQuery(String),
     /// The underlying built-in rejected the op (unknown type, invalid
     /// params, …). Carries the feature-layer error verbatim.
     Feature(FeatureError),
@@ -107,6 +172,7 @@ impl std::fmt::Display for ScriptError {
             Self::BadParams(s) => write!(f, "invalid op params json: {s}"),
             Self::NoRunner => f.write_str("no script runner is installed"),
             Self::JsRun(s) => write!(f, "script build() failed: {s}"),
+            Self::BadQuery(s) => write!(f, "invalid query: {s}"),
             Self::Feature(e) => write!(f, "{e}"),
         }
     }
@@ -211,6 +277,13 @@ pub fn commit_builtin(
         std::mem::swap(&mut ctx.sketches, &mut scratch.sketches);
         std::mem::swap(&mut ctx.edge_fillets, &mut scratch.edge_fillets);
 
+        // A successful op mutated `features`, so any previously woven
+        // B-Reps are stale: drop the cache so the next `fd.q` re-weaves
+        // against the new geometry. (The content-key check in
+        // `ensure_breps` would also catch this, but clearing here keeps
+        // the invalidation obvious and local to the write path — §2.6.)
+        scratch.brep_cache = None;
+
         result?;
         let handles = scratch.features[before..]
             .iter()
@@ -292,6 +365,79 @@ pub fn commit_builtin_global(
     commit_builtin(&registry, id, type_name, &params)
 }
 
+/// JSON DTO for one resolved query handle (the frozen cross-language
+/// contract for `fd.q`).
+///
+/// We deliberately do **not** serialise a [`TopoRef`](crate::brep::naming::TopoRef)
+/// directly: its `id_hash` is a `u64`, which loses precision when a JS
+/// runtime reads it as a `number`. So the hash is emitted as a decimal
+/// **string** and the handle carries only the JS-safe fields a script
+/// needs to round-trip a reference. `contributors` is the query's own
+/// input feature ids ([`FeatureId`] `Display` strings) — what the script
+/// asked for, which makes the handle self-describing; element-derived
+/// contributors can come later.
+#[derive(serde::Serialize)]
+struct QueryHandleDto {
+    /// Lowercase entity kind: `"face"`, `"edge"`, or `"vertex"`.
+    kind: String,
+    /// The `u64` id hash as a decimal string (JS-number-safe).
+    #[serde(rename = "idHash")]
+    id_hash: String,
+    /// The query's input feature ids as `FeatureId` display strings.
+    contributors: Vec<String>,
+}
+
+/// Parse + resolve a query against the live scratch geometry, returning
+/// the resolved element handles as JSON.
+///
+/// Weaves the in-flight B-Rep lazily (cached on the scratch, invalidated
+/// by every commit). This is the **read** side of the §2.6 single-writer
+/// discipline: it takes the same short, disjoint [`with_scratch`] borrow
+/// the commit path uses, never holding a borrow across re-entry. Called
+/// outside an `enter`/`exit` span it surfaces [`ScriptError::NoScratch`]
+/// (a query asked outside a `build()`); a malformed query string is
+/// [`ScriptError::BadQuery`].
+///
+/// The returned string is a JSON array of [`QueryHandleDto`]; an empty,
+/// well-formed match is `"[]"`.
+pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
+    use crate::brep::naming::EntityKind;
+
+    let expr = crate::queries::parse_query(query)
+        .map_err(|e| ScriptError::BadQuery(e.to_string()))?;
+
+    // Contributors are the query's own input feature ids (Display form).
+    let contributors: Vec<String> = match &expr {
+        crate::queries::QueryExpr::CreatedBy(f)
+        | crate::queries::QueryExpr::FaceOf(f)
+        | crate::queries::QueryExpr::AllRegions(f)
+        | crate::queries::QueryExpr::Region(f, _)
+        | crate::queries::QueryExpr::Regions(f, _) => vec![f.to_string()],
+        crate::queries::QueryExpr::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
+    };
+
+    let refs = with_scratch(|s| {
+        let breps = s.ensure_breps();
+        crate::queries::resolve_query_topo(breps, &expr)
+    })?;
+
+    let dtos: Vec<QueryHandleDto> = refs
+        .iter()
+        .map(|r| QueryHandleDto {
+            kind: match r.kind {
+                EntityKind::Vertex => "vertex",
+                EntityKind::Edge => "edge",
+                EntityKind::Face => "face",
+            }
+            .to_string(),
+            id_hash: r.id_hash.to_string(),
+            contributors: contributors.clone(),
+        })
+        .collect();
+
+    serde_json::to_string(&dtos).map_err(|e| ScriptError::BadQuery(e.to_string()))
+}
+
 /// A FieldSkript feature: a runtime-registered [`FeatureKind`] whose
 /// geometry comes from a JS `build()` rather than native Rust.
 ///
@@ -340,6 +486,7 @@ impl crate::features::FeatureKind for ScriptFeature {
             features: std::mem::take(&mut ctx.features),
             sketches: std::mem::take(&mut ctx.sketches),
             edge_fillets: std::mem::take(&mut ctx.edge_fillets),
+            brep_cache: None,
         };
         enter(scratch);
 
@@ -377,6 +524,17 @@ mod wasm_exports {
         let handles = super::commit_builtin_global(id, type_name, params_json)
             .map_err(|e| JsError::new(&e.to_string()))?;
         serde_json::to_string(&handles).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Resolve a `fd.q` query against the live script scratch; returns a
+    /// JSON array of element handles (`{ kind, idHash, contributors }`).
+    /// The read-side re-entry of the live context (S3): the worker calls
+    /// this synchronously from `build()` while `regenerate` is on the
+    /// stack. A malformed query or a query outside a `build()` span
+    /// becomes a thrown JS error.
+    #[wasm_bindgen(js_name = fdResolveQuery)]
+    pub fn fd_resolve_query(query: &str) -> Result<String, JsError> {
+        super::resolve_query_global(query).map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Install the worker's JS `build()` driver as the script runner for
@@ -633,5 +791,122 @@ mod tests {
         let feature = ScriptFeature::new("counterbore", schema.clone());
         assert_eq!(feature.type_name(), "counterbore");
         assert_eq!(feature.schema_json(), schema);
+    }
+
+    // ── S3: live read-context + element-query resolution ────────────
+
+    fn sphere_params() -> Value {
+        json!({ "radius": 1.5, "center": [0.0, 0.0, 0.0] })
+    }
+
+    /// Parse the resolve JSON and assert the frozen contract shape: an
+    /// array of `{ kind, idHash, contributors }` objects whose `idHash`
+    /// is a decimal string. Returns the parsed array.
+    fn assert_handle_shape(json: &str) -> Vec<Value> {
+        let v: Value = serde_json::from_str(json).expect("resolve output is valid JSON");
+        let arr = v.as_array().expect("resolve output is a JSON array").clone();
+        for h in &arr {
+            let obj = h.as_object().expect("each handle is an object");
+            assert!(obj.contains_key("kind"), "handle has `kind`");
+            assert!(obj.contains_key("idHash"), "handle has `idHash`");
+            assert!(obj.contains_key("contributors"), "handle has `contributors`");
+            // idHash must be a string (u64 safety), parseable as a number.
+            let id_hash = obj["idHash"].as_str().expect("idHash is a string");
+            id_hash.parse::<u64>().expect("idHash is a decimal u64 string");
+            assert!(obj["contributors"].is_array(), "contributors is an array");
+        }
+        arr
+    }
+
+    #[test]
+    fn resolve_query_global_returns_box_faces() {
+        let registry = FeatureRegistry::with_builtins();
+        enter(RegenScratch::new());
+        commit_builtin(&registry, "5", "box", &box_params()).unwrap();
+
+        let json = resolve_query_global("qCreatedBy(5)").unwrap();
+        let handles = assert_handle_shape(&json);
+        assert_eq!(handles.len(), 6, "a box weaves to 6 faces");
+        for h in &handles {
+            assert_eq!(h["kind"], "face", "all created-by handles are faces");
+            assert_eq!(
+                h["contributors"].as_array().unwrap(),
+                &vec![Value::from("5")],
+                "contributor is the queried feature id"
+            );
+        }
+        let _ = exit();
+    }
+
+    #[test]
+    fn resolve_query_global_reweaves_after_a_commit() {
+        let registry = FeatureRegistry::with_builtins();
+        enter(RegenScratch::new());
+        commit_builtin(&registry, "5", "box", &box_params()).unwrap();
+
+        let before = resolve_query_global("qCreatedBy(5)").unwrap();
+        let box_faces = assert_handle_shape(&before);
+        assert_eq!(box_faces.len(), 6);
+
+        // A second commit invalidates the brep_cache; a re-resolve of the
+        // SAME query must still return the box's 6 faces (unchanged by the
+        // new disjoint body) but produced by a FRESH weave — asserted by
+        // content equality, not pointer identity.
+        commit_builtin(&registry, "6", "sphere", &sphere_params()).unwrap();
+        let after = resolve_query_global("qCreatedBy(5)").unwrap();
+        let box_faces_again = assert_handle_shape(&after);
+        assert_eq!(box_faces_again.len(), 6, "box faces unchanged after re-weave");
+        assert_eq!(before, after, "same query, same box geometry → identical handles");
+
+        // And the new feature is now resolvable too — proving the cache
+        // did invalidate and re-weave to include it.
+        let sphere_q = resolve_query_global("qCreatedBy(6)").unwrap();
+        let sphere_faces = assert_handle_shape(&sphere_q);
+        assert!(!sphere_faces.is_empty(), "the freshly committed sphere resolves");
+        let _ = exit();
+    }
+
+    #[test]
+    fn resolve_query_global_empty_for_unknown_feature() {
+        let registry = FeatureRegistry::with_builtins();
+        enter(RegenScratch::new());
+        commit_builtin(&registry, "5", "box", &box_params()).unwrap();
+        let json = resolve_query_global("qCreatedBy(999)").unwrap();
+        assert_eq!(json, "[]", "well-formed query, no match → empty array");
+        let _ = exit();
+    }
+
+    #[test]
+    fn resolve_query_global_outside_a_span_is_no_scratch() {
+        let err = resolve_query_global("qCreatedBy(5)").unwrap_err();
+        assert_eq!(err, ScriptError::NoScratch);
+    }
+
+    #[test]
+    fn resolve_query_global_malformed_query_is_bad_query() {
+        enter(RegenScratch::new());
+        let err = resolve_query_global("qBogus(1)").unwrap_err();
+        let _ = exit();
+        assert!(matches!(err, ScriptError::BadQuery(_)));
+    }
+
+    #[test]
+    fn ensure_breps_caches_until_a_commit() {
+        let registry = FeatureRegistry::with_builtins();
+        enter(RegenScratch::new());
+        commit_builtin(&registry, "5", "box", &box_params()).unwrap();
+
+        // Two reads with no intervening commit hit the same cached weave
+        // (same content, and the second call does not re-partition).
+        let a = with_scratch(|s| s.ensure_breps().len()).unwrap();
+        let b = with_scratch(|s| s.ensure_breps().len()).unwrap();
+        assert_eq!(a, 1, "one body partition for a single box");
+        assert_eq!(b, 1);
+
+        // After a commit of a second disjoint body, the cache grows.
+        commit_builtin(&registry, "6", "sphere", &sphere_params()).unwrap();
+        let c = with_scratch(|s| s.ensure_breps().len()).unwrap();
+        assert_eq!(c, 2, "two disjoint bodies after the sphere commit");
+        let _ = exit();
     }
 }

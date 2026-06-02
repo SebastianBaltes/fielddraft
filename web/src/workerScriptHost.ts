@@ -47,6 +47,15 @@ export interface OpHandle {
   readonly id: string;
 }
 
+/** A resolved B-Rep element handle returned by `fd.q.*`. */
+export interface QueryHandle {
+  readonly kind: "face" | "edge" | "vertex";
+  /** Stable element id (u64) as a decimal string. */
+  readonly idHash: string;
+  /** Feature ids that the query referenced. */
+  readonly contributors: readonly string[];
+}
+
 /**
  * The hierarchical build id handed to `build()`. `sub(name)` extends it
  * for a sub-operation (`"10"` → `"10.bore"`), matching the kernel's
@@ -93,6 +102,13 @@ export type CallFn = (
  */
 export interface ScriptHostDeps {
   commit(id: string, typeName: string, defJson: string): string[];
+
+  /**
+   * Resolve a canonical query string against the live regeneration
+   * geometry, returning the matched B-Rep element handles. In the worker
+   * this wraps the wasm `fdResolveQuery` export; tests pass a fake.
+   */
+  resolveQuery(query: string): QueryHandle[];
 }
 
 /**
@@ -122,9 +138,11 @@ export function makeBuildId(id: string): BuildId {
 /**
  * Compose the `fielddraft` module a `build()` imports: the S1 authoring
  * builders (so a script's top-level `fd.feature(...)` still evaluates)
- * plus the S2 `fd.op*` geometry surface bound to `deps.commit`. `fd.q`
- * is declared but fails loudly — it is a later stage (S3 query system)
- * and must not silently no-op.
+ * plus the S2 `fd.op*` geometry surface bound to `deps.commit` and the
+ * S3 `fd.q` query surface bound to `resolveQuery`. Each `fd.q.*` method
+ * builds a canonical query string and delegates to the resolver. The
+ * bare default (no resolver injected) throws — the query surface must
+ * not silently no-op.
  *
  * `fd.call` is the §2.4 sub-feature trampoline. When the host injects a
  * full `call` capability ({@link makeScriptHost}) it resolves both
@@ -136,6 +154,7 @@ export function makeBuildId(id: string): BuildId {
 export function buildFdModule(
   deps: ScriptHostDeps,
   call?: CallFn,
+  resolveQuery?: (query: string) => QueryHandle[],
 ): Record<string, unknown> {
   const ops: Record<string, (c: BuildContext, id: BuildId, def: Record<string, unknown>) => OpHandle> = {};
   for (const [op, typeName] of Object.entries(OP_TO_BUILTIN)) {
@@ -145,8 +164,27 @@ export function buildFdModule(
     };
   }
 
-  const laterStage = (what: string, stage: string) => () => {
-    throw new Error(`${what} is a later FieldSkript stage (${stage})`);
+  // The bare default for `fd.q`: with no kernel resolver injected there
+  // is no live regeneration geometry to query, so it throws rather than
+  // silently no-op. The host (`makeScriptHost`) threads the real one.
+  const defaultResolveQuery = (_query: string): QueryHandle[] => {
+    throw new Error("fd.q requires the kernel query resolver (host-injected)");
+  };
+  const resolve = resolveQuery ?? defaultResolveQuery;
+
+  // Canonical id form: a raw string passes through, an `OpHandle` yields
+  // its `.id`. Mirrors how `fd.call`/`fd.op*` accept the dotted build id.
+  const idOf = (t: OpHandle | string): string =>
+    typeof t === "string" ? t : t.id;
+
+  const q = {
+    createdBy: (target: OpHandle | string): QueryHandle[] =>
+      resolve(`qCreatedBy(${idOf(target)})`),
+    faceOf: (target: OpHandle | string): QueryHandle[] =>
+      resolve(`qFaceOf(${idOf(target)})`),
+    edgeBetween: (a: OpHandle | string, b: OpHandle | string): QueryHandle[] =>
+      resolve(`qEdgeBetween(${idOf(a)}, ${idOf(b)})`),
+    evaluate: (query: string): QueryHandle[] => resolve(query),
   };
 
   // The bare default resolves built-ins only: with no script registry at
@@ -172,10 +210,7 @@ export function buildFdModule(
     group,
     visibleWhen,
     ...ops,
-    q: {
-      createdBy: laterStage("fd.q.createdBy", "S3 query system"),
-      evaluate: laterStage("fd.q.evaluate", "S3 query system"),
-    },
+    q,
     call: call ?? defaultCall,
   };
   // Mirror the authoring named exports so both `import { fd }` and
@@ -289,7 +324,7 @@ export function makeScriptHost(deps: ScriptHostDeps): {
     return { id: handles[0] ?? String(id) };
   };
 
-  const fdModule = buildFdModule(deps, call);
+  const fdModule = buildFdModule(deps, call, deps.resolveQuery);
 
   return {
     sync(scripts) {
