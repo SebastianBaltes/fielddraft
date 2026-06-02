@@ -453,6 +453,10 @@ pub struct Kernel {
     /// during the last regenerate pass. Applied as a post-processing
     /// step on the CsgNode tree before meshing.
     edge_fillets: Vec<csg::EdgeFillet>,
+    /// C2: resolved CSYS of every `mate_connector` from the last
+    /// regenerate pass, so the viewport can render datum triads without
+    /// re-resolving the face query on the JS side.
+    mate_connectors: Vec<features::ResolvedMateConnector>,
     /// Rollback bar position: if set, features at index >= this value
     /// are skipped during regeneration (but stay in the document).
     rollback_after: Option<usize>,
@@ -922,6 +926,7 @@ impl Kernel {
             mesh_algorithm: 0,
             mesh_version: 0,
             edge_fillets: Vec::new(),
+            mate_connectors: Vec::new(),
             rollback_after: None,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
@@ -995,6 +1000,8 @@ impl Kernel {
             let r = registry.regenerate(&mut ctx, &calls, rollback);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
+            // C2: capture resolved mate-connector CSYS for the viewport.
+            self.mate_connectors = std::mem::take(&mut ctx.mate_connectors);
             (r, std::mem::take(&mut ctx.features))
         };
         self.document.feature_calls = calls;
@@ -1489,17 +1496,29 @@ impl Kernel {
         }))
     }
 
-    /// K9.6: add a mate connector at a surface point.
+    /// K9.6 / C2: add a mate connector anchored to a B-Rep face. The
+    /// face is given as a query string (e.g. `qFace(<id_hash>)`); the
+    /// connector's CSYS is resolved from that face during regeneration.
+    /// `ou`/`ov` shift the origin in the face's in-plane basis.
     #[wasm_bindgen(js_name = addMateConnector)]
     pub fn add_mate_connector(
         &mut self,
-        ox: f32, oy: f32, oz: f32,
-        nx: f32, ny: f32, nz: f32,
+        face: &str,
+        ou: f32,
+        ov: f32,
     ) -> Result<u32, JsError> {
         self.push_feature_call("mate_connector", serde_json::json!({
-            "origin": [ox, oy, oz],
-            "normal": [nx, ny, nz],
+            "face": face,
+            "offset": [ou, ov],
         }))
+    }
+
+    /// C2: resolved CSYS of every placed `mate_connector`, as a JSON
+    /// array of `{ id, origin, normal, x_axis }`. The viewport reads this
+    /// to render datum triads instead of re-resolving the face query.
+    #[wasm_bindgen(js_name = resolvedMateConnectors)]
+    pub fn resolved_mate_connectors(&self) -> Result<String, JsError> {
+        serde_json::to_string(&self.mate_connectors).map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// K10.6: add a fillet_edge feature from detected edge data.

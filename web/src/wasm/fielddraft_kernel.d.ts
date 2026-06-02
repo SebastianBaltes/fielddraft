@@ -69,9 +69,12 @@ export class Kernel {
      */
     addLinearPattern(source_id: number, dx: number, dy: number, dz: number, count: number, spacing_mm: number): number;
     /**
-     * K9.6: add a mate connector at a surface point.
+     * K9.6 / C2: add a mate connector anchored to a B-Rep face. The
+     * face is given as a query string (e.g. `qFace(<id_hash>)`); the
+     * connector's CSYS is resolved from that face during regeneration.
+     * `ou`/`ov` shift the origin in the face's in-plane basis.
      */
-    addMateConnector(ox: number, oy: number, oz: number, nx: number, ny: number, nz: number): number;
+    addMateConnector(face: string, ou: number, ov: number): number;
     addMaterial(): number;
     /**
      * K8.2: append a `mirror` feature call that reflects the
@@ -462,6 +465,12 @@ export class Kernel {
      */
     replaceSketch(id: number, plane_query: string, sub_calls_json: string): void;
     /**
+     * C2: resolved CSYS of every placed `mate_connector`, as a JSON
+     * array of `{ id, origin, normal, x_axis }`. The viewport reads this
+     * to render datum triads instead of re-resolving the face query.
+     */
+    resolvedMateConnectors(): string;
+    /**
      * K8.10: list every document-level variable as a JSON
      * array of `{name, value}` pairs, sorted by name (the
      * BTreeMap ordering).
@@ -641,7 +650,7 @@ export interface InitOutput {
     readonly kernel_addHole: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addImportedMesh: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addLinearPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
-    readonly kernel_addMateConnector: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly kernel_addMateConnector: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_addMaterial: (a: number) => [number, number, number];
     readonly kernel_addMirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
@@ -717,6 +726,7 @@ export interface InitOutput {
     readonly kernel_reorderFeature: (a: number, b: number, c: number) => number;
     readonly kernel_replaceFeatureCallParams: (a: number, b: number, c: number, d: number) => [number, number];
     readonly kernel_replaceSketch: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly kernel_resolvedMateConnectors: (a: number) => [number, number, number, number];
     readonly kernel_sceneAabb: (a: number) => [number, number, number, number];
     readonly kernel_sceneStepExport: (a: number) => [number, number];
     readonly kernel_schemaForSketchToolType: (a: number, b: number, c: number) => [number, number, number, number];

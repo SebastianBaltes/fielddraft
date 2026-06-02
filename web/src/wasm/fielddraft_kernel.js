@@ -182,17 +182,19 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
-     * K9.6: add a mate connector at a surface point.
-     * @param {number} ox
-     * @param {number} oy
-     * @param {number} oz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
+     * K9.6 / C2: add a mate connector anchored to a B-Rep face. The
+     * face is given as a query string (e.g. `qFace(<id_hash>)`); the
+     * connector's CSYS is resolved from that face during regeneration.
+     * `ou`/`ov` shift the origin in the face's in-plane basis.
+     * @param {string} face
+     * @param {number} ou
+     * @param {number} ov
      * @returns {number}
      */
-    addMateConnector(ox, oy, oz, nx, ny, nz) {
-        const ret = wasm.kernel_addMateConnector(this.__wbg_ptr, ox, oy, oz, nx, ny, nz);
+    addMateConnector(face, ou, ov) {
+        const ptr0 = passStringToWasm0(face, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addMateConnector(this.__wbg_ptr, ptr0, len0, ou, ov);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1284,6 +1286,30 @@ export class Kernel {
         const ret = wasm.kernel_replaceSketch(this.__wbg_ptr, id, ptr0, len0, ptr1, len1);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * C2: resolved CSYS of every placed `mate_connector`, as a JSON
+     * array of `{ id, origin, normal, x_axis }`. The viewport reads this
+     * to render datum triads instead of re-resolving the face query.
+     * @returns {string}
+     */
+    resolvedMateConnectors() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.kernel_resolvedMateConnectors(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**

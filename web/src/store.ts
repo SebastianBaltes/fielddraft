@@ -1197,17 +1197,15 @@ export class KernelStore {
     this.autosave.flush();
   }
 
-  /** K9.6: add a mate connector at the current pick point. */
-  addMateConnectorAtPick(
-    point: [number, number, number],
-    normal: [number, number, number],
-  ): number | null {
+  /**
+   * K9.6 / C2: add a mate connector anchored to a picked B-Rep face.
+   * `faceQuery` is an element query string (e.g. `qFace(<idHash>)`) — the
+   * kernel resolves the face's CSYS during regeneration.
+   */
+  addMateConnectorAtFace(faceQuery: string): number | null {
     let id: number;
     try {
-      id = this.kernel.addMateConnector(
-        point[0], point[1], point[2],
-        normal[0], normal[1], normal[2],
-      );
+      id = this.kernel.addMateConnector(faceQuery, 0, 0);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addMateConnector failed", err);
@@ -1336,17 +1334,14 @@ export class KernelStore {
           indices: this.kernel.bodyIndicesView(i).slice(),
         });
       }
-      const features = JSON.parse(this.kernel.toJson()).feature_calls ?? [];
-      for (const fc of features) {
-        if (fc.type === "mate_connector" && fc.params) {
-          const origin = fc.params.origin ?? [0, 0, 0];
-          const normal = fc.params.normal ?? [0, 1, 0];
-          mateConnectors.push({
-            featureId: fc.id ?? 0,
-            origin: [origin[0], origin[1], origin[2]],
-            normal: [normal[0], normal[1], normal[2]],
-          });
-        }
+      // C2: mate-connector CSYS is resolved by the kernel from the
+      // face query during the regeneration triggered by loadJson above.
+      for (const c of this.kernel.resolvedMateConnectors()) {
+        mateConnectors.push({
+          featureId: c.id ?? 0,
+          origin: [c.origin[0], c.origin[1], c.origin[2]],
+          normal: [c.normal[0], c.normal[1], c.normal[2]],
+        });
       }
     } catch {
       // Meshing failed — add the part with empty meshes

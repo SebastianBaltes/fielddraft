@@ -284,6 +284,11 @@ struct ParamInfo {
     /// forwarded into the schema JSON so the TS widgets can
     /// show a suffix inside the input field.
     unit: Option<String>,
+    /// Optional `#[param(entity_filter = "FACE")]` topology filter,
+    /// forwarded into the schema JSON as `entityFilter` so the
+    /// viewport element-picker narrows to the right entity kind
+    /// (Brocken B/C — e.g. a sketch plane or mate-connector face).
+    entity_filter: Option<String>,
 }
 
 impl ParamInfo {
@@ -297,6 +302,7 @@ impl ParamInfo {
         let mut default: Option<Expr> = None;
         let mut ui_hint: Option<String> = None;
         let mut unit: Option<String> = None;
+        let mut entity_filter: Option<String> = None;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("param") {
@@ -323,10 +329,15 @@ impl ParamInfo {
                     let lit: syn::LitStr = value.parse()?;
                     unit = Some(lit.value());
                     Ok(())
+                } else if meta.path.is_ident("entity_filter") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    entity_filter = Some(lit.value());
+                    Ok(())
                 } else {
                     Err(meta.error(
                         "unknown #[param(...)] key \
-                         (supported: name, default, ui_hint, unit)",
+                         (supported: name, default, ui_hint, unit, entity_filter)",
                     ))
                 }
             })?;
@@ -341,6 +352,7 @@ impl ParamInfo {
             default,
             ui_hint,
             unit,
+            entity_filter,
         })
     }
 
@@ -377,6 +389,11 @@ impl ParamInfo {
             None => quote! {},
         };
 
+        let entity_filter_entry = match &self.entity_filter {
+            Some(f) => quote! { "entityFilter": #f, },
+            None => quote! {},
+        };
+
         quote! {
             ::serde_json::json!({
                 "key": #key,
@@ -386,6 +403,7 @@ impl ParamInfo {
                 #hint_entry
                 #variants_entry
                 #unit_entry
+                #entity_filter_entry
             })
         }
     }

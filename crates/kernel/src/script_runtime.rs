@@ -42,6 +42,7 @@ use serde_json::Value;
 
 use fielddraft_protocol::{Document, FeatureId};
 
+use crate::body::BrepCache;
 use crate::csg::{DecodedFeature, EdgeFillet};
 use crate::features::{Context, FeatureError, FeatureRegistry};
 use crate::sketch_features::SketchData;
@@ -60,16 +61,21 @@ pub struct RegenScratch {
     /// Edge fillets collected for the post-processing pass.
     pub edge_fillets: Vec<EdgeFillet>,
     /// Lazily woven B-Reps of the in-flight geometry, one per body
-    /// partition. Keyed on a content hash of `features`; a commit that
-    /// changes `features` invalidates it (next query re-weaves). `None`
-    /// until the first [`RegenScratch::ensure_breps`] call, and reset to
-    /// `None` by every successful [`commit_builtin`].
+    /// partition. Content-keyed via the shared [`BrepCache`]: a commit
+    /// that changes `features` invalidates it (next query re-weaves), and
+    /// every successful [`commit_builtin`] also clears it eagerly.
     ///
     /// This is the read side of the live context (S3): a script's `fd.q`
     /// resolves element-level queries against these woven solids while
     /// `build()` is still running, mirroring [`Body::ensure_brep`]'s
     /// content-keyed laziness but at scratch (whole-document) granularity.
-    brep_cache: Option<(u64, Vec<crate::brep::BRep>)>,
+    /// The weave itself is the single shared [`crate::body::weave_all`]
+    /// recipe — the same one the regeneration [`Context`] uses.
+    brep_cache: BrepCache,
+    /// Scratch buffer holding just the [`BRep`] views of `brep_cache`,
+    /// so [`RegenScratch::ensure_breps`] can hand back a `&[BRep]` that
+    /// [`crate::queries::resolve_query_topo`] consumes directly.
+    brep_view: Vec<crate::brep::BRep>,
 }
 
 impl RegenScratch {
@@ -94,39 +100,9 @@ impl RegenScratch {
     /// element structure — and therefore the stable id hashes a query
     /// returns — matches what a persisted regeneration would produce.
     pub fn ensure_breps(&mut self) -> &[crate::brep::BRep] {
-        use crate::body::{hash_body_payload, partition, Body};
-        use fielddraft_protocol::Transform;
-
-        let all: Vec<usize> = (0..self.features.len()).collect();
-        let key = hash_body_payload(&self.features, &all);
-
-        let fresh = !matches!(&self.brep_cache, Some((k, _)) if *k == key);
-        if fresh {
-            let parts = partition(&self.features);
-            let mut breps = Vec::with_capacity(parts.len());
-            for part in &parts {
-                let mut body = Body {
-                    id: part.seed_id(&self.features),
-                    feature_indices: part.feature_indices.clone(),
-                    aabb: part.aabb,
-                    payload_hash: 0,
-                    geometry_hash: 0,
-                    transform_hash: 0,
-                    mesh_resolution: 0,
-                    mesh: crate::dc::Mesh::default(),
-                    version: 1,
-                    transform_delta: None,
-                    last_mesh_transforms: Vec::new(),
-                    compiled_sdf: None,
-                    placement: Transform::IDENTITY,
-                    brep: None,
-                };
-                body.ensure_brep(&self.features);
-                breps.push(body.brep.expect("ensure_brep populates the cache").1);
-            }
-            self.brep_cache = Some((key, breps));
-        }
-        &self.brep_cache.as_ref().unwrap().1
+        let woven = self.brep_cache.ensure(&self.features);
+        self.brep_view = woven.iter().map(|(b, _)| b.clone()).collect();
+        &self.brep_view
     }
 }
 
@@ -282,7 +258,7 @@ pub fn commit_builtin(
         // against the new geometry. (The content-key check in
         // `ensure_breps` would also catch this, but clearing here keeps
         // the invalidation obvious and local to the write path — §2.6.)
-        scratch.brep_cache = None;
+        scratch.brep_cache.clear();
 
         result?;
         let handles = scratch.features[before..]
@@ -491,7 +467,8 @@ impl crate::features::FeatureKind for ScriptFeature {
             features: std::mem::take(&mut ctx.features),
             sketches: std::mem::take(&mut ctx.sketches),
             edge_fillets: std::mem::take(&mut ctx.edge_fillets),
-            brep_cache: None,
+            brep_cache: BrepCache::new(),
+            brep_view: Vec::new(),
         };
         enter(scratch);
 

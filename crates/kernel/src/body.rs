@@ -249,6 +249,87 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
     groups
 }
 
+/// Weave every body partition of `features` into one body-local
+/// [`BRep`], returning the woven solids paired with the rigid +
+/// uniform-scale **placement** that maps each one into world space.
+///
+/// This is the single canonical body-construction recipe shared by
+/// every mid-loop / live-context consumer: the regeneration
+/// [`Context`](crate::features::Context), the FieldSkript
+/// `RegenScratch`, and any other caller that needs the element-level
+/// topology of the in-flight geometry. The BReps come out body-local
+/// (placement divided out, matching [`Body::ensure_brep`]); apply the
+/// paired placement to lift a face centroid / normal into world space.
+pub fn weave_all(features: &[DecodedFeature]) -> Vec<(BRep, Transform)> {
+    let parts = partition(features);
+    let mut breps = Vec::with_capacity(parts.len());
+    for part in &parts {
+        let mut body = Body {
+            id: part.seed_id(features),
+            feature_indices: part.feature_indices.clone(),
+            aabb: part.aabb,
+            payload_hash: 0,
+            geometry_hash: 0,
+            transform_hash: 0,
+            mesh_resolution: 0,
+            mesh: Mesh::default(),
+            version: 1,
+            transform_delta: None,
+            last_mesh_transforms: Vec::new(),
+            compiled_sdf: None,
+            placement: Transform::IDENTITY,
+            brep: None,
+        };
+        body.ensure_brep(features);
+        let placement = body.placement;
+        breps.push((body.brep.expect("ensure_brep populates the cache").1, placement));
+    }
+    breps
+}
+
+/// Content-keyed lazy cache of the woven B-Reps of an in-flight feature
+/// spine, one entry per body partition.
+///
+/// The key is a content hash of the whole spine
+/// ([`hash_body_payload`] over every feature). When a feature is
+/// appended or mutated the key changes and [`BrepCache::ensure`]
+/// re-weaves; a pure read re-uses the cache. This is the shared
+/// laziness layer behind both the regeneration
+/// [`Context`](crate::features::Context) (mid-loop element queries) and
+/// the FieldSkript `RegenScratch` live context — one weave
+/// implementation, one invalidation rule.
+#[derive(Debug, Default)]
+pub struct BrepCache {
+    cached: Option<(u64, Vec<(BRep, Transform)>)>,
+}
+
+impl BrepCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Weave (or reuse) the B-Reps for the current `features` spine and
+    /// return them paired with their world placements. Re-weaves only
+    /// when the content key changes.
+    pub fn ensure(&mut self, features: &[DecodedFeature]) -> &[(BRep, Transform)] {
+        let all: Vec<usize> = (0..features.len()).collect();
+        let key = hash_body_payload(features, &all);
+        let fresh = !matches!(&self.cached, Some((k, _)) if *k == key);
+        if fresh {
+            self.cached = Some((key, weave_all(features)));
+        }
+        &self.cached.as_ref().unwrap().1
+    }
+
+    /// Drop the cache, forcing the next [`ensure`](BrepCache::ensure) to
+    /// re-weave. The content key normally handles invalidation; explicit
+    /// clearing is a belt-and-braces hook for callers (e.g. a commit) that
+    /// prefer eager invalidation.
+    pub fn clear(&mut self) {
+        self.cached = None;
+    }
+}
+
 /// World-space AABB of a single feature: its local geometry AABB
 /// transformed by its placement.
 fn feature_world_aabb(feature: &DecodedFeature) -> Aabb {

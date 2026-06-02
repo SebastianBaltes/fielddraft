@@ -222,10 +222,21 @@ function handleIkClick(
 }
 
 function handleMateClick(
-  store: { addMateConnectorAtPick(p: [number, number, number], n: [number, number, number]): void },
-  click: PickHit,
+  store: {
+    addMateConnectorAtFace(faceQuery: string): void;
+    showTransientError(msg: string): void;
+  },
+  _click: PickHit,
 ): void {
-  store.addMateConnectorAtPick(click.point, click.normal);
+  // C2: a mate connector anchors to a B-Rep face. Use the face the
+  // overlays published to the pick bridge; emit `qFace(<idHash>)` for it.
+  const hovered = getHoveredElement();
+  const query = hovered ? mapPickToQuery(hovered, "FACE") : null;
+  if (!query) {
+    store.showTransientError("Mate connector needs a face — hover a B-Rep face and click.");
+    return;
+  }
+  store.addMateConnectorAtFace(query);
 }
 
 function handleFilletClick(

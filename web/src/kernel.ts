@@ -1038,12 +1038,32 @@ export class Kernel {
     return this.inner.addImportedMesh(positions, indices, op);
   }
 
-  /** K9.6: add a mate connector at a surface point. */
-  addMateConnector(
-    ox: number, oy: number, oz: number,
-    nx: number, ny: number, nz: number,
-  ): number {
-    return this.inner.addMateConnector(ox, oy, oz, nx, ny, nz);
+  /**
+   * K9.6 / C2: add a mate connector anchored to a B-Rep face. `face` is
+   * an element query string (e.g. `qFace(<idHash>)`); the connector's
+   * CSYS is resolved from that face by the kernel during regeneration.
+   * `ou`/`ov` shift the origin in the face's in-plane basis.
+   */
+  addMateConnector(face: string, ou = 0, ov = 0): number {
+    return this.inner.addMateConnector(face, ou, ov);
+  }
+
+  /**
+   * C2: resolved CSYS of every placed `mate_connector`, parsed from the
+   * kernel's JSON. Each entry is `{ id, origin, normal, x_axis }`.
+   */
+  resolvedMateConnectors(): {
+    id: number;
+    origin: [number, number, number];
+    normal: [number, number, number];
+    x_axis: [number, number, number];
+  }[] {
+    const json = this.inner.resolvedMateConnectors();
+    try {
+      return JSON.parse(json);
+    } catch {
+      return [];
+    }
   }
 
   /** K10.6: add a fillet at a detected edge. */

@@ -992,28 +992,22 @@ export function MateConnectorOverlay() {
         (child.material as THREE.Material).dispose();
       }
     }
-    const connectors = state.features.filter(
-      (f) => f.kind === "mate_connector",
-    );
-    if (connectors.length === 0 || !store) return;
+    if (!store) return;
+    // C2: the kernel resolves each connector's CSYS from its face query
+    // during regeneration; we just render the triads it hands back.
+    const connectors = store.kernel.resolvedMateConnectors();
+    if (connectors.length === 0) return;
     for (const c of connectors) {
       try {
-        const params = store.kernel.getFeatureCallParams(c.id);
-        const origin = (params as { origin?: number[] }).origin ?? [0, 0, 0];
-        const normal = (params as { normal?: number[] }).normal ?? [0, 1, 0];
+        const origin = c.origin;
         const size = 15;
 
-        const nLen = Math.hypot(normal[0], normal[1], normal[2]) || 1;
-        const nz = [normal[0] / nLen, normal[1] / nLen, normal[2] / nLen];
-        let up = [0, 1, 0];
-        if (Math.abs(nz[1]) > 0.99) up = [1, 0, 0];
-        const nx = [
-          up[1] * nz[2] - up[2] * nz[1],
-          up[2] * nz[0] - up[0] * nz[2],
-          up[0] * nz[1] - up[1] * nz[0],
-        ];
-        const nxLen = Math.hypot(nx[0], nx[1], nx[2]) || 1;
-        nx[0] /= nxLen; nx[1] /= nxLen; nx[2] /= nxLen;
+        // CSYS: Z = face normal, X = the kernel's in-plane basis vector,
+        // Y = Z × X (right-handed).
+        const nLen = Math.hypot(c.normal[0], c.normal[1], c.normal[2]) || 1;
+        const nz = [c.normal[0] / nLen, c.normal[1] / nLen, c.normal[2] / nLen];
+        const xLen = Math.hypot(c.x_axis[0], c.x_axis[1], c.x_axis[2]) || 1;
+        const nx = [c.x_axis[0] / xLen, c.x_axis[1] / xLen, c.x_axis[2] / xLen];
         const ny = [
           nz[1] * nx[2] - nz[2] * nx[1],
           nz[2] * nx[0] - nz[0] * nx[2],
@@ -1039,7 +1033,7 @@ export function MateConnectorOverlay() {
           group.add(line);
         }
       } catch {
-        // Skip if params can't be read.
+        // Skip if a connector can't be rendered.
       }
     }
     return () => {

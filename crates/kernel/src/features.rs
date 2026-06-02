@@ -136,6 +136,16 @@ pub struct Context<'a> {
     /// K10.4: edge fillets collected during regen, applied as a
     /// post-processing pass on the CsgNode tree.
     pub edge_fillets: Vec<crate::csg::EdgeFillet>,
+    /// C0: shared lazy B-Rep cache over `features`. A feature can
+    /// resolve element-level queries (`qFace(h)`, `qCreatedBy(id)`, …)
+    /// against the geometry produced by every feature *so far* —
+    /// mid-loop. The content key auto-invalidates whenever a feature
+    /// pushes, so no manual clearing is needed between `execute` calls.
+    pub brep_cache: crate::body::BrepCache,
+    /// C2: resolved CSYS of every `mate_connector` placed this regen.
+    /// Captured by the kernel after regeneration so the viewport can
+    /// render datum triads without re-resolving the face query.
+    pub mate_connectors: Vec<ResolvedMateConnector>,
 }
 
 impl<'a> Context<'a> {
@@ -145,7 +155,60 @@ impl<'a> Context<'a> {
             features: Vec::new(),
             sketches: HashMap::new(),
             edge_fillets: Vec::new(),
+            brep_cache: crate::body::BrepCache::new(),
+            mate_connectors: Vec::new(),
         }
+    }
+
+    /// C0: resolve a query against the geometry woven from the features
+    /// accumulated so far. Lazily (re)weaves via [`Context::brep_cache`]
+    /// then delegates to [`crate::queries::resolve_query_topo`].
+    pub fn resolve_topo(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Vec<crate::brep::naming::TopoRef> {
+        let woven = self.brep_cache.ensure(&self.features);
+        let breps: Vec<crate::brep::BRep> = woven.iter().map(|(b, _)| b.clone()).collect();
+        crate::queries::resolve_query_topo(&breps, expr)
+    }
+
+    /// C0/C1: resolve a face-yielding query to the first matching face,
+    /// returning its [`SketchFrame`](crate::sketch_features::SketchFrame)
+    /// in **world** space (the woven B-Rep is body-local; the paired
+    /// placement is applied for us).
+    ///
+    /// Walks the woven solids in body order and, for each, scans for the
+    /// faces the query selects (by `id_hash` for `qFace`, by branch
+    /// feature id for `qCreatedBy`/`qFaceOf`), returning the first hit.
+    pub fn resolve_face_frame(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<crate::sketch_features::SketchFrame> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        for (brep, placement) in woven {
+            for i in 0..brep.faces.len() {
+                let fid = FaceId(i as u32);
+                let hit = match expr {
+                    QueryExpr::Face(hash) => {
+                        TopoRef::from_face(brep, fid).id_hash == *hash
+                    }
+                    QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
+                        .as_u32_or_root()
+                        .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
+                    _ => false,
+                };
+                if hit {
+                    return Some(crate::sketch_features::face_plane_frame(
+                        brep, fid, placement,
+                    ));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1078,13 +1141,34 @@ impl FeatureKind for SweepFeature {
 // (P1) to define attachment points.
 
 /// `mate_connector` — local coordinate system on a surface.
+///
+/// C2: the connector is now anchored to a B-Rep **face** (resolved
+/// mid-loop against the live geometry) rather than carrying a baked
+/// world origin/normal. Its CSYS origin is the face centroid shifted by
+/// `offset` in the face's in-plane basis; its Z-axis is the face normal.
 #[derive(FeatureSchema)]
 #[schema(type = "mate_connector")]
 pub struct MateConnectorDef {
-    /// Origin point in world space.
+    /// Face this connector attaches to (e.g. `qFace(<id_hash>)`).
+    #[param(entity_filter = "FACE")]
+    pub face: ::fielddraft_protocol::Query,
+    /// In-plane `(u, v)` offset from the face centroid, in the face's
+    /// synthesised `x_axis`/`y_axis` basis. Defaults to no offset.
+    #[param(default = [0.0, 0.0])]
+    pub offset: [f32; 2],
+}
+
+/// C2: the resolved coordinate system of a placed `mate_connector`,
+/// captured during regeneration so the viewport can render its triad
+/// without re-resolving the face query on the JS side.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ResolvedMateConnector {
+    pub id: FeatureId,
     pub origin: [f32; 3],
-    /// Surface normal (Z-axis of the CSYS).
+    /// CSYS Z-axis (the face normal).
     pub normal: [f32; 3],
+    /// CSYS X-axis (the face's in-plane basis vector).
+    pub x_axis: [f32; 3],
 }
 
 pub struct MateConnectorFeature;
@@ -1098,14 +1182,38 @@ impl FeatureKind for MateConnectorFeature {
     }
     fn execute(
         &self,
-        _ctx: &mut Context<'_>,
-        _id: &FeatureId,
-        _def: &Value,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
     ) -> Result<(), FeatureError> {
-        // Mate connectors don't produce spine geometry.
-        // They're datum features that live purely in the
-        // feature_calls list for the outliner + viewport
-        // to read and render.
+        // Mate connectors don't produce spine geometry — they're datum
+        // features. C2: resolve the `face` query against the live
+        // geometry, derive the CSYS, and stash it for the viewport.
+        let d = MateConnectorDef::parse(def)?;
+        let expr = crate::queries::parse_query(d.face.as_str()).map_err(|e| {
+            FeatureError::InvalidParameter {
+                feature: MateConnectorDef::TYPE_NAME,
+                name: "face",
+                message: format!("could not parse face query: {e}"),
+            }
+        })?;
+        let frame = ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
+            feature: MateConnectorDef::TYPE_NAME,
+            name: "face",
+            message: "face query resolved to no face".to_string(),
+        })?;
+        // Shift the centroid by the in-plane offset.
+        let origin = [
+            frame.origin[0] + d.offset[0] * frame.x_axis[0] + d.offset[1] * frame.y_axis[0],
+            frame.origin[1] + d.offset[0] * frame.x_axis[1] + d.offset[1] * frame.y_axis[1],
+            frame.origin[2] + d.offset[0] * frame.x_axis[2] + d.offset[1] * frame.y_axis[2],
+        ];
+        ctx.mate_connectors.push(ResolvedMateConnector {
+            id: id.clone(),
+            origin,
+            normal: frame.normal,
+            x_axis: frame.x_axis,
+        });
         Ok(())
     }
 }
@@ -1808,6 +1916,7 @@ impl FeatureKind for ExtrudeFeature {
         // three states explicitly: resolved-and-extrudable,
         // resolved-but-empty, no-resolve-use-fallback.
         let mut resolved_sketch: Option<::fielddraft_protocol::Sketch2d> = None;
+        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
         let mut sketch_was_found_but_empty = false;
         if let Ok(crate::queries::QueryExpr::CreatedBy(sketch_id)) =
             crate::queries::parse_query(d.profiles.as_str())
@@ -1818,6 +1927,7 @@ impl FeatureKind for ExtrudeFeature {
                 );
                 if !matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
                     resolved_sketch = Some(sketch2d);
+                    sketch_frame = sketch_data.frame;
                 } else {
                     sketch_was_found_but_empty = true;
                 }
@@ -1870,16 +1980,26 @@ impl FeatureKind for ExtrudeFeature {
             }
         };
 
+        // C1: compose the sketch's frame→world placement (parent) with
+        // the feature's own rotation/scale (child) so the profile — built
+        // in local XY — sits on the real sketch plane. `origin_plane_xy`
+        // and the legacy no-sketch path both yield the identity frame, so
+        // existing extrudes are byte-for-byte unchanged.
+        let transform = crate::compose_transforms(
+            &sketch_frame.to_transform(),
+            &Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale,
+            },
+        );
+
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
             d.operation,
             primitive,
-            Transform {
-                translate: [0.0, 0.0, 0.0],
-                rotation,
-                scale,
-            },
+            transform,
             PrimitiveModifiers::NONE,
             vec![],
         ));
@@ -1940,6 +2060,7 @@ impl FeatureKind for RevolveFeature {
         // Unlike ExtrudeFeature, we don't fall back to a legacy
         // half-extent stand-in: Revolve needs a real sketch to
         // produce any geometry at all.
+        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
         let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
             let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
             let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
@@ -1952,6 +2073,7 @@ impl FeatureKind for RevolveFeature {
             if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
                 None
             } else {
+                sketch_frame = sketch_data.frame;
                 Some(sketch2d)
             }
         })()
@@ -1964,6 +2086,16 @@ impl FeatureKind for RevolveFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
+        // C1: same frame→world composition as ExtrudeFeature.
+        let transform = crate::compose_transforms(
+            &sketch_frame.to_transform(),
+            &Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale,
+            },
+        );
+
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -1972,11 +2104,7 @@ impl FeatureKind for RevolveFeature {
                 sketch,
                 center: d.center,
             },
-            Transform {
-                translate: [0.0, 0.0, 0.0],
-                rotation,
-                scale,
-            },
+            transform,
             PrimitiveModifiers::NONE,
             vec![],
         ));
@@ -4810,5 +4938,139 @@ mod tests {
         } else {
             panic!("expected Primitive::Box");
         }
+    }
+
+    // ─── C0: mid-loop element-query resolution ─────────────────────
+
+    fn box_call(n: u32, half: f32) -> FeatureCall {
+        FeatureCall::new(
+            "box",
+            id(n),
+            json!({
+                "half_extents": [half, half, half],
+            }),
+        )
+    }
+
+    #[test]
+    fn context_resolve_topo_resolves_qface_against_features_so_far() {
+        // Build a box, weave it once to learn a face id_hash, then assert
+        // Context::resolve_topo (mid-loop) re-resolves that face against
+        // the features accumulated so far.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+
+        // Learn a real face id_hash from the woven body.
+        let woven = crate::body::weave_all(&ctx.features);
+        assert_eq!(woven.len(), 1, "one body");
+        let (brep, _placement) = &woven[0];
+        assert_eq!(brep.face_count(), 6, "a box has 6 faces");
+        let want = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(0));
+
+        let refs = ctx.resolve_topo(&crate::queries::QueryExpr::Face(want.id_hash));
+        assert_eq!(refs.len(), 1, "qFace(h) resolves to exactly one face mid-loop");
+        assert_eq!(refs[0].id_hash, want.id_hash);
+        // qCreatedBy(box) yields all six faces.
+        let all = ctx.resolve_topo(&crate::queries::QueryExpr::CreatedBy(id(1)));
+        assert_eq!(all.len(), 6, "qCreatedBy(box) yields all six faces");
+    }
+
+    #[test]
+    fn context_brep_cache_and_scratch_weave_identically() {
+        // Shared weave parity: the regeneration Context path and the
+        // FieldSkript scratch path both route through body::weave_all, so
+        // they must produce identical B-Rep topology for the same spine.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 7.0)), None)
+            .unwrap();
+
+        let via_context = ctx.brep_cache.ensure(&ctx.features).to_vec();
+        let via_weave_all = crate::body::weave_all(&ctx.features);
+        assert_eq!(via_context.len(), via_weave_all.len());
+        for ((b_ctx, p_ctx), (b_all, p_all)) in via_context.iter().zip(via_weave_all.iter()) {
+            assert_eq!(b_ctx.face_count(), b_all.face_count());
+            assert_eq!(b_ctx.edge_count(), b_all.edge_count());
+            assert_eq!(b_ctx.vertex_count(), b_all.vertex_count());
+            assert_eq!(p_ctx, p_all, "placements match");
+        }
+    }
+
+    // ─── C2: mate-connector-on-face ────────────────────────────────
+
+    #[test]
+    fn mate_connector_resolves_face_query_to_origin_and_normal() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+
+        // A 10mm half-extent box centred at origin: its +Z face sits at
+        // z = 10, normal +Z, centroid (0, 0, 10).
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+
+        // Find the +Z face id_hash from the woven body.
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, placement) = &woven[0];
+        let mut top_hash = None;
+        for i in 0..brep.face_count() {
+            let frame = crate::sketch_features::face_plane_frame(
+                brep,
+                crate::brep::FaceId(i as u32),
+                placement,
+            );
+            if (frame.normal[2] - 1.0).abs() < 1e-4 {
+                top_hash =
+                    Some(crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32)).id_hash);
+            }
+        }
+        let top_hash = top_hash.expect("box has a +Z face");
+
+        // Place a mate connector on that face; assert resolved CSYS.
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(2),
+                    json!({ "face": format!("qFace({top_hash})"), "offset": [0.0, 0.0] }),
+                )],
+                None,
+            )
+            .unwrap();
+        assert_eq!(ctx.mate_connectors.len(), 1);
+        let mc_origin = ctx.mate_connectors[0].origin;
+        let mc_normal = ctx.mate_connectors[0].normal;
+        assert!((mc_normal[2] - 1.0).abs() < 1e-3, "normal is +Z, got {mc_normal:?}");
+        assert!((mc_origin[2] - 10.0).abs() < 1e-2, "origin on the +Z face, got {mc_origin:?}");
+        assert!(mc_origin[0].abs() < 1e-2 && mc_origin[1].abs() < 1e-2, "centroid centred");
+
+        // Offset shifts the origin in-plane (x_axis/y_axis), never along
+        // the normal.
+        ctx.mate_connectors.clear();
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "mate_connector",
+                    id(3),
+                    json!({ "face": format!("qFace({top_hash})"), "offset": [3.0, 0.0] }),
+                )],
+                None,
+            )
+            .unwrap();
+        let shifted = ctx.mate_connectors[0].origin;
+        assert!((shifted[2] - 10.0).abs() < 1e-2, "offset stays in-plane (z unchanged)");
+        let in_plane_shift = ((shifted[0] - mc_origin[0]).powi(2)
+            + (shifted[1] - mc_origin[1]).powi(2))
+        .sqrt();
+        assert!((in_plane_shift - 3.0).abs() < 1e-2, "offset magnitude 3, got {in_plane_shift}");
     }
 }

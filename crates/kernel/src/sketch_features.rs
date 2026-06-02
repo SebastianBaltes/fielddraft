@@ -71,6 +71,212 @@ use crate::sketch2d::{ellipse_quad_beziers, Sketch2d, Sketch2dPrimitive, SketchS
 pub struct SketchData {
     pub state: SketchState,
     pub sub_calls: Vec<FeatureCall>,
+    /// C1: the 3D placement frame the 2D sketch lives on. Sketch
+    /// entities stay 2D (`(u, v)` in the frame's `x_axis`/`y_axis`
+    /// plane); lowering (extrude/revolve) composes
+    /// [`SketchFrame::to_transform`] into the emitted feature transform
+    /// so the profile sits on the real plane. `origin_plane_xy` yields
+    /// the identity frame so legacy XY sketches are unchanged.
+    pub frame: SketchFrame,
+}
+
+/// C1: a 3D placement for a 2D sketch — an orthonormal right-handed
+/// frame `(origin; x_axis, y_axis, normal)`. The sketch's `(u, v)`
+/// coordinates map to world as `origin + u·x_axis + v·y_axis`; the
+/// `normal` (== `x_axis × y_axis`) is the extrude/offset direction.
+///
+/// Geometry-neutral: this is just a coordinate frame, no datum-plane
+/// or mate-connector semantics baked in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchFrame {
+    pub origin: [f32; 3],
+    pub x_axis: [f32; 3],
+    pub y_axis: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+impl SketchFrame {
+    /// The identity frame: origin at world 0, axes aligned with
+    /// `+X`/`+Y`/`+Z`. [`SketchFrame::to_transform`] returns
+    /// [`Transform::IDENTITY`] for this frame, so a sketch on it lowers
+    /// exactly as a pre-C1 XY sketch did.
+    pub const IDENTITY: Self = Self {
+        origin: [0.0, 0.0, 0.0],
+        x_axis: [1.0, 0.0, 0.0],
+        y_axis: [0.0, 1.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+    };
+
+    /// Rigid frame→world [`Transform`]: a rotation whose columns are the
+    /// frame axes plus a translation to the origin. Composed into the
+    /// lowered feature transform so the 2D profile (built in XY) lands on
+    /// this plane.
+    pub fn to_transform(&self) -> fielddraft_protocol::Transform {
+        fielddraft_protocol::Transform {
+            translate: self.origin,
+            rotation: basis_to_quat(self.x_axis, self.y_axis, self.normal),
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+}
+
+/// Build a unit quaternion `(x, y, z, w)` from an orthonormal
+/// right-handed basis given as the three rotation-matrix columns
+/// (`col0 = x_axis`, `col1 = y_axis`, `col2 = z_axis`). Standard
+/// matrix→quaternion extraction (Shepperd's method, trace branch).
+pub(crate) fn basis_to_quat(c0: [f32; 3], c1: [f32; 3], c2: [f32; 3]) -> [f32; 4] {
+    let m00 = c0[0];
+    let m10 = c0[1];
+    let m20 = c0[2];
+    let m01 = c1[0];
+    let m11 = c1[1];
+    let m21 = c1[2];
+    let m02 = c2[0];
+    let m12 = c2[1];
+    let m22 = c2[2];
+    let trace = m00 + m11 + m22;
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [
+            (m21 - m12) / s,
+            (m02 - m20) / s,
+            (m10 - m01) / s,
+            0.25 * s,
+        ]
+    } else if m00 > m11 && m00 > m22 {
+        let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (m01 + m10) / s,
+            (m02 + m20) / s,
+            (m21 - m12) / s,
+        ]
+    } else if m11 > m22 {
+        let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+        [
+            (m01 + m10) / s,
+            0.25 * s,
+            (m12 + m21) / s,
+            (m02 - m20) / s,
+        ]
+    } else {
+        let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+        [
+            (m02 + m20) / s,
+            (m12 + m21) / s,
+            0.25 * s,
+            (m10 - m01) / s,
+        ]
+    }
+}
+
+/// C1: the placement frame for one of the three well-known origin
+/// datum planes, addressed by the feature id the web emits
+/// (`qCreatedBy(origin_plane_*)`). Returns `None` for any other id.
+///
+/// * `origin_plane_xy` → origin 0, normal `+Z`, axes `+X`/`+Y`
+///   (the identity frame — keeps legacy XY sketches byte-for-byte).
+/// * `origin_plane_xz` → normal `+Y`, axes `+X`/`+Z`.
+/// * `origin_plane_yz` → normal `+X`, axes `+Y`/`+Z`.
+pub fn datum_plane_frame(id: &FeatureId) -> Option<SketchFrame> {
+    match id.to_string().as_str() {
+        "origin_plane_xy" => Some(SketchFrame::IDENTITY),
+        "origin_plane_xz" => Some(SketchFrame {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 0.0, 1.0],
+            normal: [0.0, 1.0, 0.0],
+        }),
+        "origin_plane_yz" => Some(SketchFrame {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [0.0, 1.0, 0.0],
+            y_axis: [0.0, 0.0, 1.0],
+            normal: [1.0, 0.0, 0.0],
+        }),
+        _ => None,
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n > 1e-9 {
+        [v[0] / n, v[1] / n, v[2] / n]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// C1: build a sketch frame on a B-Rep face. The origin is the face
+/// centroid and the normal is the face's (world-space) analytic plane
+/// normal; the in-plane `x_axis`/`y_axis` are synthesised by crossing
+/// the normal with the world axis least aligned with it (so the basis
+/// is well-conditioned for any face orientation).
+///
+/// `placement` lifts the body-local woven face into world space (the
+/// weave is body-local, [`crate::body::Body::placement`] applied at
+/// consumption).
+pub fn face_plane_frame(
+    brep: &crate::brep::BRep,
+    id: crate::brep::FaceId,
+    placement: &fielddraft_protocol::Transform,
+) -> SketchFrame {
+    use crate::brep::naming::Fingerprint;
+
+    // Centroid (body-local) → world via the placement.
+    let fp = Fingerprint::of_face(brep, id);
+    let c_local = [fp.centroid[0] as f32, fp.centroid[1] as f32, fp.centroid[2] as f32];
+    let origin = {
+        let p = crate::quat_rotate(placement.rotation, [
+            c_local[0] * placement.scale[0],
+            c_local[1] * placement.scale[1],
+            c_local[2] * placement.scale[2],
+        ]);
+        [
+            p[0] + placement.translate[0],
+            p[1] + placement.translate[1],
+            p[2] + placement.translate[2],
+        ]
+    };
+
+    // Local analytic plane normal, rotated into world. Curved faces
+    // fall back to +Z locally.
+    let n_local = match &brep.face(id).surface {
+        crate::brep::SurfaceGeometry::Analytic {
+            surface: fielddraft_protocol::HalfSpace::Plane { normal, .. },
+            transform,
+        } => crate::quat_rotate(transform.rotation, *normal),
+        _ => [0.0, 0.0, 1.0],
+    };
+    let normal = normalize3(crate::quat_rotate(placement.rotation, n_local));
+
+    // Pick the world axis least aligned with the normal, cross twice
+    // for an orthonormal in-plane basis.
+    let ax = normal[0].abs();
+    let ay = normal[1].abs();
+    let az = normal[2].abs();
+    let seed = if ax <= ay && ax <= az {
+        [1.0, 0.0, 0.0]
+    } else if ay <= az {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let x_axis = normalize3(cross(seed, normal));
+    let y_axis = normalize3(cross(normal, x_axis));
+    SketchFrame {
+        origin,
+        x_axis,
+        y_axis,
+        normal,
+    }
 }
 
 // ─── sketch-tool layer ──────────────────────────────────────────
@@ -729,6 +935,7 @@ impl SketchFeature {
                     "name": "Plane",
                     "type": "query",
                     "required": true,
+                    "entityFilter": "FACE",
                 },
                 {
                     "key": "sub_calls",
@@ -810,7 +1017,39 @@ impl FeatureKind for SketchFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let parsed = ParsedSketchDef::parse(def)?;
-        let _plane = parsed.plane; // K6b.2 will resolve this
+
+        // C1: resolve the sketch's 3D placement frame from the `plane`
+        // query. Three resolution paths, no silent fallback:
+        //   * `qCreatedBy(origin_plane_*)` → the well-known datum frame
+        //     (`origin_plane_xy` is the identity frame).
+        //   * a face-yielding query (`qFace(h)`, or `qCreatedBy`/`qFaceOf`
+        //     of a prior feature's face) → that face's plane frame.
+        //   * anything else → a hard error.
+        let expr = crate::queries::parse_query(parsed.plane.as_str()).map_err(|e| {
+            FeatureError::InvalidParameter {
+                feature: SketchFeature::TYPE_NAME,
+                name: "plane",
+                message: format!("could not parse plane query: {e}"),
+            }
+        })?;
+        let frame = if let crate::queries::QueryExpr::CreatedBy(d) = &expr {
+            if let Some(datum) = datum_plane_frame(d) {
+                datum
+            } else {
+                ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
+                    feature: SketchFeature::TYPE_NAME,
+                    name: "plane",
+                    message: "plane query resolved to no datum and no face".to_string(),
+                })?
+            }
+        } else {
+            ctx.resolve_face_frame(&expr).ok_or(FeatureError::InvalidParameter {
+                feature: SketchFeature::TYPE_NAME,
+                name: "plane",
+                message: "plane query resolved to no face".to_string(),
+            })?
+        };
+
         let mut state = SketchState::with_origin();
         self.tools.apply_all(&mut state, &parsed.sub_calls)?;
         ctx.sketches.insert(
@@ -818,6 +1057,7 @@ impl FeatureKind for SketchFeature {
             SketchData {
                 state,
                 sub_calls: parsed.sub_calls,
+                frame,
             },
         );
         Ok(())
@@ -1131,6 +1371,8 @@ fn sort_pair(a: f32, b: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::str::FromStr;
 
     use fielddraft_protocol::{Document, FeatureCall, FeatureId};
     use serde_json::json;
@@ -1668,5 +1910,161 @@ mod tests {
         assert_eq!(at.get("key").unwrap(), "at");
         assert_eq!(at.get("type").unwrap(), "vec2");
         assert_eq!(at.get("required").unwrap(), true);
+    }
+
+    // ─── C1: sketch frames ─────────────────────────────────────────
+
+    fn is_orthonormal(f: &SketchFrame) -> bool {
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let unit = |a: [f32; 3]| (dot(a, a) - 1.0).abs() < 1e-4;
+        unit(f.x_axis)
+            && unit(f.y_axis)
+            && unit(f.normal)
+            && dot(f.x_axis, f.y_axis).abs() < 1e-4
+            && dot(f.x_axis, f.normal).abs() < 1e-4
+            && dot(f.y_axis, f.normal).abs() < 1e-4
+    }
+
+    #[test]
+    fn datum_plane_frames_are_orthonormal_and_well_known() {
+        let xy = datum_plane_frame(&FeatureId::from_str("origin_plane_xy").unwrap()).unwrap();
+        assert_eq!(xy, SketchFrame::IDENTITY);
+        assert!(xy.to_transform().is_identity(), "xy datum is the identity placement");
+
+        let xz = datum_plane_frame(&FeatureId::from_str("origin_plane_xz").unwrap()).unwrap();
+        assert_eq!(xz.normal, [0.0, 1.0, 0.0]);
+        assert!(is_orthonormal(&xz));
+
+        let yz = datum_plane_frame(&FeatureId::from_str("origin_plane_yz").unwrap()).unwrap();
+        assert_eq!(yz.normal, [1.0, 0.0, 0.0]);
+        assert!(is_orthonormal(&yz));
+
+        assert!(datum_plane_frame(&FeatureId::from_u32(5)).is_none());
+    }
+
+    #[test]
+    fn face_plane_frame_is_orthonormal_with_face_normal() {
+        // Weave a box and synthesise frames on each face; every frame must
+        // be orthonormal and its normal must match the face's plane normal.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new("box", id(1), json!({ "half_extents": [5.0, 5.0, 5.0] }))],
+                None,
+            )
+            .unwrap();
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, placement) = &woven[0];
+        for i in 0..brep.face_count() {
+            let frame = face_plane_frame(brep, crate::brep::FaceId(i as u32), placement);
+            assert!(is_orthonormal(&frame), "face {i} frame not orthonormal: {frame:?}");
+        }
+    }
+
+    #[test]
+    fn sketch_on_origin_plane_xy_yields_identity_frame() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    SketchFeature::TYPE_NAME,
+                    sketch_id.clone(),
+                    json!({
+                        "plane": "qCreatedBy(origin_plane_xy)",
+                        "sub_calls": [
+                            { "type": "sketch_rectangle", "id": "100",
+                              "params": { "corner_a": [0.0, 0.0], "corner_b": [4.0, 3.0] } }
+                        ]
+                    }),
+                )],
+                None,
+            )
+            .unwrap();
+        let data = ctx.sketches.get(&sketch_id).unwrap();
+        assert_eq!(data.frame, SketchFrame::IDENTITY, "xy sketch is the identity frame");
+        assert!(data.frame.to_transform().is_identity());
+    }
+
+    #[test]
+    fn sketch_on_prior_box_face_lands_on_that_face() {
+        // A box, then a sketch whose plane is the box's +Z face. The
+        // sketch frame's origin must sit on that face (z = +5) and its
+        // normal must be +Z — proving sketch-on-face resolves mid-loop.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+
+        let box_call = FeatureCall::new("box", id(1), json!({ "half_extents": [5.0, 5.0, 5.0] }));
+        registry.regenerate(&mut ctx, std::slice::from_ref(&box_call), None).unwrap();
+
+        // Learn the +Z face id_hash.
+        let woven = crate::body::weave_all(&ctx.features);
+        let (brep, placement) = &woven[0];
+        let mut top_hash = None;
+        for i in 0..brep.face_count() {
+            let f = face_plane_frame(brep, crate::brep::FaceId(i as u32), placement);
+            if (f.normal[2] - 1.0).abs() < 1e-4 {
+                top_hash = Some(
+                    crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32))
+                        .id_hash,
+                );
+            }
+        }
+        let top_hash = top_hash.expect("box has a +Z face");
+
+        // Re-run from scratch: box + sketch-on-face + extrude.
+        let mut doc = Document::default();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(2);
+        let extrude_id = id(3);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    box_call.clone(),
+                    FeatureCall::new(
+                        SketchFeature::TYPE_NAME,
+                        sketch_id.clone(),
+                        json!({
+                            "plane": format!("qFace({top_hash})"),
+                            "sub_calls": [
+                                { "type": "sketch_rectangle", "id": "200",
+                                  "params": { "corner_a": [-2.0, -2.0], "corner_b": [2.0, 2.0] } }
+                            ]
+                        }),
+                    ),
+                    FeatureCall::new(
+                        "extrude",
+                        extrude_id.clone(),
+                        json!({
+                            "profiles": format!("qCreatedBy({sketch_id})"),
+                            "depth": { "value": 4.0, "unit": "mm" },
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+
+        // The sketch frame sits on the +Z face.
+        let frame = ctx.sketches.get(&sketch_id).unwrap().frame;
+        assert!((frame.normal[2] - 1.0).abs() < 1e-3, "sketch normal +Z, got {:?}", frame.normal);
+        assert!((frame.origin[2] - 5.0).abs() < 1e-2, "sketch origin on the +Z face, got {:?}", frame.origin);
+
+        // The extrude inherits a non-identity placement (the frame),
+        // unlike an xy sketch — its translate lifts the profile to z≈5.
+        let extrude = ctx.features.iter().find(|f| f.id == extrude_id).unwrap();
+        assert!(
+            (extrude.transform.translate[2] - 5.0).abs() < 1e-2,
+            "extrude placement lifted to the face, got {:?}",
+            extrude.transform.translate
+        );
     }
 }
