@@ -51,6 +51,7 @@ import {
   reviseRecord,
   type FieldSkriptRecord,
 } from "./fieldskript/record";
+import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
 import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
 import {
   type MeshOverlayData,
@@ -2542,6 +2543,35 @@ export class KernelStore {
   deleteScript(id: string): void {
     this.kernel.removeScript(id);
     this.commit();
+  }
+
+  /**
+   * SI-W: instantiate a saved FieldSkript as a feature in the document.
+   * Builds the script's default parameter definition from its schema and
+   * adds a feature call keyed by the script id (its FeatureCall `type`).
+   * On success commits + selects the new feature, mirroring `commitSketch`.
+   * Returns the new feature id, or `null` on a missing record / kernel error.
+   */
+  insertScriptInstance(scriptId: string): number | null {
+    const record = this.kernel.listScripts().find((r) => r.id === scriptId);
+    if (!record) {
+      this.setTransientError(`Unknown script "${scriptId}".`);
+      return null;
+    }
+    const paramsJson = JSON.stringify(
+      buildDefaultDefinition(parseFeatureSchema(record.schema)),
+    );
+    let id: number;
+    try {
+      id = this.kernel.addFeatureCall(scriptId, paramsJson);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addFeatureCall failed", err);
+      this.setTransientError(formatKernelError(err, "Script insert failed"));
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
   }
 
   /** Derive a stable, deterministic script id from a name (or a

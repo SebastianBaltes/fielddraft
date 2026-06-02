@@ -4,6 +4,7 @@ import {
   buildFdModule,
   compileBuild,
   makeScriptHost,
+  scriptRecordsFrom,
   type ScriptHostDeps,
   type QueryHandle,
 } from "./workerScriptHost";
@@ -50,6 +51,34 @@ describe("makeBuildId", () => {
     expect(String(id)).toBe("10");
     expect(String(id.sub("bore"))).toBe("10.bore");
     expect(String(id.sub("bore").sub("ring"))).toBe("10.bore.ring");
+  });
+});
+
+describe("scriptRecordsFrom", () => {
+  it("parses a document's scripts into id + compiledJs records", () => {
+    const doc = JSON.stringify({
+      scripts: [
+        { id: "widget", compiledJs: "module.exports.default = function(){};", source: "…" },
+        { id: "slot", compiledJs: "//js" },
+      ],
+    });
+    expect(scriptRecordsFrom(doc)).toEqual([
+      { id: "widget", compiledJs: "module.exports.default = function(){};" },
+      { id: "slot", compiledJs: "//js" },
+    ]);
+  });
+
+  it("yields [] for a script-free document, a missing field, or malformed JSON", () => {
+    expect(scriptRecordsFrom(JSON.stringify({ features: [] }))).toEqual([]);
+    expect(scriptRecordsFrom("{}")).toEqual([]);
+    expect(scriptRecordsFrom("not json")).toEqual([]);
+  });
+
+  it("drops entries missing a string id or compiledJs", () => {
+    const doc = JSON.stringify({
+      scripts: [{ id: "ok", compiledJs: "x" }, { id: 7 }, { compiledJs: "y" }],
+    });
+    expect(scriptRecordsFrom(doc)).toEqual([{ id: "ok", compiledJs: "x" }]);
   });
 });
 

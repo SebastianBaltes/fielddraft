@@ -47,7 +47,7 @@ import initWasm, {
 import { MESH_CONTRIBUTOR_STRIDE } from "./kernel";
 import {
   makeScriptHost,
-  type ScriptRecordLite,
+  scriptRecordsFrom,
   type QueryHandle,
 } from "./workerScriptHost";
 import {
@@ -259,30 +259,6 @@ function snapshotBodies(
     );
   }
   return { bodies, transfers };
-}
-
-/**
- * Extract the document's FieldSkript records (id + compiled body) so the
- * build host can refresh its `build()` table before regeneration runs.
- * Tolerant of malformed JSON / a script-free document: a parse failure
- * or missing `scripts` yields an empty list, and the rebuild proceeds as
- * a pure-built-in document.
- */
-function scriptRecordsFrom(documentJson: string): ScriptRecordLite[] {
-  try {
-    const doc = JSON.parse(documentJson) as {
-      scripts?: { id?: unknown; compiledJs?: unknown }[];
-    };
-    if (!Array.isArray(doc.scripts)) return [];
-    return doc.scripts
-      .filter(
-        (s): s is { id: string; compiledJs: string } =>
-          typeof s?.id === "string" && typeof s?.compiledJs === "string",
-      )
-      .map((s) => ({ id: s.id, compiledJs: s.compiledJs }));
-  } catch {
-    return [];
-  }
 }
 
 async function handleRebuild(msg: MesherRebuildRequest): Promise<void> {

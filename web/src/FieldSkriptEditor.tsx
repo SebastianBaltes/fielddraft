@@ -208,6 +208,15 @@ function FieldSkriptEditorPanel({ store }: { store: KernelStore }) {
                     </button>
                     <button
                       type="button"
+                      className="insert"
+                      title="Insert into document"
+                      data-testid="fieldskript-insert"
+                      onClick={() => store.insertScriptInstance(r.id)}
+                    >
+                      Insert
+                    </button>
+                    <button
+                      type="button"
                       className="delete"
                       title="Delete script"
                       onClick={() => remove(r.id)}

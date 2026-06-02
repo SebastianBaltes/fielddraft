@@ -292,6 +292,31 @@ export interface ScriptRecordLite {
 }
 
 /**
+ * Extract a document's FieldSkript records (id + compiled body) so a build
+ * host can refresh its `build()` table before regeneration runs. Tolerant of
+ * malformed JSON / a script-free document: a parse failure or missing
+ * `scripts` yields an empty list, and regeneration proceeds as a pure
+ * built-in document. Shared by every realm that hosts the runner (the mesher
+ * worker and the main-thread host).
+ */
+export function scriptRecordsFrom(documentJson: string): ScriptRecordLite[] {
+  try {
+    const doc = JSON.parse(documentJson) as {
+      scripts?: { id?: unknown; compiledJs?: unknown }[];
+    };
+    if (!Array.isArray(doc.scripts)) return [];
+    return doc.scripts
+      .filter(
+        (s): s is { id: string; compiledJs: string } =>
+          typeof s?.id === "string" && typeof s?.compiledJs === "string",
+      )
+      .map((s) => ({ id: s.id, compiledJs: s.compiledJs }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The stateful host the worker holds across rebuilds. `sync` recompiles
  * the `build()` table from the current document's scripts; `run` is the
  * function handed to the wasm `installScriptRunner` — invoked

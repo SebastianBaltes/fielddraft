@@ -1082,23 +1082,36 @@ impl Kernel {
     // the schemas are serialised as strings so wasm-bindgen
     // doesn't need to learn about `serde_json::Value`.
 
-    /// K6a: list every feature type name the built-in registry
-    /// knows about, sorted for deterministic UI rendering. The
-    /// result is a JSON array of strings, e.g. `["box", "cylinder",
-    /// "extrude", "sphere"]`.
+    /// K6a: list every feature type name the UI can instantiate,
+    /// sorted for deterministic UI rendering. The result is a JSON
+    /// array of strings, e.g. `["box", "cylinder", "extrude",
+    /// "sphere"]`. Built-in registry names are joined with every
+    /// document FieldSkript id (a script's id doubles as its
+    /// `FeatureCall::type_name`), so saved scripts show up as
+    /// instantiable types alongside the built-ins.
     #[wasm_bindgen(js_name = listFeatureTypes)]
     pub fn list_feature_types(&self) -> Result<String, JsError> {
         let registry = features::FeatureRegistry::with_builtins();
         let mut names = registry.type_names();
+        names.extend(self.document.scripts.iter().map(|r| r.id.clone()));
         names.sort();
+        names.dedup();
         serde_json::to_string(&names).map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// K6a: look up the FeatureSchema-generated JSON schema for
     /// a feature type. Returns the serialised JSON string or an
-    /// error if the type isn't registered.
+    /// error if the type isn't registered. A document FieldSkript
+    /// (id == `type_name`) resolves to its stored `schema` blob —
+    /// the same RawFeatureSchema the web FeatureDialog consumes — so
+    /// the outliner's param dialog works for script instances too;
+    /// otherwise the built-in registry is consulted.
     #[wasm_bindgen(js_name = schemaForType)]
     pub fn schema_for_type(&self, type_name: &str) -> Result<String, JsError> {
+        if let Some(record) = self.document.scripts.iter().find(|r| r.id == type_name) {
+            return serde_json::to_string(&record.schema)
+                .map_err(|e| JsError::new(&e.to_string()));
+        }
         let registry = features::FeatureRegistry::with_builtins();
         let value = registry
             .schema_for(type_name)
@@ -2043,6 +2056,19 @@ impl Kernel {
             obj.insert("translate".into(), serde_json::json!([tx, ty, tz]));
             obj.insert("op".into(), serde_json::json!(op_wire));
         }
+        self.push_feature_call(type_name, params)
+    }
+
+    /// Insert a feature instance of an arbitrary registered type
+    /// (built-in OR a document FieldSkript whose id == `type_name`),
+    /// with `params_json` as its parameter blob. Returns the new flat
+    /// feature id. This is the generic counterpart to the type-specific
+    /// `addBox`/`addPrimitive`/… inserters — it's what lets a saved
+    /// FieldSkript be instantiated as a feature.
+    #[wasm_bindgen(js_name = addFeatureCall)]
+    pub fn add_feature_call(&mut self, type_name: &str, params_json: &str) -> Result<u32, JsError> {
+        let params: serde_json::Value =
+            serde_json::from_str(params_json).map_err(|e| JsError::new(&e.to_string()))?;
         self.push_feature_call(type_name, params)
     }
 
@@ -3644,6 +3670,97 @@ mod tests {
             .unwrap();
         assert_ne!(id1, id2);
         assert_eq!(k.feature_count(), 2);
+    }
+
+    // ─── generic feature-call insert + script-aware type queries ──────
+
+    #[test]
+    fn add_feature_call_appends_builtin_and_returns_new_id() {
+        let mut k = Kernel::new();
+        let params = r#"{ "half_extents": [1.0, 2.0, 3.0], "op": "union" }"#;
+        let id = k.add_feature_call("box", params).unwrap();
+        assert_eq!(k.feature_count(), 1);
+        assert!(
+            k.document.feature_calls.iter().any(|c| c.id == FeatureId::from_u32(id)),
+            "the new box call lands in feature_calls"
+        );
+        // The decoded spine grows to mirror the inserted call.
+        assert!(k.decoded.iter().any(|f| f.id == FeatureId::from_u32(id)));
+    }
+
+    #[test]
+    fn add_feature_call_rejects_malformed_params_json() {
+        // `add_feature_call`'s error branch constructs a `JsError`, which
+        // panics on native test targets, so we exercise the guard it
+        // relies on: malformed params json fails to parse, which is what
+        // makes the method short-circuit before touching the document.
+        assert!(serde_json::from_str::<serde_json::Value>("{ this is not json").is_err());
+    }
+
+    /// Build a minimal valid serialised `FieldSkriptRecord` for the
+    /// `upsert_script` path. The `schema` is the opaque RawFeatureSchema
+    /// blob the web side stores verbatim.
+    fn script_record_json(id: &str, schema: serde_json::Value) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "id": id,
+            "name": "Widget",
+            "source": "",
+            "compiledJs": "",
+            "schema": schema,
+            "version": 1,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn list_feature_types_includes_script_ids() {
+        let mut k = Kernel::new();
+        let before: Vec<String> =
+            serde_json::from_str(&k.list_feature_types().unwrap()).unwrap();
+        assert!(!before.iter().any(|t| t == "my_script"));
+
+        k.upsert_script(&script_record_json(
+            "my_script",
+            serde_json::json!({ "type": "widget", "name": "Widget", "params": [] }),
+        ))
+        .unwrap();
+
+        let after: Vec<String> =
+            serde_json::from_str(&k.list_feature_types().unwrap()).unwrap();
+        assert!(after.iter().any(|t| t == "my_script"));
+        // Still sorted and de-duplicated.
+        let mut sorted = after.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(after, sorted);
+    }
+
+    #[test]
+    fn schema_for_type_resolves_scripts_builtins_and_errors() {
+        let mut k = Kernel::new();
+        let schema = serde_json::json!({
+            "type": "widget", "name": "Widget", "params": [],
+        });
+        k.upsert_script(&script_record_json("my_script", schema.clone()))
+            .unwrap();
+
+        // A script id resolves to its stored schema verbatim.
+        let got: serde_json::Value =
+            serde_json::from_str(&k.schema_for_type("my_script").unwrap()).unwrap();
+        assert_eq!(got, schema);
+
+        // A built-in type still routes through the registry and returns
+        // that registry's schema verbatim.
+        let builtin: serde_json::Value =
+            serde_json::from_str(&k.schema_for_type("box").unwrap()).unwrap();
+        let registry = features::FeatureRegistry::with_builtins();
+        assert_eq!(builtin, registry.schema_for("box").unwrap());
+
+        // An unknown type still misses both the scripts and the registry;
+        // we assert the registry miss directly because the method's
+        // not-found branch builds a `JsError` (panics on native targets).
+        assert!(!k.document.scripts.iter().any(|r| r.id == "definitely_not_a_type"));
+        assert!(registry.schema_for("definitely_not_a_type").is_none());
     }
 
     #[test]

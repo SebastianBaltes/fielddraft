@@ -20,6 +20,8 @@ class FakeKernel {
   scripts = new Map<string, FieldSkriptRecord>();
   upsertCalls: FieldSkriptRecord[] = [];
   removeCalls: string[] = [];
+  featureCallArgs: { typeName: string; paramsJson: string }[] = [];
+  nextFeatureId = 42;
 
   // ── script CRUD ──
   listScripts(): FieldSkriptRecord[] {
@@ -34,6 +36,10 @@ class FakeKernel {
   removeScript(id: string): boolean {
     this.removeCalls.push(id);
     return this.scripts.delete(id);
+  }
+  addFeatureCall(typeName: string, paramsJson: string): number {
+    this.featureCallArgs.push({ typeName, paramsJson });
+    return this.nextFeatureId;
   }
 
   // ── accessors the constructor + commit path read ──
@@ -162,6 +168,27 @@ describe("KernelStore — FieldSkript CRUD", () => {
     store.deleteScript(saved.record.id);
     expect(kernel.removeCalls).toEqual([saved.record.id]);
     expect(store.listScripts()).toHaveLength(0);
+  });
+
+  it("insertScriptInstance adds a feature call for a known script", () => {
+    const saved = store.saveScript({ source: VALID_SOURCE });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+
+    const id = store.insertScriptInstance(saved.record.id);
+    expect(id).toBe(kernel.nextFeatureId);
+    expect(kernel.featureCallArgs).toHaveLength(1);
+    expect(kernel.featureCallArgs[0].typeName).toBe(saved.record.id);
+    // Default params are a JSON object derived from the script's schema.
+    const params = JSON.parse(kernel.featureCallArgs[0].paramsJson);
+    expect(typeof params).toBe("object");
+    expect(params).not.toBeNull();
+  });
+
+  it("insertScriptInstance on an unknown id returns null and does NOT call addFeatureCall", () => {
+    const id = store.insertScriptInstance("nope");
+    expect(id).toBeNull();
+    expect(kernel.featureCallArgs).toHaveLength(0);
   });
 });
 

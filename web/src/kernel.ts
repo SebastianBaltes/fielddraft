@@ -12,6 +12,8 @@
 // eslint-disable-next-line import/no-unresolved
 import initWasm, { Kernel as WasmKernel, wasmVersion } from "./wasm/fielddraft_kernel.js";
 import type { FieldSkriptRecord } from "./fieldskript/record";
+import { installMainScriptHost, syncMainScriptHost } from "./mainScriptHost";
+import { scriptRecordsFrom } from "./workerScriptHost";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
@@ -295,6 +297,13 @@ export class Kernel {
     } else {
       console.info(`[fielddraft] kernel v${wasmV}`);
     }
+
+    // FieldSkript SI-W: install the build host on THIS thread too. The
+    // main-thread regenerate (AABB, picking, outliner, undo) walks
+    // `ScriptFeature::execute` and would fail with `NoRunner` without it.
+    // `build()` is lightweight here (op-emission only); meshing stays in
+    // the worker. Safe to install now — wasm init has completed.
+    installMainScriptHost();
 
     return new Kernel(inner, exports.memory);
   }
@@ -852,6 +861,17 @@ export class Kernel {
 
   // ── mutations ───────────────────────────────────────────────────────
 
+  /**
+   * SI-W: instantiate a feature by type name — a built-in or a document
+   * FieldSkript — with its parameter definition as JSON. Returns the new
+   * feature id. The regenerate triggered here can reach a scripted body, so
+   * the main-thread build host must already be synced (it is, via every
+   * `upsertScript` and `loadJson`).
+   */
+  addFeatureCall(typeName: string, paramsJson: string): number {
+    return this.guardMut(() => this.inner.addFeatureCall(typeName, paramsJson));
+  }
+
   addBox(
     op: BoolOpTagValue,
     translate: [number, number, number],
@@ -1176,6 +1196,11 @@ export class Kernel {
   }
 
   loadJson(json: string): number {
+    // Refresh the main-thread build host's compiled-`build()` table BEFORE
+    // loading: the load regenerates the spine, and any scripted instance it
+    // reaches calls back through the runner. This single seam covers every
+    // store loadJson call site (rehydrate, undo/redo, import).
+    syncMainScriptHost(scriptRecordsFrom(json));
     return this.inner.loadJson(json);
   }
 
@@ -1191,11 +1216,19 @@ export class Kernel {
    * `true` when it replaced an existing record, `false` when inserted.
    */
   upsertScript(record: FieldSkriptRecord): boolean {
-    return this.guardMut(() => this.inner.upsertScript(JSON.stringify(record)));
+    const replaced = this.guardMut(() =>
+      this.inner.upsertScript(JSON.stringify(record)),
+    );
+    // The host must know the new/edited compiled `build()` before any later
+    // instance of this script regenerates on the main thread.
+    syncMainScriptHost(this.listScripts());
+    return replaced;
   }
 
   /** Remove a FieldSkript record by id. Returns `true` when removed. */
   removeScript(id: string): boolean {
-    return this.guardMut(() => this.inner.removeScript(id));
+    const removed = this.guardMut(() => this.inner.removeScript(id));
+    syncMainScriptHost(this.listScripts());
+    return removed;
   }
 }

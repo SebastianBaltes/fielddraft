@@ -86,6 +86,28 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * Insert a feature instance of an arbitrary registered type
+     * (built-in OR a document FieldSkript whose id == `type_name`),
+     * with `params_json` as its parameter blob. Returns the new flat
+     * feature id. This is the generic counterpart to the type-specific
+     * `addBox`/`addPrimitive`/… inserters — it's what lets a saved
+     * FieldSkript be instantiated as a feature.
+     * @param {string} type_name
+     * @param {string} params_json
+     * @returns {number}
+     */
+    addFeatureCall(type_name, params_json) {
+        const ptr0 = passStringToWasm0(type_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addFeatureCall(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * DL-61: add a fillet_edge feature selecting an edge by query
      * (e.g. `qEdge(<id_hash>)`). The mask tube and feature pair are
      * derived from the resolved edge during regeneration.
@@ -919,10 +941,13 @@ export class Kernel {
         }
     }
     /**
-     * K6a: list every feature type name the built-in registry
-     * knows about, sorted for deterministic UI rendering. The
-     * result is a JSON array of strings, e.g. `["box", "cylinder",
-     * "extrude", "sphere"]`.
+     * K6a: list every feature type name the UI can instantiate,
+     * sorted for deterministic UI rendering. The result is a JSON
+     * array of strings, e.g. `["box", "cylinder", "extrude",
+     * "sphere"]`. Built-in registry names are joined with every
+     * document FieldSkript id (a script's id doubles as its
+     * `FeatureCall::type_name`), so saved scripts show up as
+     * instantiable types alongside the built-ins.
      * @returns {string}
      */
     listFeatureTypes() {
@@ -1386,7 +1411,11 @@ export class Kernel {
     /**
      * K6a: look up the FeatureSchema-generated JSON schema for
      * a feature type. Returns the serialised JSON string or an
-     * error if the type isn't registered.
+     * error if the type isn't registered. A document FieldSkript
+     * (id == `type_name`) resolves to its stored `schema` blob —
+     * the same RawFeatureSchema the web FeatureDialog consumes — so
+     * the outliner's param dialog works for script instances too;
+     * otherwise the built-in registry is consulted.
      * @param {string} type_name
      * @returns {string}
      */

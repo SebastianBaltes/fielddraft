@@ -39,6 +39,15 @@ export class Kernel {
      */
     addExtrude(sketch_id: number, depth_mm: number, op: number, tz: number): number;
     /**
+     * Insert a feature instance of an arbitrary registered type
+     * (built-in OR a document FieldSkript whose id == `type_name`),
+     * with `params_json` as its parameter blob. Returns the new flat
+     * feature id. This is the generic counterpart to the type-specific
+     * `addBox`/`addPrimitive`/… inserters — it's what lets a saved
+     * FieldSkript be instantiated as a feature.
+     */
+    addFeatureCall(type_name: string, params_json: string): number;
+    /**
      * DL-61: add a fillet_edge feature selecting an edge by query
      * (e.g. `qEdge(<id_hash>)`). The mask tube and feature pair are
      * derived from the resolved edge during regeneration.
@@ -341,10 +350,13 @@ export class Kernel {
      */
     getSketchSubCalls(id: number): string;
     /**
-     * K6a: list every feature type name the built-in registry
-     * knows about, sorted for deterministic UI rendering. The
-     * result is a JSON array of strings, e.g. `["box", "cylinder",
-     * "extrude", "sphere"]`.
+     * K6a: list every feature type name the UI can instantiate,
+     * sorted for deterministic UI rendering. The result is a JSON
+     * array of strings, e.g. `["box", "cylinder", "extrude",
+     * "sphere"]`. Built-in registry names are joined with every
+     * document FieldSkript id (a script's id doubles as its
+     * `FeatureCall::type_name`), so saved scripts show up as
+     * instantiable types alongside the built-ins.
      */
     listFeatureTypes(): string;
     /**
@@ -502,7 +514,11 @@ export class Kernel {
     /**
      * K6a: look up the FeatureSchema-generated JSON schema for
      * a feature type. Returns the serialised JSON string or an
-     * error if the type isn't registered.
+     * error if the type isn't registered. A document FieldSkript
+     * (id == `type_name`) resolves to its stored `schema` blob —
+     * the same RawFeatureSchema the web FeatureDialog consumes — so
+     * the outliner's param dialog works for script instances too;
+     * otherwise the built-in registry is consulted.
      */
     schemaForType(type_name: string): string;
     /**
@@ -649,6 +665,7 @@ export interface InitOutput {
     readonly kernel_addBoolean: (a: number) => [number, number, number];
     readonly kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly kernel_addExtrude: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly kernel_addFeatureCall: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_addFilletEdge: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addGyroid: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addHole: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
