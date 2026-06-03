@@ -111,6 +111,26 @@ function FieldSkriptEditorPanel({
 
   return (
     <div className="fd-fieldskript-editor" data-testid="fieldskript-editor">
+      <header className="header">
+        {error ? (
+          <span className="error" role="alert" data-testid="fieldskript-error">
+            {error}
+          </span>
+        ) : (
+          <span className="status">
+            {`Editing ${savedRecord.id}${dirty ? " (unsaved)" : ""}`}
+          </span>
+        )}
+        <button
+          type="button"
+          className="save"
+          data-testid="fieldskript-save"
+          onClick={save}
+        >
+          Commit
+        </button>
+      </header>
+
       <div className="body">
         <section className="editor-pane">
           <div
@@ -130,26 +150,6 @@ function FieldSkriptEditorPanel({
           </div>
         </section>
       </div>
-
-      <footer className="footer">
-        {error ? (
-          <span className="error" role="alert" data-testid="fieldskript-error">
-            {error}
-          </span>
-        ) : (
-          <span className="status">
-            {`Editing ${savedRecord.id}${dirty ? " (unsaved)" : ""}`}
-          </span>
-        )}
-        <button
-          type="button"
-          className="save"
-          data-testid="fieldskript-save"
-          onClick={save}
-        >
-          Commit
-        </button>
-      </footer>
     </div>
   );
 }

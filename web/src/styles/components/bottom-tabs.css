@@ -1,28 +1,80 @@
-/* FT-W: bottom workspace tab strip (Part Editor / Feature Script).
- * Sheets/Onshape feel: a thin horizontal bar anchored at the bottom of
- * the shell, the active tab raised and accented. Light mode, font ≥ 1rem,
- * tokens-driven. Single top-level `fd-` class; children scoped by nesting. */
+/* MT-B: bottom workspace tab strip (Part / Script / Assembly).
+ * Onshape feel: a thin horizontal bar anchored at the bottom of the shell.
+ * Because the tabs hang at the BOTTOM, the border-radius is on the BOTTOM
+ * corners, and the active tab visually merges UP into the workspace above
+ * (the "tab illusion").
+ *
+ * Tab illusion technique: the strip carries a `border-top` hairline that
+ * separates it from the workspace above. The active `.tab` is pulled up by
+ * 1px (`margin-top: -1px`) so its own body (painted in `--color-bg`, the
+ * content background) sits ON TOP of that hairline and covers it across the
+ * tab's width — reading as one continuous surface with the content above.
+ * Inactive tabs stay below the hairline and are muted.
+ *
+ * Light mode, font ≥ 1rem, tokens-driven. Single top-level `fd-` class;
+ * children scoped by nesting. Menus open ABOVE the strip (bottom of the
+ * viewport) so they aren't clipped. */
 
 .fd-bottom-tabs {
+  position: relative;
   display: flex;
   align-items: stretch;
-  gap: var(--space-1);
+  gap: var(--space-2);
   flex: 0 0 auto;
   padding: 0 var(--space-3);
   background: var(--color-bg-elevated);
   border-top: 1px solid var(--color-border);
 
+  /* ── [+] add-tab button (left) ─────────────────────────────── */
+  .add {
+    position: relative;
+    display: flex;
+    align-items: center;
+
+    .add-button {
+      font-size: var(--fs-md);
+      font-weight: var(--fw-semibold);
+      line-height: 1;
+      width: 2rem;
+      height: 2rem;
+      margin: var(--space-1) 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-bg);
+      color: var(--color-text-muted);
+      cursor: pointer;
+    }
+
+    .add-button:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-text);
+    }
+  }
+
+  /* ── tab list ──────────────────────────────────────────────── */
+  .tabs {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow-x: auto;
+  }
+
   .tab {
+    position: relative;
+    display: flex;
+    align-items: stretch;
     font-size: var(--fs-base);
     font-weight: var(--fw-medium);
-    padding: var(--space-2) var(--space-4);
     border: 1px solid transparent;
-    border-bottom: none;
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
     background: transparent;
     color: var(--color-text-muted);
-    cursor: pointer;
-    line-height: 1.2;
+    line-height: var(--lh-tight);
   }
 
   .tab:hover {
@@ -30,10 +82,96 @@
     color: var(--color-text);
   }
 
+  /* The active tab merges UP into the content area: it carries the content
+   * background and is pulled up 1px so it covers the strip's top hairline
+   * over its own width. The extra top padding compensates for the offset so
+   * the label stays vertically centred. */
   .tab.is-active {
+    margin-top: -1px;
     background: var(--color-bg);
     color: var(--color-accent);
     border-color: var(--color-border);
-    cursor: default;
+    border-top: none;
+  }
+
+  .label {
+    font: inherit;
+    color: inherit;
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    white-space: nowrap;
+
+    .kind-glyph {
+      color: var(--color-text-subtle);
+    }
+  }
+
+  .tab.is-active .label .kind-glyph {
+    color: var(--color-accent);
+  }
+
+  .rename-input {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    margin: var(--space-1) 0 var(--space-1) var(--space-2);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+    min-width: 8rem;
+  }
+
+  /* ── ▾ per-tab caret ───────────────────────────────────────── */
+  .caret {
+    font-size: var(--fs-base);
+    line-height: 1;
+    padding: 0 var(--space-2);
+    border: none;
+    background: transparent;
+    color: var(--color-text-subtle);
+    cursor: pointer;
+  }
+
+  .caret:hover {
+    color: var(--color-text);
+  }
+
+  .tab.is-active .caret {
+    color: var(--color-accent);
+  }
+
+  /* ── popup menus (open ABOVE the strip) ────────────────────── */
+  .menu {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + var(--space-1));
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 13rem;
+    padding: var(--space-1);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-elevated);
+    box-shadow: var(--shadow-lg);
+
+    .menu-item {
+      font-size: var(--fs-base);
+      text-align: left;
+      padding: var(--space-2) var(--space-3);
+      border: none;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-text);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .menu-item:hover {
+      background: var(--color-bg-hover);
+    }
   }
 }
