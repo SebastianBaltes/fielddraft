@@ -1,9 +1,9 @@
 /* FieldSkript editor (MT-B) — the inline "Feature Script" workspace tab.
- * Fills its container: a Commit/status header bar pinned at the TOP, the
- * Monaco editor pane filling the rest, the schema preview below it. Light
- * mode, font ≥ 1rem, tokens-driven. No overlay/backdrop — App owns
- * visibility. (The old left record-list sidebar was removed in Chunk A —
- * each script is its own bottom tab now.) */
+ * Fills its container: a Commit/status header bar pinned at the TOP, then a
+ * horizontal body — the Monaco editor pane fills the remaining width and a
+ * resizable Schema-preview panel sits on the RIGHT (splitter on its left
+ * edge, mirroring the Part editor's Outliner). Light mode, font ≥ 1rem,
+ * tokens-driven. No overlay/backdrop — App owns visibility. */
 
 .fd-fieldskript-editor {
   display: flex;
@@ -14,7 +14,7 @@
 
   .body {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -33,13 +33,38 @@
     width: 100%;
   }
 
-  .schema-preview {
-    flex: 0 0 auto;
-    max-height: 16rem;
+  /* Resizable right panel holding the schema preview. */
+  .schema-panel {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
     overflow-y: auto;
-    padding: var(--space-3) var(--space-4);
-    border-top: 1px solid var(--color-divider);
     background: var(--color-bg);
+    border-left: 1px solid var(--color-border);
+
+    & > .splitter {
+      position: absolute;
+      top: 0;
+      left: -3px;
+      width: 7px;
+      height: 100%;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 5;
+      touch-action: none;
+      user-select: none;
+      transition: background 120ms ease;
+
+      &:hover,
+      &:active {
+        background: var(--color-accent, #3b82f6);
+        opacity: 0.25;
+      }
+    }
+  }
+
+  .schema-preview {
+    padding: var(--space-3) var(--space-4);
 
     h3 {
       margin: 0 0 var(--space-2);

@@ -14,7 +14,12 @@
  * panel mounts — keeping it out of the main bundle and the unit tests.
  */
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { KernelStore } from "./store";
 import type { ScriptTab } from "./project";
 import type { ScriptEditorHandle } from "./fieldskript/monacoSetup";
@@ -22,6 +27,34 @@ import { FeatureDialog } from "./widgets/FeatureDialog";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
 
 const noop = () => {};
+
+// ── Schema-preview panel resize (mirrors the Outliner splitter) ──
+const SCHEMA_MIN_WIDTH = 240; // px
+const SCHEMA_MAX_WIDTH = 760; // px
+const SCHEMA_DEFAULT_REM = 22;
+const SCHEMA_WIDTH_STORAGE_KEY = "fielddraft.fieldskriptSchemaWidth";
+
+function clampSchemaWidth(px: number): number {
+  if (!Number.isFinite(px)) return SCHEMA_MIN_WIDTH;
+  return Math.max(SCHEMA_MIN_WIDTH, Math.min(SCHEMA_MAX_WIDTH, px));
+}
+
+function loadSchemaWidth(): number {
+  try {
+    const raw = localStorage.getItem(SCHEMA_WIDTH_STORAGE_KEY);
+    if (raw != null) {
+      const parsed = parseFloat(raw);
+      if (Number.isFinite(parsed)) return clampSchemaWidth(parsed);
+    }
+  } catch {
+    // localStorage blocked — fall through to default.
+  }
+  const rootFontSize =
+    typeof window !== "undefined"
+      ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      : 16;
+  return clampSchemaWidth(SCHEMA_DEFAULT_REM * rootFontSize);
+}
 
 export function FieldSkriptEditor({
   store,
@@ -59,6 +92,45 @@ function FieldSkriptEditorPanel({
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<ScriptEditorHandle | null>(null);
+
+  // Resizable schema panel on the RIGHT (splitter on its left edge),
+  // mirroring the Part editor's Outliner. Width persists in localStorage.
+  const [schemaWidth, setSchemaWidth] = useState<number>(() => loadSchemaWidth());
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCHEMA_WIDTH_STORAGE_KEY, String(schemaWidth));
+    } catch {
+      // ignore
+    }
+  }, [schemaWidth]);
+
+  const onSplitterDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStateRef.current = { startX: e.clientX, startWidth: schemaWidth };
+  };
+  const onSplitterMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (!drag) return;
+    // Splitter is on the LEFT edge of the panel; dragging left widens it.
+    const delta = drag.startX - e.clientX;
+    setSchemaWidth(clampSchemaWidth(drag.startWidth + delta));
+    editorRef.current?.layout();
+  };
+  const onSplitterUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    dragStateRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+  const onSplitterDoubleClick = () => {
+    setSchemaWidth(clampSchemaWidth(SCHEMA_DEFAULT_REM * 16));
+    editorRef.current?.layout();
+  };
 
   // Lazy-mount Monaco once for this panel instance. The dynamic import
   // keeps Monaco + its `?worker` chunks out of the main bundle and the
@@ -138,6 +210,25 @@ function FieldSkriptEditorPanel({
             data-testid="fieldskript-editor-host"
             ref={hostRef}
           />
+        </section>
+        <aside
+          className="schema-panel"
+          style={{ width: `${schemaWidth}px`, flex: `0 0 ${schemaWidth}px` }}
+          data-testid="fieldskript-schema-panel"
+        >
+          <div
+            className="splitter"
+            data-testid="fieldskript-schema-splitter"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize schema preview"
+            title="Drag to resize (double-click to reset)"
+            onPointerDown={onSplitterDown}
+            onPointerMove={onSplitterMove}
+            onPointerUp={onSplitterUp}
+            onPointerCancel={onSplitterUp}
+            onDoubleClick={onSplitterDoubleClick}
+          />
           <div className="schema-preview">
             <h3>Schema preview</h3>
             <FeatureDialog
@@ -148,7 +239,7 @@ function FieldSkriptEditorPanel({
               onChange={noop}
             />
           </div>
-        </section>
+        </aside>
       </div>
     </div>
   );

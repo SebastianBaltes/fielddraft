@@ -549,6 +549,21 @@ function applyDefaults(
 /** Default value for a single parameter, taking variants and
  *  slider bounds into account. */
 export function defaultForParam(p: FeatureParamDescriptor): unknown {
+  // Length/angle are ALWAYS `{value, unit}` objects — both the
+  // LengthWidget/AngleWidget and scripted `build()`s read `.value`. A
+  // scalar `default` from the schema (e.g. `fd.length("size", {default:
+  // 20})` lowers to `default: 20`) must be WRAPPED, not passed through
+  // raw, or `def.size.value` is `undefined` → `Number(undefined)` → NaN
+  // → the kernel rejects `half_extents` as "element 0 is not a number".
+  // Handled before the generic early-return so a present default still
+  // gets wrapped.
+  if (p.widget === "length" || p.widget === "angle") {
+    const unit = p.widget === "length" ? "mm" : "deg";
+    const fallback = p.widget === "length" ? 1 : 0;
+    const d = p.defaultValue;
+    if (d !== null && typeof d === "object" && "value" in d) return d;
+    return { value: typeof d === "number" ? d : fallback, unit };
+  }
   if (p.defaultValue !== undefined) return p.defaultValue;
   switch (p.widget) {
     case "number":
@@ -566,10 +581,6 @@ export function defaultForParam(p: FeatureParamDescriptor): unknown {
       return "";
     case "enum":
       return p.variants && p.variants.length > 0 ? p.variants[0].key : "";
-    case "length":
-      return { value: 1, unit: "mm" };
-    case "angle":
-      return { value: 0, unit: "deg" };
     case "query":
     case "multi_query":
       return "";

@@ -265,6 +265,27 @@ describe("defaultForParam", () => {
       unit: "deg",
     });
   });
+  it("WRAPS a scalar length default into {value, unit}", () => {
+    // Regression: `fd.length("size", {default: 20})` lowers to a scalar
+    // `defaultValue: 20`; it must come back as {value, unit}, not raw 20,
+    // or `def.size.value` is undefined → NaN → kernel rejects half_extents.
+    expect(defaultForParam(p({ widget: "length", defaultValue: 20 }))).toEqual({
+      value: 20,
+      unit: "mm",
+    });
+  });
+  it("WRAPS a scalar angle default into {value, unit}", () => {
+    expect(defaultForParam(p({ widget: "angle", defaultValue: 45 }))).toEqual({
+      value: 45,
+      unit: "deg",
+    });
+  });
+  it("passes an already-wrapped length default through unchanged", () => {
+    const wrapped = { value: 7, unit: "cm" };
+    expect(defaultForParam(p({ widget: "length", defaultValue: wrapped }))).toEqual(
+      wrapped,
+    );
+  });
   it("returns the first variant key for enum widgets", () => {
     const def = defaultForParam(
       p({

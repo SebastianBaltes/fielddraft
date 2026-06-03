@@ -10,7 +10,14 @@
  * selection.
  */
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject,
+} from "react";
 import type { KernelStore, StoreState } from "./store";
 import type { TabKind } from "./project";
 
@@ -42,6 +49,31 @@ function useDismiss(
       document.removeEventListener("keydown", onKey);
     };
   }, [open, ref, onClose]);
+}
+
+/** Position an upward-opening popover as a fixed-position layer anchored to
+ *  `anchorRef`. `position: fixed` escapes the `.tabs` overflow scroller (a
+ *  plain overflow ancestor never clips fixed children), so the menu always
+ *  shows ABOVE the strip where there's room — never tucked under the tab.
+ *  Left edge is clamped into the viewport. */
+function useUpwardPopup(
+  open: boolean,
+  anchorRef: RefObject<HTMLElement | null>,
+): CSSProperties {
+  const [style, setStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const MENU_MIN_WIDTH = 208; // keep in sync with .fd-tab-popup min-width
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - MENU_MIN_WIDTH - 8));
+    setStyle({
+      left: `${left}px`,
+      bottom: `${window.innerHeight - r.top + 4}px`,
+    });
+  }, [open, anchorRef]);
+  return style;
 }
 
 export function BottomTabs({
@@ -77,6 +109,7 @@ export function BottomTabs({
 function AddTabButton({ store }: { store: KernelStore }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const menuStyle = useUpwardPopup(open, ref);
   useDismiss(open, ref, () => setOpen(false));
 
   const create = (kind: TabKind) => {
@@ -98,7 +131,12 @@ function AddTabButton({ store }: { store: KernelStore }) {
         +
       </button>
       {open ? (
-        <div className="menu" role="menu" data-testid="tab-add-menu">
+        <div
+          className="fd-tab-popup"
+          role="menu"
+          data-testid="tab-add-menu"
+          style={menuStyle}
+        >
           <button
             type="button"
             role="menuitem"
@@ -153,6 +191,7 @@ function TabButton({
 
   const ref = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const menuStyle = useUpwardPopup(menuOpen, ref);
   useDismiss(menuOpen, ref, () => setMenuOpen(false));
 
   useEffect(() => {
@@ -227,9 +266,10 @@ function TabButton({
       </button>
       {menuOpen ? (
         <div
-          className="menu"
+          className="fd-tab-popup"
           role="menu"
           data-testid={`tab-menu-popup-${tabId}`}
+          style={menuStyle}
         >
           <button
             type="button"
