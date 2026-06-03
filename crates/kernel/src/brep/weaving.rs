@@ -1043,6 +1043,129 @@ mod tests {
         BoundedCsg::from_csg(&csg)
     }
 
+    fn union_box_sphere(box_half: [f32; 3], sph_center: [f32; 3], sph_r: f32) -> BoundedCsg {
+        let boxn = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: box_half,
+            },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: sph_center,
+                radius: sph_r,
+            },
+        };
+        BoundedCsg::from_csg(&CsgNode::Union(Box::new(boxn), Box::new(sph)))
+    }
+
+    /// A regeneration-stable fingerprint of a woven B-Rep's wireframe: the
+    /// sorted multiset of edges (canonical signature, endpoint *positions*,
+    /// sampled polyline) plus the sorted vertex positions. Edge emission order
+    /// and endpoint `VertexId`s are themselves order-dependent, so we key on
+    /// geometry, never on ids.
+    fn wireframe_fingerprint(brep: &BRep) -> (Vec<String>, Vec<String>) {
+        let q = |x: f64| format!("{x:.4}");
+        let vpos = |vid: Option<VertexId>| match vid {
+            Some(VertexId(i)) => {
+                let p = brep.vertices[i as usize].position;
+                format!("[{},{},{}]", q(p[0]), q(p[1]), q(p[2]))
+            }
+            None => "none".to_string(),
+        };
+        let mut edges: Vec<String> = brep
+            .edges
+            .iter()
+            .map(|e| {
+                let poly: String = crate::brep::edge_sampling::sample_edge(&e.geometry)
+                    .iter()
+                    .map(|p| format!("{},{},{};", q(p[0]), q(p[1]), q(p[2])))
+                    .collect();
+                format!(
+                    "{}-{}|{}|{}|{poly}",
+                    e.signature.0.as_u32(),
+                    e.signature.1.as_u32(),
+                    vpos(e.start),
+                    vpos(e.end),
+                )
+            })
+            .collect();
+        edges.sort();
+        let mut verts: Vec<String> = brep
+            .vertices
+            .iter()
+            .map(|v| format!("[{},{},{}]", q(v.position[0]), q(v.position[1]), q(v.position[2])))
+            .collect();
+        verts.sort();
+        (edges, verts)
+    }
+
+    /// Regenerating the B-Rep from the *same* geometry must yield an identical
+    /// wireframe. The std `HashMap` seed advances between weaves in one process
+    /// (on wasm it is a per-allocation counter, on native fresh entropy), so
+    /// iterating the signature groups in raw `HashMap` order made extraction
+    /// order-dependent: edges snapped to different vertices and reflex corners
+    /// reconstructed differently, run to run — the "erratic B-Rep" bug. We weave
+    /// several times so the seed varies, and require every weave to match the
+    /// first.
+    /// DL-67: at a *coarse* octree resolution the sphere∩box-face seam used to
+    /// shatter — too few `Edge` cells along the curve, with some failing to
+    /// extract, so neither the Kåsa circle fit nor gap-chaining could rebuild it
+    /// and the seam fragmented into many short unbounded pieces (faces then fell
+    /// back to unordered loops). The analytic circular seam makes it one clean
+    /// arc at any resolution. Here we weave the corner case at res=1.0 (which
+    /// fragmented before) and require the exact, resolution-independent topology.
+    #[test]
+    fn coarse_sphere_seam_is_one_analytic_arc_not_fragments() {
+        let body = union_box_sphere([10.0, 10.0, 10.0], [10.0, 10.0, 10.0], 8.0);
+        let octree = Octree::build(&body, 1.0);
+        let brep = weave(&body, &octree);
+
+        // The three sphere-cap seams (signature carrying the sphere branch) are
+        // each exactly ONE edge, bounded by two triple vertices — not a spray of
+        // short None-None fragments.
+        let sphere_branch = 8192u32;
+        let seams: Vec<_> = brep
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.as_u32() == sphere_branch || e.signature.1.as_u32() == sphere_branch)
+            .collect();
+        assert_eq!(seams.len(), 3, "expected 3 single sphere-cap seams, got {}", seams.len());
+        for e in &seams {
+            assert!(
+                e.start.is_some() && e.end.is_some(),
+                "sphere seam must be bounded by its triple vertices, got {:?}..{:?}",
+                e.start,
+                e.end
+            );
+        }
+
+        // Every face orders into connected rings — no unordered fallback.
+        for (fi, f) in brep.faces.iter().enumerate() {
+            assert!(
+                f.outer.is_connected_ring(&brep.edges),
+                "face {fi} (branch {}) outer loop is not a connected ring",
+                f.branch_id.as_u32()
+            );
+        }
+    }
+
+    #[test]
+    fn weave_is_deterministic_across_regenerations() {
+        let body = union_box_sphere([10.0, 10.0, 10.0], [10.0, 10.0, 10.0], 8.0);
+        let octree = Octree::build(&body, 0.5);
+        let first = wireframe_fingerprint(&weave(&body, &octree));
+        for run in 1..6 {
+            let again = wireframe_fingerprint(&weave(&body, &octree));
+            assert_eq!(
+                first, again,
+                "weave #{run} differs from weave #0 — B-Rep extraction is not deterministic"
+            );
+        }
+    }
+
     fn close(a: [f64; 3], b: [f64; 3], tol: f64) -> bool {
         norm(sub(a, b)) <= tol
     }

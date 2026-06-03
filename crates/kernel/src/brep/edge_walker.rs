@@ -134,7 +134,9 @@ const SURFACE_MEMBERSHIP_FRACTION: f64 = 0.85;
 const CIRCLE_RADIAL_FRACTION: f64 = 0.9;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
-use super::vec3::{add as add3, dist, dist2, dot, norm as norm3, scale as scale3, sub};
+use super::vec3::{
+    add as add3, cross, dist, dist2, dot, norm as norm3, normalize, scale as scale3, sub,
+};
 
 /// Centroid of a point set.
 fn centroid(pts: &[[f64; 3]]) -> [f64; 3] {
@@ -399,6 +401,251 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
         let rotated: Vec<usize> = (0..n).map(|k| order[(max_idx + 1 + k) % n]).collect();
         Some(orient_chain(&inlier_points, &rotated))
     }
+}
+
+// ─── analytic circular seams (DL-67) ─────────────────────────────────────────
+
+/// Smallest analytic circle the sample-derived [`fit_circle`] is replaced for:
+/// below this radius the seam is a tiny ring barely worth a NURBS and the
+/// numeric guards below grow brittle, so we defer to the sampled fit.
+const ANALYTIC_CIRCLE_MIN_RADIUS: f64 = 1e-4;
+
+/// Target arc length (in the group's local sample spacing) of one output
+/// segment when re-sampling an analytic circle. Tied to the *extraction*
+/// spacing so a closed ring's first/last samples land within `LOOP_FACTOR`
+/// spacings of each other (closing the loop downstream), while the segment
+/// count is clamped to `[MIN, MAX]` so the curve stays smooth at any
+/// resolution.
+const ANALYTIC_CIRCLE_MIN_SEGMENTS: usize = 24;
+const ANALYTIC_CIRCLE_MAX_SEGMENTS: usize = 512;
+
+/// f64 quaternion rotation `q · v` (the `[f32; 4]` placement quaternion is
+/// `[x, y, z, w]`, matching [`crate::quat_rotate`]).
+fn quat_rotate_f64(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
+    let (qx, qy, qz, qw) = (q[0] as f64, q[1] as f64, q[2] as f64, q[3] as f64);
+    // t = 2 q_xyz × v ; v' = v + qw t + q_xyz × t
+    let t = cross([qx, qy, qz], v);
+    let t = [2.0 * t[0], 2.0 * t[1], 2.0 * t[2]];
+    add3(add3(v, scale3(t, qw)), cross([qx, qy, qz], t))
+}
+
+/// Map a primitive-local point to the body-local (weave) frame:
+/// `p_world = R·(s·p_local) + t`.
+fn local_to_world(xf: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
+    let s = [xf.scale[0] as f64, xf.scale[1] as f64, xf.scale[2] as f64];
+    let scaled = [p[0] * s[0], p[1] * s[1], p[2] * s[2]];
+    let r = quat_rotate_f64(xf.rotation, scaled);
+    add3(r, [xf.translate[0] as f64, xf.translate[1] as f64, xf.translate[2] as f64])
+}
+
+/// A plane (a point + unit normal) or a sphere (centre + radius) realised in the
+/// body-local frame from an analytic [`HalfSpace`] + its [`Transform`].
+enum AnalyticSurface {
+    Plane { point: [f64; 3], normal: [f64; 3] },
+    Sphere { center: [f64; 3], radius: f64 },
+}
+
+/// Lift a [`HalfSpace`] into the body-local frame as a [`AnalyticSurface`], or
+/// `None` for a kind we do not (yet) intersect analytically.
+fn analytic_surface(surf: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)) -> Option<AnalyticSurface> {
+    use fielddraft_protocol::HalfSpace;
+    let (hs, xf) = surf;
+    let s = xf.scale[0] as f64; // placement scale is uniform (see `inverse`)
+    match hs {
+        HalfSpace::Plane { normal, offset } => {
+            let nl = [normal[0] as f64, normal[1] as f64, normal[2] as f64];
+            // A local point on the plane is `n·offset`; the world normal is the
+            // rotated local normal (uniform scale leaves the direction).
+            let point = local_to_world(xf, scale3(nl, *offset as f64));
+            let normal = normalize(quat_rotate_f64(xf.rotation, nl));
+            Some(AnalyticSurface::Plane { point, normal })
+        }
+        HalfSpace::Sphere { radius } => Some(AnalyticSurface::Sphere {
+            center: local_to_world(xf, [0.0; 3]),
+            radius: *radius as f64 * s,
+        }),
+        _ => None,
+    }
+}
+
+/// The circle (centre, radius, plane normal) where two analytic surfaces meet,
+/// for the two circle-producing pairs: plane ∩ sphere and sphere ∩ sphere.
+fn surface_pair_circle(
+    a: &AnalyticSurface,
+    b: &AnalyticSurface,
+) -> Option<([f64; 3], f64, [f64; 3])> {
+    use AnalyticSurface::*;
+    // plane ∩ sphere
+    let plane_sphere = |pt: [f64; 3], n: [f64; 3], c: [f64; 3], r: f64| {
+        let d = dot(sub(c, pt), n); // signed distance of centre to plane
+        let r2 = r * r - d * d;
+        if r2 <= 0.0 {
+            return None;
+        }
+        let center = sub(c, scale3(n, d)); // foot of centre on the plane
+        Some((center, r2.sqrt(), n))
+    };
+    match (a, b) {
+        (Plane { point, normal }, Sphere { center, radius })
+        | (Sphere { center, radius }, Plane { point, normal }) => {
+            plane_sphere(*point, *normal, *center, *radius)
+        }
+        (Sphere { center: c1, radius: r1 }, Sphere { center: c2, radius: r2 }) => {
+            let axis = sub(*c2, *c1);
+            let d = norm3(axis);
+            if d <= 1e-9 {
+                return None; // concentric → no circle
+            }
+            let axis = scale3(axis, 1.0 / d);
+            // Distance from c1 to the radical plane along the axis.
+            let a_off = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+            let rc2 = r1 * r1 - a_off * a_off;
+            if rc2 <= 0.0 {
+                return None;
+            }
+            Some((add3(*c1, scale3(axis, a_off)), rc2.sqrt(), axis))
+        }
+        _ => None,
+    }
+}
+
+/// An orthonormal basis `(e1, e2)` spanning the plane with unit normal `n`.
+fn plane_basis(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    // Pick the axis least aligned with n to avoid a degenerate cross product.
+    let a = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if n[1].abs() <= n[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let e1 = normalize(cross(n, a));
+    let e2 = normalize(cross(n, e1));
+    (e1, e2)
+}
+
+/// Resolution-independent reconstruction of a **circular seam** between two
+/// analytic surfaces (DL-67). A sphere meeting a box face (plane) or another
+/// sphere intersects in an exact circle, but the octree only tags a handful of
+/// `Edge` cells along it and at coarse resolution some of those cells fail to
+/// extract at all — the gaps then defeat both the Kåsa [`fit_circle`] (its
+/// angular-gap test) and spatial gap-chaining, so the seam shatters into short
+/// fragments that no longer ring-close. That is the *erratic / jagged / broken*
+/// sphere-edge bug: which fragments survive depends on the exact octree grid,
+/// so a re-weave at a slightly shifted resolution flips the result.
+///
+/// Here the circle comes from the two surfaces *analytically*; the sampled
+/// points only choose the **active arc** (their angular extent is robust to
+/// interior gaps), and the seam's bounding triple vertices (already snapped to
+/// the exact analytic corner by [`refine_triple_vertex`], DL-66) pin its ends.
+/// The emitted chain is exact and identical at every resolution.
+///
+/// Topology from the vertex count: a `plane ∩ sphere` (or `sphere ∩ sphere`)
+/// seam is bounded by a triple vertex wherever it crosses a third surface, so
+/// **0 bounding vertices ⇒ a full closed ring** (the seam lies wholly on one
+/// face) and **2 ⇒ a single arc** between them through the samples. Any other
+/// count, a non-circle pair, or a tessellated/warped branch returns `None` and
+/// the sample-based fit runs unchanged.
+fn fit_analytic_circle(
+    surf_a: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform),
+    surf_b: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform),
+    pts: &[[f64; 3]],
+    bounding: &[[f64; 3]],
+    spacing: f64,
+) -> Option<Vec<HermiteSample>> {
+    if pts.len() < 3 || (!bounding.is_empty() && bounding.len() != 2) {
+        return None;
+    }
+    let (center, radius, normal) =
+        surface_pair_circle(&analytic_surface(surf_a)?, &analytic_surface(surf_b)?)?;
+    if radius < ANALYTIC_CIRCLE_MIN_RADIUS {
+        return None;
+    }
+    let (e1, e2) = plane_basis(normal);
+    let angle = |p: [f64; 3]| -> f64 {
+        let d = sub(p, center);
+        dot(d, e2).atan2(dot(d, e1))
+    };
+    // Re-sampling density: ~one output segment per local sample spacing, so a
+    // closed ring's ends meet within `LOOP_FACTOR` spacings; clamped smooth.
+    let circumference = std::f64::consts::TAU * radius;
+    let full_segments = ((circumference / spacing.max(1e-6)).round() as usize)
+        .clamp(ANALYTIC_CIRCLE_MIN_SEGMENTS, ANALYTIC_CIRCLE_MAX_SEGMENTS);
+
+    // Point + forward (increasing-θ) unit tangent on the circle at angle θ.
+    let at = |theta: f64| -> HermiteSample {
+        let (s, c) = theta.sin_cos();
+        let point = add3(center, add3(scale3(e1, radius * c), scale3(e2, radius * s)));
+        let tangent = normalize(add3(scale3(e1, -s), scale3(e2, c)));
+        HermiteSample { point, tangent }
+    };
+
+    if bounding.is_empty() {
+        // Full closed ring. Confirm the samples actually wrap the circle (no
+        // single gap dominates) — otherwise this is a clipped arc whose
+        // bounding vertices were missed, and the sampled fit is the safer call.
+        let mut ang: Vec<f64> = pts.iter().map(|&p| angle(p)).collect();
+        ang.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let max_gap = (0..ang.len())
+            .map(|i| {
+                if i + 1 < ang.len() {
+                    ang[i + 1] - ang[i]
+                } else {
+                    ang[0] + std::f64::consts::TAU - ang[ang.len() - 1]
+                }
+            })
+            .fold(0.0, f64::max);
+        if max_gap > CIRCLE_MAX_ANGULAR_GAP {
+            return None;
+        }
+        let step = std::f64::consts::TAU / full_segments as f64;
+        return Some((0..full_segments).map(|k| at(k as f64 * step)).collect());
+    }
+
+    // Arc between the two bounding vertices, taken the way the samples run.
+    let (va, vb) = (angle(bounding[0]), angle(bounding[1]));
+    let mid = {
+        let mut ang: Vec<f64> = pts.iter().map(|&p| angle(p)).collect();
+        ang.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ang[ang.len() / 2]
+    };
+    // Orient so we sweep va → end increasing, with the representative sample
+    // angle `mid` inside the swept span; pick whichever of the two arcs does.
+    let wrap = |x: f64| {
+        let mut x = x;
+        while x < 0.0 {
+            x += std::f64::consts::TAU;
+        }
+        while x >= std::f64::consts::TAU {
+            x -= std::f64::consts::TAU;
+        }
+        x
+    };
+    let span_fwd = wrap(vb - va); // va → vb going +
+    let mid_off = wrap(mid - va);
+    let (start, sweep) = if mid_off <= span_fwd {
+        (va, span_fwd)
+    } else {
+        (vb, std::f64::consts::TAU - span_fwd) // vb → va going +
+    };
+    if sweep < 1e-6 {
+        return None;
+    }
+    let segments = ((sweep / std::f64::consts::TAU * full_segments as f64).round() as usize).max(2);
+    let step = sweep / segments as f64;
+    // Inclusive of both ends so the chain starts/ends exactly on the vertices.
+    let mut samples: Vec<HermiteSample> = (0..=segments).map(|k| at(start + k as f64 * step)).collect();
+    // Pin the endpoints to the exact analytic vertex positions (the corner is
+    // on the circle to f32, but snap so downstream vertex-snapping is exact).
+    let first_is_a = mid_off <= span_fwd;
+    if first_is_a {
+        samples.first_mut().unwrap().point = bounding[0];
+        samples.last_mut().unwrap().point = bounding[1];
+    } else {
+        samples.first_mut().unwrap().point = bounding[1];
+        samples.last_mut().unwrap().point = bounding[0];
+    }
+    Some(samples)
 }
 
 // ─── vertex dedup ───────────────────────────────────────────────────────────
@@ -876,12 +1123,20 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         vid_by_branches.insert(key, vid);
     }
 
-    // Group edge points by canonical signature.
+    // Group edge points by canonical signature. We iterate the groups in a
+    // **sorted** order, not raw `HashMap` order: the std hasher's seed advances
+    // between weaves in one process (on wasm it is a per-allocation counter, not
+    // entropy), so iterating the map directly makes the whole extraction
+    // order-dependent — and therefore erratic across regenerations. The emitted
+    // `EdgeId` order (feeds idHash) and the `dangling` list (feeds reflex-vertex
+    // reconstruction) would both drift run to run. Sorting pins them.
     let mut groups: HashMap<(u32, u32), Vec<EdgePoint>> = HashMap::new();
     for ep in &edge_points {
         let key = (ep.signature.0.as_u32(), ep.signature.1.as_u32());
         groups.entry(key).or_default().push(*ep);
     }
+    let mut group_keys: Vec<(u32, u32)> = groups.keys().copied().collect();
+    group_keys.sort_unstable();
 
     // Analytic branch→surface table, used to reject phantom signature groups
     // (DL-52): a real edge lies on both faces, a contributor-eps phantom does
@@ -899,7 +1154,8 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     // vertex reconstruction post-pass (DL-60 / Task #25).
     let mut dangling: Vec<DanglingEnd> = Vec::new();
 
-    for (&(sa, sb), pts) in &groups {
+    for &(sa, sb) in &group_keys {
+        let pts = &groups[&(sa, sb)];
         // Collapse coincident edge points (DL-17) and get the characteristic
         // spacing of the distinct survivors.
         let (pts, spacing) = dedup_points(pts);
@@ -907,21 +1163,6 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         if spacing <= 0.0 {
             continue;
         }
-        // Global per-group primitive fit (DL-51): a signature group from an
-        // extrude / revolve body fragments into many gappy spatial runs even
-        // though it is topologically ONE edge. Try to fit the whole group with
-        // a single line, then a single circle; either collapses the fragments
-        // into one clean oriented chain. Only if neither fits (a genuinely
-        // multi-edge signature, DL-11) do we fall back to gap-chaining.
-        let fit_tol = spacing * FIT_RESIDUAL_FACTOR;
-        let chains: Vec<Chain> = if let Some(samples) = fit_line(&pts, fit_tol) {
-            vec![Chain { samples }]
-        } else if let Some(samples) = fit_circle(&pts, fit_tol) {
-            vec![Chain { samples }]
-        } else {
-            let gap_threshold = spacing * CHAIN_GAP_FACTOR;
-            chain_group(&pts, gap_threshold)
-        };
 
         let branch_a = BranchId(sa);
         let branch_b = BranchId(sb);
@@ -935,6 +1176,39 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
                 (vid_by_branches[&key], dv.position)
             })
             .collect();
+
+        // Analytic circular seam (DL-67): when both branches carry an analytic
+        // surface that meet in a circle (plane∩sphere, sphere∩sphere), rebuild
+        // the seam exactly from the surfaces instead of from the sampled points,
+        // bounded by the candidate triple vertices. This is resolution-
+        // independent — the cure for the shattered / jagged sphere seams that
+        // arise when coarse octree cells under-sample the curve. Falls through
+        // to the sample-based fits below for every other pairing.
+        let bounding: Vec<[f64; 3]> = candidates.iter().map(|&(_, p)| p).collect();
+        let analytic = match (halfspaces.get(&sa), halfspaces.get(&sb)) {
+            (Some(surf_a), Some(surf_b)) => {
+                fit_analytic_circle(surf_a, surf_b, &pts.iter().map(|p| p.position).collect::<Vec<_>>(), &bounding, spacing)
+            }
+            _ => None,
+        };
+
+        // Global per-group primitive fit (DL-51): a signature group from an
+        // extrude / revolve body fragments into many gappy spatial runs even
+        // though it is topologically ONE edge. Try to fit the whole group with
+        // a single line, then a single circle; either collapses the fragments
+        // into one clean oriented chain. Only if neither fits (a genuinely
+        // multi-edge signature, DL-11) do we fall back to gap-chaining.
+        let fit_tol = spacing * FIT_RESIDUAL_FACTOR;
+        let chains: Vec<Chain> = if let Some(samples) = analytic {
+            vec![Chain { samples }]
+        } else if let Some(samples) = fit_line(&pts, fit_tol) {
+            vec![Chain { samples }]
+        } else if let Some(samples) = fit_circle(&pts, fit_tol) {
+            vec![Chain { samples }]
+        } else {
+            let gap_threshold = spacing * CHAIN_GAP_FACTOR;
+            chain_group(&pts, gap_threshold)
+        };
 
         let snap_tol = spacing * SNAP_FACTOR;
         let loop_tol = spacing * LOOP_FACTOR;
