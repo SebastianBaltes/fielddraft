@@ -385,7 +385,7 @@ struct FeatureSummary {
     id: FeatureId,
     name: String,
     op: &'static str,
-    kind: &'static str,
+    kind: String,
     translate: [f32; 3],
     rotation: [f32; 4],
     scale: [f32; 3],
@@ -772,6 +772,23 @@ impl Kernel {
             "material" => "material",
             _ => "unknown",
         }
+    }
+
+    /// Outliner kind for a feature call. Built-ins map to their static
+    /// label; a script instance carries its script id as `type_name`
+    /// (not a built-in), so we pass that id straight through when the
+    /// document still defines that script — the outliner resolves the
+    /// name + icon from `state.scriptTypes` keyed by exactly this id.
+    /// A call whose script was deleted falls back to "unknown".
+    fn kind_label(&self, type_name: &str) -> String {
+        let builtin = Self::static_kind_name(type_name);
+        if builtin != "unknown" {
+            return builtin.to_string();
+        }
+        if self.document.scripts.iter().any(|s| s.id == type_name) {
+            return type_name.to_string();
+        }
+        "unknown".to_string()
     }
 
     /// K6b.3a: synthesise a display name for a feature call that
@@ -1179,7 +1196,7 @@ impl Kernel {
                     id: spine.id.clone(),
                     name: spine.name.clone(),
                     op: Self::op_label(spine.op),
-                    kind: Self::static_kind_name(&call.type_name),
+                    kind: self.kind_label(&call.type_name),
                     translate: spine.transform.translate,
                     rotation: spine.transform.rotation,
                     scale: spine.transform.scale,
@@ -1242,7 +1259,7 @@ impl Kernel {
                     id: call.id.clone(),
                     name,
                     op,
-                    kind: Self::static_kind_name(&call.type_name),
+                    kind: self.kind_label(&call.type_name),
                     translate,
                     rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: [1.0, 1.0, 1.0],
@@ -3762,6 +3779,53 @@ mod tests {
         // not-found branch builds a `JsError` (panics on native targets).
         assert!(!k.document.scripts.iter().any(|r| r.id == "definitely_not_a_type"));
         assert!(registry.schema_for("definitely_not_a_type").is_none());
+    }
+
+    /// Regression for the outliner showing "? script_1 N" on a
+    /// FieldSkript instance. A script call carries the script id as its
+    /// `type_name`; `static_kind_name` collapses every non-built-in to
+    /// "unknown", so `list_features` must instead pass the script id
+    /// through as the `kind` (the web outliner keys `scriptTypes` —
+    /// name + icon — by exactly this id).
+    #[test]
+    fn list_features_reports_script_id_as_kind() {
+        let mut k = Kernel::new();
+        k.upsert_script(&script_record_json(
+            "script_1",
+            serde_json::json!({ "type": "widget", "name": "Widget", "params": [] }),
+        ))
+        .unwrap();
+        // A script instance and a built-in side by side.
+        k.document.feature_calls.push(fielddraft_protocol::FeatureCall::new(
+            "script_1",
+            FeatureId::from_u32(1),
+            serde_json::json!({}),
+        ));
+        k.document.feature_calls.push(fielddraft_protocol::FeatureCall::new(
+            "box",
+            FeatureId::from_u32(2),
+            serde_json::json!({}),
+        ));
+
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(&k.list_features().unwrap()).unwrap();
+        let kind_of = |id: u64| {
+            arr.iter()
+                .find(|f| f["id"] == serde_json::json!(id))
+                .unwrap()["kind"]
+                .clone()
+        };
+        assert_eq!(kind_of(1), serde_json::json!("script_1"));
+        assert_eq!(kind_of(2), serde_json::json!("box"));
+
+        // A call whose script was deleted falls back to "unknown".
+        k.document.scripts.clear();
+        let arr2: Vec<serde_json::Value> =
+            serde_json::from_str(&k.list_features().unwrap()).unwrap();
+        assert_eq!(
+            arr2.iter().find(|f| f["id"] == serde_json::json!(1)).unwrap()["kind"],
+            serde_json::json!("unknown")
+        );
     }
 
     #[test]
