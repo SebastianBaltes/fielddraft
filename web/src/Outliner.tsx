@@ -27,7 +27,22 @@ import { getActive as getActivePicker } from "./queryPickerBridge";
 import { formatQueryDisplay } from "./queryLabels";
 import { ElementInfo } from "./ElementInfo";
 
-function kindGlyph(kind: string): string {
+/** A FieldSkript instance reports its `kind` as the script's id (e.g.
+ *  `script_1`), which the static feature-type tables don't know about. The
+ *  display name + icon live in the script record, surfaced via
+ *  `state.scriptTypes` (same source the Toolbar buttons use). */
+type ScriptType = { id: string; name: string; icon: string };
+
+function scriptTypeFor(
+  kind: string,
+  scriptTypes?: readonly ScriptType[],
+): ScriptType | undefined {
+  return scriptTypes?.find((t) => t.id === kind);
+}
+
+export function kindGlyph(kind: string, scriptTypes?: readonly ScriptType[]): string {
+  const script = scriptTypeFor(kind, scriptTypes);
+  if (script) return script.icon;
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
 }
 
@@ -36,8 +51,12 @@ function formatPlaneQuery(query: string | null): string {
   return query ? formatQueryDisplay(query) : "—";
 }
 
-function prettifyFeatureName(name: string, kind: string): string {
-  const prettyKind = FEATURE_TYPE_LABELS[kind];
+export function prettifyFeatureName(
+  name: string,
+  kind: string,
+  scriptTypes?: readonly ScriptType[],
+): string {
+  const prettyKind = scriptTypeFor(kind, scriptTypes)?.name ?? FEATURE_TYPE_LABELS[kind];
   if (!prettyKind) return name;
   if (name === kind) return prettyKind;
   const suffix = name.startsWith(kind + " ") ? name.slice(kind.length) : null;
@@ -958,7 +977,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                   onContextMenu={isRolledBack ? undefined : (e) => openContextMenu(e, feature.id)}
                 >
                   <span className="kind">
-                    {kindGlyph(feature.kind)}
+                    {kindGlyph(feature.kind, state.scriptTypes)}
                   </span>
                   {renamingId === feature.id ? (
                     <input
@@ -979,7 +998,7 @@ export function Outliner({ store, state }: OutlinerProps) {
                         beginRename(feature);
                       } : undefined}
                     >
-                      {prettifyFeatureName(feature.name, feature.kind)}
+                      {prettifyFeatureName(feature.name, feature.kind, state.scriptTypes)}
                     </span>
                   )}
                   {feature.kind === "sketch" ? (
@@ -1193,7 +1212,9 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
       ) : <ul className="list">
         {bodies.map((body, index) => {
           const seedFeature = state.features.find((f) => f.id === body.seedId);
-          const name = seedFeature?.name ?? `Body ${index + 1}`;
+          const name = seedFeature
+            ? prettifyFeatureName(seedFeature.name, seedFeature.kind, state.scriptTypes)
+            : `Body ${index + 1}`;
           const kind = seedFeature?.kind ?? "body";
           const selected = highlighted === index;
           return (
@@ -1211,7 +1232,7 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
                 data-body-index={index}
                 aria-hidden="true"
               />
-              <span className="kind">{kindGlyph(kind)}</span>
+              <span className="kind">{kindGlyph(kind, state.scriptTypes)}</span>
               <span className="name">{name}</span>
               {body.triangleCount > 0 && (
                 <span className="triangle-count">{body.triangleCount}</span>
