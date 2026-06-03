@@ -20,7 +20,10 @@ import {
   type BRepVertex,
   type Placement,
 } from "./kernel";
-import { elementQueryString, type PickedElement } from "./elementQuery";
+import {
+  elementQueryString,
+  type PickedElement,
+} from "./elementQuery";
 
 /** German label for each element kind. */
 const KIND_LABEL: Record<PickedElement["kind"], string> = {
@@ -229,6 +232,63 @@ export function ElementInfo({ store, state }: { store: KernelStore; state: Store
           <dd><code className="query" data-testid="element-info-query">{query}</code></dd>
         </div>
       </dl>
+      <ElementActions store={store} el={el} />
     </section>
+  );
+}
+
+/**
+ * Chunk 3b: Onshape-style context-actions. Each button starts the relevant
+ * feature directly from the selected element via the SAME store method the
+ * viewport-click tool ends up calling, fed the canonical `qFace`/`qEdge`
+ * query — no re-pick in the viewport. After firing we clear the selection so
+ * the panel doesn't linger on an element a fresh feature may have superseded.
+ *
+ * Vertices have no actions in this chunk → the section renders nothing.
+ */
+function ElementActions({ store, el }: { store: KernelStore; el: PickedElement }) {
+  if (el.kind === "vertex") return null;
+
+  const fire = (run: () => void) => {
+    run();
+    store.clearElementSelection();
+  };
+
+  return (
+    <div className="actions" data-testid="element-info-actions">
+      <span className="actions-title">Aktionen</span>
+      <div className="action-buttons">
+        {el.kind === "face" && (
+          <>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-sketch"
+              onClick={() => fire(() => store.enterSketch(elementQueryString(el)))}
+            >
+              Skizze auf Fläche
+            </button>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-mate"
+              onClick={() => fire(() => store.addMateConnectorAtFace(elementQueryString(el)))}
+            >
+              Mate-Connector
+            </button>
+          </>
+        )}
+        {el.kind === "edge" && (
+          <button
+            type="button"
+            className="action"
+            data-testid="element-action-fillet"
+            onClick={() => fire(() => store.addFilletAtEdge(elementQueryString(el)))}
+          >
+            Verrundung
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

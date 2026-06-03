@@ -83,4 +83,40 @@
     color: var(--color-text-muted);
     font-style: italic;
   }
+
+  /* Chunk 3b: Onshape-style context-actions for the selected element. */
+  & .actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: 0 var(--space-4) var(--space-3);
+  }
+
+  & .actions-title {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text-muted);
+  }
+
+  & .action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  & .action {
+    background: var(--color-accent-soft);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    color: var(--color-accent);
+    font-size: var(--fs-base);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+    line-height: 1.2;
+
+    &:hover {
+      background: var(--color-accent);
+      color: var(--color-text-on-accent);
+    }
+  }
 }
