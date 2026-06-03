@@ -10,6 +10,7 @@
 
 import { describe, expect, it, beforeEach } from "vitest";
 import { KernelStore } from "./store";
+import { parseProject } from "./project";
 import type { Kernel } from "./kernel";
 import type { AutoSaveHandle } from "./persistence";
 import type { FieldSkriptRecord } from "./fieldskript/record";
@@ -259,6 +260,51 @@ describe("KernelStore — workspace tabs", () => {
     const state = store.getState();
     expect(state.project.activeTabId).toBe(id);
     expect(state.assembly.active).toBe(true);
+  });
+
+  it("assembly edits write through to the tab immediately (single source of truth)", () => {
+    const { store } = makeStore();
+    const id = store.createTab("assembly");
+
+    store.setAssemblyScript("// hello");
+
+    const state = store.getState();
+    // The derived read-view reflects the edit…
+    expect(state.assembly.document.script).toBe("// hello");
+    // …and so does the assembly tab itself, BEFORE any tab switch.
+    const tab = state.project.tabs.find((t) => t.id === id);
+    expect(tab?.kind).toBe("assembly");
+    expect(tab?.kind === "assembly" && tab.document.script).toBe("// hello");
+    // Same object reference: the read-view points at the tab's document.
+    expect(tab?.kind === "assembly" && tab.document).toBe(state.assembly.document);
+  });
+
+  it("assembly edits persist through serialization without a prior tab switch", () => {
+    const captured: string[] = [];
+    const kernel = new FakeKernel();
+    const capturingAutosave: AutoSaveHandle = {
+      schedule: (json: string) => {
+        captured.push(json);
+      },
+      flush: () => {},
+      cancel: () => {},
+    };
+    const store = new KernelStore(
+      kernel as unknown as Kernel,
+      capturingAutosave,
+    );
+    const id = store.createTab("assembly");
+
+    store.setAssemblyScript("export default () => {};");
+
+    // The mutator scheduled an autosave with the live serialized project.
+    const lastJson = captured[captured.length - 1];
+    const project = parseProject(lastJson);
+    expect(project).not.toBeNull();
+    const tab = project!.tabs.find((t) => t.id === id);
+    expect(tab?.kind === "assembly" && tab.document.script).toBe(
+      "export default () => {};",
+    );
   });
 
   it("switching to a second part tab reloads the kernel document", () => {

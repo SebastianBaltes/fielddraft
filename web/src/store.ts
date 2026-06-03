@@ -39,6 +39,7 @@ import {
   IDENTITY_TRANSFORM,
   solveAssembly,
   solveIK,
+  type AssemblyDocument,
   type AssemblyPartInstance,
   type AssemblyMeshedBody,
   type Mate,
@@ -726,20 +727,16 @@ export class KernelStore {
 
   /**
    * MT-A: the single persistence funnel. Builds a Project mirroring
-   * `state.project` but with (a) the loaded part tab's `documentJson`
+   * `state.project` but with the loaded part tab's `documentJson`
    * replaced by the live kernel doc (scripts stripped — they live in
-   * script tabs) and (b) the active assembly tab's `document` replaced
-   * by the live assembly state. Everything that persists routes here.
+   * script tabs). The active assembly tab is always current (assembly
+   * edits write through immediately), so it needs no special-casing.
+   * Everything that persists routes here.
    */
   private serializeProject(): string {
-    const activeId = this.state.project.activeTabId;
-    const assemblyActive = this.state.assembly.active;
     const tabs = this.state.project.tabs.map((t) => {
       if (t.id === this.loadedPartTabId && t.kind === "part") {
         return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
-      }
-      if (t.id === activeId && t.kind === "assembly" && assemblyActive) {
-        return { ...t, document: this.state.assembly.document };
       }
       return t;
     });
@@ -1399,6 +1396,25 @@ export class KernelStore {
 
   // ── P1: Assembly management ────────────────────────────────────
 
+  /** Single write path for assembly-document edits. Writes `next` into the
+   *  active assembly tab (the source of truth) AND mirrors it into the
+   *  derived `state.assembly` read-view (same object reference), then
+   *  notifies + schedules autosave. No-op if the active tab isn't an
+   *  assembly tab. */
+  private updateAssemblyDocument(next: AssemblyDocument): void {
+    const activeId = this.state.project.activeTabId;
+    const tabs = this.state.project.tabs.map((t) =>
+      t.id === activeId && t.kind === "assembly" ? { ...t, document: next } : t,
+    );
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, tabs },
+      assembly: { ...this.state.assembly, document: next },
+    };
+    this.notify();
+    this.autosave.schedule(this.serializeProject());
+  }
+
   /** MT-A: leave the active assembly tab by switching to the first
    *  part tab. Drives the Outliner's "exit assembly" button. */
   exitAssembly(): void {
@@ -1464,37 +1480,23 @@ export class KernelStore {
       mateConnectors,
     };
 
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: {
-          ...asm.document,
-          parts: [...asm.document.parts, newPart],
-        },
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({
+      ...asm.document,
+      parts: [...asm.document.parts, newPart],
+    });
   }
 
   removePartFromAssembly(partId: string): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: {
-          ...asm.document,
-          parts: asm.document.parts.filter((p) => p.id !== partId),
-          mates: asm.document.mates.filter(
-            (m) => m.connectorA.partId !== partId && m.connectorB.partId !== partId,
-          ),
-        },
-        selectedPartId: asm.selectedPartId === partId ? null : asm.selectedPartId,
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({
+      ...asm.document,
+      parts: asm.document.parts.filter((p) => p.id !== partId),
+      mates: asm.document.mates.filter(
+        (m) => m.connectorA.partId !== partId && m.connectorB.partId !== partId,
+      ),
+    });
+    if (asm.selectedPartId === partId) this.selectAssemblyPart(null);
   }
 
   selectAssemblyPart(partId: string | null): void {
@@ -1514,19 +1516,12 @@ export class KernelStore {
   ): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: {
-          ...asm.document,
-          parts: asm.document.parts.map((p) =>
-            p.id === partId ? { ...p, transform: { translate, rotate } } : p,
-          ),
-        },
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({
+      ...asm.document,
+      parts: asm.document.parts.map((p) =>
+        p.id === partId ? { ...p, transform: { translate, rotate } } : p,
+      ),
+    });
   }
 
   addMate(
@@ -1552,27 +1547,16 @@ export class KernelStore {
       mates: [...asm.document.mates, mate],
     };
     const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.state = {
-      ...this.state,
-      assembly: { ...asm, document: { ...newDoc, parts: solved } },
-    };
-    this.notify();
+    this.updateAssemblyDocument({ ...newDoc, parts: solved });
   }
 
   removeMate(mateId: string): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: {
-          ...asm.document,
-          mates: asm.document.mates.filter((m) => m.id !== mateId),
-        },
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({
+      ...asm.document,
+      mates: asm.document.mates.filter((m) => m.id !== mateId),
+    });
   }
 
   setMateAngle(mateId: string, angleDeg: number): void {
@@ -1583,24 +1567,13 @@ export class KernelStore {
     );
     const newDoc = { ...asm.document, mates: newMates };
     const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.state = {
-      ...this.state,
-      assembly: { ...asm, document: { ...newDoc, parts: solved } },
-    };
-    this.notify();
+    this.updateAssemblyDocument({ ...newDoc, parts: solved });
   }
 
   setAssemblyScript(source: string): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: { ...asm.document, script: source },
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({ ...asm.document, script: source });
   }
 
   runFieldScript(
@@ -1631,11 +1604,7 @@ export class KernelStore {
       }
       const newDoc = { ...asm.document, mates: newMates };
       const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-      this.state = {
-        ...this.state,
-        assembly: { ...asm, document: { ...newDoc, parts: solved } },
-      };
-      this.notify();
+      this.updateAssemblyDocument({ ...newDoc, parts: solved });
     }
 
     return null;
@@ -1686,11 +1655,7 @@ export class KernelStore {
     if (!solved) return;
     const newDoc = { ...asm.document, mates: solved };
     const parts = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.state = {
-      ...this.state,
-      assembly: { ...asm, document: { ...newDoc, parts } },
-    };
-    this.notify();
+    this.updateAssemblyDocument({ ...newDoc, parts });
   }
 
   setMateOffset(mateId: string, offsetMm: number): void {
@@ -1701,29 +1666,18 @@ export class KernelStore {
     );
     const newDoc = { ...asm.document, mates: newMates };
     const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
-    this.state = {
-      ...this.state,
-      assembly: { ...asm, document: { ...newDoc, parts: solved } },
-    };
-    this.notify();
+    this.updateAssemblyDocument({ ...newDoc, parts: solved });
   }
 
   setMateJointLimits(mateId: string, minAngle: number, maxAngle: number): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
-    this.state = {
-      ...this.state,
-      assembly: {
-        ...asm,
-        document: {
-          ...asm.document,
-          mates: asm.document.mates.map((m) =>
-            m.id === mateId ? { ...m, minAngle, maxAngle } : m,
-          ),
-        },
-      },
-    };
-    this.notify();
+    this.updateAssemblyDocument({
+      ...asm.document,
+      mates: asm.document.mates.map((m) =>
+        m.id === mateId ? { ...m, minAngle, maxAngle } : m,
+      ),
+    });
   }
 
   selectAll(): void {
@@ -2591,17 +2545,14 @@ export class KernelStore {
 
   // ── MT-A: project / multi-tab management ──────────────────────
 
-  /** Flush the live kernel document back into the loaded part tab, and
-   *  (if an assembly tab is active) the assembly document back into it.
+  /** Flush the live kernel document back into the loaded part tab. The
+   *  active assembly tab is always current (assembly edits write through
+   *  immediately), so there is nothing to flush for it.
    *  Pure state shuffle — does NOT notify. */
   private flushLoadedTab(): void {
     const tabs = this.state.project.tabs.map((t) => {
       if (t.id === this.loadedPartTabId && t.kind === "part") {
         return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
-      }
-      const active = this.state.project.activeTabId;
-      if (t.id === active && t.kind === "assembly" && this.state.assembly.active) {
-        return { ...t, document: this.state.assembly.document };
       }
       return t;
     });
