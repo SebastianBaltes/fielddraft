@@ -15,16 +15,16 @@ describe("isTextEntryTarget", () => {
     expect(isTextEntryTarget(null)).toBe(false);
   });
 
-  // Regression: Monaco's EditContext input is a focusable <div> that is
-  // neither TEXTAREA nor contentEditable. Bare-key shortcuts (1/2/3/…)
-  // were swallowed while typing in the FieldSkript editor because the
-  // guard only checked tag/contentEditable.
-  it("matches any element inside a Monaco editor (incl. EditContext div)", () => {
+  // The script editor (Monaco) is NOT this helper's job: its EditContext
+  // input is a focusable <div> that is neither TEXTAREA nor
+  // contentEditable, so it reads as a non-text element here. Bare-key
+  // shortcuts are kept out of it by gating on the active tab kind in
+  // App.tsx, not by recognising the editor surface.
+  it("does not match a Monaco-style EditContext div", () => {
     const editor = document.createElement("div");
     editor.className = "monaco-editor";
     const editContextInput = document.createElement("div"); // not contentEditable
     editor.appendChild(editContextInput);
-    expect(isTextEntryTarget(editContextInput)).toBe(true);
-    expect(isTextEntryTarget(editor)).toBe(true);
+    expect(isTextEntryTarget(editContextInput)).toBe(false);
   });
 });

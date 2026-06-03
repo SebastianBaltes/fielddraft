@@ -31,23 +31,42 @@ export function App() {
   useEffect(() => {
     if (!store) return;
     const onKey = (e: KeyboardEvent) => {
-      // F1 toggles help overlay — always, even in inputs.
+      // F1 toggles help overlay — always, on every tab, even in inputs.
       if (e.key === "F1") {
         setShowHelp((v) => !v);
         e.preventDefault();
         return;
       }
-      // Never steal keystrokes from a focused text surface (plain
-      // inputs and, crucially, the Monaco script editor — see
-      // `isTextEntryTarget`). Without this, bare-key shortcuts
-      // (b/s/c/t/1/2/3/0/…) were swallowed mid-typing.
+      // Never steal keystrokes from a focused text surface (form fields,
+      // and the Monaco script editor).
       if (isTextEntryTarget(e.target)) return;
+
+      const ctrl = e.ctrlKey || e.metaKey;
+
+      // Ctrl+S saves the whole project — an app-level action valid in
+      // any workspace.
+      if (ctrl && (e.key === "s" || e.key === "S")) {
+        store.saveProjectToFile();
+        e.preventDefault();
+        return;
+      }
+
+      // Everything below edits the active part/assembly model, so it is
+      // only valid in the modelling workspace — NOT while a FieldSkript
+      // (script) tab is open, which has its own editor that owns the
+      // keyboard there. The window listener is global, so we gate on the
+      // active tab kind rather than on focus heuristics: a bare `b` on
+      // the script tab is text the user is typing, not "add box".
+      const cur = store.getState();
+      const activeTab = cur.project.tabs.find(
+        (t) => t.id === cur.project.activeTabId,
+      );
+      if (activeTab?.kind === "script") return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
         if (store.removeSelected()) e.preventDefault();
         return;
       }
-      const ctrl = e.ctrlKey || e.metaKey;
       if (ctrl && (e.key === "z" || e.key === "Z")) {
         if (e.shiftKey) {
           if (store.redo()) e.preventDefault();
@@ -145,13 +164,6 @@ export function App() {
             e.preventDefault();
             return;
         }
-      }
-
-      // Ctrl+S = save project to file.
-      if (ctrl && (e.key === "s" || e.key === "S")) {
-        store.saveProjectToFile();
-        e.preventDefault();
-        return;
       }
 
       // Ctrl+A = select all features.
