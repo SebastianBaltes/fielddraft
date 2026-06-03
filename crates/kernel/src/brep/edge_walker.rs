@@ -442,6 +442,90 @@ fn dedup_vertices(raw: &[Vertex]) -> Vec<DedupVertex> {
         .collect()
 }
 
+/// Maximum Gauss-Newton iterations when re-solving an analytic triple vertex.
+const VERTEX_REFINE_MAX_ITER: usize = 24;
+/// Convergence threshold on the largest per-surface signed-distance residual
+/// for accepting a refined analytic triple vertex (world units, matching the
+/// extractor's `ACCEPT_EPS` spirit). A near-tangential corner whose surfaces do
+/// not truly meet leaves the residual above this and is rejected (keep centroid).
+const VERTEX_REFINE_TOL: f32 = 1e-3;
+
+/// Re-solve a multi-branch vertex as the exact common zero of its branches'
+/// analytic surfaces, by Gauss-Newton from the centroid `seed` (DL-66).
+///
+/// At a *near-tangential* triple junction — e.g. a sphere grazing a box edge —
+/// the octree tags a fat band of `Vertex` cells (three branches active across an
+/// extended sliver) and the per-cell tangent-plane LSQ in [`extract_vertex`]
+/// scatters wildly, including gross outliers where one branch's seed landed on
+/// the wrong side. [`dedup_vertices`] averages those, so the corner drifts off
+/// the true intersection; the converging edge arcs then no longer snap to it and
+/// every touching face falls back to an unordered loop.
+///
+/// The three surfaces themselves meet cleanly there — two box planes + a sphere
+/// are well-conditioned at the corner; the tangency is between the *seam* and
+/// the box edge, not between the surface normals — so we solve the corner
+/// directly: minimise `Σ sdf_i(p)²` over the analytic branch surfaces by
+/// Gauss-Newton. Resolution-independent and outlier-proof: the scattered samples
+/// only seed it. Returns `None` (keep the centroid) when any branch has no
+/// analytic surface (a tessellated sweep / domain-warp face), the normals are
+/// rank-deficient (no isolated corner), or the solve does not converge.
+fn refine_triple_vertex(
+    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    branches: &[BranchId],
+    seed: [f64; 3],
+) -> Option<[f64; 3]> {
+    // Every branch must carry an analytic surface, else we cannot solve.
+    let surfs: Vec<&(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)> =
+        branches.iter().map(|b| halfspaces.get(&b.as_u32())).collect::<Option<_>>()?;
+    if surfs.len() < 3 {
+        return None;
+    }
+
+    // Signed distance of world point `p` to one branch surface.
+    let field = |hs, xf, p: [f32; 3]| crate::csg::sdf_halfspace(hs, crate::world_to_local(xf, p));
+    let residual = |p: [f32; 3]| -> f32 {
+        surfs.iter().map(|(hs, xf)| field(hs, xf, p).abs()).fold(0.0, f32::max)
+    };
+
+    let mut p = [seed[0] as f32, seed[1] as f32, seed[2] as f32];
+    let h = 1e-3f32; // central-difference step (planes are exact; only the
+    // curved surfaces incur a step error, which Gauss-Newton absorbs).
+
+    for _ in 0..VERTEX_REFINE_MAX_ITER {
+        if residual(p) < VERTEX_REFINE_TOL {
+            return Some([p[0] as f64, p[1] as f64, p[2] as f64]);
+        }
+        let mut jtj = Matrix3::<f32>::zeros();
+        let mut jtf = Vector3::<f32>::zeros();
+        for (hs, xf) in &surfs {
+            let f = field(hs, xf, p);
+            let mut g = [0.0f32; 3];
+            for (a, gi) in g.iter_mut().enumerate() {
+                let (mut pp, mut pm) = (p, p);
+                pp[a] += h;
+                pm[a] -= h;
+                *gi = (field(hs, xf, pp) - field(hs, xf, pm)) / (2.0 * h);
+            }
+            let gv = Vector3::new(g[0], g[1], g[2]);
+            jtj += gv * gv.transpose();
+            jtf += gv * f;
+        }
+        // Reject a rank-deficient normal matrix (parallel normals → no isolated
+        // corner): the smallest eigenvalue of `JᵀJ` collapses there.
+        let min_ev = SymmetricEigen::new(jtj)
+            .eigenvalues
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        if min_ev < 1e-6 {
+            return None;
+        }
+        let delta = jtj.try_inverse()? * jtf;
+        p = [p[0] - delta[0], p[1] - delta[1], p[2] - delta[2]];
+    }
+    (residual(p) < VERTEX_REFINE_TOL).then_some([p[0] as f64, p[1] as f64, p[2] as f64])
+}
+
 // ─── chaining ─────────────────────────────────────────────────────────────
 
 /// One ordered run of edge points (a contiguous chain along one edge).
@@ -769,7 +853,18 @@ fn chain_on_both_surfaces(
 /// Faces / shells / solids are left empty (C.6).
 pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     let (edge_points, raw_vertices) = extract_features(body, octree);
-    let dedup = dedup_vertices(&raw_vertices);
+    let mut dedup = dedup_vertices(&raw_vertices);
+
+    // Re-solve each multi-branch vertex as the exact analytic surface
+    // intersection, seeded from its centroid (DL-66). This snaps near-tangential
+    // triple junctions (a sphere grazing a box edge) back onto the true corner,
+    // where the scattered per-cell LSQ otherwise drifts the centroid off it.
+    let vertex_halfspaces = crate::brep::weaving::branch_halfspace_map(body);
+    for dv in &mut dedup {
+        if let Some(p) = refine_triple_vertex(&vertex_halfspaces, &dv.branches, dv.position) {
+            dv.position = p;
+        }
+    }
 
     let mut brep = BRep::new();
 

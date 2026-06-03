@@ -1097,4 +1097,70 @@ mod tests {
         // Bend variant of the same acceptance criterion.
         assert_warped_cube_topology(&bent_box([1.0, 1.0, 1.0], 0.3), 0.25);
     }
+
+    /// DL-66: a sphere poking through a box *corner* crosses the three box edges
+    /// meeting there at near-tangential angles (the sphere normal runs nearly
+    /// parallel to each box edge at the crossing). The per-cell vertex LSQ then
+    /// scatters and the centroid drifts off the true corner, so before DL-66 the
+    /// converging seam arcs failed to snap and three faces fell back to unordered
+    /// loops. The analytic triple-vertex re-solve must place each crossing on the
+    /// exact corner so every face weaves into a connected ring with no dangling
+    /// edge.
+    #[test]
+    fn sphere_over_box_corner_weaves_valid_faces() {
+        use crate::brep::weaving::weave;
+        // Sphere centred on the +X+Y+Z corner (10,10,10), r=8. On the +X face
+        // (x=10) the seam is the circle (y−10)²+(z−10)²=64; it meets the +X/+Y
+        // box edge (x=y=10) at z=10−8=2 → the triple vertex {+X,+Y,sphere} sits
+        // exactly at (10,10,2), and by symmetry the other two at (10,2,10) and
+        // (2,10,10).
+        let body = union_box_sphere([10.0, 10.0, 10.0], [10.0, 10.0, 10.0], 8.0);
+        let octree = Octree::build(&body, 0.5);
+        let brep = weave(&body, &octree);
+
+        // The three near-tangential triple junctions must land on the exact
+        // analytic corners (a centroid drift would be ≫ 0.1 here).
+        for want in [[10.0, 10.0, 2.0], [10.0, 2.0, 10.0], [2.0, 10.0, 10.0]] {
+            let hit = brep.vertices.iter().any(|v| {
+                let d = (0..3)
+                    .map(|i| (v.position[i] - want[i]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                d < 0.1
+            });
+            assert!(hit, "no triple vertex near tangential corner {want:?}");
+        }
+
+        // No face may fall back to the unordered loop: every outer/inner loop is
+        // a connected ring (the watertight-topology guarantee). A drifted corner
+        // would leave a dangling endpoint and break the ring here.
+        for (fi, f) in brep.faces.iter().enumerate() {
+            assert!(
+                f.outer.is_connected_ring(&brep.edges),
+                "face {fi} (branch {}) outer loop is not a connected ring",
+                f.branch_id.as_u32()
+            );
+            for (li, lp) in f.inner.iter().enumerate() {
+                assert!(
+                    lp.is_connected_ring(&brep.edges),
+                    "face {fi} inner loop {li} is not a connected ring"
+                );
+            }
+        }
+
+        // No vertex-bounded edge may dangle: each edge either closes on itself
+        // (a full trim circle) or carries both endpoints.
+        for e in &brep.edges {
+            let both = e.start.is_some() && e.end.is_some();
+            let loop_edge = e.start.is_none() && e.end.is_none();
+            assert!(
+                both || loop_edge,
+                "dangling edge sig=({},{}) start={:?} end={:?}",
+                e.signature.0.as_u32(),
+                e.signature.1.as_u32(),
+                e.start,
+                e.end
+            );
+        }
+    }
 }
