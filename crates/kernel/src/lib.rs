@@ -2286,25 +2286,50 @@ impl Kernel {
         let target_id = FeatureId::from_u32(id);
 
         // DL-61 C2b: `feature_calls` is authoritative, so a delete is
-        // just "drop the call and regenerate". The spine (including
+        // just "drop the call(s) and regenerate". The spine (including
         // any descendant clones a Pattern/Mirror/Hole execute path
-        // would have produced) falls out of the regeneration — no
-        // cascade bookkeeping needed.
-        let Some(idx) = self
-            .document
-            .feature_calls
-            .iter()
-            .position(|c| c.id == target_id)
-        else {
+        // would have produced) falls out of the regeneration.
+        if !self.document.feature_calls.iter().any(|c| c.id == target_id) {
             return false;
-        };
+        }
 
         self.snapshot();
-        self.document.feature_calls.remove(idx);
-        // A dangling dependent (e.g. a gizmo transform call that
-        // targeted the removed feature) can make regeneration error
-        // out; tolerate it like `set_rollback_index` rather than
-        // refusing the delete.
+
+        // Cascade: a deleted feature takes its dependents with it. Gizmo
+        // transform calls (translate/rotate/scale) reference their
+        // subject through a `target_id` param; left behind, an orphaned
+        // transform poisons *every* later regeneration with "target
+        // feature N not found" (it errored here too, but the delete
+        // tolerated it — so the orphan lingered and broke the next
+        // addPrimitive). Collect the dependency closure to a fixpoint so
+        // transform-of-transform chains go too, then drop them all.
+        let mut removed: std::collections::HashSet<FeatureId> =
+            std::iter::once(target_id).collect();
+        loop {
+            let mut grew = false;
+            for c in &self.document.feature_calls {
+                if removed.contains(&c.id) {
+                    continue;
+                }
+                let depends_on_removed = c
+                    .params
+                    .get("target_id")
+                    .and_then(|v| v.as_u64())
+                    .map(|t| removed.contains(&FeatureId::from_u32(t as u32)))
+                    .unwrap_or(false);
+                if depends_on_removed {
+                    removed.insert(c.id.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        self.document
+            .feature_calls
+            .retain(|c| !removed.contains(&c.id));
+
         let _ = self.bootstrap_features_from_calls();
         self.rebuild_packed();
         true
@@ -3888,6 +3913,43 @@ mod tests {
             k.decoded.iter().any(|f| f.id == FeatureId::from_u32(box_id)),
             "unrelated box remains"
         );
+    }
+
+    /// Regression: deleting a feature must take its gizmo transforms
+    /// with it. A `translate`/`rotate`/`scale` call references its
+    /// subject via `target_id`; an orphaned transform left in
+    /// `feature_calls` made the *next* regeneration (e.g. adding another
+    /// box) fail with "target feature N not found". Reproduces the bug
+    /// reported after deleting everything from the scene, then adding a
+    /// box.
+    #[test]
+    fn remove_feature_cascades_to_gizmo_transforms() {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            .unwrap();
+        // Move it — pushes a `translate` call targeting the box.
+        assert!(k.apply_gizmo_translate(box_id, 5.0, 0.0, 0.0));
+        assert!(
+            k.document
+                .feature_calls
+                .iter()
+                .any(|c| c.type_name == "translate"),
+            "translate call present after gizmo move"
+        );
+
+        // Delete the box: the orphaned translate must go too.
+        assert!(k.remove_feature(box_id));
+        assert!(
+            k.document.feature_calls.is_empty(),
+            "box and its translate are both gone"
+        );
+
+        // The bug: adding another primitive now regenerates cleanly.
+        let next = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+        );
+        assert!(next.is_ok(), "regeneration succeeds after the cascade delete");
     }
 
     #[test]
