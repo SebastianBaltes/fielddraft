@@ -5311,6 +5311,51 @@ mod tests {
         assert!(sdf([100.0, 0.0, 0.0]) > 0.0, "outside both");
     }
 
+    /// The merged union mesh is the *correct* outer surface — every mesh vertex
+    /// lies on the union surface, never inside the solid. Guards against a
+    /// regression where the union would mesh with an interior "scoop" (a lobe's
+    /// hidden cap left in the mesh). NB: the concave-scoop the user saw at the
+    /// box∪sphere overlap is a *renderer* compositing artifact (a translucent
+    /// context body occluding the active body's raymarch), not a mesh defect —
+    /// this test pins the geometry side so that distinction stays provable.
+    #[test]
+    fn union_mesh_has_no_interior_scoop() {
+        let mut k = Kernel::new();
+        // Box [±10] at origin; sphere sitting on top, overlapping the +Z face.
+        let box1 = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            0.0, 0.0, 0.0, 10.0, 10.0, 10.0,
+        ).unwrap();
+        let sph = k.add_primitive(
+            Primitive::KIND_SPHERE, BoolOp::TAG_UNION,
+            0.0, 0.0, 14.0, 8.0, 0.0, 0.0,
+        ).unwrap();
+        let bool_id = k.add_boolean().unwrap();
+        let params = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", box1, sph),
+            "targets": "", "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        assert_eq!(k.body_count(), 1, "the explicit union is one body");
+
+        let tree = csg::CsgNode::from_decoded(&k.decoded);
+        let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
+        let body = &k.bodies[0];
+        let pos = &body.mesh.positions;
+        let mut worst = 0.0f32;
+        for v in 0..pos.len() / 3 {
+            let d = sdf([pos[3 * v], pos[3 * v + 1], pos[3 * v + 2]]);
+            if d < worst {
+                worst = d;
+            }
+        }
+        assert!(
+            worst > -0.5,
+            "union mesh has interior vertices (scoop): worst sdf = {worst}"
+        );
+    }
+
     #[test]
     fn boolean_subtract_sdf_is_geometrically_correct() {
         let mut k = Kernel::new();
