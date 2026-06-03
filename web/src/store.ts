@@ -2933,17 +2933,14 @@ export async function getStore(): Promise<KernelStore> {
   storePromise = (async () => {
     const kernel = await Kernel.create();
 
-    const persisted = loadPersisted();
-    if (persisted) {
-      try {
-        kernel.loadJson(persisted);
-      } catch (err) {
-        console.warn("fielddraft: could not rehydrate persisted document", err);
-      }
-    }
-
+    // The persisted blob is a serialized *Project* (multi-tab model),
+    // not a kernel Document — the constructor rehydrates it
+    // (parseProject → inject scripts → load the active part into the
+    // kernel). Feeding it straight to `kernel.loadJson` here was the
+    // MT-A leftover that threw "missing field schema_version" and, worse,
+    // dropped the persisted project on every reload.
     const autosave = createAutoSave();
-    const store = new KernelStore(kernel, autosave);
+    const store = new KernelStore(kernel, autosave, loadPersisted());
 
     // Stale-WASM guard (UI side): `Kernel.create` already logs a console
     // warning on a version mismatch; also surface it as a toast so it's

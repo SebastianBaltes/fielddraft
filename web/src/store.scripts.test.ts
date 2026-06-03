@@ -316,6 +316,35 @@ describe("KernelStore — workspace tabs", () => {
     expect(store.getState().project.activeTabId).toBe(secondId);
     expect(store.getState().project.tabs.filter((t) => t.kind === "part")).toHaveLength(2);
   });
+
+  // Regression: getStore() used to feed the persisted *Project* JSON straight
+  // to kernel.loadJson (→ "missing field schema_version") AND construct the
+  // store without the persisted JSON, silently dropping the project on every
+  // reload. The persisted blob must reach the constructor, which loads the
+  // active part *document* (not the project) into the kernel.
+  it("rehydrates a persisted project into the active part document", () => {
+    const partDoc =
+      '{"schema_version":1,"name":"Restored Part","feature_calls":[],"next_feature_id":1}';
+    const persistedProject = JSON.stringify({
+      schemaVersion: 1,
+      name: "Saved",
+      tabs: [{ id: "tab_7", kind: "part", name: "Restored Part", documentJson: partDoc }],
+      activeTabId: "tab_7",
+    });
+    const kernel = new FakeKernel();
+    const store = new KernelStore(kernel as unknown as Kernel, autosave, persistedProject);
+
+    // The kernel received a kernel Document, never the Project wrapper.
+    const loaded = JSON.parse(kernel.loadJsonCalls[0]);
+    expect(loaded.schema_version).toBe(1);
+    expect(loaded.name).toBe("Restored Part");
+    expect(loaded.tabs).toBeUndefined();
+
+    // The persisted project (not a fresh default) is live in state.
+    const project = store.getState().project;
+    expect(project.activeTabId).toBe("tab_7");
+    expect(project.tabs.map((t) => t.id)).toContain("tab_7");
+  });
 });
 
 describe("KernelStore — script-type toolbar meta", () => {
