@@ -7,9 +7,11 @@
 //! Partitioning rules:
 //!
 //! * **Union** — seeds a new body, unless it carries explicit
-//!   `target_ids` (an explicit Boolean union), in which case it docks
-//!   into the target's body. No implicit AABB-based merging; bodies
-//!   stay separate unless an explicit Boolean operation connects them.
+//!   `target_ids` (an explicit Boolean union) *and* actually touches
+//!   the target body (AABB overlap), in which case it docks into it.
+//!   An explicit union of two disjoint solids stays two bodies: the
+//!   link is intent, contact decides the merge. Spatial overlap alone
+//!   (no explicit Boolean) never merges.
 //! * **Difference / Intersection** — attached to existing bodies via
 //!   `target_ids` (preferred) or AABB overlap (fallback for legacy
 //!   features without explicit targets).
@@ -217,18 +219,21 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
         match feature.op {
             BoolOp::Union => {
                 // A union carrying explicit `target_ids` docks into the
-                // body that already holds its target (an explicit
-                // Boolean union of two existing bodies); an untagged
-                // union seeds a fresh body. Pure spatial overlap never
-                // merges unions — only an explicit target does.
+                // body that already holds its target — but only if the
+                // two actually touch (AABB overlap). An explicit Boolean
+                // union of two *disjoint* solids stays two Parts; the
+                // link expresses intent, contact decides the merge.
+                // Untagged unions, and tagged-but-separated ones, seed a
+                // fresh body. Spatial overlap alone never merges either.
                 let docked = if feature.target_ids.is_empty() {
                     None
                 } else {
                     (0..groups.len()).find(|&idx| {
-                        groups[idx].feature_indices.iter().any(|&fi| {
+                        let targeted = groups[idx].feature_indices.iter().any(|&fi| {
                             let root = features[fi].id.root_ancestor();
                             feature.target_ids.iter().any(|tid| root == tid)
-                        })
+                        });
+                        targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
                     })
                 };
                 match docked {
@@ -1046,6 +1051,21 @@ mod tests {
         assert_eq!(bodies.len(), 1, "an explicit union is one body");
         assert_eq!(bodies[0].feature_indices, vec![0, 1]);
         assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+    }
+
+    #[test]
+    fn untouching_targeted_union_stays_separate() {
+        // An explicit union of two solids that do NOT touch must stay
+        // two bodies — the target link expresses intent, but contact
+        // decides the merge.
+        let mut sphere = sphere_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], 5.0);
+        sphere.target_ids = vec![FeatureId::from_u32(1)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            sphere,
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 2, "disjoint explicit union stays two bodies");
     }
 
     #[test]
