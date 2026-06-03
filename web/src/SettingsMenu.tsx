@@ -806,6 +806,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const setMeshAlgorithm = (algorithm: MeshAlgorithm) => {
+    const next = { ...settings, meshAlgorithm: algorithm };
+    saveSetting(LS_MESH_ALGORITHM, algorithm);
+    onSettingsChange(next);
+  };
+
   const toggleShowEdges = () => {
     const next = { ...settings, showEdges: !settings.showEdges };
     saveSetting(LS_SHOW_EDGES, String(next.showEdges));
@@ -919,6 +925,22 @@ function SettingsDialog({
                   <option value="mesh">Mesh</option>
                 </select>
               </div>
+
+              {settings.renderMode === "mesh" && (
+                <div className="setting-row" data-testid="setting-mesh-algorithm">
+                  <span className="setting-label">Mesh algorithm</span>
+                  <select
+                    className="mode-select"
+                    value={settings.meshAlgorithm}
+                    data-testid="setting-mesh-algorithm-select"
+                    onChange={(e) => setMeshAlgorithm(e.target.value as MeshAlgorithm)}
+                  >
+                    <option value="mdc">MDC</option>
+                    <option value="rfta">RFTA</option>
+                    <option value="mt">Marching Tetrahedra</option>
+                  </select>
+                </div>
+              )}
 
               <div className="setting-row" data-testid="setting-show-edges">
                 <span className="setting-label">Edge detection</span>

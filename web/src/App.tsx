@@ -7,52 +7,7 @@ import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
-import type { SettingsState, RenderMode, MeshAlgorithm } from "./SettingsMenu";
-
-const LS_LAST_SDF_MODE = "fielddraft.lastSdfMode";
-
-function RenderModeToggle({ mode, onChange, meshAlgorithm, onAlgorithmChange }: {
-  mode: RenderMode;
-  onChange: (m: RenderMode) => void;
-  meshAlgorithm: MeshAlgorithm;
-  onAlgorithmChange: (a: MeshAlgorithm) => void;
-}) {
-  const isMesh = mode === "mesh";
-  return (
-    <div className="render-mode-toggle">
-      <button
-        type="button"
-        className={!isMesh ? "active" : ""}
-        onClick={() => {
-          if (!isMesh) return;
-          let prev: RenderMode = "sdf-deferred";
-          try { const v = localStorage.getItem(LS_LAST_SDF_MODE); if (v === "sdf-vm") prev = "sdf-vm"; } catch {}
-          onChange(prev);
-        }}
-      >SDF</button>
-      <button
-        type="button"
-        className={isMesh ? "active" : ""}
-        onClick={() => {
-          if (isMesh) return;
-          try { localStorage.setItem(LS_LAST_SDF_MODE, mode); } catch {}
-          onChange("mesh");
-        }}
-      >Mesh</button>
-      {isMesh && (
-        <select
-          className="mesh-algo-select"
-          value={meshAlgorithm}
-          onChange={(e) => onAlgorithmChange(e.target.value as MeshAlgorithm)}
-        >
-          <option value="mdc">MDC</option>
-          <option value="rfta">RFTA</option>
-          <option value="mt">Marching Tetrahedra</option>
-        </select>
-      )}
-    </div>
-  );
-}
+import type { SettingsState } from "./SettingsMenu";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -224,20 +179,6 @@ export function App() {
       <header className="topbar">
         <div className="title">
           FieldDraft <span className="version">v{__APP_VERSION__}</span>
-          <RenderModeToggle
-            mode={settings.renderMode}
-            onChange={(mode: RenderMode) => {
-              const next = { ...settings, renderMode: mode };
-              try { localStorage.setItem("fielddraft.renderMode", mode); } catch {}
-              setSettings(next);
-            }}
-            meshAlgorithm={settings.meshAlgorithm}
-            onAlgorithmChange={(algo: MeshAlgorithm) => {
-              const next = { ...settings, meshAlgorithm: algo };
-              try { localStorage.setItem("fielddraft.meshAlgorithm", algo); } catch {}
-              setSettings(next);
-            }}
-          />
           <SettingsMenu
             store={store}
             state={state}
