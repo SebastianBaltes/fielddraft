@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 pub use fielddraft_protocol::sketch2d::{
     distance_point_to_aabb2, ellipse_quad_beziers, Aabb2, Sketch2d, Sketch2dPrimitive,
-    SketchSegment,
+    SketchEdgeBand, SketchSegment,
 };
 
 /// BVH-wrapped mirror of [`Sketch2d`]. Every node carries its
@@ -202,6 +202,39 @@ impl BoundedSketch2d {
             Self::Offset { inner, distance, .. } => {
                 let (d, e) = inner.sdf_with_edge(p);
                 (d - distance, e)
+            }
+        }
+    }
+
+    /// Eps-banded sibling of [`Self::sdf_with_edge`]: the signed distance
+    /// plus every boundary group within `eps` of the closest boundary,
+    /// with the same global branch numbering. Mirrors
+    /// [`Sketch2d::sdf_with_edges`] up to f32 rounding; the 3D sweep
+    /// evaluate folds this band into multi-branch contributors (DL-65).
+    pub fn sdf_with_edges(&self, p: [f32; 2], eps: f32) -> SketchEdgeBand {
+        match self {
+            Self::Empty => SketchEdgeBand::new(f32::INFINITY),
+            Self::Prim { primitive, .. } => primitive.sdf_with_edges(p, eps),
+            Self::Union { left, right, .. } => {
+                let bl = left.sdf_with_edges(p, eps);
+                let br = right.sdf_with_edges(p, eps).offset(left.edge_count());
+                SketchEdgeBand::combine_min(bl, br, eps)
+            }
+            Self::Difference { left, right, .. } => {
+                let bl = left.sdf_with_edges(p, eps);
+                let mut br = right.sdf_with_edges(p, eps).offset(left.edge_count());
+                br.distance = -br.distance;
+                SketchEdgeBand::combine_max(bl, br, eps)
+            }
+            Self::Intersection { left, right, .. } => {
+                let bl = left.sdf_with_edges(p, eps);
+                let br = right.sdf_with_edges(p, eps).offset(left.edge_count());
+                SketchEdgeBand::combine_max(bl, br, eps)
+            }
+            Self::Offset { inner, distance, .. } => {
+                let mut band = inner.sdf_with_edges(p, eps);
+                band.distance -= distance;
+                band
             }
         }
     }

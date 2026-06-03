@@ -29,7 +29,8 @@ use serde::Serialize;
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
-    expand_evaluate_leaf, sdf_extrude, Aabb, BlendMode, BranchId, Contributors, CsgNode, EvalMode,
+    expand_evaluate_leaf, extrude_contributors, revolve_contributors, sdf_extrude, Aabb, BlendMode,
+    Contributors, CsgNode, EvalMode,
 };
 use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
@@ -593,15 +594,18 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                // Per-segment identity (DL-46) + cap split (DL-50): the
-                // nearest sketch boundary group is folded into the
-                // contributor sub-id for wall faces, while points whose
-                // nearest surface is a top/bottom cap get a reserved cap
-                // sub-id so the weaver lifts them to their own plane.
-                let (d2, group) = sketch.sdf_with_edge([local[0], local[1]]);
-                let d = sdf_extrude(d2, local[2], *half_height) * world_transform.min_scale();
-                let sub = crate::csg::extrude_contributor_sub(d2, local[2], *half_height, group);
-                (d, Contributors::single(BranchId::from_feature_sub(id, sub)))
+                // Per-segment identity (DL-46) + cap split (DL-50) +
+                // eps-banded multi-contributors (DL-65): the sketch band
+                // reports every boundary group within `eps`, plus the cap
+                // term when it ties, so a genuine extrude edge names both
+                // colliding branches — uniform with the analytic half-space
+                // band, so the B-Rep both-branches gate needs no sweep
+                // special-case.
+                let band = sketch.sdf_with_edges([local[0], local[1]], eps);
+                let d =
+                    sdf_extrude(band.distance, local[2], *half_height) * world_transform.min_scale();
+                let c = extrude_contributors(id, &band, local[2], *half_height, eps);
+                (d, c)
             }
             BoundedCsg::Revolve {
                 id,
@@ -611,9 +615,10 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                let (d2, group) = sketch.sdf_with_edge([r, local[1]]);
-                let d = d2 * world_transform.min_scale();
-                (d, Contributors::single(BranchId::from_feature_sub(id, group)))
+                let band = sketch.sdf_with_edges([r, local[1]], eps);
+                let d = band.distance * world_transform.min_scale();
+                let c = revolve_contributors(id, &band);
+                (d, c)
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let (da, ca) = left.evaluate(p, eps, mode);
@@ -1142,7 +1147,7 @@ fn polyline_tube_aabb(polyline: &[[f32; 3]], radius: f32) -> Aabb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csg::{DecodedFeature, PrimitiveModifiers};
+    use crate::csg::{BranchId, DecodedFeature, PrimitiveModifiers};
     use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
 
     fn box_feature(id: u32, op: BoolOp, center: [f32; 3], half: [f32; 3]) -> DecodedFeature {

@@ -131,6 +131,117 @@ pub const PATH_FLATTEN_SAMPLES: usize = 24;
 /// segments into a single boundary branch (cos ≈ 0.999 ≈ 2.5°).
 pub const PATH_G1_COS_THRESHOLD: f32 = 0.999;
 
+/// Maximum boundary groups that can tie within `eps` at one query
+/// point. A sketch corner ties exactly two boundary groups; richer
+/// ties (three branches at a point) are vanishingly rare in 2D, so the
+/// headroom is generous while keeping [`SketchEdgeBand`] inline & `Copy`
+/// on the hot evaluate path — no heap allocation per SDF sample.
+pub const MAX_TIED_EDGES: usize = 6;
+
+/// Signed distance plus every boundary group whose boundary lies within
+/// `eps` of the closest one — the 2D analogue of the kernel's analytic
+/// half-space contributor band (`expand_evaluate_leaf` / `combine_min`).
+///
+/// A sweep ([`crate::Primitive::Extrude`] / `Revolve`) lifts this band
+/// into 3D contributors, so a *genuine* sweep edge (two adjoining sketch
+/// boundary groups meeting at a corner, or a wall meeting a cap) reports
+/// **both** colliding branches — exactly what the B-Rep both-branches
+/// gate needs. The earlier hard `sdf_with_edge` argmin returned a single
+/// group, which made every real sweep edge invisible to that gate
+/// (DL-65). Inline + `Copy`; no heap on the evaluate hot path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchEdgeBand {
+    /// Signed distance to the sketch boundary (negative inside).
+    pub distance: f32,
+    groups: [u32; MAX_TIED_EDGES],
+    len: u8,
+}
+
+impl SketchEdgeBand {
+    /// A band carrying just a distance, no groups yet.
+    pub fn new(distance: f32) -> Self {
+        Self {
+            distance,
+            groups: [0; MAX_TIED_EDGES],
+            len: 0,
+        }
+    }
+
+    /// A band with a single boundary group.
+    pub fn single(distance: f32, group: u32) -> Self {
+        let mut b = Self::new(distance);
+        b.push(group);
+        b
+    }
+
+    /// The tied boundary groups (deduplicated, insertion order).
+    pub fn groups(&self) -> &[u32] {
+        &self.groups[..self.len as usize]
+    }
+
+    /// Insert `group` if not already present (drops past capacity — a
+    /// sign of too large an `eps`, not real geometry).
+    pub fn push(&mut self, group: u32) {
+        if self.groups().contains(&group) {
+            return;
+        }
+        if (self.len as usize) < MAX_TIED_EDGES {
+            self.groups[self.len as usize] = group;
+            self.len += 1;
+        }
+    }
+
+    /// Shift every group id up by `by` — used to offset a boolean
+    /// right-child's branch ids past the left child's `edge_count`,
+    /// matching [`Sketch2d::sdf_with_edge`]'s global numbering. Public so
+    /// the kernel's `BoundedSketch2d` mirror can reuse it.
+    pub fn offset(mut self, by: u32) -> Self {
+        for i in 0..self.len as usize {
+            self.groups[i] += by;
+        }
+        self
+    }
+
+    /// Boolean-min fold of two boundary bands with the same `eps`-tie
+    /// rule as the kernel's `combine_min`: within `eps` both sides are
+    /// tied and their groups merge; otherwise the nearer side wins.
+    pub fn combine_min(a: SketchEdgeBand, b: SketchEdgeBand, eps: f32) -> SketchEdgeBand {
+        if (a.distance - b.distance).abs() <= eps {
+            let mut out = SketchEdgeBand::new(a.distance.min(b.distance));
+            for &g in a.groups() {
+                out.push(g);
+            }
+            for &g in b.groups() {
+                out.push(g);
+            }
+            out
+        } else if a.distance < b.distance {
+            a
+        } else {
+            b
+        }
+    }
+
+    /// Boolean-max fold (intersection / difference), same tie rule as
+    /// [`Self::combine_min`] but keeping the larger distance.
+    pub fn combine_max(a: SketchEdgeBand, b: SketchEdgeBand, eps: f32) -> SketchEdgeBand {
+        if (a.distance - b.distance).abs() <= eps {
+            let mut out = SketchEdgeBand::new(a.distance.max(b.distance));
+            for &g in a.groups() {
+                out.push(g);
+            }
+            for &g in b.groups() {
+                out.push(g);
+            }
+            out
+        } else if a.distance > b.distance {
+            a
+        } else {
+            b
+        }
+    }
+}
+
 impl Sketch2dPrimitive {
     pub fn sdf(&self, p: [f32; 2]) -> f32 {
         match self {
@@ -244,6 +355,81 @@ impl Sketch2dPrimitive {
                 }
                 let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
                 (sdf_path(p, segments, *closed), groups[best_i])
+            }
+        }
+    }
+
+    /// Signed distance plus **every** boundary group within `eps` of the
+    /// closest one (the eps-banded sibling of [`Self::sdf_with_edge`]).
+    /// At a sketch corner two adjoining boundary groups tie, so the band
+    /// carries both; on a flat span only the one nearest group survives.
+    /// This is what lets a sweep report both branches at a genuine edge.
+    pub fn sdf_with_edges(&self, p: [f32; 2], eps: f32) -> SketchEdgeBand {
+        match self {
+            Self::Circle { .. } => SketchEdgeBand::single(self.sdf(p), 0),
+            Self::Rectangle {
+                center,
+                half_extents,
+            } => {
+                let (cx, cy) = (center[0], center[1]);
+                let (hx, hy) = (half_extents[0], half_extents[1]);
+                // Side order matches `sdf_with_edge`: 0=+x, 1=−x, 2=+y, 3=−y.
+                let sides = [
+                    ([cx + hx, cy - hy], [cx + hx, cy + hy]),
+                    ([cx - hx, cy - hy], [cx - hx, cy + hy]),
+                    ([cx - hx, cy + hy], [cx + hx, cy + hy]),
+                    ([cx - hx, cy - hy], [cx + hx, cy - hy]),
+                ];
+                let dists = sides.map(|(a, b)| dist_point_seg(p, a, b));
+                let min_d = dists.iter().copied().fold(f32::INFINITY, f32::min);
+                let mut band = SketchEdgeBand::new(self.sdf(p));
+                for (i, &d) in dists.iter().enumerate() {
+                    if (d - min_d).abs() <= eps {
+                        band.push(i as u32);
+                    }
+                }
+                band
+            }
+            Self::Polygon { vertices } => {
+                let n = vertices.len();
+                if n < 3 {
+                    return SketchEdgeBand::new(f32::INFINITY);
+                }
+                // Edge j connects vertex j → i, matching `sdf_polygon_with_edge`.
+                let mut min_d = f32::INFINITY;
+                let mut j = n - 1;
+                for i in 0..n {
+                    min_d = min_d.min(dist_point_seg(p, vertices[j], vertices[i]));
+                    j = i;
+                }
+                let mut band = SketchEdgeBand::new(sdf_polygon(p, vertices));
+                let mut j = n - 1;
+                for i in 0..n {
+                    if (dist_point_seg(p, vertices[j], vertices[i]) - min_d).abs() <= eps {
+                        band.push(j as u32);
+                    }
+                    j = i;
+                }
+                band
+            }
+            // Sector keeps the single-group simplification of `sdf_with_edge`.
+            Self::Sector { .. } => SketchEdgeBand::single(self.sdf(p), 0),
+            Self::Path { segments, closed } => {
+                if segments.is_empty() {
+                    return SketchEdgeBand::new(f32::INFINITY);
+                }
+                let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+                let mut min_d = f32::INFINITY;
+                for seg in segments {
+                    min_d = min_d.min(seg.unsigned_distance(p));
+                }
+                let mut band = SketchEdgeBand::new(sdf_path(p, segments, *closed));
+                for (i, seg) in segments.iter().enumerate() {
+                    if (seg.unsigned_distance(p) - min_d).abs() <= eps {
+                        band.push(groups[i]);
+                    }
+                }
+                band
             }
         }
     }
@@ -603,6 +789,41 @@ impl Sketch2d {
             }
         }
     }
+
+    /// Eps-banded sibling of [`Self::sdf_with_edge`]: the signed distance
+    /// plus every boundary group within `eps` of the closest boundary,
+    /// with the same global branch numbering (right-child ids offset past
+    /// the left child's [`Self::edge_count`]). Boolean nodes fold with the
+    /// `eps`-tie rule so a boundary crossing between two primitives also
+    /// reports both branches — the 2D mirror of the kernel's analytic
+    /// `combine_min`/`expand_evaluate_leaf` contributor band (DL-65).
+    pub fn sdf_with_edges(&self, p: [f32; 2], eps: f32) -> SketchEdgeBand {
+        match self {
+            Self::Empty => SketchEdgeBand::new(f32::INFINITY),
+            Self::Prim(prim) => prim.sdf_with_edges(p, eps),
+            Self::Union(a, b) => {
+                let ba = a.sdf_with_edges(p, eps);
+                let bb = b.sdf_with_edges(p, eps).offset(a.edge_count());
+                SketchEdgeBand::combine_min(ba, bb, eps)
+            }
+            Self::Difference(a, b) => {
+                let ba = a.sdf_with_edges(p, eps);
+                let mut bb = b.sdf_with_edges(p, eps).offset(a.edge_count());
+                bb.distance = -bb.distance;
+                SketchEdgeBand::combine_max(ba, bb, eps)
+            }
+            Self::Intersection(a, b) => {
+                let ba = a.sdf_with_edges(p, eps);
+                let bb = b.sdf_with_edges(p, eps).offset(a.edge_count());
+                SketchEdgeBand::combine_max(ba, bb, eps)
+            }
+            Self::Offset { inner, distance } => {
+                let mut band = inner.sdf_with_edges(p, eps);
+                band.distance -= distance;
+                band
+            }
+        }
+    }
 }
 
 // ── Sketch segments (analytical curves) ─────────────────────────────
@@ -919,6 +1140,13 @@ pub fn ellipse_quad_beziers(
 }
 
 // ── Line segment ────────────────────────────────────────────────────
+
+/// Unsigned distance from `p` to the line segment `a→b`. Used by the
+/// per-edge contributor banding in [`Sketch2dPrimitive::sdf_with_edges`].
+fn dist_point_seg(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let c = closest_on_line_seg(p, a, b);
+    ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2)).sqrt()
+}
 
 fn closest_on_line_seg(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     let ex = b[0] - a[0];

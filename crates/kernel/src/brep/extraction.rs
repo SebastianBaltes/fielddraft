@@ -63,6 +63,20 @@ const TINY_DET: f32 = 1e-9;
 /// phantom tolerance is cell-relative (not the tight `PROJECT_EPS`).
 const PHANTOM_EPS_FACTOR: f32 = 0.25;
 
+/// Cell-relative tolerance for selecting a **per-branch start seed** (see
+/// [`project_branch`] / [`reproject_branch_near`]). Deliberately much tighter
+/// than the classification/gate band: a seed must lie in the branch's *own*
+/// Voronoi region (the branch is the single strictly-nearest surface) so its
+/// projected tangent plane is unambiguous. The wide classification band
+/// (`OctreeConfig::eps_factor`, and the sketch contributor band from DL-65)
+/// intentionally reports *both* branches near a fault so the cell is found and
+/// the gate can fire — but feeding that wide band to seed-finding would leave
+/// every near-corner probe a shared contributor, collapsing the seed onto the
+/// degenerate fault point where the field gradient is ill-defined and the
+/// Newton projection diverges. Tightening the seed eps restores a clean
+/// sole-contributor seed on each side of the edge (DL-65).
+const SEED_EPS_FACTOR: f32 = 0.05;
+
 /// Cell-relative tolerance for the *both-branches-active* gate (see
 /// [`both_branches_active`], DL-63): a resolved edge point keeps its cell only
 /// if, re-evaluating the hard min there, the second branch's field is within
@@ -145,8 +159,100 @@ fn project_branch(
         let s = cell.aabb.size();
         (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
     };
-    let eps = diag * 0.5;
 
+    // Seed search (DL-65). The default is the original *wide* band (matching the
+    // octree's classification eps), which the analytic seam extraction and the
+    // edge-walker fitting are calibrated against. Project from it first; if that
+    // succeeds we return the exact same result as before — every analytic body
+    // is byte-for-byte unchanged.
+    //
+    // The wide band only breaks at a *perpendicular sweep corner*: there every
+    // near-corner probe is a shared contributor (the sketch DL-65 band reports
+    // both adjoining walls), so the best seed collapses onto the degenerate
+    // fault point (`|f| ≈ 0`, ambiguous gradient) and the Newton projection
+    // diverges. *Only then* do we rescue with a tight band, which exposes a
+    // clean sole seed on the branch's own side of the corner. Because we gate
+    // the rescue on the wide projection actually failing, a near-tangential
+    // analytic seam (whose wide seed projects fine) never takes this path.
+    // Seed band strategy (DL-65). Pure analytic hard CSG keeps the original
+    // *wide* band: its half-space faces have clean sole-contributor regions, and
+    // the seam extraction + edge-walker fitting are calibrated against those
+    // seeds (touching them refragments a near-tangential sphere seam). A sweep or
+    // domain warp instead has a degenerate fault at every corner — the DL-65
+    // sketch band (or the warped field) reports both adjoining branches across a
+    // wide neighbourhood, so the wide best seed collapses onto the fault point
+    // (`|f| ≈ 0`, ambiguous gradient) and projects onto a neighbouring wall or
+    // diverges. There we go *tight first* to land a clean sole seed on the
+    // branch's own side, falling back to wide only if tight finds nothing.
+    let (tight_eps, wide_eps) = (diag * SEED_EPS_FACTOR, diag * 0.5);
+    let order = if body_prefers_wide_seed(body) {
+        [wide_eps, tight_eps]
+    } else {
+        [tight_eps, wide_eps]
+    };
+    for eps in order {
+        if let Some((p, _)) = find_seed(body, cell, branch, eps) {
+            if let Some(proj) = project_to_surface(body, p, PROJECT_EPS, PROJECT_MAX_ITER) {
+                return Some(proj);
+            }
+        }
+    }
+    None
+}
+
+/// Is `body` a clean hard-CSG combination of analytic primitives? Only those
+/// get the original *wide* seed band in [`project_branch`]: their half-space
+/// faces have clean sole-contributor Voronoi regions and the seam extraction is
+/// calibrated against those seeds. Sketch sweeps and domain warps have a
+/// degenerate fault at every corner (DL-65), so they seed tight-first instead.
+///
+/// NB: unlike the deleted `phantom_gate_eligible`, this no longer gates the
+/// both-branches filter — that gate is universal now — it only picks the
+/// numerical seed-search order.
+fn body_prefers_wide_seed(body: &BoundedCsg) -> bool {
+    match body {
+        BoundedCsg::Empty => true,
+        BoundedCsg::Leaf { primitive, .. } => matches!(
+            primitive,
+            Primitive::Box { .. }
+                | Primitive::Sphere { .. }
+                | Primitive::Cylinder { .. }
+                | Primitive::Cone { .. }
+                | Primitive::Torus { .. }
+                | Primitive::Ellipsoid { .. }
+                | Primitive::Capsule { .. }
+                | Primitive::HexPrism { .. }
+        ),
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            body_prefers_wide_seed(left) && body_prefers_wide_seed(right)
+        }
+        BoundedCsg::Shell { inner, .. } => body_prefers_wide_seed(inner),
+        BoundedCsg::Twist { .. }
+        | BoundedCsg::Bend { .. }
+        | BoundedCsg::Displace { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. } => false,
+    }
+}
+
+/// Find the best per-branch start probe within the given contributor `eps`:
+/// among the cell's 9 probe points whose `Logical` contributor slice contains
+/// `branch`, prefer those where `branch` is the *sole* contributor (cleanest
+/// tangent, away from the fault); within each class take the smallest `|f|`
+/// (closest to the surface, best Newton seed). Returns the probe and whether
+/// `branch` was its sole contributor, or `None` if no probe reports `branch`.
+fn find_seed(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    branch: BranchId,
+    eps: f32,
+) -> Option<([f32; 3], bool)> {
     let mut best: Option<([f32; 3], bool, f32)> = None; // (point, sole, |f|)
     for p in probe_points(cell) {
         let (f, contributors) = body.evaluate(p, eps, EvalMode::Logical);
@@ -169,9 +275,7 @@ fn project_branch(
             best = Some((p, sole, fabs));
         }
     }
-
-    let (start, _, _) = best?;
-    project_to_surface(body, start, PROJECT_EPS, PROJECT_MAX_ITER)
+    best.map(|(p, sole, _)| (p, sole))
 }
 
 /// Re-project `branch` from a seed *near* `p`, nudged into `branch`'s Voronoi
@@ -194,7 +298,12 @@ fn reproject_branch_near(
     dirs: &[Vector3<f32>],
     delta: f32,
 ) -> Option<ProjectedPoint> {
-    let eps = delta.max(1e-4);
+    // Tight membership band (caller passes `delta = diag * 0.25`, so this is
+    // ≈ `diag * SEED_EPS_FACTOR`): the nudged seed must land in the branch's
+    // own region, not on the shared DL-65 fault band of a warped sweep/corner,
+    // else the re-anchored tangent plane is taken at the fault and refinement
+    // stalls. See SEED_EPS_FACTOR.
+    let eps = (delta * (SEED_EPS_FACTOR * 4.0)).max(1e-5);
     let mut best_seed: Option<([f32; 3], bool, f32)> = None;
     for dir in dirs {
         let dir_len = dir.norm();
@@ -261,6 +370,15 @@ fn passes_phantom_filter(body: &BoundedCsg, p: [f32; 3], eps_phantom: f32) -> bo
 /// branch as a contributor there, so requiring both branches in the
 /// contributor set rejects the phantom while keeping every genuine seam point
 /// (where the two surfaces truly tie at zero).
+///
+/// Since DL-65 this gate is **universal** — applied to every body. The earlier
+/// allowlist (`phantom_gate_eligible`) excluded sketch sweeps and domain warps
+/// only because their `evaluate` reported a single contributor at a genuine
+/// edge, so the gate would have dropped real edges. That was a representational
+/// artifact, not geometry: sweeps now emit eps-banded multi-contributors
+/// ([`crate::csg::extrude_contributors`]), and warps inherit their inner leaf's
+/// half-space band, so both report both branches at a true edge just like
+/// analytic CSG. The special-case is gone.
 fn both_branches_active(
     body: &BoundedCsg,
     p: [f32; 3],
@@ -271,49 +389,6 @@ fn both_branches_active(
     let (_, contributors) = body.evaluate(p, eps, EvalMode::Logical);
     let slice = contributors.as_slice();
     slice.contains(&ba) && slice.contains(&bb)
-}
-
-/// Is `body` a clean hard-CSG combination of analytic primitives whose branch
-/// fields are well-separated Euclidean SDFs? Only then is the
-/// [`both_branches_active`] gate reliable. A sketch sweep ([`BoundedCsg::Extrude`]
-/// / [`BoundedCsg::Revolve`]) dithers its contributors along the feature (the
-/// very reason the edge walker fits whole-group lines/circles, DL-51), a domain
-/// warp (Twist / Bend / Displace) compresses field values so the second branch
-/// no longer reads within the contributor `eps` at a true edge, and a TPMS /
-/// mesh leaf has no clean half-space split — in all of these the gate would
-/// drop *genuine* edges. The phantom it guards against (a seam sliding onto one
-/// analytic primitive's free surface) only arises for clean analytic
-/// combinations anyway, so disabling it elsewhere loses nothing. See DL-63.
-fn phantom_gate_eligible(body: &BoundedCsg) -> bool {
-    match body {
-        BoundedCsg::Empty => true,
-        BoundedCsg::Leaf { primitive, .. } => matches!(
-            primitive,
-            Primitive::Box { .. }
-                | Primitive::Sphere { .. }
-                | Primitive::Cylinder { .. }
-                | Primitive::Cone { .. }
-                | Primitive::Torus { .. }
-                | Primitive::Ellipsoid { .. }
-                | Primitive::Capsule { .. }
-                | Primitive::HexPrism { .. }
-        ),
-        BoundedCsg::Union { left, right, .. }
-        | BoundedCsg::Difference { left, right, .. }
-        | BoundedCsg::Intersection { left, right, .. }
-        | BoundedCsg::SmoothUnion { left, right, .. }
-        | BoundedCsg::SmoothDifference { left, right, .. }
-        | BoundedCsg::MaskedBlend { left, right, .. }
-        | BoundedCsg::Morph { left, right, .. } => {
-            phantom_gate_eligible(left) && phantom_gate_eligible(right)
-        }
-        BoundedCsg::Shell { inner, .. } => phantom_gate_eligible(inner),
-        BoundedCsg::Twist { .. }
-        | BoundedCsg::Bend { .. }
-        | BoundedCsg::Displace { .. }
-        | BoundedCsg::Extrude { .. }
-        | BoundedCsg::Revolve { .. } => false,
-    }
 }
 
 /// Cell diagonal length (f32).
@@ -383,11 +458,7 @@ fn solve_edge_point(
 /// branch count, no clean per-branch start point, degenerate tangent
 /// (parallel normals), a singular plane-intersection system, or a failed
 /// phantom test.
-pub fn extract_edge_point(
-    body: &BoundedCsg,
-    cell: &OctreeCell,
-    gate_phantom: bool,
-) -> Option<EdgePoint> {
+pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePoint> {
     if cell.class != CellClass::Edge || cell.branches.len() != 2 {
         return None;
     }
@@ -448,11 +519,11 @@ pub fn extract_edge_point(
         return None;
     }
 
-    // Both-branches-active gate (DL-63): reject a phantom seam that has slid
-    // onto one branch's free surface, where the other branch never reaches
-    // zero. A genuine intersection curve has both branches tie at zero here.
-    // Only meaningful for clean analytic hard CSG (see `phantom_gate_eligible`).
-    if gate_phantom && !both_branches_active(body, p_edge, ba, bb, diag * BOTH_ACTIVE_EPS_FACTOR) {
+    // Both-branches-active gate (DL-63, universal since DL-65): reject a
+    // phantom seam that has slid onto one branch's free surface, where the
+    // other branch never reaches zero. A genuine intersection curve has both
+    // branches tie at zero here, so both appear in the contributor set.
+    if !both_branches_active(body, p_edge, ba, bb, diag * BOTH_ACTIVE_EPS_FACTOR) {
         return None;
     }
 
@@ -594,10 +665,9 @@ pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
 /// surviving `(edge points, vertices)`. Non-extractable cells (no clean start
 /// point, degenerate geometry, failed phantom test) are silently skipped.
 pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, Vec<Vertex>) {
-    let gate_phantom = phantom_gate_eligible(body);
     let edges = octree
         .edge_cells()
-        .filter_map(|cell| extract_edge_point(body, cell, gate_phantom))
+        .filter_map(|cell| extract_edge_point(body, cell))
         .collect();
     let vertices = octree
         .vertex_cells()
@@ -646,7 +716,7 @@ mod tests {
         let mut count = 0;
         let mut signatures = HashSet::new();
         for cell in octree.edge_cells() {
-            if let Some(ep) = extract_edge_point(&body, cell, true) {
+            if let Some(ep) = extract_edge_point(&body, cell) {
                 count += 1;
                 // On the surface.
                 let p = [
@@ -773,7 +843,7 @@ mod tests {
             class: CellClass::Face,
             branches: vec![BranchId(1 << 4)],
         };
-        assert!(extract_edge_point(&body, &face_cell, true).is_none());
+        assert!(extract_edge_point(&body, &face_cell).is_none());
         assert!(extract_vertex(&body, &face_cell).is_none());
     }
 

@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use fielddraft_protocol::sketch2d::SketchEdgeBand;
 use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
 
 use crate::sketch2d::Sketch2d;
@@ -1274,22 +1275,23 @@ impl CsgNode {
                 sketch,
                 half_height,
             } => {
-                // Per-segment identity (DL-46) + cap split (DL-50):
-                // the closest sketch boundary group becomes the
-                // contributor's sub-id for a wall face, but when the
-                // cap term `|z| − hh` dominates the 2D distance the
-                // nearest surface is a top/bottom cap, which gets a
-                // distinct reserved sub-id so the weaver can lift it
-                // to its own analytic plane.
-                let (d2, group) = sketch.sdf_with_edge([p[0], p[1]]);
-                let d = sdf_extrude(d2, p[2], *half_height);
-                let sub = extrude_contributor_sub(d2, p[2], *half_height, group);
-                (d, Contributors::single(BranchId::from_feature_sub(id, sub)))
+                // Per-segment identity (DL-46) + cap split (DL-50) +
+                // eps-banded multi-contributors (DL-65): the sketch band
+                // reports every boundary group within `eps`, and the cap
+                // term `|z| − hh` joins when it ties — so a genuine extrude
+                // edge names both colliding branches (uniform with analytic
+                // CSG; the both-branches gate no longer needs to special-
+                // case sweeps).
+                let band = sketch.sdf_with_edges([p[0], p[1]], eps);
+                let d = sdf_extrude(band.distance, p[2], *half_height);
+                let c = extrude_contributors(id, &band, p[2], *half_height, eps);
+                (d, c)
             }
             CsgNode::Revolve { id, sketch } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
-                let (d, group) = sketch.sdf_with_edge([r, p[1]]);
-                (d, Contributors::single(BranchId::from_feature_sub(id, group)))
+                let band = sketch.sdf_with_edges([r, p[1]], eps);
+                let c = revolve_contributors(id, &band);
+                (band.distance, c)
             }
         }
     }
@@ -1413,24 +1415,63 @@ pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
     outside + inside
 }
 
-/// Decide the contributor sub-id for an extrude point (DL-50). The
-/// extrude SDF is `max(d2, |z| − hh)`; whichever term dominates names
-/// the nearest surface. When the cap term wins the point is closest to
-/// a top/bottom cap → a reserved cap sub-id; otherwise it is closest to
-/// a wall → the sketch boundary `group`. `z` and `half_height` are in
-/// the canonical (centred) local extrude frame, so the cap split is
-/// independent of placement.
-pub(crate) fn extrude_contributor_sub(d2: f32, z: f32, half_height: f32, group: u32) -> u32 {
+/// Contributor band for an **extrude** point (DL-50 / DL-65). The extrude
+/// SDF is `max(d2, |z| − hh)`, so the nearest surface is whichever term
+/// ties the max within `eps`. A wall tie emits *every* banded sketch
+/// boundary group (so a sketch corner reports both adjoining walls); a
+/// cap tie emits the reserved top/bottom cap sub-id. At a genuine extrude
+/// edge — a wall∩wall vertical edge or a wall∩cap rim — this returns
+/// **both** colliding branches, exactly like the analytic half-space band
+/// in [`expand_evaluate_leaf`], so the B-Rep both-branches gate sees a
+/// real edge instead of a singleton. `z`/`half_height` are in the
+/// canonical (centred) local extrude frame, so the cap split is
+/// placement-independent.
+pub(crate) fn extrude_contributors(
+    id: &FeatureId,
+    band: &SketchEdgeBand,
+    z: f32,
+    half_height: f32,
+    eps: f32,
+) -> Contributors {
+    let wall = band.distance;
     let cap = z.abs() - half_height;
-    if cap > d2 {
-        if z >= 0.0 {
+    let d_max = wall.max(cap);
+    let mut c = Contributors::empty();
+    if (wall - d_max).abs() <= eps {
+        for &g in band.groups() {
+            c.push(BranchId::from_feature_sub(id, g));
+        }
+    }
+    if (cap - d_max).abs() <= eps {
+        let sub = if z >= 0.0 {
             BranchId::EXTRUDE_CAP_TOP_SUB
         } else {
             BranchId::EXTRUDE_CAP_BOTTOM_SUB
-        }
-    } else {
-        group
+        };
+        c.push(BranchId::from_feature_sub(id, sub));
     }
+    // Degenerate guard: never return an empty set — name the dominant
+    // wall group so the point still has a provenance.
+    if c.is_empty() {
+        let g = band.groups().first().copied().unwrap_or(0);
+        c.push(BranchId::from_feature_sub(id, g));
+    }
+    c
+}
+
+/// Contributor band for a **revolve** point (DL-65). A revolve has no
+/// caps, so every banded sketch boundary group is a wall contributor; a
+/// sketch corner therefore reports both adjoining walls and the
+/// both-branches gate sees the revolved edge.
+pub(crate) fn revolve_contributors(id: &FeatureId, band: &SketchEdgeBand) -> Contributors {
+    let mut c = Contributors::empty();
+    for &g in band.groups() {
+        c.push(BranchId::from_feature_sub(id, g));
+    }
+    if c.is_empty() {
+        c.push(BranchId::from_feature_sub(id, 0));
+    }
+    c
 }
 
 /// K10.0: polynomial smooth minimum (IQ's cubic variant).
@@ -2342,15 +2383,71 @@ mod tests {
             sketch: Box::new(path),
             half_height: 3.0,
         };
-        // A point well outside the +x (right) wall → group 1.
-        let (_, c) = extrude.evaluate([4.0, 0.0, 0.0], 0.5, EvalMode::Visual);
+        // Mid-wall probes with a tight band: each maps to exactly its own
+        // wall group (the DL-65 contributor band only ties at a corner/rim, so
+        // a clearly-nearest wall stays a single contributor). +x wall → group 1.
+        let (_, c) = extrude.evaluate([4.0, 0.0, 0.0], 0.05, EvalMode::Visual);
         assert_eq!(c.as_slice(), branches(&[(fid, 1)]).as_slice());
-        // Well outside the bottom (-y) wall → group 0.
-        let (_, c) = extrude.evaluate([0.0, -4.0, 0.0], 0.5, EvalMode::Visual);
+        // Bottom (−y) wall → group 0.
+        let (_, c) = extrude.evaluate([0.0, -4.0, 0.0], 0.05, EvalMode::Visual);
         assert_eq!(c.as_slice(), branches(&[(fid, 0)]).as_slice());
-        // Well outside the top (+y) wall → group 2 — distinct sub-id.
-        let (_, c) = extrude.evaluate([0.0, 4.0, 0.0], 0.5, EvalMode::Visual);
+        // Top (+y) wall → group 2 — distinct sub-id.
+        let (_, c) = extrude.evaluate([0.0, 4.0, 0.0], 0.05, EvalMode::Visual);
         assert_eq!(c.as_slice(), branches(&[(fid, 2)]).as_slice());
+    }
+
+    #[test]
+    fn extrude_corner_reports_both_walls_and_rim_reports_wall_and_cap() {
+        use crate::sketch2d::SketchSegment;
+        // Unit square Path (bottom=0, right=1, top=2, left=3), extruded ±3.
+        let path = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
+                SketchSegment::Line { start: [1.0, -1.0], end: [1.0, 1.0] },
+                SketchSegment::Line { start: [1.0, 1.0], end: [-1.0, 1.0] },
+                SketchSegment::Line { start: [-1.0, 1.0], end: [-1.0, -1.0] },
+            ],
+            closed: true,
+        });
+        let fid = 9u32;
+        let extrude = CsgNode::Extrude {
+            id: FeatureId::from_u32(fid),
+            sketch: Box::new(path),
+            half_height: 3.0,
+        };
+
+        // DL-65: at the (+x,+y) sketch corner the band ties the right (1) and
+        // top (2) walls → a vertical wall∩wall edge reports BOTH branches, so
+        // the both-branches gate sees a real edge instead of a singleton.
+        let (_, c) = extrude.evaluate([1.0, 1.0, 0.0], 0.25, EvalMode::Visual);
+        let s: std::collections::HashSet<u32> =
+            c.as_slice().iter().map(|b| b.as_u32()).collect();
+        assert!(
+            s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u32())
+                && s.contains(
+                    &BranchId::from_feature_sub(&FeatureId::from_u32(fid), 2).as_u32()
+                ),
+            "corner must report both adjoining walls, got {s:?}"
+        );
+        assert_eq!(c.element(), ProxyElement::Edge);
+
+        // At the top rim (mid-wall, z = +half_height) the wall group and the
+        // top cap tie → a wall∩cap edge reports both branches.
+        let (_, c) = extrude.evaluate([1.0, 0.0, 3.0], 0.25, EvalMode::Visual);
+        let s: std::collections::HashSet<u32> =
+            c.as_slice().iter().map(|b| b.as_u32()).collect();
+        assert!(
+            s.contains(&BranchId::from_feature_sub(&FeatureId::from_u32(fid), 1).as_u32())
+                && s.contains(
+                    &BranchId::from_feature_sub(
+                        &FeatureId::from_u32(fid),
+                        BranchId::EXTRUDE_CAP_TOP_SUB
+                    )
+                    .as_u32()
+                ),
+            "rim must report the wall group and the top cap, got {s:?}"
+        );
+        assert_eq!(c.element(), ProxyElement::Edge);
     }
 
     #[test]
