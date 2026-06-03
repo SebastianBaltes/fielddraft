@@ -19,6 +19,7 @@ import {
   type PrimitiveKindName,
 } from "./kernel";
 import { createAutoSave, loadPersisted, type AutoSaveHandle } from "./persistence";
+import type { PickedElement } from "./elementQuery";
 import type {
   MesherBodiesResponse,
   MesherBodyPayload,
@@ -136,6 +137,11 @@ export interface StoreState {
   /** Anchor for shift-click range selection — id of the last single-clicked
    *  feature. `null` while nothing has been clicked yet. */
   selectionAnchor: number | null;
+  /** Chunk 3a: persistent, tool-free B-Rep element selection (a single
+   *  face / edge / vertex picked in the viewport with no active tool).
+   *  Ephemeral UI state — NOT persisted to the project. Mutually exclusive
+   *  with the feature-level `selection` set: setting one clears the other. */
+  selectedElement: PickedElement | null;
   canUndo: boolean;
   undoDepth: number;
   canRedo: boolean;
@@ -437,6 +443,7 @@ export class KernelStore {
       features: initFeatures,
       selection: new Set(),
       selectionAnchor: null,
+      selectedElement: null,
       canUndo: kernel.canUndo(),
       undoDepth: kernel.undoDepth(),
       canRedo: kernel.canRedo(),
@@ -521,6 +528,9 @@ export class KernelStore {
       features,
       selection: nextSelection ?? this.state.selection,
       selectionAnchor: nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
+      // A document mutation invalidates any picked element (its idHash may no
+      // longer resolve), and the two selection notions are mutually exclusive.
+      selectedElement: null,
       canUndo: this.kernel.canUndo(),
       undoDepth: this.kernel.undoDepth(),
       canRedo: this.kernel.canRedo(),
@@ -1166,6 +1176,8 @@ export class KernelStore {
       ...this.state,
       selection: new Set([id]),
       selectionAnchor: id,
+      // Feature selection and element selection are mutually exclusive.
+      selectedElement: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1180,6 +1192,7 @@ export class KernelStore {
       ...this.state,
       selection: next,
       selectionAnchor: id,
+      selectedElement: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1215,6 +1228,7 @@ export class KernelStore {
       selection: next,
       // Anchor stays put — that's the standard finder/Onshape behaviour.
       selectionAnchor: anchor,
+      selectedElement: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1687,11 +1701,43 @@ export class KernelStore {
   }
 
   clearSelection(): void {
-    if (this.state.selection.size === 0 && this.state.selectionAnchor === null) return;
-    this.patch({ selection: new Set(), selectionAnchor: null });
+    if (
+      this.state.selection.size === 0 &&
+      this.state.selectionAnchor === null &&
+      this.state.selectedElement === null
+    )
+      return;
+    this.patch({
+      selection: new Set(),
+      selectionAnchor: null,
+      selectedElement: null,
+    });
     this.syncActiveBody();
     this.refreshMeshCache();
     for (const listener of this.listeners) listener();
+  }
+
+  // ── Chunk 3a: persistent B-Rep element selection ──────────────────
+
+  /** Select a single B-Rep element (face / edge / vertex) picked tool-free
+   *  in the viewport. Clears the feature-level selection so the two notions
+   *  never both show. Ephemeral UI state — not persisted. */
+  selectElement(el: PickedElement): void {
+    this.state = {
+      ...this.state,
+      selection: new Set(),
+      selectionAnchor: null,
+      selectedElement: el,
+    };
+    this.syncActiveBody();
+    this.notify();
+  }
+
+  /** Clear the persistent element selection. No-op when nothing is selected. */
+  clearElementSelection(): void {
+    if (this.state.selectedElement === null) return;
+    this.patch({ selectedElement: null });
+    this.notify();
   }
 
   // ── K6b.2: sketch session ────────────────────────────────────────

@@ -25,6 +25,7 @@ import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import { buildDraftSketchState } from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { formatQueryDisplay } from "./queryLabels";
+import { ElementInfo } from "./ElementInfo";
 
 function kindGlyph(kind: string): string {
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
@@ -537,6 +538,9 @@ export function Outliner({ store, state }: OutlinerProps) {
         onPointerCancel={handleSplitterPointerUp}
         onDoubleClick={handleSplitterDoubleClick}
       />
+      {state.selectedElement ? (
+        <ElementInfo store={store} state={state} />
+      ) : null}
       {sketchSession.active ? (
         <section
           className="sketch-session"

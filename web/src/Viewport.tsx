@@ -34,6 +34,7 @@ import {
   Invalidator,
   BRepEdgeOverlay,
   BRepSelectionOverlay,
+  BRepSelectedOverlay,
   MeshPreview,
   AssemblyParts,
   MateConnectorOverlay,
@@ -358,6 +359,18 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
       return;
     }
 
+    // Chunk 3a: tool-free B-Rep element selection. A plain click on a hovered
+    // face/edge/vertex persistently selects it (no multi-select / modifiers in
+    // this chunk). Otherwise clear any element selection and fall through to
+    // feature-level selection.
+    const hovered = getHoveredElement();
+    if (hovered) {
+      store.selectElement(hovered);
+      invalidateCanvas();
+      return;
+    }
+    store.clearElementSelection();
+
     handleSelectionClick(store, click, event, setMeasurePoints);
   };
 
@@ -481,6 +494,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
               <ReferenceMesh />
               <BRepEdgeOverlay pick={pickResult} mode={brepEdgeMode} />
               <BRepSelectionOverlay ndc={ndc} />
+              <BRepSelectedOverlay />
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />

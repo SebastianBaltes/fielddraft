@@ -36,6 +36,13 @@
   --color-warning: #b07820;
   --color-success: #2c8a4a;
 
+  /* ── B-Rep element selection (chunk 3a) ─────────────────────
+   * Distinct from the orange hover (--color-warning) and the blue
+   * picker-highlight (--color-accent): a teal that reads as "selected"
+   * in Light Mode. `-soft` backs the info panel's accent strip. */
+  --color-element-selection: #0d8a8a;
+  --color-element-selection-soft: #d6f0ef;
+
   /* ── Typography ─────────────────────────────────────────── */
   /* Hard floor: --fs-base = 1rem. NEVER define a smaller value. */
   --font-family-sans:
@@ -119,6 +126,9 @@
   --color-error: #e05555;
   --color-warning: #d4952e;
   --color-success: #4db86a;
+
+  --color-element-selection: #2bc4c4;
+  --color-element-selection-soft: #133a3a;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.3);

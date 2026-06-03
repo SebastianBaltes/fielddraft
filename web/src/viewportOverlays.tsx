@@ -573,6 +573,10 @@ export function BRepEdgeOverlay({ pick, mode }: { pick: PickResult | null; mode:
 const FACE_HOVER_COLOR = 0x2f5fa8;
 const VERTEX_COLOR = 0xb07820;
 const VERTEX_HOVER_COLOR = 0x3d72be;
+/** Persistent element-selection colour (chunk 3a). Mirrors
+ *  `--color-element-selection` (#0d8a8a) — a teal distinct from the orange
+ *  hover and the blue picker-highlight. */
+const ELEMENT_SELECTION_COLOR = 0x0d8a8a;
 const VERTEX_MARKER_RADIUS = 2.2;
 /** Screen-space radius (in NDC units) within which a vertex marker counts as
  *  hovered. ~3.5% of the viewport half-extent. */
@@ -736,17 +740,20 @@ export function BRepSelectionOverlay({
 
   useFrame(() => {
     const picker = getActiveQueryPicker();
-    // Element selection only matters while a query picker is active.
-    if (!picker || !ndc.active || bodies.length === 0) {
+    // Hover detection runs whenever the cursor is over the viewport — tool-free
+    // element selection (chunk 3a) needs the hovered element published even
+    // with no active picker. When a picker IS active we honour its
+    // entityFilter; with no picker, all kinds are pickable.
+    if (!ndc.active || bodies.length === 0) {
       if (faceHover) { setFaceHover(false); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
       return;
     }
-    const filter = picker.entityFilter;
-    const wantFace = filterAllows("face", filter);
-    const wantVertex = filterAllows("vertex", filter);
+    const filter = picker?.entityFilter;
+    const wantFace = picker ? filterAllows("face", filter) : true;
+    const wantVertex = picker ? filterAllows("vertex", filter) : true;
 
     raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
 
@@ -852,6 +859,208 @@ export function BRepSelectionOverlay({
           }),
         )}
     </>
+  );
+}
+
+/**
+ * Persistent B-Rep element-selection highlight (chunk 3a).
+ *
+ * Renders `state.selectedElement` — a single face, edge, or vertex picked
+ * tool-free in the viewport — in the distinct teal selection colour. Unlike
+ * the hover highlights in {@link BRepSelectionOverlay}/{@link BRepEdgeOverlay}
+ * this is NOT picker-gated and persists after the pointer leaves; it clears
+ * only when the store's `selectedElement` is reset.
+ *
+ * The highlight geometry is resolved from the kernel by `idHash`:
+ *   - face → all triangles whose face-arena index matches, in world space;
+ *   - edge → the matching analytic polyline, body-local → world;
+ *   - vertex → a sphere marker at the world position.
+ */
+export function BRepSelectedOverlay() {
+  const { store, state } = useKernelStore();
+  const selected = state?.selectedElement ?? null;
+
+  const faceGeomRef = useRef(new THREE.BufferGeometry());
+  const faceMatRef = useRef(
+    new THREE.MeshBasicMaterial({
+      color: ELEMENT_SELECTION_COLOR,
+      transparent: true,
+      opacity: 0.5,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  const edgeGeomRef = useRef(new THREE.BufferGeometry());
+  const edgeMatRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: ELEMENT_SELECTION_COLOR,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+
+  useEffect(() => {
+    const fg = faceGeomRef.current;
+    const fm = faceMatRef.current;
+    const eg = edgeGeomRef.current;
+    const em = edgeMatRef.current;
+    return () => {
+      fg.dispose();
+      fm.dispose();
+      eg.dispose();
+      em.dispose();
+    };
+  }, []);
+
+  // Body fingerprint: re-resolve the highlight when bodies actually change
+  // (same trick as the hover overlays), since a regen invalidates idHashes.
+  const bodyFingerprint = useMemo(() => {
+    if (!store) return "";
+    const n = store.kernel.bodyCount();
+    let fp = String(n);
+    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    return fp;
+  }, [store, state]);
+
+  // Resolve the selected element to renderable data. Returns the kind plus the
+  // payload the JSX below needs (face/edge geometry are written into the shared
+  // refs; vertex resolves to a world position).
+  const resolved = useMemo<
+    | { kind: "face" }
+    | { kind: "edge" }
+    | { kind: "vertex"; world: [number, number, number] }
+    | null
+  >(() => {
+    if (!store || !selected) return null;
+    const k = store.kernel;
+    const count = k.bodyCount();
+
+    if (selected.kind === "face") {
+      for (let i = 0; i < count; i++) {
+        let faces: BRepFace[];
+        let placement: Placement;
+        let faceIndexView: Uint32Array;
+        let positions: Float32Array;
+        let indices: Uint32Array;
+        try {
+          faces = k.bodyBrepFaces(i);
+          placement = k.bodyPlacement(i);
+          faceIndexView = k.bodyFaceIndexView(i).slice();
+          positions = k.bodyPositionsView(i).slice();
+          indices = k.bodyIndicesView(i).slice();
+        } catch {
+          continue;
+        }
+        const face = faces.find((f) => f.idHash === selected.idHash);
+        if (!face) continue;
+        const tris: number[] = [];
+        for (let t = 0; t < faceIndexView.length; t++) {
+          if (faceIndexView[t] !== face.faceIndex) continue;
+          for (let c = 0; c < 3; c++) {
+            const vi = indices[t * 3 + c];
+            const local: [number, number, number] = [
+              positions[vi * 3],
+              positions[vi * 3 + 1],
+              positions[vi * 3 + 2],
+            ];
+            const w = localToWorld(local, placement);
+            tris.push(w[0], w[1], w[2]);
+          }
+        }
+        if (tris.length === 0) continue;
+        faceGeomRef.current.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(tris, 3),
+        );
+        faceGeomRef.current.computeBoundingSphere();
+        return { kind: "face" };
+      }
+      return null;
+    }
+
+    if (selected.kind === "edge") {
+      for (let i = 0; i < count; i++) {
+        let edges: BRepEdge[];
+        let placement: Placement;
+        try {
+          edges = k.bodyBrepEdges(i);
+          placement = k.bodyPlacement(i);
+        } catch {
+          continue;
+        }
+        const edge = edges.find((e) => e.idHash === selected.idHash);
+        if (!edge) continue;
+        const world: number[] = [];
+        for (let p = 0; p + 2 < edge.points.length; p += 3) {
+          const w = localToWorld(
+            [edge.points[p], edge.points[p + 1], edge.points[p + 2]],
+            placement,
+          );
+          world.push(w[0], w[1], w[2]);
+        }
+        const segs = polylineToSegments(world);
+        if (segs.length === 0) continue;
+        edgeGeomRef.current.setAttribute(
+          "position",
+          new THREE.BufferAttribute(segs, 3),
+        );
+        edgeGeomRef.current.computeBoundingSphere();
+        return { kind: "edge" };
+      }
+      return null;
+    }
+
+    // vertex
+    for (let i = 0; i < count; i++) {
+      let verts: BRepVertex[];
+      let placement: Placement;
+      try {
+        verts = k.bodyBrepVertices(i);
+        placement = k.bodyPlacement(i);
+      } catch {
+        continue;
+      }
+      const v = verts.find((vx) => vx.idHash === selected.idHash);
+      if (!v) continue;
+      return { kind: "vertex", world: localToWorld(v.positionLocal, placement) };
+    }
+    return null;
+  }, [store, selected, bodyFingerprint]);
+
+  if (!resolved) return null;
+
+  if (resolved.kind === "face") {
+    return (
+      <mesh
+        ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+        geometry={faceGeomRef.current}
+        material={faceMatRef.current}
+        frustumCulled={false}
+        renderOrder={1001}
+      />
+    );
+  }
+  if (resolved.kind === "edge") {
+    return (
+      <lineSegments
+        ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+        geometry={edgeGeomRef.current}
+        material={edgeMatRef.current}
+        frustumCulled={false}
+        renderOrder={1002}
+      />
+    );
+  }
+  return (
+    <mesh
+      position={resolved.world}
+      ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+      renderOrder={1003}
+    >
+      <sphereGeometry args={[VERTEX_MARKER_RADIUS * 1.7, 16, 16]} />
+      <meshBasicMaterial color={ELEMENT_SELECTION_COLOR} depthTest={false} />
+    </mesh>
   );
 }
 

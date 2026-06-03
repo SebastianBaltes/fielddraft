@@ -12,6 +12,7 @@
 
 @import "./components/toolbar.css";
 @import "./components/outliner.css";
+@import "./components/element-info.css";
 @import "./components/viewport.css";
 @import "./components/feature-dialog.css";
 @import "./components/settings-menu.css";
