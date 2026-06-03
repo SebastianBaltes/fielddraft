@@ -2858,13 +2858,16 @@ impl FeatureKind for BooleanFeature {
             return Ok(());
         }
 
-        // The first tool in spine order must keep op=Union so it
-        // seeds a BodyPartition. Subsequent tools get the selected
-        // op so they attach to that body via AABB overlap.
+        // The first tool in spine order keeps op=Union so it seeds a
+        // BodyPartition. Subsequent tools attach to that body — a union
+        // routes them in via an explicit `target_ids` link to the seed
+        // (pure spatial overlap never merges unions); intersect/subtract
+        // dock via AABB overlap.
         let first_tool_pos = ctx
             .features
             .iter()
             .position(|f| tool_ids.contains(&f.id));
+        let first_tool_id = first_tool_pos.and_then(|p| ctx.features.get(p).map(|f| f.id.clone()));
 
         for (idx, feature) in ctx.features.iter_mut().enumerate() {
             if !tool_ids.contains(&feature.id) {
@@ -2873,6 +2876,15 @@ impl FeatureKind for BooleanFeature {
             match op {
                 BoolOp::Union => {
                     feature.op = BoolOp::Union;
+                    // Seed the body with the first tool; route every
+                    // other tool into that same body so the partition
+                    // pass merges them into one Part instead of
+                    // spawning a body per tool.
+                    if Some(idx) == first_tool_pos {
+                        feature.target_ids.clear();
+                    } else if let Some(seed) = &first_tool_id {
+                        feature.target_ids = vec![seed.clone()];
+                    }
                 }
                 BoolOp::Intersect => {
                     if tool_ids.len() > 1 && Some(idx) == first_tool_pos {

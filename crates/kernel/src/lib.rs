@@ -5274,6 +5274,44 @@ mod tests {
     }
 
     #[test]
+    fn boolean_union_merges_tools_into_one_body() {
+        let mut k = Kernel::new();
+        let box1 = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            0.0, 0.0, 0.0, 20.0, 20.0, 20.0,
+        ).unwrap();
+        let sph = k.add_primitive(
+            Primitive::KIND_SPHERE, BoolOp::TAG_UNION,
+            20.0, 0.0, 0.0, 15.0, 0.0, 0.0,
+        ).unwrap();
+        // Two plain primitives are two separate parts.
+        assert_eq!(k.body_count(), 2, "two plain unions are two parts");
+
+        let bool_id = k.add_boolean().unwrap();
+        let params = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", box1, sph),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+
+        // The boolean routes the second tool into the first tool's body.
+        assert_eq!(k.decoded[0].op, BoolOp::Union);
+        assert_eq!(k.decoded[1].op, BoolOp::Union);
+        assert!(k.decoded[0].target_ids.is_empty(), "seed carries no target");
+        assert_eq!(k.decoded[1].target_ids, vec![FeatureId::from_u32(box1)]);
+        assert_eq!(k.body_count(), 1, "an explicit union is one part");
+
+        // The folded tree is a single solid spanning both lobes.
+        let tree = csg::CsgNode::from_decoded(&k.decoded);
+        let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
+        assert!(sdf([0.0, 0.0, 0.0]) < 0.0, "inside the box lobe");
+        assert!(sdf([30.0, 0.0, 0.0]) < 0.0, "inside the sphere lobe");
+        assert!(sdf([100.0, 0.0, 0.0]) > 0.0, "outside both");
+    }
+
+    #[test]
     fn boolean_subtract_sdf_is_geometrically_correct() {
         let mut k = Kernel::new();
         let box1 = k.add_primitive(

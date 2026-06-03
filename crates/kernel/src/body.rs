@@ -6,9 +6,10 @@
 //!
 //! Partitioning rules:
 //!
-//! * **Union** — always creates a new body. No implicit AABB-based
-//!   merging; bodies stay separate unless an explicit Boolean
-//!   operation connects them.
+//! * **Union** — seeds a new body, unless it carries explicit
+//!   `target_ids` (an explicit Boolean union), in which case it docks
+//!   into the target's body. No implicit AABB-based merging; bodies
+//!   stay separate unless an explicit Boolean operation connects them.
 //! * **Difference / Intersection** — attached to existing bodies via
 //!   `target_ids` (preferred) or AABB overlap (fallback for legacy
 //!   features without explicit targets).
@@ -215,10 +216,31 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
 
         match feature.op {
             BoolOp::Union => {
-                groups.push(BodyPartition {
-                    feature_indices: vec![i],
-                    aabb: feat_aabb,
-                });
+                // A union carrying explicit `target_ids` docks into the
+                // body that already holds its target (an explicit
+                // Boolean union of two existing bodies); an untagged
+                // union seeds a fresh body. Pure spatial overlap never
+                // merges unions — only an explicit target does.
+                let docked = if feature.target_ids.is_empty() {
+                    None
+                } else {
+                    (0..groups.len()).find(|&idx| {
+                        groups[idx].feature_indices.iter().any(|&fi| {
+                            let root = features[fi].id.root_ancestor();
+                            feature.target_ids.iter().any(|tid| root == tid)
+                        })
+                    })
+                };
+                match docked {
+                    Some(idx) => {
+                        groups[idx].feature_indices.push(i);
+                        groups[idx].aabb = Aabb::union(groups[idx].aabb, feat_aabb);
+                    }
+                    None => groups.push(BodyPartition {
+                        feature_indices: vec![i],
+                        aabb: feat_aabb,
+                    }),
+                }
             }
             BoolOp::Difference | BoolOp::Intersect => {
                 if !feature.target_ids.is_empty() {
@@ -1007,6 +1029,37 @@ mod tests {
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 3, "each union must be its own body");
+    }
+
+    #[test]
+    fn targeted_union_docks_into_seed_body() {
+        // An explicit Boolean union tags the second tool with the first
+        // tool's id; the two must collapse into one body even though a
+        // plain pair of unions would stay separate.
+        let mut sphere = sphere_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        sphere.target_ids = vec![FeatureId::from_u32(1)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            sphere,
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1, "an explicit union is one body");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+    }
+
+    #[test]
+    fn orphan_targeted_union_seeds_its_own_body() {
+        // A tagged union whose target is absent must not vanish — it
+        // falls back to seeding a fresh body rather than being dropped.
+        let mut sphere = sphere_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        sphere.target_ids = vec![FeatureId::from_u32(99)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            sphere,
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 2, "an orphan union still produces a body");
     }
 
     #[test]
