@@ -960,6 +960,14 @@ impl Kernel {
             serde_json::from_str(json).map_err(|e| JsError::new(&e.to_string()))?;
         self.document = document;
 
+        // Self-heal documents written before the cascade-delete fix: a
+        // delete used to leave gizmo transforms (translate/rotate/scale)
+        // orphaned — their `target_id` points at a feature that no longer
+        // exists — and such an orphan fails *every* regeneration. Prune
+        // them on the way in so a stale `.fdraft` loads instead of dying
+        // with "target feature N not found".
+        self.prune_dangling_transform_calls();
+
         // DL-61 C2b: `feature_calls` is the sole wire form, so a load
         // always rebuilds the decoded spine by replaying the calls
         // through the feature registry. Any registry error surfaces
@@ -2277,6 +2285,29 @@ impl Kernel {
             p.insert("scale".into(), serde_json::json!([sx, sy, sz]));
             true
         })
+    }
+
+    /// Drop any gizmo transform call whose `target_id` references a
+    /// feature that isn't present in `feature_calls`. Runs to a fixpoint
+    /// so a transform chained onto a just-pruned transform goes too.
+    /// Idempotent and cheap on a healthy document (no dangling refs → no
+    /// change). Used by [`Kernel::load_json`] to heal documents written
+    /// before `remove_feature` learned to cascade.
+    fn prune_dangling_transform_calls(&mut self) {
+        loop {
+            let present: std::collections::HashSet<FeatureId> =
+                self.document.feature_calls.iter().map(|c| c.id.clone()).collect();
+            let before = self.document.feature_calls.len();
+            self.document.feature_calls.retain(|c| {
+                match c.params.get("target_id").and_then(|v| v.as_u64()) {
+                    Some(t) => present.contains(&FeatureId::from_u32(t as u32)),
+                    None => true,
+                }
+            });
+            if self.document.feature_calls.len() == before {
+                break;
+            }
+        }
     }
 
     /// Remove the feature with the given id. Returns true if anything
@@ -4836,6 +4867,56 @@ mod tests {
         // regenerated features, which is a round-trip no-op thanks
         // to the lossless primitive execute impls.
         assert_spine_matches_calls(&k);
+    }
+
+    #[test]
+    fn load_json_prunes_orphaned_gizmo_transform() {
+        // A document written before the cascade-delete fix can carry a
+        // gizmo transform whose `target_id` points at a feature that was
+        // already deleted. Loading it used to fail outright with
+        // "feature regeneration failed: ... target feature N not found".
+        // The loader now prunes the orphan and loads what remains.
+        let mut k = Kernel::new();
+        let json = r#"{
+            "schema_version": 2,
+            "name": "stale",
+            "features": [],
+            "feature_calls": [
+                {
+                    "type": "box",
+                    "id": 1,
+                    "params": {
+                        "half_extents": [5, 5, 5],
+                        "center": [0, 0, 0],
+                        "translate": [0, 0, 0],
+                        "rotation": [0, 0, 0, 1],
+                        "scale": 1.0,
+                        "op": "union",
+                        "name": "Base"
+                    }
+                },
+                {
+                    "type": "translate",
+                    "id": 2,
+                    "params": {
+                        "target_id": 3,
+                        "translate": [5, 0, 0]
+                    }
+                }
+            ],
+            "next_feature_id": 4
+        }"#;
+
+        k.load_json(json).expect("stale document loads after pruning");
+        // The orphaned translate is gone; only the box survives.
+        assert_eq!(k.document.feature_calls.len(), 1);
+        assert_eq!(k.decoded.len(), 1);
+        assert_eq!(k.decoded[0].name, "Base");
+        // And regeneration is healthy afterwards.
+        let next = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+        );
+        assert!(next.is_ok(), "regeneration succeeds after pruning the orphan");
     }
 
     #[test]
