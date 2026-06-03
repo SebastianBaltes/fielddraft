@@ -22,6 +22,9 @@ class FakeKernel {
   removeCalls: string[] = [];
   featureCallArgs: { typeName: string; paramsJson: string }[] = [];
   nextFeatureId = 42;
+  /** Last JSON handed to loadJson — what toJson echoes back. */
+  loadedJson = '{"schema_version":1,"name":"Part","feature_calls":[],"next_feature_id":1}';
+  loadJsonCalls: string[] = [];
 
   // ── script CRUD ──
   listScripts(): FieldSkriptRecord[] {
@@ -40,6 +43,22 @@ class FakeKernel {
   addFeatureCall(typeName: string, paramsJson: string): number {
     this.featureCallArgs.push({ typeName, paramsJson });
     return this.nextFeatureId;
+  }
+
+  // ── document load/save ──
+  loadJson(json: string) {
+    this.loadJsonCalls.push(json);
+    this.loadedJson = json;
+    // Keep the script map in sync with any embedded scripts.
+    this.scripts.clear();
+    try {
+      const doc = JSON.parse(json);
+      if (Array.isArray(doc.scripts)) {
+        for (const r of doc.scripts) this.scripts.set(r.id, r);
+      }
+    } catch {
+      // ignore — fake kernel tolerates malformed input
+    }
   }
 
   // ── accessors the constructor + commit path read ──
@@ -65,7 +84,15 @@ class FakeKernel {
     return -1;
   }
   toJson() {
-    return "{}";
+    // Echo the last-loaded document, minus any embedded scripts (the
+    // store strips scripts before persisting). JSON.parse must succeed.
+    try {
+      const doc = JSON.parse(this.loadedJson);
+      delete doc.scripts;
+      return JSON.stringify(doc);
+    } catch {
+      return '{"schema_version":1,"name":"Part","feature_calls":[],"next_feature_id":1}';
+    }
   }
   sceneAabb() {
     return { size: [0, 0, 0] };
@@ -105,7 +132,14 @@ export const definition = fd.feature({
 });
 export default function build() {}`;
 
-describe("KernelStore — FieldSkript CRUD", () => {
+/** Find the (single) script tab in the project, or undefined. */
+function scriptTabId(store: KernelStore): string | undefined {
+  return store
+    .getState()
+    .project.tabs.find((t) => t.kind === "script")?.id;
+}
+
+describe("KernelStore — FieldSkript tab CRUD", () => {
   let store: KernelStore;
   let kernel: FakeKernel;
 
@@ -113,74 +147,69 @@ describe("KernelStore — FieldSkript CRUD", () => {
     ({ store, kernel } = makeStore());
   });
 
-  it("saveScript creates a new record from valid source", () => {
-    const result = store.saveScript({ source: VALID_SOURCE });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.record.name).toBe("Widget");
-    expect(result.record.version).toBe(1);
-    expect(result.record.id).toBe("widget"); // slugged from the name
-    expect(kernel.upsertCalls).toHaveLength(1);
-    expect(kernel.upsertCalls[0].id).toBe("widget");
-    expect(store.listScripts().map((r) => r.id)).toEqual(["widget"]);
-  });
-
-  it("saveScript on malformed source returns an error and does NOT upsert", () => {
-    const result = store.saveScript({ source: "export const definition = 123;" });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.length).toBeGreaterThan(0);
-    expect(kernel.upsertCalls).toHaveLength(0);
-    expect(store.listScripts()).toHaveLength(0);
-  });
-
-  it("saveScript with an existing id revises and bumps the version", () => {
-    const first = store.saveScript({ source: VALID_SOURCE });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-
-    const revised = store.saveScript({
-      id: first.record.id,
-      source: VALID_SOURCE.replace("size", "width"),
-    });
-    expect(revised.ok).toBe(true);
-    if (!revised.ok) return;
-    expect(revised.record.id).toBe(first.record.id);
-    expect(revised.record.version).toBe(2);
-    expect(revised.record.schema.params.map((p) => p.key)).toEqual(["width"]);
-    // Still a single record under that id.
+  it("createTab('script') appends a script tab, mirrors the record, activates it", () => {
+    const id = store.createTab("script");
+    const state = store.getState();
+    expect(state.project.activeTabId).toBe(id);
+    const tab = state.project.tabs.find((t) => t.id === id);
+    expect(tab?.kind).toBe("script");
+    // The starter record was mirrored into the kernel.
+    expect(kernel.upsertCalls.length).toBeGreaterThanOrEqual(1);
     expect(store.listScripts()).toHaveLength(1);
   });
 
-  it("dedupes derived ids for distinct same-named scripts", () => {
-    const a = store.saveScript({ source: VALID_SOURCE });
-    const b = store.saveScript({ source: VALID_SOURCE });
-    expect(a.ok && b.ok).toBe(true);
-    if (!a.ok || !b.ok) return;
-    expect(a.record.id).toBe("widget");
-    expect(b.record.id).toBe("widget_2");
-    expect(store.listScripts()).toHaveLength(2);
+  it("saveScriptTab with valid source creates/updates the record", () => {
+    const id = store.createTab("script");
+    const result = store.saveScriptTab(id, VALID_SOURCE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.name).toBe("Widget");
+    // reviseRecord keeps the id and bumps version (starter was v1).
+    expect(result.record.version).toBe(2);
+    // The tab label tracks the record name.
+    const tab = store.getState().project.tabs.find((t) => t.id === id);
+    expect(tab?.kind === "script" && tab.name).toBe("Widget");
   });
 
-  it("deleteScript removes via the kernel", () => {
-    const saved = store.saveScript({ source: VALID_SOURCE });
-    expect(saved.ok).toBe(true);
-    if (!saved.ok) return;
-    store.deleteScript(saved.record.id);
-    expect(kernel.removeCalls).toEqual([saved.record.id]);
+  it("saveScriptTab on malformed source returns an error and does NOT upsert", () => {
+    const id = store.createTab("script");
+    const upsertsBefore = kernel.upsertCalls.length;
+    const result = store.saveScriptTab(id, "export const definition = 123;");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.length).toBeGreaterThan(0);
+    expect(kernel.upsertCalls.length).toBe(upsertsBefore);
+  });
+
+  it("saveScriptTab revise bumps the version", () => {
+    const id = store.createTab("script");
+    const first = store.saveScriptTab(id, VALID_SOURCE);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const revised = store.saveScriptTab(id, VALID_SOURCE.replace("size", "width"));
+    expect(revised.ok).toBe(true);
+    if (!revised.ok) return;
+    expect(revised.record.id).toBe(first.record.id);
+    expect(revised.record.version).toBe(first.record.version + 1);
+    expect(revised.record.schema.params.map((p) => p.key)).toEqual(["width"]);
+  });
+
+  it("deleteTab on a script tab removes it via the kernel", () => {
+    const id = store.createTab("script");
+    const recordId = store.listScripts()[0].id;
+    store.deleteTab(id);
+    expect(kernel.removeCalls).toContain(recordId);
     expect(store.listScripts()).toHaveLength(0);
+    expect(store.getState().project.tabs.some((t) => t.id === id)).toBe(false);
   });
 
   it("insertScriptInstance adds a feature call for a known script", () => {
-    const saved = store.saveScript({ source: VALID_SOURCE });
-    expect(saved.ok).toBe(true);
-    if (!saved.ok) return;
-
-    const id = store.insertScriptInstance(saved.record.id);
+    store.createTab("script");
+    const recordId = store.listScripts()[0].id;
+    const id = store.insertScriptInstance(recordId);
     expect(id).toBe(kernel.nextFeatureId);
     expect(kernel.featureCallArgs).toHaveLength(1);
-    expect(kernel.featureCallArgs[0].typeName).toBe(saved.record.id);
-    // Default params are a JSON object derived from the script's schema.
+    expect(kernel.featureCallArgs[0].typeName).toBe(recordId);
     const params = JSON.parse(kernel.featureCallArgs[0].paramsJson);
     expect(typeof params).toBe("object");
     expect(params).not.toBeNull();
@@ -194,50 +223,77 @@ describe("KernelStore — FieldSkript CRUD", () => {
 });
 
 describe("KernelStore — workspace tabs", () => {
-  it("setActiveTab flips activeTab part↔script and notifies", () => {
+  it("default project has one active part tab", () => {
     const { store } = makeStore();
+    const { project } = store.getState();
+    expect(project.tabs).toHaveLength(1);
+    expect(project.tabs[0].kind).toBe("part");
+    expect(project.activeTabId).toBe(project.tabs[0].id);
+  });
+
+  it("createTab('script') appends + activates; setActiveTab(partId) switches back", () => {
+    const { store } = makeStore();
+    const partId = store.getState().project.tabs[0].id;
+
+    const scriptId = store.createTab("script");
+    expect(store.getState().project.activeTabId).toBe(scriptId);
+
+    store.setActiveTab(partId);
+    expect(store.getState().project.activeTabId).toBe(partId);
+  });
+
+  it("setActiveTab with the active id is a no-op (no extra notify)", () => {
+    const { store } = makeStore();
+    const partId = store.getState().project.tabs[0].id;
     let notifications = 0;
     store.subscribe(() => {
       notifications += 1;
     });
+    store.setActiveTab(partId);
+    expect(notifications).toBe(0);
+  });
 
-    expect(store.getState().activeTab).toBe("part");
+  it("createTab('assembly') activates assembly mode", () => {
+    const { store } = makeStore();
+    const id = store.createTab("assembly");
+    const state = store.getState();
+    expect(state.project.activeTabId).toBe(id);
+    expect(state.assembly.active).toBe(true);
+  });
 
-    store.setActiveTab("script");
-    expect(store.getState().activeTab).toBe("script");
-    expect(notifications).toBe(1);
-
-    // Idempotent: setting the same tab is a no-op (no extra notify).
-    store.setActiveTab("script");
-    expect(notifications).toBe(1);
-
-    store.setActiveTab("part");
-    expect(store.getState().activeTab).toBe("part");
-    expect(notifications).toBe(2);
+  it("switching to a second part tab reloads the kernel document", () => {
+    const { store, kernel } = makeStore();
+    const loadsBefore = kernel.loadJsonCalls.length;
+    const secondId = store.createTab("part");
+    // createTab flushes + setActiveTab(part) reloads the kernel.
+    expect(kernel.loadJsonCalls.length).toBeGreaterThan(loadsBefore);
+    expect(store.getState().project.activeTabId).toBe(secondId);
+    expect(store.getState().project.tabs.filter((t) => t.kind === "part")).toHaveLength(2);
   });
 });
 
 describe("KernelStore — script-type toolbar meta", () => {
-  it("saveScript surfaces the new script in state.scriptTypes", () => {
+  it("saveScriptTab surfaces the new script in state.scriptTypes", () => {
     const { store } = makeStore();
     expect(store.getState().scriptTypes).toHaveLength(0);
 
-    const result = store.saveScript({ source: VALID_SOURCE });
+    const id = store.createTab("script");
+    const result = store.saveScriptTab(id, VALID_SOURCE);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const types = store.getState().scriptTypes;
-    expect(types).toEqual([{ id: "widget", name: "Widget", icon: "⬡" }]);
+    expect(types).toEqual([{ id: result.record.id, name: "Widget", icon: "⬡" }]);
   });
 
-  it("deleteScript removes the script from state.scriptTypes", () => {
+  it("deleteTab removes the script from state.scriptTypes", () => {
     const { store } = makeStore();
-    const saved = store.saveScript({ source: VALID_SOURCE });
-    expect(saved.ok).toBe(true);
-    if (!saved.ok) return;
+    store.createTab("script");
     expect(store.getState().scriptTypes).toHaveLength(1);
 
-    store.deleteScript(saved.record.id);
+    const id = scriptTabId(store);
+    expect(id).toBeDefined();
+    store.deleteTab(id!);
     expect(store.getState().scriptTypes).toHaveLength(0);
   });
 });

@@ -1,10 +1,18 @@
 /**
- * FT-W: bottom tab strip (Sheets/Onshape style) switching the inner
- * workspace between the Part Editor (CAD) and the Feature Script IDE.
- * Both workspaces stay mounted in App; this only flips `activeTab`.
+ * MT-A: bottom tab strip (Sheets/Onshape style). Renders one button per
+ * project tab and switches the active tab. Chunk B (MT-B) adds the [+]
+ * button, the per-tab ▾ context menu, and the tab-illusion CSS — here we
+ * keep it minimal but functional.
  */
 
 import type { KernelStore, StoreState } from "./store";
+import type { TabKind } from "./project";
+
+const KIND_GLYPH: Record<TabKind, string> = {
+  part: "◳",
+  script: "ƒ",
+  assembly: "⚙",
+};
 
 export function BottomTabs({
   store,
@@ -13,29 +21,28 @@ export function BottomTabs({
   store: KernelStore;
   state: StoreState;
 }) {
-  const tab = state.activeTab;
+  const { tabs, activeTabId } = state.project;
   return (
     <div className="fd-bottom-tabs" role="tablist">
-      <button
-        type="button"
-        role="tab"
-        className={"tab" + (tab === "part" ? " is-active" : "")}
-        aria-selected={tab === "part"}
-        data-testid="tab-part"
-        onClick={() => store.setActiveTab("part")}
-      >
-        Part Editor
-      </button>
-      <button
-        type="button"
-        role="tab"
-        className={"tab" + (tab === "script" ? " is-active" : "")}
-        aria-selected={tab === "script"}
-        data-testid="tab-script"
-        onClick={() => store.setActiveTab("script")}
-      >
-        Feature Script
-      </button>
+      {tabs.map((tab) => {
+        const isActive = tab.id === activeTabId;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            className={"tab" + (isActive ? " is-active" : "")}
+            aria-selected={isActive}
+            data-testid={`tab-${tab.id}`}
+            onClick={() => store.setActiveTab(tab.id)}
+          >
+            <span className="kind-glyph" aria-hidden="true">
+              {KIND_GLYPH[tab.kind]}
+            </span>{" "}
+            {tab.name}
+          </button>
+        );
+      })}
     </div>
   );
 }

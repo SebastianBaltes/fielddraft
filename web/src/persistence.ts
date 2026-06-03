@@ -7,7 +7,7 @@
  * at startup; everything else is in-memory.
  */
 
-export const STORAGE_KEY = "fielddraft.project.v1";
+export const STORAGE_KEY = "fielddraft.project.v2";
 export const DEFAULT_DEBOUNCE_MS = 500;
 
 export interface StorageLike {

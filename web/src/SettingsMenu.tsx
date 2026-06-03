@@ -449,20 +449,6 @@ export function SettingsMenu({
           <button
             type="button"
             role="menuitem"
-            className={"menu-item" + (state?.assembly.active ? " is-active" : "")}
-            data-testid="menu-assembly"
-            onClick={() =>
-              menuAction(() => {
-                if (state?.assembly.active) store?.exitAssembly();
-                else store?.enterAssembly();
-              })
-            }
-          >
-            Assembly
-          </button>
-          <button
-            type="button"
-            role="menuitem"
             className="menu-item"
             data-testid="menu-share"
             disabled={!hasFeatures || !state?.projectId}

@@ -173,6 +173,12 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [store]);
 
+  const activeProjectTab = state?.project.tabs.find(
+    (t) => t.id === state.project.activeTabId,
+  );
+  const activeScriptTab =
+    activeProjectTab?.kind === "script" ? activeProjectTab : null;
+
   return (
     <WorkspaceUnitsContext.Provider value={settings.units}>
     <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
@@ -222,19 +228,25 @@ export function App() {
           )}
         </div>
       </header>
-      {/* FT-W: both workspaces stay mounted; we toggle visibility with
+      {/* MT-A: both workspaces stay mounted; we toggle visibility with
           the `hidden` attr so the Viewport's GPU context and Monaco are
-          never torn down on a tab switch. The topbar is always visible. */}
-      <div className="fd-workspace" hidden={state?.activeTab === "script"}>
+          never torn down on a tab switch. The active tab is derived from
+          the project; part AND assembly both use the part workspace
+          (Viewport + Outliner render the assembly when active). */}
+      <div className="fd-workspace" hidden={activeProjectTab?.kind === "script"}>
         {store && state ? <Toolbar store={store} state={state} /> : null}
         <main className="main">
           <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} />
           {store && state ? <Outliner store={store} state={state} /> : null}
         </main>
       </div>
-      <div className="fd-workspace fd-script-workspace" hidden={state?.activeTab !== "script"}>
-        {store && state ? (
-          <FieldSkriptEditor store={store} state={state} visible={state.activeTab === "script"} />
+      <div className="fd-workspace fd-script-workspace" hidden={activeProjectTab?.kind !== "script"}>
+        {store && state && activeScriptTab ? (
+          <FieldSkriptEditor
+            store={store}
+            tab={activeScriptTab}
+            visible={activeProjectTab?.kind === "script"}
+          />
         ) : null}
       </div>
       {store && state ? <BottomTabs store={store} state={state} /> : null}

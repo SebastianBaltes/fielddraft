@@ -51,6 +51,23 @@ import {
   reviseRecord,
   type FieldSkriptRecord,
 } from "./fieldskript/record";
+import {
+  DEFAULT_SCRIPT_SOURCE,
+  allocateTabId,
+  createDefaultProject,
+  createPartTab,
+  createAssemblyTab,
+  injectScripts,
+  parseProject,
+  projectScripts,
+  reseedTabIds,
+  serializeProject as serializeProjectJson,
+  stripScripts,
+  type Project,
+  type ProjectTab,
+  type ScriptTab,
+  type TabKind,
+} from "./project";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
 import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
 import {
@@ -200,10 +217,12 @@ export interface StoreState {
    *  in this set are visible. Persisted to localStorage. */
   hiddenDatums: ReadonlySet<string>;
   highlightedBodyIndex: number | null;
-  /** FT-W: active workspace tab. "part" = the CAD editor
-   *  (Viewport + Outliner + Toolbar), "script" = the FieldSkript
-   *  IDE. UI-only, never persisted to the document. */
-  activeTab: "part" | "script";
+  /** MT-A: the multi-tab project model (part / script / assembly
+   *  tabs). Replaces the old two-way `activeTab` toggle — the active
+   *  tab is `project.tabs` filtered by `project.activeTabId`.
+   *  Persisted (via the store's serializeProject funnel) to
+   *  localStorage. */
+  project: Project;
   /** FT-W: lightweight per-script-type meta the Part toolbar renders
    *  as one button each (glyph = icon, label = name). Recomputed from
    *  the kernel's `listScripts()` on every commit so newly saved /
@@ -369,9 +388,49 @@ export class KernelStore {
   private workerAvailable = false;
   private dcMeshingEnabled = true;
 
-  constructor(kernel: Kernel, autosave: AutoSaveHandle) {
+  /** MT-A: which part tab's document is currently loaded into the live
+   *  kernel. `null` only transiently during construction. */
+  private loadedPartTabId: string | null = null;
+
+  constructor(
+    kernel: Kernel,
+    autosave: AutoSaveHandle,
+    persistedProjectJson: string | null = null,
+  ) {
     this.kernel = kernel;
     this.autosave = autosave;
+
+    // ── MT-A: build the project + load the active/first part into the
+    //   kernel before reading the initial feature list. ──────────────
+    const project = parseProject(persistedProjectJson ?? "") ?? createDefaultProject();
+    reseedTabIds(project.tabs);
+
+    // Mirror every project script into the live kernel so the loaded
+    // part regenerates against them.
+    for (const record of projectScripts(project)) {
+      kernel.upsertScript(record);
+    }
+
+    // Determine the part tab to load: the active tab if it's a part,
+    // else the first part tab. A default project always has ≥1 part
+    // tab; if a loaded project somehow has none, create + append one.
+    const activeTab = project.tabs.find((t) => t.id === project.activeTabId);
+    let partTab =
+      activeTab && activeTab.kind === "part"
+        ? activeTab
+        : project.tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+    if (!partTab) {
+      partTab = createPartTab("Part 1");
+      project.tabs.push(partTab);
+    }
+    kernel.loadJson(injectScripts(partTab.documentJson, projectScripts(project)));
+    this.loadedPartTabId = partTab.id;
+
+    const initialAssembly =
+      activeTab && activeTab.kind === "assembly"
+        ? { active: true, document: activeTab.document, selectedPartId: null }
+        : INACTIVE_ASSEMBLY;
+
     const initFeatures = kernel.listFeatures();
     this.state = {
       features: initFeatures,
@@ -396,7 +455,7 @@ export class KernelStore {
       transientError: null,
       facePickMode: false,
       mateMode: false,
-      assembly: INACTIVE_ASSEMBLY,
+      assembly: initialAssembly,
       ikMode: false,
       gizmoMode: "translate" as const,
       threemfStash: null,
@@ -404,7 +463,7 @@ export class KernelStore {
       hiddenDatums: loadHiddenDatumsFromStorage(),
       highlightedBodyIndex: null,
       rollbackIndex: initFeatures.length,
-      activeTab: "part",
+      project,
       scriptTypes: this.snapshotScriptTypes(),
     };
 
@@ -488,7 +547,7 @@ export class KernelStore {
       hiddenDatums: this.state.hiddenDatums,
       highlightedBodyIndex: this.state.highlightedBodyIndex,
       rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
-      activeTab: this.state.activeTab,
+      project: this.state.project,
       scriptTypes: this.snapshotScriptTypes(),
     };
     // Drop selection entries pointing at deleted features.
@@ -510,7 +569,7 @@ export class KernelStore {
       this.patch({ selectionAnchor: null });
     }
     this.syncActiveBody();
-    this.autosave.schedule(this.kernel.toJson());
+    this.autosave.schedule(this.serializeProject());
     this.refreshMeshCache();
     for (const listener of this.listeners) listener();
   }
@@ -663,6 +722,28 @@ export class KernelStore {
     return this.kernel
       .listScripts()
       .map((r) => ({ id: r.id, name: r.name, icon: r.icon }));
+  }
+
+  /**
+   * MT-A: the single persistence funnel. Builds a Project mirroring
+   * `state.project` but with (a) the loaded part tab's `documentJson`
+   * replaced by the live kernel doc (scripts stripped — they live in
+   * script tabs) and (b) the active assembly tab's `document` replaced
+   * by the live assembly state. Everything that persists routes here.
+   */
+  private serializeProject(): string {
+    const activeId = this.state.project.activeTabId;
+    const assemblyActive = this.state.assembly.active;
+    const tabs = this.state.project.tabs.map((t) => {
+      if (t.id === this.loadedPartTabId && t.kind === "part") {
+        return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
+      }
+      if (t.id === activeId && t.kind === "assembly" && assemblyActive) {
+        return { ...t, document: this.state.assembly.document };
+      }
+      return t;
+    });
+    return serializeProjectJson({ ...this.state.project, tabs });
   }
 
   /**
@@ -1151,7 +1232,7 @@ export class KernelStore {
   /** Save the current project as a downloadable .fdraft file. */
   saveProjectToFile(filename = "project.fdraft"): void {
     if (typeof document === "undefined") return;
-    const json = this.kernel.toJson();
+    const json = this.serializeProject();
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1163,15 +1244,38 @@ export class KernelStore {
     URL.revokeObjectURL(url);
   }
 
-  /** Load a project from a .fdraft JSON string. */
+  /** MT-A: load a project from a .fdraft JSON string. Replaces the
+   *  whole project, rebuilds the kernel's script set, and loads the
+   *  active/first part document. Returns `false` on malformed input. */
   loadProjectFromJson(json: string): boolean {
-    try {
-      this.kernel.loadJson(json);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("fielddraft: loadProjectFromJson failed", err);
-      return false;
+    const project = parseProject(json);
+    if (!project) return false;
+    reseedTabIds(project.tabs);
+
+    // Rebuild the kernel's scripts from scratch.
+    for (const r of this.kernel.listScripts()) this.kernel.removeScript(r.id);
+    for (const r of projectScripts(project)) this.kernel.upsertScript(r);
+
+    const activeTab = project.tabs.find((t) => t.id === project.activeTabId);
+    let partTab =
+      activeTab && activeTab.kind === "part"
+        ? activeTab
+        : project.tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+    if (!partTab) {
+      partTab = createPartTab("Part 1");
+      project.tabs.push(partTab);
     }
+    this.kernel.loadJson(injectScripts(partTab.documentJson, projectScripts(project)));
+    this.loadedPartTabId = partTab.id;
+
+    this.state = {
+      ...this.state,
+      project,
+      assembly:
+        activeTab && activeTab.kind === "assembly"
+          ? { active: true, document: activeTab.document, selectedPartId: null }
+          : INACTIVE_ASSEMBLY,
+    };
     this.commit(new Set(), null);
     this.autosave.flush();
     return true;
@@ -1220,9 +1324,19 @@ export class KernelStore {
     }
   }
 
-  /** Clear the document back to a fresh empty state. */
+  /** MT-A: reset to a fresh default project (one empty part tab). */
   newProject(): void {
-    this.kernel.loadJson('{"schema_version":1,"name":"Untitled","feature_calls":[],"next_feature_id":1}');
+    const project = createDefaultProject();
+    reseedTabIds(project.tabs);
+    for (const r of this.kernel.listScripts()) this.kernel.removeScript(r.id);
+    const partTab = project.tabs[0] as import("./project").PartTab;
+    this.kernel.loadJson(injectScripts(partTab.documentJson, []));
+    this.loadedPartTabId = partTab.id;
+    this.state = {
+      ...this.state,
+      project,
+      assembly: INACTIVE_ASSEMBLY,
+    };
     this.commit(new Set(), null);
     this.autosave.flush();
   }
@@ -1285,21 +1399,11 @@ export class KernelStore {
 
   // ── P1: Assembly management ────────────────────────────────────
 
-  enterAssembly(): void {
-    this.state = {
-      ...this.state,
-      assembly: {
-        active: true,
-        document: { ...this.state.assembly.document },
-        selectedPartId: null,
-      },
-    };
-    this.notify();
-  }
-
+  /** MT-A: leave the active assembly tab by switching to the first
+   *  part tab. Drives the Outliner's "exit assembly" button. */
   exitAssembly(): void {
-    this.patch({ assembly: INACTIVE_ASSEMBLY });
-    this.notify();
+    const partTab = this.state.project.tabs.find((t) => t.kind === "part");
+    if (partTab) this.setActiveTab(partTab.id);
   }
 
   addPartToAssembly(documentJson: string, name?: string): void {
@@ -2485,14 +2589,200 @@ export class KernelStore {
     triggerDownload(buildObjExportText(this.state.meshedBodies), "text/plain", filename);
   }
 
-  // ── S4: FieldSkript editor + record CRUD ──────────────────────
+  // ── MT-A: project / multi-tab management ──────────────────────
 
-  /** FT-W: switch the active workspace tab ("part" ↔ "script").
-   *  No-op (no notify) when already on the requested tab. */
-  setActiveTab(tab: "part" | "script"): void {
-    if (this.state.activeTab === tab) return;
-    this.patch({ activeTab: tab });
+  /** Flush the live kernel document back into the loaded part tab, and
+   *  (if an assembly tab is active) the assembly document back into it.
+   *  Pure state shuffle — does NOT notify. */
+  private flushLoadedTab(): void {
+    const tabs = this.state.project.tabs.map((t) => {
+      if (t.id === this.loadedPartTabId && t.kind === "part") {
+        return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
+      }
+      const active = this.state.project.activeTabId;
+      if (t.id === active && t.kind === "assembly" && this.state.assembly.active) {
+        return { ...t, document: this.state.assembly.document };
+      }
+      return t;
+    });
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, tabs },
+    };
+  }
+
+  /** MT-A: switch the active tab by id. Flushes the currently-loaded
+   *  part (and active assembly) first, then loads / activates the
+   *  target. Switching to a part tab resets undo (intended). */
+  setActiveTab(id: string): void {
+    const project = this.state.project;
+    if (id === project.activeTabId) return;
+    const target = project.tabs.find((t) => t.id === id);
+    if (!target) return;
+
+    this.flushLoadedTab();
+
+    if (target.kind === "part") {
+      this.kernel.loadJson(
+        injectScripts(target.documentJson, projectScripts(this.state.project)),
+      );
+      this.loadedPartTabId = target.id;
+      this.state = {
+        ...this.state,
+        assembly: INACTIVE_ASSEMBLY,
+        project: { ...this.state.project, activeTabId: id },
+      };
+      // Standard commit path refreshes features / meshes / selection.
+      this.commit(new Set(), null);
+      return;
+    }
+
+    if (target.kind === "script") {
+      this.state = {
+        ...this.state,
+        assembly: INACTIVE_ASSEMBLY,
+        project: { ...this.state.project, activeTabId: id },
+      };
+      this.notify();
+      this.autosave.schedule(this.serializeProject());
+      return;
+    }
+
+    // assembly
+    this.state = {
+      ...this.state,
+      assembly: { active: true, document: target.document, selectedPartId: null },
+      project: { ...this.state.project, activeTabId: id },
+    };
     this.notify();
+    this.autosave.schedule(this.serializeProject());
+  }
+
+  /** MT-A: create a new tab of the given kind, activate it, return its
+   *  id. Flushes the currently-loaded part first. */
+  createTab(kind: TabKind): string {
+    this.flushLoadedTab();
+    const project = this.state.project;
+    let newTab: ProjectTab;
+
+    if (kind === "part") {
+      const maxN = project.tabs.reduce((max, t) => {
+        const m = /^Part (\d+)$/.exec(t.name);
+        return m ? Math.max(max, Number(m[1])) : max;
+      }, 0);
+      newTab = createPartTab(`Part ${maxN + 1}`);
+    } else if (kind === "assembly") {
+      const maxN = project.tabs.reduce((max, t) => {
+        const m = /^Assembly (\d+)$/.exec(t.name);
+        return m ? Math.max(max, Number(m[1])) : max;
+      }, 0);
+      newTab = createAssemblyTab(`Assembly ${maxN + 1}`);
+    } else {
+      const id = this.deriveScriptId(undefined, projectScripts(project));
+      const record = createRecord({ id, source: DEFAULT_SCRIPT_SOURCE });
+      newTab = {
+        id: allocateTabId(),
+        kind: "script",
+        name: record.name,
+        record,
+      };
+      this.kernel.upsertScript(record);
+    }
+
+    this.state = {
+      ...this.state,
+      project: { ...project, tabs: [...project.tabs, newTab] },
+      // A script tab mirrors a new record into the kernel; refresh the
+      // toolbar meta now since the script-tab activation path below does
+      // not run commit().
+      scriptTypes: this.snapshotScriptTypes(),
+    };
+    this.setActiveTab(newTab.id);
+    return newTab.id;
+  }
+
+  /** MT-A: rename a tab (trim; ignore empty). For a script tab the
+   *  record id is unchanged — only the tab label moves. */
+  renameTab(id: string, name: string): void {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+    const tabs = this.state.project.tabs.map((t) =>
+      t.id === id ? ({ ...t, name: trimmed } as ProjectTab) : t,
+    );
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, tabs },
+    };
+    this.notify();
+    this.autosave.schedule(this.serializeProject());
+  }
+
+  /** MT-A: delete a tab. Mirrors the kernel for script tabs, picks a
+   *  fresh part to load when the loaded part is removed, and never
+   *  leaves the tab list empty. */
+  deleteTab(id: string): void {
+    const project = this.state.project;
+    const target = project.tabs.find((t) => t.id === id);
+    if (!target) return;
+
+    if (target.kind === "script") {
+      this.kernel.removeScript(target.record.id);
+    }
+
+    let tabs = project.tabs.filter((t) => t.id !== id);
+    const deletedIndex = project.tabs.findIndex((t) => t.id === id);
+
+    // Ensure a part tab still exists to load against.
+    const removedLoadedPart = target.kind === "part" && target.id === this.loadedPartTabId;
+    if (removedLoadedPart) {
+      let fallback = tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+      if (!fallback) {
+        fallback = createPartTab("Part 1");
+        tabs = [...tabs, fallback];
+      }
+      this.kernel.loadJson(
+        injectScripts(fallback.documentJson, projectScripts({ ...project, tabs })),
+      );
+      this.loadedPartTabId = fallback.id;
+    }
+
+    // Pick the next active tab if we deleted the active one.
+    let activeTabId = project.activeTabId;
+    if (id === project.activeTabId) {
+      const neighbor = tabs[deletedIndex - 1] ?? tabs[deletedIndex] ?? tabs[0];
+      activeTabId = neighbor.id;
+    }
+
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, tabs, activeTabId },
+    };
+
+    // If the active tab changed, route through setActiveTab semantics by
+    // re-loading. Simplest: reset activeTabId then reuse setActiveTab when
+    // the active tab actually moved. Here we instead resolve inline.
+    const newActive = tabs.find((t) => t.id === activeTabId);
+    if (newActive?.kind === "assembly") {
+      this.state = {
+        ...this.state,
+        assembly: { active: true, document: newActive.document, selectedPartId: null },
+      };
+    } else if (newActive?.kind === "part") {
+      // Load the active part if it isn't already loaded.
+      if (this.loadedPartTabId !== newActive.id) {
+        this.kernel.loadJson(
+          injectScripts(newActive.documentJson, projectScripts(this.state.project)),
+        );
+        this.loadedPartTabId = newActive.id;
+      }
+      this.state = { ...this.state, assembly: INACTIVE_ASSEMBLY };
+    } else {
+      this.state = { ...this.state, assembly: INACTIVE_ASSEMBLY };
+    }
+
+    // A loaded-part regenerate happened; surface it through commit so
+    // features/meshes/scriptTypes refresh and autosave persists.
+    this.commit();
   }
 
   /** S4: the document's FieldSkript records (ground truth in the
@@ -2502,60 +2792,38 @@ export class KernelStore {
   }
 
   /**
-   * S4: save a FieldSkript record. With an `id` matching an existing
-   * record this revises it (version bumps); otherwise it creates a
-   * fresh record. The id for a new record is derived deterministically
-   * from the display name (slugged, de-duped against existing ids) so
-   * repeated saves never collide and never depend on wall-clock time.
-   *
-   * The whole transpile → eval → schema pipeline lives inside
-   * {@link createRecord}/{@link reviseRecord} and THROWS on malformed
-   * source, so we wrap it and surface the message instead of letting it
-   * escape. On success the record is upserted into the kernel and the
-   * standard commit path runs so autosave persists the new document and
-   * the worker re-syncs scripts on the next rebuild.
+   * MT-A: save the source of a script tab. Revises the tab's record
+   * (keeps id, bumps version), updates tab name + label, mirrors into
+   * the kernel, and commits so the live part regenerates + autosave
+   * persists. Returns the new record or an error on malformed source.
    */
-  saveScript(input: { id?: string; source: string; name?: string }):
+  saveScriptTab(tabId: string, source: string):
     | { ok: true; record: FieldSkriptRecord }
     | { ok: false; error: string } {
-    const existing = this.kernel.listScripts();
+    const tab = this.state.project.tabs.find(
+      (t): t is ScriptTab => t.id === tabId && t.kind === "script",
+    );
+    if (!tab) return { ok: false, error: `Unknown script tab "${tabId}".` };
+
     let record: FieldSkriptRecord;
     try {
-      if (input.id) {
-        const prev = existing.find((r) => r.id === input.id);
-        record = prev
-          ? reviseRecord(prev, { source: input.source, name: input.name })
-          : createRecord({ id: input.id, source: input.source, name: input.name });
-      } else {
-        // No id yet: build the record once with a placeholder id, then
-        // re-key it from the derived display name (slugged + deduped).
-        // `createRecord` derives `name` from `definition.name`, so this
-        // is the first point the real name is known. The schema's `type`
-        // field must track the id (it equals the FeatureCall `type`).
-        const placeholder = `script_${existing.length + 1}`;
-        const built = createRecord({
-          id: placeholder,
-          source: input.source,
-          name: input.name,
-        });
-        const id = this.deriveScriptId(built.name, existing);
-        record =
-          id === built.id
-            ? built
-            : { ...built, id, schema: { ...built.schema, type: id } };
-      }
+      record = reviseRecord(tab.record, { source });
     } catch (e) {
       return { ok: false, error: String(e instanceof Error ? e.message : e) };
     }
+
+    const tabs = this.state.project.tabs.map((t) =>
+      t.id === tabId && t.kind === "script"
+        ? ({ ...t, record, name: record.name } as ProjectTab)
+        : t,
+    );
+    this.state = {
+      ...this.state,
+      project: { ...this.state.project, tabs },
+    };
     this.kernel.upsertScript(record);
     this.commit();
     return { ok: true, record };
-  }
-
-  /** S4: delete a FieldSkript record by id and commit. */
-  deleteScript(id: string): void {
-    this.kernel.removeScript(id);
-    this.commit();
   }
 
   /**
