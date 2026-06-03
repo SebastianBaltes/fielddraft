@@ -108,6 +108,31 @@ const CIRCLE_INLIER_FRACTION: f64 = 0.4;
 /// arc or a stray planar sub-cluster does. See DL-52.
 const CIRCLE_MAX_ANGULAR_GAP: f64 = std::f64::consts::PI / 2.0;
 
+/// A circle-fit group is accepted as a **single arc** when, after removing its
+/// one open side (the largest angular gap — for a clipped seam this is the
+/// portion outside the solid), every remaining inter-sample angular gap stays
+/// within `ARC_GAP_FACTOR ×` the median gap. The spatial analogue of
+/// [`CHAIN_GAP_FACTOR`]: a second large gap means two disjoint arcs share the
+/// signature, which must chain per-arc instead. See DL-64.
+const ARC_GAP_FACTOR: f64 = 6.0;
+
+/// Fraction of a consolidated chain's samples that must lie on each branch's
+/// analytic surface for the phantom-signature filter to keep it. A genuine
+/// edge has ~all samples on both faces; a contributor-eps phantom pairing has
+/// ~none. The slack below 1.0 absorbs the handful of extraction-noise outliers
+/// near a curved seam's bounding triple-points, where the membership tolerance
+/// (one post-dedup sample spacing) collapses below the local projection
+/// accuracy. See DL-64.
+const SURFACE_MEMBERSHIP_FRACTION: f64 = 0.85;
+
+/// Fraction of a circle-fit group's inliers that must lie within `tol` of the
+/// fitted radius for the fit to be accepted. A robust quantile in place of a
+/// strict max residual: a densely-sampled curved seam collapses `tol` below the
+/// tangent-plane extraction noise, so a handful of worst-case points must not
+/// veto an otherwise clean circle, while a genuine non-circle still fails the
+/// share. See DL-64.
+const CIRCLE_RADIAL_FRACTION: f64 = 0.9;
+
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
 use super::vec3::{add as add3, dist, dist2, dot, norm as norm3, scale as scale3, sub};
 
@@ -198,19 +223,22 @@ fn fit_line(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
 /// axial contamination tail** (DL-52).
 ///
 /// First a best-fit plane (PCA — the two dominant eigenvectors span it, the
-/// smallest is the normal). The plane *offset* is taken at the **median**
+/// smallest is the normal). The plane *offset* is taken at the **densest**
 /// signed distance along the normal, not the centroid: a drilled-cylinder trim
 /// group carries extra cylinder-wall samples one or two cells deep along the
 /// bore axis (same signature, different axial offset), and the centroid is
-/// dragged off the true ring by that tail — the median is not. Points within
-/// `tol` of that plane are the **inliers**; we run the algebraic (Kåsa) circle
-/// fit on the inliers alone and accept only when they (a) are a clear majority
-/// ([`CIRCLE_INLIER_FRACTION`]), (b) cover the full ring (largest angular gap
-/// below [`CIRCLE_MAX_ANGULAR_GAP`]), and (c) have a radial residual within
-/// `tol`. On success returns the inliers sorted by angle as oriented Hermite
-/// samples for one closed-loop edge; otherwise `None`. A genuine straight edge
-/// (degenerate plane / radius), a partial arc, or a stray sub-cluster fails one
-/// of the gates and falls back to gap-chaining. See DL-51, DL-52.
+/// dragged off the true ring by that tail — the dominant offset is not. Points
+/// within `tol` of that plane are the **inliers**; we run the algebraic (Kåsa)
+/// circle fit on the inliers alone and accept when they (a) are a clear majority
+/// ([`CIRCLE_INLIER_FRACTION`]), (b) lie within `tol` of the fitted radius for a
+/// strong majority ([`CIRCLE_RADIAL_FRACTION`]), and (c) form **one contiguous
+/// angular run** — either a full ring (largest gap below
+/// [`CIRCLE_MAX_ANGULAR_GAP`]) or a single arc clipped out of a circle, with no
+/// *second* large gap ([`ARC_GAP_FACTOR`]). A full ring returns sorted as a
+/// closed loop; a clipped arc returns as an OPEN chain (DL-64) whose ends snap
+/// to the bounding vertices. A straight edge, a two-arc signature, or a stray
+/// sub-cluster fails a gate and falls back to gap-chaining. See DL-51, DL-52,
+/// DL-64.
 fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     // A circle needs enough distinct points to be well-posed and to read as a
     // loop downstream.
@@ -293,43 +321,84 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     }
     let r = r2.sqrt();
 
-    // Radial residual over the inliers.
-    let mut max_res = 0.0f64;
-    for &(x, y) in &uv {
-        let rr = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-        max_res = max_res.max((rr - r).abs());
-    }
-    if max_res > tol {
+    // Radial fit quality: a *strong majority* of inliers must lie within `tol`
+    // of the fitted radius. A strict max-residual test collapses for a densely
+    // sampled curved seam — there `tol` (= one post-dedup sample spacing × 1.5)
+    // falls below the first-order tangent-plane extraction noise, so a few
+    // worst-case points near the seam would reject an otherwise perfect circle
+    // (DL-64). A genuine non-circle (an L of two segments, a stray cluster) has
+    // *many* points far from any single radius and still fails this share.
+    let within = uv
+        .iter()
+        .filter(|&&(x, y)| (((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - r).abs() <= tol)
+        .count();
+    if (within as f64) < CIRCLE_RADIAL_FRACTION * uv.len() as f64 {
         return None;
     }
 
-    // Angular coverage: order inliers by angle about the fitted centre and
-    // require no gap larger than `CIRCLE_MAX_ANGULAR_GAP` (including the wrap),
-    // so a partial arc or a stray cluster does not pass as a full circle.
+    // Order inliers by angle about the fitted centre and inspect the angular
+    // gaps. A genuine circular edge is one contiguous angular run: a **full
+    // ring** (every gap small) or a **single arc** clipped out of a circle —
+    // e.g. a sphere ∩ box-face seam, whose missing portion lies outside the
+    // solid (DL-64). Both are one edge; only a signature carrying *two or more*
+    // disjoint arcs (two large gaps) must fall back to per-arc gap-chaining.
     let mut order: Vec<usize> = (0..inlier_idx.len()).collect();
     let angle = |k: usize| (uv[k].1 - cy).atan2(uv[k].0 - cx);
     order.sort_by(|&i, &j| angle(i).partial_cmp(&angle(j)).unwrap());
-    let mut max_gap = 0.0f64;
-    for w in order.windows(2) {
-        max_gap = max_gap.max(angle(w[1]) - angle(w[0]));
+
+    // Consecutive angular gaps along the sorted order, plus the wrap gap. Track
+    // the two largest and where the single largest sits (it is the arc's open
+    // side; for a full ring it is merely the largest of many tiny gaps).
+    let n = order.len();
+    let gap_at = |i: usize| -> f64 {
+        if i + 1 < n {
+            angle(order[i + 1]) - angle(order[i])
+        } else {
+            // wrap from last back to first (+2π)
+            angle(order[0]) + std::f64::consts::TAU - angle(order[n - 1])
+        }
+    };
+    let (mut max_gap, mut max_idx, mut second_gap) = (0.0f64, n - 1, 0.0f64);
+    for i in 0..n {
+        let g = gap_at(i);
+        if g > max_gap {
+            second_gap = max_gap;
+            max_gap = g;
+            max_idx = i;
+        } else if g > second_gap {
+            second_gap = g;
+        }
     }
-    // Wrap gap from the last back to the first (+2π).
-    let wrap = angle(order[0]) + std::f64::consts::TAU - angle(*order.last().unwrap());
-    max_gap = max_gap.max(wrap);
-    if max_gap > CIRCLE_MAX_ANGULAR_GAP {
+
+    // A median-relative continuity bound: after removing the single open side,
+    // every remaining gap must stay within `ARC_GAP_FACTOR ×` the median gap,
+    // mirroring the spatial gap-chaining rule. Two disjoint arcs leave a second
+    // large gap and are rejected here so each arc chains on its own.
+    let mut gaps: Vec<f64> = (0..n).map(gap_at).collect();
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_gap = gaps[n / 2];
+    if second_gap > (median_gap * ARC_GAP_FACTOR).max(CIRCLE_MAX_ANGULAR_GAP) {
         return None;
     }
 
-    // Emit the inliers, sorted by angle, as one closed loop. orient_chain
-    // references k+1 for the forward direction; for a circle the last sample
-    // should look back to the first, so we append the first index to wrap,
-    // then drop the duplicate sample.
     let inlier_points: Vec<EdgePoint> = inlier_idx.iter().map(|&i| points[i]).collect();
-    let mut closed: Vec<usize> = order.clone();
-    closed.push(order[0]);
-    let mut samples = orient_chain(&inlier_points, &closed);
-    samples.pop();
-    Some(samples)
+    if max_gap <= CIRCLE_MAX_ANGULAR_GAP {
+        // Full ring → one closed loop. orient_chain references k+1 for the
+        // forward direction; the last sample should look back to the first, so
+        // we append the first index to wrap, then drop the duplicate sample.
+        let mut closed: Vec<usize> = order.clone();
+        closed.push(order[0]);
+        let mut samples = orient_chain(&inlier_points, &closed);
+        samples.pop();
+        Some(samples)
+    } else {
+        // Single clipped arc → one OPEN chain. Rotate the angular order so it
+        // starts just after the open side (`max_idx` → `max_idx + 1`); the
+        // chain then runs end-to-end along the arc and its two endpoints snap
+        // to the bounding vertices downstream.
+        let rotated: Vec<usize> = (0..n).map(|k| order[(max_idx + 1 + k) % n]).collect();
+        Some(orient_chain(&inlier_points, &rotated))
+    }
 }
 
 // ─── vertex dedup ───────────────────────────────────────────────────────────
@@ -657,21 +726,33 @@ fn chain_on_both_surfaces(
     samples: &[HermiteSample],
     tol: f64,
 ) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
     let check_branch = |branch: u32| -> bool {
         let Some((hs, xf)) = halfspaces.get(&branch) else {
             // No analytic surface to validate against → cannot judge, keep.
             return true;
         };
-        // *Every* sample of a consolidated chain must lie on this branch's
-        // analytic surface: the chain is already one clean edge (line / circle
-        // inliers, or a gap-chained run), so a phantom pairing — whose run sits
-        // entirely off one face — is rejected wholesale, while a real edge
-        // (on both faces by definition) is kept.
-        samples.iter().all(|s| {
-            let pw = [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32];
-            let local = crate::world_to_local(xf, pw);
-            (crate::csg::sdf_halfspace(hs, local).abs() as f64) <= tol
-        })
+        // A *strong majority* of a consolidated chain's samples must lie on this
+        // branch's analytic surface. A phantom pairing — whose run sits entirely
+        // off one face by a cell-scale offset (e.g. a cylinder-wall ring at the
+        // bore radius) — has essentially *no* on-surface samples and is rejected
+        // wholesale, while a real edge has all but a few. The few exceptions are
+        // extraction-noise outliers near the bounding triple-points, where a
+        // densely-sampled curved seam collapses `tol` (= one post-dedup sample
+        // spacing) below the local projection accuracy; demanding unanimity there
+        // would discard the whole genuine seam over a handful of borderline end
+        // samples (DL-64).
+        let on = samples
+            .iter()
+            .filter(|s| {
+                let pw = [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32];
+                let local = crate::world_to_local(xf, pw);
+                (crate::csg::sdf_halfspace(hs, local).abs() as f64) <= tol
+            })
+            .count();
+        on as f64 >= SURFACE_MEMBERSHIP_FRACTION * samples.len() as f64
     };
     check_branch(sa) && check_branch(sb)
 }

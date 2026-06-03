@@ -40,6 +40,7 @@ use crate::brep::projection::{project_to_surface, ProjectedPoint};
 use crate::brep::Vertex;
 use crate::bvh::BoundedCsg;
 use crate::csg::{BranchId, EvalMode};
+use fielddraft_protocol::Primitive;
 
 /// Surface-distance tolerance for the Newton projection (Phase 2). Tight —
 /// this is the convergence criterion of the projection itself, not the
@@ -61,6 +62,15 @@ const TINY_DET: f32 = 1e-9;
 /// survives when `|f(p)| < PHANTOM_EPS_FACTOR · diag`. See DL-5 for why the
 /// phantom tolerance is cell-relative (not the tight `PROJECT_EPS`).
 const PHANTOM_EPS_FACTOR: f32 = 0.25;
+
+/// Cell-relative tolerance for the *both-branches-active* gate (see
+/// [`both_branches_active`], DL-63): a resolved edge point keeps its cell only
+/// if, re-evaluating the hard min there, the second branch's field is within
+/// `BOTH_ACTIVE_EPS_FACTOR · diag` of the live one. Tight enough to reject a
+/// phantom seam that has slid onto one branch's free surface (the dormant
+/// branch is then a whole feature-size away), loose enough to admit the f32
+/// tie at a genuine intersection curve.
+const BOTH_ACTIVE_EPS_FACTOR: f32 = 0.25;
 
 /// Outer-refinement iteration cap for warped (curved) faces (see DL-38). The
 /// initial one-shot linear/LSQ solve only first-order-approximates a curved
@@ -236,6 +246,76 @@ fn passes_phantom_filter(body: &BoundedCsg, p: [f32; 3], eps_phantom: f32) -> bo
     f.abs() < eps_phantom
 }
 
+/// True iff **both** signature branches are simultaneously active (within
+/// `eps` of the hard-min surface) at `p` — the defining condition of a *real*
+/// edge: the intersection curve of two branch zero-sets.
+///
+/// The `edge_residual`/`passes_phantom_filter` gates only check the *union*
+/// field `|f(p)|`, which a point on **one** branch's free surface satisfies
+/// trivially. A phantom edge cell forms wherever a second branch is merely the
+/// runner-up across the cell corners (e.g. a box-face half-space alongside a
+/// sphere that pokes out near that face) without that branch ever reaching the
+/// zero-set: the tangent-plane solve then slides the point along the live
+/// branch, *off* the dormant one, producing a seam that curls onto the free
+/// surface (DL-63). Re-evaluating the hard min at `p` returns only the live
+/// branch as a contributor there, so requiring both branches in the
+/// contributor set rejects the phantom while keeping every genuine seam point
+/// (where the two surfaces truly tie at zero).
+fn both_branches_active(
+    body: &BoundedCsg,
+    p: [f32; 3],
+    ba: BranchId,
+    bb: BranchId,
+    eps: f32,
+) -> bool {
+    let (_, contributors) = body.evaluate(p, eps, EvalMode::Logical);
+    let slice = contributors.as_slice();
+    slice.contains(&ba) && slice.contains(&bb)
+}
+
+/// Is `body` a clean hard-CSG combination of analytic primitives whose branch
+/// fields are well-separated Euclidean SDFs? Only then is the
+/// [`both_branches_active`] gate reliable. A sketch sweep ([`BoundedCsg::Extrude`]
+/// / [`BoundedCsg::Revolve`]) dithers its contributors along the feature (the
+/// very reason the edge walker fits whole-group lines/circles, DL-51), a domain
+/// warp (Twist / Bend / Displace) compresses field values so the second branch
+/// no longer reads within the contributor `eps` at a true edge, and a TPMS /
+/// mesh leaf has no clean half-space split — in all of these the gate would
+/// drop *genuine* edges. The phantom it guards against (a seam sliding onto one
+/// analytic primitive's free surface) only arises for clean analytic
+/// combinations anyway, so disabling it elsewhere loses nothing. See DL-63.
+fn phantom_gate_eligible(body: &BoundedCsg) -> bool {
+    match body {
+        BoundedCsg::Empty => true,
+        BoundedCsg::Leaf { primitive, .. } => matches!(
+            primitive,
+            Primitive::Box { .. }
+                | Primitive::Sphere { .. }
+                | Primitive::Cylinder { .. }
+                | Primitive::Cone { .. }
+                | Primitive::Torus { .. }
+                | Primitive::Ellipsoid { .. }
+                | Primitive::Capsule { .. }
+                | Primitive::HexPrism { .. }
+        ),
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            phantom_gate_eligible(left) && phantom_gate_eligible(right)
+        }
+        BoundedCsg::Shell { inner, .. } => phantom_gate_eligible(inner),
+        BoundedCsg::Twist { .. }
+        | BoundedCsg::Bend { .. }
+        | BoundedCsg::Displace { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. } => false,
+    }
+}
+
 /// Cell diagonal length (f32).
 fn cell_diag(cell: &OctreeCell) -> f32 {
     let s = cell.aabb.size();
@@ -303,7 +383,11 @@ fn solve_edge_point(
 /// branch count, no clean per-branch start point, degenerate tangent
 /// (parallel normals), a singular plane-intersection system, or a failed
 /// phantom test.
-pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePoint> {
+pub fn extract_edge_point(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    gate_phantom: bool,
+) -> Option<EdgePoint> {
     if cell.class != CellClass::Edge || cell.branches.len() != 2 {
         return None;
     }
@@ -361,6 +445,14 @@ pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePo
     // Phantom filter (cell-relative tolerance, DL-5).
     let eps_phantom = diag * PHANTOM_EPS_FACTOR;
     if !passes_phantom_filter(body, p_edge, eps_phantom) {
+        return None;
+    }
+
+    // Both-branches-active gate (DL-63): reject a phantom seam that has slid
+    // onto one branch's free surface, where the other branch never reaches
+    // zero. A genuine intersection curve has both branches tie at zero here.
+    // Only meaningful for clean analytic hard CSG (see `phantom_gate_eligible`).
+    if gate_phantom && !both_branches_active(body, p_edge, ba, bb, diag * BOTH_ACTIVE_EPS_FACTOR) {
         return None;
     }
 
@@ -502,9 +594,10 @@ pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
 /// surviving `(edge points, vertices)`. Non-extractable cells (no clean start
 /// point, degenerate geometry, failed phantom test) are silently skipped.
 pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, Vec<Vertex>) {
+    let gate_phantom = phantom_gate_eligible(body);
     let edges = octree
         .edge_cells()
-        .filter_map(|cell| extract_edge_point(body, cell))
+        .filter_map(|cell| extract_edge_point(body, cell, gate_phantom))
         .collect();
     let vertices = octree
         .vertex_cells()
@@ -553,7 +646,7 @@ mod tests {
         let mut count = 0;
         let mut signatures = HashSet::new();
         for cell in octree.edge_cells() {
-            if let Some(ep) = extract_edge_point(&body, cell) {
+            if let Some(ep) = extract_edge_point(&body, cell, true) {
                 count += 1;
                 // On the surface.
                 let p = [
@@ -680,7 +773,7 @@ mod tests {
             class: CellClass::Face,
             branches: vec![BranchId(1 << 4)],
         };
-        assert!(extract_edge_point(&body, &face_cell).is_none());
+        assert!(extract_edge_point(&body, &face_cell, true).is_none());
         assert!(extract_vertex(&body, &face_cell).is_none());
     }
 
@@ -736,6 +829,83 @@ mod tests {
                 v.position
             );
         }
+    }
+
+    /// Branch id of the analytic primitive face nearest `p` on the union
+    /// surface (for asserting which box face a seam lies on).
+    fn union_box_sphere(box_half: [f32; 3], sph_center: [f32; 3], sph_r: f32) -> BoundedCsg {
+        let boxn = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: box_half,
+            },
+        };
+        let sph = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Sphere {
+                center: sph_center,
+                radius: sph_r,
+            },
+        };
+        BoundedCsg::from_csg(&CsgNode::Union(Box::new(boxn), Box::new(sph)))
+    }
+
+    /// DL-63: the both-branches-active gate kills phantom seam points. A sphere
+    /// poking through one box face must produce a seam that lies *exactly* on
+    /// that face's plane — no points curling onto the sphere's free surface off
+    /// the plane (the "edge curves inward toward the sphere" bug).
+    #[test]
+    fn union_seam_lies_on_the_box_face_not_the_free_sphere() {
+        // Sphere centred 12 above the +Z face (z=10), r=8 → a clean circular
+        // intersection on z=10 of radius √(64−4)=7.75, well inside the face.
+        let body = union_box_sphere([10.0, 10.0, 10.0], [0.0, 0.0, 12.0], 8.0);
+        let octree = Octree::build(&body, 0.5);
+        let (edges, _) = extract_features(&body, &octree);
+
+        // The sphere branch is the lone Sphere leaf; every edge it participates
+        // in is a box-face∩sphere seam. Each such point must sit on z=10.
+        let sphere_seam: Vec<_> = edges
+            .iter()
+            .filter(|e| e.signature.0.as_u32() == 8192 || e.signature.1.as_u32() == 8192)
+            .collect();
+        assert!(!sphere_seam.is_empty(), "no sphere seam extracted");
+        for e in &sphere_seam {
+            assert!(
+                (e.position[2] - 10.0).abs() < 0.3,
+                "seam point off the +Z face plane (phantom curl): {:?}",
+                e.position
+            );
+        }
+    }
+
+    /// DL-64: a sphere poking straight through one face produces a *single
+    /// continuous* circular seam, not dozens of fragments. The full circle
+    /// weaves into exactly one closed-loop edge.
+    #[test]
+    fn union_seam_is_one_continuous_loop_not_fragments() {
+        use crate::brep::weaving::weave;
+        let body = union_box_sphere([10.0, 10.0, 10.0], [0.0, 0.0, 12.0], 8.0);
+        let octree = Octree::build(&body, 0.5);
+        let brep = weave(&body, &octree);
+
+        let seam_edges: Vec<_> = brep
+            .edges
+            .iter()
+            .filter(|e| e.signature.0.as_u32() == 8192 || e.signature.1.as_u32() == 8192)
+            .collect();
+        assert_eq!(
+            seam_edges.len(),
+            1,
+            "sphere seam must be ONE continuous edge, got {} fragments",
+            seam_edges.len()
+        );
+        // A full ring closes on itself: no bounding vertices.
+        let e = seam_edges[0];
+        assert!(
+            e.start.is_none() && e.end.is_none(),
+            "a closed circular seam carries no end vertices"
+        );
     }
 
     // ─── D.3: domain warps (twist / bend) ──────────────────────────────────
