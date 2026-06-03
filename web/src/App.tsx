@@ -6,6 +6,7 @@ import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
+import { isTextEntryTarget } from "./keyboardTarget";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
 
@@ -36,9 +37,11 @@ export function App() {
         e.preventDefault();
         return;
       }
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      // Never steal keystrokes from a focused text surface (plain
+      // inputs and, crucially, the Monaco script editor — see
+      // `isTextEntryTarget`). Without this, bare-key shortcuts
+      // (b/s/c/t/1/2/3/0/…) were swallowed mid-typing.
+      if (isTextEntryTarget(e.target)) return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
         if (store.removeSelected()) e.preventDefault();
