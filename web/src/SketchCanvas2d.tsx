@@ -38,7 +38,7 @@ import {
   inferCandidates,
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
-import { solveSketch } from "./solver/planegcs";
+import { solveAndReplace } from "./solver/replaySolve";
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
 import type { SketchState } from "./solver/types";
 
@@ -707,22 +707,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
 
   const scheduleSolverReplay = () => {
     if (!store) return;
-    void (async () => {
-      const before = store.getState().sketchSession;
-      if (!before.active) return;
-      const snapshot = before.subCalls;
-      try {
-        const state = buildDraftSketchState(snapshot);
-        const result = await solveSketch(state);
-        const rebuilt = rebuildSubCallsFromSolved(snapshot, result.state);
-        const after = store.getState().sketchSession;
-        if (!after.active || after.subCalls !== snapshot) return;
-        store.replaceSketchSubCalls(rebuilt);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("fielddraft: solveSketch failed", err);
-      }
-    })();
+    void solveAndReplace(store);
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -933,102 +918,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       onContextMenu={(e) => e.preventDefault()}
     />
   );
-}
-
-// ─── K6b.3d: commit-time solver result apply ────────────────────
-
-type SubCall = SketchSessionState["subCalls"][number];
-
-/**
- * Walk a sub_calls list alongside a solved `SketchState` and
- * return a new sub_calls list where every `sketch_point` and
- * `sketch_line` carries the solved coordinates. The mapping
- * replicates the kernel's deterministic entity allocation
- * order: entity id 0 is the origin, then ids 1+ are allocated
- * one per `add_point` / `add_line` call in sub_calls order.
- * Constraint calls are left untouched — their entity-id
- * references don't change under a pure coordinate solve.
- */
-function rebuildSubCallsFromSolved(
-  original: ReadonlyArray<SubCall>,
-  solved: SketchState,
-): SubCall[] {
-  const pointAt = (id: number): [number, number] | null => {
-    const e = solved.entities.find((x) => x.id === id);
-    if (!e) return null;
-    if (e.kind === "point") return [e.at.x, e.at.y];
-    if (e.kind === "origin") return [0, 0];
-    return null;
-  };
-  let nextId = 1; // origin is at id 0
-  return original.map((call): SubCall => {
-    if (call.type === "sketch_point") {
-      const at = pointAt(nextId++);
-      if (!at) return call;
-      return { ...call, params: { ...call.params, at } };
-    }
-    if (call.type === "sketch_line") {
-      const start = pointAt(nextId++);
-      const end = pointAt(nextId++);
-      nextId += 1; // line entity itself
-      if (!start || !end) return call;
-      return {
-        ...call,
-        params: { ...call.params, start, end },
-      };
-    }
-    if (call.type === "sketch_circle") {
-      const center = pointAt(nextId++);
-      const circleId = nextId++;
-      if (!center) return call;
-      const circle = solved.entities.find((e) => e.id === circleId);
-      const radius =
-        circle && circle.kind === "circle"
-          ? circle.radius
-          : Number(call.params.radius);
-      return {
-        ...call,
-        params: { ...call.params, center, radius },
-      };
-    }
-    if (call.type === "sketch_rectangle") {
-      // Match the bl/br/tr/tl allocation order — corner_a maps
-      // to bl, corner_b maps to tr.
-      const bl = pointAt(nextId++);
-      nextId += 1; // br
-      const tr = pointAt(nextId++);
-      nextId += 1; // tl
-      nextId += 4; // bottom, right, top, left
-      if (!bl || !tr) return call;
-      return {
-        ...call,
-        params: { ...call.params, corner_a: bl, corner_b: tr },
-      };
-    }
-    if (call.type === "sketch_polygon") {
-      const verts = call.params.vertices;
-      if (Array.isArray(verts)) {
-        const numPoints = Math.floor(verts.length / 2);
-        const newVerts: number[] = [];
-        for (let i = 0; i < numPoints; i++) {
-          const pt = pointAt(nextId++);
-          if (pt) {
-            newVerts.push(pt[0], pt[1]);
-          } else {
-            newVerts.push(Number(verts[i * 2]), Number(verts[i * 2 + 1]));
-          }
-        }
-        return { ...call, params: { ...call.params, vertices: newVerts } };
-      }
-      return call;
-    }
-    if (call.type === "sketch_arc") {
-      const center = pointAt(nextId++);
-      if (!center) return call;
-      return { ...call, params: { ...call.params, center } };
-    }
-    return call;
-  });
 }
 
 // ─── drawing ────────────────────────────────────────────────────

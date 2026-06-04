@@ -189,6 +189,32 @@
     gap: var(--space-2);
   }
 
+  /* P0.1: context-sensitive constraint palette, shown in select
+   * mode and gated by the current selection. */
+  & .sketch-constraint-row {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    border-left: 1px solid var(--color-border);
+    padding-left: var(--space-3);
+
+    & .tool {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+
+      & .glyph {
+        font-size: 1.1rem;
+        line-height: 1;
+      }
+    }
+
+    & .hint {
+      align-self: center;
+      color: var(--color-text-muted);
+      font-size: 1rem;
+    }
+  }
+
   & .tool.is-stub {
     opacity: 0.55;
   }

@@ -36,7 +36,10 @@ import {
   toggleSketchSelection as reduceToggleSelection,
   setSketchSelection as reduceSetSelection,
   clearSketchSelection as reduceClearSelection,
+  buildDraftSketchState,
 } from "./sketchSession";
+import { buildConstraintCall } from "./sketchConstraints";
+import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
   allocateAssemblyId,
@@ -1936,6 +1939,26 @@ export class KernelStore {
   /** Clear the sketch selection. */
   clearSketchSelection(): void {
     this.updateSketch(reduceClearSelection(this.state.sketchSession));
+  }
+
+  /**
+   * P0.1: apply an explicit geometric constraint to the current
+   * sketch selection. Maps the selected entity ids onto the
+   * constraint's kernel param names, appends the `sketch_constraint_*`
+   * sub-call, clears the selection and re-solves so the geometry
+   * snaps to satisfy the new relation. No-op when the selection
+   * doesn't match the constraint (the palette only offers matching
+   * ones, but the guard keeps the call safe).
+   */
+  applySketchConstraint(type: string): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const state = buildDraftSketchState(session.subCalls);
+    const call = buildConstraintCall(type, session.selection, state);
+    if (!call) return;
+    this.pushSketchSubCalls([call]);
+    this.clearSketchSelection();
+    void solveAndReplace(this);
   }
 
   toggleConstraintDriven(index: number): void {

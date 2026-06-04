@@ -3,6 +3,8 @@ import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
+import { buildDraftSketchState } from "./sketchSession";
+import { applicableConstraints } from "./sketchConstraints";
 
 /* ------------------------------------------------------------------ */
 /*  Meta helper                                                        */
@@ -297,6 +299,20 @@ export function Toolbar({ store, state }: ToolbarProps) {
     } catch { /* ignore */ }
   };
 
+  // P0.1: constraints applicable to the current select-mode pick.
+  const sketchSelection = sketchSession.selection;
+  const constraintOptions = useMemo(() => {
+    if (!sketchSession.active || sketchSelection.length === 0) return [];
+    try {
+      return applicableConstraints(
+        buildDraftSketchState(sketchSession.subCalls),
+        sketchSelection,
+      );
+    } catch {
+      return [];
+    }
+  }, [sketchSession.active, sketchSession.subCalls, sketchSelection]);
+
   const hasSketch = state.features.some((f) => f.kind === "sketch");
   const hasFeatures = state.features.length > 0;
 
@@ -329,6 +345,33 @@ export function Toolbar({ store, state }: ToolbarProps) {
             );
           })}
         </div>
+
+        {!sketchSession.selectedTool ? (
+          <div
+            className="group sketch-constraint-row"
+            data-testid="sketch-constraint-row"
+          >
+            {sketchSelection.length === 0 ? (
+              <span className="hint">Select geometry to add a constraint</span>
+            ) : constraintOptions.length === 0 ? (
+              <span className="hint">No constraint fits this selection</span>
+            ) : (
+              constraintOptions.map((o) => (
+                <button
+                  key={o.type}
+                  type="button"
+                  className="tool"
+                  title={o.title}
+                  data-testid={`sketch-constraint-${o.type}`}
+                  onClick={() => store.applySketchConstraint(o.type)}
+                >
+                  <span className="glyph" aria-hidden="true">{o.glyph}</span>
+                  {o.label}
+                </button>
+              ))
+            )}
+          </div>
+        ) : null}
       </div>
     );
   }
