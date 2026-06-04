@@ -27,11 +27,6 @@
 //! This is the edge (1D) analogue of DL-66's [`super::edge_walker`]
 //! `refine_triple_vertex` (a 0D vertex = joint zero-set of *three* fields).
 
-// Transitional: `Field` / `project_to_edge` / `edge_tangent` are exercised by
-// this module's tests now and wired into `build_wireframe` in DL-68 S3/S4.
-// Remove this allow once the tracer replaces `fit_analytic_circle`.
-#![allow(dead_code)]
-
 use fielddraft_protocol::{HalfSpace, Transform};
 
 use super::vec3::{add, cross, dist, dot, norm, normalize, scale, sub};
@@ -54,6 +49,15 @@ pub(crate) enum Field<'a> {
     /// Its zero set is the whole primitive boundary; near a seam, away from the
     /// primitive's own creases, it is smooth and its gradient is the surface
     /// normal — enough for project + trace on swept/warped faces.
+    ///
+    /// Exercised by this module's field-agnostic proof tests (a sphere as a dual
+    /// leaf projects/traces identically to its analytic half-space) but not yet
+    /// wired into `build_wireframe`: there the only non-analytic faces are a
+    /// primitive's *own* curved sketch-sweep walls, whose seam with its cap plane
+    /// is exactly the leaf SDF's C0 crease (ambiguous gradient). Cross-body curved
+    /// seams — where the leaf is smooth at the seam — are the natural first
+    /// consumer, a focused follow-up (DL-69).
+    #[allow(dead_code)]
     Leaf { node: &'a BoundedCsg },
 }
 
@@ -170,17 +174,23 @@ pub(crate) struct TraceParams {
     /// A forward march closes a loop once it returns within this distance of the
     /// seed (after leaving its neighbourhood). Keep ≈ `step`.
     pub close_tol: f64,
+    /// Arc-length budget for one march direction. Exceeding it stalls the march
+    /// (returning a non-clean end) — the guard against an *unbounded* edge (e.g.
+    /// a plane parallel to an infinite cylinder) marching off to infinity. The
+    /// caller sets it from the seam's spatial extent; [`f64::INFINITY`] disables.
+    pub max_arc: f64,
 }
 
 impl TraceParams {
     /// Defaults derived from a single arc step: vertices are caught within 1.5
-    /// steps ahead, loops close within one step.
+    /// steps ahead, loops close within one step, arc length unbounded.
     pub(crate) fn from_step(step: f64) -> Self {
         Self {
             step,
             max_steps: 100_000,
             vertex_reach: 1.5 * step,
             close_tol: step,
+            max_arc: f64::INFINITY,
         }
     }
 }
@@ -224,6 +234,7 @@ fn march(
     let mut pts = Vec::new();
     let mut cur = start;
     let mut t_prev = t0;
+    let mut arc = 0.0;
     for step_i in 0..p.max_steps {
         // A bounding vertex ahead within reach ends the arc exactly: append the
         // vertex itself (not a projected approximation) and stop.
@@ -251,6 +262,13 @@ fn march(
         // Loop closure: back near the seed after genuinely leaving it.
         if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < p.close_tol {
             return (pts, MarchEnd::Loop);
+        }
+
+        // Arc-length budget: an unbounded edge that neither loops nor hits a
+        // vertex stalls here instead of running to infinity.
+        arc += dist(np, cur);
+        if arc > p.max_arc {
+            return (pts, MarchEnd::Stalled);
         }
 
         pts.push(np);
@@ -646,3 +664,5 @@ mod tests {
         }
     }
 }
+
+

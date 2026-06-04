@@ -134,8 +134,9 @@ const SURFACE_MEMBERSHIP_FRACTION: f64 = 0.85;
 const CIRCLE_RADIAL_FRACTION: f64 = 0.9;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
+use super::edge_trace::{edge_tangent, project_to_edge, trace_edge, Field, TraceParams, TracedEdge};
 use super::vec3::{
-    add as add3, cross, dist, dist2, dot, norm as norm3, normalize, scale as scale3, sub,
+    add as add3, dist, dist2, dot, norm as norm3, normalize, scale as scale3, sub,
 };
 
 /// Centroid of a point set.
@@ -403,249 +404,215 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
     }
 }
 
-// ─── analytic circular seams (DL-67) ─────────────────────────────────────────
+// ─── general SDF edge tracer wiring (DL-68) ──────────────────────────────────
 
-/// Smallest analytic circle the sample-derived [`fit_circle`] is replaced for:
-/// below this radius the seam is a tiny ring barely worth a NURBS and the
-/// numeric guards below grow brittle, so we defer to the sampled fit.
-const ANALYTIC_CIRCLE_MIN_RADIUS: f64 = 1e-4;
+/// Largest multiple of the local sample spacing a seed may drift when projected
+/// onto the joint zero-set before we reject it as *not on this edge*. A genuine
+/// seam sample sits within roughly one octree cell of the true edge; a phantom
+/// signature's sample (e.g. a cylinder-wall point tagged with a non-touching box
+/// face) projects far away or not at all, and is dropped here rather than seeding
+/// a spurious component. See DL-68, and the membership backstop
+/// [`chain_on_both_surfaces`] (DL-52).
+const SEAM_SEED_DRIFT_FACTOR: f64 = 4.0;
 
-/// Target arc length (in the group's local sample spacing) of one output
-/// segment when re-sampling an analytic circle. Tied to the *extraction*
-/// spacing so a closed ring's first/last samples land within `LOOP_FACTOR`
-/// spacings of each other (closing the loop downstream), while the segment
-/// count is clamped to `[MIN, MAX]` so the curve stays smooth at any
-/// resolution.
-const ANALYTIC_CIRCLE_MIN_SEGMENTS: usize = 24;
-const ANALYTIC_CIRCLE_MAX_SEGMENTS: usize = 512;
+/// A traced component consumes every remaining sample within this multiple of
+/// spacing of its polyline; the rest seed the next disjoint component (one
+/// signature can carry several, e.g. the two circles of a sphere ∩ cylinder).
+const SEAM_NEAR_FACTOR: f64 = 1.5;
 
-/// f64 quaternion rotation `q · v` (the `[f32; 4]` placement quaternion is
-/// `[x, y, z, w]`, matching [`crate::quat_rotate`]).
-fn quat_rotate_f64(q: [f32; 4], v: [f64; 3]) -> [f64; 3] {
-    let (qx, qy, qz, qw) = (q[0] as f64, q[1] as f64, q[2] as f64, q[3] as f64);
-    // t = 2 q_xyz × v ; v' = v + qw t + q_xyz × t
-    let t = cross([qx, qy, qz], v);
-    let t = [2.0 * t[0], 2.0 * t[1], 2.0 * t[2]];
-    add3(add3(v, scale3(t, qw)), cross([qx, qy, qz], t))
+/// Safety cap on disjoint components traced from one signature group — far above
+/// any real fan-out, a backstop against a non-terminating seed loop.
+const SEAM_MAX_COMPONENTS: usize = 16;
+
+/// A traced component's arc length may not exceed this multiple of the group's
+/// spatial extent (bounding-box diagonal). A circle's circumference is π× its
+/// diameter, a line ≤ its span, so 4× clears any real single seam while a
+/// runaway on an unbounded edge stalls quickly into the sample-fit fallback.
+const SEAM_MAX_ARC_FACTOR: f64 = 4.0;
+
+/// The analytic scalar [`Field`] backing a branch, or `None` for a branch with
+/// no analytic surface (a curved sketch-sweep wall). Every primitive face —
+/// box plane, sphere, (infinite) cylinder, cone, torus, and the analytic
+/// extrude/revolve walls — appears in [`branch_halfspace_map`], so the tracer
+/// covers the whole analytic surface zoo and their cross-pairs; the leftover
+/// curved sketch walls fall through to the sampled fits.
+fn branch_field(
+    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    branch: u32,
+) -> Option<Field<'static>> {
+    let (hs, xf) = halfspaces.get(&branch)?;
+    Some(Field::Analytic {
+        hs: hs.clone(),
+        xf: *xf,
+    })
 }
 
-/// Map a primitive-local point to the body-local (weave) frame:
-/// `p_world = R·(s·p_local) + t`.
-fn local_to_world(xf: &fielddraft_protocol::Transform, p: [f64; 3]) -> [f64; 3] {
-    let s = [xf.scale[0] as f64, xf.scale[1] as f64, xf.scale[2] as f64];
-    let scaled = [p[0] * s[0], p[1] * s[1], p[2] * s[2]];
-    let r = quat_rotate_f64(xf.rotation, scaled);
-    add3(r, [xf.translate[0] as f64, xf.translate[1] as f64, xf.translate[2] as f64])
+/// Is `q` within `tol` of any vertex of the polyline?
+fn near_polyline(q: [f64; 3], poly: &[[f64; 3]], tol: f64) -> bool {
+    let t2 = tol * tol;
+    poly.iter().any(|&p| dist2(p, q) <= t2)
 }
 
-/// A plane (a point + unit normal) or a sphere (centre + radius) realised in the
-/// body-local frame from an analytic [`HalfSpace`] + its [`Transform`].
-enum AnalyticSurface {
-    Plane { point: [f64; 3], normal: [f64; 3] },
-    Sphere { center: [f64; 3], radius: f64 },
-}
-
-/// Lift a [`HalfSpace`] into the body-local frame as a [`AnalyticSurface`], or
-/// `None` for a kind we do not (yet) intersect analytically.
-fn analytic_surface(surf: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)) -> Option<AnalyticSurface> {
-    use fielddraft_protocol::HalfSpace;
-    let (hs, xf) = surf;
-    let s = xf.scale[0] as f64; // placement scale is uniform (see `inverse`)
-    match hs {
-        HalfSpace::Plane { normal, offset } => {
-            let nl = [normal[0] as f64, normal[1] as f64, normal[2] as f64];
-            // A local point on the plane is `n·offset`; the world normal is the
-            // rotated local normal (uniform scale leaves the direction).
-            let point = local_to_world(xf, scale3(nl, *offset as f64));
-            let normal = normalize(quat_rotate_f64(xf.rotation, nl));
-            Some(AnalyticSurface::Plane { point, normal })
-        }
-        HalfSpace::Sphere { radius } => Some(AnalyticSurface::Sphere {
-            center: local_to_world(xf, [0.0; 3]),
-            radius: *radius as f64 * s,
-        }),
-        _ => None,
-    }
-}
-
-/// The circle (centre, radius, plane normal) where two analytic surfaces meet,
-/// for the two circle-producing pairs: plane ∩ sphere and sphere ∩ sphere.
-fn surface_pair_circle(
-    a: &AnalyticSurface,
-    b: &AnalyticSurface,
-) -> Option<([f64; 3], f64, [f64; 3])> {
-    use AnalyticSurface::*;
-    // plane ∩ sphere
-    let plane_sphere = |pt: [f64; 3], n: [f64; 3], c: [f64; 3], r: f64| {
-        let d = dot(sub(c, pt), n); // signed distance of centre to plane
-        let r2 = r * r - d * d;
-        if r2 <= 0.0 {
-            return None;
-        }
-        let center = sub(c, scale3(n, d)); // foot of centre on the plane
-        Some((center, r2.sqrt(), n))
-    };
-    match (a, b) {
-        (Plane { point, normal }, Sphere { center, radius })
-        | (Sphere { center, radius }, Plane { point, normal }) => {
-            plane_sphere(*point, *normal, *center, *radius)
-        }
-        (Sphere { center: c1, radius: r1 }, Sphere { center: c2, radius: r2 }) => {
-            let axis = sub(*c2, *c1);
-            let d = norm3(axis);
-            if d <= 1e-9 {
-                return None; // concentric → no circle
-            }
-            let axis = scale3(axis, 1.0 / d);
-            // Distance from c1 to the radical plane along the axis.
-            let a_off = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
-            let rc2 = r1 * r1 - a_off * a_off;
-            if rc2 <= 0.0 {
-                return None;
-            }
-            Some((add3(*c1, scale3(axis, a_off)), rc2.sqrt(), axis))
-        }
-        _ => None,
-    }
-}
-
-/// An orthonormal basis `(e1, e2)` spanning the plane with unit normal `n`.
-fn plane_basis(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-    // Pick the axis least aligned with n to avoid a degenerate cross product.
-    let a = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
-        [1.0, 0.0, 0.0]
-    } else if n[1].abs() <= n[2].abs() {
-        [0.0, 1.0, 0.0]
-    } else {
-        [0.0, 0.0, 1.0]
-    };
-    let e1 = normalize(cross(n, a));
-    let e2 = normalize(cross(n, e1));
-    (e1, e2)
-}
-
-/// Resolution-independent reconstruction of a **circular seam** between two
-/// analytic surfaces (DL-67). A sphere meeting a box face (plane) or another
-/// sphere intersects in an exact circle, but the octree only tags a handful of
-/// `Edge` cells along it and at coarse resolution some of those cells fail to
-/// extract at all — the gaps then defeat both the Kåsa [`fit_circle`] (its
-/// angular-gap test) and spatial gap-chaining, so the seam shatters into short
-/// fragments that no longer ring-close. That is the *erratic / jagged / broken*
-/// sphere-edge bug: which fragments survive depends on the exact octree grid,
-/// so a re-weave at a slightly shifted resolution flips the result.
+/// Does a candidate vertex genuinely bound a seam — i.e. is it a *real* junction
+/// where **all** its branch surfaces actually pass through, not a coarse-octree
+/// contributor-bleed artifact?
 ///
-/// Here the circle comes from the two surfaces *analytically*; the sampled
-/// points only choose the **active arc** (their angular extent is robust to
-/// interior gaps), and the seam's bounding triple vertices (already snapped to
-/// the exact analytic corner by [`refine_triple_vertex`], DL-66) pin its ends.
-/// The emitted chain is exact and identical at every resolution.
+/// At coarse resolution a smooth seam (e.g. a sphere cap circle on a box face)
+/// can spuriously activate a *non-touching* third face inside an octree cell, so
+/// `dedup_vertices` mints a phantom triple vertex sitting *on the seam* but whose
+/// third surface is a whole feature away. Feeding it to the tracer would chop the
+/// smooth seam into arcs at that fake corner. A real corner satisfies every
+/// branch's analytic surface to within a fraction of the local spacing (it was
+/// refined to the common zero by [`refine_triple_vertex`]); a phantom one misses
+/// its bleed branch by `O(feature size)`. A branch with no analytic surface (a
+/// tessellated sweep wall) cannot be disproven, so it is kept conservatively.
+fn vertex_bounds_seam(
+    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    branches: &[BranchId],
+    pos: [f64; 3],
+    spacing: f64,
+) -> bool {
+    let tol = (0.5 * spacing).max(2.0 * VERTEX_REFINE_TOL as f64);
+    let p = [pos[0] as f32, pos[1] as f32, pos[2] as f32];
+    branches.iter().all(|b| match halfspaces.get(&b.as_u32()) {
+        None => true, // non-analytic branch: cannot judge → keep
+        Some((hs, xf)) => {
+            (crate::csg::sdf_halfspace(hs, crate::world_to_local(xf, p)).abs() as f64) <= tol
+        }
+    })
+}
+
+/// Convert a [`TracedEdge`] into oriented Hermite samples: each tangent is the
+/// exact edge tangent `∇f_a × ∇f_b` at that point (falling back to the chord
+/// only at a degeneracy), flipped to run forward along the polyline.
+fn traced_to_hermite(fa: &Field, fb: &Field, traced: &TracedEdge) -> Vec<HermiteSample> {
+    let pts = &traced.points;
+    let n = pts.len();
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let p = pts[k];
+        // Forward chord direction at this sample, for orientation.
+        let fwd = if k + 1 < n {
+            sub(pts[k + 1], p)
+        } else if traced.closed {
+            sub(pts[0], p)
+        } else if k > 0 {
+            sub(p, pts[k - 1])
+        } else {
+            [0.0; 3]
+        };
+        let mut t = edge_tangent(fa, fb, p).unwrap_or_else(|| normalize(fwd));
+        if dot(t, fwd) < 0.0 {
+            t = scale3(t, -1.0);
+        }
+        out.push(HermiteSample { point: p, tangent: t });
+    }
+    out
+}
+
+/// Reconstruct one signature group's seam(s) with the general SDF edge tracer
+/// (DL-68), replacing DL-67's per-pair closed-form circle.
 ///
-/// Topology from the vertex count: a `plane ∩ sphere` (or `sphere ∩ sphere`)
-/// seam is bounded by a triple vertex wherever it crosses a third surface, so
-/// **0 bounding vertices ⇒ a full closed ring** (the seam lies wholly on one
-/// face) and **2 ⇒ a single arc** between them through the samples. Any other
-/// count, a non-circle pair, or a tessellated/warped branch returns `None` and
-/// the sample-based fit runs unchanged.
-fn fit_analytic_circle(
-    surf_a: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform),
-    surf_b: &(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform),
+/// For each disjoint component, a central sample seeds [`trace_edge`]: project
+/// it exactly onto `{f_a = 0 ∧ f_b = 0}`, then march the tangent in both
+/// directions, closing a loop or snapping each end to a bounding triple vertex.
+/// The component's covered samples are removed and any leftover cluster seeds the
+/// next component. Resolution-independent and surface-exact for the whole
+/// analytic surface zoo; returns `None` (→ the sampled fits) when no seed sits on
+/// a well-conditioned edge — a phantom signature, or a pair that does not meet.
+fn trace_seam_chains(
+    fa: &Field,
+    fb: &Field,
     pts: &[[f64; 3]],
     bounding: &[[f64; 3]],
     spacing: f64,
-) -> Option<Vec<HermiteSample>> {
-    if pts.len() < 3 || (!bounding.is_empty() && bounding.len() != 2) {
+) -> Option<Vec<Chain>> {
+    if pts.len() < 3 {
         return None;
     }
-    let (center, radius, normal) =
-        surface_pair_circle(&analytic_surface(surf_a)?, &analytic_surface(surf_b)?)?;
-    if radius < ANALYTIC_CIRCLE_MIN_RADIUS {
-        return None;
-    }
-    let (e1, e2) = plane_basis(normal);
-    let angle = |p: [f64; 3]| -> f64 {
-        let d = sub(p, center);
-        dot(d, e2).atan2(dot(d, e1))
-    };
-    // Re-sampling density: ~one output segment per local sample spacing, so a
-    // closed ring's ends meet within `LOOP_FACTOR` spacings; clamped smooth.
-    let circumference = std::f64::consts::TAU * radius;
-    let full_segments = ((circumference / spacing.max(1e-6)).round() as usize)
-        .clamp(ANALYTIC_CIRCLE_MIN_SEGMENTS, ANALYTIC_CIRCLE_MAX_SEGMENTS);
+    let mut params = TraceParams::from_step(spacing);
+    // Arc budget: a real seam component cannot be longer than a small multiple
+    // of the group's spatial extent. Beyond that the march is on an unbounded
+    // edge (a stalled, non-clean end) and we hand the whole group to the proven
+    // sample fits rather than emit a runaway chain.
+    params.max_arc = SEAM_MAX_ARC_FACTOR * group_span(pts);
+    let drift2 = (SEAM_SEED_DRIFT_FACTOR * spacing).powi(2);
+    let near_tol = SEAM_NEAR_FACTOR * spacing;
+    let mut remaining: Vec<[f64; 3]> = pts.to_vec();
+    let mut chains: Vec<Chain> = Vec::new();
 
-    // Point + forward (increasing-θ) unit tangent on the circle at angle θ.
-    let at = |theta: f64| -> HermiteSample {
-        let (s, c) = theta.sin_cos();
-        let point = add3(center, add3(scale3(e1, radius * c), scale3(e2, radius * s)));
-        let tangent = normalize(add3(scale3(e1, -s), scale3(e2, c)));
-        HermiteSample { point, tangent }
-    };
-
-    if bounding.is_empty() {
-        // Full closed ring. Confirm the samples actually wrap the circle (no
-        // single gap dominates) — otherwise this is a clipped arc whose
-        // bounding vertices were missed, and the sampled fit is the safer call.
-        let mut ang: Vec<f64> = pts.iter().map(|&p| angle(p)).collect();
-        ang.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let max_gap = (0..ang.len())
-            .map(|i| {
-                if i + 1 < ang.len() {
-                    ang[i + 1] - ang[i]
-                } else {
-                    ang[0] + std::f64::consts::TAU - ang[ang.len() - 1]
-                }
+    for _ in 0..SEAM_MAX_COMPONENTS {
+        if remaining.is_empty() {
+            break;
+        }
+        // Seed from the sample nearest the centroid of what is left — the most
+        // interior point, least likely to be a noisy fragment end.
+        let c = centroid(&remaining);
+        let si = (0..remaining.len())
+            .min_by(|&i, &j| {
+                dist2(remaining[i], c)
+                    .partial_cmp(&dist2(remaining[j], c))
+                    .unwrap()
             })
-            .fold(0.0, f64::max);
-        if max_gap > CIRCLE_MAX_ANGULAR_GAP {
+            .unwrap();
+        let seed = remaining[si];
+
+        // Drop a seed that is not actually on this edge (phantom / non-meeting
+        // pair): its projection must stay within a few cells. Always removes the
+        // seed, so the loop makes progress.
+        let on_edge = project_to_edge(fa, fb, seed).is_some_and(|proj| dist2(seed, proj) <= drift2);
+        if !on_edge {
+            remaining.swap_remove(si);
+            continue;
+        }
+        let Some(traced) = trace_edge(fa, fb, seed, bounding, &params) else {
+            remaining.swap_remove(si);
+            continue;
+        };
+
+        // The tracer must settle the topology *cleanly*: a closed ring, or an
+        // open arc that reached a real bounding vertex at BOTH ends. A stalled
+        // end (ran out of arc budget, projection diverged, tangent collapsed)
+        // means this pair is not cleanly traceable here — abandon the tracer for
+        // the whole group and fall back to the sample fits, which are robust to
+        // exactly these ill-conditioned signatures.
+        let clean = traced.closed || (traced.ends.0.is_some() && traced.ends.1.is_some());
+        if !clean {
             return None;
         }
-        let step = std::f64::consts::TAU / full_segments as f64;
-        return Some((0..full_segments).map(|k| at(k as f64 * step)).collect());
+
+        // Consume the seed and every sample belonging to this component; the
+        // rest seed the next disjoint component. Membership is by **projection**,
+        // not raw proximity: an octree sample can sit up to a cell off the true
+        // seam, far more than the dense polyline's point spacing, yet it still
+        // *projects onto* this curve. Testing the projection (which lands exactly
+        // on the traced component, or elsewhere for a genuinely disjoint one)
+        // removes the off-curve stragglers that would otherwise re-seed a
+        // duplicate of the same loop. Removing the seed by value guarantees
+        // progress even if its own projection somehow misses the polyline.
+        remaining.retain(|&q| {
+            if q == seed {
+                return false;
+            }
+            match project_to_edge(fa, fb, q) {
+                Some(pq) => !near_polyline(pq, &traced.points, near_tol),
+                None => true,
+            }
+        });
+
+        let samples = traced_to_hermite(fa, fb, &traced);
+        if samples.len() >= 2 {
+            // The tracer already settled the topology: a closed ring needs no
+            // bounding vertices, an open arc ends exactly on its two; carry that
+            // so the emitter skips the sample-fit snap/loop heuristics.
+            chains.push(Chain {
+                samples,
+                closed: Some(traced.closed),
+            });
+        }
     }
 
-    // Arc between the two bounding vertices, taken the way the samples run.
-    let (va, vb) = (angle(bounding[0]), angle(bounding[1]));
-    let mid = {
-        let mut ang: Vec<f64> = pts.iter().map(|&p| angle(p)).collect();
-        ang.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        ang[ang.len() / 2]
-    };
-    // Orient so we sweep va → end increasing, with the representative sample
-    // angle `mid` inside the swept span; pick whichever of the two arcs does.
-    let wrap = |x: f64| {
-        let mut x = x;
-        while x < 0.0 {
-            x += std::f64::consts::TAU;
-        }
-        while x >= std::f64::consts::TAU {
-            x -= std::f64::consts::TAU;
-        }
-        x
-    };
-    let span_fwd = wrap(vb - va); // va → vb going +
-    let mid_off = wrap(mid - va);
-    let (start, sweep) = if mid_off <= span_fwd {
-        (va, span_fwd)
-    } else {
-        (vb, std::f64::consts::TAU - span_fwd) // vb → va going +
-    };
-    if sweep < 1e-6 {
-        return None;
-    }
-    let segments = ((sweep / std::f64::consts::TAU * full_segments as f64).round() as usize).max(2);
-    let step = sweep / segments as f64;
-    // Inclusive of both ends so the chain starts/ends exactly on the vertices.
-    let mut samples: Vec<HermiteSample> = (0..=segments).map(|k| at(start + k as f64 * step)).collect();
-    // Pin the endpoints to the exact analytic vertex positions (the corner is
-    // on the circle to f32, but snap so downstream vertex-snapping is exact).
-    let first_is_a = mid_off <= span_fwd;
-    if first_is_a {
-        samples.first_mut().unwrap().point = bounding[0];
-        samples.last_mut().unwrap().point = bounding[1];
-    } else {
-        samples.first_mut().unwrap().point = bounding[1];
-        samples.last_mut().unwrap().point = bounding[0];
-    }
-    Some(samples)
+    (!chains.is_empty()).then_some(chains)
 }
 
 // ─── vertex dedup ───────────────────────────────────────────────────────────
@@ -778,6 +745,11 @@ fn refine_triple_vertex(
 /// One ordered run of edge points (a contiguous chain along one edge).
 struct Chain {
     samples: Vec<HermiteSample>,
+    /// Topology decided by the DL-68 tracer: `Some(true)` = closed ring (no
+    /// bounding vertices), `Some(false)` = open arc ending exactly on its two
+    /// bounding vertices. `None` for a sample-fit / gap-chained run, whose
+    /// endpoints go through the legacy snap + loop-detection heuristics.
+    closed: Option<bool>,
 }
 
 /// Merge coincident edge points (DL-17). Phase 3 emits one edge point per
@@ -977,7 +949,10 @@ fn chain_group(points: &[EdgePoint], gap_threshold: f64) -> Vec<Chain> {
         // Build oriented Hermite samples: flip each tangent to agree with the
         // local forward direction (previous→next), so the chain is monotone.
         let samples = orient_chain(points, &idx_chain);
-        chains.push(Chain { samples });
+        chains.push(Chain {
+            samples,
+            closed: None,
+        });
     }
 
     chains
@@ -1177,18 +1152,33 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
             })
             .collect();
 
-        // Analytic circular seam (DL-67): when both branches carry an analytic
-        // surface that meet in a circle (plane∩sphere, sphere∩sphere), rebuild
-        // the seam exactly from the surfaces instead of from the sampled points,
-        // bounded by the candidate triple vertices. This is resolution-
-        // independent — the cure for the shattered / jagged sphere seams that
-        // arise when coarse octree cells under-sample the curve. Falls through
-        // to the sample-based fits below for every other pairing.
-        let bounding: Vec<[f64; 3]> = candidates.iter().map(|&(_, p)| p).collect();
-        let analytic = match (halfspaces.get(&sa), halfspaces.get(&sb)) {
-            (Some(surf_a), Some(surf_b)) => {
-                fit_analytic_circle(surf_a, surf_b, &pts.iter().map(|p| p.position).collect::<Vec<_>>(), &bounding, spacing)
-            }
+        // General SDF edge tracer (DL-68): when both branches carry an analytic
+        // surface, recover the seam directly from the two fields — project each
+        // seed exactly onto `{f_a = 0 ∧ f_b = 0}` and march the tangent, bounded
+        // by the candidate triple vertices. ONE method for the whole analytic
+        // surface zoo (plane / sphere / cylinder / cone / torus and their
+        // cross-pairs), resolution-independent, replacing DL-67's per-pair
+        // closed-form circle and superseding the sampled line/circle fits for
+        // analytic pairs. Falls through to those fits for curved sketch-sweep
+        // walls (no analytic field) and under a domain warp (the analytic map
+        // describes the un-warped primitive, so `halfspaces` is empty there).
+        //
+        // The tracer's bounding set is restricted to **real** junctions: a
+        // coarse-octree contributor bleed can mint a phantom triple vertex on a
+        // smooth seam (a non-touching face spuriously active in one cell), and
+        // marching to it would chop the seam into arcs at a fake corner. Such a
+        // vertex misses its bleed branch's surface by a feature size and is
+        // dropped here (it stays in `candidates` for the legacy fits, which do
+        // not snap to it unless an endpoint actually lands there).
+        let bounding: Vec<[f64; 3]> = dedup
+            .iter()
+            .filter(|dv| dv.branches.contains(&branch_a) && dv.branches.contains(&branch_b))
+            .filter(|dv| vertex_bounds_seam(&halfspaces, &dv.branches, dv.position, spacing))
+            .map(|dv| dv.position)
+            .collect();
+        let pos: Vec<[f64; 3]> = pts.iter().map(|p| p.position).collect();
+        let traced = match (branch_field(&halfspaces, sa), branch_field(&halfspaces, sb)) {
+            (Some(fa), Some(fb)) => trace_seam_chains(&fa, &fb, &pos, &bounding, spacing),
             _ => None,
         };
 
@@ -1199,12 +1189,12 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         // into one clean oriented chain. Only if neither fits (a genuinely
         // multi-edge signature, DL-11) do we fall back to gap-chaining.
         let fit_tol = spacing * FIT_RESIDUAL_FACTOR;
-        let chains: Vec<Chain> = if let Some(samples) = analytic {
-            vec![Chain { samples }]
+        let chains: Vec<Chain> = if let Some(component_chains) = traced {
+            component_chains
         } else if let Some(samples) = fit_line(&pts, fit_tol) {
-            vec![Chain { samples }]
+            vec![Chain { samples, closed: None }]
         } else if let Some(samples) = fit_circle(&pts, fit_tol) {
-            vec![Chain { samples }]
+            vec![Chain { samples, closed: None }]
         } else {
             let gap_threshold = spacing * CHAIN_GAP_FACTOR;
             chain_group(&pts, gap_threshold)
@@ -1228,16 +1218,32 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
             let first = chain.samples.first().unwrap().point;
             let last = chain.samples.last().unwrap().point;
 
-            let start = snap_to_vertex(first, &candidates, snap_tol);
-            let end = snap_to_vertex(last, &candidates, snap_tol);
-
-            // Closed-loop detection: no vertex candidates and the ends meet.
-            let is_loop = start.is_none()
-                && end.is_none()
-                && chain.samples.len() >= 3
-                && dist(first, last) <= loop_tol;
-
-            let (start, end) = if is_loop { (None, None) } else { (start, end) };
+            // Endpoint topology. The tracer already decided it (`chain.closed`):
+            // a closed ring carries no vertices, an open arc snaps its two ends
+            // to the real bounding vertices it stopped on. A sample-fit / chained
+            // run (`closed = None`) goes through the legacy snap + loop heuristic.
+            let (start, end, is_loop) = match chain.closed {
+                Some(true) => (None, None, true),
+                Some(false) => (
+                    snap_to_vertex(first, &candidates, snap_tol),
+                    snap_to_vertex(last, &candidates, snap_tol),
+                    false,
+                ),
+                None => {
+                    let start = snap_to_vertex(first, &candidates, snap_tol);
+                    let end = snap_to_vertex(last, &candidates, snap_tol);
+                    // Closed-loop detection: no vertex candidates and ends meet.
+                    let is_loop = start.is_none()
+                        && end.is_none()
+                        && chain.samples.len() >= 3
+                        && dist(first, last) <= loop_tol;
+                    if is_loop {
+                        (None, None, true)
+                    } else {
+                        (start, end, false)
+                    }
+                }
+            };
 
             let eid = brep.add_edge(Edge::new(
                 EdgeGeometry::Hermite(chain.samples),

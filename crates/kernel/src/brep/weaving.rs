@@ -1878,6 +1878,57 @@ mod tests {
         assert_eq!(loops, 2, "both trim edges are closed circular loops");
     }
 
+    /// DL-68: the general SDF edge tracer recovers a **cylinder** trim seam
+    /// exactly and resolution-independently — the concrete generalisation past
+    /// DL-67, whose closed-form circle handled only plane∩sphere / sphere∩sphere.
+    /// At a coarse octree the bore-wall∩cap seam must still be exactly TWO clean
+    /// closed loops whose every sample lies on the cylinder of radius 0.5 (so the
+    /// edge comes from the surfaces, not from how many cells tagged the curve).
+    #[test]
+    fn coarse_cylinder_trim_seam_is_exact_resolution_independent() {
+        let outer = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+        };
+        let drill = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: 0.5,
+                half_height: 2.0,
+            },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(Box::new(outer), Box::new(drill)));
+        // A different (coarser) density than the 0.25 sibling test, to show the
+        // trim seam is identical topology regardless of octree spacing.
+        let octree = Octree::build(&body, 0.4);
+        let brep = weave(&body, &octree);
+
+        let wall = BranchId::from_feature_sub(&FeatureId::from_u32(2), 0).as_u32();
+        let (loops, total) = count_loops_for_branch(&brep, wall);
+        assert_eq!(total, 2, "bore wall bounded by exactly 2 edges at coarse res");
+        assert_eq!(loops, 2, "both trim seams are closed loops at coarse res");
+
+        // Surface-exactness: every trim-seam sample is on the cylinder r=0.5
+        // about the Y axis, regardless of the coarse octree spacing.
+        for e in &brep.edges {
+            if e.signature.0.as_u32() != wall && e.signature.1.as_u32() != wall {
+                continue;
+            }
+            let EdgeGeometry::Hermite(samples) = &e.geometry else {
+                continue;
+            };
+            for s in samples {
+                let r = (s.point[0] * s.point[0] + s.point[2] * s.point[2]).sqrt();
+                assert!(
+                    (r - 0.5).abs() < 1e-4,
+                    "trim sample off the bore cylinder: r={r}, p={:?}",
+                    s.point
+                );
+            }
+        }
+    }
+
     #[test]
     fn intersect_two_boxes_weaves_watertight_overlap_box() {
         // Two unit-half boxes offset by (0.5, 0.5, 0.5): their Intersection is
