@@ -1015,6 +1015,22 @@ export class KernelStore {
     return id;
   }
 
+  /** Add a `shell` feature and select it so its dialog opens. Faces to open
+   *  and the wall thickness are picked in the dialog (schema-driven); the
+   *  feature emits no geometry until at least one planar face is chosen. */
+  addShell(thicknessMm = 2): number {
+    let id: number;
+    try {
+      id = this.kernel.addShell("", thicknessMm);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addShell failed", err);
+      return -1;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   addBoolean(): number {
     let id: number;
     try {

@@ -664,10 +664,16 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             depth.to_bits().hash(hasher);
             freq.to_bits().hash(hasher);
         }
-        CsgNode::Shell(a, thickness) => {
+        CsgNode::Shell(a, thickness, open) => {
             11u8.hash(hasher);
             hash_node(a, hasher);
             thickness.to_bits().hash(hasher);
+            for pl in open {
+                pl.normal[0].to_bits().hash(hasher);
+                pl.normal[1].to_bits().hash(hasher);
+                pl.normal[2].to_bits().hash(hasher);
+                pl.offset.to_bits().hash(hasher);
+            }
         }
         CsgNode::Morph(a, b, t) => {
             12u8.hash(hasher);
@@ -971,7 +977,15 @@ pub fn build_bounded_for_body_local(
     indices: &[usize],
     placement: &Transform,
 ) -> BoundedCsg {
-    let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
+    // The B-Rep weave tracks the outer surface, so the body-shell modifier is
+    // skipped here (its open planes are world-space; the local frame would
+    // mis-place them). The mesh / SDF / pick paths keep the shell.
+    let sub: Vec<DecodedFeature> = indices
+        .iter()
+        .map(|&i| &features[i])
+        .filter(|f| !f.is_shell_modifier())
+        .cloned()
+        .collect();
     let csg = CsgNode::from_decoded(&sub);
     BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
 }

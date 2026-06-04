@@ -211,6 +211,44 @@ impl<'a> Context<'a> {
         None
     }
 
+    /// Resolve a planar B-Rep face query to the world-space [`OpenPlane`] that
+    /// removes it from a shell, paired with the feature id that owns the face
+    /// (its branch). The plane is `normal·p − offset`, outward normal, `0` on
+    /// the face. Returns `None` for a non-matching or non-planar query (a
+    /// curved face's frame falls back to local +Z and is rejected here — only
+    /// planar openings are supported for now).
+    pub fn resolve_open_face(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<(crate::csg::OpenPlane, FeatureId)> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        for (brep, placement) in woven {
+            for i in 0..brep.faces.len() {
+                let fid = FaceId(i as u32);
+                let hit = match expr {
+                    QueryExpr::Face(hash) => TopoRef::from_face(brep, fid).id_hash == *hash,
+                    QueryExpr::CreatedBy(f) | QueryExpr::FaceOf(f) => f
+                        .as_u32_or_root()
+                        .is_some_and(|t| brep.faces[i].branch_id.feature_id() == t),
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+                let frame = crate::sketch_features::face_plane_frame(brep, fid, placement);
+                let n = frame.normal;
+                let offset = n[0] * frame.origin[0] + n[1] * frame.origin[1] + n[2] * frame.origin[2];
+                let owner = FeatureId::from_u32(brep.faces[i].branch_id.feature_id());
+                return Some((crate::csg::OpenPlane { normal: n, offset }, owner));
+            }
+        }
+        None
+    }
+
     /// Resolve a *plane* query to a world-space [`SketchFrame`],
     /// accepting both the well-known datum planes
     /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
@@ -414,6 +452,7 @@ impl FeatureRegistry {
         r.register(Box::new(MateConnectorFeature));
         r.register(Box::new(SweepFeature));
         r.register(Box::new(FilletEdgeFeature));
+        r.register(Box::new(ShellFeature));
         r.register(Box::new(ImportedMeshFeature));
         r.register(Box::new(GyroidFeature));
         r.register(Box::new(LinearPatternFeature));
@@ -1565,6 +1604,138 @@ impl FeatureKind for FilletEdgeFeature {
                 blend_mode: crate::csg::BlendMode::Fillet,
             });
         }
+        Ok(())
+    }
+}
+
+// ─── Shell: hollow a body, opening it at selected planar faces ───
+//
+// The classic CAD shell-with-removed-faces. The user picks one or more
+// planar B-Rep faces; the body they belong to is hollowed to a wall of
+// `thickness`, broken open flush with each picked face. It lowers to the
+// sentinel node `Shell(Empty, t, open_planes)` on a `Difference` feature,
+// which `body::partition` docks into the target body and
+// `CsgNode::from_decoded` turns into an inward `CsgNode::Shell` wrapping
+// that body's whole subtree (see `wrap_shell`). Only planar openings are
+// supported for now; curved faces are a later step.
+#[derive(FeatureSchema)]
+#[schema(type = "shell")]
+pub struct ShellDef {
+    /// The planar face(s) to remove, opening the shell there
+    /// (e.g. `qFace(<id_hash>)`, comma-separated for several).
+    #[param(name = "Open faces", entity_filter = "FACE")]
+    pub open_faces: ::fielddraft_protocol::MultiQuery,
+    /// Wall thickness, grown inward from the surface.
+    #[param(name = "Thickness", default = ::fielddraft_protocol::Length::mm(2.0))]
+    pub thickness: ::fielddraft_protocol::Length,
+}
+
+pub struct ShellFeature;
+
+impl FeatureKind for ShellFeature {
+    fn type_name(&self) -> &'static str {
+        ShellDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ShellDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ShellDef::parse(def)?;
+        // No faces picked yet — the feature was just created and its dialog is
+        // still being filled. Emit nothing rather than failing the regen; once
+        // a face is picked the shell appears.
+        if d.open_faces.queries().is_empty() {
+            return Ok(());
+        }
+        let thickness = d.thickness.to_mm();
+        if thickness <= 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: ShellDef::TYPE_NAME,
+                name: "thickness",
+                message: format!("must be > 0, got {thickness}"),
+            });
+        }
+
+        // Resolve every picked face to a world-space open plane, recording the
+        // feature each face belongs to so we can find the body to hollow.
+        let mut open_planes: Vec<crate::csg::OpenPlane> = Vec::new();
+        let mut owner: Option<FeatureId> = None;
+        for q in d.open_faces.queries() {
+            let expr = crate::queries::parse_query(q).map_err(|e| {
+                FeatureError::InvalidParameter {
+                    feature: ShellDef::TYPE_NAME,
+                    name: "open_faces",
+                    message: format!("could not parse face query `{q}`: {e}"),
+                }
+            })?;
+            match ctx.resolve_open_face(&expr) {
+                Some((plane, face_owner)) => {
+                    open_planes.push(plane);
+                    owner.get_or_insert(face_owner);
+                }
+                None => {
+                    return Err(FeatureError::InvalidParameter {
+                        feature: ShellDef::TYPE_NAME,
+                        name: "open_faces",
+                        message: format!(
+                            "face query `{q}` resolved to no planar face (curved \
+                             openings are not yet supported)"
+                        ),
+                    });
+                }
+            }
+        }
+        let Some(owner) = owner else {
+            return Err(FeatureError::InvalidParameter {
+                feature: ShellDef::TYPE_NAME,
+                name: "open_faces",
+                message: "shell needs at least one face to open".to_string(),
+            });
+        };
+
+        // Gather every feature of the body that owns the first picked face — the
+        // full target set so `wrap_shell` wraps the whole (possibly fused) body,
+        // not just one feature.
+        let parts = crate::body::partition(&ctx.features);
+        let target_ids: Vec<FeatureId> = parts
+            .iter()
+            .find(|p| {
+                p.feature_indices.iter().any(|&fi| {
+                    ctx.features[fi].id.root_ancestor() == &owner
+                })
+            })
+            .map(|p| {
+                p.feature_indices
+                    .iter()
+                    .map(|&fi| ctx.features[fi].id.clone())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![owner.clone()]);
+
+        ctx.features.push(DecodedFeature {
+            id: id.clone(),
+            name: "Shell".to_string(),
+            // `Difference` is purely a partition hint (dock into the target
+            // body); `from_decoded` intercepts the sentinel node before any
+            // boolean fold.
+            op: BoolOp::Difference,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids,
+            transform: Transform::IDENTITY,
+            node: crate::csg::CsgNode::Shell(
+                Box::new(crate::csg::CsgNode::Empty),
+                thickness,
+                open_planes,
+            ),
+        });
         Ok(())
     }
 }
@@ -3026,7 +3197,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 26);
+        assert_eq!(registry.len(), 27);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -3060,7 +3231,7 @@ mod tests {
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
         let params = extrude_schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 6);
+        assert_eq!(params.len(), 7);
     }
 
     #[test]
@@ -3097,6 +3268,7 @@ mod tests {
                 "revolve",
                 "rotate",
                 "scale",
+                "shell",
                 "sketch",
                 "sphere",
                 "sweep",
@@ -3986,7 +4158,7 @@ mod tests {
         // wall thickness; the inner solid is unchanged (export_primitive
         // walks through the Shell wrapper to the underlying box).
         match &f.node {
-            crate::csg::CsgNode::Shell(_, t) => assert!((t - 2.0).abs() < 1e-5),
+            crate::csg::CsgNode::Shell(_, t, _) => assert!((t - 2.0).abs() < 1e-5),
             other => panic!("expected CsgNode::Shell, got {other:?}"),
         }
         match &f.export_primitive().expect("primitive") {
@@ -5572,6 +5744,79 @@ mod tests {
         assert!(format!("{err:?}").contains("edge"), "error mentions the edge param: {err:?}");
     }
 
+    #[test]
+    fn shell_feature_hollows_the_target_body_and_opens_the_picked_face() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                &[
+                    box_call(1, 10.0),
+                    FeatureCall::new(
+                        "shell",
+                        id(2),
+                        json!({
+                            "open_faces": "qCreatedBy(1)",
+                            "thickness": { "value": 2.0, "unit": "mm" },
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(ctx.features.len(), 2, "box + shell modifier");
+        let shell = &ctx.features[1];
+        assert!(shell.is_shell_modifier(), "second feature is the shell sentinel");
+        assert!(shell.target_ids.contains(&id(1)), "targets the box body");
+        match &shell.node {
+            crate::csg::CsgNode::Shell(inner, t, open) => {
+                assert!(matches!(**inner, crate::csg::CsgNode::Empty));
+                assert!((t - 2.0).abs() < 1e-6, "thickness in mm");
+                assert_eq!(open.len(), 1, "one open plane from the picked face");
+            }
+            other => panic!("expected Shell sentinel, got {other:?}"),
+        }
+
+        // The hollow is visible in the assembled tree (the centre of a solid
+        // box would be deep inside; here it is carved away).
+        let tree = crate::csg::CsgNode::from_decoded(&ctx.features);
+        assert!(
+            tree.sdf([0.0, 0.0, 0.0], crate::csg::EvalMode::Logical) > 0.0,
+            "centre is hollow after shelling",
+        );
+    }
+
+    #[test]
+    fn shell_feature_rejects_a_query_that_resolves_to_no_face() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let err = registry
+            .regenerate(
+                &mut ctx,
+                &[FeatureCall::new(
+                    "shell",
+                    id(2),
+                    json!({
+                        "open_faces": "qFace(999999)",
+                        "thickness": { "value": 2.0, "unit": "mm" },
+                    }),
+                )],
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("face"),
+            "error mentions the face param: {err:?}",
+        );
+    }
+
     fn count_masked_blends(node: &crate::csg::CsgNode) -> usize {
         use crate::csg::CsgNode;
         match node {
@@ -5587,7 +5832,7 @@ mod tests {
             CsgNode::Transform(_, i)
             | CsgNode::Twist(i, _)
             | CsgNode::Bend(i, _)
-            | CsgNode::Shell(i, _)
+            | CsgNode::Shell(i, _, _)
             | CsgNode::Displace(i, _, _) => count_masked_blends(i),
             _ => 0,
         }

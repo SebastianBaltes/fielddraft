@@ -103,6 +103,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   mirror:             { label: "Mirror",           glyph: "◫" },
   mate_connector:     { label: "Mate Connector",   glyph: "⊕" },
   fillet_edge:        { label: "Fillet Edge",      glyph: "◠" },
+  shell:              { label: "Shell",            glyph: "⬚" },
   sweep:              { label: "Sweep",            glyph: "↝" },
   boolean:            { label: "Boolean",          glyph: "⊕" },
   material:           { label: "Material",         glyph: "🎨" },

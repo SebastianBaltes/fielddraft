@@ -169,6 +169,7 @@ export type FeatureKindName =
   | "mirror"
   | "mate_connector"
   | "fillet_edge"
+  | "shell"
   | "sweep"
   | "imported_mesh"
   | "translate"
@@ -1083,6 +1084,13 @@ export class Kernel {
   /** DL-61: add a fillet selecting an edge by query (e.g. `qEdge(<idHash>)`). */
   addFilletEdge(edge: string, blendRadius: number): number {
     return this.inner.addFilletEdge(edge, blendRadius);
+  }
+
+  /** Add a shell feature hollowing the body of the picked planar face(s).
+   *  `openFaces` is a comma-separated list of face queries; empty creates the
+   *  feature so its dialog can be filled. */
+  addShell(openFaces: string, thicknessMm: number): number {
+    return this.inner.addShell(openFaces, thicknessMm);
   }
 
   /** K9.1: overall scene AABB in mm. */

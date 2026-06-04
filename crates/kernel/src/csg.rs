@@ -490,6 +490,51 @@ pub enum BlendMode {
     Chamfer,
 }
 
+/// An infinite half-space removed from a [`CsgNode::Shell`] to open it: the
+/// outward-pointing face plane `g(p) = normal·p − offset`, which is `≤ 0`
+/// inside the body and `0` on the face. Built from a selected planar B-Rep
+/// face. The shell's cavity is not eroded where this plane is the nearest
+/// boundary, so the wall opens flush with the face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenPlane {
+    pub normal: [f32; 3],
+    pub offset: f32,
+}
+
+impl OpenPlane {
+    /// Signed plane value `g(p) = normal·p − offset` (≤ 0 inside the body).
+    #[inline]
+    pub fn eval(&self, p: [f32; 3]) -> f32 {
+        self.normal[0] * p[0] + self.normal[1] * p[1] + self.normal[2] * p[2] - self.offset
+    }
+}
+
+/// Inward shell SDF with optional openings (see [`CsgNode::Shell`]).
+///
+/// `d` is the solid's signed distance at `p`, `thickness` the wall thickness.
+/// The cavity is the solid eroded by a *local* depth `e`: `thickness` away from
+/// every open plane, tapering linearly to `0` as the nearest open plane becomes
+/// the active (closest) boundary. The wall is the solid minus that cavity,
+/// `max(d, −(d + e))`, so it hugs the outer surface and breaks open exactly at
+/// the selected faces. With no open planes `e == thickness` everywhere → a
+/// closed inward shell.
+#[inline]
+pub fn open_shell_sdf(d: f32, thickness: f32, open_planes: &[OpenPlane], p: [f32; 3]) -> f32 {
+    let e = if open_planes.is_empty() {
+        thickness
+    } else {
+        // g = nearest open-face plane value (≤ d, since d is the max over all
+        // faces). `d − g` is 0 when an open face is the active boundary and
+        // grows as it recedes; clamping to [0, thickness] gives the taper.
+        let g = open_planes
+            .iter()
+            .map(|pl| pl.eval(p))
+            .fold(f32::NEG_INFINITY, f32::max);
+        (d - g).clamp(0.0, thickness)
+    };
+    d.max(-(d + e))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CsgNode {
     Empty,
@@ -535,10 +580,14 @@ pub enum CsgNode {
     /// frequency (cycles per mm). Produces an egg-crate-like bump
     /// texture. The AABB expands by `depth` in every direction.
     Displace(Box<CsgNode>, f32, f32),
-    /// Shell: hollow the child by replacing its SDF with
-    /// `|sdf(p)| - thickness`. Turns a solid body into a
-    /// thin-walled shell of uniform thickness.
-    Shell(Box<CsgNode>, f32),
+    /// Shell: hollow the child into a thin wall of `thickness`, grown
+    /// *inward* from the surface (`max(d, −(d + e))`), so the outer
+    /// dimensions are preserved. `e` is the local erosion depth — normally
+    /// `thickness`, but tapered to `0` near any `open_planes` so the cavity
+    /// breaks through there, leaving an opening (the classic CAD shell with
+    /// removed faces). With no open planes this is a closed inward shell of
+    /// uniform thickness. See [`open_shell_sdf`].
+    Shell(Box<CsgNode>, f32, Vec<OpenPlane>),
     /// K10.3 / DL-61: spatially-masked blend. Evaluates `a` and `b` at
     /// every point, then checks a polyline-tube mask SDF (defined by
     /// `mask_polyline`, `mask_radius`). Inside the mask:
@@ -733,7 +782,7 @@ impl DecodedFeature {
             node = CsgNode::Displace(Box::new(node), mods.displace_depth, mods.displace_freq);
         }
         if mods.shell_thickness > 0.0 {
-            node = CsgNode::Shell(Box::new(node), mods.shell_thickness);
+            node = CsgNode::Shell(Box::new(node), mods.shell_thickness, Vec::new());
         }
         // Blend selection: fillet (blend_radius) wins over chamfer
         // (chamfer_size) when both are set.
@@ -762,6 +811,15 @@ impl DecodedFeature {
         CsgNode::Transform(self.transform, Box::new(self.node.clone()))
     }
 
+    /// True for the `shell` feature's sentinel node `Shell(Empty, …)` — a
+    /// whole-body post-process rather than geometry. [`CsgNode::from_decoded`]
+    /// folds it into an inward shell of its target body; the body-LOCAL B-Rep
+    /// weave skips it (the shell's world-space open planes don't belong in the
+    /// local frame, and the analytic B-Rep tracks the outer surface).
+    pub fn is_shell_modifier(&self) -> bool {
+        matches!(&self.node, CsgNode::Shell(inner, _, _) if matches!(**inner, CsgNode::Empty))
+    }
+
     /// Reconstruct this feature's export `Primitive` from the local
     /// geometry node, peeling the domain-warp/shell modifiers. Sketch
     /// lifts come back as `Primitive::Extrude`/`Revolve` with their
@@ -775,7 +833,7 @@ impl DecodedFeature {
                 CsgNode::Twist(inner, _)
                 | CsgNode::Bend(inner, _)
                 | CsgNode::Displace(inner, _, _)
-                | CsgNode::Shell(inner, _) => cur = inner,
+                | CsgNode::Shell(inner, _, _) => cur = inner,
                 CsgNode::Leaf { primitive, .. } => return Some(primitive.clone()),
                 CsgNode::Extrude {
                     sketch,
@@ -837,6 +895,18 @@ impl CsgNode {
     pub fn from_decoded(features: &[DecodedFeature]) -> Self {
         let mut acc = Self::Empty;
         for f in features {
+            // A body-shell modifier (the `shell` feature) is a post-process,
+            // not geometry: it carries the sentinel node `Shell(Empty, t, open)`
+            // and wraps the *already-accumulated* subtree of its target body in
+            // an inward shell. Intercept it before the boolean fold — its
+            // `Difference` op only serves `body::partition` (to dock it into the
+            // target body), never the CSG combine.
+            if let CsgNode::Shell(inner, thickness, open) = &f.node {
+                if matches!(**inner, CsgNode::Empty) {
+                    acc = wrap_shell(acc, &f.target_ids, *thickness, open);
+                    continue;
+                }
+            }
             let leaf = f.placed_node();
             let blend_r = f.blend_radius;
             let blend_mode = f.blend_mode;
@@ -909,8 +979,8 @@ impl CsgNode {
             CsgNode::Bend(inner, r) => {
                 CsgNode::Bend(Box::new(inner.apply_edge_fillets(fillets)), r)
             }
-            CsgNode::Shell(inner, t) => {
-                CsgNode::Shell(Box::new(inner.apply_edge_fillets(fillets)), t)
+            CsgNode::Shell(inner, t, open) => {
+                CsgNode::Shell(Box::new(inner.apply_edge_fillets(fillets)), t, open)
             }
             CsgNode::Displace(inner, d, f) => {
                 CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
@@ -937,7 +1007,7 @@ impl CsgNode {
             CsgNode::Transform(_, inner)
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
-            | CsgNode::Shell(inner, _)
+            | CsgNode::Shell(inner, _, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_primitives(out),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -966,7 +1036,7 @@ impl CsgNode {
             CsgNode::Transform(_, inner)
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
-            | CsgNode::Shell(inner, _)
+            | CsgNode::Shell(inner, _, _)
             | CsgNode::Displace(inner, _, _) => inner.contains_any_target(target_ids),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -995,7 +1065,7 @@ impl CsgNode {
             CsgNode::Transform(_, inner)
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
-            | CsgNode::Shell(inner, _)
+            | CsgNode::Shell(inner, _, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_ids(out),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -1070,8 +1140,8 @@ impl CsgNode {
                     * (p[2] * freq * 0.7).sin();
                 d - disp
             }
-            CsgNode::Shell(inner, thickness) => {
-                inner.sdf(p, mode).abs() - *thickness
+            CsgNode::Shell(inner, thickness, open) => {
+                open_shell_sdf(inner.sdf(p, mode), *thickness, open, p)
             }
             CsgNode::Morph(a, b, t) => {
                 let da = a.sdf(p, mode);
@@ -1217,9 +1287,9 @@ impl CsgNode {
                     * (p[2] * freq * 0.7).sin();
                 (d - disp, c)
             }
-            CsgNode::Shell(inner, thickness) => {
+            CsgNode::Shell(inner, thickness, open) => {
                 let (d, c) = inner.evaluate(p, eps, mode);
-                (d.abs() - *thickness, c)
+                (open_shell_sdf(d, *thickness, open, p), c)
             }
             CsgNode::Morph(a, b, t) => {
                 let (da, ca) = a.evaluate(p, eps, mode);
@@ -1347,17 +1417,9 @@ impl CsgNode {
                     max: [bb.max[0] + d, bb.max[1] + d, bb.max[2] + d],
                 }
             }
-            CsgNode::Shell(inner, thickness) => {
-                let bb = inner.aabb();
-                if bb.is_empty() {
-                    return Aabb::EMPTY;
-                }
-                let t = *thickness;
-                Aabb {
-                    min: [bb.min[0] - t, bb.min[1] - t, bb.min[2] - t],
-                    max: [bb.max[0] + t, bb.max[1] + t, bb.max[2] + t],
-                }
-            }
+            // Inward shell ⊆ the solid (the outer surface is preserved), so
+            // the bounds are exactly the child's — no expansion.
+            CsgNode::Shell(inner, _thickness, _open) => inner.aabb(),
             CsgNode::Morph(a, b, _) => Aabb::union(a.aabb(), b.aabb()),
             CsgNode::MaskedBlend { a, b, .. } => {
                 Aabb::union(a.aabb(), b.aabb())
@@ -1494,6 +1556,64 @@ pub(crate) fn smin_poly(da: f32, db: f32, r: f32) -> f32 {
 /// applying `op(subtree, wrapper)` only to the branch(es) that
 /// contain a leaf whose root_ancestor matches one of `target_ids`.
 /// Non-target branches pass through unchanged.
+/// Wrap the minimal subtree containing *all* of `target_ids` (one body) in an
+/// inward [`CsgNode::Shell`]. Descends through the body-separating unions while
+/// exactly one side holds the body, then wraps where both sides do (the body
+/// root) or at any non-union node — mirroring [`wrap_targeted`]'s descent, but
+/// replacing the subtree with its shell rather than booleaning a wrapper onto
+/// it. Used by [`CsgNode::from_decoded`] for the `shell` feature.
+fn wrap_shell(
+    tree: CsgNode,
+    target_ids: &[FeatureId],
+    thickness: f32,
+    open: &[OpenPlane],
+) -> CsgNode {
+    if !tree.contains_any_target(target_ids) {
+        return tree;
+    }
+    match tree {
+        CsgNode::Union(a, b) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => {
+                    CsgNode::Union(Box::new(wrap_shell(*a, target_ids, thickness, open)), b)
+                }
+                (false, true) => {
+                    CsgNode::Union(a, Box::new(wrap_shell(*b, target_ids, thickness, open)))
+                }
+                _ => CsgNode::Shell(Box::new(CsgNode::Union(a, b)), thickness, open.to_vec()),
+            }
+        }
+        CsgNode::SmoothUnion(a, b, r, m) => {
+            let a_has = a.contains_any_target(target_ids);
+            let b_has = b.contains_any_target(target_ids);
+            match (a_has, b_has) {
+                (true, false) => CsgNode::SmoothUnion(
+                    Box::new(wrap_shell(*a, target_ids, thickness, open)),
+                    b,
+                    r,
+                    m,
+                ),
+                (false, true) => CsgNode::SmoothUnion(
+                    a,
+                    Box::new(wrap_shell(*b, target_ids, thickness, open)),
+                    r,
+                    m,
+                ),
+                _ => CsgNode::Shell(
+                    Box::new(CsgNode::SmoothUnion(a, b, r, m)),
+                    thickness,
+                    open.to_vec(),
+                ),
+            }
+        }
+        // Difference / Intersection / etc. keep a body together — never split
+        // them to shell only the base. Wrap the whole node.
+        other => CsgNode::Shell(Box::new(other), thickness, open.to_vec()),
+    }
+}
+
 fn wrap_targeted(
     tree: CsgNode,
     target_ids: &[FeatureId],
@@ -1988,6 +2108,60 @@ mod tests {
             PrimitiveModifiers::NONE,
             vec![],
         )
+    }
+
+    /// A body-shell modifier: the sentinel `Shell(Empty, t, open)` node on a
+    /// `Difference` feature targeting `target`, exactly as `ShellFeature`
+    /// emits it.
+    fn shell_feature(id: u32, target: u32, thickness: f32, open: Vec<OpenPlane>) -> DecodedFeature {
+        DecodedFeature {
+            id: FeatureId::from_u32(id),
+            name: "Shell".to_string(),
+            op: BoolOp::Difference,
+            blend_radius: 0.0,
+            blend_mode: BlendMode::Fillet,
+            target_ids: vec![FeatureId::from_u32(target)],
+            transform: Transform::IDENTITY,
+            node: CsgNode::Shell(Box::new(CsgNode::Empty), thickness, open),
+        }
+    }
+
+    #[test]
+    fn open_shell_sdf_closed_is_an_inward_wall() {
+        // No open planes → wall from the surface (d = 0) inward to d = −t,
+        // hollow beyond. Outer surface preserved.
+        let t = 2.0;
+        let p = [0.0, 0.0, 0.0];
+        assert!((open_shell_sdf(0.0, t, &[], p)).abs() < 1e-6, "surface on boundary");
+        assert!(open_shell_sdf(-1.0, t, &[], p) < 0.0, "mid-wall is solid");
+        assert!((open_shell_sdf(-2.0, t, &[], p)).abs() < 1e-6, "inner wall face");
+        assert!(open_shell_sdf(-5.0, t, &[], p) > 0.0, "deep interior is hollow");
+    }
+
+    #[test]
+    fn open_shell_breaks_through_the_open_face_only() {
+        // 20³ box centred at origin, top (+Z) face removed, 2 mm wall.
+        let features = vec![
+            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            shell_feature(
+                2,
+                1,
+                2.0,
+                vec![OpenPlane { normal: [0.0, 0.0, 1.0], offset: 10.0 }],
+            ),
+        ];
+        let tree = CsgNode::from_decoded(&features);
+        let s = |p: [f32; 3]| tree.sdf(p, EvalMode::Logical);
+
+        // Hollow centre, open top, but the side and bottom walls remain solid.
+        assert!(s([0.0, 0.0, 0.0]) > 0.0, "centre is hollow");
+        assert!(s([0.0, 0.0, 9.0]) > 0.0, "just under the open top is open");
+        assert!(s([9.0, 0.0, 0.0]) < 0.0, "+X side wall is solid");
+        assert!(s([0.0, 0.0, -9.0]) < 0.0, "bottom wall is solid (closed face)");
+        // The outer surface is preserved everywhere — including over the
+        // opening, where the rim sits exactly on the original face.
+        assert!(s([10.0, 0.0, 0.0]).abs() < 1e-4, "+X outer face preserved");
+        assert!(s([0.0, 0.0, 10.0]).abs() < 1e-4, "top rim on the original face");
     }
 
     #[test]

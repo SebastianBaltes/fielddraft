@@ -1578,6 +1578,22 @@ impl Kernel {
         }))
     }
 
+    /// Add a `shell` feature: hollow the body owning the picked planar
+    /// face(s) to a wall of `thickness_mm`, opening it flush with each
+    /// face. `open_faces` is one or more comma-separated face queries
+    /// (e.g. `qFace(<id_hash>)`).
+    #[wasm_bindgen(js_name = addShell)]
+    pub fn add_shell(
+        &mut self,
+        open_faces: String,
+        thickness_mm: f32,
+    ) -> Result<u32, JsError> {
+        self.push_feature_call("shell", serde_json::json!({
+            "open_faces": open_faces,
+            "thickness": { "value": thickness_mm, "unit": "mm" },
+        }))
+    }
+
     /// K8.13: list the connected inside-regions of a sketch.
     /// Returns a JSON array of `{index, centroid, aabb, area}`
     /// objects. The sketch is identified by its feature id.

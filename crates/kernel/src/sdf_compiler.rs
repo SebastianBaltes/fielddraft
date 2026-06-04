@@ -203,12 +203,24 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(*freq);
         }
         BoundedCsg::Shell {
-            inner, thickness, ..
+            inner,
+            thickness,
+            open_planes,
+            ..
         } => {
             emit_node(inner, ctx);
             let out = &mut ctx.opcodes;
             out.push(op(OP_SHELL));
             out.push(*thickness);
+            // Variable-length operand: plane count, then (nx, ny, nz, offset)
+            // per open face. Zero planes ⇒ a closed inward shell.
+            out.push(open_planes.len() as f32);
+            for pl in open_planes {
+                out.push(pl.normal[0]);
+                out.push(pl.normal[1]);
+                out.push(pl.normal[2]);
+                out.push(pl.offset);
+            }
         }
         BoundedCsg::Morph {
             left, right, t, ..
@@ -716,8 +728,20 @@ pub fn eval_opcodes_with_volumes(
             // ── Unary / compositor operators ───────────────────
             OP_SHELL => {
                 let thickness = rd!();
+                let count = rd!() as usize;
+                // g = nearest open-face plane value (−∞ when none, so the
+                // clamp below yields the full thickness → closed shell).
+                let mut g = f32::NEG_INFINITY;
+                for _ in 0..count {
+                    let nx = rd!();
+                    let ny = rd!();
+                    let nz = rd!();
+                    let off = rd!();
+                    g = g.max(nx * pt[0] + ny * pt[1] + nz * pt[2] - off);
+                }
                 let d = pop_v!();
-                push_v!(d.abs() - thickness);
+                let e = (d - g).clamp(0.0, thickness);
+                push_v!(d.max(-(d + e)));
             }
             OP_MORPH => {
                 let t = rd!();

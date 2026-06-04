@@ -119,6 +119,13 @@ export class Kernel {
      */
     addRevolve(sketch_id: number, op: number, cx: number, cy: number, cz: number): number;
     /**
+     * Add a `shell` feature: hollow the body owning the picked planar
+     * face(s) to a wall of `thickness_mm`, opening it flush with each
+     * face. `open_faces` is one or more comma-separated face queries
+     * (e.g. `qFace(<id_hash>)`).
+     */
+    addShell(open_faces: string, thickness_mm: number): number;
+    /**
      * K6b.3a: commit a sketch from the UI's sub-spine draft. The
      * caller hands in a plane query string plus a JSON array of
      * `FeatureCall`s (the sketch-tool calls accumulated by
@@ -676,6 +683,7 @@ export interface InitOutput {
     readonly kernel_addMirror: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly kernel_addShell: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_applyGizmoRotate: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly kernel_applyGizmoScale: (a: number, b: number, c: number, d: number, e: number) => number;

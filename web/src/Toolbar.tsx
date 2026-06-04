@@ -384,6 +384,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <span className="tool-label">Delete</span>
         </button>
         <FeatureButton kind="fillet_edge" title="Click an edge to fillet it" testId="fillet-toggle" active={state.filletMode} onClick={() => store.toggleFilletMode()} label="Fillet" />
+        <FeatureButton kind="shell" title="Hollow a body — pick faces to open in the dialog" testId="add-shell" disabled={!hasFeatures} onClick={() => store.addShell()} label="Shell" />
         <FeatureButton kind="mate_connector" title="Place a mate connector" testId="add-mate-connector" disabled={!hasFeatures} active={state.mateMode} onClick={() => store.toggleMateMode()} label="Mate" />
         <button type="button" className={"tool" + (state.measureMode ? " is-active" : "")} title="Measure distance (click two points)" data-testid="measure-toggle" onClick={() => store.toggleMeasureMode()}>
           <span className="glyph" aria-hidden="true">📏</span>

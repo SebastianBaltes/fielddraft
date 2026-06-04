@@ -296,9 +296,31 @@ export function buildVmSdfEvalFn(
         pushV(blendMinFn({ a: a.negate(), b, r, mode }).negate());
 
       }).ElseIf(tag.equal(int(OP_SHELL)), () => {
+        // Inward shell with optional openings (mirrors `open_shell_sdf`):
+        // erode the solid by a local depth that tapers to 0 at the nearest
+        // open-face plane, so the wall breaks through there.
         const thickness = rd();
+        const nRaw = rd();
+        const nInt = floatToIntFn({ v: nRaw });
+        const planeStart = pc.toVar();
+        pc.addAssign(nInt.mul(4));
         const d = popV();
-        pushV(abs(d).sub(thickness));
+        // g = nearest open-face plane value; −1e30 when none → clamp yields
+        // the full thickness (a closed shell).
+        const g = float(-1e30).toVar();
+        const ii = int(0).toVar();
+        Loop(int(32), () => {
+          If(ii.greaterThanEqual(nInt), () => { Break(); });
+          const base = planeStart.add(ii.mul(4));
+          const nx = opBuf.element(base);
+          const ny = opBuf.element(base.add(1));
+          const nz = opBuf.element(base.add(2));
+          const off = opBuf.element(base.add(3));
+          g.assign(max(g, nx.mul(ptx).add(ny.mul(pty)).add(nz.mul(ptz)).sub(off)));
+          ii.addAssign(1);
+        });
+        const e = clamp(d.sub(g), float(0), thickness);
+        pushV(max(d, d.add(e).negate()));
       }).ElseIf(tag.equal(int(OP_MORPH)), () => {
         const t = rd();
         const b = popV(), a = popV();

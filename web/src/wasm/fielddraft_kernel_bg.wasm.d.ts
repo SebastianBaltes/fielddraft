@@ -20,6 +20,7 @@ export const kernel_addMaterial: (a: number) => [number, number, number];
 export const kernel_addMirror: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const kernel_addPrimitive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const kernel_addShell: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const kernel_applyGizmoRotate: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
 export const kernel_applyGizmoScale: (a: number, b: number, c: number, d: number, e: number) => number;

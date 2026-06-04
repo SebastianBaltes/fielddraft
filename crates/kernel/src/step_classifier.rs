@@ -122,7 +122,7 @@ fn peel_modifiers(node: &CsgNode) -> (&CsgNode, NodeModifiers) {
                 mods.displace = true;
                 cur = inner;
             }
-            CsgNode::Shell(inner, _) => {
+            CsgNode::Shell(inner, _, _) => {
                 mods.shell = true;
                 cur = inner;
             }

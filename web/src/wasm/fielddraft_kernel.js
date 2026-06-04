@@ -298,6 +298,24 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * Add a `shell` feature: hollow the body owning the picked planar
+     * face(s) to a wall of `thickness_mm`, opening it flush with each
+     * face. `open_faces` is one or more comma-separated face queries
+     * (e.g. `qFace(<id_hash>)`).
+     * @param {string} open_faces
+     * @param {number} thickness_mm
+     * @returns {number}
+     */
+    addShell(open_faces, thickness_mm) {
+        const ptr0 = passStringToWasm0(open_faces, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addShell(this.__wbg_ptr, ptr0, len0, thickness_mm);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * K6b.3a: commit a sketch from the UI's sub-spine draft. The
      * caller hands in a plane query string plus a JSON array of
      * `FeatureCall`s (the sketch-tool calls accumulated by
