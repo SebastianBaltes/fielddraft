@@ -471,9 +471,22 @@ fn branch_leaf_map(body: &BoundedCsg) -> HashMap<u32, &BoundedCsg> {
 
 fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a BoundedCsg>) {
     match node {
-        BoundedCsg::Leaf { id, .. }
-        | BoundedCsg::Extrude { id, .. }
-        | BoundedCsg::Revolve { id, .. } => {
+        BoundedCsg::Leaf { id, primitive, .. } => {
+            // Exempt the non-Lipschitz primitive class (toy Thread, Gyroid, and
+            // any future runtime FieldSkript raw-SDF op) from the edge tracer.
+            // Their dual field is not a clean Euclidean distance (|∇f|≠1, NaN
+            // gradients at singularities), so project_to_edge/march cannot
+            // condition their faces and shatter the seam into hundreds of
+            // useless pieces instead of one edge (Thread∩Sphere → E=442, V=0).
+            // A correct B-Rep for these SDF-difficult shapes is not the goal —
+            // the renderer covers them via conservative under-relaxed marching.
+            // Leaving them out of the leaf map makes `branch_field` return None,
+            // so the robust sampled line/circle/gap fits take the seam instead.
+            if !primitive_is_non_lipschitz(primitive) {
+                out.insert(BranchId::from_feature(id).feature_id(), node);
+            }
+        }
+        BoundedCsg::Extrude { id, .. } | BoundedCsg::Revolve { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id(), node);
         }
         BoundedCsg::Union { left, right, .. }
@@ -492,6 +505,18 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
         | BoundedCsg::Shell { inner, .. } => collect_leaf_nodes(inner, out),
         BoundedCsg::Empty => {}
     }
+}
+
+/// The non-Lipschitz SDF class: primitives whose field is not a clean Euclidean
+/// distance (|∇f|≠1 and/or NaN gradients at singularities), so the DL-68/69 edge
+/// tracer cannot condition their faces. Excluded from the edge tracer (→ sampled
+/// fits); the renderer covers them via conservative under-relaxed marching
+/// (`MARCH_RELAX`). Domain warps (Twist/Bend/Displace) are handled separately and
+/// wholesale by [`body_has_warp`]. Extend this list when FieldSkript gains a raw
+/// user-SDF op — its field is non-Lipschitz by construction.
+fn primitive_is_non_lipschitz(prim: &fielddraft_protocol::Primitive) -> bool {
+    use fielddraft_protocol::Primitive;
+    matches!(prim, Primitive::Thread { .. } | Primitive::Gyroid { .. })
 }
 
 /// Is `q` within `tol` of any vertex of the polyline?
@@ -1534,6 +1559,53 @@ mod tests {
             }
         }
         axis
+    }
+
+    #[test]
+    fn non_lipschitz_primitives_excluded_from_leaf_map() {
+        // D: Thread/Gyroid are non-Lipschitz → must NOT enter the leaf map (the
+        // DL-68/69 tracer would shatter their seams, e.g. Thread∩Sphere E=442).
+        // A Box leaf is a clean field and stays mapped so its own seams still
+        // trace. branch_field then returns None for the excluded branches → the
+        // robust sampled fits reconstruct those seams instead.
+        let thread = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Thread {
+                nominal_radius: 0.5,
+                pitch: 0.2,
+                depth: 0.1,
+                half_height: 1.0,
+            },
+        };
+        let boxn = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [1.0, 1.0, 1.0],
+            },
+        };
+        let gyroid = CsgNode::Leaf {
+            id: FeatureId::from_u32(3),
+            primitive: Primitive::Gyroid {
+                cell_size: 1.0,
+                thickness: 0.2,
+            },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(CsgNode::Union(Box::new(thread), Box::new(boxn))),
+            Box::new(gyroid),
+        ));
+        let map = branch_leaf_map(&body);
+        let fid = |n| BranchId::from_feature(&FeatureId::from_u32(n)).feature_id();
+        assert!(map.contains_key(&fid(2)), "clean box leaf must stay mapped");
+        assert!(
+            !map.contains_key(&fid(1)),
+            "thread must be excluded (non-Lipschitz)"
+        );
+        assert!(
+            !map.contains_key(&fid(3)),
+            "gyroid must be excluded (non-Lipschitz)"
+        );
     }
 
     #[test]
