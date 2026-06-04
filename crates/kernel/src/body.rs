@@ -256,25 +256,26 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
         match feature.op {
             BoolOp::Union => {
                 // A union carrying explicit `target_ids` docks into every
-                // body that already holds one of its targets — but only
-                // those it actually touches (AABB overlap). A union can
-                // bridge *several* bodies at once: the sphere that unions a
-                // left and a right solid fuses all three into a single Part,
-                // because union is transitive. An explicit Boolean union of
-                // two *disjoint* solids stays two Parts; the link expresses
-                // intent, contact decides the merge. Untagged unions, and
-                // tagged-but-separated ones, connect to nothing and seed a
-                // fresh body. Spatial overlap alone never merges.
+                // body that already holds one of its targets — *unconditionally*.
+                // An explicit Boolean union is the user's stated intent: in
+                // standard CAD, `union(A, B)` always yields one body, even
+                // when A and B are disjoint (one Part with two lumps). So a
+                // sphere unioned to a left and a right solid fuses all three
+                // into a single Part regardless of whether it physically
+                // touches each — union is transitive. Geometric proximity
+                // does NOT gate an explicit link (that was the "2 Parts that
+                // should be 1" bug: the bridge reached one box's AABB but not
+                // the other's). Untagged unions connect to nothing and seed a
+                // fresh body — spatial overlap alone never merges.
                 let connected: Vec<usize> = if feature.target_ids.is_empty() {
                     Vec::new()
                 } else {
                     (0..groups.len())
                         .filter(|&idx| {
-                            let targeted = groups[idx].feature_indices.iter().any(|&fi| {
+                            groups[idx].feature_indices.iter().any(|&fi| {
                                 let root = features[fi].id.root_ancestor();
                                 feature.target_ids.iter().any(|tid| root == tid)
-                            });
-                            targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
+                            })
                         })
                         .collect()
                 };
@@ -1151,10 +1152,13 @@ mod tests {
     }
 
     #[test]
-    fn bridging_union_skips_a_target_it_does_not_touch() {
-        // A bridge that overlaps only one of its two targets fuses just
-        // that one; the untouched target stays a separate Part (contact
-        // still decides each merge).
+    fn bridging_union_fuses_even_a_disjoint_target() {
+        // An explicit Boolean union is intent, not proximity: a bridge
+        // unioned to two targets fuses BOTH into one Part even when it
+        // physically overlaps only one of them. Union of disjoint solids
+        // is one body with two lumps (standard CAD), so geometric contact
+        // must NOT gate an explicit target link — that gating was the
+        // "2 Parts that should be 1" bug.
         let mut bridge = sphere_feat(3, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
         bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
         let features = vec![
@@ -1163,9 +1167,9 @@ mod tests {
             bridge,
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 2, "the far target stays separate");
-        assert_eq!(bodies[0].feature_indices, vec![0, 2]);
-        assert_eq!(bodies[1].feature_indices, vec![1]);
+        assert_eq!(bodies.len(), 1, "an explicit union fuses even a far target");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1, 2]);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
     }
 
     #[test]
@@ -1186,10 +1190,11 @@ mod tests {
     }
 
     #[test]
-    fn untouching_targeted_union_stays_separate() {
-        // An explicit union of two solids that do NOT touch must stay
-        // two bodies — the target link expresses intent, but contact
-        // decides the merge.
+    fn untouching_targeted_union_fuses_into_one() {
+        // An explicit union of two solids that do NOT touch is still ONE
+        // body: the target link is the user's stated intent, and contact
+        // does NOT gate it (standard CAD `union(A, B)` = one body with two
+        // lumps). This was the "2 Parts that should be 1" bug.
         let mut sphere = sphere_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], 5.0);
         sphere.target_ids = vec![FeatureId::from_u32(1)];
         let features = vec![
@@ -1197,7 +1202,8 @@ mod tests {
             sphere,
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 2, "disjoint explicit union stays two bodies");
+        assert_eq!(bodies.len(), 1, "an explicit union fuses even when disjoint");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
     }
 
     #[test]
