@@ -77,6 +77,34 @@ export const worldToLocalFn = wgslFn(`
   }
 `);
 
+// Outward-oriented open-face gate for OP_SHELL, mirroring the kernel's
+// `csg::sdf_halfspace` / `sdf_compiler::open_gate_local`. `kind` selects the
+// analytic surface; `p` holds up to four params (layout per kind, zero-padded):
+//   0 plane: normal=(p.x,p.y,p.z), offset=p.w
+//   1 infinite cylinder (axis Y): radius=p.x
+//   2 sphere: radius=p.x
+//   3 cone (apex origin, axis Y): half_angle=p.x
+//   4 torus: major=p.x, minor=p.y
+//   5 never (TPMS / non-analytic): keeps the wall closed
+export const openGateFn = wgslFn(`
+  fn fd_open_gate(local: vec3f, kind: f32, p: vec4f) -> f32 {
+    if (kind < 0.5) {
+      return dot(local, vec3f(p.x, p.y, p.z)) - p.w;
+    } else if (kind < 1.5) {
+      return length(vec2f(local.x, local.z)) - p.x;
+    } else if (kind < 2.5) {
+      return length(local) - p.x;
+    } else if (kind < 3.5) {
+      let r = length(vec2f(local.x, local.z));
+      return r * cos(p.x) - abs(local.y) * sin(p.x);
+    } else if (kind < 4.5) {
+      let q0 = length(vec2f(local.x, local.z)) - p.x;
+      return length(vec2f(q0, local.y)) - p.y;
+    }
+    return -1e30;
+  }
+`);
+
 export const sdfBoxFn = wgslFn(`
   fn fd_sdf_box(p: vec3f, h: vec3f) -> f32 {
     let q = abs(p) - h;

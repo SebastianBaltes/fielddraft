@@ -490,22 +490,33 @@ pub enum BlendMode {
     Chamfer,
 }
 
-/// An infinite half-space removed from a [`CsgNode::Shell`] to open it: the
-/// outward-pointing face plane `g(p) = normal·p − offset`, which is `≤ 0`
-/// inside the body and `0` on the face. Built from a selected planar B-Rep
-/// face. The shell's cavity is not eroded where this plane is the nearest
-/// boundary, so the wall opens flush with the face.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OpenPlane {
-    pub normal: [f32; 3],
-    pub offset: f32,
+/// An analytic surface removed from a [`CsgNode::Shell`] to open it. Generalises
+/// the planar opening to any analytic B-Rep face (Plane, Cylinder, Sphere, Cone,
+/// Torus): the outward-oriented gate `g(p) = sdf_halfspace(surface, W⁻¹·p)`, which
+/// is `≤ 0` inside the body and `0` on the face. `surface` is the face's local
+/// [`HalfSpace`]; `placement` is its rigid local→world transform (`body placement
+/// ∘ face transform`). The shell's cavity is not eroded where this surface is the
+/// nearest boundary, so the wall opens flush with the face. For a plane, `g`
+/// reduces exactly to `normal·p − offset`; for curved faces the gate is a true
+/// Euclidean distance (∇g ≈ 1), so the shell taper stays well-conditioned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenSurface {
+    pub surface: HalfSpace,
+    pub placement: Transform,
 }
 
-impl OpenPlane {
-    /// Signed plane value `g(p) = normal·p − offset` (≤ 0 inside the body).
+impl OpenSurface {
+    /// Outward-oriented surface gate `g(p)` (≤ 0 inside the body, 0 on the face).
+    /// Maps `p` world→surface-local (rigid inverse, undoing any scale) and
+    /// evaluates the face's analytic [`HalfSpace`] there.
     #[inline]
     pub fn eval(&self, p: [f32; 3]) -> f32 {
-        self.normal[0] * p[0] + self.normal[1] * p[1] + self.normal[2] * p[2] - self.offset
+        let t = &self.placement;
+        let d = [p[0] - t.translate[0], p[1] - t.translate[1], p[2] - t.translate[2]];
+        let conj = [-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]];
+        let r = crate::quat_rotate(conj, d);
+        let lp = [r[0] / t.scale[0], r[1] / t.scale[1], r[2] / t.scale[2]];
+        sdf_halfspace(&self.surface, lp)
     }
 }
 
@@ -519,16 +530,16 @@ impl OpenPlane {
 /// the selected faces. With no open planes `e == thickness` everywhere → a
 /// closed inward shell.
 #[inline]
-pub fn open_shell_sdf(d: f32, thickness: f32, open_planes: &[OpenPlane], p: [f32; 3]) -> f32 {
-    let e = if open_planes.is_empty() {
+pub fn open_shell_sdf(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
+    let e = if open_faces.is_empty() {
         thickness
     } else {
-        // g = nearest open-face plane value (≤ d, since d is the max over all
-        // faces). `d − g` is 0 when an open face is the active boundary and
-        // grows as it recedes; clamping to [0, thickness] gives the taper.
-        let g = open_planes
+        // g = nearest open-face gate value. `d − g` is ~0 when an open face is the
+        // active boundary and grows as it recedes; clamping to [0, thickness]
+        // gives the taper that breaks the cavity through at the selected faces.
+        let g = open_faces
             .iter()
-            .map(|pl| pl.eval(p))
+            .map(|f| f.eval(p))
             .fold(f32::NEG_INFINITY, f32::max);
         (d - g).clamp(0.0, thickness)
     };
@@ -583,11 +594,12 @@ pub enum CsgNode {
     /// Shell: hollow the child into a thin wall of `thickness`, grown
     /// *inward* from the surface (`max(d, −(d + e))`), so the outer
     /// dimensions are preserved. `e` is the local erosion depth — normally
-    /// `thickness`, but tapered to `0` near any `open_planes` so the cavity
+    /// `thickness`, but tapered to `0` near any `open_faces` so the cavity
     /// breaks through there, leaving an opening (the classic CAD shell with
-    /// removed faces). With no open planes this is a closed inward shell of
+    /// removed faces). The open faces may be planar or curved (any analytic
+    /// [`OpenSurface`]). With no open faces this is a closed inward shell of
     /// uniform thickness. See [`open_shell_sdf`].
-    Shell(Box<CsgNode>, f32, Vec<OpenPlane>),
+    Shell(Box<CsgNode>, f32, Vec<OpenSurface>),
     /// K10.3 / DL-61: spatially-masked blend. Evaluates `a` and `b` at
     /// every point, then checks a polyline-tube mask SDF (defined by
     /// `mask_polyline`, `mask_radius`). Inside the mask:
@@ -1566,7 +1578,7 @@ fn wrap_shell(
     tree: CsgNode,
     target_ids: &[FeatureId],
     thickness: f32,
-    open: &[OpenPlane],
+    open: &[OpenSurface],
 ) -> CsgNode {
     if !tree.contains_any_target(target_ids) {
         return tree;
@@ -2113,7 +2125,7 @@ mod tests {
     /// A body-shell modifier: the sentinel `Shell(Empty, t, open)` node on a
     /// `Difference` feature targeting `target`, exactly as `ShellFeature`
     /// emits it.
-    fn shell_feature(id: u32, target: u32, thickness: f32, open: Vec<OpenPlane>) -> DecodedFeature {
+    fn shell_feature(id: u32, target: u32, thickness: f32, open: Vec<OpenSurface>) -> DecodedFeature {
         DecodedFeature {
             id: FeatureId::from_u32(id),
             name: "Shell".to_string(),
@@ -2147,7 +2159,10 @@ mod tests {
                 2,
                 1,
                 2.0,
-                vec![OpenPlane { normal: [0.0, 0.0, 1.0], offset: 10.0 }],
+                vec![OpenSurface {
+                    surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
+                    placement: Transform::IDENTITY,
+                }],
             ),
         ];
         let tree = CsgNode::from_decoded(&features);
@@ -2162,6 +2177,28 @@ mod tests {
         // opening, where the rim sits exactly on the original face.
         assert!(s([10.0, 0.0, 0.0]).abs() < 1e-4, "+X outer face preserved");
         assert!(s([0.0, 0.0, 10.0]).abs() < 1e-4, "top rim on the original face");
+    }
+
+    #[test]
+    fn open_shell_curved_gate_opens_at_the_curved_face() {
+        // A curved opening: gate = an InfiniteCylinder (axis Y, radius 10), the
+        // lateral face of a cylinder body. `open_shell_sdf` must break the wall
+        // through at the curved surface yet keep it everywhere radially deeper.
+        let t = 2.0;
+        let open = vec![OpenSurface {
+            surface: HalfSpace::InfiniteCylinder { radius: 10.0 },
+            placement: Transform::IDENTITY,
+        }];
+        // 1 mm inside the lateral wall: gate g = 9 − 10 = −1 = d ⇒ e = 0 ⇒ open.
+        assert!(
+            open_shell_sdf(-1.0, t, &open, [9.0, 0.0, 0.0]) > 0.0,
+            "just inside the curved wall is open"
+        );
+        // On the axis (radially far inside): gate ≈ −10 ⇒ e = t ⇒ wall present.
+        assert!(
+            open_shell_sdf(-1.0, t, &open, [0.0, 0.0, 0.0]) < 0.0,
+            "axis interior keeps the wall"
+        );
     }
 
     #[test]

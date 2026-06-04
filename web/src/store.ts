@@ -1017,7 +1017,8 @@ export class KernelStore {
 
   /** Add a `shell` feature and select it so its dialog opens. Faces to open
    *  and the wall thickness are picked in the dialog (schema-driven); the
-   *  feature emits no geometry until at least one planar face is chosen. */
+   *  feature emits no geometry until at least one face (planar or curved)
+   *  is chosen. */
   addShell(thicknessMm = 2): number {
     let id: number;
     try {

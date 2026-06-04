@@ -119,10 +119,10 @@ export class Kernel {
      */
     addRevolve(sketch_id: number, op: number, cx: number, cy: number, cz: number): number;
     /**
-     * Add a `shell` feature: hollow the body owning the picked planar
-     * face(s) to a wall of `thickness_mm`, opening it flush with each
-     * face. `open_faces` is one or more comma-separated face queries
-     * (e.g. `qFace(<id_hash>)`).
+     * Add a `shell` feature: hollow the body owning the picked face(s)
+     * — planar or curved (any analytic surface) — to a wall of
+     * `thickness_mm`, opening it flush with each face. `open_faces` is one
+     * or more comma-separated face queries (e.g. `qFace(<id_hash>)`).
      */
     addShell(open_faces: string, thickness_mm: number): number;
     /**

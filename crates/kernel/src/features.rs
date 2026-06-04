@@ -211,18 +211,21 @@ impl<'a> Context<'a> {
         None
     }
 
-    /// Resolve a planar B-Rep face query to the world-space [`OpenPlane`] that
-    /// removes it from a shell, paired with the feature id that owns the face
-    /// (its branch). The plane is `normal·p − offset`, outward normal, `0` on
-    /// the face. Returns `None` for a non-matching or non-planar query (a
-    /// curved face's frame falls back to local +Z and is rejected here — only
-    /// planar openings are supported for now).
+    /// Resolve a B-Rep face query to the world-space [`OpenSurface`] that removes
+    /// it from a shell, paired with the feature id that owns the face (its
+    /// branch). Works for any analytic face — Plane, Cylinder, Sphere, Cone,
+    /// Torus — by composing the face's local `transform` with the body
+    /// `placement` into a rigid world placement and pairing it with the face's
+    /// own [`HalfSpace`]; the shell gate then evaluates that surface's SDF
+    /// (`sdf_halfspace`) in world space, opening flush with the (possibly
+    /// curved) face. Returns `None` for a non-matching query or a tessellated
+    /// (TPMS / non-analytic) face, which has no closed-form gate.
     pub fn resolve_open_face(
         &mut self,
         expr: &crate::queries::QueryExpr,
-    ) -> Option<(crate::csg::OpenPlane, FeatureId)> {
+    ) -> Option<(crate::csg::OpenSurface, FeatureId)> {
         use crate::brep::naming::TopoRef;
-        use crate::brep::FaceId;
+        use crate::brep::{FaceId, SurfaceGeometry};
         use crate::queries::QueryExpr;
 
         let woven = self.brep_cache.ensure(&self.features);
@@ -239,11 +242,18 @@ impl<'a> Context<'a> {
                 if !hit {
                     continue;
                 }
-                let frame = crate::sketch_features::face_plane_frame(brep, fid, placement);
-                let n = frame.normal;
-                let offset = n[0] * frame.origin[0] + n[1] * frame.origin[1] + n[2] * frame.origin[2];
+                let SurfaceGeometry::Analytic { surface, transform } = &brep.face(fid).surface
+                else {
+                    // Tessellated (TPMS / non-analytic) face — no closed-form gate.
+                    return None;
+                };
+                // World placement = body placement ∘ face transform (rigid).
+                let world = compose_placement(placement, transform);
                 let owner = FeatureId::from_u32(brep.faces[i].branch_id.feature_id());
-                return Some((crate::csg::OpenPlane { normal: n, offset }, owner));
+                return Some((
+                    crate::csg::OpenSurface { surface: surface.clone(), placement: world },
+                    owner,
+                ));
             }
         }
         None
@@ -1412,6 +1422,34 @@ fn find_target(
         })
 }
 
+/// Compose two transforms: `outer ∘ inner`, i.e. the placement that maps a
+/// point through `inner` then `outer` (`outer.apply(inner.apply(p))`). Used to
+/// lift a B-Rep face's body-local surface transform into world space via the
+/// body `placement`. Assumes rigid (or uniformly-scaled) placements — the
+/// shell gate's curved-surface SDF presumes a unit metric, so a non-uniform
+/// body scale would distort the opening taper (the common case is rigid).
+pub(crate) fn compose_placement(outer: &Transform, inner: &Transform) -> Transform {
+    let scaled = [
+        inner.translate[0] * outer.scale[0],
+        inner.translate[1] * outer.scale[1],
+        inner.translate[2] * outer.scale[2],
+    ];
+    let rotated = crate::quat_rotate(outer.rotation, scaled);
+    Transform {
+        translate: [
+            rotated[0] + outer.translate[0],
+            rotated[1] + outer.translate[1],
+            rotated[2] + outer.translate[2],
+        ],
+        rotation: crate::quat_multiply(outer.rotation, inner.rotation),
+        scale: [
+            outer.scale[0] * inner.scale[0],
+            outer.scale[1] * inner.scale[1],
+            outer.scale[2] * inner.scale[2],
+        ],
+    }
+}
+
 pub(crate) fn euler_xyz_to_quat(rx_deg: f32, ry_deg: f32, rz_deg: f32) -> [f32; 4] {
     let (s1, c1) = (rx_deg.to_radians() * 0.5).sin_cos();
     let (s2, c2) = (ry_deg.to_radians() * 0.5).sin_cos();
@@ -1608,16 +1646,17 @@ impl FeatureKind for FilletEdgeFeature {
     }
 }
 
-// ─── Shell: hollow a body, opening it at selected planar faces ───
+// ─── Shell: hollow a body, opening it at selected faces ───
 //
 // The classic CAD shell-with-removed-faces. The user picks one or more
-// planar B-Rep faces; the body they belong to is hollowed to a wall of
-// `thickness`, broken open flush with each picked face. It lowers to the
-// sentinel node `Shell(Empty, t, open_planes)` on a `Difference` feature,
-// which `body::partition` docks into the target body and
-// `CsgNode::from_decoded` turns into an inward `CsgNode::Shell` wrapping
-// that body's whole subtree (see `wrap_shell`). Only planar openings are
-// supported for now; curved faces are a later step.
+// B-Rep faces (planar or curved — any analytic surface); the body they
+// belong to is hollowed to a wall of `thickness`, broken open flush with
+// each picked face. It lowers to the sentinel node `Shell(Empty, t,
+// open_faces)` on a `Difference` feature, which `body::partition` docks into
+// the target body and `CsgNode::from_decoded` turns into an inward
+// `CsgNode::Shell` wrapping that body's whole subtree (see `wrap_shell`).
+// Each `OpenSurface` carries the face's analytic `HalfSpace` + world
+// placement, so the gate opens flush with cylinders/spheres/cones too.
 #[derive(FeatureSchema)]
 #[schema(type = "shell")]
 pub struct ShellDef {
@@ -1663,9 +1702,10 @@ impl FeatureKind for ShellFeature {
             });
         }
 
-        // Resolve every picked face to a world-space open plane, recording the
-        // feature each face belongs to so we can find the body to hollow.
-        let mut open_planes: Vec<crate::csg::OpenPlane> = Vec::new();
+        // Resolve every picked face to a world-space open surface (planar or
+        // curved), recording the feature each face belongs to so we can find the
+        // body to hollow.
+        let mut open_faces: Vec<crate::csg::OpenSurface> = Vec::new();
         let mut owner: Option<FeatureId> = None;
         for q in d.open_faces.queries() {
             let expr = crate::queries::parse_query(q).map_err(|e| {
@@ -1676,8 +1716,8 @@ impl FeatureKind for ShellFeature {
                 }
             })?;
             match ctx.resolve_open_face(&expr) {
-                Some((plane, face_owner)) => {
-                    open_planes.push(plane);
+                Some((surface, face_owner)) => {
+                    open_faces.push(surface);
                     owner.get_or_insert(face_owner);
                 }
                 None => {
@@ -1685,8 +1725,8 @@ impl FeatureKind for ShellFeature {
                         feature: ShellDef::TYPE_NAME,
                         name: "open_faces",
                         message: format!(
-                            "face query `{q}` resolved to no planar face (curved \
-                             openings are not yet supported)"
+                            "face query `{q}` resolved to no analytic face (only \
+                             tessellated/TPMS faces cannot be opened)"
                         ),
                     });
                 }
@@ -1733,7 +1773,7 @@ impl FeatureKind for ShellFeature {
             node: crate::csg::CsgNode::Shell(
                 Box::new(crate::csg::CsgNode::Empty),
                 thickness,
-                open_planes,
+                open_faces,
             ),
         });
         Ok(())

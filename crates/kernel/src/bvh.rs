@@ -30,7 +30,7 @@ use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
     expand_evaluate_leaf, extrude_contributors, open_shell_sdf, revolve_contributors, sdf_extrude,
-    Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenPlane,
+    Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenSurface,
 };
 use crate::sketch2d::BoundedSketch2d;
 use crate::{compose_transforms, sdf_primitive, world_to_local};
@@ -129,12 +129,12 @@ pub enum BoundedCsg {
         aabb: Aabb,
     },
     /// Shell: hollow the child into an inward wall of given thickness, with
-    /// optional `open_planes` where the wall breaks through (see
-    /// [`crate::csg::open_shell_sdf`]).
+    /// optional `open_faces` (planar or curved) where the wall breaks through
+    /// (see [`crate::csg::open_shell_sdf`]).
     Shell {
         inner: Box<BoundedCsg>,
         thickness: f32,
-        open_planes: Vec<OpenPlane>,
+        open_faces: Vec<OpenSurface>,
         aabb: Aabb,
     },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
@@ -384,8 +384,8 @@ impl BoundedCsg {
                     * (p[2] * freq * 0.7).sin();
                 d - disp
             }
-            BoundedCsg::Shell { inner, thickness, open_planes, .. } => {
-                open_shell_sdf(inner.sdf(p, mode), *thickness, open_planes, p)
+            BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
+                open_shell_sdf(inner.sdf(p, mode), *thickness, open_faces, p)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -543,9 +543,9 @@ impl BoundedCsg {
                     * (p[2] * freq * 0.7).sin();
                 (d - disp, c)
             }
-            BoundedCsg::Shell { inner, thickness, open_planes, .. } => {
+            BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
                 let (d, c) = inner.evaluate(p, eps, mode);
-                (open_shell_sdf(d, *thickness, open_planes, p), c)
+                (open_shell_sdf(d, *thickness, open_faces, p), c)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -774,7 +774,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
-        CsgNode::Shell(inner, thickness, open_planes) => {
+        CsgNode::Shell(inner, thickness, open_faces) => {
             let child = build(inner, carry);
             // Inward shell ⊆ the solid: the outer surface is preserved, so the
             // bounds are the child's — no expansion.
@@ -782,7 +782,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             BoundedCsg::Shell {
                 inner: Box::new(child),
                 thickness: *thickness,
-                open_planes: open_planes.clone(),
+                open_faces: open_faces.clone(),
                 aabb,
             }
         }

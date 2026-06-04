@@ -10,10 +10,10 @@
 //! A CPU interpreter ([`eval_opcodes`]) mirrors the GPU logic 1:1 so
 //! that every opcode path can be tested without a GPU.
 
-use fielddraft_protocol::{BakedVolume, Primitive, Transform};
+use fielddraft_protocol::{BakedVolume, HalfSpace, Primitive, Transform};
 
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, BlendMode};
+use crate::csg::{Aabb, BlendMode, OpenSurface};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive, SketchSegment};
 use crate::quat_rotate;
 
@@ -205,21 +205,20 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
         BoundedCsg::Shell {
             inner,
             thickness,
-            open_planes,
+            open_faces,
             ..
         } => {
             emit_node(inner, ctx);
             let out = &mut ctx.opcodes;
             out.push(op(OP_SHELL));
             out.push(*thickness);
-            // Variable-length operand: plane count, then (nx, ny, nz, offset)
-            // per open face. Zero planes ⇒ a closed inward shell.
-            out.push(open_planes.len() as f32);
-            for pl in open_planes {
-                out.push(pl.normal[0]);
-                out.push(pl.normal[1]);
-                out.push(pl.normal[2]);
-                out.push(pl.offset);
+            // Variable-length operand: open-face count, then per face a record of
+            // `kind(1) + transform(10) + params`. Zero faces ⇒ a closed inward
+            // shell. The VM maps world→local via the transform and evaluates the
+            // face's analytic half-space SDF, so curved openings work too.
+            out.push(open_faces.len() as f32);
+            for f in open_faces {
+                emit_open_surface(f, out);
             }
         }
         BoundedCsg::Morph {
@@ -313,6 +312,76 @@ fn emit_transform(t: &Transform, out: &mut Vec<f32>) {
     out.extend_from_slice(&t.translate);
     out.extend_from_slice(&t.rotation);
     out.extend_from_slice(&t.scale);
+}
+
+// ── Shell open-face surface kinds (mirror in `web/src/sdfRenderer.ts`'s
+//    `fd_open_gate`). Each open face is a fixed 15-float record so both VMs can
+//    pre-skip the operand block and loop at a constant stride:
+//    `kind(1) + transform(10) + params(4, zero-padded)`. ──
+pub(crate) const OPEN_KIND_PLANE: f32 = 0.0;
+pub(crate) const OPEN_KIND_CYLINDER: f32 = 1.0;
+pub(crate) const OPEN_KIND_SPHERE: f32 = 2.0;
+pub(crate) const OPEN_KIND_CONE: f32 = 3.0;
+pub(crate) const OPEN_KIND_TORUS: f32 = 4.0;
+/// A face with no openable closed-form gate (TPMS) — keeps the wall closed.
+pub(crate) const OPEN_KIND_NEVER: f32 = 5.0;
+/// Floats per serialised open-face record (kind + transform + 4 params).
+pub(crate) const OPEN_REC_LEN: usize = 15;
+
+/// Serialise one [`OpenSurface`] as a fixed-stride `OPEN_REC_LEN` record.
+fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
+    let kind = match &f.surface {
+        HalfSpace::Plane { .. } => OPEN_KIND_PLANE,
+        HalfSpace::InfiniteCylinder { .. } => OPEN_KIND_CYLINDER,
+        HalfSpace::Sphere { .. } => OPEN_KIND_SPHERE,
+        HalfSpace::Cone { .. } => OPEN_KIND_CONE,
+        HalfSpace::Torus { .. } => OPEN_KIND_TORUS,
+        HalfSpace::Gyroid { .. } => OPEN_KIND_NEVER,
+    };
+    out.push(kind);
+    out.extend_from_slice(&f.placement.translate);
+    out.extend_from_slice(&f.placement.rotation);
+    out.extend_from_slice(&f.placement.scale);
+    // Four param slots, zero-padded; layout matches `fd_open_gate`.
+    let params = match &f.surface {
+        HalfSpace::Plane { normal, offset } => [normal[0], normal[1], normal[2], *offset],
+        HalfSpace::InfiniteCylinder { radius } | HalfSpace::Sphere { radius } => {
+            [*radius, 0.0, 0.0, 0.0]
+        }
+        HalfSpace::Cone { half_angle } => [*half_angle, 0.0, 0.0, 0.0],
+        HalfSpace::Torus { major_radius, minor_radius } => {
+            [*major_radius, *minor_radius, 0.0, 0.0]
+        }
+        HalfSpace::Gyroid { .. } => [0.0; 4],
+    };
+    out.extend_from_slice(&params);
+}
+
+/// Outward-oriented open-face gate `g(local)` in the face's local frame, mirroring
+/// `csg::sdf_halfspace` and `web/src/sdfRenderer.ts`'s `fd_open_gate`.
+fn open_gate_local(local: [f32; 3], kind: f32, p: [f32; 4]) -> f32 {
+    if kind < 0.5 {
+        // Plane: normal = (p0, p1, p2), offset = p3.
+        local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3]
+    } else if kind < 1.5 {
+        // Infinite cylinder, radius p0, axis Y.
+        (local[0] * local[0] + local[2] * local[2]).sqrt() - p[0]
+    } else if kind < 2.5 {
+        // Sphere, radius p0.
+        (local[0] * local[0] + local[1] * local[1] + local[2] * local[2]).sqrt() - p[0]
+    } else if kind < 3.5 {
+        // Cone, half-angle p0, apex at origin, axis Y.
+        let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
+        let (sin_a, cos_a) = p[0].sin_cos();
+        r * cos_a - local[1].abs() * sin_a
+    } else if kind < 4.5 {
+        // Torus, major p0, minor p1.
+        let q0 = (local[0] * local[0] + local[2] * local[2]).sqrt() - p[0];
+        (q0 * q0 + local[1] * local[1]).sqrt() - p[1]
+    } else {
+        // Never opens (TPMS / non-analytic).
+        f32::NEG_INFINITY
+    }
 }
 
 // ── Leaf primitives ────────────────────────────────────────────────
@@ -729,15 +798,20 @@ pub fn eval_opcodes_with_volumes(
             OP_SHELL => {
                 let thickness = rd!();
                 let count = rd!() as usize;
-                // g = nearest open-face plane value (−∞ when none, so the
-                // clamp below yields the full thickness → closed shell).
+                // g = nearest open-face gate value (−∞ when none, so the clamp
+                // below yields the full thickness → closed shell). Each face is a
+                // fixed `OPEN_REC_LEN` record: kind, transform(10), 4 params.
                 let mut g = f32::NEG_INFINITY;
                 for _ in 0..count {
-                    let nx = rd!();
-                    let ny = rd!();
-                    let nz = rd!();
-                    let off = rd!();
-                    g = g.max(nx * pt[0] + ny * pt[1] + nz * pt[2] - off);
+                    let kind = opcodes[pc];
+                    let translate = [opcodes[pc + 1], opcodes[pc + 2], opcodes[pc + 3]];
+                    let quat = [opcodes[pc + 4], opcodes[pc + 5], opcodes[pc + 6], opcodes[pc + 7]];
+                    let scale = [opcodes[pc + 8], opcodes[pc + 9], opcodes[pc + 10]];
+                    let params =
+                        [opcodes[pc + 11], opcodes[pc + 12], opcodes[pc + 13], opcodes[pc + 14]];
+                    pc += OPEN_REC_LEN;
+                    let local = world_to_local_inline(pt, translate, quat, scale);
+                    g = g.max(open_gate_local(local, kind, params));
                 }
                 let d = pop_v!();
                 let e = (d - g).clamp(0.0, thickness);
@@ -1454,6 +1528,41 @@ mod tests {
             [10.0, 0.0, 0.0],
             [9.5, 0.0, 0.0],
             [15.0, 0.0, 0.0],
+        ];
+        assert_sdf_match(&bvh, &compiled, &points, 1e-3);
+    }
+
+    #[test]
+    fn shell_operator_curved_opening() {
+        // A sphere body shelled with its own spherical face opened: the curved
+        // gate must compile identically to the BVH path (validates the per-kind
+        // open-surface VM record + `open_gate_local`/`fd_open_gate` mirror).
+        use fielddraft_protocol::{HalfSpace, Transform};
+        let sphere = CsgNode::from_decoded(&[DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "Sphere 1".into(),
+            BoolOp::Union,
+            Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 10.0 },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        )]);
+        let shell = CsgNode::Shell(
+            Box::new(sphere),
+            1.0,
+            vec![OpenSurface {
+                surface: HalfSpace::Sphere { radius: 10.0 },
+                placement: Transform::IDENTITY,
+            }],
+        );
+        let bvh = BoundedCsg::from_csg(&shell);
+        let compiled = compile_body(&bvh);
+        let points = [
+            [0.0, 0.0, 0.0],
+            [9.5, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 9.5, 0.0],
+            [5.0, 5.0, 0.0],
         ];
         assert_sdf_match(&bvh, &compiled, &points, 1e-3);
     }

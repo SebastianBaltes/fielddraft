@@ -40,7 +40,7 @@ import {
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_MASKED_BLEND, OP_END,
-  worldToLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
+  worldToLocalFn, openGateFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
   blendMinFn, sdfCapsule3dFn, sdfExtrudeFn,
@@ -296,27 +296,42 @@ export function buildVmSdfEvalFn(
         pushV(blendMinFn({ a: a.negate(), b, r, mode }).negate());
 
       }).ElseIf(tag.equal(int(OP_SHELL)), () => {
-        // Inward shell with optional openings (mirrors `open_shell_sdf`):
-        // erode the solid by a local depth that tapers to 0 at the nearest
-        // open-face plane, so the wall breaks through there.
+        // Inward shell with optional openings (mirrors `open_shell_sdf`): erode
+        // the solid by a local depth that tapers to 0 at the nearest open face,
+        // so the wall breaks through there. Each open face is a fixed 15-float
+        // record (`OPEN_REC_LEN`): kind(1) + transform(10) + params(4), letting
+        // any analytic face (plane / cylinder / sphere / cone / torus) open.
+        const REC = 15;
         const thickness = rd();
         const nRaw = rd();
         const nInt = floatToIntFn({ v: nRaw });
-        const planeStart = pc.toVar();
-        pc.addAssign(nInt.mul(4));
+        const recStart = pc.toVar();
+        pc.addAssign(nInt.mul(REC));
         const d = popV();
-        // g = nearest open-face plane value; −1e30 when none → clamp yields
-        // the full thickness (a closed shell).
+        // g = nearest open-face gate; −1e30 when none → clamp yields the full
+        // thickness (a closed shell).
         const g = float(-1e30).toVar();
         const ii = int(0).toVar();
         Loop(int(32), () => {
           If(ii.greaterThanEqual(nInt), () => { Break(); });
-          const base = planeStart.add(ii.mul(4));
-          const nx = opBuf.element(base);
-          const ny = opBuf.element(base.add(1));
-          const nz = opBuf.element(base.add(2));
-          const off = opBuf.element(base.add(3));
-          g.assign(max(g, nx.mul(ptx).add(ny.mul(pty)).add(nz.mul(ptz)).sub(off)));
+          const base = recStart.add(ii.mul(REC));
+          const kind = opBuf.element(base);
+          const translate = vec3(
+            opBuf.element(base.add(1)), opBuf.element(base.add(2)), opBuf.element(base.add(3)),
+          );
+          const quat = vec4(
+            opBuf.element(base.add(4)), opBuf.element(base.add(5)),
+            opBuf.element(base.add(6)), opBuf.element(base.add(7)),
+          );
+          const scale = vec3(
+            opBuf.element(base.add(8)), opBuf.element(base.add(9)), opBuf.element(base.add(10)),
+          );
+          const params = vec4(
+            opBuf.element(base.add(11)), opBuf.element(base.add(12)),
+            opBuf.element(base.add(13)), opBuf.element(base.add(14)),
+          );
+          const local = worldToLocalFn({ p: vec3(ptx, pty, ptz), translate, quat, scale });
+          g.assign(max(g, openGateFn({ local, kind, p: params })));
           ii.addAssign(1);
         });
         const e = clamp(d.sub(g), float(0), thickness);

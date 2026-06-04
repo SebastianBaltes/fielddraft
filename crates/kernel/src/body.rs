@@ -21,7 +21,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use fielddraft_protocol::{BoolOp, FeatureId, Primitive, Transform};
+use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
 
 use crate::brep::octree::Octree;
 use crate::brep::weaving::weave;
@@ -598,6 +598,43 @@ fn hash_blend_mode(mode: &BlendMode, hasher: &mut DefaultHasher) {
 /// [`hash_body_payload_split`]), so a pure move leaves this unchanged.
 /// Covers primitives, the extrude/revolve self-centering, and every
 /// domain-warp/shell modifier.
+/// Structural hash of an analytic [`HalfSpace`]: a kind tag plus its scalar
+/// parameters. Used to fold a shell's curved/planar open faces into the body
+/// hash so an opening change invalidates the cache.
+fn hash_halfspace(hs: &HalfSpace, hasher: &mut DefaultHasher) {
+    match hs {
+        HalfSpace::Plane { normal, offset } => {
+            0u8.hash(hasher);
+            for v in normal {
+                v.to_bits().hash(hasher);
+            }
+            offset.to_bits().hash(hasher);
+        }
+        HalfSpace::InfiniteCylinder { radius } => {
+            1u8.hash(hasher);
+            radius.to_bits().hash(hasher);
+        }
+        HalfSpace::Sphere { radius } => {
+            2u8.hash(hasher);
+            radius.to_bits().hash(hasher);
+        }
+        HalfSpace::Cone { half_angle } => {
+            3u8.hash(hasher);
+            half_angle.to_bits().hash(hasher);
+        }
+        HalfSpace::Torus { major_radius, minor_radius } => {
+            4u8.hash(hasher);
+            major_radius.to_bits().hash(hasher);
+            minor_radius.to_bits().hash(hasher);
+        }
+        HalfSpace::Gyroid { cell_size, thickness } => {
+            5u8.hash(hasher);
+            cell_size.to_bits().hash(hasher);
+            thickness.to_bits().hash(hasher);
+        }
+    }
+}
+
 fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
     match node {
         CsgNode::Empty => 0u8.hash(hasher),
@@ -668,11 +705,17 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             11u8.hash(hasher);
             hash_node(a, hasher);
             thickness.to_bits().hash(hasher);
-            for pl in open {
-                pl.normal[0].to_bits().hash(hasher);
-                pl.normal[1].to_bits().hash(hasher);
-                pl.normal[2].to_bits().hash(hasher);
-                pl.offset.to_bits().hash(hasher);
+            for f in open {
+                hash_halfspace(&f.surface, hasher);
+                for v in f.placement.translate {
+                    v.to_bits().hash(hasher);
+                }
+                for v in f.placement.rotation {
+                    v.to_bits().hash(hasher);
+                }
+                for v in f.placement.scale {
+                    v.to_bits().hash(hasher);
+                }
             }
         }
         CsgNode::Morph(a, b, t) => {

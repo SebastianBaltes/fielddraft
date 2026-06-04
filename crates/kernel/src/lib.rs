@@ -1578,10 +1578,10 @@ impl Kernel {
         }))
     }
 
-    /// Add a `shell` feature: hollow the body owning the picked planar
-    /// face(s) to a wall of `thickness_mm`, opening it flush with each
-    /// face. `open_faces` is one or more comma-separated face queries
-    /// (e.g. `qFace(<id_hash>)`).
+    /// Add a `shell` feature: hollow the body owning the picked face(s)
+    /// — planar or curved (any analytic surface) — to a wall of
+    /// `thickness_mm`, opening it flush with each face. `open_faces` is one
+    /// or more comma-separated face queries (e.g. `qFace(<id_hash>)`).
     #[wasm_bindgen(js_name = addShell)]
     pub fn add_shell(
         &mut self,
