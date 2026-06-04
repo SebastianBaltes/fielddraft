@@ -2121,6 +2121,46 @@ pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// The analytic surface of a shell's *inner wall*: the body's outer surface
+/// `hs` pushed inward (into the solid) by `thickness`. Because every analytic
+/// [`HalfSpace`] gate is an exact signed Euclidean distance (`g < 0` inside, unit
+/// gradient — see [`grad_halfspace`]), the inner wall is exactly the level set
+/// `g = -thickness`, which for these surfaces is the same surface family with one
+/// shifted parameter and an *unchanged* placement [`Transform`]:
+///
+/// - Plane    `offset → offset − t`
+/// - Cylinder `radius → radius − t`
+/// - Sphere   `radius → radius − t`
+/// - Torus    `minor  → minor  − t`
+///
+/// Returns `None` when the wall would self-intersect or vanish (`radius`/`minor`
+/// `≤ t`), and for surfaces whose inward offset is *not* a member of the same
+/// family: a [`HalfSpace::Cone`] offset splits its two nappes apart (the apex is
+/// no longer a single point), and [`HalfSpace::Gyroid`] / TPMS have no analytic
+/// offset. Those inner walls fall back to a tessellated face, like other
+/// non-analytic surfaces in the weaver.
+pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpace> {
+    let shrink = |r: f32| (r - thickness > 1e-4).then_some(r - thickness);
+    match hs {
+        HalfSpace::Plane { normal, offset } => Some(HalfSpace::Plane {
+            normal: *normal,
+            offset: offset - thickness,
+        }),
+        HalfSpace::InfiniteCylinder { radius } => {
+            shrink(*radius).map(|radius| HalfSpace::InfiniteCylinder { radius })
+        }
+        HalfSpace::Sphere { radius } => shrink(*radius).map(|radius| HalfSpace::Sphere { radius }),
+        HalfSpace::Torus { major_radius, minor_radius } => {
+            shrink(*minor_radius).map(|minor_radius| HalfSpace::Torus {
+                major_radius: *major_radius,
+                minor_radius,
+            })
+        }
+        // Cone nappes separate under offset; Gyroid/TPMS have no analytic offset.
+        HalfSpace::Cone { .. } | HalfSpace::Gyroid { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2296,6 +2336,53 @@ mod tests {
             },
         };
         assert!((aniso.eval([4.0, 0.0, 0.0]) - 2.0).abs() < 1e-4, "non-uniform: on-axis world distance");
+    }
+
+    #[test]
+    fn offset_halfspace_inward_is_the_inner_wall_surface() {
+        // For each analytic kind, a point exactly `t` inside the original surface
+        // (its g = -t level set) must lie ON the offset surface (g_offset ≈ 0),
+        // and a point on the original surface must read +t (it is `t` *outside*
+        // the smaller inner wall). This is the defining property of the inner wall.
+        let t = 2.0;
+        let cases: Vec<(HalfSpace, [f32; 3], [f32; 3])> = vec![
+            // Plane (normal +X, offset 10): surface at x=10, inner wall at x=8.
+            (
+                HalfSpace::Plane { normal: [1.0, 0.0, 0.0], offset: 10.0 },
+                [8.0, 1.0, 1.0],  // on inner wall
+                [10.0, 1.0, 1.0], // on original surface
+            ),
+            // Cylinder radius 10 (axis Y): inner wall radius 8.
+            (
+                HalfSpace::InfiniteCylinder { radius: 10.0 },
+                [8.0, 3.0, 0.0],
+                [10.0, 3.0, 0.0],
+            ),
+            // Sphere radius 10: inner wall radius 8.
+            (HalfSpace::Sphere { radius: 10.0 }, [0.0, 8.0, 0.0], [0.0, 10.0, 0.0]),
+            // Torus major 10, minor 4: inner wall minor 2, on the tube top.
+            (
+                HalfSpace::Torus { major_radius: 10.0, minor_radius: 4.0 },
+                [10.0, 2.0, 0.0],
+                [10.0, 4.0, 0.0],
+            ),
+        ];
+        for (hs, on_inner, on_outer) in cases {
+            let inner = offset_halfspace_inward(&hs, t).expect("analytic inner wall");
+            assert!(
+                sdf_halfspace(&inner, on_inner).abs() < 1e-4,
+                "{hs:?}: inner-wall point should be on the offset surface"
+            );
+            assert!(
+                (sdf_halfspace(&inner, on_outer) - t).abs() < 1e-4,
+                "{hs:?}: original surface is t outside the inner wall"
+            );
+        }
+
+        // Degenerate + non-analytic cases yield no inner-wall surface.
+        assert!(offset_halfspace_inward(&HalfSpace::Sphere { radius: 1.5 }, 2.0).is_none(), "wall thicker than radius vanishes");
+        assert!(offset_halfspace_inward(&HalfSpace::Cone { half_angle: 0.5 }, 2.0).is_none(), "cone nappes separate under offset");
+        assert!(offset_halfspace_inward(&HalfSpace::Gyroid { cell_size: 5.0, thickness: 0.3 }, 2.0).is_none(), "TPMS has no analytic offset");
     }
 
     #[test]
