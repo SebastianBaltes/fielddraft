@@ -209,6 +209,85 @@ describe("sketchSession reducers", () => {
     expect((cstr.params as { line: number }).line).toBe(3);
   });
 
+  it("buildDraftSketchState translates every constraint sub-call into the solver state", () => {
+    // Two lines (entities 1-3 and 4-6) plus one constraint of each
+    // multi-entity kind referencing them, so the solver actually
+    // sees them rather than silently dropping the relation.
+    const state = buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+      { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } },
+      { type: "sketch_constraint_parallel", params: { line_a: 3, line_b: 6 } },
+      { type: "sketch_constraint_perpendicular", params: { line_a: 3, line_b: 6 } },
+      { type: "sketch_constraint_equal", params: { entity_a: 3, entity_b: 6 } },
+      { type: "sketch_constraint_angle", params: { line_a: 3, line_b: 6, value_deg: 45 } },
+      { type: "sketch_constraint_distance", params: { entity_a: 1, entity_b: 4, value_mm: 7 } },
+    ]);
+    const kinds = state.constraints.map((c) => c.kind).sort();
+    expect(kinds).toEqual(
+      ["angle", "distance", "equal", "parallel", "perpendicular"].sort(),
+    );
+    const angle = state.constraints.find((c) => c.kind === "angle");
+    expect(angle && angle.kind === "angle" && angle.value_deg).toBe(45);
+    const dist = state.constraints.find((c) => c.kind === "distance");
+    expect(dist && dist.kind === "distance" && dist.value_mm).toBe(7);
+  });
+
+  it("buildDraftSketchState carries the driven flag on dimensional constraints", () => {
+    const state = buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+      { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } },
+      {
+        type: "sketch_constraint_angle",
+        params: { line_a: 3, line_b: 6, value_deg: 30, driven: true },
+      },
+    ]);
+    const angle = state.constraints.find((c) => c.kind === "angle");
+    expect(angle && angle.kind === "angle" && angle.driven).toBe(true);
+  });
+
+  it("removeSketchSubCallAt drops a parallel constraint whose line is removed", () => {
+    const session: Parameters<typeof removeSketchSubCallAt>[0] = {
+      active: true,
+      planeQuery: "qA",
+      selectedTool: null,
+      toolDraft: {},
+      editingFeatureId: null,
+      subCalls: [
+        { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 1-3
+        { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 4-6
+        { type: "sketch_constraint_parallel", params: { line_a: 3, line_b: 6 } },
+      ],
+    };
+    // Remove the first line (entities 1-3). The parallel ref line_a=3
+    // is now invalid → the whole constraint is dropped.
+    const after = removeSketchSubCallAt(session, 0);
+    expect(after.subCalls).toHaveLength(1);
+    expect(after.subCalls[0].type).toBe("sketch_line");
+  });
+
+  it("removeSketchSubCallAt shifts a parallel constraint's refs past the removed range", () => {
+    const session: Parameters<typeof removeSketchSubCallAt>[0] = {
+      active: true,
+      planeQuery: "qA",
+      selectedTool: null,
+      toolDraft: {},
+      editingFeatureId: null,
+      subCalls: [
+        { type: "sketch_point", params: { at: [0, 0] } }, // entity 1
+        { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 2-4 (line=4)
+        { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 5-7 (line=7)
+        { type: "sketch_constraint_parallel", params: { line_a: 4, line_b: 7 } },
+      ],
+    };
+    // Remove the leading point (entity 1). Both lines shift down by
+    // one, so the parallel refs become 3 and 6.
+    const after = removeSketchSubCallAt(session, 0);
+    expect(after.subCalls).toHaveLength(3);
+    const cstr = after.subCalls[2];
+    expect(cstr.type).toBe("sketch_constraint_parallel");
+    expect(cstr.params).toMatchObject({ line_a: 3, line_b: 6 });
+  });
+
   it("exitSketchSession discards any accumulated sub-spine draft", () => {
     let session = selectSketchTool(
       enterSketchSession(INACTIVE_SKETCH_SESSION, "qA"),

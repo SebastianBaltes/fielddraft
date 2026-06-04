@@ -95,6 +95,29 @@ export function applySketchToolDraft(
   return { ...state, subCalls: [...state.subCalls, entry] };
 }
 
+/**
+ * For each `sketch_constraint_*` sub-call type, the param keys that
+ * hold sketch-local entity ids. Used by both the draft-state
+ * rebuild (to translate sub-calls into solver constraints) and the
+ * delete path (to rewrite / drop dangling references). Keeping a
+ * single table here means a new constraint type is wired in exactly
+ * one place. Param names mirror the Rust kernel tool defs in
+ * `crates/kernel/src/sketch_features.rs` one-to-one.
+ */
+export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
+  sketch_constraint_horizontal: ["line"],
+  sketch_constraint_vertical: ["line"],
+  sketch_constraint_coincident: ["a", "b"],
+  sketch_constraint_distance: ["entity_a", "entity_b"],
+  sketch_constraint_angle: ["line_a", "line_b"],
+  sketch_constraint_equal: ["entity_a", "entity_b"],
+  sketch_constraint_parallel: ["line_a", "line_b"],
+  sketch_constraint_perpendicular: ["line_a", "line_b"],
+  sketch_constraint_tangent: ["line", "curve"],
+  sketch_constraint_midpoint: ["point", "line"],
+  sketch_constraint_symmetric: ["entity_a", "entity_b", "axis"],
+};
+
 // ─── K6b.3c: draft sketch-state rebuild for live inference ──────
 
 /** ID the [`buildDraftSketchState`] helper assigns to an in-flight
@@ -291,6 +314,102 @@ export function buildDraftSketchState(
           b,
         });
       }
+    } else if (call.type === "sketch_constraint_parallel") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "parallel",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_perpendicular") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "perpendicular",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_equal") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "equal",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_tangent") {
+      const line = Number(call.params.line);
+      const curve = Number(call.params.curve);
+      if (Number.isFinite(line) && Number.isFinite(curve)) {
+        state.constraints.push({
+          kind: "tangent",
+          id: state.next_constraint_id++,
+          line,
+          curve,
+        });
+      }
+    } else if (call.type === "sketch_constraint_midpoint") {
+      const point = Number(call.params.point);
+      const line = Number(call.params.line);
+      if (Number.isFinite(point) && Number.isFinite(line)) {
+        state.constraints.push({
+          kind: "midpoint",
+          id: state.next_constraint_id++,
+          point,
+          line,
+        });
+      }
+    } else if (call.type === "sketch_constraint_distance") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      const value_mm = Number(call.params.value_mm);
+      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(value_mm)) {
+        state.constraints.push({
+          kind: "distance",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          value_mm,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_angle") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      const value_deg = Number(call.params.value_deg);
+      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(value_deg)) {
+        state.constraints.push({
+          kind: "angle",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          value_deg,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_symmetric") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      const axis = Number(call.params.axis);
+      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(axis)) {
+        state.constraints.push({
+          kind: "symmetric",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          axis,
+        });
+      }
     }
   }
   if (drawingLineFrom) {
@@ -343,29 +462,24 @@ export function removeSketchSubCallAt(
 
   const rewritten: SketchSessionState["subCalls"][number][] = [];
   for (const call of tail) {
-    if (
-      call.type === "sketch_constraint_horizontal" ||
-      call.type === "sketch_constraint_vertical"
-    ) {
-      const line = Number(call.params.line);
-      if (!Number.isFinite(line) || inRange(line)) continue;
-      rewritten.push({
-        ...call,
-        params: { ...call.params, line: shift(line) },
-      });
-    } else if (call.type === "sketch_constraint_coincident") {
-      const a = Number(call.params.a);
-      const b = Number(call.params.b);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-      if (inRange(a) || inRange(b)) continue;
-      rewritten.push({
-        ...call,
-        params: { ...call.params, a: shift(a), b: shift(b) },
-      });
-    } else {
+    const entityParams = CONSTRAINT_ENTITY_PARAMS[call.type];
+    if (!entityParams) {
       // Geometric calls allocate fresh ids — no shift needed.
       rewritten.push(call);
+      continue;
     }
+    // Read every entity-id reference this constraint carries. Drop
+    // the whole constraint if any reference points into the removed
+    // range (the referenced entity is gone); otherwise shift each
+    // reference above the range down so it still targets the same
+    // post-remove entity.
+    const refs = entityParams.map((key) => Number(call.params[key]));
+    if (refs.some((n) => !Number.isFinite(n) || inRange(n))) continue;
+    const nextParams = { ...call.params };
+    entityParams.forEach((key, i) => {
+      nextParams[key] = shift(refs[i]);
+    });
+    rewritten.push({ ...call, params: nextParams });
   }
 
   return { ...state, subCalls: [...before, ...rewritten] };
