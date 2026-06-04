@@ -631,6 +631,76 @@ mod tests {
     }
 
     #[test]
+    fn two_leaf_fields_trace_transversal_curved_seam() {
+        // DL-69 leaf↔leaf: the tracer pairs TWO dual-SDF Leaf fields — the
+        // deferred case (two curved sweep walls, neither with an analytic
+        // half-space). Leaf A: full-sweep `Sector` r=1 extruded → a cylinder
+        // about Z. Leaf B: full-sweep `Sector` r=0.3 extruded then rotated 90°
+        // about Y → a thin drill about X. The drill crosses A's curved wall
+        // **transversally** (∇f_a ∝ (x,y,0), ∇f_b ∝ (0,y,z) are never parallel on
+        // the seam), so the seam is a small closed loop x²+y²=1 ∧ y²+z²=0.09 with
+        // NO tangent turning point. The march projects and steps using ONLY the
+        // two leaf gradients; a clean, surface-exact closed ring proves leaf↔leaf
+        // tracing end to end. (A coaxial Steinmetz, by contrast, has tangent poles
+        // where ∇f_a×∇f_b→0 — two numeric fields stall there and the build_wireframe
+        // integration falls back to the sample fits; one analytic field would
+        // stabilise that pole. See the leaf↔analytic weave test.)
+        use crate::bvh::BoundedCsg;
+        use crate::csg::CsgNode;
+        use fielddraft_protocol::{FeatureId, Sketch2d, Sketch2dPrimitive};
+
+        let sector = |r: f32| {
+            Sketch2d::Prim(Sketch2dPrimitive::Sector {
+                center: [0.0, 0.0],
+                radius: r,
+                start_angle: 0.0,
+                sweep_angle: std::f32::consts::TAU,
+            })
+        };
+        let leaf_a = BoundedCsg::from_csg(&CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sector(1.0)),
+            half_height: 1.5,
+        });
+        // Extrude about Z, then rotate +90° about Y (quaternion [0, √½, 0, √½])
+        // so the drill lies about X. The folded transform rides into the leaf's
+        // placement and the dual SDF honours it.
+        let leaf_b = BoundedCsg::from_csg(&CsgNode::Transform(
+            Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ],
+                scale: [1.0, 1.0, 1.0],
+            },
+            Box::new(CsgNode::Extrude {
+                id: FeatureId::from_u32(2),
+                sketch: Box::new(sector(0.3)),
+                half_height: 1.5,
+            }),
+        ));
+        let fa = Field::Leaf { node: &leaf_a };
+        let fb = Field::Leaf { node: &leaf_b };
+
+        // Seam point near (1, 0, 0.3): on_a = √(x²+y²) = 1, on_b = √(y²+z²) = 0.3.
+        let step = 0.04;
+        let params = TraceParams::from_step(step);
+        let traced = trace_edge(&fa, &fb, [1.02, 0.03, 0.31], &[], &params)
+            .expect("two leaf fields must trace");
+        assert!(traced.closed, "transversal drill seam is a closed ring");
+        for &q in &traced.points {
+            let on_a = (q[0] * q[0] + q[1] * q[1]).sqrt();
+            let on_b = (q[1] * q[1] + q[2] * q[2]).sqrt();
+            assert!((on_a - 1.0).abs() < 1e-3, "off leaf A wall: r={on_a} at {q:?}");
+            assert!((on_b - 0.3).abs() < 1e-3, "off leaf B wall: r={on_b} at {q:?}");
+        }
+        assert_even_spacing(&traced.points, step);
+    }
+
+    #[test]
     fn leaf_field_projects_like_analytic() {
         // The general Leaf path (dual SDF) must land on the same circle as the
         // analytic half-space for an analytic primitive — proves the projection
