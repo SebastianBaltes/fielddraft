@@ -1207,3 +1207,155 @@ test.describe("Sketch dimensions (P0.2)", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * P0.3 — drag-edit committed geometry via grip handles.
+ *
+ * Selecting an entity exposes grip handles at its key points; dragging
+ * a grip rewrites the underlying coordinate live and the solver
+ * re-runs on drop. Only a real browser exercises the full chain:
+ * select-mode hit-test → grip pick → pointer-capture drag →
+ * replaceSketchSubCalls per move → solveAndReplace on release.
+ */
+test.describe("Sketch grip-drag (P0.3)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => {
+      try {
+        window.localStorage.removeItem("fielddraft.project.v1");
+      } catch {
+        /* ignore */
+      }
+    });
+    await page.reload();
+  });
+
+  function readSketchSession(page: import("@playwright/test").Page) {
+    return page.evaluate(() => {
+      const store = (
+        window as unknown as {
+          __fdStore?: {
+            getState: () => {
+              sketchSession: {
+                active: boolean;
+                selection: ReadonlyArray<number>;
+                subCalls: Array<{ type: string; params: Record<string, unknown> }>;
+              };
+            };
+          };
+        }
+      ).__fdStore;
+      if (!store) return null;
+      const s = store.getState().sketchSession;
+      return { active: s.active, selection: [...s.selection], subCalls: s.subCalls };
+    });
+  }
+
+  test("drag a line endpoint to relocate it", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    // A 40 mm horizontal line, off the origin so its endpoints don't
+    // collide with the origin grip.
+    await drawLine(page, [10, 0], [50, 0]);
+
+    // Select the line by clicking its midpoint. The palette's
+    // single-line options confirm the line is selected (and so its
+    // endpoint grips are now live).
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [mx, my] = project(30, 0);
+    await page.mouse.click(mx, my);
+    await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
+
+    // Grab the end-point grip at (50, 0) and drag it to (50, 40). The
+    // line is unconstrained, so the solver leaves the dragged point put.
+    const [ex, ey] = project(50, 0);
+    const [tx, ty] = project(50, 40);
+    await page.mouse.move(ex, ey);
+    await page.mouse.down();
+    await page.mouse.move((ex + tx) / 2, (ey + ty) / 2, { steps: 5 });
+    await page.mouse.move(tx, ty, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(900);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const line = committed!.find((c) => c.type === "sketch_line") as unknown as {
+      params: { start: [number, number]; end: [number, number] };
+    };
+    expect(line).toBeDefined();
+    // Start unchanged, end relocated to ~(50, 40) within pixel-rounding.
+    expect(Math.abs(line.params.start[0] - 10)).toBeLessThan(2);
+    expect(Math.abs(line.params.start[1] - 0)).toBeLessThan(2);
+    expect(Math.abs(line.params.end[0] - 50)).toBeLessThan(2);
+    expect(Math.abs(line.params.end[1] - 40)).toBeLessThan(2);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("drag a circle rim grip to change its radius", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    // A circle at (40, 0) with radius 20, placed precisely via the dialog.
+    await page.getByTestId("sketch-tool-sketch_circle").click();
+    await page.getByLabel("Center x").fill("40");
+    await page.getByLabel("Center y").fill("0");
+    await page.getByLabel("Radius").fill("20");
+    await page.getByTestId("sketch-tool-apply").click();
+
+    // Select the circle by clicking its rightmost rim point (60, 0).
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [rimx, rimy] = project(60, 0);
+    await page.mouse.click(rimx, rimy);
+
+    // Confirm the circle is selected so the rim grip is live.
+    const sel = await readSketchSession(page);
+    expect(sel).not.toBeNull();
+    expect(sel!.selection.length).toBeGreaterThan(0);
+
+    // Drag the rim grip from (60, 0) out to (80, 0): radius 20 → 40.
+    const [tx, ty] = project(80, 0);
+    await page.mouse.move(rimx, rimy);
+    await page.mouse.down();
+    await page.mouse.move((rimx + tx) / 2, rimy, { steps: 5 });
+    await page.mouse.move(tx, ty, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(900);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const circle = committed!.find((c) => c.type === "sketch_circle") as unknown as {
+      params: { center: [number, number]; radius: number };
+    };
+    expect(circle).toBeDefined();
+    // Centre stays put; radius grew to ~40.
+    expect(Math.abs(circle.params.center[0] - 40)).toBeLessThan(2);
+    expect(Math.abs(circle.params.center[1] - 0)).toBeLessThan(2);
+    expect(Math.abs(circle.params.radius - 40)).toBeLessThan(2);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+});

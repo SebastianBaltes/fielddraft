@@ -34,6 +34,7 @@ import {
   predictNextLineIds,
 } from "./sketchSession";
 import { hitTestSketchEntity } from "./sketchHitTest";
+import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -88,6 +89,12 @@ const COLOR_SELECTED = "#f97316";
 /** Pick radius for select-mode hit-testing, in CSS pixels. Divided
  *  by the camera zoom to get the sketch-plane tolerance. */
 const SELECT_PICK_PX = 6;
+/** Grip handle half-size (drawn as a filled square) in CSS pixels. */
+const GRIP_PX = 4;
+/** Grip pick radius in CSS pixels — generous so the small handles
+ *  are easy to grab. Beats the entity hit-test, so grabbing a grip
+ *  starts a drag rather than re-toggling the selection. */
+const GRIP_PICK_PX = 9;
 
 /**
  * Find the WebGPU `<canvas>` sibling of the overlay so camera
@@ -197,6 +204,13 @@ type DragState =
       kind: "polygon";
       vertices: [number, number][];
       current: [number, number];
+    }
+  | {
+      /** P0.3: dragging a grip handle on committed geometry. The
+       *  geometry follows the cursor live; the solver re-runs only
+       *  on drop so existing constraints snap the sketch back. */
+      kind: "grip";
+      grip: Grip;
     };
 
 /**
@@ -528,6 +542,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       e.preventDefault();
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       const [u, v] = screenToSketchFromEvent(e, cam);
+
+      // P0.3: grabbing a grip handle on the current selection starts a
+      // drag-edit. Grips win over entity picking — they're a deliberate
+      // edit gesture, and a re-toggle of the selection would be wrong.
+      const grip = pickGrip(e, cam, session);
+      if (grip) {
+        (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+        dragRef.current = { kind: "grip", grip };
+        lastCamVersionRef.current = -1;
+        return;
+      }
+
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
@@ -640,6 +666,30 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // P0.3: grip drag lives in select mode (no tool active), so it
+    // runs before the drawing-tool guard below. The geometry follows
+    // the cursor live; the solver waits until drop.
+    if (dragRef.current.kind === "grip") {
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      let [u, v] = screenToSketchFromEvent(e, cam);
+      if (e.ctrlKey || e.metaKey) {
+        const minPxGap = 20;
+        let step = 1;
+        while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
+        u = Math.round(u / step) * step;
+        v = Math.round(v / step) * step;
+      }
+      if (store) {
+        const current = store.getState().sketchSession;
+        if (current.active) {
+          store.replaceSketchSubCalls(
+            applyGripDrag(current.subCalls, dragRef.current.grip, [u, v]),
+          );
+        }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (!session.active || !session.selectedTool) return;
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     let [u, v] = screenToSketchFromEvent(e, cam);
@@ -711,6 +761,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragRef.current.kind === "grip") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      dragRef.current = { kind: "idle" };
+      // Re-solve from the dragged geometry so existing constraints
+      // reassert themselves (the live drag moved coordinates freely).
+      scheduleSolverReplay();
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (dragRef.current.kind === "circle") {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
       const { center, current } = dragRef.current;
@@ -1102,6 +1161,8 @@ function drawOverlay(
   // obvious. Resolved against skState (same id space as selection).
   if (session.selection.length > 0) {
     drawSelectionHighlight(ctx, skState, session.selection, cam);
+    // P0.3: draggable grip handles on the selected entities.
+    drawGrips(ctx, gripsForSelection(session.subCalls, session.selection), cam);
   }
 
   // K6b.6: draw constraint glyphs anchored to the constrained geometry.
@@ -1211,6 +1272,31 @@ function drawOverlay(
  * Resolved against the rebuilt solver state so the id space matches
  * the session's `selection`.
  */
+/**
+ * P0.3: draw the draggable grip handles for the current selection as
+ * small white-bordered squares in the highlight colour, so the user
+ * sees exactly where the geometry can be grabbed and dragged.
+ */
+function drawGrips(
+  ctx: CanvasRenderingContext2D,
+  grips: ReadonlyArray<Grip>,
+  cam: Readonly<SketchCameraState>,
+): void {
+  if (grips.length === 0) return;
+  ctx.save();
+  ctx.fillStyle = COLOR_SELECTED;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1;
+  for (const g of grips) {
+    const [px, py] = sketchToScreen(g.pos[0], g.pos[1], cam);
+    ctx.beginPath();
+    ctx.rect(px - GRIP_PX, py - GRIP_PX, GRIP_PX * 2, GRIP_PX * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawSelectionHighlight(
   ctx: CanvasRenderingContext2D,
   state: SketchState,
@@ -1538,4 +1624,32 @@ function screenToSketchFromEvent(
   const px = e.clientX - rect.left;
   const py = e.clientY - rect.top;
   return screenToSketch(px, py, cam);
+}
+
+/**
+ * P0.3: the grip under the pointer (within `GRIP_PICK_PX`), or null.
+ * Compared in screen pixels against each grip of the current
+ * selection so the pick tolerance is zoom-independent.
+ */
+function pickGrip(
+  e: React.PointerEvent<HTMLCanvasElement>,
+  cam: Readonly<SketchCameraState>,
+  session: SketchSessionState,
+): Grip | null {
+  const grips = gripsForSelection(session.subCalls, session.selection);
+  if (grips.length === 0) return null;
+  const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+  const ppx = e.clientX - rect.left;
+  const ppy = e.clientY - rect.top;
+  let best: Grip | null = null;
+  let bestD = GRIP_PICK_PX;
+  for (const g of grips) {
+    const [gx, gy] = sketchToScreen(g.pos[0], g.pos[1], cam);
+    const d = Math.hypot(ppx - gx, ppy - gy);
+    if (d <= bestD) {
+      bestD = d;
+      best = g;
+    }
+  }
+  return best;
 }

@@ -461,6 +461,8 @@ graph TD
 7. **Commit**: `kernel.addSketch(planeQuery, subCalls)` stores solved state in `Context::sketches`
 8. **Extrude/Revolve** features reference sketch via query, evaluate 2D SDF profile from `Sketch2d`
 
+**Select-mode editing (P0.1–P0.3):** With a sketch open and no drawing tool active, the overlay is in *select mode*. Left-clicks hit-test committed geometry (`sketchHitTest.ts`) and toggle it in `sketchSession.selection`. The toolbar palette offers the constraints/dimensions applicable to the current pick (`sketchConstraints.ts`): geometric constraints (P0.1) and dimensions seeded from the current measurement (P0.2, editable in the constraint manager). Selected entities expose draggable grip handles (`sketchGrips.ts`, P0.3) at their endpoints / centre / radius rim; dragging a grip rewrites the sub-call coordinate live and re-solves on drop, so existing constraints reassert themselves. All edits route through the same solve-and-replace pipeline as drawing.
+
 **Entity types:** Point, Line, Circle, Arc, Origin (fixed at 0,0).
 
 **Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim` (stub — no-op in V0), `sketch_mirror`, `sketch_offset`.
