@@ -194,10 +194,11 @@ test.describe("Sketch editor smoke", () => {
     await page.getByTestId("sketch-finish").click();
     await expect(page.getByTestId("sketch-session-panel")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
-    await expect(page.getByTestId("add-box")).toBeVisible();
+    await expect(page.getByTestId("primitive-split-button")).toBeVisible();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
-    // The new row's kind glyph is the sketch pencil.
-    const sketchRow = page.locator(".fd-outliner .row").first();
+    // The new row's kind glyph is the sketch pencil. (Datum rows like
+    // Origin precede feature rows now, so target the sketch row by kind.)
+    const sketchRow = page.locator('.fd-outliner .row[data-feature-kind="sketch"]');
     await expect(sketchRow).toContainText("Sketch");
 
     // 7. No blocking console errors, no uncaught page errors.
@@ -671,7 +672,11 @@ test.describe("Sketch editor smoke", () => {
     await expect(subSpineRows).toHaveCount(2);
     await page.waitForTimeout(700);
 
-    // K6b.3g: delete the circle (second row).
+    // K6b.3g: delete the circle (second row). The per-row delete
+    // button is `pointer-events:none` until its row is hovered (the
+    // "quiet row" UX), so mirror what a user does — hover the row to
+    // reveal + enable the button, then click it.
+    await subSpineRows.nth(1).hover();
     await page.getByTestId("sketch-sub-row-delete-1").click();
     await expect(subSpineRows).toHaveCount(1);
 
@@ -753,10 +758,16 @@ test.describe("Sketch editor smoke", () => {
     expect(shape!.some((f) => f.kind === "sketch")).toBe(true);
     expect(shape!.some((f) => f.kind === "extrude")).toBe(true);
 
-    // Download the STL and check it contains real triangles.
+    // Download the STL and check it contains real triangles. Export
+    // now lives in the ☰ settings menu under an Export submenu:
+    // open the menu, hover Export to reveal the submenu, click STL.
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByTestId("export-stl").click(),
+      (async () => {
+        await page.getByTestId("settings-menu-trigger").click();
+        await page.getByTestId("menu-export").hover();
+        await page.getByTestId("menu-export-stl").click();
+      })(),
     ]);
     const path = await download.path();
     expect(path).not.toBeNull();
