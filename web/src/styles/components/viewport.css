@@ -40,6 +40,14 @@
       pointer-events: auto;
       cursor: crosshair;
     }
+
+    /* Select mode: no drawing tool active. The overlay owns
+     * left-click selection; wheel-zoom and right-drag pan are
+     * forwarded to the R3F canvas underneath. */
+    &.is-select-mode {
+      pointer-events: auto;
+      cursor: default;
+    }
   }
 
   /* Invisible pick-state probe (see PickHud). Kept in the DOM purely as an

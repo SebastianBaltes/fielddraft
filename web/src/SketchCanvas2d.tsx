@@ -33,6 +33,7 @@ import {
   DRAFT_DRAG_START_ID,
   predictNextLineIds,
 } from "./sketchSession";
+import { hitTestSketchEntity } from "./sketchHitTest";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -82,6 +83,49 @@ const SNAP_RADIUS_MM = 10;
 const SNAP_RING_PX = 8;
 
 const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
+/** Highlight colour for entities picked in select mode. */
+const COLOR_SELECTED = "#f97316";
+/** Pick radius for select-mode hit-testing, in CSS pixels. Divided
+ *  by the camera zoom to get the sketch-plane tolerance. */
+const SELECT_PICK_PX = 6;
+
+/**
+ * Find the WebGPU `<canvas>` sibling of the overlay so camera
+ * gestures (wheel zoom, right-drag pan) can be forwarded to the
+ * R3F OrbitControls underneath while the overlay owns left-click
+ * selection in select mode.
+ */
+function viewportCanvas(overlay: HTMLCanvasElement): HTMLCanvasElement | null {
+  const parent = overlay.parentElement;
+  if (!parent) return null;
+  for (const c of parent.querySelectorAll("canvas")) {
+    if (c !== overlay) return c as HTMLCanvasElement;
+  }
+  return null;
+}
+
+/** Re-dispatch a pointer event onto the WebGPU canvas so the
+ *  OrbitControls pan gesture (right / middle drag) works while the
+ *  overlay is capturing events in select mode. OrbitControls'
+ *  pointerdown handler takes a pointer-capture on its own element,
+ *  so forwarding just the initial down is enough for the drag to
+ *  continue there. */
+function forwardPointerToViewport(e: React.PointerEvent<HTMLCanvasElement>): void {
+  const target = viewportCanvas(e.currentTarget as HTMLCanvasElement);
+  if (!target) return;
+  target.dispatchEvent(
+    new PointerEvent(e.nativeEvent.type, {
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      button: e.button,
+      buttons: e.buttons,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
 
 interface ProjectedEdge {
   p0: [number, number];
@@ -357,6 +401,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const lastCamVersionRef = useRef<number>(-1);
   const lastSessionRef = useRef<SketchSessionState | null>(null);
   const projectedEdgesRef = useRef<ProjectedEdge[]>([]);
+  // Latest session, readable from imperative (non-React) listeners
+  // like the native wheel handler below.
+  const sessionRef = useRef<SketchSessionState>(session);
+  sessionRef.current = session;
 
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
@@ -386,6 +434,36 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       projectedEdgesRef.current = [];
     }
   }, [store, session.planeQuery]);
+
+  // Forward wheel-zoom to the WebGPU canvas while in select mode so
+  // OrbitControls keeps zooming under the (pointer-events: auto)
+  // overlay. Native listener with { passive: false } so we can stop
+  // the page from scrolling. Drawing-tool mode is left untouched.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      const s = sessionRef.current;
+      if (!s.active || s.selectedTool) return;
+      const target = viewportCanvas(canvas);
+      if (!target) return;
+      target.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaZ: e.deltaZ,
+          deltaMode: e.deltaMode,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      e.preventDefault();
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Size the canvas to its container on mount and on resize.
   useLayoutEffect(() => {
@@ -438,6 +516,29 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // `pointer-events: auto`, which the CSS only sets when a
   // sketch tool is active (see `.is-tool-active` below).
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Select mode: no drawing tool active. Left-click hit-tests the
+    // committed geometry and toggles it in the selection; clicking
+    // empty space clears. Other buttons (pan) are forwarded to the
+    // R3F canvas so OrbitControls keeps working under the overlay.
+    if (store && session.active && !session.selectedTool) {
+      if (e.button !== 0) {
+        forwardPointerToViewport(e);
+        return;
+      }
+      e.preventDefault();
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const state = buildDraftSketchState(session.subCalls);
+      const hit = hitTestSketchEntity(state, [u, v], tolMm);
+      if (hit === null) {
+        store.clearSketchSelection();
+      } else {
+        store.toggleSketchSelection(hit);
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (!store || !session.active || !session.selectedTool) return;
     if (e.button !== 0) return; // left button only
     e.preventDefault();
@@ -815,11 +916,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   if (!session.active) return null;
 
   const toolActive = session.selectedTool !== null;
+  const selectMode = session.active && !toolActive;
   return (
     <canvas
       ref={canvasRef}
       data-testid="sketch-canvas-2d"
-      className={"fd-sketch-canvas" + (toolActive ? " is-tool-active" : "")}
+      className={
+        "fd-sketch-canvas" +
+        (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "")
+      }
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -1103,6 +1208,13 @@ function drawOverlay(
     }
   }
 
+  // Select mode: highlight the picked entities on top of the
+  // committed geometry so the constraint palette's target is
+  // obvious. Resolved against skState (same id space as selection).
+  if (session.selection.length > 0) {
+    drawSelectionHighlight(ctx, skState, session.selection, cam);
+  }
+
   // K6b.6: draw constraint glyphs anchored to the constrained geometry.
   // Resolve entity ids against the already-built solved state (skState)
   // rather than guessing from sub-call ordering.
@@ -1202,6 +1314,59 @@ function drawOverlay(
   if (snap.anchor && snap.candidate) {
     drawSnapIndicator(ctx, snap.anchor, snap.candidate.label, cam);
   }
+}
+
+/**
+ * Overdraw the selected entities in the highlight colour: points get
+ * an open ring, lines a thicker stroke, circles/arcs a thicker rim.
+ * Resolved against the rebuilt solver state so the id space matches
+ * the session's `selection`.
+ */
+function drawSelectionHighlight(
+  ctx: CanvasRenderingContext2D,
+  state: SketchState,
+  selection: ReadonlyArray<number>,
+  cam: Readonly<SketchCameraState>,
+): void {
+  const pointAt = (id: number): [number, number] | null => {
+    const e = state.entities.find((x) => x.id === id);
+    if (!e) return null;
+    if (e.kind === "point") return [e.at.x, e.at.y];
+    if (e.kind === "origin") return [0, 0];
+    return null;
+  };
+  ctx.save();
+  ctx.strokeStyle = COLOR_SELECTED;
+  ctx.fillStyle = COLOR_SELECTED;
+  for (const id of selection) {
+    const e = state.entities.find((x) => x.id === id);
+    if (!e) continue;
+    if (e.kind === "point" || e.kind === "origin") {
+      const at = e.kind === "origin" ? ([0, 0] as [number, number]) : [e.at.x, e.at.y] as [number, number];
+      const [px, py] = sketchToScreen(at[0], at[1], cam);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(px, py, POINT_PX + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (e.kind === "line") {
+      const a = pointAt(e.start);
+      const b = pointAt(e.end);
+      if (a && b) drawLine(ctx, a, b, cam, COLOR_SELECTED, STROKE_PX + 2);
+    } else if (e.kind === "circle" || e.kind === "arc") {
+      const c = pointAt(e.center);
+      if (c) {
+        const [cx, cy] = sketchToScreen(c[0], c[1], cam);
+        const rPx = e.radius * cam.zoom;
+        if (rPx >= 0.5) {
+          ctx.lineWidth = STROKE_PX + 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+  ctx.restore();
 }
 
 function drawSnapIndicator(
