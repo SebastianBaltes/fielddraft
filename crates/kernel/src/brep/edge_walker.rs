@@ -430,21 +430,68 @@ const SEAM_MAX_COMPONENTS: usize = 16;
 /// runaway on an unbounded edge stalls quickly into the sample-fit fallback.
 const SEAM_MAX_ARC_FACTOR: f64 = 4.0;
 
-/// The analytic scalar [`Field`] backing a branch, or `None` for a branch with
-/// no analytic surface (a curved sketch-sweep wall). Every primitive face —
-/// box plane, sphere, (infinite) cylinder, cone, torus, and the analytic
-/// extrude/revolve walls — appears in [`branch_halfspace_map`], so the tracer
-/// covers the whole analytic surface zoo and their cross-pairs; the leftover
-/// curved sketch walls fall through to the sampled fits.
-fn branch_field(
+/// The scalar [`Field`] backing a branch. Every primitive face — box plane,
+/// sphere, (infinite) cylinder, cone, torus, and the analytic extrude/revolve
+/// walls — appears in [`branch_halfspace_map`] and yields an exact, globally
+/// smooth [`Field::Analytic`]. A branch with **no** analytic surface (a curved
+/// sketch-sweep wall: a sector arc, a Bézier/arc path) falls back to a
+/// [`Field::Leaf`] over its owning leaf subtree, evaluated by the dual SDF
+/// (DL-69) — so the tracer reaches genuinely curved faces, not just the
+/// analytic zoo. `None` only when the branch is neither (should not happen for a
+/// real face). The Leaf field is smooth — and the tracer well-conditioned —
+/// only *away* from the leaf SDF's own C0 creases; the same-feature guard in
+/// [`build_wireframe`] keeps a sweep's own wall∩cap seam off this path.
+fn branch_field<'a>(
     halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    leaf_map: &HashMap<u32, &'a BoundedCsg>,
     branch: u32,
-) -> Option<Field<'static>> {
-    let (hs, xf) = halfspaces.get(&branch)?;
-    Some(Field::Analytic {
-        hs: hs.clone(),
-        xf: *xf,
-    })
+) -> Option<Field<'a>> {
+    if let Some((hs, xf)) = halfspaces.get(&branch) {
+        return Some(Field::Analytic {
+            hs: hs.clone(),
+            xf: *xf,
+        });
+    }
+    let fid = BranchId(branch).feature_id();
+    leaf_map.get(&fid).map(|&node| Field::Leaf { node })
+}
+
+/// Map each leaf feature's id to its [`BoundedCsg`] subtree, the source of a
+/// [`Field::Leaf`] for branches without an analytic half-space (curved
+/// sketch-sweep walls). The dual SDF of that subtree is the general edge field
+/// (DL-69). Keyed by [`BranchId::feature_id`] so a branch resolves to its leaf
+/// with the sub-index stripped — the whole leaf SDF backs every one of its
+/// faces. Mapping *all* leaves (box, cylinder, …) is harmless: their branches
+/// resolve through `halfspaces` first and never consult this map.
+fn branch_leaf_map(body: &BoundedCsg) -> HashMap<u32, &BoundedCsg> {
+    let mut out = HashMap::new();
+    collect_leaf_nodes(body, &mut out);
+    out
+}
+
+fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a BoundedCsg>) {
+    match node {
+        BoundedCsg::Leaf { id, .. }
+        | BoundedCsg::Extrude { id, .. }
+        | BoundedCsg::Revolve { id, .. } => {
+            out.insert(BranchId::from_feature(id).feature_id(), node);
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_leaf_nodes(left, out);
+            collect_leaf_nodes(right, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. } => collect_leaf_nodes(inner, out),
+        BoundedCsg::Empty => {}
+    }
 }
 
 /// Is `q` within `tol` of any vertex of the polyline?
@@ -1116,13 +1163,19 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     // Analytic branch→surface table, used to reject phantom signature groups
     // (DL-52): a real edge lies on both faces, a contributor-eps phantom does
     // not. Branches without an analytic entry (tessellated sketch sweeps) are
-    // not validated and never dropped. Under a domain warp the analytic map
-    // describes the un-warped primitive (it would wrongly reject every warped
-    // edge), so the filter is disabled there.
-    let halfspaces = if body_has_warp(body) {
-        HashMap::new()
+    // not validated and never dropped. The companion leaf map (DL-69) backs the
+    // tracer's [`Field::Leaf`] for those non-analytic walls. Under a domain warp
+    // BOTH are disabled: the analytic map describes the un-warped primitive (it
+    // would wrongly reject every warped edge), and a leaf field over the
+    // un-warped subtree would trace the wrong surface — so warped seams fall
+    // back wholesale to the sampled fits.
+    let (halfspaces, leaf_map) = if body_has_warp(body) {
+        (HashMap::new(), HashMap::new())
     } else {
-        crate::brep::weaving::branch_halfspace_map(body)
+        (
+            crate::brep::weaving::branch_halfspace_map(body),
+            branch_leaf_map(body),
+        )
     };
 
     // Dangling chain endpoints (no vertex snapped) recorded for the reflex-
@@ -1177,8 +1230,28 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
             .map(|dv| dv.position)
             .collect();
         let pos: Vec<[f64; 3]> = pts.iter().map(|p| p.position).collect();
-        let traced = match (branch_field(&halfspaces, sa), branch_field(&halfspaces, sb)) {
-            (Some(fa), Some(fb)) => trace_seam_chains(&fa, &fb, &pos, &bounding, spacing),
+        let traced = match (
+            branch_field(&halfspaces, &leaf_map, sa),
+            branch_field(&halfspaces, &leaf_map, sb),
+        ) {
+            (Some(fa), Some(fb)) => {
+                // A sweep's *own* seams (wall∩cap, wall∩wall) are exactly the C0
+                // creases of its leaf SDF, where the gradient is ambiguous and
+                // project/march are ill-conditioned. Detect them structurally —
+                // a leaf field paired within the SAME feature — and leave them to
+                // the proven sample fits. A leaf paired ACROSS features (a curved
+                // wall meeting another body's face, or another body's wall) is
+                // smooth at the seam and traces cleanly (DL-69). Analytic↔analytic
+                // pairs are unaffected (a box's own plane∩plane edges still trace).
+                let leaf_involved =
+                    matches!(fa, Field::Leaf { .. }) || matches!(fb, Field::Leaf { .. });
+                let same_feature = BranchId(sa).feature_id() == BranchId(sb).feature_id();
+                if leaf_involved && same_feature {
+                    None
+                } else {
+                    trace_seam_chains(&fa, &fb, &pos, &bounding, spacing)
+                }
+            }
             _ => None,
         };
 

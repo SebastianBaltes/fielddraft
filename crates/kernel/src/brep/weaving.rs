@@ -1929,6 +1929,99 @@ mod tests {
         }
     }
 
+    /// DL-69: the general SDF edge tracer's [`Field::Leaf`] path recovers a
+    /// **curved cross-feature** seam — one whose face has no analytic
+    /// half-space. A full-sweep `Sector` extruded is a cylinder evaluated as a
+    /// dual-SDF leaf (its wall is *not* in `branch_halfspace_map`); unioned with
+    /// an analytic cylinder about a perpendicular axis, the wall∩wall seam is a
+    /// non-planar Steinmetz curve (two closed loops). `fit_line` and `fit_circle`
+    /// BOTH fail on it (neither a line nor a planar circle), so a clean,
+    /// surface-exact, resolution-independent recovery is the tracer's doing —
+    /// the leaf field for the sector wall paired with the analytic field for the
+    /// cylinder. The same-feature guard keeps the sector's *own* wall∩cap creases
+    /// off the leaf path (they fall back to the sample fits).
+    #[test]
+    fn leaf_field_traces_curved_cross_feature_seam() {
+        // Body A: full-sweep sector r=1 extruded ±1.5 → a cylinder about Z, but
+        // NON-analytic (a sector wall is not enumerated in branch_halfspace_map),
+        // so its wall branch resolves to a Field::Leaf over the extrude subtree.
+        let sector = ProtoSketch2d::Prim(ProtoSketch2dPrim::Sector {
+            center: [0.0, 0.0],
+            radius: 1.0,
+            start_angle: 0.0,
+            sweep_angle: std::f32::consts::TAU,
+        });
+        let cyl_z = CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sector),
+            half_height: 1.5,
+        };
+        // Body B: an analytic cylinder r=0.8 about Y (caps at y = ±1.5), so the
+        // seam stays clear of all four caps (|y| ≤ 1, |z| ≤ 0.8 on the curve).
+        let cyl_y = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: 0.8,
+                half_height: 1.5,
+            },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(cyl_z), Box::new(cyl_y)));
+
+        // Seam membership: a point on BOTH cylinders — radius about Z is the
+        // leaf cylinder A (r=1), radius about Y is the analytic cylinder B (r=0.8).
+        let on_a = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1]).sqrt();
+        let on_b = |p: [f64; 3]| (p[0] * p[0] + p[2] * p[2]).sqrt();
+
+        for res in [0.3_f32, 0.4] {
+            let octree = Octree::build(&body, res);
+            let brep = build_wireframe(&body, &octree);
+
+            let mut seam_edges = 0usize;
+            let mut closed_seam_loops = 0usize;
+            for e in &brep.edges {
+                let EdgeGeometry::Hermite(samples) = &e.geometry else {
+                    continue;
+                };
+                // Classify (loose gate): an edge is on the Steinmetz seam iff
+                // every sample lies on both cylinders.
+                let is_seam = samples
+                    .iter()
+                    .all(|s| (on_a(s.point) - 1.0).abs() < 5e-2 && (on_b(s.point) - 0.8).abs() < 5e-2);
+                if !is_seam {
+                    continue;
+                }
+                seam_edges += 1;
+                // Surface-exact on BOTH the leaf cylinder and the analytic one,
+                // independent of the octree spacing — the hallmark of the tracer
+                // (a coarse-octree gap-chain fragments; fit_circle/fit_line cannot
+                // represent this non-planar curve at all).
+                for s in samples {
+                    assert!(
+                        (on_a(s.point) - 1.0).abs() < 3e-3,
+                        "seam off leaf cylinder A: r={} at res {res}, p={:?}",
+                        on_a(s.point),
+                        s.point
+                    );
+                    assert!(
+                        (on_b(s.point) - 0.8).abs() < 3e-3,
+                        "seam off analytic cylinder B: r={} at res {res}, p={:?}",
+                        on_b(s.point),
+                        s.point
+                    );
+                }
+                if e.start.is_none() && e.end.is_none() {
+                    closed_seam_loops += 1;
+                }
+            }
+            assert_eq!(seam_edges, 2, "exactly two Steinmetz seam loops at res {res}");
+            assert_eq!(
+                closed_seam_loops, 2,
+                "both seam loops are closed (no triple-junction vertices) at res {res}"
+            );
+        }
+    }
+
     #[test]
     fn intersect_two_boxes_weaves_watertight_overlap_box() {
         // Two unit-half boxes offset by (0.5, 0.5, 0.5): their Intersection is

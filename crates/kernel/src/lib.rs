@@ -5887,11 +5887,11 @@ mod tests {
             let mut pinned_axis: Option<usize> = None;
             let mut pinned_count = 0;
             let mut inside_count = 0;
-            for axis in 0..3 {
-                if (c[axis].abs() - 25.0).abs() < 0.5 {
+            for (axis, &coord) in c.iter().enumerate() {
+                if (coord.abs() - 25.0).abs() < 0.5 {
                     pinned_axis = Some(axis);
                     pinned_count += 1;
-                } else if c[axis].abs() < 20.0 {
+                } else if coord.abs() < 20.0 {
                     inside_count += 1;
                 }
             }

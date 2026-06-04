@@ -48,16 +48,14 @@ pub(crate) enum Field<'a> {
     /// General fallback: a single leaf subtree evaluated by the dual SDF layer.
     /// Its zero set is the whole primitive boundary; near a seam, away from the
     /// primitive's own creases, it is smooth and its gradient is the surface
-    /// normal — enough for project + trace on swept/warped faces.
+    /// normal — enough for project + trace on swept faces.
     ///
-    /// Exercised by this module's field-agnostic proof tests (a sphere as a dual
-    /// leaf projects/traces identically to its analytic half-space) but not yet
-    /// wired into `build_wireframe`: there the only non-analytic faces are a
-    /// primitive's *own* curved sketch-sweep walls, whose seam with its cap plane
-    /// is exactly the leaf SDF's C0 crease (ambiguous gradient). Cross-body curved
-    /// seams — where the leaf is smooth at the seam — are the natural first
-    /// consumer, a focused follow-up (DL-69).
-    #[allow(dead_code)]
+    /// Wired in `build_wireframe` (DL-69) for branches with no analytic
+    /// half-space — a curved sketch-sweep wall (sector arc, Bézier/arc path).
+    /// Restricted there to **cross-feature** seams: a curved wall meeting another
+    /// body's face or wall, where the leaf SDF is smooth at the seam. A sweep's
+    /// *own* wall∩cap / wall∩wall seam is exactly the leaf SDF's C0 crease
+    /// (ambiguous gradient), so it is excluded and falls back to the sample fits.
     Leaf { node: &'a BoundedCsg },
 }
 
