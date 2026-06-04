@@ -2876,20 +2876,31 @@ impl FeatureKind for BooleanFeature {
             match op {
                 BoolOp::Union => {
                     feature.op = BoolOp::Union;
-                    // Seed the body with the first tool; route every
-                    // other tool into that same body so the partition
-                    // pass merges them into one Part instead of
-                    // spawning a body per tool. A non-seed tool *accumulates*
-                    // its links (push, don't overwrite): a part shared by two
-                    // union operations (the sphere unioned to a left and a
-                    // right solid) must carry BOTH seed links so the partition
-                    // pass fuses all three into one Part. Overwriting would
-                    // drop the earlier link and split the part in two.
-                    if Some(idx) == first_tool_pos {
-                        feature.target_ids.clear();
-                    } else if let Some(seed) = &first_tool_id {
-                        if !feature.target_ids.contains(seed) {
-                            feature.target_ids.push(seed.clone());
+                    // Seed the body with the first tool; route every other
+                    // tool into that same body via an explicit link so the
+                    // partition pass merges them into one Part instead of
+                    // spawning a body per tool. Two rules keep union
+                    // transitive across operations:
+                    //
+                    // * Non-seed tools *accumulate* their links (push, don't
+                    //   overwrite): a part shared by two unions (a sphere
+                    //   unioned to a left and a right solid) carries BOTH seed
+                    //   links so all three fuse into one Part.
+                    // * The seed *keeps* whatever links it already carries —
+                    //   we must NOT clear it. On a fresh decode the seed
+                    //   starts empty, so a non-shared seed still seeds its own
+                    //   body; but a tool shared with an EARLIER union arrives
+                    //   already linked to that union's seed. The Boolean picks
+                    //   its seed as the first tool in *spine order*, so when
+                    //   the shared bridge is spine-earlier than this op's
+                    //   other tool, the bridge becomes the seed — clearing it
+                    //   would drop the earlier link and split the part (the
+                    //   "2 Parts that should be 1" bug).
+                    if Some(idx) != first_tool_pos {
+                        if let Some(seed) = &first_tool_id {
+                            if !feature.target_ids.contains(seed) {
+                                feature.target_ids.push(seed.clone());
+                            }
                         }
                     }
                 }

@@ -5316,6 +5316,64 @@ mod tests {
     }
 
     #[test]
+    fn shared_tool_before_second_seed_in_spine_still_fuses() {
+        // Same transitive-union scene as `two_boolean_unions_sharing_a_tool…`,
+        // but the SPINE ORDER is the one the user's project hit: the shared
+        // bridge (sphere) is created *before* the second box. The Boolean
+        // picks its seed as the first tool in spine order, so op2's seed is
+        // the sphere — NOT the second box. If the seed-assignment clears the
+        // sphere's accumulated link to op1's box, the first box splits off
+        // into its own Part ("2 Parts that should be 1"). All three overlap,
+        // so geometry never gates the merge; the only thing that can break it
+        // is clobbering the bridge's link.
+        let mut k = Kernel::new();
+        let box_a = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            -10.0, 0.0, 0.0, 12.0, 12.0, 12.0,
+        ).unwrap();
+        let sph = k.add_primitive(
+            Primitive::KIND_SPHERE, BoolOp::TAG_UNION,
+            0.0, 0.0, 0.0, 15.0, 0.0, 0.0,
+        ).unwrap();
+        // Created AFTER the sphere → spine-later than the shared bridge.
+        let box_b = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            10.0, 0.0, 0.0, 12.0, 12.0, 12.0,
+        ).unwrap();
+
+        // Op 1: box_a ∪ sphere.
+        let b1 = k.add_boolean().unwrap();
+        let p1 = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", box_a, sph),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(b1, &p1.to_string()).unwrap();
+
+        // Op 2: box_b ∪ sphere — sphere is spine-earlier than box_b, so it
+        // is op2's seed.
+        let b2 = k.add_boolean().unwrap();
+        let p2 = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", box_b, sph),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(b2, &p2.to_string()).unwrap();
+
+        assert_eq!(
+            k.body_count(), 1,
+            "a shared bridge created before the second seed must still fuse all three"
+        );
+        let tree = csg::CsgNode::from_decoded(&k.decoded);
+        let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
+        assert!(sdf([-10.0, 0.0, 0.0]) < 0.0, "inside box_a");
+        assert!(sdf([0.0, 0.0, 0.0]) < 0.0, "inside the sphere");
+        assert!(sdf([10.0, 0.0, 0.0]) < 0.0, "inside box_b");
+    }
+
+    #[test]
     fn two_boolean_unions_sharing_a_tool_form_one_body() {
         // Scene: a left box, a right box, and a centre sphere that bridges
         // both. The user builds it as TWO separate union operations that
