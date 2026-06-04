@@ -113,6 +113,12 @@ export function App() {
               store.enterSketch("qCreatedBy(origin_plane_xy)");
             } else if (cur.mateMode) {
               store.toggleMateMode();
+            } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
+              // P0.1: in a sketch session, Esc drops the active drawing
+              // tool and returns to select mode so geometry can be picked.
+              store.selectSketchTool(null);
+            } else if (cur.sketchSession.active && cur.sketchSession.selection.length > 0) {
+              store.clearSketchSelection();
             } else {
               store.clearSelection();
             }

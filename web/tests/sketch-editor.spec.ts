@@ -731,3 +731,317 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * P0.1 — explicit constraint palette.
+ *
+ * Vitest already covers the pure pieces (hit-test, applicability,
+ * param mapping, reducers, solve-replay). What only surfaces in a
+ * real browser is the integration: the Select tool actually drops
+ * back to select mode, a left-click on the overlay hit-tests the
+ * committed geometry and drives the store selection, the palette
+ * renders the right buttons for that pick, and clicking one applies
+ * the constraint, persists it on the kernel, and the live solver
+ * actually moves the geometry to satisfy it.
+ *
+ * Entities are placed at known sketch coordinates via the dialog,
+ * then targeted by projecting those coordinates through the live
+ * ortho camera (`__fdSketchCamera`) — robust against whatever
+ * zoom/DPR the headed host happens to use.
+ */
+test.describe("Sketch constraint palette (P0.1)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => {
+      try {
+        window.localStorage.removeItem("fielddraft.project.v1");
+      } catch {
+        /* ignore */
+      }
+    });
+    await page.reload();
+  });
+
+  /** Read the live sketch camera and return a projector that maps a
+   *  sketch coordinate to absolute client pixels on the overlay. */
+  async function makeProjector(page: import("@playwright/test").Page) {
+    const overlay = page.getByTestId("sketch-canvas-2d");
+    const box = await overlay.boundingBox();
+    expect(box).not.toBeNull();
+    const readCam = () =>
+      page.evaluate(() => {
+        const hook = (
+          window as unknown as {
+            __fdSketchCamera?: () => {
+              zoom: number;
+              centerU: number;
+              centerV: number;
+              version: number;
+            };
+          }
+        ).__fdSketchCamera;
+        const c = hook?.();
+        return c
+          ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
+          : null;
+      });
+    // The R3F ortho camera publishes its zoom asynchronously after the
+    // WebGPU canvas mounts. Project with a *settled* camera so the click
+    // maps to the same sketch coordinate the overlay hit-test will use:
+    // poll until two reads a frame apart agree and the camera has
+    // actually published (version > 0).
+    let cam = await readCam();
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(100);
+      const next = await readCam();
+      if (
+        next &&
+        cam &&
+        next.version > 0 &&
+        next.zoom === cam.zoom &&
+        next.centerU === cam.centerU &&
+        next.centerV === cam.centerV
+      ) {
+        cam = next;
+        break;
+      }
+      cam = next;
+    }
+    expect(cam).not.toBeNull();
+    expect(cam!.version).toBeGreaterThan(0);
+    const b = box!;
+    const c = cam!;
+    // Mirror sketchToScreen() with the overlay's own measured size as
+    // the authoritative viewport (the bridge can publish stale dims).
+    return (u: number, v: number): [number, number] => {
+      const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
+      const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
+      return [px, py];
+    };
+  }
+
+  /** Draw one line via the FeatureDialog at precise coordinates. */
+  async function drawLine(
+    page: import("@playwright/test").Page,
+    start: [number, number],
+    end: [number, number],
+  ) {
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await page.getByLabel("Start x").fill(String(start[0]));
+    await page.getByLabel("Start y").fill(String(start[1]));
+    await page.getByLabel("End x").fill(String(end[0]));
+    await page.getByLabel("End y").fill(String(end[1]));
+    await page.getByTestId("sketch-tool-apply").click();
+  }
+
+  function readCommittedSubCalls(page: import("@playwright/test").Page) {
+    return page.evaluate(() => {
+      const kernel = (
+        window as unknown as {
+          __fdKernel?: {
+            listFeatures: () => Array<{ id: number; kind: string }>;
+            getSketchSubCalls: (id: number) => Array<{
+              type: string;
+              params: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).__fdKernel;
+      if (!kernel) return null;
+      const sketch = kernel.listFeatures().find((f) => f.kind === "sketch");
+      if (!sketch) return null;
+      return kernel.getSketchSubCalls(sketch.id);
+    });
+  }
+
+  test("Select tool returns to select mode and shows the constraint hint", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    // Picking a drawing tool leaves select mode — the palette hides.
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await expect(page.getByTestId("sketch-constraint-row")).toHaveCount(0);
+
+    // The Select tool drops back to select mode. The palette returns
+    // with its empty-selection hint, and the Select button reads active.
+    await page.getByTestId("sketch-tool-select").click();
+    const row = page.getByTestId("sketch-constraint-row");
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Select geometry");
+    await expect(page.getByTestId("sketch-tool-select")).toHaveClass(/is-active/);
+
+    // Escape from a drawing tool also returns to select mode.
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await expect(page.getByTestId("sketch-constraint-row")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("sketch-constraint-row")).toBeVisible();
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("pick two lines, apply Parallel, solver makes them parallel", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+
+    // Two clearly non-parallel lines, both off the origin so neither
+    // endpoint snaps and the midpoints are unambiguous pick targets.
+    await drawLine(page, [20, 30], [80, 40]); // slope +1/6
+    await drawLine(page, [20, -40], [80, 0]); // slope +2/3
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(2);
+
+    // Drop to select mode and pick both lines on their midpoints.
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [m1x, m1y] = project(50, 35); // midpoint of line 1
+    const [m2x, m2y] = project(50, -20); // midpoint of line 2
+    await page.mouse.click(m1x, m1y);
+    await page.waitForTimeout(120); // let the store/overlay settle the pick
+    await page.mouse.click(m2x, m2y);
+
+    // The palette now offers Parallel + Perpendicular for two lines.
+    await expect(page.getByTestId("sketch-constraint-parallel")).toBeVisible();
+    await expect(page.getByTestId("sketch-constraint-perpendicular")).toBeVisible();
+
+    // Apply Parallel — a third sub-spine row (the constraint) appears.
+    await page.getByTestId("sketch-constraint-parallel").click();
+    await expect(subSpineRows).toHaveCount(3);
+    await page.waitForTimeout(800); // let the solver land
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const lines = committed!.filter(
+      (c) => c.type === "sketch_line",
+    ) as unknown as Array<{
+      params: { start: [number, number]; end: [number, number] };
+    }>;
+    expect(lines.length).toBe(2);
+    expect(
+      committed!.some((c) => c.type === "sketch_constraint_parallel"),
+    ).toBe(true);
+
+    // The two line directions must now be parallel: their 2D cross
+    // product is ~0.
+    const dir = (l: { params: { start: [number, number]; end: [number, number] } }) => [
+      l.params.end[0] - l.params.start[0],
+      l.params.end[1] - l.params.start[1],
+    ];
+    const [ax, ay] = dir(lines[0]);
+    const [bx, by] = dir(lines[1]);
+    const cross = ax * by - ay * bx;
+    const norm = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    expect(Math.abs(cross) / norm).toBeLessThan(1e-3);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("pick two points, apply Coincident, solver merges them", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+
+    // Two free points a short distance apart, both off the origin.
+    await page.getByTestId("sketch-tool-sketch_point").click();
+    await page.getByLabel("At x").fill("40");
+    await page.getByLabel("At y").fill("40");
+    await page.getByTestId("sketch-tool-apply").click();
+    await page.getByTestId("sketch-tool-sketch_point").click();
+    await page.getByLabel("At x").fill("70");
+    await page.getByLabel("At y").fill("55");
+    await page.getByTestId("sketch-tool-apply").click();
+
+    const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
+    await expect(subSpineRows).toHaveCount(2);
+
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [p1x, p1y] = project(40, 40);
+    const [p2x, p2y] = project(70, 55);
+    await page.mouse.click(p1x, p1y);
+    await page.waitForTimeout(120); // let the store/overlay settle the pick
+    await page.mouse.click(p2x, p2y);
+
+    await expect(page.getByTestId("sketch-constraint-coincident")).toBeVisible();
+    await page.getByTestId("sketch-constraint-coincident").click();
+    await expect(subSpineRows).toHaveCount(3);
+    await page.waitForTimeout(800);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    expect(
+      committed!.some((c) => c.type === "sketch_constraint_coincident"),
+    ).toBe(true);
+    const points = committed!.filter(
+      (c) => c.type === "sketch_point",
+    ) as unknown as Array<{
+      params: { at: [number, number] };
+    }>;
+    expect(points.length).toBe(2);
+    // Solved coincident: the two points sit on top of each other.
+    expect(points[0].params.at[0]).toBeCloseTo(points[1].params.at[0], 3);
+    expect(points[0].params.at[1]).toBeCloseTo(points[1].params.at[1], 3);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("clicking empty space clears the selection", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    await drawLine(page, [20, 30], [80, 40]);
+
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [mx, my] = project(50, 35);
+    await page.mouse.click(mx, my);
+    // One line selected → it offers Horizontal/Vertical.
+    await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
+
+    // Click far-off empty space → selection clears, palette shows the
+    // empty hint again.
+    const [ex, ey] = project(-90, -90);
+    await page.waitForTimeout(120);
+    await page.mouse.click(ex, ey);
+    await expect(page.getByTestId("sketch-constraint-horizontal")).toHaveCount(0);
+    await expect(page.getByTestId("sketch-constraint-row")).toContainText(
+      "Select geometry",
+    );
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+});

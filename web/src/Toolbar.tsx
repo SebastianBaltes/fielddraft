@@ -332,6 +332,20 @@ export function Toolbar({ store, state }: ToolbarProps) {
         </div>
 
         <div className="group sketch-tool-row">
+          {/* P0.1: the Select tool returns to select mode (no drawing
+              tool active) so committed geometry can be picked and
+              constrained. Without it the constraint palette is
+              unreachable once any drawing tool is chosen. */}
+          <button
+            type="button"
+            className={"tool" + (sketchSession.selectedTool === null ? " is-active" : "")}
+            title="Select & constrain geometry (Esc)"
+            data-testid="sketch-tool-select"
+            onClick={() => store.selectSketchTool(null)}
+          >
+            <span className="glyph" aria-hidden="true">↖</span>
+            <span className="tool-label">Select</span>
+          </button>
           {sketchToolTypes.map((type) => {
             if (!SKETCH_TOOL_KEYS.has(type)) return null;
             return (
@@ -362,7 +376,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
                   type="button"
                   className="tool"
                   title={o.title}
-                  data-testid={`sketch-constraint-${o.type}`}
+                  data-testid={`sketch-constraint-${o.type.replace(/^sketch_constraint_/, "")}`}
                   onClick={() => store.applySketchConstraint(o.type)}
                 >
                   <span className="glyph" aria-hidden="true">{o.glyph}</span>
