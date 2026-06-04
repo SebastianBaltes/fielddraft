@@ -273,7 +273,11 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let r_profile = *nominal_radius - *depth * 0.5 * (1.0 - phase.cos());
             let d_radial = r - r_profile;
             let d_axial = p[1].abs() - *half_height;
-            d_radial.max(d_axial)
+            // Lipschitz normalization: |∇f| peaks at sqrt(1 + (π·depth/pitch)²);
+            // divide by it for a conservative ≤1 distance (cf. sdf_dual::Thread,
+            // Gyroid 0.2887, Cone wall_scale).
+            let lip = (1.0 + (std::f32::consts::PI * *depth / pitch.max(1e-6)).powi(2)).sqrt();
+            d_radial.max(d_axial) / lip
         }
         Primitive::Cone { r_bottom, r_top, half_height } => {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();

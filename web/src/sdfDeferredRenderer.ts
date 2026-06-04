@@ -88,10 +88,6 @@ const DEFERRED_MAX_OPCODES = 16384;
 const MAX_BODIES = 256;
 const DEFERRED_MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
-// Global sphere-tracing under-relaxation; see sdfVmRenderer.ts MARCH_RELAX.
-// Non-Lipschitz SDFs (Thread, FieldSkript) overestimate distance and the march
-// overshoots thin walls without it. K ≤ 1/max|∇f|; 0.5 covers Thread's ≈1.87.
-const MARCH_RELAX = 0.5;
 const HULL_INFLATE = 1.01;
 const MAX_PIXELS = 4096 * 2160;
 const BODY_ID_WORDS_PER_PIXEL = 2;
@@ -428,7 +424,7 @@ function createShadeMaterial(
             hitBody.assign(closestBody);
             Break();
           });
-          t.addAssign(max(minD.mul(MARCH_RELAX), float(SURFACE_EPS)));
+          t.addAssign(max(minD, float(SURFACE_EPS)));
           If(t.greaterThan(tMax), () => { Break(); });
         });
 

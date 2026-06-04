@@ -113,7 +113,17 @@ fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
                 - T::from(*depth as f64) * T::from(0.5) * (T::from(1.0) - phase.cos());
             let d_radial = r - r_profile;
             let d_axial = p[1].abs() - T::from(*half_height as f64);
-            if d_radial > d_axial { d_radial } else { d_axial }
+            let d = if d_radial > d_axial { d_radial } else { d_axial };
+            // Lipschitz normalization (constant in p → preserves gradient
+            // direction, scales magnitude to ≤1): the helix folds y into
+            // r_profile's phase, so ∂r_profile/∂y = π·depth/pitch and |∇f| peaks
+            // at sqrt(1 + (π·depth/pitch)²) ≈ 1.86 for the default thread. The raw
+            // Chebyshev max overestimates distance; dividing by the exact bound
+            // makes it a conservative distance so the sphere-march stops
+            // overshooting the groove walls (cf. Gyroid 0.2887, Cone wall_scale).
+            let pitch64 = (*pitch as f64).max(1e-6);
+            let lip = (1.0 + (std::f64::consts::PI * (*depth as f64) / pitch64).powi(2)).sqrt();
+            d * T::from(1.0 / lip)
         }
         Primitive::Cone { r_bottom, r_top, half_height } => {
             let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
@@ -1029,6 +1039,47 @@ mod tests {
                 [g[0], g[1], g[2]]
             );
         }
+    }
+
+    #[test]
+    fn thread_field_is_lipschitz_after_normalization() {
+        // B: the raw Thread Chebyshev field has |∇f| up to ≈1.86 (the y-derivative
+        // of r_profile from the helix unwrap) → it overestimates distance and the
+        // sphere-march overshoots. The /sqrt(1+(π·depth/pitch)²) normalization
+        // makes it a conservative ≤1 distance. Sample off-axis (away from the
+        // atan2 singularity) over a grid and assert the dual gradient magnitude
+        // never exceeds 1 by more than a hair. Pre-normalization this peaked at
+        // 1.86 and would fail.
+        let prim = Primitive::Thread {
+            nominal_radius: 0.5,
+            pitch: 0.2,
+            depth: 0.1,
+            half_height: 1.0,
+        };
+        let mut max_grad = 0.0_f64;
+        for ri in 1..=8 {
+            let r = 0.2 + 0.08 * ri as f64; // 0.28 .. 0.84, off-axis
+            for ti in 0..12 {
+                let theta = ti as f64 * std::f64::consts::TAU / 12.0;
+                let (x, z) = (r * theta.cos(), r * theta.sin());
+                for yi in -4..=4 {
+                    let y = 0.12 * yi as f64;
+                    let d = sdf_primitive_generic::<D3>(
+                        &prim,
+                        [seed_d3(x, 0), seed_d3(y, 1), seed_d3(z, 2)],
+                    );
+                    let g = d.eps.unwrap_generic(nalgebra::Const::<3>, nalgebra::Const::<1>);
+                    let n = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+                    if n.is_finite() {
+                        max_grad = max_grad.max(n);
+                    }
+                }
+            }
+        }
+        assert!(
+            max_grad <= 1.02,
+            "normalized thread must be ~Lipschitz-1 off-axis, got |∇f|max = {max_grad}"
+        );
     }
 
     #[test]

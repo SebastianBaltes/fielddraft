@@ -976,7 +976,12 @@ fn sdf_thread_local(
     let r_profile = nominal_radius - depth * 0.5 * (1.0 - phase.cos());
     let d_radial = r - r_profile;
     let d_axial = p[1].abs() - half_height;
-    d_radial.max(d_axial)
+    // Lipschitz normalization: |∇f| peaks at sqrt(1 + (π·depth/pitch)²) because
+    // the helix folds y into r_profile's phase; divide by it so the field is a
+    // conservative ≤1 distance and the sphere-march never overshoots the groove
+    // walls (cf. Gyroid 0.2887 / Cone wall_scale). See sdf_dual::Thread.
+    let lip = (1.0 + (std::f32::consts::PI * depth / pitch.max(1e-6)).powi(2)).sqrt();
+    d_radial.max(d_axial) / lip
 }
 
 fn sdf_polygon_2d(p: [f32; 2], verts: &[[f32; 2]]) -> f32 {

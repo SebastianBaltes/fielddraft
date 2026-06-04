@@ -176,7 +176,15 @@ export const sdfThreadFn = wgslFn(`
     let r_profile = nom_r - depth * 0.5 * (1.0 - cos(phase));
     let d_radial = r - r_profile;
     let d_axial = abs(p.y) - hh;
-    return max(d_radial, d_axial);
+    // Lipschitz normalization. The helix unwraps y into r_profile's phase, so
+    // ∂r_profile/∂y = π·depth/pitch and |∇f| peaks at sqrt(1 + (π·depth/pitch)²)
+    // — the raw Chebyshev field OVERESTIMATES distance and the sphere-march
+    // overshoots the groove walls (the banding seen on Thread-subtractions,
+    // worst looking down the axis). Dividing by that exact bound yields a
+    // conservative ≤1 distance, same idea as the Gyroid 0.2887 / Cone wall_scale
+    // normalizations. eps_pitch guards a degenerate pitch→0 thread.
+    let lip = sqrt(1.0 + pow(3.14159265 * depth / max(pitch, 1e-6), 2.0));
+    return max(d_radial, d_axial) / lip;
   }
 `);
 
