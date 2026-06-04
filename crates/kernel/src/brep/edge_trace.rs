@@ -12,9 +12,12 @@
 //!   1. **Project** ([`project_to_edge`]) — Newton on `(f_a, f_b) = (0, 0)`
 //!      pulls a near-edge sample *exactly* onto the edge (quadratic
 //!      convergence, independent of where the sample sat). Cures jaggedness.
-//!   2. **Trace** (DL-68 S3, next) — march along the edge tangent
-//!      `t = ∇f_a × ∇f_b`, reprojecting each step, until a bounding vertex or a
-//!      closed loop. Cures fragmentation / missing pieces.
+//!   2. **Trace** ([`trace_edge`]) — predictor-corrector march along the edge
+//!      tangent `t = ∇f_a × ∇f_b`: step `step·t̂`, reproject onto the edge, from
+//!      an interior seed in *both* directions until each end hits a bounding
+//!      vertex or the march closes a loop. Cures fragmentation / missing pieces:
+//!      the edge geometry comes from the surfaces, not from how many octree
+//!      cells happened to tag the seam.
 //!
 //! Everything runs in **f64**: the dual SDF layer is f64 internally, and the
 //! rank guard near tangential intersections lives well below f32-ε, so the f32
@@ -31,7 +34,7 @@
 
 use fielddraft_protocol::{HalfSpace, Transform};
 
-use super::vec3::{add, cross, dot, norm, scale};
+use super::vec3::{add, cross, dist, dot, norm, normalize, scale, sub};
 use crate::bvh::BoundedCsg;
 use crate::csg::EvalMode;
 use crate::sdf_dual::{bounded_value_grad, halfspace_value_grad};
@@ -140,7 +143,6 @@ pub(crate) fn project_to_edge(fa: &Field, fb: &Field, p0: [f64; 3]) -> Option<[f
 /// Unit edge tangent at a point assumed to lie on the edge: `∇f_a × ∇f_b`,
 /// normalised. Returns `None` at a tangential degeneracy (collapsing cross
 /// product) — the same condition the projection's rank guard rejects.
-#[allow(dead_code)] // consumed by the DL-68 S3 tracer (next step)
 pub(crate) fn edge_tangent(fa: &Field, fb: &Field, p: [f64; 3]) -> Option<[f64; 3]> {
     let (_, ga) = fa.value_grad(p);
     let (_, gb) = fb.value_grad(p);
@@ -151,6 +153,184 @@ pub(crate) fn edge_tangent(fa: &Field, fb: &Field, p: [f64; 3]) -> Option<[f64; 
         return None;
     }
     Some(scale(t, 1.0 / len))
+}
+
+/// Tuning for [`trace_edge`]. All lengths are in world units; pick `step`
+/// relative to the body's scale and the desired wireframe density.
+#[derive(Clone, Copy)]
+pub(crate) struct TraceParams {
+    /// Nominal arc step between successive polyline points (predictor length).
+    pub step: f64,
+    /// Hard cap on points per march direction (loop/escape backstop). A full
+    /// loop needs ≈ circumference / step points; size accordingly.
+    pub max_steps: usize,
+    /// A march end snaps to a bounding vertex once one lies ahead within this
+    /// distance. Must exceed `step` so a vertex is never stepped over.
+    pub vertex_reach: f64,
+    /// A forward march closes a loop once it returns within this distance of the
+    /// seed (after leaving its neighbourhood). Keep ≈ `step`.
+    pub close_tol: f64,
+}
+
+impl TraceParams {
+    /// Defaults derived from a single arc step: vertices are caught within 1.5
+    /// steps ahead, loops close within one step.
+    pub(crate) fn from_step(step: f64) -> Self {
+        Self {
+            step,
+            max_steps: 100_000,
+            vertex_reach: 1.5 * step,
+            close_tol: step,
+        }
+    }
+}
+
+/// A traced edge polyline. `closed` rings carry no `ends`; open arcs carry the
+/// indices (into the caller's vertex slice) of the bounding vertices each end
+/// reached, or `None` for an end that stalled before reaching one.
+pub(crate) struct TracedEdge {
+    pub points: Vec<[f64; 3]>,
+    pub closed: bool,
+    pub ends: (Option<usize>, Option<usize>),
+}
+
+/// How a one-directional march terminated.
+enum MarchEnd {
+    /// Reached `vertices[idx]` — the natural end of an open arc.
+    Vertex(usize),
+    /// Returned to the seed neighbourhood — the edge is a closed ring.
+    Loop,
+    /// Projection failed, the tangent collapsed, or `max_steps` was hit. The
+    /// collected points are still usable; the arc just isn't pinned to a vertex.
+    Stalled,
+}
+
+/// A forward march must leave the seed's neighbourhood before it may close a
+/// loop, else it would "close" on step one.
+const MIN_LOOP_STEPS: usize = 4;
+
+/// March one direction from `start` (already on the edge) with initial unit
+/// tangent `t0`, collecting reprojected points until a bounding vertex, a loop
+/// back to `seed`, or a stall. Does not include `start` in the returned points.
+fn march(
+    fa: &Field,
+    fb: &Field,
+    start: [f64; 3],
+    t0: [f64; 3],
+    seed: [f64; 3],
+    vertices: &[[f64; 3]],
+    p: &TraceParams,
+) -> (Vec<[f64; 3]>, MarchEnd) {
+    let mut pts = Vec::new();
+    let mut cur = start;
+    let mut t_prev = t0;
+    for step_i in 0..p.max_steps {
+        // A bounding vertex ahead within reach ends the arc exactly: append the
+        // vertex itself (not a projected approximation) and stop.
+        if let Some(vi) = vertex_ahead(cur, t_prev, vertices, p.vertex_reach) {
+            pts.push(vertices[vi]);
+            return (pts, MarchEnd::Vertex(vi));
+        }
+
+        // Predictor: a straight step along the current tangent.
+        let q = add(cur, scale(t_prev, p.step));
+        // Corrector: pull back exactly onto the joint zero-set.
+        let np = match project_to_edge(fa, fb, q) {
+            Some(np) => np,
+            None => return (pts, MarchEnd::Stalled),
+        };
+        // Tangent at the new point, oriented to keep marching forward.
+        let mut t = match edge_tangent(fa, fb, np) {
+            Some(t) => t,
+            None => return (pts, MarchEnd::Stalled),
+        };
+        if dot(t, t_prev) < 0.0 {
+            t = scale(t, -1.0);
+        }
+
+        // Loop closure: back near the seed after genuinely leaving it.
+        if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < p.close_tol {
+            return (pts, MarchEnd::Loop);
+        }
+
+        pts.push(np);
+        cur = np;
+        t_prev = t;
+    }
+    (pts, MarchEnd::Stalled)
+}
+
+/// Index of the nearest vertex that lies *ahead* of `cur` along `t` (forward
+/// half-space) and within `reach`, if any. Forward-only so the march doesn't
+/// snap back to the vertex it just departed.
+fn vertex_ahead(
+    cur: [f64; 3],
+    t: [f64; 3],
+    vertices: &[[f64; 3]],
+    reach: f64,
+) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &v) in vertices.iter().enumerate() {
+        let d = dist(v, cur);
+        if d > reach {
+            continue;
+        }
+        // Ahead = the step toward v has a positive component along the tangent.
+        if dot(normalize(sub(v, cur)), t) <= 0.0 {
+            continue;
+        }
+        if best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((i, d));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Trace the full edge through an interior `seed_pt` on the active arc.
+///
+/// Projects the seed onto the edge, then marches both tangent directions. If
+/// the forward march loops back, the edge is a closed ring (vertices ignored);
+/// otherwise the two marches are stitched — `reverse(backward) ++ seed ++
+/// forward` — into one open polyline whose ends record which bounding vertices
+/// were reached. Returns `None` only if the seed itself is not near a
+/// well-conditioned edge point.
+pub(crate) fn trace_edge(
+    fa: &Field,
+    fb: &Field,
+    seed_pt: [f64; 3],
+    vertices: &[[f64; 3]],
+    p: &TraceParams,
+) -> Option<TracedEdge> {
+    let seed = project_to_edge(fa, fb, seed_pt)?;
+    let t0 = edge_tangent(fa, fb, seed)?;
+
+    let (fwd, fend) = march(fa, fb, seed, t0, seed, vertices, p);
+    if matches!(fend, MarchEnd::Loop) {
+        let mut points = Vec::with_capacity(fwd.len() + 1);
+        points.push(seed);
+        points.extend(fwd);
+        return Some(TracedEdge {
+            points,
+            closed: true,
+            ends: (None, None),
+        });
+    }
+
+    let (bwd, bend) = march(fa, fb, seed, scale(t0, -1.0), seed, vertices, p);
+    let mut points = Vec::with_capacity(bwd.len() + 1 + fwd.len());
+    points.extend(bwd.iter().rev().copied());
+    points.push(seed);
+    points.extend(fwd.iter().copied());
+
+    let end_idx = |e: &MarchEnd| match e {
+        MarchEnd::Vertex(i) => Some(*i),
+        _ => None,
+    };
+    Some(TracedEdge {
+        points,
+        closed: false,
+        ends: (end_idx(&bend), end_idx(&fend)),
+    })
 }
 
 #[cfg(test)]
@@ -306,6 +486,132 @@ mod tests {
         // ⟂ to sphere normal (= p, since centred at origin).
         assert!(dot(t, p).abs() < 1e-9, "tangent must be ⟂ radius");
         assert!((norm(t) - 1.0).abs() < 1e-12, "unit tangent");
+    }
+
+    /// Assert every polyline point lies on both the unit origin-sphere and the
+    /// plane `z = z0`.
+    fn assert_on_sphere_plane(points: &[[f64; 3]], z0: f64, tol: f64) {
+        for &q in points {
+            assert!((norm(q) - 1.0).abs() < tol, "|p|={} off sphere", norm(q));
+            assert!((q[2] - z0).abs() < tol, "z={} off plane", q[2]);
+        }
+    }
+
+    /// Consecutive points sit ≈ one step apart (no gaps, no doublings).
+    fn assert_even_spacing(points: &[[f64; 3]], step: f64) {
+        for w in points.windows(2) {
+            let d = dist(w[0], w[1]);
+            assert!(d < 1.5 * step, "gap {d} exceeds 1.5·step");
+            assert!(d > 0.25 * step, "doubled point, spacing {d}");
+        }
+    }
+
+    #[test]
+    fn sphere_plane_traces_closed_ring() {
+        // Unit sphere ∩ plane z = 0.3, no bounding vertices → full closed ring.
+        let s = sphere([0.0, 0.0, 0.0], 1.0);
+        let pl = plane([0.0, 0.0, 1.0], 0.3);
+        let r = (1.0 - 0.3 * 0.3_f64).sqrt();
+        let step = 0.1;
+        let params = TraceParams::from_step(step);
+        // Seed nudged off the +x point of the circle.
+        let traced = trace_edge(&s, &pl, [r + 0.07, -0.05, 0.34], &[], &params)
+            .expect("must trace");
+        assert!(traced.closed, "no vertices → closed ring");
+        assert_eq!(traced.ends, (None, None));
+        // ≈ circumference / step points.
+        let circ = std::f64::consts::TAU * r;
+        let expected = (circ / step) as usize;
+        assert!(
+            (expected.saturating_sub(8)..expected + 8).contains(&traced.points.len()),
+            "len {} not ≈ {expected}",
+            traced.points.len()
+        );
+        assert_on_sphere_plane(&traced.points, 0.3, 1e-6);
+        assert_even_spacing(&traced.points, step);
+        // Implicit closing segment (last → first) is also ≈ one step.
+        let closing = dist(*traced.points.first().unwrap(), *traced.points.last().unwrap());
+        assert!(closing < 2.0 * step, "ring not closed, gap {closing}");
+    }
+
+    #[test]
+    fn sphere_plane_open_arc_terminates_at_vertices() {
+        // Same circle, but two bounding vertices at θ = ±60° clip it to the
+        // short arc through θ = 0 (the seed). Each march end must snap to a
+        // vertex.
+        let s = sphere([0.0, 0.0, 0.0], 1.0);
+        let pl = plane([0.0, 0.0, 1.0], 0.3);
+        let r = (1.0 - 0.3 * 0.3_f64).sqrt();
+        let a = std::f64::consts::FRAC_PI_3; // 60°
+        let v_pos = [r * a.cos(), r * a.sin(), 0.3];
+        let v_neg = [r * a.cos(), -r * a.sin(), 0.3];
+        let verts = [v_pos, v_neg];
+        let step = 0.1;
+        let params = TraceParams::from_step(step);
+        let traced = trace_edge(&s, &pl, [r + 0.05, 0.0, 0.31], &verts, &params)
+            .expect("must trace");
+
+        assert!(!traced.closed, "clipped arc is open");
+        let (b, f) = traced.ends;
+        let (b, f) = (b.expect("back end at vertex"), f.expect("fwd end at vertex"));
+        assert_ne!(b, f, "the two ends are distinct vertices");
+        // Endpoints are the exact vertices, in end order.
+        assert_eq!(*traced.points.first().unwrap(), verts[b]);
+        assert_eq!(*traced.points.last().unwrap(), verts[f]);
+        // The active arc is the short one through θ = 0: every point has x > 0.
+        for &q in &traced.points {
+            assert!(q[0] > 0.0, "point {q:?} left the short arc");
+        }
+        assert_on_sphere_plane(&traced.points, 0.3, 1e-6);
+        assert_even_spacing(&traced.points, step);
+    }
+
+    #[test]
+    fn cylinder_plane_traces_closed_ring() {
+        // Cylinder r=2 about Y ∩ plane y = 1.5 → closed circle r=2 at y=1.5.
+        let c = cylinder_y([0.0, 0.0, 0.0], 2.0);
+        let pl = plane([0.0, 1.0, 0.0], 1.5);
+        let step = 0.15;
+        let params = TraceParams::from_step(step);
+        let traced = trace_edge(&c, &pl, [2.1, 1.55, 0.05], &[], &params).expect("trace");
+        assert!(traced.closed);
+        for &q in &traced.points {
+            assert!((q[1] - 1.5).abs() < 1e-6, "y={} off plane", q[1]);
+            let rad = (q[0] * q[0] + q[2] * q[2]).sqrt();
+            assert!((rad - 2.0).abs() < 1e-6, "r={rad} off cylinder");
+        }
+        assert_even_spacing(&traced.points, step);
+    }
+
+    #[test]
+    fn leaf_field_traces_closed_ring() {
+        // The general dual-SDF Leaf path traces the same ring as the analytic
+        // half-space — proving the tracer is field-agnostic end to end.
+        use crate::bvh::BoundedCsg;
+        use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+        use fielddraft_protocol::{BoolOp, FeatureId, Primitive};
+
+        let sphere_feat = DecodedFeature::from_parts(
+            FeatureId::from_u32(1),
+            "S".into(),
+            BoolOp::Union,
+            Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![],
+        );
+        let csg = CsgNode::from_decoded(&[sphere_feat]);
+        let leaf = BoundedCsg::from_csg(&csg);
+        let s = Field::Leaf { node: &leaf };
+        let pl = plane([0.0, 0.0, 1.0], 0.3);
+        let r = (1.0 - 0.09_f64).sqrt();
+        let step = 0.12;
+        let params = TraceParams::from_step(step);
+        let traced = trace_edge(&s, &pl, [r + 0.06, 0.04, 0.33], &[], &params).expect("trace");
+        assert!(traced.closed, "leaf ring should close");
+        // Dual leaf SDF carries the f32 mesh floor → looser but still tight.
+        assert_on_sphere_plane(&traced.points, 0.3, 1e-6);
+        assert_even_spacing(&traced.points, step);
     }
 
     #[test]
