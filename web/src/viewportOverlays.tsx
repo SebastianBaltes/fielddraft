@@ -394,18 +394,54 @@ function polylineToSegments(points: number[]): Float32Array {
   return seg;
 }
 
+/** NDC pick band for edges — the cursor snaps to an edge within this radius
+ *  (in normalised device coords, like {@link VERTEX_PICK_NDC_RADIUS}). A touch
+ *  tighter than the vertex radius so a corner still wins over its edges. */
+const EDGE_PICK_NDC_RADIUS = 0.022;
+
+/** Shortest distance, in NDC, from point `p` to the segment `a`–`b`. All three
+ *  are 2-component {x,y}. Used to snap the cursor to the nearest B-Rep edge. */
+function ndcPointSegmentDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 /**
  * Draws the analytic B-Rep edges (from the woven, cached kernel B-Rep — *not*
  * the mesh) as a dark wireframe overlay, and highlights the edge the cursor is
- * over. The hovered edge is matched by its colliding-branch signature against
- * the `contributors` the kernel `pick` reports, so the same analytic edge that
- * STEP export emits is the one that lights up.
+ * over. The hovered edge is found by projecting every analytic polyline to the
+ * screen and snapping the cursor to the nearest one within
+ * {@link EDGE_PICK_NDC_RADIUS} — the same screen-space approach
+ * {@link BRepSelectionOverlay} uses for faces/vertices. (The kernel sphere-trace
+ * pick almost always reports the face *behind* the thin edge, so it can't drive
+ * edge hover on its own.) The matched edge carries the stable `id_hash` that
+ * STEP export emits, so the lit edge is exactly the one a `qEdge` query targets.
  *
  * Rendered on both the default layer (mesh render mode) and the overlay layer
  * (composited over the SDF render pass), so edges are visible in every mode.
  */
-export function BRepEdgeOverlay({ pick, mode }: { pick: PickResult | null; mode: BRepEdgeMode }) {
+export function BRepEdgeOverlay({
+  ndc,
+  mode,
+}: {
+  ndc: { x: number; y: number; active: boolean };
+  mode: BRepEdgeMode;
+}) {
   const { store, state } = useKernelStore();
+  const camera = useThree((s) => s.camera);
+  const invalidate = useThree((s) => s.invalidate);
   const baseGeometryRef = useRef(new THREE.BufferGeometry());
   const hoverGeometryRef = useRef(new THREE.BufferGeometry());
   const baseMaterialRef = useRef(
@@ -493,15 +529,51 @@ export function BRepEdgeOverlay({ pick, mode }: { pick: PickResult | null; mode:
     setReady(true);
   }, [edges]);
 
-  // Match the hovered edge by signature: pick reports the colliding faces as
-  // packed `branches`; an edge lights up when both of its signature branches
-  // are among them. (Selection uses the flat `contributors`; the edge's a/b
-  // are packed per-face ids, so they must be matched against `branches`.)
-  const hoveredIdx = useMemo(() => {
-    if (!pick || !pick.hit || pick.element !== "edge") return -1;
-    const b = pick.branches;
-    return edges.findIndex((e) => b.includes(e.a) && b.includes(e.b));
-  }, [pick, edges]);
+  // Screen-space edge hover. The kernel sphere-trace pick reports the face
+  // *behind* the thin edge (1 contributor → "face"), so it can never light up
+  // an edge on its own. Instead we project every analytic polyline to NDC each
+  // frame and snap the cursor to the nearest segment within
+  // EDGE_PICK_NDC_RADIUS — front-most wins on near-ties. Mirrors how
+  // BRepSelectionOverlay screen-space-picks vertices.
+  const [hoveredIdx, setHoveredIdx] = useState(-1);
+  const projA = useRef(new THREE.Vector3());
+  const projB = useRef(new THREE.Vector3());
+  useFrame(() => {
+    if (!ndc.active || edges.length === 0) {
+      if (hoveredIdx !== -1) {
+        setHoveredIdx(-1);
+        invalidate();
+      }
+      return;
+    }
+    const a = projA.current;
+    const b = projB.current;
+    let best = -1;
+    let bestDist = EDGE_PICK_NDC_RADIUS;
+    let bestDepth = Infinity;
+    for (let ei = 0; ei < edges.length; ei++) {
+      const pos = edges[ei].positions;
+      for (let i = 0; i + 5 < pos.length; i += 6) {
+        a.set(pos[i], pos[i + 1], pos[i + 2]).project(camera);
+        b.set(pos[i + 3], pos[i + 4], pos[i + 5]).project(camera);
+        // Skip segments that cross or sit behind the near plane — projecting
+        // those wraps the NDC coords and yields bogus distances.
+        if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
+        const d = ndcPointSegmentDistance(ndc.x, ndc.y, a.x, a.y, b.x, b.y);
+        if (d > EDGE_PICK_NDC_RADIUS) continue;
+        const depth = Math.min(a.z, b.z);
+        if (d < bestDist - 1e-4 || (d <= bestDist + 1e-4 && depth < bestDepth)) {
+          best = ei;
+          bestDist = d;
+          bestDepth = depth;
+        }
+      }
+    }
+    if (best !== hoveredIdx) {
+      setHoveredIdx(best);
+      invalidate();
+    }
+  });
 
   // Publish the hovered edge's stable id_hash to the pick bridge so a click
   // in query-picker mode can emit `qEdge(<idHash>)`. A missing idHash (kernel

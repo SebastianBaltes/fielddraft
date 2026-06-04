@@ -475,7 +475,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { r
               <ClearColorSync />
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
-              <BRepEdgeOverlay pick={pickResult} mode={brepEdgeMode} />
+              <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
               <BRepSelectionOverlay ndc={ndc} />
               <BRepSelectedOverlay />
               <MateConnectorOverlay />
