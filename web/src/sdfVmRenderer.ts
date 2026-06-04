@@ -66,6 +66,14 @@ const GLOBAL_MAX_OPCODES = 16384;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
 const MAX_MARCH_DIST = 3000;
+// Global sphere-tracing under-relaxation. A true SDF is Lipschitz-1, but
+// non-Lipschitz primitives (Thread |∇f|≈1.87, and any runtime FieldSkript SDF
+// we cannot pre-normalize) OVERESTIMATE distance → the march overshoots through
+// thin walls → banding/tearing artifacts (worst along the helix axis). Stepping
+// by minD·K with K ≤ 1/max|∇f| restores a conservative march for the whole
+// class. 0.5 covers Thread's 1.87 bound with margin. Per-body Lipschitz bounds
+// (B) later relax clean bodies back to K=1 to recover step budget.
+const MARCH_RELAX = 0.5;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -237,7 +245,7 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
         hitBody.assign(closestBody);
         Break();
       });
-      t.addAssign(max(minD, float(SURFACE_EPS)));
+      t.addAssign(max(minD.mul(MARCH_RELAX), float(SURFACE_EPS)));
       If(t.greaterThan(float(MAX_MARCH_DIST)), () => { Break(); });
     });
 

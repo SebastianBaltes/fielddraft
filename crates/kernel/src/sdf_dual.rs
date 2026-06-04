@@ -97,7 +97,15 @@ fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
         }
         Primitive::Thread { nominal_radius, pitch, depth, half_height } => {
             let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
-            let theta = p[2].atan2(p[0]);
+            // Axis guard: ∂θ/∂(x,z) = (-z, x)/r² diverges as r→0 and produces NaN
+            // dual gradients on the helix axis. The axis is deep interior
+            // (r ≪ nominal_radius), so the surface never depends on θ there —
+            // freeze θ's derivative below eps_axis to keep the gradient finite.
+            let theta = if r.re() > 1e-4 {
+                p[2].atan2(p[0])
+            } else {
+                T::from(p[2].re().atan2(p[0].re()))
+            };
             let tau = T::from(std::f64::consts::TAU);
             let y_unwrapped = p[1] - T::from(*pitch as f64) * theta / tau;
             let phase = (y_unwrapped / T::from(*pitch as f64)) * tau;
@@ -990,6 +998,37 @@ mod tests {
             "d/dz: expected 0.0, got {}",
             eps[2]
         );
+    }
+
+    #[test]
+    fn thread_gradient_is_finite_on_axis() {
+        // The Thread profile unwraps the helix via atan2(z, x); its derivative
+        // ∂θ/∂(x,z) = (-z, x)/r² diverges as r→0, producing NaN dual gradients on
+        // the helix axis (40 NaNs measured pre-guard). The axis guard freezes θ's
+        // derivative below eps_axis, so on- and near-axis gradients stay finite.
+        let prim = Primitive::Thread {
+            nominal_radius: 0.5,
+            pitch: 0.2,
+            depth: 0.1,
+            half_height: 1.0,
+        };
+        for p in [
+            [0.0_f64, 0.05, 0.0],   // exactly on axis
+            [1e-6, -0.03, 1e-6],    // sub-eps_axis
+            [1e-5, 0.0, -2e-5],     // sub-eps_axis, mixed signs
+        ] {
+            let d = sdf_primitive_generic::<D3>(
+                &prim,
+                [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)],
+            );
+            assert!(d.re.is_finite(), "value NaN at {p:?}");
+            let g = d.eps.unwrap_generic(nalgebra::Const::<3>, nalgebra::Const::<1>);
+            assert!(
+                g[0].is_finite() && g[1].is_finite() && g[2].is_finite(),
+                "gradient {:?} not finite at {p:?}",
+                [g[0], g[1], g[2]]
+            );
+        }
     }
 
     #[test]
