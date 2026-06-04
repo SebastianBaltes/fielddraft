@@ -16,35 +16,43 @@ function twoLinesAndCircle() {
 }
 
 describe("applicableConstraints", () => {
-  it("offers horizontal + vertical for a single line", () => {
+  it("offers horizontal + vertical + length for a single line", () => {
     const state = twoLinesAndCircle();
     const opts = applicableConstraints(state, [3]).map((o) => o.type);
     expect(opts).toEqual([
       "sketch_constraint_horizontal",
       "sketch_constraint_vertical",
+      "sketch_constraint_distance",
     ]);
   });
 
-  it("offers parallel + perpendicular for two lines", () => {
+  it("offers parallel + perpendicular + angle for two lines", () => {
     const state = twoLinesAndCircle();
     const opts = applicableConstraints(state, [3, 6]).map((o) => o.type);
     expect(opts).toEqual([
       "sketch_constraint_parallel",
       "sketch_constraint_perpendicular",
+      "sketch_constraint_angle",
     ]);
   });
 
-  it("offers coincident for two points", () => {
+  it("offers coincident + distance for two points", () => {
     const state = twoLinesAndCircle();
     // points: line-1 start=1, line-2 start=4.
     const opts = applicableConstraints(state, [1, 4]).map((o) => o.type);
-    expect(opts).toEqual(["sketch_constraint_coincident"]);
+    expect(opts).toEqual([
+      "sketch_constraint_coincident",
+      "sketch_constraint_distance",
+    ]);
   });
 
-  it("offers coincident against the origin", () => {
+  it("offers coincident + distance against the origin", () => {
     const state = twoLinesAndCircle();
     const opts = applicableConstraints(state, [0, 1]).map((o) => o.type);
-    expect(opts).toEqual(["sketch_constraint_coincident"]);
+    expect(opts).toEqual([
+      "sketch_constraint_coincident",
+      "sketch_constraint_distance",
+    ]);
   });
 
   it("offers tangent for a line + a circle, order-independent", () => {
@@ -114,6 +122,60 @@ describe("buildConstraintCall", () => {
       type: "sketch_constraint_tangent",
       params: { line: 3, curve: 8 },
     });
+  });
+
+  it("measures a single line's length into value_mm", () => {
+    // line 3 runs (0,0)→(10,0): length 10. entity_a/_b are its
+    // endpoint ids 1 and 2.
+    const state = twoLinesAndCircle();
+    expect(buildConstraintCall("sketch_constraint_distance", [3], state)).toEqual({
+      type: "sketch_constraint_distance",
+      params: { entity_a: 1, entity_b: 2, value_mm: 10 },
+    });
+  });
+
+  it("measures the distance between two picked points", () => {
+    // point 1 = (0,0), point 4 = (0,5): distance 5.
+    const state = twoLinesAndCircle();
+    expect(buildConstraintCall("sketch_constraint_distance", [1, 4], state)).toEqual({
+      type: "sketch_constraint_distance",
+      params: { entity_a: 1, entity_b: 4, value_mm: 5 },
+    });
+  });
+
+  it("measures the distance to the origin", () => {
+    const state = buildDraftSketchState([
+      { type: "sketch_point", params: { at: [3, 4] } }, // point 1
+    ]);
+    // origin (0) → point 1 (3,4): distance 5.
+    expect(buildConstraintCall("sketch_constraint_distance", [0, 1], state)).toEqual({
+      type: "sketch_constraint_distance",
+      params: { entity_a: 0, entity_b: 1, value_mm: 5 },
+    });
+  });
+
+  it("measures the signed angle between two lines (l2 − l1) in degrees", () => {
+    // line 3 horizontal (angle 0), line 6 at 90° up.
+    const state = buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // line 3
+      { type: "sketch_line", params: { start: [0, 0], end: [0, 10] } }, // line 6
+    ]);
+    const call = buildConstraintCall("sketch_constraint_angle", [3, 6], state)!;
+    expect(call.type).toBe("sketch_constraint_angle");
+    expect(call.params.line_a).toBe(3);
+    expect(call.params.line_b).toBe(6);
+    expect(call.params.value_deg).toBeCloseTo(90, 9);
+  });
+
+  it("wraps the measured angle into (−180, 180]", () => {
+    // l1 points up-left (135°), l2 points down-right (−45°):
+    // raw diff −180 wraps to 180.
+    const state = buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [-10, 10] } }, // line 3 @135°
+      { type: "sketch_line", params: { start: [0, 0], end: [10, -10] } }, // line 6 @−45°
+    ]);
+    const call = buildConstraintCall("sketch_constraint_angle", [3, 6], state)!;
+    expect(Math.abs(call.params.value_deg as number)).toBeCloseTo(180, 9);
   });
 
   it("returns null when the selection doesn't match the constraint", () => {

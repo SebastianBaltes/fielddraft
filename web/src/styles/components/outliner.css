@@ -816,9 +816,41 @@
         }
 
         & .value {
-          color: var(--color-text-muted);
-          font-size: var(--fs-sm, 0.85rem);
+          display: inline-flex;
+          align-items: center;
+          gap: var(--space-1);
           flex-shrink: 0;
+
+          /* P0.2: editable dimension value. */
+          & .dim-input {
+            width: 4.5rem;
+            text-align: right;
+            font-family: inherit;
+            font-size: var(--fs-base);
+            color: var(--color-text);
+            background: var(--color-bg);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-sm);
+            padding: 0 var(--space-1);
+
+            &:hover:not(:disabled) {
+              border-color: var(--color-border-strong);
+            }
+            &:focus {
+              outline: none;
+              border-color: var(--color-accent);
+            }
+            &:disabled {
+              color: var(--color-text-muted);
+              background: transparent;
+              border-color: transparent;
+            }
+          }
+
+          & .unit {
+            color: var(--color-text-muted);
+            font-size: var(--fs-base);
+          }
         }
 
         & .driven-tag {

@@ -1656,11 +1656,11 @@ function ConstraintManagerPanel({
             call.type === "sketch_constraint_distance" ||
             call.type === "sketch_constraint_angle";
           const isDriven = isDimensional && Boolean(call.params.driven);
-          const value = isDimensional
-            ? call.type === "sketch_constraint_distance"
-              ? `${call.params.value_mm ?? "?"} mm`
-              : `${call.params.value_deg ?? "?"}°`
-            : null;
+          const isDistance = call.type === "sketch_constraint_distance";
+          const dimUnit = isDistance ? "mm" : "°";
+          const dimValue = isDimensional
+            ? Number(isDistance ? call.params.value_mm : call.params.value_deg)
+            : NaN;
 
           return (
             <li
@@ -1688,8 +1688,37 @@ function ConstraintManagerPanel({
               <span className="name">
                 {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_constraint_", "")}
               </span>
-              {value && (
-                <span className="value">{value}</span>
+              {isDimensional && (
+                <span className="value">
+                  <input
+                    key={dimValue}
+                    className="dim-input"
+                    type="number"
+                    inputMode="decimal"
+                    aria-label={`Dimension value (${dimUnit})`}
+                    data-testid={`constraint-value-${index}`}
+                    defaultValue={Number.isFinite(dimValue) ? dimValue : ""}
+                    disabled={isDriven}
+                    title={
+                      isDriven
+                        ? "Driven dimension (read-only)"
+                        : "Edit to drive the geometry"
+                    }
+                    onBlur={(e) => {
+                      const n = Number(e.currentTarget.value);
+                      if (Number.isFinite(n)) {
+                        store.setSketchConstraintValue(index, n);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                  <span className="unit">{dimUnit}</span>
+                </span>
               )}
               {isDimensional && (
                 <span

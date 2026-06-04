@@ -428,7 +428,26 @@ function translateConstraint(
  * The input sketch is not mutated; the returned state is a deep
  * copy with updated point positions and circle / arc radii.
  */
-export async function solveSketch(input: SketchState): Promise<SolveResult> {
+/**
+ * Serializes solves. The PlaneGCS wrapper is a shared singleton with
+ * mutable state (cleared via `clear_data` at the start of each solve),
+ * so two solves that overlap — e.g. the solve fired when a dimension
+ * is applied and the one fired immediately after when its value is
+ * edited — would interleave their `clear_data` / `push_primitive`
+ * calls and corrupt the system ("object with id e_0 already exists").
+ * Chaining every solve through one promise keeps them strictly
+ * sequential. A rejected solve is swallowed on the chain so a single
+ * failure can't wedge all later solves.
+ */
+let solveQueue: Promise<unknown> = Promise.resolve();
+
+export function solveSketch(input: SketchState): Promise<SolveResult> {
+  const run = solveQueue.then(() => solveSketchInner(input));
+  solveQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function solveSketchInner(input: SketchState): Promise<SolveResult> {
   const wrapper = await getWrapper();
 
   const entityIndex = new Map<EntityId, Entity>();

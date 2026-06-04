@@ -1978,6 +1978,32 @@ export class KernelStore {
   }
 
   /**
+   * P0.2: change the numeric value of a dimensional constraint
+   * (distance/angle) sub-call, then re-solve so the geometry snaps
+   * to the new measurement. The param key depends on the kind:
+   * `value_mm` for distance, `value_deg` for angle. No-op for
+   * non-dimensional calls or a non-finite value.
+   */
+  setSketchConstraintValue(index: number, value: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const call = session.subCalls[index];
+    if (!call || !Number.isFinite(value)) return;
+    const key =
+      call.type === "sketch_constraint_distance"
+        ? "value_mm"
+        : call.type === "sketch_constraint_angle"
+          ? "value_deg"
+          : null;
+    if (key === null) return;
+    if (call.params[key] === value) return;
+    const next = [...session.subCalls];
+    next[index] = { ...call, params: { ...call.params, [key]: value } };
+    this.updateSketch({ ...session, subCalls: next });
+    void solveAndReplace(this);
+  }
+
+  /**
    * K6b.3a: commit the current sketch session to the kernel as
    * a real `sketch` FeatureCall. Called from the "Finish"
    * button. Pushes the session's accumulated sub_calls through

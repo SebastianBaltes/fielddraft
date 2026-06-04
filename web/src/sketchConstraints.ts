@@ -1,18 +1,21 @@
 /**
- * Explicit-constraint palette logic (P0.1).
+ * Explicit-constraint palette logic (P0.1 / P0.2).
  *
  * Given the entities the user picked in select mode, decide which
  * geometric constraints can be applied and build the matching
  * `sketch_constraint_*` sub-call. Only constraint/entity combinations
  * the planegcs solver actually supports are offered, so applying one
  * can never throw inside the live solve. Dimensional constraints
- * (distance, angle, radius) need a numeric value and are handled by
- * the editable-dimensions slice (P0.2), not here.
+ * (P0.2) — Length/Distance and Angle — seed their value from the
+ * geometry's current measurement so applying them never makes the
+ * sketch jump; the value is editable afterwards via
+ * `store.setSketchConstraintValue`. (Radius needs a kernel tool that
+ * doesn't exist yet, so it isn't offered.)
  *
  * Pure and DOM-free so the rules are unit-tested directly.
  */
 
-import type { SketchState } from "./solver/types";
+import type { Entity, SketchState } from "./solver/types";
 
 export interface ConstraintOption {
   /** Sub-call type, e.g. `sketch_constraint_parallel`. */
@@ -34,6 +37,58 @@ function kindOf(state: SketchState, id: number): Kind | null {
 
 const isPointish = (k: Kind | null): boolean => k === "point" || k === "origin";
 const isCurvish = (k: Kind | null): boolean => k === "circle" || k === "arc";
+
+function entityOf(state: SketchState, id: number): Entity | undefined {
+  return state.entities.find((x) => x.id === id);
+}
+
+/** World position of a point-like entity. The origin sits at (0, 0)
+ *  and carries no `at`, so it's special-cased. Returns null for
+ *  non-point entities. */
+function pointPos(state: SketchState, id: number): [number, number] | null {
+  const e = entityOf(state, id);
+  if (!e) return null;
+  if (e.kind === "origin") return [0, 0];
+  if (e.kind === "point") return [e.at.x, e.at.y];
+  return null;
+}
+
+/** The two endpoint ids of a line entity, or null. */
+function lineEndpoints(
+  state: SketchState,
+  id: number,
+): [number, number] | null {
+  const e = entityOf(state, id);
+  if (!e || e.kind !== "line") return null;
+  return [e.start, e.end];
+}
+
+/** Direction angle (radians) of a line, start→end, matching the
+ *  planegcs `l2l_angle_ll` convention (atan2 of the endpoint delta). */
+function lineAngle(state: SketchState, id: number): number | null {
+  const ends = lineEndpoints(state, id);
+  if (!ends) return null;
+  const a = pointPos(state, ends[0]);
+  const b = pointPos(state, ends[1]);
+  if (!a || !b) return null;
+  return Math.atan2(b[1] - a[1], b[0] - a[0]);
+}
+
+/** Wrap an angle in degrees to (−180, 180]. */
+function wrapDeg(deg: number): number {
+  let d = deg % 360;
+  if (d > 180) d -= 360;
+  if (d <= -180) d += 360;
+  return d;
+}
+
+/** Trim floating-point noise from a measured dimension so the value
+ *  shown in the editable field is clean and a no-op blur doesn't
+ *  re-trigger the solver. 1e-4 mm / deg is far below any meaningful
+ *  geometric tolerance. */
+function roundDim(n: number): number {
+  return Math.round(n * 1e4) / 1e4;
+}
 
 /**
  * Which constraints can apply to the current selection. Order is the
@@ -64,6 +119,14 @@ export function applicableConstraints(
       glyph: "|",
       title: "Make this line vertical",
     });
+    // P0.2: a length dimension on a single line drives the distance
+    // between its two endpoints.
+    out.push({
+      type: "sketch_constraint_distance",
+      label: "Length",
+      glyph: "↔",
+      title: "Set the length of this line",
+    });
   }
 
   if (n === 2 && lines === 2) {
@@ -79,6 +142,13 @@ export function applicableConstraints(
       glyph: "⊥",
       title: "Make the two lines perpendicular",
     });
+    // P0.2: an angle dimension between two lines.
+    out.push({
+      type: "sketch_constraint_angle",
+      label: "Angle",
+      glyph: "∠",
+      title: "Set the angle between the two lines",
+    });
   }
 
   if (n === 2 && points === 2) {
@@ -87,6 +157,13 @@ export function applicableConstraints(
       label: "Coincident",
       glyph: "⊙",
       title: "Make the two points coincident",
+    });
+    // P0.2: a distance dimension between two points.
+    out.push({
+      type: "sketch_constraint_distance",
+      label: "Distance",
+      glyph: "↔",
+      title: "Set the distance between the two points",
     });
   }
 
@@ -150,6 +227,50 @@ export function buildConstraintCall(
         return null;
       }
       return { type, params: { entity_a: selection[0], entity_b: selection[1] } };
+
+    case "sketch_constraint_distance": {
+      // Two shapes drive a p2p_distance: a single line (its two
+      // endpoints) or two picked points. Either way the initial
+      // value is the current measured distance, so applying the
+      // dimension never makes the geometry jump.
+      let pa: number;
+      let pb: number;
+      if (selection.length === 1 && kinds[0] === "line") {
+        const ends = lineEndpoints(state, selection[0]);
+        if (!ends) return null;
+        [pa, pb] = ends;
+      } else if (
+        selection.length === 2 &&
+        isPointish(kinds[0]) &&
+        isPointish(kinds[1])
+      ) {
+        [pa, pb] = [selection[0], selection[1]];
+      } else {
+        return null;
+      }
+      const a = pointPos(state, pa);
+      const b = pointPos(state, pb);
+      if (!a || !b) return null;
+      const value_mm = roundDim(Math.hypot(b[0] - a[0], b[1] - a[1]));
+      return {
+        type,
+        params: { entity_a: pa, entity_b: pb, value_mm },
+      };
+    }
+
+    case "sketch_constraint_angle": {
+      if (selection.length !== 2 || kinds[0] !== "line" || kinds[1] !== "line") {
+        return null;
+      }
+      const angA = lineAngle(state, selection[0]);
+      const angB = lineAngle(state, selection[1]);
+      if (angA === null || angB === null) return null;
+      const value_deg = roundDim(wrapDeg(((angB - angA) * 180) / Math.PI));
+      return {
+        type,
+        params: { line_a: selection[0], line_b: selection[1], value_deg },
+      };
+    }
 
     case "sketch_constraint_tangent": {
       if (selection.length !== 2) return null;

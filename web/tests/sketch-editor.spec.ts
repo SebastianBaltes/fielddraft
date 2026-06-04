@@ -31,6 +31,102 @@ function isBlockingConsoleMessage(text: string): boolean {
   return !IGNORED_CONSOLE_SUBSTRINGS.some((s) => lower.includes(s.toLowerCase()));
 }
 
+/* ------------------------------------------------------------------ */
+/*  Shared sketch-overlay helpers (P0.1 / P0.2)                        */
+/* ------------------------------------------------------------------ */
+
+/** Read the live sketch camera and return a projector that maps a
+ *  sketch coordinate to absolute client pixels on the overlay. */
+async function makeProjector(page: import("@playwright/test").Page) {
+  const overlay = page.getByTestId("sketch-canvas-2d");
+  const box = await overlay.boundingBox();
+  expect(box).not.toBeNull();
+  const readCam = () =>
+    page.evaluate(() => {
+      const hook = (
+        window as unknown as {
+          __fdSketchCamera?: () => {
+            zoom: number;
+            centerU: number;
+            centerV: number;
+            version: number;
+          };
+        }
+      ).__fdSketchCamera;
+      const c = hook?.();
+      return c
+        ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
+        : null;
+    });
+  // The R3F ortho camera publishes its zoom asynchronously after the
+  // WebGPU canvas mounts. Project with a *settled* camera so the click
+  // maps to the same sketch coordinate the overlay hit-test will use:
+  // poll until two reads a frame apart agree and the camera has
+  // actually published (version > 0).
+  let cam = await readCam();
+  for (let i = 0; i < 40; i++) {
+    await page.waitForTimeout(100);
+    const next = await readCam();
+    if (
+      next &&
+      cam &&
+      next.version > 0 &&
+      next.zoom === cam.zoom &&
+      next.centerU === cam.centerU &&
+      next.centerV === cam.centerV
+    ) {
+      cam = next;
+      break;
+    }
+    cam = next;
+  }
+  expect(cam).not.toBeNull();
+  expect(cam!.version).toBeGreaterThan(0);
+  const b = box!;
+  const c = cam!;
+  // Mirror sketchToScreen() with the overlay's own measured size as
+  // the authoritative viewport (the bridge can publish stale dims).
+  return (u: number, v: number): [number, number] => {
+    const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
+    const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
+    return [px, py];
+  };
+}
+
+/** Draw one line via the FeatureDialog at precise coordinates. */
+async function drawLine(
+  page: import("@playwright/test").Page,
+  start: [number, number],
+  end: [number, number],
+) {
+  await page.getByTestId("sketch-tool-sketch_line").click();
+  await page.getByLabel("Start x").fill(String(start[0]));
+  await page.getByLabel("Start y").fill(String(start[1]));
+  await page.getByLabel("End x").fill(String(end[0]));
+  await page.getByLabel("End y").fill(String(end[1]));
+  await page.getByTestId("sketch-tool-apply").click();
+}
+
+function readCommittedSubCalls(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const kernel = (
+      window as unknown as {
+        __fdKernel?: {
+          listFeatures: () => Array<{ id: number; kind: string }>;
+          getSketchSubCalls: (id: number) => Array<{
+            type: string;
+            params: Record<string, unknown>;
+          }>;
+        };
+      }
+    ).__fdKernel;
+    if (!kernel) return null;
+    const sketch = kernel.listFeatures().find((f) => f.kind === "sketch");
+    if (!sketch) return null;
+    return kernel.getSketchSubCalls(sketch.id);
+  });
+}
+
 test.describe("Sketch editor smoke", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
@@ -762,98 +858,6 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.reload();
   });
 
-  /** Read the live sketch camera and return a projector that maps a
-   *  sketch coordinate to absolute client pixels on the overlay. */
-  async function makeProjector(page: import("@playwright/test").Page) {
-    const overlay = page.getByTestId("sketch-canvas-2d");
-    const box = await overlay.boundingBox();
-    expect(box).not.toBeNull();
-    const readCam = () =>
-      page.evaluate(() => {
-        const hook = (
-          window as unknown as {
-            __fdSketchCamera?: () => {
-              zoom: number;
-              centerU: number;
-              centerV: number;
-              version: number;
-            };
-          }
-        ).__fdSketchCamera;
-        const c = hook?.();
-        return c
-          ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
-          : null;
-      });
-    // The R3F ortho camera publishes its zoom asynchronously after the
-    // WebGPU canvas mounts. Project with a *settled* camera so the click
-    // maps to the same sketch coordinate the overlay hit-test will use:
-    // poll until two reads a frame apart agree and the camera has
-    // actually published (version > 0).
-    let cam = await readCam();
-    for (let i = 0; i < 40; i++) {
-      await page.waitForTimeout(100);
-      const next = await readCam();
-      if (
-        next &&
-        cam &&
-        next.version > 0 &&
-        next.zoom === cam.zoom &&
-        next.centerU === cam.centerU &&
-        next.centerV === cam.centerV
-      ) {
-        cam = next;
-        break;
-      }
-      cam = next;
-    }
-    expect(cam).not.toBeNull();
-    expect(cam!.version).toBeGreaterThan(0);
-    const b = box!;
-    const c = cam!;
-    // Mirror sketchToScreen() with the overlay's own measured size as
-    // the authoritative viewport (the bridge can publish stale dims).
-    return (u: number, v: number): [number, number] => {
-      const px = b.x + b.width / 2 + (u - c.centerU) * c.zoom;
-      const py = b.y + b.height / 2 - (v - c.centerV) * c.zoom;
-      return [px, py];
-    };
-  }
-
-  /** Draw one line via the FeatureDialog at precise coordinates. */
-  async function drawLine(
-    page: import("@playwright/test").Page,
-    start: [number, number],
-    end: [number, number],
-  ) {
-    await page.getByTestId("sketch-tool-sketch_line").click();
-    await page.getByLabel("Start x").fill(String(start[0]));
-    await page.getByLabel("Start y").fill(String(start[1]));
-    await page.getByLabel("End x").fill(String(end[0]));
-    await page.getByLabel("End y").fill(String(end[1]));
-    await page.getByTestId("sketch-tool-apply").click();
-  }
-
-  function readCommittedSubCalls(page: import("@playwright/test").Page) {
-    return page.evaluate(() => {
-      const kernel = (
-        window as unknown as {
-          __fdKernel?: {
-            listFeatures: () => Array<{ id: number; kind: string }>;
-            getSketchSubCalls: (id: number) => Array<{
-              type: string;
-              params: Record<string, unknown>;
-            }>;
-          };
-        }
-      ).__fdKernel;
-      if (!kernel) return null;
-      const sketch = kernel.listFeatures().find((f) => f.kind === "sketch");
-      if (!sketch) return null;
-      return kernel.getSketchSubCalls(sketch.id);
-    });
-  }
-
   test("Select tool returns to select mode and shows the constraint hint", async ({ page }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
@@ -1038,6 +1042,153 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await expect(page.getByTestId("sketch-constraint-row")).toContainText(
       "Select geometry",
     );
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+});
+
+/**
+ * P0.2 — editable dimensions.
+ *
+ * The palette seeds Length/Distance and Angle dimensions from the
+ * current measurement (so applying never makes the sketch jump), and
+ * the constraint manager exposes the value as an editable field that
+ * re-drives the geometry through the live solver. These checks need a
+ * real browser: the value edit only takes effect once the async
+ * planegcs solve lands and rewrites the persisted sub-calls.
+ */
+test.describe("Sketch dimensions (P0.2)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => {
+      try {
+        window.localStorage.removeItem("fielddraft.project.v1");
+      } catch {
+        /* ignore */
+      }
+    });
+    await page.reload();
+  });
+
+  test("length dimension on a line drives its length when edited", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    // A 40 mm horizontal line, off the origin.
+    await drawLine(page, [10, 0], [50, 0]);
+
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [mx, my] = project(30, 0); // line midpoint
+    await page.mouse.click(mx, my);
+
+    // The palette offers a Length dimension for a single line.
+    const lengthBtn = page.getByTestId("sketch-constraint-distance");
+    await expect(lengthBtn).toBeVisible();
+    await lengthBtn.click();
+
+    // The constraint manager now shows the measured value (≈40) in an
+    // editable field. The line is sub-call 0, the distance is 1.
+    const valueInput = page.getByTestId("constraint-value-1");
+    await expect(valueInput).toBeVisible();
+    await expect(valueInput).toHaveValue("40");
+
+    // Drive it to 80 mm and let the solver land.
+    await valueInput.fill("80");
+    await valueInput.press("Enter");
+    await page.waitForTimeout(900);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const dist = committed!.find(
+      (c) => c.type === "sketch_constraint_distance",
+    ) as { params: { value_mm: number } } | undefined;
+    expect(dist).toBeDefined();
+    expect(dist!.params.value_mm).toBeCloseTo(80, 3);
+
+    // The solved line is actually 80 mm long.
+    const line = committed!.find((c) => c.type === "sketch_line") as unknown as {
+      params: { start: [number, number]; end: [number, number] };
+    };
+    const len = Math.hypot(
+      line.params.end[0] - line.params.start[0],
+      line.params.end[1] - line.params.start[1],
+    );
+    expect(len).toBeCloseTo(80, 2);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("angle dimension drives two lines to the edited angle", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    await drawLine(page, [10, 0], [50, 0]); // line A, horizontal
+    await drawLine(page, [10, 20], [50, 40]); // line B, ~26.6°
+
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [ax, ay] = project(30, 0); // midpoint of line A
+    const [bx, by] = project(30, 30); // midpoint of line B
+    await page.mouse.click(ax, ay);
+    await page.waitForTimeout(120);
+    await page.mouse.click(bx, by);
+
+    const angleBtn = page.getByTestId("sketch-constraint-angle");
+    await expect(angleBtn).toBeVisible();
+    await angleBtn.click();
+
+    // Lines are sub-calls 0 and 1; the angle constraint is 2.
+    const valueInput = page.getByTestId("constraint-value-2");
+    await expect(valueInput).toBeVisible();
+    await valueInput.fill("90");
+    await valueInput.press("Enter");
+    await page.waitForTimeout(900);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const ang = committed!.find(
+      (c) => c.type === "sketch_constraint_angle",
+    ) as { params: { value_deg: number } } | undefined;
+    expect(ang).toBeDefined();
+    expect(ang!.params.value_deg).toBeCloseTo(90, 3);
+
+    // The two solved lines are perpendicular: direction dot product ~0.
+    const lines = committed!.filter(
+      (c) => c.type === "sketch_line",
+    ) as unknown as Array<{
+      params: { start: [number, number]; end: [number, number] };
+    }>;
+    expect(lines.length).toBe(2);
+    const dir = (l: { params: { start: [number, number]; end: [number, number] } }) => [
+      l.params.end[0] - l.params.start[0],
+      l.params.end[1] - l.params.start[1],
+    ];
+    const [dax, day] = dir(lines[0]);
+    const [dbx, dby] = dir(lines[1]);
+    const dot = dax * dbx + day * dby;
+    const norm = Math.hypot(dax, day) * Math.hypot(dbx, dby);
+    expect(Math.abs(dot) / norm).toBeLessThan(1e-3);
 
     expect(
       pageErrors.map((e) => e.message),
