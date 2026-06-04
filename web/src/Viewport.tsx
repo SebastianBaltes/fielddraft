@@ -18,7 +18,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
-import type { BRepEdgeMode } from "./SettingsMenu";
+import type { BRepEdgeMode, FrameLoopMode } from "./SettingsMenu";
 import { SdfVmOverlay, SdfDeferredOverlay } from "./viewportSdfOverlays";
 import {
   CameraBridgePublisher,
@@ -298,7 +298,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
+export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -429,7 +429,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
-          frameloop="always"
+          frameloop={frameLoop}
           camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
@@ -460,7 +460,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
             }
             return renderer;
           }}
-          onCreated={(rootState) => {
+          onCreated={() => {
             // Gate the scene graph until the renderer is fully created.
             // With an async `gl` factory, children that commit before the
             // renderer/scene are ready never attach to the live scene and
@@ -468,23 +468,6 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode }: { renderMode: 
             // Mounting them only after `onCreated` guarantees they land in
             // the ready scene.
             setCanvasReady(true);
-            // One-shot present nudge. On first boot the WebGPU swapchain
-            // can come up mis-configured: the scene renders but never
-            // reaches the screen until something resizes the canvas — the
-            // "blank until I resize the window" symptom. Re-apply the
-            // canvas size (reconfiguring the swapchain) and bounce a
-            // resize so R3F and the SDF overlays re-sync to the real
-            // viewport. Two animation frames in, after layout settled.
-            const nudge = () => {
-              const gl = rootState.gl;
-              const parent = gl.domElement.parentElement;
-              if (parent) {
-                const { width, height } = parent.getBoundingClientRect();
-                if (width > 0 && height > 0) gl.setSize(width, height, false);
-              }
-              window.dispatchEvent(new Event("resize"));
-            };
-            requestAnimationFrame(() => requestAnimationFrame(nudge));
           }}
         >
           {canvasReady && (

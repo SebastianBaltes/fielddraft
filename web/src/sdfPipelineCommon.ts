@@ -1,10 +1,25 @@
 // @ts-nocheck — TSL's TypeScript surface in three r183 is intentionally loose.
 
 import * as THREE from "three";
-import { storage } from "three/tsl";
+import {
+  If,
+  abs,
+  float,
+  fract,
+  int,
+  max,
+  min,
+  mix,
+  normalize,
+  smoothstep,
+  storage,
+  vec3,
+  vec4,
+} from "three/tsl";
 import { StorageBufferAttribute } from "three/webgpu";
 import { BODY_COLORS } from "./sdfDeferredRenderer";
-import { DEFAULT_ROUGHNESS } from "./pbrShading";
+import { DEFAULT_ROUGHNESS, pbrShade } from "./pbrShading";
+import { NORMAL_EPS } from "./sdfRenderer";
 
 // ── Per-body material struct layout (single storage buffer) ────────
 
@@ -192,3 +207,111 @@ export const EDGE_EPS = 0.5;
 export const EDGE_THRESH_MIN = 0.1;
 export const EDGE_THRESH_MAX = 0.5;
 export const EDGE_COLOR = 0.12;
+
+// ── Shared hit shading ─────────────────────────────────────────────
+
+/**
+ * Shade a raymarched SDF surface hit: central-difference normal → PBR lighting
+ * → optional edge-darkening, selection tint, and wireframe-grid alpha. Emits
+ * its nodes into the calling `Fn()` body (it uses `If`), and returns the final
+ * `vec4(color, alpha)`. Shared by the single-pass VM renderer and the deferred
+ * renderer so the lighting/material/edge/wireframe logic lives in one place.
+ *
+ * @param p              — world-space hit position (vec3 node)
+ * @param bi             — body index (int node)
+ * @param offsetBuf      — per-body opcode (offset,length) storage buffer
+ * @param volumeBaseBuf  — per-body volume-texture base-index storage buffer
+ * @param materialBuf    — per-body material storage buffer (MAT_* layout)
+ * @param viewMatU       — view-matrix uniform (world → view)
+ * @param viewDirWorld   — world-space direction toward the camera (vec3 node)
+ * @param showEdgesU     — edge-overlay toggle uniform (>0.5 = on)
+ * @param sdfEval        — compiled SDF eval node-fn
+ * @param selectionBuf   — optional per-body selection-flag buffer; when given,
+ *                         selected bodies (>0.5) get a blue highlight tint
+ */
+export function shadeSdfHit({
+  p,
+  bi,
+  offsetBuf,
+  volumeBaseBuf,
+  materialBuf,
+  viewMatU,
+  viewDirWorld,
+  showEdgesU,
+  sdfEval,
+  selectionBuf,
+}: any) {
+  const baseOff = int(offsetBuf.element(bi.mul(2)));
+  const volBase = int(volumeBaseBuf.element(bi));
+
+  // Normal via central differences.
+  const eps = float(NORMAL_EPS);
+  const ex = vec3(eps, 0, 0);
+  const ey = vec3(0, eps, 0);
+  const ez = vec3(0, 0, eps);
+  const n = normalize(vec3(
+    sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+      .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+    sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+      .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+    sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+      .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
+  ));
+
+  const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
+  const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
+
+  const matBase = bi.mul(MAT_STRIDE);
+  const cr = materialBuf.element(matBase.add(MAT_COLOR_R));
+  const cg = materialBuf.element(matBase.add(MAT_COLOR_G));
+  const cb = materialBuf.element(matBase.add(MAT_COLOR_B));
+  const baseColor = vec3(cr, cg, cb);
+  const roughness = materialBuf.element(matBase.add(MAT_ROUGHNESS));
+  const metalness = materialBuf.element(matBase.add(MAT_METALNESS));
+  const er = materialBuf.element(matBase.add(MAT_EMISSIVE_R));
+  const eg = materialBuf.element(matBase.add(MAT_EMISSIVE_G));
+  const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
+  const emissive = vec3(er, eg, eb);
+  const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
+
+  If(showEdgesU.greaterThan(float(0.5)), () => {
+    const edgeEps = float(EDGE_EPS);
+    const eex = vec3(edgeEps, 0, 0);
+    const eey = vec3(0, edgeEps, 0);
+    const eez = vec3(0, 0, edgeEps);
+    const edgeSum = abs(
+      sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
+        .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+        .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
+    );
+    const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
+    color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
+  });
+
+  if (selectionBuf) {
+    const sel = selectionBuf.element(bi);
+    If(sel.greaterThan(float(0.5)), () => {
+      color.assign(mix(color, vec3(0.541, 0.706, 0.973), float(0.35)));
+    });
+  }
+
+  const bodyOpacity = materialBuf.element(matBase.add(MAT_OPACITY));
+  const wf = materialBuf.element(matBase.add(MAT_WIREFRAME));
+  const alpha = bodyOpacity.toVar();
+  If(wf.greaterThan(float(0.5)), () => {
+    const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
+    const edgeFactor = smoothstep(float(FRESNEL_EDGE_MIN), float(FRESNEL_EDGE_MAX), fresnel);
+    const gridSize = float(WIREFRAME_GRID_SIZE);
+    const gx = min(fract(p.x.div(gridSize)), float(1).sub(fract(p.x.div(gridSize))));
+    const gy = min(fract(p.y.div(gridSize)), float(1).sub(fract(p.y.div(gridSize))));
+    const gz = min(fract(p.z.div(gridSize)), float(1).sub(fract(p.z.div(gridSize))));
+    const minGrid = min(gx, min(gy, gz));
+    const gridAlpha = float(1).sub(smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid));
+    alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
+  });
+
+  return vec4(color, alpha);
+}

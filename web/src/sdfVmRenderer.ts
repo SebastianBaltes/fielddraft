@@ -15,17 +15,12 @@ import {
   Fn,
   If,
   Loop,
-  abs,
   depth,
   float,
-  fract,
   int,
   max,
-  min,
   normalize,
   positionGeometry,
-  mix,
-  smoothstep,
   storage,
   uniform,
   vec3,
@@ -33,9 +28,6 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
-import { pbrShade } from "./pbrShading";
-
-import { NORMAL_EPS } from "./sdfRenderer";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import {
   createMaterialBuffers,
@@ -44,21 +36,10 @@ import {
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
-  MAT_COLOR_R, MAT_COLOR_G, MAT_COLOR_B,
-  MAT_ROUGHNESS, MAT_METALNESS,
-  MAT_EMISSIVE_R, MAT_EMISSIVE_G, MAT_EMISSIVE_B,
-  MAT_OPACITY, MAT_WIREFRAME,
   MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
-  WIREFRAME_GRID_SIZE,
-  WIREFRAME_GRID_THRESHOLD,
-  FRESNEL_EDGE_MIN,
-  FRESNEL_EDGE_MAX,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
-  EDGE_EPS,
-  EDGE_THRESH_MIN,
-  EDGE_THRESH_MAX,
-  EDGE_COLOR,
+  shadeSdfHit,
 } from "./sdfPipelineCommon";
 
 const MAX_BODIES = 8;
@@ -253,73 +234,20 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z;
     depth.assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU)).toStack();
 
-    // Normal via central differences
-    const eps = float(NORMAL_EPS);
-    const ex = vec3(eps, 0, 0);
-    const ey = vec3(0, eps, 0);
-    const ez = vec3(0, 0, eps);
-    const baseOff = int(state.offsetBuf.element(hitBody.mul(2)));
-    const volBase = int(state.volumeBaseBuf.element(hitBody));
-    const bi = hitBody;
-    const n = normalize(vec3(
-      sdfEval({ p: hitPos.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-        .sub(sdfEval({ p: hitPos.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-      sdfEval({ p: hitPos.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-        .sub(sdfEval({ p: hitPos.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-      sdfEval({ p: hitPos.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-        .sub(sdfEval({ p: hitPos.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-    ));
-
-    const nView = normalize(state.viewMatU.mul(vec4(n, 0.0)).xyz);
-    const viewDir = normalize(state.viewMatU.mul(vec4(rd.negate(), 0.0)).xyz);
-
-    const matBase = hitBody.mul(MAT_STRIDE);
-    const cr = state.materialBuf.element(matBase.add(MAT_COLOR_R));
-    const cg = state.materialBuf.element(matBase.add(MAT_COLOR_G));
-    const cb = state.materialBuf.element(matBase.add(MAT_COLOR_B));
-    const baseColor = vec3(cr, cg, cb);
-    const roughness = state.materialBuf.element(matBase.add(MAT_ROUGHNESS));
-    const metalness = state.materialBuf.element(matBase.add(MAT_METALNESS));
-    const er = state.materialBuf.element(matBase.add(MAT_EMISSIVE_R));
-    const eg = state.materialBuf.element(matBase.add(MAT_EMISSIVE_G));
-    const eb = state.materialBuf.element(matBase.add(MAT_EMISSIVE_B));
-    const emissive = vec3(er, eg, eb);
-    const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
-
-    If(state.showEdgesU.greaterThan(float(0.5)), () => {
-      const edgeEps = float(EDGE_EPS);
-      const eex = vec3(edgeEps, 0, 0);
-      const eey = vec3(0, edgeEps, 0);
-      const eez = vec3(0, 0, edgeEps);
-      const edgeSum = abs(
-        sdfEval({ p: hitPos.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-          .add(sdfEval({ p: hitPos.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: hitPos.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: hitPos.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: hitPos.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-          .add(sdfEval({ p: hitPos.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-      );
-      const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
-      color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
+    // Shade the hit (normal → PBR → edges → wireframe) via the shared SDF
+    // pipeline. The view direction is the negated ray direction (a unit vector
+    // already). This single-pass renderer has no per-body selection overlay.
+    return shadeSdfHit({
+      p: hitPos,
+      bi: hitBody,
+      offsetBuf: state.offsetBuf,
+      volumeBaseBuf: state.volumeBaseBuf,
+      materialBuf: state.materialBuf,
+      viewMatU: state.viewMatU,
+      viewDirWorld: rd.negate(),
+      showEdgesU: state.showEdgesU,
+      sdfEval,
     });
-
-    const bodyOpacity = state.materialBuf.element(matBase.add(MAT_OPACITY));
-    const wf = state.materialBuf.element(matBase.add(MAT_WIREFRAME));
-    const alpha = bodyOpacity.toVar();
-    If(wf.greaterThan(float(0.5)), () => {
-      const viewDirWorld = rd.negate();
-      const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
-      const edgeFactor = smoothstep(float(FRESNEL_EDGE_MIN), float(FRESNEL_EDGE_MAX), fresnel);
-      const gridSize = float(WIREFRAME_GRID_SIZE);
-      const gx = min(fract(hitPos.x.div(gridSize)), float(1).sub(fract(hitPos.x.div(gridSize))));
-      const gy = min(fract(hitPos.y.div(gridSize)), float(1).sub(fract(hitPos.y.div(gridSize))));
-      const gz = min(fract(hitPos.z.div(gridSize)), float(1).sub(fract(hitPos.z.div(gridSize))));
-      const minGrid = min(gx, min(gy, gz));
-      const gridAlpha = float(1).sub(smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid));
-      alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
-    });
-
-    return vec4(color, alpha);
   })();
 
   material.side = THREE.DoubleSide;

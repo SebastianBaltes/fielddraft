@@ -228,7 +228,11 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
       showGpuError(err);
     }
 
-    invalidate();
+    // No trailing invalidate(): this overlay is demand-driven. Re-renders are
+    // triggered by events — kernel mutations via <Invalidator> (it watches the
+    // `features`/`selection` refs that commit() replaces), camera moves via
+    // OrbitControls, and compile completion via the .then() above. Self-driving
+    // the loop here would force a continuous 60 fps render of a static scene.
   }, 1);
 
   return null;
@@ -372,7 +376,9 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
       showGpuError(err);
     }
 
-    invalidate();
+    // No trailing invalidate(): demand-driven. See the note in SdfVmOverlay —
+    // re-renders come from <Invalidator>, OrbitControls, the resize effect, and
+    // the compile .then(), not from self-driving the loop every frame.
   }, 1);
 
   return null;

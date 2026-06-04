@@ -501,6 +501,50 @@ fn surface_normal_at(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<[f64; 3]>
     }
 }
 
+/// Inverse parameterization of an analytic surface: map a world point lying on
+/// the surface to its `(u, v)` parameters. Used to classify outer vs. inner
+/// loops on curved faces by parametric signed area — a containment test that,
+/// unlike world-space chord length, is invariant to a tapered surface's varying
+/// radius (a small-radius outer boundary can have shorter chords than a
+/// large-radius hole, which the chord proxy would misrank). Returns `None` for
+/// surfaces without a usable parameterization (plane / gyroid / tessellated) or
+/// at a parametric pole where `(u, v)` is undefined.
+///
+/// Local-frame conventions match [`surface_normal_at`] (axis = local +Y):
+/// - `InfiniteCylinder` / `Cone`: `u = atan2(z, x)` around the axis, `v = y`
+///   along it.
+/// - `Sphere`: `u = atan2(z, x)` longitude, `v = atan2(y, r_xz)` latitude.
+/// - `Torus`: `u = atan2(z, x)` major angle, `v = atan2(y, r_xz − major)` minor.
+fn surface_uv(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<(f64, f64)> {
+    let SurfaceGeometry::Analytic { surface, transform } = surface else {
+        return None;
+    };
+    let l = crate::world_to_local(transform, [p[0] as f32, p[1] as f32, p[2] as f32]);
+    let l = [l[0] as f64, l[1] as f64, l[2] as f64];
+    let r_xz = norm([l[0], 0.0, l[2]]);
+    match surface {
+        HalfSpace::InfiniteCylinder { .. } | HalfSpace::Cone { .. } => {
+            if r_xz < 1e-9 {
+                return None;
+            }
+            Some((l[2].atan2(l[0]), l[1]))
+        }
+        HalfSpace::Sphere { .. } => {
+            if r_xz < 1e-9 && l[1].abs() < 1e-9 {
+                return None;
+            }
+            Some((l[2].atan2(l[0]), l[1].atan2(r_xz)))
+        }
+        HalfSpace::Torus { major_radius, .. } => {
+            if r_xz < 1e-9 {
+                return None;
+            }
+            Some((l[2].atan2(l[0]), l[1].atan2(r_xz - *major_radius as f64)))
+        }
+        HalfSpace::Plane { .. } | HalfSpace::Gyroid { .. } => None,
+    }
+}
+
 /// Project a 3D direction into the tangent plane defined by unit `normal`,
 /// dropping its normal component. (Not re-normalised; callers compare angles.)
 fn project_tangent(d: [f64; 3], normal: [f64; 3]) -> [f64; 3] {
@@ -706,11 +750,12 @@ fn ring_signed_area(brep: &BRep, ring: &[(EdgeId, bool)], normal: [f64; 3]) -> f
     area * 0.5
 }
 
-/// Approximate enclosed extent of a ring used to classify outer vs. inner for
-/// CURVED faces (cylinder/cone/sphere/torus), where projected signed area is
-/// not a reliable containment test. We use the ring's total chord length as a
-/// monotone proxy for "how much boundary it encloses": the longest ring is the
-/// outer boundary, shorter rings are holes (DL-58).
+/// Total chord length of a ring. Used to rank the *full-revolution* trim
+/// circles of a curved wall (cylinder/cone tube) against each other — among
+/// those periodic boundaries the longest is taken as the outer bound, the rest
+/// as inner (DL-58). Bounded (vertex-delimited) loops are classified instead by
+/// parametric signed area ([`ring_uv_area`]), which world-space chord length
+/// would misrank on a tapered surface.
 fn ring_extent(brep: &BRep, ring: &[(EdgeId, bool)]) -> f64 {
     let mut len = 0.0;
     for &(eid, _) in ring {
@@ -729,6 +774,57 @@ fn ring_extent(brep: &BRep, ring: &[(EdgeId, bool)]) -> f64 {
     len
 }
 
+/// Parametric signed area of a bounded ring, computed in the surface's `(u, v)`
+/// domain ([`surface_uv`]). This is the curved-surface analogue of
+/// [`ring_signed_area`]: it measures how much *parameter* area the loop
+/// encloses, which — unlike world-space chord length — is invariant to a
+/// tapered surface's varying radius, so the true outer boundary outranks holes
+/// regardless of their physical size. `u` is unwrapped across the periodic seam
+/// so the shoelace stays continuous. Returns `None` if any vertex has no
+/// `(u, v)` (e.g. a full-revolution circle edge, or an unparameterized surface).
+fn ring_uv_area(brep: &BRep, ring: &[(EdgeId, bool)], surface: &SurfaceGeometry) -> Option<f64> {
+    // Collect the ring's ordered tail vertices (b of edge i == a of edge i+1,
+    // so the tails are the polygon vertices), mapped to (u, v) and unwrapped.
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(ring.len());
+    for &(eid, reversed) in ring {
+        let edge = brep.edge(eid);
+        let (Some(s), Some(e)) = (edge.start, edge.end) else {
+            return None;
+        };
+        let tail = if reversed { e } else { s };
+        let (mut u, v) = surface_uv(surface, brep.vertex(tail).position)?;
+        if let Some(&(prev_u, _)) = uv.last() {
+            while u - prev_u > std::f64::consts::PI {
+                u -= std::f64::consts::TAU;
+            }
+            while u - prev_u < -std::f64::consts::PI {
+                u += std::f64::consts::TAU;
+            }
+        }
+        uv.push((u, v));
+    }
+    if uv.len() < 3 {
+        return None;
+    }
+    let mut area = 0.0;
+    for i in 0..uv.len() {
+        let (x0, y0) = uv[i];
+        let (x1, y1) = uv[(i + 1) % uv.len()];
+        area += x0 * y1 - x1 * y0;
+    }
+    Some(area * 0.5)
+}
+
+/// Whether a ring is a single full-revolution circle edge (no bounding
+/// vertices) — the natural periodic boundary of a cylinder/cone/sphere/torus
+/// wall, peeled off whole at the start of [`order_loops`].
+fn is_full_revolution(brep: &BRep, ring: &[(EdgeId, bool)]) -> bool {
+    ring.len() == 1 && {
+        let e = brep.edge(ring[0].0);
+        e.start.is_none() && e.end.is_none()
+    }
+}
+
 /// Order a face's edges into one outer ring plus inner (hole) rings, with
 /// reflex-correct turning-angle ordering and outer/inner classification.
 ///
@@ -738,7 +834,8 @@ fn ring_extent(brep: &BRep, ring: &[(EdgeId, bool)]) -> f64 {
 /// the face (positive projected signed area), matching the STEP
 /// `ADVANCED_FACE(... .T.)` convention; holes are reversed to wind the opposite
 /// way. For planar faces classification is by signed-area magnitude (largest =
-/// outer); for curved faces it is by ring extent (longest = outer, DL-58).
+/// outer); for curved faces a full-revolution trim circle wins by chord extent
+/// (DL-58), otherwise bounded loops are ranked by parametric (u, v) signed area.
 ///
 /// Returns `None` only if the edges cannot be assembled into closed rings at all
 /// (degenerate topology) — the caller then keeps the unordered fallback.
@@ -825,13 +922,45 @@ fn order_loops(brep: &BRep, edge_ids: &[EdgeId], surface: &SurfaceGeometry) -> O
         }
     }
 
-    // Curved face (or planar fallback without a usable normal): classify by
-    // ring extent — the longest ring is the outer boundary (DL-58). Winding is
-    // left as ordered (a single curved-wall ring needs no winding fix; multi-
-    // ring curved faces are rare and STEP only needs connected rings).
-    let outer_idx = (0..rings.len())
-        .max_by(|&a, &b| ring_extent(brep, &rings[a]).total_cmp(&ring_extent(brep, &rings[b])))
-        .unwrap();
+    // Curved face (or planar fallback without a usable normal). Winding is left
+    // as ordered (STEP only needs connected rings here); we only pick which ring
+    // is the outer bound:
+    //
+    // - If any ring is a full-revolution trim circle, it is the surface's
+    //   natural periodic boundary and encloses every bounded sub-loop, so the
+    //   outer bound is the longest such circle (DL-58 extent rule — the
+    //   cylinder/cone tube + drilled-box convention). All other rings are inner.
+    // - Otherwise every ring is a bounded loop: classify by parametric (u, v)
+    //   signed area, the largest by magnitude being outer. This is invariant to
+    //   a tapered surface's varying radius, so a physically large hole no longer
+    //   out-ranks a radially small true boundary (which world-space chord length
+    //   would get wrong).
+    // - With no usable parameterization (tessellated / gyroid) fall back to the
+    //   extent rule.
+    let extent_max = |rings: &[Vec<(EdgeId, bool)>]| {
+        (0..rings.len())
+            .max_by(|&a, &b| ring_extent(brep, &rings[a]).total_cmp(&ring_extent(brep, &rings[b])))
+            .unwrap()
+    };
+    let full_rev: Vec<usize> = (0..rings.len())
+        .filter(|&i| is_full_revolution(brep, &rings[i]))
+        .collect();
+    let outer_idx = if !full_rev.is_empty() {
+        *full_rev
+            .iter()
+            .max_by(|&&a, &&b| ring_extent(brep, &rings[a]).total_cmp(&ring_extent(brep, &rings[b])))
+            .unwrap()
+    } else if let Some(areas) = rings
+        .iter()
+        .map(|r| ring_uv_area(brep, r, surface))
+        .collect::<Option<Vec<f64>>>()
+    {
+        (0..rings.len())
+            .max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))
+            .unwrap()
+    } else {
+        extent_max(&rings)
+    };
     let outer = rings.remove(outer_idx);
     Some(FaceLoops { outer, inner: rings })
 }
@@ -2101,6 +2230,115 @@ mod tests {
             surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 0.0 },
             transform: Transform::IDENTITY,
         }
+    }
+
+    /// A cone opening along the local +Y axis (apex at the origin), used to test
+    /// outer/inner classification on a tapered curved surface.
+    fn cone_surface() -> SurfaceGeometry {
+        SurfaceGeometry::Analytic {
+            surface: HalfSpace::Cone { half_angle: 0.05_f32.atan() },
+            transform: Transform::IDENTITY,
+        }
+    }
+
+    /// Build a BRep whose edges form the given closed rings (each an ordered
+    /// vertex-position list), one straight NURBS edge between consecutive
+    /// vertices. The rings are disjoint (share no vertices), so `order_loops`
+    /// recovers them independently — what we then exercise is its outer/inner
+    /// classification. Returns the BRep and the flat edge-id list.
+    fn curved_face_rings(rings: &[Vec<[f64; 3]>]) -> (BRep, Vec<EdgeId>) {
+        use crate::brep::{Edge, Vertex};
+        let mut brep = BRep::new();
+        let a = BranchId(1 << 4);
+        let b = BranchId(2 << 4);
+        let mut eids = Vec::new();
+        for ring in rings {
+            let vids: Vec<VertexId> = ring
+                .iter()
+                .map(|p| brep.add_vertex(Vertex::new(*p, vec![a, b])))
+                .collect();
+            let n = ring.len();
+            for i in 0..n {
+                let (ps, pe) = (ring[i], ring[(i + 1) % n]);
+                let curve = hermite_to_nurbs(&[
+                    HermiteSample { point: ps, tangent: unit(sub(pe, ps)) },
+                    HermiteSample { point: pe, tangent: unit(sub(pe, ps)) },
+                ]);
+                eids.push(brep.add_edge(Edge::new(
+                    EdgeGeometry::Nurbs(curve),
+                    a,
+                    b,
+                    Some(vids[i]),
+                    Some(vids[(i + 1) % n]),
+                )));
+            }
+        }
+        (brep, eids)
+    }
+
+    #[test]
+    fn order_loops_tapered_cone_classifies_by_parametric_area_not_chord_length() {
+        // THE TAPERED-TRIM CASE the chord-length proxy gets wrong (#8). On a
+        // cone (radius ≈ 0.05·y, apex at origin) we place two disjoint bounded
+        // loops:
+        //   • OUTER — near the apex (radius ≈ 0.05, tiny chords) but spanning a
+        //     LARGE parameter region: 5 rad of angle × 0.2 of axial height.
+        //   • HOLE  — far out (radius ≈ 2.5, large chords) but a TINY parameter
+        //     region: 0.2 × 0.2.
+        // World-space chord length ranks the physically large hole above the
+        // radially small boundary — so the old extent rule would pick the hole
+        // as the outer bound. Parametric (u,v) area ranks them correctly.
+        let k = 0.05; // radius / axial-height ⇒ cone half-angle
+        let pt = |u: f64, v: f64| {
+            let r = k * v;
+            [r * u.cos(), v, r * u.sin()]
+        };
+
+        // Outer boundary: bottom rim u = 0..=5 at v = 1.0, then top rim back at
+        // v = 1.2 — a closed 12-edge loop, each angular step (1 rad) < π so the
+        // (u,v) seam-unwrap stays exact.
+        let mut outer = Vec::new();
+        for i in 0..=5 {
+            outer.push(pt(i as f64, 1.0));
+        }
+        for i in (0..=5).rev() {
+            outer.push(pt(i as f64, 1.2));
+        }
+
+        // Hole: a small 4-edge quad far from the apex.
+        let hole = vec![
+            pt(0.0, 50.0),
+            pt(0.2, 50.0),
+            pt(0.2, 50.2),
+            pt(0.0, 50.2),
+        ];
+
+        let (brep, eids) = curved_face_rings(&[outer, hole]);
+        let loops =
+            order_loops(&brep, &eids, &cone_surface()).expect("must order into rings");
+
+        // The fix: the radially small but parametrically large loop is the outer
+        // bound; the physically large hole is inner.
+        assert_eq!(loops.outer.len(), 12, "the large-(u,v)-area loop is the outer bound");
+        assert_eq!(loops.inner.len(), 1, "exactly one inner hole loop");
+        assert_eq!(loops.inner[0].len(), 4, "the small-(u,v)-area loop is the hole");
+
+        // Demonstrate that the OLD chord-length proxy would have misranked: the
+        // hole's total chord exceeds the outer boundary's.
+        let outer_extent = ring_extent(&brep, &loops.outer);
+        let hole_extent = ring_extent(&brep, &loops.inner[0]);
+        assert!(
+            hole_extent > outer_extent,
+            "chord proxy would wrongly pick the hole as outer (hole {hole_extent} > outer {outer_extent})"
+        );
+
+        // Parametric (u,v) area ranks them the right way round.
+        let outer_area = ring_uv_area(&brep, &loops.outer, &cone_surface()).unwrap().abs();
+        let hole_area = ring_uv_area(&brep, &loops.inner[0], &cone_surface()).unwrap().abs();
+        assert!(
+            outer_area > hole_area,
+            "(u,v) area ranks the boundary above the hole ({outer_area} > {hole_area})"
+        );
     }
 
     #[test]

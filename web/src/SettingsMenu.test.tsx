@@ -43,6 +43,7 @@ function setup() {
     meshAlgorithm: "mdc",
     showEdges: true,
     brepEdgeMode: "xray",
+    frameLoop: "demand",
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -221,6 +222,24 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("switches render loop in settings dialog", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    click(t.container.querySelector('[data-testid="setting-frame-loop-always"]')!);
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ frameLoop: "always" }),
+    );
+    expect(localStorage.getItem("fielddraft.frameLoop")).toBe("always");
+
+    click(t.container.querySelector('[data-testid="setting-frame-loop-demand"]')!);
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ frameLoop: "demand" }),
+    );
+    expect(localStorage.getItem("fielddraft.frameLoop")).toBe("demand");
+    t.cleanup();
+  });
+
   it("shows shortcuts table on shortcuts tab", () => {
     const t = setup();
     openSettingsDialog(t.container);
@@ -298,6 +317,7 @@ describe("loadSettings", () => {
       meshAlgorithm: "mdc",
       showEdges: true,
       brepEdgeMode: "xray",
+      frameLoop: "demand",
     });
   });
 
@@ -324,6 +344,7 @@ describe("loadSettings", () => {
       meshAlgorithm: "mdc",
       showEdges: true,
       brepEdgeMode: "xray",
+      frameLoop: "demand",
     });
   });
 
