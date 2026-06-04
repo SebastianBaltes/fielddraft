@@ -1127,6 +1127,78 @@ mod tests {
     }
 
     #[test]
+    fn bridging_sphere_weaves_clean_faces_on_both_boxes() {
+        // DL-74: once the bridging union fuses the two boxes and the sphere into
+        // ONE body (DL-73), the sphere overhangs each box's inner top edge and
+        // crosses it at two points. Those two corners share a branch-set
+        // {inner-face, top-face, sphere}; the old branch-set-keyed vertex dedup
+        // merged them into one phantom corner, leaving the touched faces
+        // unorderable (the "left box's edges are incomplete" report). The fix
+        // keeps the two corners distinct and trims the buried edge stretch, so
+        // every face orders into a connected ring and the solid stays watertight.
+        let mut bridge = sphere_feat(3, BoolOp::Union, [0.0, 0.0, 10.0], 8.0);
+        bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [-12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feat(2, BoolOp::Union, [12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            bridge,
+        ];
+        let breps = weave_all(&features);
+        assert_eq!(breps.len(), 1, "the bridging union is one body");
+        let brep = &breps[0].0;
+        assert_eq!(brep.validate(), Ok(()), "woven B-Rep must be well-formed");
+
+        // No face fell back to the unordered (degenerate) loop: every outer and
+        // inner loop is a properly connected ring.
+        for f in &brep.faces {
+            assert!(
+                f.outer.is_connected_ring(&brep.edges),
+                "every face outer loop must order into a connected ring"
+            );
+            assert!(
+                f.inner.iter().all(|lp| lp.is_connected_ring(&brep.edges)),
+                "every hole loop must order into a connected ring"
+            );
+        }
+
+        // The fused solid is watertight: every edge is shared by exactly two
+        // face loops.
+        let mut uses = vec![0u32; brep.edge_count()];
+        for f in &brep.faces {
+            for &(crate::brep::EdgeId(idx), _) in &f.outer.edges {
+                uses[idx as usize] += 1;
+            }
+            for lp in &f.inner {
+                for &(crate::brep::EdgeId(idx), _) in &lp.edges {
+                    uses[idx as usize] += 1;
+                }
+            }
+        }
+        assert!(
+            uses.iter().all(|&u| u == 2),
+            "every edge used by exactly two face loops (watertight)"
+        );
+
+        // Each box's doubly-crossed inner-top edge yields exactly two
+        // triple-vertices with the sphere (one per crossing), not one merged
+        // phantom — the heart of the DL-74 fix.
+        let sphere_branch = crate::csg::BranchId::from_feature(&FeatureId::from_u32(3));
+        for box_id in [1u32, 2] {
+            let n = brep
+                .vertices
+                .iter()
+                .filter(|v| {
+                    v.branches
+                        .iter()
+                        .any(|b| b.feature_id() == sphere_branch.feature_id())
+                        && v.branches.iter().filter(|b| b.feature_id() == box_id).count() == 2
+                })
+                .count();
+            assert_eq!(n, 2, "box {box_id} keeps both sphere-crossing corners");
+        }
+    }
+
+    #[test]
     fn bridging_union_fuses_both_targets_into_one_body() {
         // Two disjoint boxes each seed their own Part. A sphere that
         // unions BOTH (target_ids = [1, 2]) and physically overlaps each

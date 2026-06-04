@@ -708,36 +708,165 @@ struct DedupVertex {
     position: [f64; 3],
 }
 
-/// Deduplicate the Phase-3 vertices by branch-set, averaging positions. Many
-/// `Vertex` cells around one corner emit the same branch-triple; we merge them
-/// into one vertex at the centroid (DL-13).
-fn dedup_vertices(raw: &[Vertex]) -> Vec<DedupVertex> {
-    // Keyed by the branch-set's raw u32 payloads (already sorted by
-    // `Vertex::new`), preserving insertion order for determinism.
+/// Single-linkage cluster gap, as a multiple of the local vertex-cell size: two
+/// raw vertices closer than this fuse into one corner cluster. A near-tangential
+/// triple junction smears across a *band* of vertex cells (DL-66), so the gap
+/// must span several cells; the macroscopic separation between two genuinely
+/// distinct corners that happen to share a branch-set (a sphere crossing one box
+/// edge twice — DL-74) is far larger, so they never get merged.
+const VERTEX_CLUSTER_GAP_FACTOR: f64 = 4.0;
+
+/// Deduplicate the Phase-3 vertices by branch-set **and spatial cluster**,
+/// averaging positions within each cluster. Many `Vertex` cells around one
+/// corner emit the same branch-triple; we merge them into one vertex at the
+/// centroid (DL-13).
+///
+/// The branch-set alone does **not** identify a corner: a curved surface can
+/// cross a single straight edge at two points, minting two distinct vertices
+/// with the *same* branch-set (a sphere unioned onto a box that it overhangs —
+/// DL-74). Keying purely on the branch-set averaged those two into one phantom
+/// corner at their midpoint, which then snapped onto one root and left every
+/// touching face unorderable. So within each branch-set group we single-linkage
+/// cluster by `cluster_gap` and emit one vertex per cluster. `cluster_gap <= 0`
+/// (no vertex cells to size from) keeps the legacy single-cluster behaviour.
+fn dedup_vertices(raw: &[Vertex], cluster_gap: f64) -> Vec<DedupVertex> {
+    // Group by branch-set (raw u32 payloads, already sorted by `Vertex::new`),
+    // preserving insertion order for determinism. Each group accumulates its raw
+    // positions plus the canonical `BranchId`s for emission.
+    type BranchGroup = (Vec<[f64; 3]>, Vec<BranchId>);
     let mut order: Vec<Vec<u32>> = Vec::new();
-    let mut acc: HashMap<Vec<u32>, ([f64; 3], usize, Vec<BranchId>)> = HashMap::new();
+    let mut groups: HashMap<Vec<u32>, BranchGroup> = HashMap::new();
     for v in raw {
         let key: Vec<u32> = v.branches.iter().map(|b| b.as_u32()).collect();
-        let entry = acc.entry(key.clone()).or_insert_with(|| {
+        let entry = groups.entry(key.clone()).or_insert_with(|| {
             order.push(key.clone());
-            ([0.0; 3], 0, v.branches.clone())
+            (Vec::new(), v.branches.clone())
         });
-        entry.0[0] += v.position[0];
-        entry.0[1] += v.position[1];
-        entry.0[2] += v.position[2];
-        entry.1 += 1;
+        entry.0.push(v.position);
     }
-    order
-        .into_iter()
-        .map(|key| {
-            let (sum, n, branches) = &acc[&key];
-            let inv = 1.0 / *n as f64;
-            DedupVertex {
+
+    let mut out = Vec::new();
+    for key in &order {
+        let (positions, branches) = &groups[key];
+        for cluster in cluster_positions(positions, cluster_gap) {
+            let inv = 1.0 / cluster.len() as f64;
+            let mut sum = [0.0; 3];
+            for &i in &cluster {
+                sum[0] += positions[i][0];
+                sum[1] += positions[i][1];
+                sum[2] += positions[i][2];
+            }
+            out.push(DedupVertex {
                 branches: branches.clone(),
                 position: [sum[0] * inv, sum[1] * inv, sum[2] * inv],
+            });
+        }
+    }
+    out
+}
+
+/// Single-linkage clustering of `positions`: indices land in the same cluster
+/// when a chain of pairwise gaps each `<= gap` connects them. With `gap <= 0`
+/// everything collapses into one cluster (the legacy branch-set-only behaviour).
+/// Clusters come out in ascending min-index order for deterministic emission.
+fn cluster_positions(positions: &[[f64; 3]], gap: f64) -> Vec<Vec<usize>> {
+    let n = positions.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if gap <= 0.0 {
+        return vec![(0..n).collect()];
+    }
+    let gap2 = gap * gap;
+    // Union-find over the n points, unioning every pair within `gap`.
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if dist_sq(positions[i], positions[j]) <= gap2 {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri] = rj;
+                }
             }
+        }
+    }
+    // Bucket by root, keyed on the cluster's smallest member for determinism.
+    let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        by_root.entry(r).or_default().push(i);
+    }
+    let mut clusters: Vec<Vec<usize>> = by_root.into_values().collect();
+    clusters.sort_unstable_by_key(|c| c[0]);
+    clusters
+}
+
+/// Squared Euclidean distance between two points.
+fn dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+/// Re-merge refined vertices that share a branch-set and now sit within `gap` of
+/// each other (DL-74). Runs after [`refine_triple_vertex`] has snapped every
+/// cluster onto its exact analytic corner: over-split fragments of one corner
+/// coincide and fuse, while two truly distinct corners stay apart. Preserves
+/// first-seen branch-set order for deterministic vertex ids.
+fn merge_refined_by_branch_set(dedup: Vec<DedupVertex>, gap: f64) -> Vec<DedupVertex> {
+    let mut order: Vec<Vec<u32>> = Vec::new();
+    let mut groups: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
+    for (i, dv) in dedup.iter().enumerate() {
+        let key: Vec<u32> = dv.branches.iter().map(|b| b.as_u32()).collect();
+        groups
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key.clone());
+                Vec::new()
+            })
+            .push(i);
+    }
+
+    let mut out = Vec::new();
+    for key in &order {
+        let idxs = &groups[key];
+        let positions: Vec<[f64; 3]> = idxs.iter().map(|&i| dedup[i].position).collect();
+        let branches = dedup[idxs[0]].branches.clone();
+        for cluster in cluster_positions(&positions, gap) {
+            let inv = 1.0 / cluster.len() as f64;
+            let mut sum = [0.0; 3];
+            for &c in &cluster {
+                sum[0] += positions[c][0];
+                sum[1] += positions[c][1];
+                sum[2] += positions[c][2];
+            }
+            out.push(DedupVertex {
+                branches: branches.clone(),
+                position: [sum[0] * inv, sum[1] * inv, sum[2] * inv],
+            });
+        }
+    }
+    out
+}
+
+/// Largest edge length over all `Vertex` cells — the characteristic resolution
+/// at which corners are tagged. Drives the vertex-dedup cluster gap (DL-74).
+/// `0.0` when the body has no vertex cells (a lone closed surface), which keeps
+/// dedup in its single-cluster mode.
+fn max_vertex_cell_size(octree: &Octree) -> f64 {
+    octree
+        .vertex_cells()
+        .map(|c| {
+            let s = c.aabb.size();
+            s[0].max(s[1]).max(s[2]) as f64
         })
-        .collect()
+        .fold(0.0, f64::max)
 }
 
 /// Maximum Gauss-Newton iterations when re-solving an analytic triple vertex.
@@ -1147,6 +1276,28 @@ fn chain_on_both_surfaces(
     check_branch(sa) && check_branch(sb)
 }
 
+/// Does a chain lie on the body's actual boundary, rather than buried inside it
+/// (DL-74)? Evaluates the hard-union ([`EvalMode::Logical`]) SDF at each sample:
+/// a real edge sits at `sdf ≈ 0`, while a stretch of analytic joint zero-set
+/// that tunnels through another union member (a box edge under an overhanging
+/// sphere) reads strongly negative along its whole length. A chain is kept when
+/// fewer than a small fraction of its samples are interior beyond one sample
+/// spacing — slack enough for on-boundary jitter, far tighter than the cell-deep
+/// burial of a genuinely interior segment.
+fn chain_on_body_boundary(body: &BoundedCsg, samples: &[HermiteSample], tol: f64) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    let interior = samples
+        .iter()
+        .filter(|s| {
+            let p = [s.point[0] as f32, s.point[1] as f32, s.point[2] as f32];
+            (body.sdf(p, crate::csg::EvalMode::Logical) as f64) < -tol
+        })
+        .count();
+    (interior as f64) <= (1.0 - SURFACE_MEMBERSHIP_FRACTION) * samples.len() as f64
+}
+
 // ─── public entry point ───────────────────────────────────────────────────
 
 /// Build a **wireframe** [`BRep`] from `body`'s classified `octree`: ordered
@@ -1159,12 +1310,18 @@ fn chain_on_both_surfaces(
 /// Faces / shells / solids are left empty (C.6).
 pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     let (edge_points, raw_vertices) = extract_features(body, octree);
-    let mut dedup = dedup_vertices(&raw_vertices);
+    // Cluster gap for vertex dedup: a few times the local vertex-cell size, so a
+    // single corner's band of cells fuses while two distinct corners that share a
+    // branch-set (a sphere crossing a box edge twice — DL-74) stay separate.
+    let cluster_gap = VERTEX_CLUSTER_GAP_FACTOR * max_vertex_cell_size(octree);
+    let mut dedup = dedup_vertices(&raw_vertices, cluster_gap);
 
     // Re-solve each multi-branch vertex as the exact analytic surface
     // intersection, seeded from its centroid (DL-66). This snaps near-tangential
     // triple junctions (a sphere grazing a box edge) back onto the true corner,
-    // where the scattered per-cell LSQ otherwise drifts the centroid off it.
+    // where the scattered per-cell LSQ otherwise drifts the centroid off it. The
+    // per-cluster seed (DL-74) lands each of a doubly-crossed edge's two corners
+    // in its own root's basin, so Gauss-Newton resolves them to distinct points.
     let vertex_halfspaces = crate::brep::weaving::branch_halfspace_map(body);
     for dv in &mut dedup {
         if let Some(p) = refine_triple_vertex(&vertex_halfspaces, &dv.branches, dv.position) {
@@ -1172,15 +1329,23 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         }
     }
 
+    // Re-merge per branch-set on the *refined* positions (DL-74). A wide
+    // near-tangential band (DL-66) can over-split into several clusters that all
+    // refine onto the SAME analytic corner; collapse them back. Two genuinely
+    // distinct corners that share a branch-set refined to far-apart points and
+    // survive. The fine pre-refine split only existed to seed each true corner's
+    // Gauss-Newton basin separately; with that done, identity is positional.
+    let dedup = merge_refined_by_branch_set(dedup, cluster_gap);
+
     let mut brep = BRep::new();
 
-    // Add deduped vertices, recording their VertexId keyed by branch-set.
-    let mut vid_by_branches: HashMap<Vec<u32>, VertexId> = HashMap::new();
-    for dv in &dedup {
-        let key: Vec<u32> = dv.branches.iter().map(|b| b.as_u32()).collect();
-        let vid = brep.add_vertex(Vertex::new(dv.position, dv.branches.clone()));
-        vid_by_branches.insert(key, vid);
-    }
+    // Add deduped vertices. Their `VertexId`s run parallel to `dedup` (by index):
+    // a branch-set is no longer a unique key (DL-74), so downstream lookups carry
+    // the per-vertex id rather than re-deriving it from the branch-set.
+    let vids: Vec<VertexId> = dedup
+        .iter()
+        .map(|dv| brep.add_vertex(Vertex::new(dv.position, dv.branches.clone())))
+        .collect();
 
     // Group edge points by canonical signature. We iterate the groups in a
     // **sorted** order, not raw `HashMap` order: the std hasher's seed advances
@@ -1252,11 +1417,9 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         // Candidate end-vertices: deduped vertices whose branch-set ⊇ {a, b}.
         let candidates: Vec<(VertexId, [f64; 3])> = dedup
             .iter()
-            .filter(|dv| dv.branches.contains(&branch_a) && dv.branches.contains(&branch_b))
-            .map(|dv| {
-                let key: Vec<u32> = dv.branches.iter().map(|b| b.as_u32()).collect();
-                (vid_by_branches[&key], dv.position)
-            })
+            .zip(&vids)
+            .filter(|(dv, _)| dv.branches.contains(&branch_a) && dv.branches.contains(&branch_b))
+            .map(|(dv, &vid)| (vid, dv.position))
             .collect();
 
         // General SDF edge tracer (DL-68): when both branches carry an analytic
@@ -1340,6 +1503,15 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
             // enough for on-surface jitter, far tighter than the cell-scale
             // offset a contributor-eps phantom pairing exhibits.
             if !chain_on_both_surfaces(&halfspaces, sa, sb, &chain.samples, spacing) {
+                continue;
+            }
+            // Body-boundary filter (DL-74): the analytic tracer marches the full
+            // joint zero-set of two surfaces, including stretches that lie on both
+            // yet are *buried inside another union member* — the part of a box's
+            // top edge that passes under an overhanging sphere. Such a stretch is
+            // on both planes but interior to the solid, so it is no edge. Reject a
+            // chain whose samples are predominantly inside the body.
+            if !chain_on_body_boundary(body, &chain.samples, spacing) {
                 continue;
             }
             let first = chain.samples.first().unwrap().point;
@@ -1811,7 +1983,8 @@ mod tests {
             // A different triple → its own vertex.
             Vertex::new([5.0, 5.0, 5.0], vec![BranchId(1), BranchId(2), BranchId(4)]),
         ];
-        let dedup = dedup_vertices(&raw);
+        // Gap large enough to fuse the one corner's band into a single cluster.
+        let dedup = dedup_vertices(&raw, 10.0);
         assert_eq!(dedup.len(), 2);
         let triple = dedup
             .iter()
@@ -1820,6 +1993,29 @@ mod tests {
         assert!((triple.position[0] - 1.0).abs() < 1e-9);
         assert!((triple.position[1] - 1.0).abs() < 1e-9);
         assert!((triple.position[2] - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn vertex_dedup_keeps_two_corners_that_share_a_branch_set() {
+        // A curved surface crossing one straight edge twice mints two distinct
+        // corners with the SAME branch-set (DL-74). Spatial clustering must keep
+        // them apart: branch-set alone is not a unique vertex key. Two tight
+        // bands far apart, both tagged {1,2,3}; gap between band-scatter (≤ 1) and
+        // band separation (20) → two clusters, each averaged independently.
+        let b = vec![BranchId(1), BranchId(2), BranchId(3)];
+        let raw = vec![
+            Vertex::new([0.0, 0.0, 0.0], b.clone()),
+            Vertex::new([0.5, 0.0, 0.0], b.clone()),
+            Vertex::new([20.0, 0.0, 0.0], b.clone()),
+            Vertex::new([20.5, 0.0, 0.0], b.clone()),
+        ];
+        let dedup = dedup_vertices(&raw, 4.0);
+        assert_eq!(dedup.len(), 2, "two far-apart same-branch-set corners stay split");
+        assert!(dedup.iter().all(|d| d.branches == b));
+        let mut xs: Vec<f64> = dedup.iter().map(|d| d.position[0]).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((xs[0] - 0.25).abs() < 1e-9, "first corner at the near band centroid");
+        assert!((xs[1] - 20.25).abs() < 1e-9, "second corner at the far band centroid");
     }
 
     #[test]
