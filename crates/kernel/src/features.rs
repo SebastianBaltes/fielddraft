@@ -1996,6 +1996,13 @@ pub struct ExtrudeDef {
     /// extrude plane Z coordinate.
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
+
+    /// Wall thickness for hollowing the extruded body. `0` (the
+    /// default) leaves it solid; any positive value lowers to a
+    /// [`CsgNode::Shell`] (`|sdf| − thickness`) via
+    /// [`PrimitiveModifiers`], producing a thin-walled closed shell.
+    #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub shell_thickness: ::fielddraft_protocol::Length,
 }
 
 pub struct ExtrudeFeature;
@@ -2130,7 +2137,10 @@ impl FeatureKind for ExtrudeFeature {
             d.operation,
             primitive,
             transform,
-            PrimitiveModifiers::NONE,
+            PrimitiveModifiers {
+                shell_thickness: d.shell_thickness.to_mm().max(0.0),
+                ..PrimitiveModifiers::NONE
+            },
             vec![],
         ));
         Ok(())
@@ -2165,6 +2175,13 @@ pub struct RevolveDef {
     /// Override for the revolve centre in world space.
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
+
+    /// Wall thickness for hollowing the revolved body. `0` (the
+    /// default) leaves it solid; any positive value lowers to a
+    /// [`CsgNode::Shell`] (`|sdf| − thickness`) via
+    /// [`PrimitiveModifiers`], producing a thin-walled closed shell.
+    #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub shell_thickness: ::fielddraft_protocol::Length,
 }
 
 pub struct RevolveFeature;
@@ -2235,7 +2252,10 @@ impl FeatureKind for RevolveFeature {
                 center: d.center,
             },
             transform,
-            PrimitiveModifiers::NONE,
+            PrimitiveModifiers {
+                shell_thickness: d.shell_thickness.to_mm().max(0.0),
+                ..PrimitiveModifiers::NONE
+            },
             vec![],
         ));
         Ok(())
@@ -3921,7 +3941,7 @@ mod tests {
         let schema = ExtrudeDef::schema_json();
         assert_eq!(schema["type"], json!("extrude"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 6);
+        assert_eq!(params.len(), 7);
 
         // Each key / type pair documents the K4.5.4f vocabulary
         // demonstrated in a single definition.
@@ -3948,6 +3968,47 @@ mod tests {
         assert_eq!(variant_keys, vec!["union", "difference", "intersect"]);
         assert_eq!(map["center"]["type"], json!("vec3"));
         assert_eq!(map["center"]["required"], json!(false));
+        // #9: optional shell thickness hollows the extruded body.
+        assert_eq!(map["shell_thickness"]["type"], json!("length"));
+        assert_eq!(map["shell_thickness"]["required"], json!(false));
+    }
+
+    #[test]
+    fn extrude_shell_thickness_lowers_to_a_shell_node() {
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let mut def = extrude_def("qCreatedBy(s)", 40.0, 5.0, 7.0);
+        def["shell_thickness"] = json!({ "value": 2.0, "unit": "mm" });
+        ExtrudeFeature.execute(&mut ctx, &id(1), &def).unwrap();
+
+        let f = &ctx.features[0];
+        // The geometry node is wrapped in a Shell of the requested
+        // wall thickness; the inner solid is unchanged (export_primitive
+        // walks through the Shell wrapper to the underlying box).
+        match &f.node {
+            crate::csg::CsgNode::Shell(_, t) => assert!((t - 2.0).abs() < 1e-5),
+            other => panic!("expected CsgNode::Shell, got {other:?}"),
+        }
+        match &f.export_primitive().expect("primitive") {
+            Primitive::Box { half_extents, .. } => {
+                assert_eq!(*half_extents, [5.0, 7.0, 20.0]);
+            }
+            other => panic!("expected Primitive::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extrude_zero_shell_thickness_stays_solid() {
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        ExtrudeFeature
+            .execute(&mut ctx, &id(1), &extrude_def("qCreatedBy(s)", 40.0, 5.0, 7.0))
+            .unwrap();
+        // No shell param ⇒ default 0 ⇒ no Shell wrapper.
+        assert!(
+            !matches!(&ctx.features[0].node, crate::csg::CsgNode::Shell(..)),
+            "zero shell_thickness must not wrap the node in a Shell",
+        );
     }
 
     #[test]
