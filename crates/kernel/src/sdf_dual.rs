@@ -188,7 +188,6 @@ fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
     }
 }
 
-#[allow(dead_code)] // used in tests; production callers come in Phase C (B-Rep extraction)
 pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
     hs: &HalfSpace,
     p: [T; 3],
@@ -887,6 +886,60 @@ pub fn sdf_gradient_mode(node: &BoundedCsg, p: [f32; 3], mode: EvalMode) -> (f32
             / (2.0 * fd_eps);
         (result.re as f32, [dx, dy, dz])
     }
+}
+
+// ─── f64 value+gradient (no f32 downcast) ────────────────────────────
+//
+// The public `sdf_gradient*` API casts to f32 for the renderer/mesher. The
+// B-Rep edge tracer instead needs the *full f64* value and gradient: it runs
+// Newton iterations on the joint zero-set of two fields, where the f32 floor
+// (catastrophic cancellation in finite differences, a rank guard near
+// tangencies that lives below f32-ε) would cap the achievable exactness. The
+// dual evaluation is already f64 internally — these two entry points just skip
+// the downcast.
+
+/// Helper: extract the f64 gradient out of a finished `D3`.
+#[inline]
+fn d3_grad_f64(result: &D3) -> [f64; 3] {
+    let eps = result
+        .eps
+        .unwrap_generic(nalgebra::Const::<3>, nalgebra::Const::<1>);
+    [eps[0], eps[1], eps[2]]
+}
+
+/// Value and exact gradient of a single analytic per-face [`HalfSpace`] at a
+/// world-space point, in full f64. `xf` maps the half-space's centred local
+/// frame to world (the same `(HalfSpace, Transform)` pair that
+/// `brep::weaving::branch_halfspace_map` produces). The half-space value is the
+/// *local* field; we omit the `min_scale` factor that `eval_bounded_d3`
+/// applies — it is a positive constant, so it changes neither the zero set
+/// (where the tracer lives) nor the gradient direction.
+pub(crate) fn halfspace_value_grad(
+    hs: &HalfSpace,
+    xf: &Transform,
+    p: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let pd = [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)];
+    let local = world_to_local_d3(xf, pd);
+    let result = sdf_halfspace_generic(hs, local);
+    (result.re, d3_grad_f64(&result))
+}
+
+/// Value and exact gradient of an arbitrary [`BoundedCsg`] subtree at a
+/// world-space point, in full f64. Used for the *general* (non-analytic) edge
+/// fields: an Extrude/Revolve/sweep leaf has no closed-form half-space, but its
+/// surface is still the zero set of this evaluable field with a usable
+/// gradient (exact dual where the primitive is dual-aware, FD fallback inside
+/// for sketch/mesh internals). For a single leaf there is no smooth blend, so
+/// [`EvalMode::Logical`] is the right choice (hard, well-defined branch).
+pub(crate) fn bounded_value_grad(
+    node: &BoundedCsg,
+    p: [f64; 3],
+    mode: EvalMode,
+) -> (f64, [f64; 3]) {
+    let pd = [seed_d3(p[0], 0), seed_d3(p[1], 1), seed_d3(p[2], 2)];
+    let result = eval_bounded_d3(node, pd, mode);
+    (result.re, d3_grad_f64(&result))
 }
 
 // ═══════════════════════════════════════════════════════════════════════

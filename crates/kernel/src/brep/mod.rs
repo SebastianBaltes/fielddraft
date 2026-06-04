@@ -25,6 +25,7 @@
 //! no `Rc`/`RefCell`, cheap to clone, and trivially serialisable.
 
 pub mod edge_sampling;
+pub mod edge_trace;
 pub mod edge_walker;
 pub mod extraction;
 pub mod face_export;

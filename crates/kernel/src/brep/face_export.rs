@@ -305,7 +305,7 @@ pub fn correlate_mesh_faces(
                     let align = 1.0 - dot; // [0, 2]
                     let mut score = dist + NORMAL_WEIGHT * align;
                     score += dist2(centroids[fk as usize], cl) * 1e-9;
-                    if best.map_or(true, |(_, bs)| score < bs) {
+                    if best.is_none_or(|(_, bs)| score < bs) {
                         best = Some((fk, score));
                     }
                 }
