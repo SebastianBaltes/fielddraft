@@ -4,11 +4,14 @@ import {
   INACTIVE_SKETCH_SESSION,
   applySketchToolDraft,
   buildDraftSketchState,
+  clearSketchSelection,
   enterSketchSession,
   exitSketchSession,
   removeSketchSubCallAt,
   selectSketchTool,
+  setSketchSelection,
   setSketchToolDraft,
+  toggleSketchSelection,
 } from "./sketchSession";
 
 describe("sketchSession reducers", () => {
@@ -170,6 +173,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      selection: [],
       subCalls: [
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
         { type: "sketch_constraint_horizontal", params: { line: 3 } },
@@ -191,6 +195,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      selection: [],
       subCalls: [
         // Call 0: sketch_point — allocates entity 1.
         { type: "sketch_point", params: { at: [0, 0] } },
@@ -252,6 +257,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      selection: [],
       subCalls: [
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 1-3
         { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 4-6
@@ -272,6 +278,7 @@ describe("sketchSession reducers", () => {
       selectedTool: null,
       toolDraft: {},
       editingFeatureId: null,
+      selection: [],
       subCalls: [
         { type: "sketch_point", params: { at: [0, 0] } }, // entity 1
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 2-4 (line=4)
@@ -286,6 +293,56 @@ describe("sketchSession reducers", () => {
     const cstr = after.subCalls[2];
     expect(cstr.type).toBe("sketch_constraint_parallel");
     expect(cstr.params).toMatchObject({ line_a: 3, line_b: 6 });
+  });
+
+  it("toggleSketchSelection adds then removes an entity id", () => {
+    const session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    expect(session.selection).toEqual([]);
+    const one = toggleSketchSelection(session, 3);
+    expect(one.selection).toEqual([3]);
+    const two = toggleSketchSelection(one, 6);
+    expect(two.selection).toEqual([3, 6]);
+    const back = toggleSketchSelection(two, 3);
+    expect(back.selection).toEqual([6]);
+  });
+
+  it("setSketchSelection replaces the whole set, clearSketchSelection empties it", () => {
+    const session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    const set = setSketchSelection(session, [1, 2, 4]);
+    expect(set.selection).toEqual([1, 2, 4]);
+    const cleared = clearSketchSelection(set);
+    expect(cleared.selection).toEqual([]);
+  });
+
+  it("clearSketchSelection is identity when already empty", () => {
+    const session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    expect(clearSketchSelection(session)).toBe(session);
+  });
+
+  it("selection reducers are no-ops on an inactive session", () => {
+    expect(toggleSketchSelection(INACTIVE_SKETCH_SESSION, 1)).toBe(
+      INACTIVE_SKETCH_SESSION,
+    );
+    expect(setSketchSelection(INACTIVE_SKETCH_SESSION, [1])).toBe(
+      INACTIVE_SKETCH_SESSION,
+    );
+  });
+
+  it("selecting a drawing tool clears a stale selection", () => {
+    let session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    session = setSketchSelection(session, [3, 6]);
+    const drawing = selectSketchTool(session, "sketch_line", {});
+    expect(drawing.selection).toEqual([]);
+  });
+
+  it("removeSketchSubCallAt clears the selection (ids shift)", () => {
+    let session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    session = selectSketchTool(session, "sketch_point", { at: [1, 1] });
+    session = applySketchToolDraft(session);
+    session = selectSketchTool(session, null);
+    session = setSketchSelection(session, [1]);
+    const after = removeSketchSubCallAt(session, 0);
+    expect(after.selection).toEqual([]);
   });
 
   it("exitSketchSession discards any accumulated sub-spine draft", () => {

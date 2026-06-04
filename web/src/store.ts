@@ -33,6 +33,9 @@ import {
   selectSketchTool as reduceSelect,
   setSketchToolDraft as reduceSetDraft,
   removeSketchSubCallAt as reduceRemoveAt,
+  toggleSketchSelection as reduceToggleSelection,
+  setSketchSelection as reduceSetSelection,
+  clearSketchSelection as reduceClearSelection,
 } from "./sketchSession";
 import {
   INACTIVE_ASSEMBLY,
@@ -129,6 +132,13 @@ export interface SketchSessionState {
    *  through `replaceSketch` instead of `addSketch` so the
    *  outliner row keeps its id. */
   editingFeatureId: number | null;
+  /** Solver-entity ids of the committed geometry currently
+   *  selected in the canvas (select mode — no drawing tool
+   *  active). Drives the context-sensitive constraint palette
+   *  and, later, drag-edit. Ids are resolved against
+   *  `buildDraftSketchState(subCalls)`. Empty when nothing is
+   *  picked. */
+  selection: ReadonlyArray<number>;
 }
 
 export interface StoreState {
@@ -1909,6 +1919,23 @@ export class KernelStore {
    */
   removeSketchSubCall(index: number): void {
     this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
+  }
+
+  /** Select mode: toggle a committed-entity id in the sketch
+   *  selection set. Ids are resolved against
+   *  `buildDraftSketchState(subCalls)` by the canvas. */
+  toggleSketchSelection(entityId: number): void {
+    this.updateSketch(reduceToggleSelection(this.state.sketchSession, entityId));
+  }
+
+  /** Replace the sketch selection wholesale. */
+  setSketchSelection(ids: ReadonlyArray<number>): void {
+    this.updateSketch(reduceSetSelection(this.state.sketchSession, ids));
+  }
+
+  /** Clear the sketch selection. */
+  clearSketchSelection(): void {
+    this.updateSketch(reduceClearSelection(this.state.sketchSession));
   }
 
   toggleConstraintDriven(index: number): void {

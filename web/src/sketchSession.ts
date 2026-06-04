@@ -22,6 +22,7 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   toolDraft: {},
   subCalls: [],
   editingFeatureId: null,
+  selection: [],
 };
 
 /** Options for the `enterSketchSession` reducer. K6b.3b adds the
@@ -49,6 +50,7 @@ export function enterSketchSession(
     toolDraft: {},
     subCalls: opts.initialSubCalls ?? [],
     editingFeatureId: opts.editingFeatureId ?? null,
+    selection: [],
   };
 }
 
@@ -70,11 +72,51 @@ export function selectSketchTool(
 ): SketchSessionState {
   if (!state.active) return state;
   if (state.selectedTool === typeName) return state;
+  // Switching tools leaves select-mode: clear any picked geometry so
+  // a stale selection can't drive the constraint palette while the
+  // user is drawing.
   return {
     ...state,
     selectedTool: typeName,
     toolDraft: typeName === null ? {} : initialDraft,
+    selection: state.selection.length === 0 ? state.selection : [],
   };
+}
+
+// ─── selection (select mode — no drawing tool active) ───────────
+
+/** Toggle one committed-entity id in the selection set. Adding an
+ *  id appends it; clicking an already-selected id removes it. */
+export function toggleSketchSelection(
+  state: SketchSessionState,
+  entityId: number,
+): SketchSessionState {
+  if (!state.active) return state;
+  const has = state.selection.includes(entityId);
+  return {
+    ...state,
+    selection: has
+      ? state.selection.filter((id) => id !== entityId)
+      : [...state.selection, entityId],
+  };
+}
+
+/** Replace the selection wholesale (e.g. a marquee or programmatic
+ *  pick). Order is preserved as supplied. */
+export function setSketchSelection(
+  state: SketchSessionState,
+  ids: ReadonlyArray<number>,
+): SketchSessionState {
+  if (!state.active) return state;
+  return { ...state, selection: [...ids] };
+}
+
+/** Drop the entire selection. No-op (identity) when already empty. */
+export function clearSketchSelection(
+  state: SketchSessionState,
+): SketchSessionState {
+  if (!state.active || state.selection.length === 0) return state;
+  return { ...state, selection: [] };
 }
 
 /** Update the FeatureDialog working copy for the active tool. */
@@ -482,7 +524,9 @@ export function removeSketchSubCallAt(
     rewritten.push({ ...call, params: nextParams });
   }
 
-  return { ...state, subCalls: [...before, ...rewritten] };
+  // Entity ids shift when a call is removed, so any prior selection
+  // would now point at the wrong geometry — drop it.
+  return { ...state, subCalls: [...before, ...rewritten], selection: [] };
 }
 
 /**
