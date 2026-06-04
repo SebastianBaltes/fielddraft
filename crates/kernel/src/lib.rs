@@ -5315,6 +5315,67 @@ mod tests {
         assert!(sdf([100.0, 0.0, 0.0]) > 0.0, "outside both");
     }
 
+    #[test]
+    fn two_boolean_unions_sharing_a_tool_form_one_body() {
+        // Scene: a left box, a right box, and a centre sphere that bridges
+        // both. The user builds it as TWO separate union operations that
+        // share the sphere: (left ∪ sphere) and (right ∪ sphere). Union is
+        // transitive, so all three must collapse into a single Part — the
+        // second union must not clobber the sphere's link to the first.
+        let mut k = Kernel::new();
+        let left = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            -20.0, 0.0, 0.0, 10.0, 10.0, 10.0,
+        ).unwrap();
+        let right = k.add_primitive(
+            Primitive::KIND_BOX, BoolOp::TAG_UNION,
+            20.0, 0.0, 0.0, 10.0, 10.0, 10.0,
+        ).unwrap();
+        let sph = k.add_primitive(
+            Primitive::KIND_SPHERE, BoolOp::TAG_UNION,
+            0.0, 0.0, 0.0, 15.0, 0.0, 0.0,
+        ).unwrap();
+        assert_eq!(k.body_count(), 3, "three plain unions are three parts");
+
+        // Operation 1: left ∪ sphere.
+        let b1 = k.add_boolean().unwrap();
+        let p1 = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", left, sph),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(b1, &p1.to_string()).unwrap();
+
+        // Operation 2: right ∪ sphere — shares the sphere with op 1.
+        let b2 = k.add_boolean().unwrap();
+        let p2 = serde_json::json!({
+            "operation": "Union",
+            "tools": format!("qCreatedBy({}), qCreatedBy({})", right, sph),
+            "targets": "",
+            "keep_tools": false,
+        });
+        k.replace_feature_call_params(b2, &p2.to_string()).unwrap();
+
+        // The sphere accumulates BOTH seed links (left + right), not just
+        // the most recent one.
+        let sphere_feat = k.decoded.iter().find(|f| f.id == FeatureId::from_u32(sph)).unwrap();
+        assert!(
+            sphere_feat.target_ids.contains(&FeatureId::from_u32(left))
+                && sphere_feat.target_ids.contains(&FeatureId::from_u32(right)),
+            "the bridging sphere links to both union seeds: {:?}",
+            sphere_feat.target_ids
+        );
+        assert_eq!(k.body_count(), 1, "the shared sphere fuses both unions into one part");
+
+        // The fused solid spans all three lobes.
+        let tree = csg::CsgNode::from_decoded(&k.decoded);
+        let sdf = |p: [f32; 3]| tree.sdf(p, csg::EvalMode::Logical);
+        assert!(sdf([-20.0, 0.0, 0.0]) < 0.0, "inside the left box");
+        assert!(sdf([0.0, 0.0, 0.0]) < 0.0, "inside the sphere");
+        assert!(sdf([20.0, 0.0, 0.0]) < 0.0, "inside the right box");
+    }
+
     /// The merged union mesh is the *correct* outer surface — every mesh vertex
     /// lies on the union surface, never inside the solid. Guards against a
     /// regression where the union would mesh with an interior "scoop" (a lobe's

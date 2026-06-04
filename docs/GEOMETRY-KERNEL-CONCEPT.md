@@ -1555,3 +1555,17 @@ Der in DL-69 als „sollte einfach funktionieren“ vermerkte **Leaf↔Leaf**-Fa
 **Offen für später:** Eine *echte* Schraubgewinde-Geometrie (verschiedene Gewindeprofile) braucht Sketch-Helix, nicht das Spielzeug-Thread. Und für künftige **FieldSkript-Roh-SDF-Ops**, die nicht statisch normiert werden können, bleibt die ursprüngliche „B-per-Body"-Idee gültig: zur Compile-Zeit einen per-Body-Lipschitz-Bound schätzen (Gradienten-Sampling) und ins Feld falten — derselbe Mechanismus, nur mit geschätztem statt geschlossenem `L`. Sobald ein FieldSkript-Op raumfüllend ist, erbt er via `is_space_filling` automatisch den Weave-Skip. Siehe Memory `thread-sdf-not-lipschitz`.
 
 **Vergleich `Primitive::Cone`** machte es schon immer richtig (radialer Gap auf Wand-Normale, `wall_scale = 2·hh/slant_len`); Thread folgt jetzt demselben Muster.
+
+### DL-72 — Union ist transitiv: ein geteiltes Tool verschmilzt alle beteiligten Parts (2026-06-04, 0.5.18)
+
+**Symptom (User-Report).** Szene mit zwei Haupt-Booleans, die sich eine Kugel teilen: „rechte Box ∪ Kugel" und (separat) „linke Gyroid-Box ∪ Kugel". Union ist transitiv, also müsste alles *ein* Part sein — angezeigt werden aber **2 Parts** (auch farblich getrennt sichtbar): grün = Gyroid-Box + Kugel, blau = rechte Box allein.
+
+**Ursache — zwei Ebenen.**
+1. **Boolean-`execute` (features.rs) überschrieb statt zu akkumulieren.** Ein Union-Boolean macht das *erste* Tool zum Seed (`target_ids` leer) und routet jedes weitere Tool per `target_ids = vec![seed]` in dessen Body. Bei zwei Boolean-Features, die sich die Kugel teilen, **überschrieb** das zweite (`= vec![…]`) die Verknüpfung des ersten: nach Op2 hatte die Kugel nur noch `target_ids = [gyroid]`, der Link zur rechten Box war weg → die Kugel dockte nur an einen Body.
+2. **`partition` dockte ohnehin nur in *einen* Body (`.find()`).** Selbst mit korrekten Doppel-Links hätte ein brückenbildendes Tool, dessen Targets über zwei bestehende Bodies spannen, nur den ersten getroffen und den zweiten verwaist gelassen.
+
+**Lösung — beide Ebenen.**
+- **features.rs:** Nicht-Seed-Tools **akkumulieren** ihren Seed-Link (`if !contains { push }`) statt zu überschreiben. Die geteilte Kugel trägt danach `target_ids = [rechteBox, gyroidBox]`.
+- **partition (`BoolOp::Union`):** sammelt **alle** verbundenen Bodies (`filter` statt `find`: getargetet **und** AABB-Überlappung), dockt in den niedrigst-indizierten und **faltet jeden weiteren hinein** (Entfernen in absteigender Reihenfolge hält die Indizes gültig; `feature_indices` danach sortiert für die Dokument-Reihenfolge-Invariante). Eine Brücke, die nur einen ihrer Targets *berührt*, verschmilzt weiterhin nur diesen — Kontakt entscheidet jede einzelne Fusion (`bridging_union_skips_a_target_it_does_not_touch`).
+
+Tests: `bridging_union_fuses_both_targets_into_one_body`, `bridging_union_skips_a_target_it_does_not_touch` (partition), `two_boolean_unions_sharing_a_tool_form_one_body` (End-to-End über zwei `add_boolean`).

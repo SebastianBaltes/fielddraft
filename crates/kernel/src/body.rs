@@ -255,33 +255,53 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
 
         match feature.op {
             BoolOp::Union => {
-                // A union carrying explicit `target_ids` docks into the
-                // body that already holds its target — but only if the
-                // two actually touch (AABB overlap). An explicit Boolean
-                // union of two *disjoint* solids stays two Parts; the
-                // link expresses intent, contact decides the merge.
-                // Untagged unions, and tagged-but-separated ones, seed a
-                // fresh body. Spatial overlap alone never merges either.
-                let docked = if feature.target_ids.is_empty() {
-                    None
+                // A union carrying explicit `target_ids` docks into every
+                // body that already holds one of its targets — but only
+                // those it actually touches (AABB overlap). A union can
+                // bridge *several* bodies at once: the sphere that unions a
+                // left and a right solid fuses all three into a single Part,
+                // because union is transitive. An explicit Boolean union of
+                // two *disjoint* solids stays two Parts; the link expresses
+                // intent, contact decides the merge. Untagged unions, and
+                // tagged-but-separated ones, connect to nothing and seed a
+                // fresh body. Spatial overlap alone never merges.
+                let connected: Vec<usize> = if feature.target_ids.is_empty() {
+                    Vec::new()
                 } else {
-                    (0..groups.len()).find(|&idx| {
-                        let targeted = groups[idx].feature_indices.iter().any(|&fi| {
-                            let root = features[fi].id.root_ancestor();
-                            feature.target_ids.iter().any(|tid| root == tid)
-                        });
-                        targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
-                    })
+                    (0..groups.len())
+                        .filter(|&idx| {
+                            let targeted = groups[idx].feature_indices.iter().any(|&fi| {
+                                let root = features[fi].id.root_ancestor();
+                                feature.target_ids.iter().any(|tid| root == tid)
+                            });
+                            targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
+                        })
+                        .collect()
                 };
-                match docked {
-                    Some(idx) => {
-                        groups[idx].feature_indices.push(i);
-                        groups[idx].aabb = Aabb::union(groups[idx].aabb, feat_aabb);
-                    }
+                match connected.split_first() {
+                    // No bridged body: this union seeds its own Part.
                     None => groups.push(BodyPartition {
                         feature_indices: vec![i],
                         aabb: feat_aabb,
                     }),
+                    // Dock into the lowest-index bridged body and fold every
+                    // other one into it (descending order keeps `keep` and
+                    // the not-yet-removed indices valid). `connected` is
+                    // ascending, so `keep` is below all of `rest`.
+                    Some((&keep, rest)) => {
+                        groups[keep].feature_indices.push(i);
+                        groups[keep].aabb = Aabb::union(groups[keep].aabb, feat_aabb);
+                        for &idx in rest.iter().rev() {
+                            let merged = groups.remove(idx);
+                            groups[keep]
+                                .feature_indices
+                                .extend(merged.feature_indices);
+                            groups[keep].aabb = Aabb::union(groups[keep].aabb, merged.aabb);
+                        }
+                        // Keep members in original document order (the
+                        // `feature_indices` invariant downstream relies on).
+                        groups[keep].feature_indices.sort_unstable();
+                    }
                 }
             }
             BoolOp::Difference | BoolOp::Intersect => {
@@ -1104,6 +1124,48 @@ mod tests {
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 3, "each union must be its own body");
+    }
+
+    #[test]
+    fn bridging_union_fuses_both_targets_into_one_body() {
+        // Two disjoint boxes each seed their own Part. A sphere that
+        // unions BOTH (target_ids = [1, 2]) and physically overlaps each
+        // must fuse all three into a single Part — union is transitive,
+        // so it cannot dock into only the first body and orphan the
+        // second (the "2 Parts that should be 1" bug).
+        let mut bridge = sphere_feat(3, BoolOp::Union, [15.0, 0.0, 0.0], 16.0);
+        bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            bridge,
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1, "a bridging union fuses both targets");
+        assert_eq!(
+            bodies[0].feature_indices,
+            vec![0, 1, 2],
+            "all three features in original order"
+        );
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+    }
+
+    #[test]
+    fn bridging_union_skips_a_target_it_does_not_touch() {
+        // A bridge that overlaps only one of its two targets fuses just
+        // that one; the untouched target stays a separate Part (contact
+        // still decides each merge).
+        let mut bridge = sphere_feat(3, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
+        let features = vec![
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            bridge,
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 2, "the far target stays separate");
+        assert_eq!(bodies[0].feature_indices, vec![0, 2]);
+        assert_eq!(bodies[1].feature_indices, vec![1]);
     }
 
     #[test]

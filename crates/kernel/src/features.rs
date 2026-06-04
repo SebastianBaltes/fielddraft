@@ -2879,11 +2879,18 @@ impl FeatureKind for BooleanFeature {
                     // Seed the body with the first tool; route every
                     // other tool into that same body so the partition
                     // pass merges them into one Part instead of
-                    // spawning a body per tool.
+                    // spawning a body per tool. A non-seed tool *accumulates*
+                    // its links (push, don't overwrite): a part shared by two
+                    // union operations (the sphere unioned to a left and a
+                    // right solid) must carry BOTH seed links so the partition
+                    // pass fuses all three into one Part. Overwriting would
+                    // drop the earlier link and split the part in two.
                     if Some(idx) == first_tool_pos {
                         feature.target_ids.clear();
                     } else if let Some(seed) = &first_tool_id {
-                        feature.target_ids = vec![seed.clone()];
+                        if !feature.target_ids.contains(seed) {
+                            feature.target_ids.push(seed.clone());
+                        }
                     }
                 }
                 BoolOp::Intersect => {
