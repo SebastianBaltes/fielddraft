@@ -506,9 +506,15 @@ pub struct OpenSurface {
 }
 
 impl OpenSurface {
-    /// Outward-oriented surface gate `g(p)` (≤ 0 inside the body, 0 on the face).
-    /// Maps `p` world→surface-local (rigid inverse, undoing any scale) and
-    /// evaluates the face's analytic [`HalfSpace`] there.
+    /// Outward-oriented surface gate `g(p)` (≤ 0 inside the body, 0 on the face),
+    /// expressed as a *world* Euclidean distance. Maps `p` world→surface-local
+    /// (rigid inverse, undoing the placement scale), evaluates the face's analytic
+    /// [`HalfSpace`] there, then Eikonal-normalises the result by the world
+    /// gradient magnitude `|S⁻¹∇f|` so the gate measures true world distance even
+    /// when the body placement carries a (possibly non-uniform) scale. This is
+    /// exact for a uniform scale `s` (gate is multiplied by `s`) and a first-order
+    /// correction otherwise — keeping the shell taper well-conditioned (∇g ≈ 1)
+    /// instead of stretching it by the local scale factors.
     #[inline]
     pub fn eval(&self, p: [f32; 3]) -> f32 {
         let t = &self.placement;
@@ -516,7 +522,17 @@ impl OpenSurface {
         let conj = [-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]];
         let r = crate::quat_rotate(conj, d);
         let lp = [r[0] / t.scale[0], r[1] / t.scale[1], r[2] / t.scale[2]];
-        sdf_halfspace(&self.surface, lp)
+        let f = sdf_halfspace(&self.surface, lp);
+        let grad = grad_halfspace(&self.surface, lp);
+        let gn = ((grad[0] / t.scale[0]).powi(2)
+            + (grad[1] / t.scale[1]).powi(2)
+            + (grad[2] / t.scale[2]).powi(2))
+        .sqrt();
+        if gn > 1e-9 {
+            f / gn
+        } else {
+            f
+        }
     }
 }
 
@@ -2057,6 +2073,54 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
     }
 }
 
+/// Analytic gradient `∇f` of [`sdf_halfspace`] in the surface-local frame. Each
+/// branch is unit-norm where the SDF is smooth (Plane/Sphere/Cylinder/Cone/Torus
+/// are Eikonal in local coordinates); at the central singularities (cylinder/cone
+/// axis, sphere centre, torus core) it returns the zero vector so callers fall
+/// back to the unscaled value. Used by [`OpenSurface::eval`] to convert a local
+/// gate to a world Euclidean distance under a scaled placement.
+pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
+    match hs {
+        HalfSpace::Plane { normal, .. } => *normal,
+        HalfSpace::InfiniteCylinder { .. } => {
+            let rho = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            if rho > 1e-9 {
+                [p[0] / rho, 0.0, p[2] / rho]
+            } else {
+                [0.0, 0.0, 0.0]
+            }
+        }
+        HalfSpace::Sphere { .. } => {
+            let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            if len > 1e-9 {
+                [p[0] / len, p[1] / len, p[2] / len]
+            } else {
+                [0.0, 0.0, 0.0]
+            }
+        }
+        HalfSpace::Cone { half_angle } => {
+            let rho = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let (sin_a, cos_a) = half_angle.sin_cos();
+            if rho > 1e-9 {
+                [cos_a * p[0] / rho, -p[1].signum() * sin_a, cos_a * p[2] / rho]
+            } else {
+                [0.0, -p[1].signum() * sin_a, 0.0]
+            }
+        }
+        HalfSpace::Torus { major_radius, .. } => {
+            let rho = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let q0 = rho - major_radius;
+            let k = (q0 * q0 + p[1] * p[1]).sqrt();
+            if k > 1e-9 && rho > 1e-9 {
+                [q0 * p[0] / (rho * k), p[1] / k, q0 * p[2] / (rho * k)]
+            } else {
+                [0.0, 0.0, 0.0]
+            }
+        }
+        HalfSpace::Gyroid { .. } => [0.0, 0.0, 0.0],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2199,6 +2263,39 @@ mod tests {
             open_shell_sdf(-1.0, t, &open, [0.0, 0.0, 0.0]) < 0.0,
             "axis interior keeps the wall"
         );
+    }
+
+    #[test]
+    fn open_surface_gate_is_world_distance_under_scaled_placement() {
+        // A unit sphere gate carried by a uniform-scale-2 placement is the world
+        // sphere of radius 2. The gate must report the *world* Euclidean distance
+        // (Eikonal-normalised), not the unscaled local SDF, so the shell taper
+        // keeps its true millimetre width regardless of the body's placement scale.
+        let scaled = OpenSurface {
+            surface: HalfSpace::Sphere { radius: 1.0 },
+            placement: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [2.0, 2.0, 2.0],
+            },
+        };
+        // World point 2 mm outside the radius-2 surface ⇒ gate = +2.
+        assert!((scaled.eval([4.0, 0.0, 0.0]) - 2.0).abs() < 1e-4, "uniform scale: exact world distance");
+        // On the surface ⇒ gate ≈ 0.
+        assert!(scaled.eval([2.0, 0.0, 0.0]).abs() < 1e-4, "on the scaled surface");
+
+        // Non-uniform scale (x·2): on-axis the gate is still the true distance to
+        // the ellipsoid's x semi-axis (= 2), proving the gradient normalisation
+        // beats the raw local SDF (which would report 1).
+        let aniso = OpenSurface {
+            surface: HalfSpace::Sphere { radius: 1.0 },
+            placement: Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [2.0, 1.0, 1.0],
+            },
+        };
+        assert!((aniso.eval([4.0, 0.0, 0.0]) - 2.0).abs() < 1e-4, "non-uniform: on-axis world distance");
     }
 
     #[test]

@@ -358,29 +358,69 @@ fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
 }
 
 /// Outward-oriented open-face gate `g(local)` in the face's local frame, mirroring
-/// `csg::sdf_halfspace` and `web/src/sdfRenderer.ts`'s `fd_open_gate`.
-fn open_gate_local(local: [f32; 3], kind: f32, p: [f32; 4]) -> f32 {
-    if kind < 0.5 {
+/// `csg::sdf_halfspace`/`grad_halfspace` and `web/src/sdfRenderer.ts`'s
+/// `fd_open_gate`. Returns a *world* Euclidean distance: the local SDF is
+/// Eikonal-normalised by `|S⁻¹∇f|` (`scale` = the placement scale) so a scaled
+/// body placement does not stretch the shell taper. Exact for uniform scale.
+fn open_gate_local(local: [f32; 3], kind: f32, p: [f32; 4], scale: [f32; 3]) -> f32 {
+    // (f, grad) = local SDF value and its analytic gradient (unit-norm where smooth).
+    let (f, grad) = if kind < 0.5 {
         // Plane: normal = (p0, p1, p2), offset = p3.
-        local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3]
+        (
+            local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3],
+            [p[0], p[1], p[2]],
+        )
     } else if kind < 1.5 {
         // Infinite cylinder, radius p0, axis Y.
-        (local[0] * local[0] + local[2] * local[2]).sqrt() - p[0]
+        let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
+        let grad = if rho > 1e-9 {
+            [local[0] / rho, 0.0, local[2] / rho]
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+        (rho - p[0], grad)
     } else if kind < 2.5 {
         // Sphere, radius p0.
-        (local[0] * local[0] + local[1] * local[1] + local[2] * local[2]).sqrt() - p[0]
+        let len = (local[0] * local[0] + local[1] * local[1] + local[2] * local[2]).sqrt();
+        let grad = if len > 1e-9 {
+            [local[0] / len, local[1] / len, local[2] / len]
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+        (len - p[0], grad)
     } else if kind < 3.5 {
         // Cone, half-angle p0, apex at origin, axis Y.
-        let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
+        let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
         let (sin_a, cos_a) = p[0].sin_cos();
-        r * cos_a - local[1].abs() * sin_a
+        let grad = if rho > 1e-9 {
+            [cos_a * local[0] / rho, -local[1].signum() * sin_a, cos_a * local[2] / rho]
+        } else {
+            [0.0, -local[1].signum() * sin_a, 0.0]
+        };
+        (rho * cos_a - local[1].abs() * sin_a, grad)
     } else if kind < 4.5 {
         // Torus, major p0, minor p1.
-        let q0 = (local[0] * local[0] + local[2] * local[2]).sqrt() - p[0];
-        (q0 * q0 + local[1] * local[1]).sqrt() - p[1]
+        let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
+        let q0 = rho - p[0];
+        let k = (q0 * q0 + local[1] * local[1]).sqrt();
+        let grad = if k > 1e-9 && rho > 1e-9 {
+            [q0 * local[0] / (rho * k), local[1] / k, q0 * local[2] / (rho * k)]
+        } else {
+            [0.0, 0.0, 0.0]
+        };
+        (k - p[1], grad)
     } else {
         // Never opens (TPMS / non-analytic).
-        f32::NEG_INFINITY
+        return f32::NEG_INFINITY;
+    };
+    let gn = ((grad[0] / scale[0]).powi(2)
+        + (grad[1] / scale[1]).powi(2)
+        + (grad[2] / scale[2]).powi(2))
+    .sqrt();
+    if gn > 1e-9 {
+        f / gn
+    } else {
+        f
     }
 }
 
@@ -811,7 +851,7 @@ pub fn eval_opcodes_with_volumes(
                         [opcodes[pc + 11], opcodes[pc + 12], opcodes[pc + 13], opcodes[pc + 14]];
                     pc += OPEN_REC_LEN;
                     let local = world_to_local_inline(pt, translate, quat, scale);
-                    g = g.max(open_gate_local(local, kind, params));
+                    g = g.max(open_gate_local(local, kind, params, scale));
                 }
                 let d = pop_v!();
                 let e = (d - g).clamp(0.0, thickness);

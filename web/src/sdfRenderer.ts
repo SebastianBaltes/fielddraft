@@ -86,22 +86,40 @@ export const worldToLocalFn = wgslFn(`
 //   3 cone (apex origin, axis Y): half_angle=p.x
 //   4 torus: major=p.x, minor=p.y
 //   5 never (TPMS / non-analytic): keeps the wall closed
+// Returns a *world* Euclidean distance: the local SDF is Eikonal-normalised by
+// |S⁻¹∇f| (`scale` = placement scale) so a scaled body placement does not stretch
+// the shell taper. Exact for uniform scale. Mirrors csg::grad_halfspace.
 export const openGateFn = wgslFn(`
-  fn fd_open_gate(local: vec3f, kind: f32, p: vec4f) -> f32 {
+  fn fd_open_gate(local: vec3f, kind: f32, p: vec4f, scale: vec3f) -> f32 {
+    var f: f32;
+    var grad: vec3f;
     if (kind < 0.5) {
-      return dot(local, vec3f(p.x, p.y, p.z)) - p.w;
+      f = dot(local, vec3f(p.x, p.y, p.z)) - p.w;
+      grad = vec3f(p.x, p.y, p.z);
     } else if (kind < 1.5) {
-      return length(vec2f(local.x, local.z)) - p.x;
+      let rho = length(vec2f(local.x, local.z));
+      f = rho - p.x;
+      grad = select(vec3f(0.0), vec3f(local.x / rho, 0.0, local.z / rho), rho > 1e-9);
     } else if (kind < 2.5) {
-      return length(local) - p.x;
+      let len = length(local);
+      f = len - p.x;
+      grad = select(vec3f(0.0), local / len, len > 1e-9);
     } else if (kind < 3.5) {
-      let r = length(vec2f(local.x, local.z));
-      return r * cos(p.x) - abs(local.y) * sin(p.x);
+      let rho = length(vec2f(local.x, local.z));
+      f = rho * cos(p.x) - abs(local.y) * sin(p.x);
+      let sy = -sign(local.y) * sin(p.x);
+      grad = select(vec3f(0.0, sy, 0.0), vec3f(cos(p.x) * local.x / rho, sy, cos(p.x) * local.z / rho), rho > 1e-9);
     } else if (kind < 4.5) {
-      let q0 = length(vec2f(local.x, local.z)) - p.x;
-      return length(vec2f(q0, local.y)) - p.y;
+      let rho = length(vec2f(local.x, local.z));
+      let q0 = rho - p.x;
+      let k = length(vec2f(q0, local.y));
+      f = k - p.y;
+      grad = select(vec3f(0.0), vec3f(q0 * local.x / (rho * k), local.y / k, q0 * local.z / (rho * k)), k > 1e-9 && rho > 1e-9);
+    } else {
+      return -1e30;
     }
-    return -1e30;
+    let gn = length(grad / scale);
+    return select(f, f / gn, gn > 1e-9);
   }
 `);
 

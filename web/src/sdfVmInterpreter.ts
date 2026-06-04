@@ -331,7 +331,7 @@ export function buildVmSdfEvalFn(
             opBuf.element(base.add(13)), opBuf.element(base.add(14)),
           );
           const local = worldToLocalFn({ p: vec3(ptx, pty, ptz), translate, quat, scale });
-          g.assign(max(g, openGateFn({ local, kind, p: params })));
+          g.assign(max(g, openGateFn({ local, kind, p: params, scale })));
           ii.addAssign(1);
         });
         const e = clamp(d.sub(g), float(0), thickness);
