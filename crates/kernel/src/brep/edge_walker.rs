@@ -471,22 +471,9 @@ fn branch_leaf_map(body: &BoundedCsg) -> HashMap<u32, &BoundedCsg> {
 
 fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a BoundedCsg>) {
     match node {
-        BoundedCsg::Leaf { id, primitive, .. } => {
-            // Exempt the non-Lipschitz primitive class (toy Thread, Gyroid, and
-            // any future runtime FieldSkript raw-SDF op) from the edge tracer.
-            // Their dual field is not a clean Euclidean distance (|∇f|≠1, NaN
-            // gradients at singularities), so project_to_edge/march cannot
-            // condition their faces and shatter the seam into hundreds of
-            // useless pieces instead of one edge (Thread∩Sphere → E=442, V=0).
-            // A correct B-Rep for these SDF-difficult shapes is not the goal —
-            // the renderer covers them via conservative under-relaxed marching.
-            // Leaving them out of the leaf map makes `branch_field` return None,
-            // so the robust sampled line/circle/gap fits take the seam instead.
-            if !primitive_is_non_lipschitz(primitive) {
-                out.insert(BranchId::from_feature(id).feature_id(), node);
-            }
-        }
-        BoundedCsg::Extrude { id, .. } | BoundedCsg::Revolve { id, .. } => {
+        BoundedCsg::Leaf { id, .. }
+        | BoundedCsg::Extrude { id, .. }
+        | BoundedCsg::Revolve { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id(), node);
         }
         BoundedCsg::Union { left, right, .. }
@@ -507,16 +494,41 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
     }
 }
 
-/// The non-Lipschitz SDF class: primitives whose field is not a clean Euclidean
-/// distance (|∇f|≠1 and/or NaN gradients at singularities), so the DL-68/69 edge
-/// tracer cannot condition their faces. Excluded from the edge tracer (→ sampled
-/// fits); the renderer covers them via conservative under-relaxed marching
-/// (`MARCH_RELAX`). Domain warps (Twist/Bend/Displace) are handled separately and
-/// wholesale by [`body_has_warp`]. Extend this list when FieldSkript gains a raw
-/// user-SDF op — its field is non-Lipschitz by construction.
-fn primitive_is_non_lipschitz(prim: &fielddraft_protocol::Primitive) -> bool {
-    use fielddraft_protocol::Primitive;
-    matches!(prim, Primitive::Thread { .. } | Primitive::Gyroid { .. })
+/// The set of **feature ids** whose primitive is non-Lipschitz
+/// ([`fielddraft_protocol::Primitive::is_non_lipschitz`]: Thread, Gyroid, future
+/// FieldSkript raw-SDF). [`build_wireframe`] drops every signature group that
+/// touches one — their field is not a clean Euclidean distance, so neither the
+/// DL-68/69 tracer nor the sampled line/circle fits can condition their faces;
+/// both shatter the seam into useless fragments (Thread∩Sphere → E=442, the star
+/// of garbage around a threaded bore, the dashed mess across a gyroid). A correct
+/// B-Rep for these SDF-difficult shapes is not the goal — the renderer covers
+/// them via conservative marching (each is self-normalised, DL-70). Dropping the
+/// group also skips the O(n²) walker over a space-filling gyroid's huge seam
+/// groups. Neighbour seams (a box's own plane∩plane edges) are untouched. See
+/// DL-71.
+fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections::HashSet<u32>) {
+    match node {
+        BoundedCsg::Leaf { id, primitive, .. } => {
+            if primitive.is_non_lipschitz() {
+                out.insert(BranchId::from_feature(id).feature_id());
+            }
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_non_lipschitz_features(left, out);
+            collect_non_lipschitz_features(right, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. } => collect_non_lipschitz_features(inner, out),
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => {}
+    }
 }
 
 /// Is `q` within `tol` of any vertex of the polyline?
@@ -1203,11 +1215,28 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
         )
     };
 
+    // Feature ids whose primitive is non-Lipschitz (Thread / Gyroid / future
+    // FieldSkript raw-SDF). Any seam touching one is dropped below: their field
+    // is not a clean Euclidean distance, so neither the tracer nor the sampled
+    // fits can condition it — the seam shatters into garbage (the star around a
+    // threaded bore, the dashed mess across a gyroid). Skipping the group up
+    // front also avoids the O(n²) walker over a space-filling gyroid's huge
+    // groups. See [`collect_non_lipschitz_features`], DL-71.
+    let mut non_lipschitz: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    collect_non_lipschitz_features(body, &mut non_lipschitz);
+
     // Dangling chain endpoints (no vertex snapped) recorded for the reflex-
     // vertex reconstruction post-pass (DL-60 / Task #25).
     let mut dangling: Vec<DanglingEnd> = Vec::new();
 
     for &(sa, sb) in &group_keys {
+        // Drop any seam that touches a non-Lipschitz face — no clean B-Rep edge
+        // exists there (DL-71). The renderer covers these shapes directly.
+        if non_lipschitz.contains(&BranchId(sa).feature_id())
+            || non_lipschitz.contains(&BranchId(sb).feature_id())
+        {
+            continue;
+        }
         let pts = &groups[&(sa, sb)];
         // Collapse coincident edge points (DL-17) and get the characteristic
         // spacing of the distinct survivors.
@@ -1562,50 +1591,54 @@ mod tests {
     }
 
     #[test]
-    fn non_lipschitz_primitives_excluded_from_leaf_map() {
-        // D: Thread/Gyroid are non-Lipschitz → must NOT enter the leaf map (the
-        // DL-68/69 tracer would shatter their seams, e.g. Thread∩Sphere E=442).
-        // A Box leaf is a clean field and stays mapped so its own seams still
-        // trace. branch_field then returns None for the excluded branches → the
-        // robust sampled fits reconstruct those seams instead.
-        let thread = CsgNode::Leaf {
-            id: FeatureId::from_u32(1),
-            primitive: Primitive::Thread {
-                nominal_radius: 0.5,
-                pitch: 0.2,
-                depth: 0.1,
-                half_height: 1.0,
-            },
-        };
+    fn non_lipschitz_seams_dropped_box_edges_kept() {
+        // DL-71: a Thread bored out of a Box. Every clean box edge survives, but
+        // NO emitted edge touches the (non-Lipschitz) thread face — the seam
+        // that used to shatter into the garbage star around the bore is dropped
+        // entirely, instead of being sample-fit. The renderer covers the thread.
         let boxn = CsgNode::Leaf {
-            id: FeatureId::from_u32(2),
+            id: FeatureId::from_u32(1),
             primitive: Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [1.0, 1.0, 1.0],
             },
         };
-        let gyroid = CsgNode::Leaf {
-            id: FeatureId::from_u32(3),
-            primitive: Primitive::Gyroid {
-                cell_size: 1.0,
-                thickness: 0.2,
+        let thread = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Thread {
+                nominal_radius: 0.5,
+                pitch: 0.2,
+                depth: 0.1,
+                half_height: 2.0,
             },
         };
-        let body = BoundedCsg::from_csg(&CsgNode::Union(
-            Box::new(CsgNode::Union(Box::new(thread), Box::new(boxn))),
-            Box::new(gyroid),
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(
+            Box::new(boxn),
+            Box::new(thread),
         ));
-        let map = branch_leaf_map(&body);
-        let fid = |n| BranchId::from_feature(&FeatureId::from_u32(n)).feature_id();
-        assert!(map.contains_key(&fid(2)), "clean box leaf must stay mapped");
+        let octree = Octree::build(&body, 0.0625);
+        let brep = build_wireframe(&body, &octree);
+
+        let thread_fid = BranchId::from_feature(&FeatureId::from_u32(2)).feature_id();
+        for e in &brep.edges {
+            assert_ne!(
+                BranchId(e.signature.0.as_u32()).feature_id(),
+                thread_fid,
+                "no edge may touch the non-Lipschitz thread face"
+            );
+            assert_ne!(
+                BranchId(e.signature.1.as_u32()).feature_id(),
+                thread_fid,
+                "no edge may touch the non-Lipschitz thread face"
+            );
+        }
+        // The box keeps its 12 sharp edges (the bore does not reach them).
         assert!(
-            !map.contains_key(&fid(1)),
-            "thread must be excluded (non-Lipschitz)"
+            brep.edge_count() >= 12,
+            "box edges must survive, got {}",
+            brep.edge_count()
         );
-        assert!(
-            !map.contains_key(&fid(3)),
-            "gyroid must be excluded (non-Lipschitz)"
-        );
+        assert_eq!(brep.validate(), Ok(()));
     }
 
     #[test]
@@ -1731,6 +1764,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn gyroid_seams_dropped_from_wireframe() {
+        // DL-71: a gyroid clipped to a box. Its space-filling surface meets the
+        // box faces in non-Lipschitz seams (the dashed garbage in the viewport);
+        // the wireframe must emit NONE of them. The box's own plane∩plane edges
+        // still survive. (The whole-body weave skip lives in `Body::ensure_brep`;
+        // here we exercise the per-group drop directly on the woven octree.)
+        let boxn = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [1.0, 1.0, 1.0],
+            },
+        };
+        let gyroid = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Gyroid { cell_size: 0.5, thickness: 0.15 },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Intersection(
+            Box::new(boxn),
+            Box::new(gyroid),
+        ));
+        let octree = Octree::build(&body, 2.0 / 32.0);
+        let brep = build_wireframe(&body, &octree);
+
+        let gyroid_fid = BranchId::from_feature(&FeatureId::from_u32(2)).feature_id();
+        for e in &brep.edges {
+            assert_ne!(BranchId(e.signature.0.as_u32()).feature_id(), gyroid_fid);
+            assert_ne!(BranchId(e.signature.1.as_u32()).feature_id(), gyroid_fid);
+        }
+        assert_eq!(brep.validate(), Ok(()));
     }
 
     #[test]

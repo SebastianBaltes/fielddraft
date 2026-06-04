@@ -169,9 +169,21 @@ impl Body {
             // under rigid + uniform scale, so the local sampling matches.
             let bounded =
                 build_bounded_for_body_local(features, &self.feature_indices, &self.placement);
-            let min_cell = topology_min_cell_size(&self.aabb);
-            let octree = Octree::build(&bounded, min_cell);
-            self.brep = Some((key, weave(&bounded, &octree)));
+            // A body containing a space-filling primitive (a gyroid TPMS) gets
+            // NO B-Rep wireframe (DL-71): the surface threads through nearly the
+            // whole volume, so the octree refines on tens of thousands of cells
+            // — a 30s move-stall in wasm — to weave a wireframe whose every seam
+            // is non-Lipschitz garbage we discard anyway. Skip the octree+weave
+            // outright; the renderer covers the shape. A *separate* clean body
+            // (union → its own partition) still weaves normally.
+            let brep = if bounded_contains_space_filling(&bounded) {
+                BRep::new()
+            } else {
+                let min_cell = topology_min_cell_size(&self.aabb);
+                let octree = Octree::build(&bounded, min_cell);
+                weave(&bounded, &octree)
+            };
+            self.brep = Some((key, brep));
         }
         &self.brep.as_ref().unwrap().1
     }
@@ -200,6 +212,31 @@ fn topology_min_cell_size(aabb: &Aabb) -> f32 {
     let size = aabb.size();
     let largest = size[0].max(size[1]).max(size[2]);
     (largest / DIVISOR).clamp(FLOOR, CEIL)
+}
+
+/// Does `node`'s CSG tree contain a **space-filling** primitive (a gyroid
+/// TPMS, [`Primitive::is_space_filling`])? Such a body skips the B-Rep weave
+/// entirely (DL-71): its surface threads through nearly the whole volume, so
+/// the octree would refine on tens of thousands of cells to produce a wireframe
+/// of non-Lipschitz seams we discard anyway.
+fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
+    match node {
+        BoundedCsg::Leaf { primitive, .. } => primitive.is_space_filling(),
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            bounded_contains_space_filling(left) || bounded_contains_space_filling(right)
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. } => bounded_contains_space_filling(inner),
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
+    }
 }
 
 /// Walk the feature spine once and return one [`BodyPartition`] per
@@ -964,6 +1001,39 @@ mod tests {
             PrimitiveModifiers::NONE,
             vec![],
         )
+    }
+
+    fn gyroid_feat(id: u32, op: BoolOp, target: u32, cell_size: f32, thickness: f32) -> DecodedFeature {
+        DecodedFeature::from_parts(
+            FeatureId::from_u32(id),
+            format!("Gyroid {id}"),
+            op,
+            Primitive::Gyroid { cell_size, thickness },
+            Transform::IDENTITY,
+            PrimitiveModifiers::NONE,
+            vec![FeatureId::from_u32(target)],
+        )
+    }
+
+    #[test]
+    fn space_filling_body_skips_weave() {
+        // DL-71: a body containing a gyroid (space-filling) gets NO B-Rep — the
+        // octree would refine over the whole volume (a 30s wasm move-stall) to
+        // weave a wireframe of non-Lipschitz seams we discard anyway. A plain
+        // box, by contrast, still weaves its 12 edges.
+        let gyroid_body = weave_all(&[
+            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+            gyroid_feat(2, BoolOp::Intersect, 1, 0.5, 0.15),
+        ]);
+        assert_eq!(gyroid_body.len(), 1);
+        assert_eq!(
+            gyroid_body[0].0.edge_count(),
+            0,
+            "a space-filling body must weave an empty B-Rep"
+        );
+
+        let plain_box = weave_all(&[box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]);
+        assert_eq!(plain_box[0].0.edge_count(), 12, "a plain box keeps its edges");
     }
 
     #[test]

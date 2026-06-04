@@ -377,6 +377,30 @@ impl Primitive {
         }
     }
 
+    /// The **non-Lipschitz SDF class**: primitives whose field is not a
+    /// clean Euclidean distance (|∇f| ≠ 1 and/or NaN gradients at
+    /// singularities). The B-Rep edge tracer / sampled fits cannot
+    /// condition their faces — they shatter a seam into hundreds of
+    /// useless fragments (Thread∩Sphere → E=442) — so the weaver emits no
+    /// edges *touching* such a face. The renderer covers these shapes via
+    /// conservative marching (each is self-normalised, DL-70). Extend this
+    /// when FieldSkript gains a raw user-SDF op — non-Lipschitz by
+    /// construction. See DL-71.
+    pub fn is_non_lipschitz(&self) -> bool {
+        matches!(self, Primitive::Thread { .. } | Primitive::Gyroid { .. })
+    }
+
+    /// **Space-filling** primitives whose zero-set threads through (nearly)
+    /// the whole bounding volume — a TPMS lattice like the Gyroid. The
+    /// B-Rep octree refines on every cell the surface passes through, so a
+    /// space-filling field drives it to a huge cell count (a clipped
+    /// gyroid: 30k+ face cells) for a wireframe we discard anyway (its
+    /// seams are non-Lipschitz). A body containing one skips the weave
+    /// outright (`Body::ensure_brep`) — the 30s move-stall fix. See DL-71.
+    pub fn is_space_filling(&self) -> bool {
+        matches!(self, Primitive::Gyroid { .. })
+    }
+
     pub fn default_name(&self) -> &'static str {
         match self {
             Primitive::Box { .. } => "Box",
