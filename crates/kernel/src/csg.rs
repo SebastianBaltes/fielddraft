@@ -41,12 +41,24 @@ impl BranchId {
     const SUB_BITS: u32 = 12;
     const SUB_MASK: u32 = 0xFFF;
 
+    /// Bit 11 of the 12-bit sub field, reserved as the inner-wall flag (DL-75).
+    /// A shelled body's inner wall is the outer face offset inward by the wall
+    /// thickness — the *same* feature and analytic surface family, so it keeps
+    /// the outer face's `feature_id()` (selection still resolves to the owning
+    /// feature) but needs a *distinct* branch id so the weave classifies it as
+    /// its own face. Setting this bit is that distinct id. All outer sub-ids
+    /// (sketch boundary groups + the two extrude caps) live strictly below it
+    /// (`< 0x800`), so the flag never collides; `feature_id()` (the top 20
+    /// bits) is untouched.
+    pub const INNER_WALL_FLAG: u32 = 0x800;
+
     /// Reserved extrude-cap sub-ids (DL-50). The top/bottom caps of an
-    /// extrude are not sketch boundary groups, so they get distinct
-    /// sub-ids at the very top of the 12-bit range. Wall groups are
-    /// always small (`< edge_count ≪ 0xFFE`), so there is no collision.
-    pub const EXTRUDE_CAP_TOP_SUB: u32 = 0xFFF;
-    pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0xFFE;
+    /// extrude are not sketch boundary groups, so they get distinct sub-ids at
+    /// the top of the *outer* sub range (just below [`INNER_WALL_FLAG`]). Wall
+    /// groups are always small (`< edge_count ≪ 0x7FE`), so there is no
+    /// collision.
+    pub const EXTRUDE_CAP_TOP_SUB: u32 = 0x7FF;
+    pub const EXTRUDE_CAP_BOTTOM_SUB: u32 = 0x7FE;
 
     /// Branch id for a whole feature (sub-index 0).
     pub fn from_feature(id: &FeatureId) -> Self {
@@ -63,6 +75,18 @@ impl BranchId {
     /// The flat feature id (sub-index stripped).
     pub fn feature_id(self) -> u32 {
         self.0 >> Self::SUB_BITS
+    }
+
+    /// Map this (outer) branch to its shell inner-wall counterpart (DL-75) by
+    /// setting [`INNER_WALL_FLAG`](Self::INNER_WALL_FLAG). Idempotent; leaves
+    /// `feature_id()` unchanged.
+    pub fn inner_wall(self) -> Self {
+        Self(self.0 | Self::INNER_WALL_FLAG)
+    }
+
+    /// True if this branch is a shell inner-wall face (DL-75).
+    pub fn is_inner_wall(self) -> bool {
+        self.0 & Self::INNER_WALL_FLAG != 0
     }
 
     pub fn as_u32(self) -> u32 {
@@ -162,6 +186,18 @@ impl Contributors {
         let mut out = Self::empty();
         for &b in self.as_slice() {
             out.push(BranchId(b.feature_id() << BranchId::SUB_BITS));
+        }
+        out
+    }
+
+    /// Remap every contained branch to its shell inner-wall counterpart
+    /// (DL-75). [`BoundedCsg::Shell`]'s `evaluate` calls this for the
+    /// inner-wall term `−(d + e)` so the cavity surface is classified as the
+    /// offset inner face, not the outer face it was eroded from.
+    pub fn mapped_inner(&self) -> Self {
+        let mut out = Self::empty();
+        for &b in self.as_slice() {
+            out.push(b.inner_wall());
         }
         out
     }
@@ -545,9 +581,15 @@ impl OpenSurface {
 /// `max(d, −(d + e))`, so it hugs the outer surface and breaks open exactly at
 /// the selected faces. With no open planes `e == thickness` everywhere → a
 /// closed inward shell.
+/// The shell's local erosion depth `e` at `p` (see [`open_shell_sdf`]): the
+/// cavity is the solid eroded by `e`, which is `thickness` away from every open
+/// face and tapers linearly to `0` as the nearest open face becomes the active
+/// boundary. Factored out so the contributor-tracking [`BoundedCsg::Shell`]
+/// evaluate can reconstruct the inner-wall term `−(d + e)` and tag it with
+/// inner-wall provenance (DL-75).
 #[inline]
-pub fn open_shell_sdf(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
-    let e = if open_faces.is_empty() {
+pub fn open_shell_erosion(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
+    if open_faces.is_empty() {
         thickness
     } else {
         // g = nearest open-face gate value. `d − g` is ~0 when an open face is the
@@ -558,7 +600,12 @@ pub fn open_shell_sdf(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f3
             .map(|f| f.eval(p))
             .fold(f32::NEG_INFINITY, f32::max);
         (d - g).clamp(0.0, thickness)
-    };
+    }
+}
+
+#[inline]
+pub fn open_shell_sdf(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
+    let e = open_shell_erosion(d, thickness, open_faces, p);
     d.max(-(d + e))
 }
 
@@ -2383,6 +2430,29 @@ mod tests {
         assert!(offset_halfspace_inward(&HalfSpace::Sphere { radius: 1.5 }, 2.0).is_none(), "wall thicker than radius vanishes");
         assert!(offset_halfspace_inward(&HalfSpace::Cone { half_angle: 0.5 }, 2.0).is_none(), "cone nappes separate under offset");
         assert!(offset_halfspace_inward(&HalfSpace::Gyroid { cell_size: 5.0, thickness: 0.3 }, 2.0).is_none(), "TPMS has no analytic offset");
+    }
+
+    #[test]
+    fn inner_wall_branch_id_scheme() {
+        // DL-75 Step 2: the inner-wall id is a distinct branch that preserves
+        // `feature_id()` (so UI selection still resolves to the owning feature)
+        // and never collides with the reserved extrude caps.
+        let outer = BranchId::from_feature_sub(&FeatureId::from_u32(7), 3);
+        let inner = outer.inner_wall();
+        assert!(!outer.is_inner_wall());
+        assert!(inner.is_inner_wall());
+        assert_ne!(outer.as_u32(), inner.as_u32(), "inner wall is a distinct id");
+        assert_eq!(inner.feature_id(), outer.feature_id(), "feature_id preserved");
+        assert_eq!(inner.feature_id(), 7);
+        assert_eq!(inner.inner_wall().as_u32(), inner.as_u32(), "idempotent");
+
+        // The two extrude caps live below the inner-wall flag, so a cap and its
+        // inner wall are distinct and the flag never collides with a cap.
+        assert!(BranchId::EXTRUDE_CAP_TOP_SUB < BranchId::INNER_WALL_FLAG);
+        assert!(BranchId::EXTRUDE_CAP_BOTTOM_SUB < BranchId::INNER_WALL_FLAG);
+        let cap = BranchId::from_feature_sub(&FeatureId::from_u32(7), BranchId::EXTRUDE_CAP_TOP_SUB);
+        assert!(!cap.is_inner_wall());
+        assert_ne!(cap.as_u32(), cap.inner_wall().as_u32());
     }
 
     #[test]

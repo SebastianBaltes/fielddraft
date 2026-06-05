@@ -29,7 +29,8 @@ use serde::Serialize;
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
-    expand_evaluate_leaf, extrude_contributors, open_shell_sdf, revolve_contributors, sdf_extrude,
+    expand_evaluate_leaf, extrude_contributors, open_shell_erosion, open_shell_sdf,
+    revolve_contributors, sdf_extrude,
     Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenSurface,
 };
 use crate::sketch2d::BoundedSketch2d;
@@ -545,7 +546,14 @@ impl BoundedCsg {
             }
             BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
                 let (d, c) = inner.evaluate(p, eps, mode);
-                (open_shell_sdf(d, *thickness, open_faces, p), c)
+                // Shell is `max(d, −(d + e))`: a hard combine_max of the outer
+                // surface (term `d`, outer contributors) against the inner wall
+                // (term `−(d + e)`, the *same* faces offset inward → inner-wall
+                // contributors, DL-75). Reusing combine_max gives the inner
+                // faces their own provenance and yields the dual-contributor
+                // band exactly at the opening rim where the two surfaces meet.
+                let e = open_shell_erosion(d, *thickness, open_faces, p);
+                combine_max(d, c, -(d + e), c.mapped_inner(), eps)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -1467,5 +1475,48 @@ mod tests {
         assert!((d - 10.0).abs() < 1e-5);
         let d = distance_point_to_aabb([13.0, 14.0, 0.0], bb);
         assert!((d - 5.0).abs() < 1e-4, "{d}");
+    }
+
+    #[test]
+    fn shell_evaluate_tags_inner_wall_with_inner_branch_provenance() {
+        // DL-75 Step 1: on the outer surface the contributor is the plain outer
+        // face; on the inner wall it is that same face's inner-wall id. This is
+        // what lets the weave classify the cavity as its own pickable face.
+        let half = 5.0_f32;
+        let thickness = 1.0_f32;
+        let csg = CsgNode::Shell(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [half, half, half],
+                },
+            }),
+            thickness,
+            Vec::new(),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let eps = 1e-3;
+
+        // On the +X outer face (x = 5): the outer term `d` dominates.
+        let (d_out, c_out) = body.evaluate([half, 0.0, 0.0], eps, EvalMode::Logical);
+        assert!(d_out.abs() < 1e-3, "on the outer surface");
+        assert!(!c_out.is_empty(), "outer face has provenance");
+        assert!(
+            c_out.as_slice().iter().all(|b| !b.is_inner_wall()),
+            "no inner-wall ids on the outer surface"
+        );
+
+        // On the +X inner wall (x = 4 = half − thickness): `−(d + e)` dominates.
+        let (d_in, c_in) = body.evaluate([half - thickness, 0.0, 0.0], eps, EvalMode::Logical);
+        assert!(d_in.abs() < 1e-3, "on the inner wall");
+        assert!(
+            c_in.as_slice().iter().any(|b| b.is_inner_wall()),
+            "inner-wall id present on the cavity surface"
+        );
+        assert!(
+            c_in.as_slice().iter().all(|b| b.feature_id() == 1),
+            "inner wall keeps its owning feature"
+        );
     }
 }

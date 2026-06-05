@@ -39,7 +39,7 @@ use crate::brep::{
 };
 use crate::bvh::BoundedCsg;
 use crate::compose_transforms;
-use crate::csg::{primitive_halfspaces, BranchId};
+use crate::csg::{offset_halfspace_inward, primitive_halfspaces, BranchId};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
 use fielddraft_protocol::{HalfSpace, Transform};
 
@@ -167,8 +167,26 @@ fn collect_halfspaces(node: &BoundedCsg, out: &mut HashMap<u32, (HalfSpace, Tran
         }
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
-        | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Shell { inner, .. } => collect_halfspaces(inner, out),
+        | BoundedCsg::Displace { inner, .. } => collect_halfspaces(inner, out),
+        BoundedCsg::Shell { inner, thickness, .. } => {
+            // The outer faces are geometrically unchanged (the shell preserves
+            // `d = 0`), so they keep their entries. Additionally register each
+            // outer analytic face's inward offset under its inner-wall branch id
+            // (DL-75) so the weave can classify the hollow's inner wall as a
+            // pickable face. The inner wall shares the outer face's transform —
+            // `offset_halfspace_inward` only shifts the surface parameter — and
+            // skips kinds without an analytic offset (Cone/Gyroid) and degenerate
+            // walls (radius/minor ≤ thickness), which fall back to tessellated.
+            let mut sub = HashMap::new();
+            collect_halfspaces(inner, &mut sub);
+            for (key, (hs, xf)) in &sub {
+                if let Some(inner_hs) = offset_halfspace_inward(hs, *thickness) {
+                    out.entry(BranchId(*key).inner_wall().as_u32())
+                        .or_insert((inner_hs, *xf));
+                }
+            }
+            out.extend(sub);
+        }
         BoundedCsg::Extrude {
             id,
             sketch,
@@ -1649,6 +1667,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shell_adds_inner_wall_halfspaces_under_inner_branch_ids() {
+        // DL-75 Step 3: a closed-shell box keeps its 6 outer planes and gains 6
+        // inner-wall planes — each outer face offset inward by the thickness,
+        // keyed by the outer branch's inner-wall id, with `feature_id` preserved.
+        let half = 5.0_f32;
+        let thickness = 1.0_f32;
+        let csg = CsgNode::Shell(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [half, half, half],
+                },
+            }),
+            thickness,
+            Vec::new(),
+        );
+        let map = branch_halfspace_map(&BoundedCsg::from_csg(&csg));
+        assert_eq!(map.len(), 12, "6 outer + 6 inner-wall planes");
+
+        let inner: Vec<_> = map
+            .iter()
+            .filter(|(k, _)| BranchId(**k).is_inner_wall())
+            .collect();
+        assert_eq!(inner.len(), 6, "one inner wall per outer box face");
+        for (k, (hs, _)) in inner {
+            assert_eq!(
+                BranchId(*k).feature_id(),
+                1,
+                "inner wall stays selectable as its owning feature"
+            );
+            match hs {
+                HalfSpace::Plane { offset, .. } => assert!(
+                    (offset - (half - thickness)).abs() < 1e-4,
+                    "inner plane is the outer face pushed in by the thickness"
+                ),
+                other => panic!("box inner wall must be a plane, got {other:?}"),
+            }
+        }
+    }
+
     // ── DL-50: analytic Extrude / Revolve faces ──────────────────────────
 
     use crate::sketch2d::SketchSegment;
@@ -1864,7 +1924,8 @@ mod tests {
 
     #[test]
     fn extrude_caps_use_reserved_sub_ids() {
-        // The cap branch sub-ids must be the reserved 0xFFF / 0xFFE.
+        // The cap branch sub-ids must be the reserved 0x7FF / 0x7FE (top of
+        // the outer sub range, below the inner-wall flag 0x800; DL-75).
         let sketch = ProtoSketch2d::Prim(ProtoSketch2dPrim::Rectangle {
             center: [0.0, 0.0],
             half_extents: [1.0, 1.0],
