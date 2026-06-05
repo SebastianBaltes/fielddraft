@@ -134,6 +134,54 @@ function forwardPointerToViewport(e: React.PointerEvent<HTMLCanvasElement>): voi
   );
 }
 
+/**
+ * Touch pinch sensitivity: how many wheel `deltaY` units one CSS pixel of
+ * finger-spread synthesises. Spreading the fingers zooms in (negative
+ * deltaY by browser convention); the gain just keeps the dolly pacing the
+ * gesture. Tuned to feel like the mouse wheel, not a hard requirement.
+ */
+const PINCH_ZOOM_GAIN = 2.5;
+
+/** Euclidean distance between the first two tracked touch points (CSS px). */
+function touchSpan(pts: Map<number, { x: number; y: number }>): {
+  dist: number;
+  midX: number;
+  midY: number;
+} {
+  const it = pts.values();
+  const a = it.next().value;
+  const b = it.next().value;
+  if (!a || !b) return { dist: 0, midX: 0, midY: 0 };
+  return {
+    dist: Math.hypot(a.x - b.x, a.y - b.y),
+    midX: (a.x + b.x) / 2,
+    midY: (a.y + b.y) / 2,
+  };
+}
+
+/** Synthesize a wheel event on the WebGPU canvas so the existing
+ *  OrbitControls dolly path handles the zoom — same route the mouse
+ *  wheel already takes. Used by the two-finger pinch gesture. */
+function dispatchZoomWheel(
+  overlay: HTMLCanvasElement,
+  clientX: number,
+  clientY: number,
+  deltaY: number,
+): void {
+  const target = viewportCanvas(overlay);
+  if (!target) return;
+  target.dispatchEvent(
+    new WheelEvent("wheel", {
+      deltaY,
+      deltaMode: 0,
+      clientX,
+      clientY,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
 interface ProjectedEdge {
   p0: [number, number];
   p1: [number, number];
@@ -420,6 +468,21 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const sessionRef = useRef<SketchSessionState>(session);
   sessionRef.current = session;
 
+  // Touch pinch-to-zoom — a two-finger gesture layered ON TOP of the
+  // single-finger sketch interaction. We track live touch pointers; once a
+  // second finger lands we abort any in-progress single-finger draft and
+  // hold a lockout (pinchRef.active) until EVERY finger lifts, so the
+  // leftover finger can't resume a stray sketch action mid-gesture. Zoom is
+  // driven by synthesising wheel events onto the WebGPU canvas, reusing the
+  // OrbitControls dolly path the mouse wheel already uses. Mouse pointers
+  // never enter any of this; single-finger sketching is unchanged. Two-finger
+  // PAN is a deliberate follow-up (see ARCHITECTURE.md).
+  const touchPtsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{ active: boolean; lastDist: number }>({
+    active: false,
+    lastDist: 0,
+  });
+
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
     if (!store) { projectedEdgesRef.current = []; return; }
@@ -530,6 +593,32 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // `pointer-events: auto`, which the CSS only sets when a
   // sketch tool is active (see `.is-tool-active` below).
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Touch: track the pointer; a second finger turns the gesture into a
+    // camera pinch. Abort whatever the first finger started, drop any
+    // pointer capture it took, and let the pinch own the gesture until all
+    // fingers lift.
+    if (e.pointerType === "touch") {
+      touchPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPtsRef.current.size >= 2) {
+        if (dragRef.current.kind !== "idle") {
+          dragRef.current = { kind: "idle" };
+          hoverRef.current = null;
+        }
+        const canvas = e.currentTarget as HTMLCanvasElement;
+        for (const id of touchPtsRef.current.keys()) {
+          try {
+            canvas.releasePointerCapture(id);
+          } catch {
+            /* this pointer wasn't captured — fine */
+          }
+        }
+        pinchRef.current = { active: true, lastDist: touchSpan(touchPtsRef.current).dist };
+        lastCamVersionRef.current = -1;
+        e.preventDefault();
+        return;
+      }
+    }
+
     // Select mode: no drawing tool active. Left-click hit-tests the
     // committed geometry and toggles it in the selection; clicking
     // empty space clears. Other buttons (pan) are forwarded to the
@@ -666,6 +755,30 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Pinch gesture owns the move while it's live. With both fingers down we
+    // dolly by the change in finger spread; with one finger left (mid-lift)
+    // we stay inert until it too lifts, so no stray sketch action leaks out.
+    if (pinchRef.current.active) {
+      if (e.pointerType === "touch" && touchPtsRef.current.has(e.pointerId)) {
+        touchPtsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+      if (touchPtsRef.current.size >= 2) {
+        const span = touchSpan(touchPtsRef.current);
+        const delta = span.dist - pinchRef.current.lastDist;
+        if (delta !== 0) {
+          dispatchZoomWheel(
+            e.currentTarget as HTMLCanvasElement,
+            span.midX,
+            span.midY,
+            -delta * PINCH_ZOOM_GAIN,
+          );
+          pinchRef.current.lastDist = span.dist;
+        }
+      }
+      e.preventDefault();
+      return;
+    }
+
     // P0.3: grip drag lives in select mode (no tool active), so it
     // runs before the drawing-tool guard below. The geometry follows
     // the cursor live; the solver waits until drop.
@@ -761,6 +874,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === "touch") {
+      touchPtsRef.current.delete(e.pointerId);
+      if (pinchRef.current.active) {
+        // Consume every touch-up for the duration of the pinch lockout; the
+        // gesture only fully ends (and sketching resumes) once all fingers
+        // are off the glass.
+        if (touchPtsRef.current.size === 0) {
+          pinchRef.current = { active: false, lastDist: 0 };
+        }
+        e.preventDefault();
+        return;
+      }
+    }
     if (dragRef.current.kind === "grip") {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
       dragRef.current = { kind: "idle" };
@@ -934,7 +1060,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     scheduleSolverReplay();
   };
 
-  const onPointerCancel = () => {
+  const onPointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === "touch") {
+      touchPtsRef.current.delete(e.pointerId);
+      if (touchPtsRef.current.size === 0) {
+        pinchRef.current = { active: false, lastDist: 0 };
+      }
+    }
     dragRef.current = { kind: "idle" };
     hoverRef.current = null;
     snapRef.current = {
