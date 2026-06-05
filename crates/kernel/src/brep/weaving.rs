@@ -2293,6 +2293,98 @@ mod tests {
         }
     }
 
+    /// DL-69b: a **leaf↔leaf** cross-feature seam now CONSOLIDATES in
+    /// `build_wireframe`, not just at the tracer level. Leaf A: full-sweep sector
+    /// r=1 extruded → cylinder about Z (a leaf wall, no analytic half-space).
+    /// Leaf B: sector r=0.3 extruded then rotated +90° about Y → a thin drill
+    /// about X (also a leaf). The drill pierces A's wall transversally, so the
+    /// seam is two small CLOSED loops with NO tangent node (different radii). Both
+    /// fields are numeric dual SDFs — `fit_line`/`fit_circle` cannot represent the
+    /// non-planar curve and the legacy gap-chain fragments it. Before the adaptive
+    /// march-step refinement this fragmented at res 0.15 (≈78 stubs); now the two
+    /// fields trace two clean, surface-exact closed rings at BOTH resolutions.
+    /// (A coaxial equal-radius Steinmetz, by contrast, has a genuine degree-4 node
+    /// where ∇f_a×∇f_b→0; the continuity guard refuses to crawl across it, so that
+    /// case still falls back to the sample fits until the node is extracted as a
+    /// vertex — a separate piece.)
+    #[test]
+    fn leaf_leaf_transversal_seam_consolidates() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, Transform as XF};
+        let sector = |r: f32| {
+            Sketch2d::Prim(Sketch2dPrimitive::Sector {
+                center: [0.0, 0.0],
+                radius: r,
+                start_angle: 0.0,
+                sweep_angle: std::f32::consts::TAU,
+            })
+        };
+        let cyl_z = CsgNode::Extrude {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(sector(1.0)),
+            half_height: 1.5,
+        };
+        let drill_x = CsgNode::Transform(
+            XF {
+                translate: [0.0, 0.0, 0.0],
+                rotation: [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2],
+                scale: [1.0, 1.0, 1.0],
+            },
+            Box::new(CsgNode::Extrude {
+                id: FeatureId::from_u32(2),
+                sketch: Box::new(sector(0.3)),
+                half_height: 1.5,
+            }),
+        );
+        let body = BoundedCsg::from_csg(&CsgNode::Union(Box::new(cyl_z), Box::new(drill_x)));
+
+        // Seam membership: on leaf A's wall (radius-about-Z = 1) AND on leaf B's
+        // wall (radius-about-X = 0.3).
+        let on_a = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1]).sqrt();
+        let on_b = |p: [f64; 3]| (p[1] * p[1] + p[2] * p[2]).sqrt();
+
+        for res in [0.15_f32, 0.2] {
+            let octree = Octree::build(&body, res);
+            let brep = build_wireframe(&body, &octree);
+            let mut seam_edges = 0usize;
+            let mut closed_loops = 0usize;
+            for e in &brep.edges {
+                let EdgeGeometry::Hermite(samples) = &e.geometry else { continue };
+                let is_seam = samples
+                    .iter()
+                    .all(|s| (on_a(s.point) - 1.0).abs() < 5e-2 && (on_b(s.point) - 0.3).abs() < 5e-2);
+                if !is_seam {
+                    continue;
+                }
+                seam_edges += 1;
+                // Surface-exact on BOTH leaf walls, independent of the octree
+                // spacing — the hallmark of the tracer (a gap-chain fragments; the
+                // line/circle fits cannot represent this non-planar curve at all).
+                for s in samples {
+                    assert!(
+                        (on_a(s.point) - 1.0).abs() < 3e-3,
+                        "seam off leaf A wall: r={} at res {res}, p={:?}",
+                        on_a(s.point),
+                        s.point
+                    );
+                    assert!(
+                        (on_b(s.point) - 0.3).abs() < 3e-3,
+                        "seam off leaf B wall: r={} at res {res}, p={:?}",
+                        on_b(s.point),
+                        s.point
+                    );
+                }
+                if e.start.is_none() && e.end.is_none() {
+                    closed_loops += 1;
+                }
+            }
+            assert_eq!(seam_edges, 2, "exactly two transversal seam loops at res {res}");
+            assert_eq!(
+                closed_loops, 2,
+                "both leaf↔leaf seam loops are closed (consolidated, not fragmented) at res {res}"
+            );
+        }
+    }
+
     #[test]
     fn intersect_two_boxes_weaves_watertight_overlap_box() {
         // Two unit-half boxes offset by (0.5, 0.5, 0.5): their Intersection is

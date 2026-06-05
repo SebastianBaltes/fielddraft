@@ -217,6 +217,74 @@ enum MarchEnd {
 /// loop, else it would "close" on step one.
 const MIN_LOOP_STEPS: usize = 4;
 
+/// Adaptive-step floor: when a nominal predictor step stalls, the march halves
+/// it down to `step / 2^k` before giving up. Six halvings (≈ step/64) resolves a
+/// sharp turn or a near-degenerate numeric gradient without an unbounded crawl.
+const MARCH_REFINE_HALVINGS: u32 = 6;
+/// A refined (sub-nominal) step is accepted only if its tangent continues the
+/// curve smoothly — `cosθ ≥ ½` (≤ 60° turn per sub-step). This lets the march
+/// push through a sharp but *smooth* turn while refusing to crawl across a true
+/// seam node, where the re-acquired tangent forks (near-perpendicular). Applies
+/// only on the refinement path, so a nominal step is never gated by it.
+const MARCH_CONTINUITY_COS: f64 = 0.5;
+
+/// One predictor + corrector step of length `step` from `cur` along `t_prev`.
+/// Returns the reprojected edge point and its forward-oriented unit tangent, or
+/// `None` if the predictor lands where projection diverges or the tangent
+/// collapses. This is the historical single-step body, factored out so both the
+/// nominal step and the refinement reuse identical acceptance.
+fn step_once(
+    fa: &Field,
+    fb: &Field,
+    cur: [f64; 3],
+    t_prev: [f64; 3],
+    step: f64,
+) -> Option<([f64; 3], [f64; 3])> {
+    let q = add(cur, scale(t_prev, step));
+    let np = project_to_edge(fa, fb, q)?;
+    let mut t = edge_tangent(fa, fb, np)?;
+    if dot(t, t_prev) < 0.0 {
+        t = scale(t, -1.0);
+    }
+    Some((np, t))
+}
+
+/// Advance the march one step, refining the step length on a stall (DL-69b).
+///
+/// The nominal `step` is tried first with the exact historical acceptance (no
+/// continuity gate), so a step that already succeeds is returned unchanged — the
+/// refinement is strictly additive. Only when the nominal predictor stalls
+/// (projection diverged or the tangent collapsed, typically a sharp turn
+/// overshooting or two numeric leaf gradients going briefly near-parallel) does
+/// it halve the step toward the edge, down to `step / 2^MARCH_REFINE_HALVINGS`.
+/// A refined step is accepted only when its tangent continues the curve smoothly
+/// (`MARCH_CONTINUITY_COS`); at a genuine seam node the re-acquired tangent forks
+/// near-perpendicular and fails the guard, so the arc still terminates there
+/// (→ falls back to the sample fits) rather than crawling onto the wrong branch.
+fn advance(
+    fa: &Field,
+    fb: &Field,
+    cur: [f64; 3],
+    t_prev: [f64; 3],
+    step: f64,
+) -> Option<([f64; 3], [f64; 3])> {
+    // Nominal step: historical path, byte-identical when it succeeds.
+    if let Some(hit) = step_once(fa, fb, cur, t_prev, step) {
+        return Some(hit);
+    }
+    // Refinement: only reached on a stalled nominal step.
+    let mut h = step * 0.5;
+    for _ in 0..MARCH_REFINE_HALVINGS {
+        if let Some((np, t)) = step_once(fa, fb, cur, t_prev, h) {
+            if dot(t, t_prev) >= MARCH_CONTINUITY_COS {
+                return Some((np, t));
+            }
+        }
+        h *= 0.5;
+    }
+    None
+}
+
 /// March one direction from `start` (already on the edge) with initial unit
 /// tangent `t0`, collecting reprojected points until a bounding vertex, a loop
 /// back to `seed`, or a stall. Does not include `start` in the returned points.
@@ -241,21 +309,14 @@ fn march(
             return (pts, MarchEnd::Vertex(vi));
         }
 
-        // Predictor: a straight step along the current tangent.
-        let q = add(cur, scale(t_prev, p.step));
-        // Corrector: pull back exactly onto the joint zero-set.
-        let np = match project_to_edge(fa, fb, q) {
-            Some(np) => np,
-            None => return (pts, MarchEnd::Stalled),
+        // Predictor + corrector, with adaptive step refinement (DL-69b). The
+        // nominal step is tried first and accepted exactly as before, so any
+        // seam that already traced is byte-for-byte unchanged; only a stalled
+        // nominal step refines toward the edge (decoupling the march from the
+        // seed spacing) instead of abandoning the whole group to the sample fits.
+        let Some((np, t)) = advance(fa, fb, cur, t_prev, p.step) else {
+            return (pts, MarchEnd::Stalled);
         };
-        // Tangent at the new point, oriented to keep marching forward.
-        let mut t = match edge_tangent(fa, fb, np) {
-            Some(t) => t,
-            None => return (pts, MarchEnd::Stalled),
-        };
-        if dot(t, t_prev) < 0.0 {
-            t = scale(t, -1.0);
-        }
 
         // Loop closure: back near the seed after genuinely leaving it.
         if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < p.close_tol {

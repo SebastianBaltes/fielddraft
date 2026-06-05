@@ -2448,8 +2448,8 @@ mod tests {
 
         // The two extrude caps live below the inner-wall flag, so a cap and its
         // inner wall are distinct and the flag never collides with a cap.
-        assert!(BranchId::EXTRUDE_CAP_TOP_SUB < BranchId::INNER_WALL_FLAG);
-        assert!(BranchId::EXTRUDE_CAP_BOTTOM_SUB < BranchId::INNER_WALL_FLAG);
+        const { assert!(BranchId::EXTRUDE_CAP_TOP_SUB < BranchId::INNER_WALL_FLAG) };
+        const { assert!(BranchId::EXTRUDE_CAP_BOTTOM_SUB < BranchId::INNER_WALL_FLAG) };
         let cap = BranchId::from_feature_sub(&FeatureId::from_u32(7), BranchId::EXTRUDE_CAP_TOP_SUB);
         assert!(!cap.is_inner_wall());
         assert_ne!(cap.as_u32(), cap.inner_wall().as_u32());
