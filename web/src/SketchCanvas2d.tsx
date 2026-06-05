@@ -36,6 +36,12 @@ import {
 import { hitTestSketchEntity } from "./sketchHitTest";
 import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
 import {
+  angleAbout,
+  buildArcSubCall,
+  sampleArc,
+  unwrapSweep,
+} from "./sketchArc";
+import {
   inferCandidates,
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
@@ -252,6 +258,18 @@ type DragState =
       kind: "polygon";
       vertices: [number, number][];
       current: [number, number];
+    }
+  | {
+      /** Arc: a centre → start → end three-click gesture. `start` is
+       *  null until the 2nd click fixes the radius + start angle; after
+       *  that the 3rd click fixes the sweep. `sweep` is unwrapped live
+       *  (see `sketchArc.unwrapSweep`) so arcs past 180° are reachable. */
+      kind: "arc";
+      center: [number, number];
+      start: [number, number] | null;
+      current: [number, number];
+      startAngle: number;
+      sweep: number;
     }
   | {
       /** P0.3: dragging a grip handle on committed geometry. The
@@ -542,6 +560,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
 
+  // Reset an in-progress multi-click arc draft when the active tool
+  // changes, so a stale centre/start can't get committed as the first
+  // click of the next gesture.
+  useEffect(() => {
+    if (dragRef.current.kind === "arc") {
+      dragRef.current = { kind: "idle" };
+      lastCamVersionRef.current = -1;
+    }
+  }, [session.selectedTool]);
+
   // Size the canvas to its container on mount and on resize.
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -752,6 +780,39 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_arc") {
+      const drag = dragRef.current;
+      if (drag.kind !== "arc") {
+        // Click 1 — place the centre.
+        dragRef.current = {
+          kind: "arc",
+          center: [su, sv],
+          start: null,
+          current: [su, sv],
+          startAngle: 0,
+          sweep: 0,
+        };
+      } else if (drag.start === null) {
+        // Click 2 — fix radius + start angle.
+        dragRef.current = {
+          ...drag,
+          start: [su, sv],
+          current: [su, sv],
+          startAngle: angleAbout(drag.center, [su, sv]),
+          sweep: 0,
+        };
+      } else {
+        // Click 3 — fix the sweep and commit (or discard if degenerate).
+        const call = buildArcSubCall(drag.center, drag.start, [su, sv], drag.sweep);
+        dragRef.current = { kind: "idle" };
+        if (call) {
+          store.pushSketchSubCalls([call]);
+          scheduleSolverReplay();
+        }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -838,6 +899,22 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       };
     } else if (dragRef.current.kind === "circle") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "arc") {
+      const d = dragRef.current;
+      if (d.start === null) {
+        // Stage 1: rubber-band the radius/start point.
+        dragRef.current = { ...d, current: [u, v] };
+      } else {
+        // Stage 2: sweep, unwrapped so it tracks past ±180°.
+        const sweep = unwrapSweep(d.startAngle, angleAbout(d.center, [u, v]), d.sweep);
+        dragRef.current = { ...d, current: [u, v], sweep };
+      }
+      snapRef.current = {
+        snapped: [u, v],
+        candidate: null,
+        anchor: null,
+        coincidentTargetId: null,
+      };
     } else if (dragRef.current.kind === "polygon") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
@@ -1271,18 +1348,7 @@ function drawOverlay(
         Number.isFinite(a0) &&
         Number.isFinite(sweep)
       ) {
-        const a1 = a0 + sweep;
-        const [cx, cy] = sketchToScreen(center[0], center[1], cam);
-        const radiusPx = radius * cam.zoom;
-        if (radiusPx >= 0.5) {
-          ctx.save();
-          ctx.strokeStyle = committedColor;
-          ctx.lineWidth = STROKE_PX;
-          ctx.beginPath();
-          ctx.arc(cx, cy, radiusPx, a0, a1, sweep < 0);
-          ctx.stroke();
-          ctx.restore();
-        }
+        drawArc(ctx, center, radius, a0, sweep, cam, committedColor, STROKE_PX);
         drawPoint(ctx, center, cam, committedColor);
       }
     }
@@ -1382,6 +1448,24 @@ function drawOverlay(
       for (const v of vertices) {
         drawPoint(ctx, v, cam, COLOR_PREVIEW);
       }
+    }
+  } else if (drag.kind === "arc") {
+    const { center, start, current, startAngle, sweep } = drag;
+    if (start === null) {
+      // Stage 1: picking radius/start — ghost full circle + radius spoke.
+      const r = Math.hypot(current[0] - center[0], current[1] - center[1]);
+      drawCircle(ctx, center, r, cam, COLOR_PREVIEW);
+      drawLine(ctx, center, current, cam, COLOR_PREVIEW, STROKE_PX);
+      drawPoint(ctx, center, cam, COLOR_PREVIEW);
+      drawRadiusLabel(ctx, center, r, cam);
+    } else {
+      // Stage 2: sweeping — the arc itself plus the start spoke.
+      const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
+      drawArc(ctx, center, r, startAngle, sweep, cam, COLOR_PREVIEW, STROKE_PX);
+      drawLine(ctx, center, start, cam, COLOR_PREVIEW, 1);
+      drawPoint(ctx, center, cam, COLOR_PREVIEW);
+      drawPoint(ctx, start, cam, COLOR_PREVIEW);
+      drawRadiusLabel(ctx, center, r, cam);
     }
   } else if (hover) {
     // Hover preview outside of a drag — shows where a click
@@ -1547,6 +1631,38 @@ function drawCircle(
   ctx.lineWidth = STROKE_PX;
   ctx.beginPath();
   ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Draw an arc by sampling it in sketch space and projecting each point
+ * through `sketchToScreen`. Going via `ctx.arc` would feed sketch-space
+ * angles into the Y-down canvas convention and mirror the arc relative to
+ * its grips; the sampler keeps drawing, grips and the kernel in agreement.
+ */
+function drawArc(
+  ctx: CanvasRenderingContext2D,
+  center: [number, number],
+  radiusMm: number,
+  startAngle: number,
+  sweep: number,
+  cam: Readonly<SketchCameraState>,
+  color: string,
+  widthPx: number,
+): void {
+  if (radiusMm * cam.zoom < 0.5 || Math.abs(sweep) < 1e-4) return;
+  const pts = sampleArc(center, radiusMm, startAngle, sweep);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = widthPx;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const [px, py] = sketchToScreen(pts[i][0], pts[i][1], cam);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
   ctx.stroke();
   ctx.restore();
 }
