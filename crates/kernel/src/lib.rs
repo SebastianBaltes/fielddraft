@@ -449,6 +449,12 @@ pub struct Kernel {
     sync_meshing: bool,
     /// Mesh algorithm selection: 0 = MDC (default), 1 = RFTA.
     mesh_algorithm: u8,
+    /// Milestone-1 parametric weaving: when on, pure grundforms (currently
+    /// the Box) get an exact analytic B-Rep instead of an octree-sampled one.
+    /// Default `false` — opt-in via `setParametricWeave`. Anything not yet
+    /// handled analytically falls back to the octree weave, so this never
+    /// changes the result for unsupported shapes.
+    parametric_weave: bool,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
@@ -628,12 +634,13 @@ impl Kernel {
         // which face a vertex sits on. We therefore only (re)tag meshes whose
         // `face_index` is missing/out-of-sync, weaving the B-Rep once and
         // sharing the cache with the later face/vertex exports.
+        let parametric = self.parametric_weave;
         for i in 0..self.bodies.len() {
             let tc = self.bodies[i].mesh.triangle_count();
             if tc == 0 || self.bodies[i].mesh.face_index.len() == tc {
                 continue;
             }
-            self.bodies[i].ensure_brep(&self.decoded);
+            self.bodies[i].ensure_brep(&self.decoded, parametric);
             let placement = self.bodies[i].placement;
             let brep = self.bodies[i].brep_cached().expect("woven above");
             let tags = crate::brep::face_export::correlate_mesh_faces(
@@ -945,6 +952,7 @@ impl Kernel {
             active_body_id: None,
             sync_meshing: true,
             mesh_algorithm: 0,
+            parametric_weave: false,
             mesh_version: 0,
             edge_fillets: Vec::new(),
             mate_connectors: Vec::new(),
@@ -2806,7 +2814,7 @@ impl Kernel {
         // Split the borrow: `ensure_brep` needs `&mut bodies[i]` and
         // `&document.features` simultaneously, which a method on the
         // whole `Kernel` can't express without aliasing.
-        let brep = self.bodies[i].ensure_brep(&self.decoded);
+        let brep = self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let watertight = brep.shells.first().map(|s| s.is_closed).unwrap_or(false);
         serde_json::json!({
             "vertices": brep.vertex_count(),
@@ -2837,7 +2845,7 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::EdgeId;
 
-        self.bodies[i].ensure_brep(&self.decoded);
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let s = placement.scale[0];
@@ -2882,7 +2890,7 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
 
-        self.bodies[i].ensure_brep(&self.decoded);
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut faces = Vec::with_capacity(brep.faces.len());
         for (k, face) in brep.faces.iter().enumerate() {
@@ -2912,7 +2920,7 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::VertexId;
 
-        self.bodies[i].ensure_brep(&self.decoded);
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut verts = Vec::with_capacity(brep.vertices.len());
         for (k, vertex) in brep.vertices.iter().enumerate() {
@@ -2938,7 +2946,7 @@ impl Kernel {
     /// current.
     #[wasm_bindgen(js_name = bodyPlacement)]
     pub fn body_placement(&mut self, i: usize) -> String {
-        self.bodies[i].ensure_brep(&self.decoded);
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let p = self.bodies[i].placement;
         serde_json::json!({
             "translate": p.translate,
@@ -2980,7 +2988,7 @@ impl Kernel {
     #[wasm_bindgen(js_name = bodyStepExport)]
     pub fn body_step_export(&mut self, i: usize) -> String {
         let product_name = format!("body_{}", self.bodies[i].id);
-        self.bodies[i].ensure_brep(&self.decoded);
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
         crate::brep::step_export::export_step_placed(brep, &placement, &product_name)
@@ -2998,7 +3006,7 @@ impl Kernel {
         // breps immutably for export — two passes so the mutable `ensure_brep`
         // borrows don't overlap the shared-slice borrow.
         for i in 0..self.bodies.len() {
-            self.bodies[i].ensure_brep(&self.decoded);
+            self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         }
         let breps: Vec<(&crate::brep::BRep, fielddraft_protocol::Transform)> = self
             .bodies
@@ -3158,6 +3166,29 @@ impl Kernel {
         // meshes after enabling.
         self.bodies.clear();
         self.rebuild_mesh_internal();
+        true
+    }
+
+    /// Toggle milestone-1 parametric weaving (exact analytic B-Rep for pure
+    /// grundforms). Returns `false` if the flag was already at `enabled`.
+    /// Clears the body cache and remeshes so every body re-weaves through the
+    /// chosen path — the woven `id_hash`es are identical on both routes, so
+    /// existing element selections keep resolving across the toggle.
+    #[wasm_bindgen(js_name = setParametricWeave)]
+    pub fn set_parametric_weave(&mut self, enabled: bool) -> bool {
+        if self.parametric_weave == enabled {
+            return false;
+        }
+        self.parametric_weave = enabled;
+        // The render mesh (DC) is identical on both routes — only the woven
+        // B-Rep differs. Invalidate each body's B-Rep cache and bump its
+        // version so the frontend refetches the now-exact (or now-sampled)
+        // edges / faces; no remesh needed.
+        for b in &mut self.bodies {
+            b.brep = None;
+            b.version = b.version.wrapping_add(1);
+        }
+        self.mesh_version = self.mesh_version.wrapping_add(1);
         true
     }
 
@@ -5804,7 +5835,7 @@ mod tests {
             brep: None,
         };
 
-        bdy.ensure_brep(&features);
+        bdy.ensure_brep(&features, false);
         let key0 = hash_body_local_payload(&features, &bdy.feature_indices, &bdy.placement);
         let ptr0 = bdy.brep_cached().unwrap() as *const _;
 
@@ -5819,7 +5850,7 @@ mod tests {
         let key1 = hash_body_local_payload(&moved, &bdy.feature_indices, &placement_moved);
         assert_eq!(key0, key1, "pure move must NOT change the local cache key");
 
-        bdy.ensure_brep(&moved);
+        bdy.ensure_brep(&moved, false);
         let ptr1 = bdy.brep_cached().unwrap() as *const _;
         assert_eq!(ptr0, ptr1, "pure move must reuse the cached B-Rep (no re-weave)");
         assert_eq!(bdy.placement.translate, [10.0, -4.0, 7.0], "placement updated");

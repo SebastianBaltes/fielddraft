@@ -44,6 +44,7 @@ function setup() {
     showEdges: true,
     brepEdgeMode: "xray",
     frameLoop: "demand",
+    parametricWeave: false,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -240,6 +241,20 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("toggles parametric weaving in settings dialog", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    click(
+      t.container.querySelector('[data-testid="setting-parametric-weave-toggle"]')!,
+    );
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ parametricWeave: true }),
+    );
+    expect(localStorage.getItem("fielddraft.parametricWeave")).toBe("true");
+    t.cleanup();
+  });
+
   it("shows shortcuts table on shortcuts tab", () => {
     const t = setup();
     openSettingsDialog(t.container);
@@ -318,6 +333,7 @@ describe("loadSettings", () => {
       showEdges: true,
       brepEdgeMode: "xray",
       frameLoop: "demand",
+      parametricWeave: false,
     });
   });
 
@@ -345,6 +361,7 @@ describe("loadSettings", () => {
       showEdges: true,
       brepEdgeMode: "xray",
       frameLoop: "demand",
+      parametricWeave: false,
     });
   });
 

@@ -34,14 +34,14 @@ use std::collections::HashMap;
 use crate::brep::edge_walker::build_wireframe;
 use crate::brep::octree::Octree;
 use crate::brep::{
-    BRep, EdgeGeometry, EdgeId, Face, HermiteSample, Loop, NurbsCurve, Shell, Solid,
-    SurfaceGeometry, VertexId,
+    BRep, Edge, EdgeGeometry, EdgeId, Face, HermiteSample, Loop, NurbsCurve, Shell, Solid,
+    SurfaceGeometry, Vertex, VertexId,
 };
 use crate::bvh::BoundedCsg;
 use crate::compose_transforms;
 use crate::csg::{offset_halfspace_inward, primitive_halfspaces, BranchId};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
-use fielddraft_protocol::{HalfSpace, Transform};
+use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
 use super::vec3::{add, normalize as unit, scale, sub};
@@ -997,8 +997,19 @@ fn flip_orientations(ring: &mut [(EdgeId, bool)]) {
 /// (C.4), fit every Hermite edge to a NURBS curve, weave one trimmed face per
 /// branch, and assemble a single watertight shell + solid.
 pub fn weave(body: &BoundedCsg, octree: &Octree) -> BRep {
-    let mut brep = build_wireframe(body, octree);
+    finish_weave(build_wireframe(body, octree), body)
+}
 
+/// Finish a wireframe [`BRep`] — deduplicated vertices plus signed edges — into
+/// a watertight solid: upgrade Hermite edges to NURBS, weave one trimmed face
+/// per branch, assemble the shell + solid.
+///
+/// Shared by the octree route ([`weave`]) and the analytic route
+/// ([`weave_parametric`]). The ONLY difference between the two is how the input
+/// wireframe was produced; everything downstream — face grouping, loop
+/// ordering, watertightness, the stable `id_hash` naming — is byte-identical,
+/// so toggling parametric weaving never changes a body's element handles.
+fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     // (1) Upgrade every Hermite edge to NURBS. The edge-walk samples stop
     // roughly one octree cell short of each bounding corner (the corner is a
     // Vertex cell, not an Edge cell), so we anchor the chain's first/last
@@ -1150,6 +1161,123 @@ pub fn weave(body: &BoundedCsg, octree: &Octree) -> BRep {
     brep
 }
 
+// ─── parametric weave (M1: pure grundforms, analytic wireframe) ──────────────
+
+/// Analytic ("parametric") B-Rep weave — milestone 1 of the parametric-weaving
+/// roadmap (`docs/GEOMETRY-KERNEL-CONCEPT.md`, roadmap point E).
+///
+/// Builds the *exact* wireframe of a pure grundform directly from its
+/// parameters — no octree, no sampling — then finishes it through the same
+/// [`finish_weave`] the octree path uses. Because the corners and edges are
+/// solved in closed form, they are resolution-independent and land exactly on
+/// their face planes; and because the branch signatures are identical to the
+/// octree decomposition, the resulting `id_hash` element handles are
+/// byte-identical to the SDF route (so a UI selection survives toggling the
+/// feature on/off).
+///
+/// Returns `None` for anything not yet handled analytically — every boolean,
+/// warp, and (so far) every primitive except an axis-aligned Box — and the
+/// caller transparently falls back to the octree [`weave`]. Each primitive we
+/// add support for simply removes one `None` return; the merge of a parametric
+/// grundform with an SDF-derived boolean result is milestone 2.
+pub fn weave_parametric(body: &BoundedCsg) -> Option<BRep> {
+    let wireframe = build_box_wireframe(body)?;
+    Some(finish_weave(wireframe, body))
+}
+
+/// Exact 8-corner / 12-edge wireframe of a single axis-aligned Box leaf, in the
+/// body-local frame. `None` unless `body` is exactly one Box primitive.
+///
+/// The corner positions are computed with the SAME face transform the analytic
+/// faces use (`branch_halfspace_map`, which folds the primitive `center` in),
+/// so every corner lies exactly on its three face planes — the body is
+/// watertight by construction, not by sampling tolerance.
+fn build_box_wireframe(body: &BoundedCsg) -> Option<BRep> {
+    let (id, half_extents) = match body {
+        BoundedCsg::Leaf {
+            id,
+            primitive: Primitive::Box { half_extents, .. },
+            ..
+        } => (id, *half_extents),
+        _ => return None,
+    };
+
+    // Reuse the analytic face transform (sub 0; all six box faces share it).
+    let halfspaces = branch_halfspace_map(body);
+    let face_xf = halfspaces.get(&BranchId::from_feature_sub(id, 0).as_u32())?.1;
+
+    let [hx, hy, hz] = half_extents;
+    let mut brep = BRep::new();
+
+    // Sub-id layout for a Box (see `primitive_halfspaces`): X faces are subs
+    // 0(+)/1(-), Y are 2(+)/3(-), Z are 4(+)/5(-). Subs are already ascending
+    // per axis, so a corner's three branches come out canonically sorted.
+    let axis_sub = |axis: usize, positive: bool| (axis as u32) * 2 + u32::from(!positive);
+    let signs = [-1.0f32, 1.0f32]; // index 0 = negative, 1 = positive
+
+    // 8 corners, keyed by (xi, yi, zi) sign-bit indices.
+    let mut corner: HashMap<(usize, usize, usize), VertexId> = HashMap::new();
+    for (xi, &sx) in signs.iter().enumerate() {
+        for (yi, &sy) in signs.iter().enumerate() {
+            for (zi, &sz) in signs.iter().enumerate() {
+                let p = xf_point(&face_xf, [sx * hx, sy * hy, sz * hz]);
+                let branches = vec![
+                    BranchId::from_feature_sub(id, axis_sub(0, sx > 0.0)),
+                    BranchId::from_feature_sub(id, axis_sub(1, sy > 0.0)),
+                    BranchId::from_feature_sub(id, axis_sub(2, sz > 0.0)),
+                ];
+                let vid = brep.add_vertex(Vertex::new(p, branches));
+                corner.insert((xi, yi, zi), vid);
+            }
+        }
+    }
+
+    // 12 edges: every pair of faces on DIFFERENT axes. The edge runs along the
+    // third (free) axis between the two corners sharing the two fixed signs.
+    for &(a, b) in &[(0usize, 1usize), (0, 2), (1, 2)] {
+        let free = 3 - a - b;
+        for (ia, &sa) in signs.iter().enumerate() {
+            for (ib, &sb) in signs.iter().enumerate() {
+                // Endpoints: hold the two fixed sign-bits, vary the free axis.
+                let mut idx = [0usize; 3];
+                idx[a] = ia;
+                idx[b] = ib;
+                idx[free] = 0;
+                let v0 = corner[&(idx[0], idx[1], idx[2])];
+                idx[free] = 1;
+                let v1 = corner[&(idx[0], idx[1], idx[2])];
+
+                let ba = BranchId::from_feature_sub(id, axis_sub(a, sa > 0.0));
+                let bb = BranchId::from_feature_sub(id, axis_sub(b, sb > 0.0));
+                // A box edge is a straight segment → exact 2-point polyline.
+                let p0 = brep.vertex(v0).position;
+                let p1 = brep.vertex(v1).position;
+                brep.add_edge(Edge::new(
+                    EdgeGeometry::Polyline(vec![p0, p1]),
+                    ba,
+                    bb,
+                    Some(v0),
+                    Some(v1),
+                ));
+            }
+        }
+    }
+
+    Some(brep)
+}
+
+/// `R·(s·p) + t` for a rigid + uniform-scale transform (f32 in, f64 out).
+fn xf_point(t: &Transform, p: [f32; 3]) -> [f64; 3] {
+    let s = t.scale[0];
+    let scaled = [p[0] * s, p[1] * s, p[2] * s];
+    let r = crate::quat_rotate(t.rotation, scaled);
+    [
+        (r[0] + t.translate[0]) as f64,
+        (r[1] + t.translate[1]) as f64,
+        (r[2] + t.translate[2]) as f64,
+    ]
+}
+
 /// Manifold / watertight test: every edge referenced by a face's outer loop
 /// (faces are single-loop here) must be used by **exactly two** loops. See
 /// DL-24.
@@ -1247,6 +1375,100 @@ mod tests {
             .collect();
         verts.sort();
         (edges, verts)
+    }
+
+    /// Sorted multiset of the stable element handles (`id_hash`) for a woven
+    /// B-Rep's faces / edges / vertices — exactly what `qFace`/`qEdge`/`qVertex`
+    /// address. Independent of arena order.
+    fn topo_handles(brep: &BRep) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{EdgeId, FaceId, VertexId};
+        let mut faces: Vec<u64> = (0..brep.faces.len())
+            .map(|k| TopoRef::from_face(brep, FaceId(k as u32)).id_hash)
+            .collect();
+        let mut edges: Vec<u64> = (0..brep.edges.len())
+            .map(|k| TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash)
+            .collect();
+        let mut verts: Vec<u64> = (0..brep.vertices.len())
+            .map(|k| TopoRef::from_vertex(brep, VertexId(k as u32)).id_hash)
+            .collect();
+        faces.sort_unstable();
+        edges.sort_unstable();
+        verts.sort_unstable();
+        (faces, edges, verts)
+    }
+
+    #[test]
+    fn parametric_box_matches_octree_topology_and_handles() {
+        // A non-cube box so the "exact corner" check is discriminating.
+        let body = box_body([2.0, 1.0, 0.5]);
+
+        let octree = Octree::build(&body, 0.125);
+        let sdf = weave(&body, &octree);
+        let par = weave_parametric(&body).expect("a lone Box is parametric-weavable");
+
+        // Same cube topology, both watertight.
+        assert_eq!(par.faces.len(), 6, "box has 6 faces");
+        assert_eq!(par.edges.len(), 12, "box has 12 edges");
+        assert_eq!(par.vertices.len(), 8, "box has 8 corners");
+        assert!(par.shells[0].is_closed, "parametric box is watertight");
+        assert_eq!(sdf.faces.len(), 6);
+        assert_eq!(sdf.edges.len(), 12);
+        assert_eq!(sdf.vertices.len(), 8);
+
+        // The corners are EXACT — every sign combination of the half-extents to
+        // full f64 precision (the octree path only reaches these within a
+        // sampling tolerance). This is the precision win of milestone 1.
+        let mut corners: Vec<[f64; 3]> = par.vertices.iter().map(|v| v.position).collect();
+        corners.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut expect: Vec<[f64; 3]> = Vec::new();
+        for &sx in &[-2.0, 2.0] {
+            for &sy in &[-1.0, 1.0] {
+                for &sz in &[-0.5, 0.5] {
+                    expect.push([sx, sy, sz]);
+                }
+            }
+        }
+        expect.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (got, want) in corners.iter().zip(&expect) {
+            for k in 0..3 {
+                assert!(
+                    (got[k] - want[k]).abs() < 1e-12,
+                    "corner {got:?} is not exactly {want:?}"
+                );
+            }
+        }
+
+        // The element handles (qFace/qEdge/qVertex id_hash) are byte-identical
+        // on both routes — toggling parametric weaving never breaks a saved
+        // selection. This also proves the SDF path produced the same clean
+        // 6/12/8 topology (different handle sets would fail here).
+        assert_eq!(
+            topo_handles(&par),
+            topo_handles(&sdf),
+            "parametric and octree weave must yield identical element handles"
+        );
+    }
+
+    #[test]
+    fn parametric_weave_falls_back_for_non_grundform() {
+        // A boolean union is milestone 2, not yet analytic → None, so the
+        // caller transparently uses the octree weave.
+        let union = union_box_sphere([1.0, 1.0, 1.0], [1.0, 0.0, 0.0], 0.8);
+        assert!(weave_parametric(&union).is_none(), "union is not yet parametric");
+
+        // A lone sphere is closed analytic but not a Box → also falls back in M1.
+        let sphere = {
+            let csg = CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Sphere {
+                    center: [0.0; 3],
+                    radius: 1.0,
+                },
+            };
+            BoundedCsg::from_csg(&csg)
+        };
+        assert!(weave_parametric(&sphere).is_none(), "sphere is not handled in M1");
     }
 
     /// Regenerating the B-Rep from the *same* geometry must yield an identical

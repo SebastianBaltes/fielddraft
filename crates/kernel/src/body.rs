@@ -24,7 +24,7 @@ use std::hash::{Hash, Hasher};
 use fielddraft_protocol::{BoolOp, FeatureId, HalfSpace, Primitive, Transform};
 
 use crate::brep::octree::Octree;
-use crate::brep::weaving::weave;
+use crate::brep::weaving::{weave, weave_parametric};
 use crate::brep::BRep;
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, BlendMode, CsgNode, DecodedFeature};
@@ -149,7 +149,13 @@ impl Body {
     /// or a huge body both get proportional sampling instead of an
     /// absolute default. The weave path is panic-safe — degenerate
     /// geometry yields a possibly-empty B-Rep rather than a crash.
-    pub fn ensure_brep(&mut self, features: &[DecodedFeature]) -> &BRep {
+    /// `parametric` selects milestone-1 parametric weaving: pure grundforms
+    /// (currently the Box) get an exact analytic B-Rep via
+    /// [`weave_parametric`], skipping the octree entirely; anything it does not
+    /// yet handle transparently falls back to the octree [`weave`]. The flag
+    /// does not enter the cache key — the woven `id_hash`es are identical on
+    /// both paths, and the kernel clears the cache when the flag is toggled.
+    pub fn ensure_brep(&mut self, features: &[DecodedFeature], parametric: bool) -> &BRep {
         // Placement is cheap (O(features)) and recomputed on EVERY call,
         // OUTSIDE the stale-gated weave: a move changes only `placement`,
         // so consumers always see the current world pose without forcing
@@ -178,6 +184,11 @@ impl Body {
             // (union → its own partition) still weaves normally.
             let brep = if bounded_contains_space_filling(&bounded) {
                 BRep::new()
+            } else if let Some(parametric_brep) =
+                parametric.then(|| weave_parametric(&bounded)).flatten()
+            {
+                // Exact analytic weave for a pure grundform — no octree at all.
+                parametric_brep
             } else {
                 let min_cell = topology_min_cell_size(&self.aabb);
                 let octree = Octree::build(&bounded, min_cell);
@@ -364,7 +375,9 @@ pub fn weave_all(features: &[DecodedFeature]) -> Vec<(BRep, Transform)> {
             placement: Transform::IDENTITY,
             brep: None,
         };
-        body.ensure_brep(features);
+        // Query resolution stays on the proven octree path; parametric weaving
+        // produces identical `id_hash`es, so handles resolve either way.
+        body.ensure_brep(features, false);
         let placement = body.placement;
         breps.push((body.brep.expect("ensure_brep populates the cache").1, placement));
     }

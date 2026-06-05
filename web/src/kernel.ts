@@ -603,6 +603,12 @@ export class Kernel {
     return this.inner.setSyncMeshing(enabled);
   }
 
+  /** Toggle milestone-1 parametric weaving (exact analytic B-Rep for pure
+   * grundforms). Returns `true` if the flag actually changed. */
+  setParametricWeave(enabled: boolean): boolean {
+    return this.inner.setParametricWeave(enabled);
+  }
+
   // ── outliner ────────────────────────────────────────────────────────
 
   listFeatures(): FeatureSummary[] {

@@ -1602,6 +1602,19 @@ export class Kernel {
         return ret !== 0;
     }
     /**
+     * Toggle milestone-1 parametric weaving (exact analytic B-Rep for pure
+     * grundforms). Returns `false` if the flag was already at `enabled`.
+     * Clears the body cache and remeshes so every body re-weaves through the
+     * chosen path — the woven `id_hash`es are identical on both routes, so
+     * existing element selections keep resolving across the toggle.
+     * @param {boolean} enabled
+     * @returns {boolean}
+     */
+    setParametricWeave(enabled) {
+        const ret = wasm.kernel_setParametricWeave(this.__wbg_ptr, enabled);
+        return ret !== 0;
+    }
+    /**
      * @param {number} index
      */
     setRollbackIndex(index) {

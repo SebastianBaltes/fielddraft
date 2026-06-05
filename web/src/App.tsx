@@ -26,6 +26,10 @@ export function App() {
     if (store) store.setDcMeshingEnabled(isMeshMode, settings.meshAlgorithm);
   }, [store, isMeshMode, settings.meshAlgorithm]);
 
+  useEffect(() => {
+    if (store) store.setParametricWeave(settings.parametricWeave);
+  }, [store, settings.parametricWeave]);
+
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
   useEffect(() => {

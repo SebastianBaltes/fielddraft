@@ -108,6 +108,7 @@ export const kernel_setFeatureTransform: (a: number, b: number, c: number, d: nu
 export const kernel_setFeatureTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
 export const kernel_setMeshAlgorithm: (a: number, b: number, c: number) => number;
 export const kernel_setMeshResolution: (a: number, b: number) => number;
+export const kernel_setParametricWeave: (a: number, b: number) => number;
 export const kernel_setRollbackIndex: (a: number, b: number) => void;
 export const kernel_setSyncMeshing: (a: number, b: number) => number;
 export const kernel_setVariable: (a: number, b: number, c: number, d: number) => [number, number];

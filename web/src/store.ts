@@ -630,6 +630,14 @@ export class KernelStore {
     }
   }
 
+  /** Milestone-1 parametric weaving toggle. Only the woven B-Rep changes (the
+   * DC render mesh is identical), so we just flip the kernel flag and notify —
+   * the kernel bumps each body's version, which refetches the B-Rep edge /
+   * face overlays. */
+  setParametricWeave(enabled: boolean): void {
+    if (this.kernel.setParametricWeave(enabled)) this.notify();
+  }
+
   private scheduleWorkerRebuild(): void {
     if (!this.worker || !this.workerAvailable) return;
     if (!this.dcMeshingEnabled) return;

@@ -585,6 +585,14 @@ export class Kernel {
      * `setMeshResolution` for backward compatibility.
      */
     setMeshResolution(resolution: number): boolean;
+    /**
+     * Toggle milestone-1 parametric weaving (exact analytic B-Rep for pure
+     * grundforms). Returns `false` if the flag was already at `enabled`.
+     * Clears the body cache and remeshes so every body re-weaves through the
+     * chosen path — the woven `id_hash`es are identical on both routes, so
+     * existing element selections keep resolving across the toggle.
+     */
+    setParametricWeave(enabled: boolean): boolean;
     setRollbackIndex(index: number): void;
     /**
      * Enable or disable the synchronous DC pass. Toggling forces a
@@ -771,6 +779,7 @@ export interface InitOutput {
     readonly kernel_setFeatureTranslate: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_setMeshAlgorithm: (a: number, b: number, c: number) => number;
     readonly kernel_setMeshResolution: (a: number, b: number) => number;
+    readonly kernel_setParametricWeave: (a: number, b: number) => number;
     readonly kernel_setRollbackIndex: (a: number, b: number) => void;
     readonly kernel_setSyncMeshing: (a: number, b: number) => number;
     readonly kernel_setVariable: (a: number, b: number, c: number, d: number) => [number, number];

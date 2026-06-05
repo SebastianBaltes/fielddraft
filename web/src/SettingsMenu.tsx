@@ -10,6 +10,7 @@ const LS_SHOW_EDGES = "fielddraft.showEdges";
 const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
+const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -192,6 +193,10 @@ export interface SettingsState {
   showEdges: boolean;
   brepEdgeMode: BRepEdgeMode;
   frameLoop: FrameLoopMode;
+  /** Milestone-1 parametric weaving: exact analytic B-Rep for pure grundforms
+   * (currently the Box), skipping the octree. Falls back to the octree weave
+   * for anything not yet handled, so it is safe to leave on. */
+  parametricWeave: boolean;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -242,6 +247,7 @@ export function loadSettings(): SettingsState {
   let showEdges = true;
   let brepEdgeMode: BRepEdgeMode = "xray";
   let frameLoop: FrameLoopMode = "demand";
+  let parametricWeave = false;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -261,10 +267,11 @@ export function loadSettings(): SettingsState {
     const rawFrameLoop = localStorage.getItem(LS_FRAME_LOOP);
     if (rawFrameLoop === "always" || rawFrameLoop === "demand")
       frameLoop = rawFrameLoop;
+    parametricWeave = localStorage.getItem(LS_PARAMETRIC_WEAVE) === "true";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -829,6 +836,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleParametricWeave = () => {
+    const next = { ...settings, parametricWeave: !settings.parametricWeave };
+    saveSetting(LS_PARAMETRIC_WEAVE, String(next.parametricWeave));
+    onSettingsChange(next);
+  };
+
   const TABS: { key: SettingsTab; label: string }[] = [
     { key: "ui", label: "UI" },
     { key: "units", label: "Workspace Units" },
@@ -997,6 +1010,22 @@ function SettingsDialog({
                     Always
                   </button>
                 </div>
+              </div>
+
+              <div className="setting-row" data-testid="setting-parametric-weave">
+                <span className="setting-label" title="Exact analytic B-Rep for pure grundforms (Box) — skips the octree. Falls back automatically for anything not yet supported.">
+                  Parametric weaving
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.parametricWeave ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.parametricWeave}
+                  data-testid="setting-parametric-weave-toggle"
+                  onClick={toggleParametricWeave}
+                >
+                  {settings.parametricWeave ? "On" : "Off"}
+                </button>
               </div>
             </>
           )}
