@@ -65,11 +65,30 @@ describe("applicableConstraints", () => {
     ]);
   });
 
+  it("offers midpoint for a point + a line, order-independent", () => {
+    const state = twoLinesAndCircle();
+    // line 3 + point 4 (start of line 2).
+    expect(applicableConstraints(state, [3, 4]).map((o) => o.type)).toEqual([
+      "sketch_constraint_midpoint",
+    ]);
+    expect(applicableConstraints(state, [4, 3]).map((o) => o.type)).toEqual([
+      "sketch_constraint_midpoint",
+    ]);
+  });
+
+  it("offers symmetric for two points + a line axis", () => {
+    const state = twoLinesAndCircle();
+    // points 1 and 4 mirrored across line 6 (the axis).
+    expect(applicableConstraints(state, [1, 4, 6]).map((o) => o.type)).toEqual([
+      "sketch_constraint_symmetric",
+    ]);
+  });
+
   it("offers nothing for unsupported / empty selections", () => {
     const state = twoLinesAndCircle();
     expect(applicableConstraints(state, [])).toEqual([]);
-    // line + point: no supported geometric constraint.
-    expect(applicableConstraints(state, [3, 1])).toEqual([]);
+    // point + circle: no supported geometric constraint.
+    expect(applicableConstraints(state, [1, 8])).toEqual([]);
     // three lines: nothing.
     expect(applicableConstraints(state, [3, 6, 3])).toEqual([]);
   });
@@ -178,10 +197,41 @@ describe("buildConstraintCall", () => {
     expect(Math.abs(call.params.value_deg as number)).toBeCloseTo(180, 9);
   });
 
+  it("normalises midpoint so the point maps to `point` and line to `line`", () => {
+    const state = twoLinesAndCircle();
+    // line-first and point-first selections both resolve correctly.
+    expect(buildConstraintCall("sketch_constraint_midpoint", [3, 4], state)).toEqual({
+      type: "sketch_constraint_midpoint",
+      params: { point: 4, line: 3 },
+    });
+    expect(buildConstraintCall("sketch_constraint_midpoint", [4, 3], state)).toEqual({
+      type: "sketch_constraint_midpoint",
+      params: { point: 4, line: 3 },
+    });
+  });
+
+  it("maps two points + an axis line to entity_a / entity_b / axis", () => {
+    const state = twoLinesAndCircle();
+    // Axis line can appear anywhere in the pick; the two points keep
+    // their selection order.
+    expect(buildConstraintCall("sketch_constraint_symmetric", [1, 4, 6], state)).toEqual({
+      type: "sketch_constraint_symmetric",
+      params: { entity_a: 1, entity_b: 4, axis: 6 },
+    });
+    expect(buildConstraintCall("sketch_constraint_symmetric", [6, 1, 4], state)).toEqual({
+      type: "sketch_constraint_symmetric",
+      params: { entity_a: 1, entity_b: 4, axis: 6 },
+    });
+  });
+
   it("returns null when the selection doesn't match the constraint", () => {
     const state = twoLinesAndCircle();
     expect(buildConstraintCall("sketch_constraint_parallel", [3], state)).toBeNull();
     expect(buildConstraintCall("sketch_constraint_coincident", [3, 6], state)).toBeNull();
     expect(buildConstraintCall("sketch_constraint_unknown", [3], state)).toBeNull();
+    // midpoint needs exactly one point + one line.
+    expect(buildConstraintCall("sketch_constraint_midpoint", [3, 6], state)).toBeNull();
+    // symmetric needs two points + one line.
+    expect(buildConstraintCall("sketch_constraint_symmetric", [1, 4], state)).toBeNull();
   });
 });

@@ -300,6 +300,71 @@ describe("solveSketch: fully constrained rectangle", () => {
   });
 });
 
+describe("solveSketch: midpoint + symmetric", () => {
+  /**
+   * `Midpoint { point, line }` should pull the point onto the centre
+   * of the line's two endpoints. Translated to PlaneGCS as
+   * `p2p_symmetric_ppp` (endpoints symmetric about the point), so the
+   * solved point sits at the endpoint average regardless of where the
+   * endpoints settle.
+   */
+  it("midpoint pins a point to the centre of a line's endpoints", async () => {
+    const sketch = emptySketch("midpoint");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 10, y: 0 } });
+    sketch.entities.push({ kind: "line", id: 3, start: 1, end: 2 });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 3, y: 4 } });
+    sketch.next_entity_id = 5;
+    sketch.constraints.push({ kind: "midpoint", id: 1, point: 4, line: 3 });
+    sketch.next_constraint_id = 2;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const p = (id: number) => {
+      const e = result.state.entities.find((x) => x.id === id);
+      if (!e || e.kind !== "point") throw new Error(`point ${id} missing`);
+      return e.at;
+    };
+    const a = p(1);
+    const b = p(2);
+    const m = p(4);
+    expect(m.x).toBeCloseTo((a.x + b.x) / 2, 4);
+    expect(m.y).toBeCloseTo((a.y + b.y) / 2, 4);
+  });
+
+  /**
+   * `Symmetric { a, b, axis }` mirrors two points across the axis
+   * line. With the axis pinned to the x-axis (origin + horizontal),
+   * the reflection of (x, y) is (x, −y), so the solved points satisfy
+   * Bx ≈ Ax and By ≈ −Ay. Maps to PlaneGCS' `p2p_symmetric_ppl`.
+   */
+  it("symmetric mirrors two points across an axis line", async () => {
+    const sketch = sketchWithOrigin("symmetric");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 10, y: 0 } });
+    sketch.entities.push({ kind: "line", id: 2, start: 0, end: 1 });
+    sketch.entities.push({ kind: "point", id: 3, at: { x: 3, y: 5 } });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 6, y: -2 } });
+    sketch.next_entity_id = 5;
+    // Pin the axis to the x-axis: origin anchors it at (0,0), the
+    // horizontal constraint keeps it flat.
+    sketch.constraints.push({ kind: "horizontal", id: 1, line: 2 });
+    sketch.constraints.push({ kind: "symmetric", id: 2, a: 3, b: 4, axis: 2 });
+    sketch.next_constraint_id = 3;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const p = (id: number) => {
+      const e = result.state.entities.find((x) => x.id === id);
+      if (!e || e.kind !== "point") throw new Error(`point ${id} missing`);
+      return e.at;
+    };
+    const a = p(3);
+    const b = p(4);
+    expect(b.x).toBeCloseTo(a.x, 4);
+    expect(b.y).toBeCloseTo(-a.y, 4);
+  });
+});
+
 describe("solveSketch: conflict diagnostics", () => {
   /**
    * Two Distance constraints between the same two points with

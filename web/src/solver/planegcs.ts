@@ -390,28 +390,40 @@ function translateConstraint(
         `solver: equal between ${a.kind} and ${b.kind} is not yet supported`,
       );
     }
-    case "midpoint":
+    case "midpoint": {
+      // FieldDraft's `Midpoint { point, line }` means "the point lies at
+      // the midpoint of the line". A point M is the midpoint of segment
+      // (A, B) exactly when A and B are symmetric about M — which is
+      // PlaneGCS' `p2p_symmetric_ppp` (p1, p2 symmetric about p). So we
+      // resolve the line's two endpoints and pin `point` as their
+      // symmetry centre. One constraint, no helper geometry.
+      const line = entityIndex.get(constraint.line);
+      if (!line || line.kind !== "line") {
+        throw new Error("solver: midpoint requires a line");
+      }
       return {
-        type: "midpoint_on_line_ll",
+        type: "p2p_symmetric_ppp",
         id,
-        // PlaneGCS' midpoint_on_line_ll takes two lines and
-        // asserts the second passes through the midpoint of
-        // the first. FieldDraft's `Midpoint { point, line }`
-        // maps to "the `point` lies at the midpoint of `line`";
-        // the cleanest PlaneGCS equivalent is a
-        // `point_on_line` plus a distance equality on the two
-        // half-segments. K5a models it as the lighter
-        // midpoint_on_line_pppp form when a second line is
-        // available; otherwise this arm throws an error with a
-        // clear message so the K5b adapter knows to decompose.
-        l1_id: entityOid(constraint.line),
-        l2_id: entityOid(constraint.point),
+        p1_id: entityOid(line.start),
+        p2_id: entityOid(line.end),
+        p_id: entityOid(constraint.point),
       };
-    case "symmetric":
-      throw new Error(
-        "solver: symmetric constraint decomposition is K5b adapter-layer " +
-          "work; K5a does not yet support it",
-      );
+    }
+    case "symmetric": {
+      // `Symmetric { a, b, axis }`: points a and b mirror across the
+      // axis line. Maps one-to-one to PlaneGCS' `p2p_symmetric_ppl`.
+      const axis = entityIndex.get(constraint.axis);
+      if (!axis || axis.kind !== "line") {
+        throw new Error("solver: symmetric axis must be a line");
+      }
+      return {
+        type: "p2p_symmetric_ppl",
+        id,
+        p1_id: entityOid(constraint.a),
+        p2_id: entityOid(constraint.b),
+        l_id: entityOid(constraint.axis),
+      };
+    }
   }
 }
 

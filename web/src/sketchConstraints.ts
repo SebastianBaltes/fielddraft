@@ -185,6 +185,26 @@ export function applicableConstraints(
     });
   }
 
+  // A point plus a line pins the point at the line's midpoint.
+  if (n === 2 && points === 1 && lines === 1) {
+    out.push({
+      type: "sketch_constraint_midpoint",
+      label: "Midpoint",
+      glyph: "◎",
+      title: "Pin the point at the midpoint of the line",
+    });
+  }
+
+  // Two points plus a line make the points mirror across that line.
+  if (n === 3 && points === 2 && lines === 1) {
+    out.push({
+      type: "sketch_constraint_symmetric",
+      label: "Symmetric",
+      glyph: "⇆",
+      title: "Make the two points symmetric across the line",
+    });
+  }
+
   return out;
 }
 
@@ -281,6 +301,31 @@ export function buildConstraintCall(
       return {
         type,
         params: { line: selection[lineIdx], curve: selection[curveIdx] },
+      };
+    }
+
+    case "sketch_constraint_midpoint": {
+      if (selection.length !== 2) return null;
+      // Order-independent: one point, one line.
+      const pointIdx = kinds.findIndex(isPointish);
+      const lineIdx = kinds.findIndex((k) => k === "line");
+      if (pointIdx === -1 || lineIdx === -1) return null;
+      return {
+        type,
+        params: { point: selection[pointIdx], line: selection[lineIdx] },
+      };
+    }
+
+    case "sketch_constraint_symmetric": {
+      if (selection.length !== 3) return null;
+      // Order-independent: two points and the axis line.
+      const lineIdx = kinds.findIndex((k) => k === "line");
+      if (lineIdx === -1) return null;
+      const pts = selection.filter((_, i) => isPointish(kinds[i]));
+      if (pts.length !== 2) return null;
+      return {
+        type,
+        params: { entity_a: pts[0], entity_b: pts[1], axis: selection[lineIdx] },
       };
     }
 
