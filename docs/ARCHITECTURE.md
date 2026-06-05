@@ -526,6 +526,19 @@ styles/
 - Light mode only
 - Minimum font size: 1rem
 
+**Responsive layout.** Below the 768px phone breakpoint the docked Outliner
+becomes an off-canvas drawer (absolutely positioned in `.main`, parked at
+`translateX(100%)`), slid in by a 44px hamburger in the topbar and dismissed
+via a scrim; the viewport then owns the full width. The `useMediaQuery` hook
+(`useMediaQuery.ts`, kept in sync with the `768px` CSS literal via the
+`MOBILE_QUERY` constant) lets `Outliner` drop its splitter-driven inline width
+on mobile so the CSS drawer width wins. Two gotchas, both load-bearing: a
+`box-shadow: var(--x, <fallback with commas>)` declaration placed before
+nested rules makes lightningcss silently swallow those nested rules, so the
+drawer states use explicit selectors and a plain shadow; and a CSS `transform`
+*transition* freezes off-canvas under the always-mounted WebGPU render loop's
+per-frame style recalc, so the drawer toggles instantly with no transition.
+
 ---
 
 ## 5. Go Server

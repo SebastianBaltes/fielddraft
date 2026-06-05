@@ -21,6 +21,27 @@
     height: var(--topbar-height);
     flex: 0 0 var(--topbar-height);
 
+    /* Hamburger that toggles the off-canvas outliner. Desktop docks the
+       outliner permanently, so the toggle only appears at phone width
+       (see the responsive block below). */
+    & .nav-toggle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      margin-right: var(--space-2);
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      color: var(--color-text);
+      font-size: var(--fs-lg);
+      line-height: 1;
+      cursor: pointer;
+
+      &:hover {
+        background: var(--color-bg-hover);
+      }
+    }
+
     & .title {
       font-size: var(--fs-lg);
       font-weight: var(--fw-semibold);
@@ -70,12 +91,50 @@
       flex: 1;
       min-height: 0;
       display: flex;
+      /* Positioning context for the mobile outliner drawer + scrim. */
+      position: relative;
     }
   }
 
   & > .fd-script-workspace {
     /* The de-modal'd editor fills the whole inner area. */
     overflow: hidden;
+  }
+}
+
+/* Dim scrim behind the mobile outliner drawer. Only rendered while the
+   drawer is open; hidden outright on desktop where the drawer never shows. */
+.fd-nav-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* ── Responsive: phone width ──────────────────────────────────────────
+   Kept in sync with MOBILE_QUERY in useMediaQuery.ts (768px). Below this
+   the outliner becomes an off-canvas drawer so the viewport gets the full
+   width, and the topbar grows a toggle for it. */
+@media (max-width: 768px) {
+  .fd-shell > .topbar .nav-toggle {
+    display: inline-flex;
+    /* iOS/Android touch-target minimum. */
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Contain the off-canvas drawer so its parked (translated) state can't
+     add horizontal page scroll. */
+  .fd-shell > .fd-workspace > .main {
+    overflow: hidden;
+  }
+}
+
+@media (min-width: 769px) {
+  /* Belt-and-braces: the scrim is React-gated, but never let it paint on
+     desktop even if drawer state lingers across a resize. */
+  .fd-nav-scrim {
+    display: none;
   }
 }
 

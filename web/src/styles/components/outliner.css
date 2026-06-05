@@ -1041,3 +1041,35 @@
     accent-color: var(--color-accent);
   }
 }
+
+/* ── Responsive: phone width ──────────────────────────────────────────
+   Kept in sync with MOBILE_QUERY in useMediaQuery.ts (768px). The docked
+   sidebar becomes an off-canvas drawer that slides in from the right; the
+   viewport then owns the full width. `Outliner` drops its inline width on
+   mobile so the CSS width here wins. */
+@media (max-width: 768px) {
+  .fd-outliner {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: min(85vw, 20rem);
+    flex: none;
+    z-index: 50;
+    /* No CSS transition on the slide: under the always-mounted WebGPU
+       render loop the per-frame style recalc keeps restarting a
+       `transform` transition, freezing the drawer off-canvas. An instant
+       toggle is reliable; the slide is not worth a stuck panel. */
+    transform: translateX(100%);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .fd-outliner.is-open {
+    transform: none;
+  }
+
+  /* The resize splitter is meaningless once the panel is off-canvas. */
+  .fd-outliner > .splitter {
+    display: none;
+  }
+}

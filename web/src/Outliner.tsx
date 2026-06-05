@@ -16,6 +16,7 @@ import {
 import { type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
+import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
 import { FeatureDialog, FEATURE_TYPE_LABELS, FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import {
   buildDefaultDefinition,
@@ -90,6 +91,9 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
 interface OutlinerProps {
   store: KernelStore;
   state: StoreState;
+  /** Mobile drawer: whether the off-canvas panel is slid in. Ignored on
+   *  desktop, where the outliner is always docked. */
+  mobileNavOpen?: boolean;
 }
 
 /** Outliner-splitter drag constraints. Width is clamped to these
@@ -121,7 +125,10 @@ function loadOutlinerWidth(defaultRem: number): number {
   return clampOutlinerWidth(defaultRem * rootFontSize);
 }
 
-export function Outliner({ store, state }: OutlinerProps) {
+export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps) {
+  // Below the phone breakpoint the outliner is an off-canvas drawer whose
+  // width comes from CSS, so the splitter-driven inline width is dropped.
+  const isMobile = useMediaQuery(MOBILE_QUERY);
   // K6a: memoised Outer API façade over the store's kernel. The
   // `createFdApi` return value is a tiny object of method refs,
   // so re-creating it per render is cheap — but memoising keeps
@@ -540,9 +547,9 @@ export function Outliner({ store, state }: OutlinerProps) {
 
   return (
     <aside
-      className="fd-outliner"
+      className={"fd-outliner" + (mobileNavOpen ? " is-open" : "")}
       data-testid="fielddraft-outliner"
-      style={{ width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
+      style={isMobile ? undefined : { width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
     >
       <div
         className="splitter"
