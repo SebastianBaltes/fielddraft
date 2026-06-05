@@ -1204,19 +1204,21 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 continue;
             }
             "sketch_offset" => {
-                // Offset the accumulated tree by adjusting the SDF.
-                // Positive = grow, negative = shrink.
+                // Offset the accumulated profile by inflating its SDF.
+                // Positive = grow (outward), negative = shrink (inward).
+                // The `Sketch2d::Offset` node carries the distance through
+                // to evaluation (`sketch2d.rs`) and SDF compilation
+                // (`sdf_compiler.rs`), so the whole profile so far is
+                // wrapped in one offset node.
                 let d = match SketchOffsetDef::parse(&call.params) {
                     Ok(d) => d,
                     Err(_) => continue,
                 };
-                if let Some(ref _tree) = acc {
-                    // V0: store the offset as a metadata marker.
-                    // The actual SDF offset happens in the Sketch2d
-                    // evaluation — we'd need a Sketch2d::Offset node.
-                    // For now, skip (the tool registers but doesn't
-                    // transform geometry yet).
-                    let _ = d.distance;
+                if acc.is_some() {
+                    acc = Some(Sketch2d::Offset {
+                        inner: Box::new(acc.take().unwrap()),
+                        distance: d.distance,
+                    });
                 }
                 continue;
             }
@@ -1865,6 +1867,78 @@ mod tests {
             build_sketch2d_from_sub_calls(&calls),
             Sketch2d::Empty
         ));
+    }
+
+    #[test]
+    fn build_sketch2d_mirror_unions_a_reflected_copy() {
+        // A rectangle in the +x half-plane, then a mirror across the
+        // Y axis (axis = 1 flips X). The result is a Union of the
+        // original and its reflection: the original centre stays
+        // inside and the reflected centre (−x) becomes inside too.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [10.0, -5.0], "corner_b": [20.0, 5.0] }),
+            ),
+            FeatureCall::new("sketch_mirror", id(2), json!({ "axis": 1.0 })),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Union(_, _) = &sketch else {
+            panic!("expected a Union (original ∪ mirrored), got {sketch:?}");
+        };
+        assert!(sketch.sdf([15.0, 0.0]) < 0.0, "original centre inside");
+        assert!(sketch.sdf([-15.0, 0.0]) < 0.0, "mirrored centre inside");
+    }
+
+    #[test]
+    fn build_sketch2d_mirror_without_prior_geometry_is_empty() {
+        // Mirror has nothing to reflect when no region precedes it.
+        let calls = vec![FeatureCall::new("sketch_mirror", id(1), json!({ "axis": 0.0 }))];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+    }
+
+    #[test]
+    fn build_sketch2d_offset_grows_the_profile() {
+        // A 20×20 rectangle (half-extent 10) grown by 5 mm. A point at
+        // (13, 0) sits outside the original but inside the offset, and
+        // the tree is wrapped in a single Offset node carrying +5.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            FeatureCall::new("sketch_offset", id(2), json!({ "distance": 5.0 })),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Offset { distance, .. } = &sketch else {
+            panic!("expected an Offset node wrapping the profile, got {sketch:?}");
+        };
+        assert!((distance - 5.0).abs() < 1e-6, "offset distance preserved");
+        assert!(sketch.sdf([13.0, 0.0]) < 0.0, "point inside the grown profile");
+        // Beyond the grown boundary it is still outside.
+        assert!(sketch.sdf([16.0, 0.0]) > 0.0, "point past the grown boundary");
+    }
+
+    #[test]
+    fn build_sketch2d_offset_inward_shrinks_the_profile() {
+        // Negative distance shrinks: a point just inside the original
+        // boundary falls outside the inset profile.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            FeatureCall::new("sketch_offset", id(2), json!({ "distance": -4.0 })),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([8.0, 0.0]) > 0.0, "near-edge point now outside");
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre still inside");
     }
 
     #[test]

@@ -255,9 +255,11 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_circle",
   "sketch_polygon",
   "sketch_arc",
-  "sketch_trim",
   "sketch_mirror",
   "sketch_offset",
+  // `sketch_trim` is intentionally omitted: its kernel apply is a no-op
+  // stub (real trim needs entity-vs-entity intersection detection, which
+  // has no subsystem yet), so surfacing it would be a dead button.
 ]);
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";

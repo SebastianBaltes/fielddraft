@@ -467,7 +467,9 @@ graph TD
 
 **Entity types:** Point, Line, Circle, Arc, Origin (fixed at 0,0).
 
-**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim` (stub — no-op in V0), `sketch_mirror`, `sketch_offset`.
+**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`.
+
+**Profile-operation tools:** `sketch_mirror` and `sketch_offset` act on the whole accumulated profile rather than drawing a new entity. They are applied through the tool dialog (axis for mirror, distance for offset) plus an Apply button, or by clicking the canvas while the tool is active — the click appends the operation sub-call with the dialog's current parameters. The actual geometry transform happens at commit time in `build_sketch2d_from_sub_calls` (`sketch_features.rs`): mirror unions the accumulated `Sketch2d` tree with a reflected copy (`mirror_sketch2d`); offset wraps the tree in a `Sketch2d::Offset` node whose `distance` inflates (positive) or insets (negative) the SDF in evaluation and SDF compilation. Because these ops carry no solver entity, they do not appear in the live 2D overlay — only the committed 3D body reflects them. `sketch_trim` remains a no-op stub: a real trim needs entity-vs-entity intersection detection, which has no kernel subsystem yet.
 
 **Arc gesture:** `sketch_arc` is a three-click *centre → start → end* gesture. The first click sets the centre, the second fixes radius and start angle, the third sweeps the arc; a live preview tracks the cursor between clicks. The pure geometry lives in `sketchArc.ts` (`buildArcSubCall`, `unwrapSweep`, `sampleArc`) so it is unit-testable in isolation. All angles are sketch-space (CCW from +x, Y-up) to match `sketchGrips.ts` and the kernel `SketchArcDef`; `unwrapSweep` keeps the sweep continuous across the ±180° seam so the gesture can wind toward a full turn. Rendering samples the arc into a polyline via `sampleArc` rather than `ctx.arc`, which would mirror the arc on the Y-down canvas.
 

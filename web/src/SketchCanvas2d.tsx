@@ -813,6 +813,21 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (
+      session.selectedTool === "sketch_mirror" ||
+      session.selectedTool === "sketch_offset"
+    ) {
+      // Whole-profile operation tools. They don't draw an entity; they
+      // transform the geometry accumulated so far (mirror reflects it
+      // across an axis, offset grows/shrinks it) at commit time. A click
+      // applies the operation with the parameters from the tool dialog
+      // (mirror axis / offset distance) so the canvas isn't a dead
+      // surface for these tools. The op carries no solver entity, so we
+      // just append the sub-call — no inference replay needed.
+      store.applySketchToolDraft();
+      lastCamVersionRef.current = -1;
+      return;
+    }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
