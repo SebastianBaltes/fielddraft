@@ -1709,6 +1709,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shell_weave_produces_inner_wall_faces() {
+        // DL-75 Step 4: weaving a closed-shell box yields the 6 outer faces AND
+        // 6 inner-wall faces (the cavity), the latter carrying inner-wall branch
+        // ids that still resolve to the owning feature for selection.
+        let half = 2.0_f32;
+        let thickness = 0.5_f32;
+        let csg = CsgNode::Shell(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [half, half, half],
+                },
+            }),
+            thickness,
+            Vec::new(),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.1);
+        let brep = weave(&body, &octree);
+        assert_eq!(brep.validate(), Ok(()), "shelled B-Rep must be well-formed");
+
+        let inner: Vec<_> = brep
+            .faces
+            .iter()
+            .filter(|f| f.branch_id.is_inner_wall())
+            .collect();
+        let outer = brep.faces.iter().filter(|f| !f.branch_id.is_inner_wall()).count();
+        assert_eq!(outer, 6, "6 outer faces preserved");
+        assert_eq!(inner.len(), 6, "6 inner-wall faces (the cavity)");
+        for f in inner {
+            assert_eq!(f.branch_id.feature_id(), 1, "inner wall stays selectable");
+            assert!(
+                matches!(
+                    f.surface,
+                    SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
+                ),
+                "inner wall is an analytic offset plane, got {:?}",
+                f.surface
+            );
+        }
+    }
+
+    #[test]
+    fn open_shell_weaves_inner_wall_and_keeps_outer_faces() {
+        // DL-75: the realistic case — a box hollowed and opened at its +Z face.
+        // The weave must stay watertight-valid and surface BOTH outer faces and
+        // inner-wall faces (the cavity exposed through the opening), with the
+        // inner walls offset inward and still resolving to the owning feature.
+        let half = 2.0_f32;
+        let thickness = 0.5_f32;
+        let csg = CsgNode::Shell(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [half, half, half],
+                },
+            }),
+            thickness,
+            // Open the +Z face: its outward gate is the plane z = +half.
+            vec![crate::csg::OpenSurface {
+                surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: half },
+                placement: Transform::IDENTITY,
+            }],
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.1);
+        let brep = weave(&body, &octree);
+        assert_eq!(brep.validate(), Ok(()), "open-shell B-Rep must be well-formed");
+
+        let inner = brep.faces.iter().filter(|f| f.branch_id.is_inner_wall()).count();
+        let outer = brep.faces.iter().filter(|f| !f.branch_id.is_inner_wall()).count();
+        assert!(outer >= 5, "outer faces preserved (got {outer})");
+        assert!(inner >= 4, "inner-wall faces exposed through the opening (got {inner})");
+        for f in brep.faces.iter().filter(|f| f.branch_id.is_inner_wall()) {
+            assert_eq!(f.branch_id.feature_id(), 1, "inner wall stays selectable");
+        }
+    }
+
     // ── DL-50: analytic Extrude / Revolve faces ──────────────────────────
 
     use crate::sketch2d::SketchSegment;

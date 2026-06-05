@@ -33,14 +33,99 @@
 //! start point makes the whole cell non-extractable (we emit nothing — never
 //! a phantom).
 
+use std::collections::HashMap;
+
 use nalgebra::{Matrix3, Vector3};
 
 use crate::brep::octree::{surface_gradient, CellClass, Octree, OctreeCell};
 use crate::brep::projection::{project_to_surface, ProjectedPoint};
 use crate::brep::Vertex;
 use crate::bvh::BoundedCsg;
-use crate::csg::{BranchId, EvalMode};
-use fielddraft_protocol::Primitive;
+use crate::csg::{grad_halfspace, sdf_halfspace, BranchId, EvalMode};
+use crate::{quat_rotate, world_to_local};
+use fielddraft_protocol::{HalfSpace, Primitive, Transform};
+
+/// A branch → (analytic surface, local→world placement) table, as built by
+/// [`crate::brep::weaving::branch_halfspace_map`]. Threaded into feature
+/// extraction so a branch with an analytic surface is projected onto its OWN
+/// surface (DL-75) instead of the body SDF — see [`project_branch_analytic`].
+type HalfspaceMap = HashMap<u32, (HalfSpace, Transform)>;
+
+/// Project `p` (world) exactly onto a branch's own analytic surface, given its
+/// [`HalfSpace`] and local→world placement (DL-75).
+///
+/// The generic [`project_to_surface`] Newton-marches the *body* SDF, which for a
+/// shelled body has two parallel zero-surfaces a wall-thickness apart (inner
+/// wall + outer surface); a seed can slide from one onto the other, yielding a
+/// tangent plane on the wrong sheet. Targeting the branch's own half-space (a
+/// true Euclidean distance with unit gradient) removes that ambiguity: Newton in
+/// the surface's local frame converges in one step for a plane and a few for a
+/// quadric, then the point and its normal are mapped back to world.
+fn project_branch_analytic(hs: &HalfSpace, xf: &Transform, p: [f32; 3]) -> Option<ProjectedPoint> {
+    let mut lp = world_to_local(xf, p);
+    let mut g = [0.0f32; 3];
+    let mut converged = false;
+    for _ in 0..PROJECT_MAX_ITER {
+        let f = sdf_halfspace(hs, lp);
+        g = grad_halfspace(hs, lp);
+        let g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+        if g2 < 1e-12 {
+            return None;
+        }
+        if f.abs() < PROJECT_EPS {
+            converged = true;
+            break;
+        }
+        let s = f / g2;
+        lp = [lp[0] - s * g[0], lp[1] - s * g[1], lp[2] - s * g[2]];
+    }
+    if !converged && sdf_halfspace(hs, lp).abs() >= PROJECT_EPS {
+        return None;
+    }
+    // local → world position: scale, rotate, translate.
+    let scaled = [lp[0] * xf.scale[0], lp[1] * xf.scale[1], lp[2] * xf.scale[2]];
+    let rot = quat_rotate(xf.rotation, scaled);
+    let position = [
+        rot[0] + xf.translate[0],
+        rot[1] + xf.translate[1],
+        rot[2] + xf.translate[2],
+    ];
+    // local normal → world (inverse-transpose; for a rigid+scale placement this
+    // is rotate(n / scale), then renormalise).
+    let nl = [g[0] / xf.scale[0], g[1] / xf.scale[1], g[2] / xf.scale[2]];
+    let nw = quat_rotate(xf.rotation, nl);
+    let nlen = (nw[0] * nw[0] + nw[1] * nw[1] + nw[2] * nw[2]).sqrt();
+    if nlen < 1e-9 {
+        return None;
+    }
+    Some(ProjectedPoint {
+        position,
+        normal: [nw[0] / nlen, nw[1] / nlen, nw[2] / nlen],
+    })
+}
+
+/// Does `body` contain a [`BoundedCsg::Shell`]? Only then is the analytic
+/// branch-projection path engaged (DL-75); every other body keeps the exact
+/// generic projection it had before, so non-shell weaves are byte-identical.
+pub(crate) fn body_contains_shell(body: &BoundedCsg) -> bool {
+    match body {
+        BoundedCsg::Shell { .. } => true,
+        BoundedCsg::Leaf { .. } | BoundedCsg::Empty => false,
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            body_contains_shell(left) || body_contains_shell(right)
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. } => body_contains_shell(inner),
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => false,
+    }
+}
 
 /// Surface-distance tolerance for the Newton projection (Phase 2). Tight —
 /// this is the convergence criterion of the projection itself, not the
@@ -154,7 +239,19 @@ fn project_branch(
     body: &BoundedCsg,
     cell: &OctreeCell,
     branch: BranchId,
+    halfspaces: &HalfspaceMap,
 ) -> Option<ProjectedPoint> {
+    // Analytic fast path (DL-75): when the branch carries an analytic surface,
+    // project the cell centre straight onto THAT surface. Only populated for
+    // shelled bodies, whose two parallel zero-surfaces defeat the generic body-
+    // SDF Newton below (a seed slides between the inner wall and the outer
+    // surface). For every other body `halfspaces` is empty → unchanged.
+    if let Some((hs, xf)) = halfspaces.get(&branch.as_u32()) {
+        if let Some(proj) = project_branch_analytic(hs, xf, cell.center()) {
+            return Some(proj);
+        }
+    }
+
     let diag = {
         let s = cell.aabb.size();
         (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
@@ -190,9 +287,23 @@ fn project_branch(
     } else {
         [tight_eps, wide_eps]
     };
+    // Cross-sheet guard is only needed for shelled bodies (non-empty `halfspaces`
+    // ⟺ a shell, since the map is shell-gated by `extract_features`). There a
+    // body-SDF Newton can slide off `branch`'s sheet onto the parallel one
+    // (inner wall vs outer surface a wall-thickness apart, DL-75), so the
+    // projection is kept only if `branch` is still active at it. Off for every
+    // other body, so non-shell weaves stay byte-identical.
+    let shelled = !halfspaces.is_empty();
     for eps in order {
         if let Some((p, _)) = find_seed(body, cell, branch, eps) {
             if let Some(proj) = project_to_surface(body, p, PROJECT_EPS, PROJECT_MAX_ITER) {
+                if shelled {
+                    let (_, c) =
+                        body.evaluate(proj.position, diag * SEED_EPS_FACTOR, EvalMode::Logical);
+                    if !c.as_slice().contains(&branch) {
+                        continue;
+                    }
+                }
                 return Some(proj);
             }
         }
@@ -297,7 +408,15 @@ fn reproject_branch_near(
     p: [f32; 3],
     dirs: &[Vector3<f32>],
     delta: f32,
+    halfspaces: &HalfspaceMap,
 ) -> Option<ProjectedPoint> {
+    // Analytic fast path (DL-75): re-anchor straight onto the branch's own
+    // surface, never the wrong sheet of a shelled body's twin surfaces.
+    if let Some((hs, xf)) = halfspaces.get(&branch.as_u32()) {
+        if let Some(proj) = project_branch_analytic(hs, xf, p) {
+            return Some(proj);
+        }
+    }
     // Tight membership band (caller passes `delta = diag * 0.25`, so this is
     // ≈ `diag * SEED_EPS_FACTOR`): the nudged seed must land in the branch's
     // own region, not on the shared DL-65 fault band of a warped sweep/corner,
@@ -458,7 +577,11 @@ fn solve_edge_point(
 /// branch count, no clean per-branch start point, degenerate tangent
 /// (parallel normals), a singular plane-intersection system, or a failed
 /// phantom test.
-pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePoint> {
+pub fn extract_edge_point(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    halfspaces: &HalfspaceMap,
+) -> Option<EdgePoint> {
     if cell.class != CellClass::Edge || cell.branches.len() != 2 {
         return None;
     }
@@ -466,8 +589,8 @@ pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePo
     let bb = cell.branches[1];
 
     // Initial per-branch tangent planes from clean cell-corner seeds.
-    let mut pa = project_branch(body, cell, ba)?;
-    let mut pb = project_branch(body, cell, bb)?;
+    let mut pa = project_branch(body, cell, ba, halfspaces)?;
+    let mut pb = project_branch(body, cell, bb, halfspaces)?;
 
     let c = cell.center();
     let diag = cell_diag(cell);
@@ -492,10 +615,10 @@ pub fn extract_edge_point(body: &BoundedCsg, cell: &OctreeCell) -> Option<EdgePo
         let n_b_cur = Vector3::new(pb.normal[0], pb.normal[1], pb.normal[2]);
         let dir_a = t.cross(&n_a_cur);
         let dir_b = t.cross(&n_b_cur);
-        let Some(ra) = reproject_branch_near(body, ba, p_edge, &[dir_a], delta) else {
+        let Some(ra) = reproject_branch_near(body, ba, p_edge, &[dir_a], delta, halfspaces) else {
             break;
         };
-        let Some(rb) = reproject_branch_near(body, bb, p_edge, &[dir_b], delta) else {
+        let Some(rb) = reproject_branch_near(body, bb, p_edge, &[dir_b], delta, halfspaces) else {
             break;
         };
         let Some((p_new, t_new)) = solve_edge_point(&ra, &rb, p_edge) else {
@@ -589,7 +712,11 @@ fn solve_vertex_point(planes: &[(BranchId, ProjectedPoint)]) -> Option<[f32; 3]>
 /// singularity guard (see DL-6). Returns `None` when fewer than 3 branches
 /// project cleanly, the normal-equation matrix is rank-deficient, or the
 /// phantom test fails.
-pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
+pub fn extract_vertex(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    halfspaces: &HalfspaceMap,
+) -> Option<Vertex> {
     if cell.class != CellClass::Vertex || cell.branches.len() < 3 {
         return None;
     }
@@ -597,7 +724,7 @@ pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
     // Initial per-branch tangent planes from clean cell-corner seeds.
     let mut planes: Vec<(BranchId, ProjectedPoint)> = Vec::with_capacity(cell.branches.len());
     for &branch in &cell.branches {
-        if let Some(proj) = project_branch(body, cell, branch) {
+        if let Some(proj) = project_branch(body, cell, branch, halfspaces) {
             planes.push((branch, proj));
         }
     }
@@ -628,7 +755,7 @@ pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
             let axis = least_aligned_axis(n);
             let u = (axis - n * n.dot(&axis)).normalize();
             let v = n.cross(&u);
-            match reproject_branch_near(body, *branch, p_vert, &[u, v], delta) {
+            match reproject_branch_near(body, *branch, p_vert, &[u, v], delta, halfspaces) {
                 Some(r) => next.push((*branch, r)),
                 None => next.push((*branch, *proj)),
             }
@@ -665,13 +792,21 @@ pub fn extract_vertex(body: &BoundedCsg, cell: &OctreeCell) -> Option<Vertex> {
 /// surviving `(edge points, vertices)`. Non-extractable cells (no clean start
 /// point, degenerate geometry, failed phantom test) are silently skipped.
 pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, Vec<Vertex>) {
+    // Analytic branch-projection table — only for shelled bodies, whose twin
+    // parallel surfaces defeat the generic body-SDF projection (DL-75). Empty
+    // otherwise, so every non-shell weave keeps its exact previous numerics.
+    let halfspaces = if body_contains_shell(body) {
+        crate::brep::weaving::branch_halfspace_map(body)
+    } else {
+        HalfspaceMap::new()
+    };
     let edges = octree
         .edge_cells()
-        .filter_map(|cell| extract_edge_point(body, cell))
+        .filter_map(|cell| extract_edge_point(body, cell, &halfspaces))
         .collect();
     let vertices = octree
         .vertex_cells()
-        .filter_map(|cell| extract_vertex(body, cell))
+        .filter_map(|cell| extract_vertex(body, cell, &halfspaces))
         .collect();
     (edges, vertices)
 }
@@ -716,7 +851,7 @@ mod tests {
         let mut count = 0;
         let mut signatures = HashSet::new();
         for cell in octree.edge_cells() {
-            if let Some(ep) = extract_edge_point(&body, cell) {
+            if let Some(ep) = extract_edge_point(&body, cell, &HalfspaceMap::new()) {
                 count += 1;
                 // On the surface.
                 let p = [
@@ -757,7 +892,7 @@ mod tests {
         let mut by_branches: std::collections::HashMap<Vec<u32>, [f64; 3]> =
             std::collections::HashMap::new();
         for cell in octree.vertex_cells() {
-            if let Some(v) = extract_vertex(&body, cell) {
+            if let Some(v) = extract_vertex(&body, cell, &HalfspaceMap::new()) {
                 assert!(
                     v.branches.len() >= 3,
                     "vertex with <3 branches: {:?}",
@@ -843,8 +978,8 @@ mod tests {
             class: CellClass::Face,
             branches: vec![BranchId(1 << 4)],
         };
-        assert!(extract_edge_point(&body, &face_cell).is_none());
-        assert!(extract_vertex(&body, &face_cell).is_none());
+        assert!(extract_edge_point(&body, &face_cell, &HalfspaceMap::new()).is_none());
+        assert!(extract_vertex(&body, &face_cell, &HalfspaceMap::new()).is_none());
     }
 
     #[test]

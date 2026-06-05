@@ -1619,6 +1619,16 @@ const REFLEX_CELL_HALF_FACTOR: f32 = 3.0;
 ///    not a real corner is rejected. Resolution-independent: the corner comes
 ///    from the analytic face planes, not from finer sampling.
 fn reconcile_dangling_endpoints(body: &BoundedCsg, brep: &mut BRep, dangling: &[DanglingEnd]) {
+    // Analytic branch-projection table for the synthetic reflex-vertex cells in
+    // stage 2 — shell-gated, matching `extract_features` (DL-75): a shelled
+    // body's twin parallel surfaces need the branch's own surface to project
+    // onto; every other body keeps the generic projection unchanged (empty map).
+    let reflex_halfspaces = if crate::brep::extraction::body_contains_shell(body) {
+        crate::brep::weaving::branch_halfspace_map(body)
+    } else {
+        HashMap::new()
+    };
+
     // ── Stage 1: re-snap to an existing branch-compatible vertex ──────────────
     let mut remaining: Vec<usize> = Vec::new();
     for (k, d) in dangling.iter().enumerate() {
@@ -1691,7 +1701,7 @@ fn reconcile_dangling_endpoints(body: &BoundedCsg, brep: &mut BRep, dangling: &[
             class: CellClass::Vertex,
             branches,
         };
-        let Some(vertex) = extract_vertex(body, &cell) else {
+        let Some(vertex) = extract_vertex(body, &cell, &reflex_halfspaces) else {
             continue;
         };
         let vid = brep.add_vertex(vertex);

@@ -245,6 +245,59 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
     }
 }
 
+/// Rotate a dual vector `v` by quaternion `q = [x, y, z, w]` (constant), via the
+/// standard `v + 2w(q×v) + 2 q×(q×v)` form. Used by the dual open-shell gate.
+fn quat_rotate_d3(q: [f32; 4], v: [D3; 3]) -> [D3; 3] {
+    let (qx, qy, qz, qw) = (
+        D3::from(q[0] as f64),
+        D3::from(q[1] as f64),
+        D3::from(q[2] as f64),
+        D3::from(q[3] as f64),
+    );
+    let two = D3::from(2.0);
+    let tx = (qy * v[2] - qz * v[1]) * two;
+    let ty = (qz * v[0] - qx * v[2]) * two;
+    let tz = (qx * v[1] - qy * v[0]) * two;
+    [
+        v[0] + qw * tx + (qy * tz - qz * ty),
+        v[1] + qw * ty + (qz * tx - qx * tz),
+        v[2] + qw * tz + (qx * ty - qy * tx),
+    ]
+}
+
+/// Dual-number mirror of [`crate::csg::OpenSurface::eval`]: the outward,
+/// world-distance gate of one open face (DL-75). Maps the dual point world→local
+/// (rigid inverse undoing the placement scale), evaluates the face's analytic
+/// [`HalfSpace`], then Eikonal-normalises by the real world-gradient magnitude (a
+/// scalar, so it scales the dual cleanly).
+fn open_surface_eval_d3(f: &crate::csg::OpenSurface, p: [D3; 3]) -> D3 {
+    let t = &f.placement;
+    let d = [
+        p[0] - D3::from(t.translate[0] as f64),
+        p[1] - D3::from(t.translate[1] as f64),
+        p[2] - D3::from(t.translate[2] as f64),
+    ];
+    let conj = [-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]];
+    let r = quat_rotate_d3(conj, d);
+    let lp = [
+        r[0] / D3::from(t.scale[0] as f64),
+        r[1] / D3::from(t.scale[1] as f64),
+        r[2] / D3::from(t.scale[2] as f64),
+    ];
+    let fval = sdf_halfspace_generic(&f.surface, lp);
+    let lpr = [lp[0].re as f32, lp[1].re as f32, lp[2].re as f32];
+    let grad = crate::csg::grad_halfspace(&f.surface, lpr);
+    let gn = ((grad[0] / t.scale[0]).powi(2)
+        + (grad[1] / t.scale[1]).powi(2)
+        + (grad[2] / t.scale[2]).powi(2))
+    .sqrt();
+    if gn > 1e-9 {
+        fval / D3::from(gn as f64)
+    } else {
+        fval
+    }
+}
+
 // ─── Generic helpers ─────────────────────────────────────────────────
 
 /// Generic extrude composition. Mirrors `crate::csg::sdf_extrude`.
@@ -480,13 +533,41 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
                 * (p[2] * freq_d * D3::from(0.7)).sin();
             d - disp
         }
-        BoundedCsg::Shell { inner, thickness, .. } => {
+        BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
+            // Mirror `crate::csg::open_shell_sdf` exactly (DL-75): the inward wall
+            // `max(d, −(d + e))` with local erosion `e = clamp(d − g, 0, t)`,
+            // `g = max` over the open-face gates. The OLD centred `|d| − t` here
+            // was stale (it pre-dated the open-shell rework) and disagreed with
+            // the renderer / `evaluate`, so once the weave stopped skipping shells
+            // the B-Rep's surface_gradient read the wrong sheet.
             let d = eval_bounded_d3(inner, p, mode);
-            // `abs` while keeping the dual derivative: flip the whole
-            // dual when the real part is negative (mirrors bvh.rs's
-            // `inner.sdf(p).abs() - thickness`).
-            let abs_d = if d.re < 0.0 { -d } else { d };
-            abs_d - D3::from(*thickness as f64)
+            let t = D3::from(*thickness as f64);
+            let e = if open_faces.is_empty() {
+                t
+            } else {
+                let mut g = open_surface_eval_d3(&open_faces[0], p);
+                for f in &open_faces[1..] {
+                    let gate = open_surface_eval_d3(f, p);
+                    if gate.re > g.re {
+                        g = gate;
+                    }
+                }
+                // e = clamp(d − g, 0, t).
+                let de = d - g;
+                let lo = if de.re > 0.0 { de } else { D3::from(0.0) };
+                if lo.re < t.re {
+                    lo
+                } else {
+                    t
+                }
+            };
+            // shell = max(d, −(d + e)).
+            let neg = -(d + e);
+            if d.re >= neg.re {
+                d
+            } else {
+                neg
+            }
         }
         BoundedCsg::Morph {
             left, right, t, ..

@@ -787,10 +787,24 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             // Inward shell ⊆ the solid: the outer surface is preserved, so the
             // bounds are the child's — no expansion.
             let aabb = child.aabb();
+            // Carry the accumulated transform into each open-face placement, just
+            // like a Transform node folds into leaves (DL-75). The placements are
+            // world-space (`body_placement ∘ face_transform`); for the world build
+            // `carry` is identity (no-op), but the body-LOCAL weave seeds `carry =
+            // inverse(placement)`, which cancels the body placement so the gates
+            // sit in the same body-local frame as the leaves. This is what lets
+            // the weave see the hollow with correctly-placed openings.
+            let open_faces = open_faces
+                .iter()
+                .map(|f| OpenSurface {
+                    surface: f.surface.clone(),
+                    placement: compose_transforms(carry, &f.placement),
+                })
+                .collect();
             BoundedCsg::Shell {
                 inner: Box::new(child),
                 thickness: *thickness,
-                open_faces: open_faces.clone(),
+                open_faces,
                 aabb,
             }
         }

@@ -1020,15 +1020,13 @@ pub fn build_bounded_for_body_local(
     indices: &[usize],
     placement: &Transform,
 ) -> BoundedCsg {
-    // The B-Rep weave tracks the outer surface, so the body-shell modifier is
-    // skipped here (its open planes are world-space; the local frame would
-    // mis-place them). The mesh / SDF / pick paths keep the shell.
-    let sub: Vec<DecodedFeature> = indices
-        .iter()
-        .map(|&i| &features[i])
-        .filter(|f| !f.is_shell_modifier())
-        .cloned()
-        .collect();
+    // Include the body-shell modifier so the weave sees the hollow and can give
+    // the inner wall / opening selectable B-Rep faces (DL-75). The shell's open
+    // faces are world-space (`body_placement ∘ face_transform`); the build carry
+    // `inverse(placement)` folds into them too (see `build`'s Shell arm), so they
+    // land in the same body-local frame as the leaves. Earlier this modifier was
+    // skipped precisely because that frame correction was missing.
+    let sub: Vec<DecodedFeature> = indices.iter().map(|&i| features[i].clone()).collect();
     let csg = CsgNode::from_decoded(&sub);
     BoundedCsg::from_csg_with_carry(&csg, &crate::inverse(placement))
 }
