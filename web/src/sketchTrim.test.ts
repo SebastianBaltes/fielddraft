@@ -28,6 +28,14 @@ const arc = (
   type: "sketch_arc",
   params: { center: c, radius: r, start_angle: start, sweep_angle: sweep, ...extra },
 });
+const rect = (a: Vec2, b: Vec2): SubCall => ({
+  type: "sketch_rectangle",
+  params: { corner_a: a, corner_b: b },
+});
+const polygon = (verts: number[]): SubCall => ({
+  type: "sketch_polygon",
+  params: { vertices: verts },
+});
 
 const near = (a: number, b: number, tol = 1e-6): boolean => Math.abs(a - b) <= tol;
 const pt = (call: SubCall, key: string): Vec2 => call.params[key] as Vec2;
@@ -239,6 +247,68 @@ describe("trimCurveAt — arcs", () => {
 
   it("deletes an arc with no interior crossings", () => {
     expect(trimCurveAt([arc([0, 0], 10, 0, Math.PI)], 0, [10, 0])).toEqual([]);
+  });
+});
+
+describe("trimCurveAt — composites (rectangle / polygon)", () => {
+  it("picks a rectangle edge as the nearest target", () => {
+    // Rectangle [-10,-10]..[10,10]; click just outside the top edge.
+    expect(nearestTrimTarget([rect([-10, -10], [10, 10])], [0, 10.5], 2)).toBe(0);
+    // Click in the empty centre is not near any edge.
+    expect(nearestTrimTarget([rect([-10, -10], [10, 10])], [0, 0], 2)).toBeNull();
+  });
+
+  it("deleting an uncrossed rectangle edge flattens it into three lines", () => {
+    const out = trimCurveAt([rect([-10, -10], [10, 10])], 0, [0, 10])!;
+    // Top edge removed; bottom, right, left survive as standalone lines.
+    expect(out).toHaveLength(3);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
+    // None of the survivors is the (now-removed) top edge y = 10.
+    expect(out.some((c) => pt(c, "start")[1] === 10 && pt(c, "end")[1] === 10)).toBe(false);
+  });
+
+  it("splits a crossed rectangle edge, keeping the other three", () => {
+    const calls = [
+      rect([-10, -10], [10, 10]),
+      line([-5, 5], [-5, 20]), // crosses the top edge at (-5, 10)
+      line([5, 5], [5, 20]), // crosses the top edge at (5, 10)
+    ];
+    const out = trimCurveAt(calls, 0, [0, 10])!; // click the top middle
+    // 3 untouched edges + 2 trimmed pieces of the top edge.
+    expect(out).toHaveLength(5);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
+    // Exactly two pieces sit on the top edge (y = 10 at both ends).
+    const topPieces = out.filter(
+      (c) => near(pt(c, "start")[1], 10) && near(pt(c, "end")[1], 10),
+    );
+    expect(topPieces).toHaveLength(2);
+    const xs = topPieces
+      .flatMap((c) => [pt(c, "start")[0], pt(c, "end")[0]])
+      .sort((a, b) => a - b);
+    expect(xs.map((x) => Math.round(x))).toEqual([-10, -5, 5, 10]);
+  });
+
+  it("shortens a crossed polygon edge and keeps the rest", () => {
+    const calls = [
+      polygon([0, 0, 10, 0, 5, 10]), // triangle
+      line([5, -5], [5, 5]), // crosses the bottom edge at (5, 0)
+    ];
+    const out = trimCurveAt(calls, 0, [8, 0])!; // click the right of the bottom edge
+    // Bottom edge shortened to one piece + the two other edges.
+    expect(out).toHaveLength(3);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
+    const bottom = out.find(
+      (c) => near(pt(c, "start")[1], 0) && near(pt(c, "end")[1], 0),
+    )!;
+    const bx = [pt(bottom, "start")[0], pt(bottom, "end")[0]].sort((a, b) => a - b);
+    expect(near(bx[0], 0)).toBe(true);
+    expect(near(bx[1], 5)).toBe(true);
+  });
+
+  it("deleting an uncrossed polygon edge flattens it into the remaining edges", () => {
+    const out = trimCurveAt([polygon([0, 0, 10, 0, 5, 10])], 0, [5, 0])!;
+    expect(out).toHaveLength(2);
+    expect(out.every((c) => c.type === "sketch_line")).toBe(true);
   });
 });
 

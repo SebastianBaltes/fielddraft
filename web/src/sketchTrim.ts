@@ -17,11 +17,14 @@
  * [`replaceSketchSubCallAt`](./sketchSession) (which rewrites any
  * downstream constraint refs) and re-solves.
  *
- * Scope: trims `sketch_line`, `sketch_circle` and `sketch_arc`.
- * Composite primitives (rectangle, polygon) are single sub-calls that
- * expand to several edges, so trimming one of their edges would mean
- * decomposing them — out of scope here; they're skipped as targets but
- * still act as cutters via the lines they contribute.
+ * Scope: trims `sketch_line`, `sketch_circle` and `sketch_arc`, plus the
+ * edges of the composite primitives `sketch_rectangle` and
+ * `sketch_polygon`. A composite is a single sub-call that expands to
+ * several edges; trimming one of its edges decomposes the whole composite
+ * into individual `sketch_line` sub-calls (the clicked edge trimmed, the
+ * siblings carried over verbatim) — a rectangle is no longer a closed
+ * region once you cut an edge, so flattening it to lines is the right
+ * model. Every edge of every sub-call also acts as a cutter.
  */
 
 export type Vec2 = [number, number];
@@ -83,6 +86,59 @@ export function curveOfSubCall(call: SubCall): Curve | null {
     }
   }
   return null;
+}
+
+/** The four edges (bottom, right, top, left) of a `sketch_rectangle`,
+ *  in the same corner order the kernel allocates them. */
+function rectangleEdges(call: SubCall): Curve[] {
+  const a = asVec2(call.params.corner_a);
+  const b = asVec2(call.params.corner_b);
+  if (!a || !b) return [];
+  const minX = Math.min(a[0], b[0]);
+  const minY = Math.min(a[1], b[1]);
+  const maxX = Math.max(a[0], b[0]);
+  const maxY = Math.max(a[1], b[1]);
+  if (maxX - minX < EPS || maxY - minY < EPS) return [];
+  const bl: Vec2 = [minX, minY];
+  const br: Vec2 = [maxX, minY];
+  const tr: Vec2 = [maxX, maxY];
+  const tl: Vec2 = [minX, maxY];
+  return [
+    { kind: "line", a: bl, b: br },
+    { kind: "line", a: br, b: tr },
+    { kind: "line", a: tr, b: tl },
+    { kind: "line", a: tl, b: bl },
+  ];
+}
+
+/** The N edges of a `sketch_polygon`, closing the last vertex back to the
+ *  first. `vertices` is a flat `[x0,y0,x1,y1,…]` array. */
+function polygonEdges(call: SubCall): Curve[] {
+  const flat = call.params.vertices;
+  if (!Array.isArray(flat) || flat.length < 6) return [];
+  const verts: Vec2[] = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const x = Number(flat[i]);
+    const y = Number(flat[i + 1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+    verts.push([x, y]);
+  }
+  if (verts.length < 3) return [];
+  return verts.map((v, i) => ({
+    kind: "line" as const,
+    a: v,
+    b: verts[(i + 1) % verts.length],
+  }));
+}
+
+/** Every trimmable edge a sub-call contributes: one for a line/circle/arc,
+ *  four for a rectangle, N for a polygon, none for anything else. */
+export function edgesOfSubCall(call: SubCall): Curve[] {
+  const simple = curveOfSubCall(call);
+  if (simple) return [simple];
+  if (call.type === "sketch_rectangle") return rectangleEdges(call);
+  if (call.type === "sketch_polygon") return polygonEdges(call);
+  return [];
 }
 
 // ── small vector helpers ────────────────────────────────────────────
@@ -260,12 +316,12 @@ export function nearestTrimTarget(
   let bestIdx: number | null = null;
   let bestDist = tolMm;
   subCalls.forEach((call, i) => {
-    const cv = curveOfSubCall(call);
-    if (!cv) return;
-    const d = distToCurve(click, cv);
-    if (d < bestDist) {
-      bestDist = d;
-      bestIdx = i;
+    for (const cv of edgesOfSubCall(call)) {
+      const d = distToCurve(click, cv);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
     }
   });
   return bestIdx;
@@ -307,44 +363,51 @@ function dedupeSorted(values: number[]): number[] {
   return out;
 }
 
-/**
- * Compute the replacement sub-calls when the curve at `targetIndex` is
- * trimmed at `click`. Returns:
- *  - an array of 0, 1 or 2 sub-calls to replace the target with
- *    (0 = the curve is deleted, e.g. an isolated line or an
- *    intersection-free circle), or
- *  - null when the target isn't a trimmable curve (the caller treats
- *    null as "do nothing").
- *
- * The replacement sub-calls inherit the target's extra params (notably
- * the `construction` flag) so a trimmed construction line stays
- * construction.
- */
-export function trimCurveAt(
-  subCalls: ReadonlyArray<SubCall>,
-  targetIndex: number,
+/** Carry forward generic, geometry-independent params (the `construction`
+ *  flag today) so a trimmed construction edge stays construction. */
+function carryFlags(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (params.construction !== undefined) out.construction = params.construction;
+  return out;
+}
+
+/** Reproduce a curve as a standalone sub-call — used for the sibling edges
+ *  of a composite that survive untrimmed when one of its edges is cut. */
+function subCallOfCurve(cv: Curve, carry: Record<string, unknown>): SubCall {
+  if (cv.kind === "line") {
+    return {
+      type: "sketch_line",
+      params: { ...carry, start: [cv.a[0], cv.a[1]], end: [cv.b[0], cv.b[1]] },
+    };
+  }
+  if (cv.kind === "circle") {
+    return {
+      type: "sketch_circle",
+      params: { ...carry, center: [cv.c[0], cv.c[1]], radius: cv.r },
+    };
+  }
+  return {
+    type: "sketch_arc",
+    params: {
+      ...carry,
+      center: [cv.c[0], cv.c[1]],
+      radius: cv.r,
+      start_angle: cv.start,
+      sweep_angle: cv.sweep,
+    },
+  };
+}
+
+/** Trim a single edge at `click`, bounded by its intersections with
+ *  `cutters`. Returns 0, 1 or 2 replacement sub-calls (0 = delete). */
+function trimEdge(
+  cv: Curve,
+  cutters: ReadonlyArray<Curve>,
   click: Vec2,
-): SubCall[] | null {
-  const target = subCalls[targetIndex];
-  if (!target) return null;
-  const cv = curveOfSubCall(target);
-  if (!cv) return null;
-
-  // Every other trimmable curve is a potential cutter.
-  const cutters: Curve[] = [];
-  subCalls.forEach((call, i) => {
-    if (i === targetIndex) return;
-    const c = curveOfSubCall(call);
-    if (c) cutters.push(c);
-  });
-
-  // Collect intersection points on the target.
+  carry: Record<string, unknown>,
+): SubCall[] {
   const hits: Vec2[] = [];
   for (const cutter of cutters) hits.push(...intersectCurves(cv, cutter));
-
-  // Carry forward construction (and any future) params, minus the
-  // geometry keys each branch overwrites.
-  const carry = { ...target.params };
 
   if (cv.kind === "line") {
     const ts = dedupeSorted(
@@ -439,6 +502,63 @@ export function trimCurveAt(
       },
     },
   ];
+}
+
+/**
+ * Compute the replacement sub-calls when the sub-call at `targetIndex` is
+ * trimmed at `click`. Returns:
+ *  - an array of replacement sub-calls (empty = the target is deleted,
+ *    e.g. an isolated line or an intersection-free circle), or
+ *  - null when the target isn't trimmable (the caller treats null as
+ *    "do nothing").
+ *
+ * For a simple line/circle/arc this is the trimmed result. For a composite
+ * (rectangle/polygon) the clicked edge is trimmed and every sibling edge
+ * is carried over as a standalone `sketch_line`, so the composite flattens
+ * into individual lines — a cut edge means it's no longer a closed region.
+ *
+ * Replacement sub-calls inherit the target's `construction` flag.
+ */
+export function trimCurveAt(
+  subCalls: ReadonlyArray<SubCall>,
+  targetIndex: number,
+  click: Vec2,
+): SubCall[] | null {
+  const target = subCalls[targetIndex];
+  if (!target) return null;
+  const edges = edgesOfSubCall(target);
+  if (edges.length === 0) return null;
+
+  // Which edge of the target did the click land on?
+  let clickedEdge = 0;
+  let bestDist = Infinity;
+  edges.forEach((cv, k) => {
+    const d = distToCurve(click, cv);
+    if (d < bestDist) {
+      bestDist = d;
+      clickedEdge = k;
+    }
+  });
+
+  // Every other edge in the whole sketch is a potential cutter — including
+  // the sibling edges of a composite target (they only meet the clicked
+  // edge at shared corners, which the endpoint tolerance filters out).
+  const cutters: Curve[] = [];
+  subCalls.forEach((call, i) => {
+    edgesOfSubCall(call).forEach((cv, k) => {
+      if (i === targetIndex && k === clickedEdge) return;
+      cutters.push(cv);
+    });
+  });
+
+  const carry = carryFlags(target.params);
+
+  const out: SubCall[] = [];
+  edges.forEach((cv, k) => {
+    if (k === clickedEdge) out.push(...trimEdge(cv, cutters, click, carry));
+    else out.push(subCallOfCurve(cv, carry));
+  });
+  return out;
 }
 
 /** Largest boundary value strictly below `x`, or 0 if none. */
