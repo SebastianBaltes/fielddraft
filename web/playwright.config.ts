@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 /**
  * Playwright config for FieldDraft smoke and viewport tests.
@@ -6,7 +9,35 @@ import { defineConfig, devices } from "@playwright/test";
  * We only run Chromium with WebGPU enabled — WebGPU is a hard requirement,
  * no fallback. Firefox/Safari will land once their WebGPU support is stable
  * in CI-grade headless mode.
+ *
+ * Per-instance: base URL (port + scheme) is derived exactly like vite.config.ts
+ * so `fielddraft` (5173) and `fielddraft-a` (5174) test their *own* dev server
+ * instead of whichever one happens to hold the hardcoded port. See ../.env.example.
  */
+
+// Mirror vite.config.ts: process env wins, then the repo-root .env, then 5173.
+function webPort(): number {
+  let fromFile: string | undefined;
+  try {
+    const envText = readFileSync(join(process.cwd(), "..", ".env"), "utf-8");
+    const match = envText.match(/^\s*FIELDDRAFT_WEB_PORT\s*=\s*(\d+)/m);
+    fromFile = match?.[1];
+  } catch {
+    // no .env — fall back to the default below
+  }
+  const port = Number(process.env.FIELDDRAFT_WEB_PORT ?? fromFile);
+  return Number.isInteger(port) && port > 0 ? port : 5173;
+}
+
+// Mirror vite.config.ts: HTTPS when the Tailscale cert is present, else HTTP.
+const certDir = join(homedir(), ".local/share/tailscale-certs");
+const hasTailscaleCert =
+  existsSync(join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.crt")) &&
+  existsSync(join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.key"));
+
+const scheme = hasTailscaleCert ? "https" : "http";
+const baseURL = `${scheme}://localhost:${webPort()}`;
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: true,
@@ -17,7 +48,10 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 5_000 },
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL,
+    // The Tailscale cert is issued for the *.ts.net host, not `localhost`, so a
+    // localhost HTTPS connection trips a SAN mismatch — harmless for local e2e.
+    ignoreHTTPSErrors: true,
     trace: "retain-on-failure",
   },
   projects: [
@@ -39,8 +73,9 @@ export default defineConfig({
   ],
   webServer: {
     command: "npm run dev",
-    url: "http://localhost:5173",
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    ignoreHTTPSErrors: true,
   },
 });
