@@ -257,9 +257,9 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_arc",
   "sketch_mirror",
   "sketch_offset",
-  // `sketch_trim` is intentionally omitted: its kernel apply is a no-op
-  // stub (real trim needs entity-vs-entity intersection detection, which
-  // has no subsystem yet), so surfacing it would be a dead button.
+  // `sketch_trim` is not in this allowlist because it isn't a kernel tool
+  // at all — it's an interactive editing mode rendered as a separate
+  // button below the kernel-driven row (see the JSX).
 ]);
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
@@ -360,6 +360,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
               />
             );
           })}
+          {/* Trim is an interactive editing mode, not a kernel feature
+              tool, so it isn't in `sketchToolTypes`. Selecting it makes a
+              canvas click cut the curve under the cursor at its nearest
+              intersections (see store.trimSketchAt / sketchTrim.ts). */}
+          <FeatureButton
+            kind="sketch_trim"
+            active={sketchSession.selectedTool === "sketch_trim"}
+            testId="sketch-tool-sketch_trim"
+            onClick={() => store.selectSketchTool("sketch_trim", {})}
+          />
         </div>
 
         {!sketchSession.selectedTool ? (

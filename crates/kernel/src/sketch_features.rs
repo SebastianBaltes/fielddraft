@@ -339,7 +339,6 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchPolygonTool));
         r.register(Box::new(SketchArcTool));
         r.register(Box::new(SketchEllipseTool));
-        r.register(Box::new(SketchTrimTool));
         r.register(Box::new(SketchMirrorTool));
         r.register(Box::new(SketchOffsetTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
@@ -658,37 +657,11 @@ impl SketchToolKind for SketchEllipseTool {
     }
 }
 
-/// `sketch_trim` — placeholder for trimming sketch entities.
-/// V0 is a no-op that registers in the tool registry so the
-/// toolbar button is enabled. The actual trim logic (split an
-/// entity at an intersection, remove one side) requires the
-/// B-Rep proxy which is not yet wired.
-#[derive(FeatureSchema)]
-#[schema(type = "sketch_trim")]
-pub struct SketchTrimDef {
-    /// Entity index to trim (placeholder).
-    pub entity_index: f32,
-}
-
-pub struct SketchTrimTool;
-
-impl SketchToolKind for SketchTrimTool {
-    fn type_name(&self) -> &'static str {
-        SketchTrimDef::TYPE_NAME
-    }
-    fn schema_json(&self) -> Value {
-        SketchTrimDef::schema_json()
-    }
-    fn apply(
-        &self,
-        _state: &mut SketchState,
-        _id: &FeatureId,
-        _def: &Value,
-    ) -> Result<(), FeatureError> {
-        // V0: no-op. Real trim needs intersection detection.
-        Ok(())
-    }
-}
+// Trim is not a kernel tool: it's an interactive editing operation on
+// the web side that rewrites the sketch sub-call list in place (a clicked
+// curve is split at its nearest intersections and the picked piece is
+// dropped), emitting ordinary `sketch_line` / `sketch_arc` calls the
+// kernel already understands. See `web/src/sketchTrim.ts`.
 
 /// `sketch_mirror` — mirrors all existing geometric sub-calls
 /// across the specified axis ("x" mirrors across the X axis,
@@ -1574,7 +1547,6 @@ mod tests {
                 "sketch_point".to_string(),
                 "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
-                "sketch_trim".to_string(),
             ]
         );
     }

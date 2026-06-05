@@ -491,24 +491,27 @@ export function buildDraftSketchState(
 }
 
 /**
- * K6b.3g: remove one sub-call at `index` and rewrite downstream
- * constraint calls so their entity-id references stay valid.
+ * K6b.3g / trim: replace one sub-call at `index` with zero or more new
+ * sub-calls and rewrite downstream constraint calls so their entity-id
+ * references stay valid.
  *
- * Removing a geometric call (sketch_point, sketch_line,
- * sketch_rectangle, sketch_circle) frees a range of entity ids
- * that every subsequent sketch_tool would have been allocated.
- * Any constraint call that references an id inside the removed
- * range is dropped; any constraint call that references an id
- * *above* the removed range has its reference shifted down by
- * the range size so it still points at the same entity after
- * re-allocation.
+ * The replaced call freed a range of entity ids that every subsequent
+ * sketch_tool would have been allocated; the replacement calls allocate
+ * a (possibly different) number in its place. Any constraint that
+ * references an id inside the old range is dropped (its target is gone
+ * or was reshaped); any constraint above the old range has its
+ * references shifted by the size delta so they still point at the same
+ * entity after re-allocation.
  *
- * This keeps the sub-spine internally consistent without
- * forcing the user to manually clean up dangling constraints.
+ * Passing an empty `newCalls` is a plain delete; trimming passes the
+ * 0–2 line/arc pieces that survive the cut. This keeps the sub-spine
+ * internally consistent without forcing the user to clean up dangling
+ * constraints by hand.
  */
-export function removeSketchSubCallAt(
+export function replaceSketchSubCallAt(
   state: SketchSessionState,
   index: number,
+  newCalls: ReadonlyArray<SketchSessionState["subCalls"][number]>,
 ): SketchSessionState {
   if (!state.active) return state;
   if (index < 0 || index >= state.subCalls.length) return state;
@@ -516,16 +519,16 @@ export function removeSketchSubCallAt(
   const removed = state.subCalls[index];
   const tail = state.subCalls.slice(index + 1);
 
-  // Delta = entities allocated by the removed call.
-  const preState = buildDraftSketchState(before);
-  const preId = preState.next_entity_id;
-  const postState = buildDraftSketchState([...before, removed]);
-  const postId = postState.next_entity_id;
+  // Entity-id range the removed call occupied, and the size delta the
+  // replacement introduces (replacement count − removed count).
+  const preId = buildDraftSketchState(before).next_entity_id;
+  const removedHi = buildDraftSketchState([...before, removed]).next_entity_id;
+  const newHi = buildDraftSketchState([...before, ...newCalls]).next_entity_id;
   const rangeLo = preId;
-  const rangeHi = postId - 1;
-  const delta = postId - preId;
+  const rangeHi = removedHi - 1;
+  const shiftDelta = newHi - removedHi;
 
-  const shift = (n: number): number => (n > rangeHi ? n - delta : n);
+  const shift = (n: number): number => (n > rangeHi ? n + shiftDelta : n);
   const inRange = (n: number): boolean => n >= rangeLo && n <= rangeHi;
 
   const rewritten: SketchSessionState["subCalls"][number][] = [];
@@ -539,8 +542,7 @@ export function removeSketchSubCallAt(
     // Read every entity-id reference this constraint carries. Drop
     // the whole constraint if any reference points into the removed
     // range (the referenced entity is gone); otherwise shift each
-    // reference above the range down so it still targets the same
-    // post-remove entity.
+    // reference above the range so it still targets the same entity.
     const refs = entityParams.map((key) => Number(call.params[key]));
     if (refs.some((n) => !Number.isFinite(n) || inRange(n))) continue;
     const nextParams = { ...call.params };
@@ -550,9 +552,24 @@ export function removeSketchSubCallAt(
     rewritten.push({ ...call, params: nextParams });
   }
 
-  // Entity ids shift when a call is removed, so any prior selection
+  // Entity ids shift when the spine changes, so any prior selection
   // would now point at the wrong geometry — drop it.
-  return { ...state, subCalls: [...before, ...rewritten], selection: [] };
+  return {
+    ...state,
+    subCalls: [...before, ...newCalls, ...rewritten],
+    selection: [],
+  };
+}
+
+/**
+ * K6b.3g: drop a single sub-spine entry by index — the empty-
+ * replacement case of [`replaceSketchSubCallAt`].
+ */
+export function removeSketchSubCallAt(
+  state: SketchSessionState,
+  index: number,
+): SketchSessionState {
+  return replaceSketchSubCallAt(state, index, []);
 }
 
 /**

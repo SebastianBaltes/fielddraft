@@ -33,12 +33,14 @@ import {
   selectSketchTool as reduceSelect,
   setSketchToolDraft as reduceSetDraft,
   removeSketchSubCallAt as reduceRemoveAt,
+  replaceSketchSubCallAt as reduceReplaceAt,
   toggleSketchSelection as reduceToggleSelection,
   setSketchSelection as reduceSetSelection,
   clearSketchSelection as reduceClearSelection,
   buildDraftSketchState,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
+import { computeTrim } from "./sketchTrim";
 import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
@@ -1922,6 +1924,26 @@ export class KernelStore {
    */
   removeSketchSubCall(index: number): void {
     this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
+  }
+
+  /**
+   * Trim: cut the curve under `click` at its nearest intersections with
+   * the other sketch geometry and drop the picked piece. The clicked
+   * line/arc is replaced in place by the 0–2 surviving pieces (an
+   * intersection-free curve is deleted outright); downstream constraint
+   * refs are rewritten by [`replaceSketchSubCallAt`] and the sketch is
+   * re-solved. `tolMm` is the pick radius in sketch millimetres. No-op
+   * when nothing trimmable is under the cursor.
+   */
+  trimSketchAt(click: [number, number], tolMm: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const result = computeTrim(session.subCalls, click, tolMm);
+    if (!result) return;
+    this.updateSketch(
+      reduceReplaceAt(session, result.index, result.newCalls),
+    );
+    void solveAndReplace(this);
   }
 
   /** Select mode: toggle a committed-entity id in the sketch

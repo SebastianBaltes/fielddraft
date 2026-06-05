@@ -692,6 +692,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     let [u, v] = screenToSketchFromEvent(e, cam);
+    // Trim: not a drawing tool — a single click cuts the curve under the
+    // cursor at its nearest intersections and drops the picked piece. No
+    // drag, no snap, no grid; the raw click decides which segment dies.
+    if (session.selectedTool === "sketch_trim") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      store.trimSketchAt([u, v], tolMm);
+      lastCamVersionRef.current = -1;
+      return;
+    }
     // K6b.8: Ctrl = snap to grid. Round to nearest grid step.
     if (e.ctrlKey || e.metaKey) {
       const minPxGap = 20;
