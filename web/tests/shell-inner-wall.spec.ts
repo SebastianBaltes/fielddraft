@@ -11,8 +11,6 @@ import { expect, test } from "@playwright/test";
  * face selection goes through `store.selectElement({kind:"face", idHash})`.
  */
 
-const INNER_WALL_FLAG = 0x800;
-
 type FaceLite = {
   faceIndex: number;
   idHash: string;
