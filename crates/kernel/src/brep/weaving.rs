@@ -1181,7 +1181,9 @@ fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
 /// add support for simply removes one `None` return; the merge of a parametric
 /// grundform with an SDF-derived boolean result is milestone 2.
 pub fn weave_parametric(body: &BoundedCsg) -> Option<BRep> {
-    let wireframe = build_box_wireframe(body)?;
+    // Each handled grundform contributes one `build_*_wireframe`; the first that
+    // recognises `body` wins, anything else falls through to `None` (→ octree).
+    let wireframe = build_box_wireframe(body).or_else(|| build_cylinder_wireframe(body))?;
     Some(finish_weave(wireframe, body))
 }
 
@@ -1264,6 +1266,88 @@ fn build_box_wireframe(body: &BoundedCsg) -> Option<BRep> {
     }
 
     Some(brep)
+}
+
+/// Exact analytic wireframe of a single axis-aligned Cylinder leaf, in the
+/// body-local frame. `None` unless `body` is exactly one Cylinder primitive.
+///
+/// A cylinder weaves into three faces — one [`HalfSpace::InfiniteCylinder`] wall
+/// (sub 0) plus two planar caps (sub 1 = +Y, sub 2 = −Y) — joined at exactly two
+/// rim circles and carrying NO vertices (a closed-loop edge per rim). We emit the
+/// two rims directly as *exact rational-quadratic NURBS circles* (the closed-form
+/// circle, resolution-independent — the milestone-1 precision win over the
+/// sampled octree fit), each tagged with its wall∩cap branch signature.
+/// [`finish_weave`] groups them into the three analytic faces via
+/// [`branch_halfspace_map`], so the resulting `id_hash` handles are byte-identical
+/// to the octree route.
+fn build_cylinder_wireframe(body: &BoundedCsg) -> Option<BRep> {
+    let (id, radius, half_height) = match body {
+        BoundedCsg::Leaf {
+            id,
+            primitive: Primitive::Cylinder { radius, half_height, .. },
+            ..
+        } => (id, *radius, *half_height),
+        _ => return None,
+    };
+
+    // The wall transform (sub 0) maps the centred-local frame to world; it
+    // already folds the primitive centre (branch_halfspace_map / DL-20). The two
+    // caps share the same frame, so both rims use it.
+    let halfspaces = branch_halfspace_map(body);
+    let wall = BranchId::from_feature_sub(id, 0);
+    let top = BranchId::from_feature_sub(id, 1);
+    let bottom = BranchId::from_feature_sub(id, 2);
+    let wall_xf = halfspaces.get(&wall.as_u32())?.1;
+
+    let mut brep = BRep::new();
+    // Rims are the closed-loop edges wall∩cap: top at local y = +half_height,
+    // bottom at y = −half_height (the cylinder axis is local Y, radius in x-z).
+    brep.add_edge(Edge::new(
+        EdgeGeometry::Nurbs(nurbs_circle(&wall_xf, radius, half_height)),
+        wall,
+        top,
+        None,
+        None,
+    ));
+    brep.add_edge(Edge::new(
+        EdgeGeometry::Nurbs(nurbs_circle(&wall_xf, radius, -half_height)),
+        wall,
+        bottom,
+        None,
+        None,
+    ));
+    Some(brep)
+}
+
+/// The exact closed circle of `radius` in the plane `y = y_local` of the
+/// centred-local frame, mapped to world by `xf`, as a rational quadratic NURBS.
+///
+/// This is the canonical 9-control-point degree-2 representation of a full
+/// circle: the four axis points carry weight 1, the four square corners weight
+/// √2/2, with a clamped knot vector — geometrically *exact* (a true circle, not a
+/// polygonal sample), and exactly periodic (first control point repeated to
+/// close). A rigid + uniform-scale `xf` maps it to another exact circle.
+fn nurbs_circle(xf: &Transform, radius: f32, y_local: f32) -> NurbsCurve {
+    let r = radius;
+    let y = y_local;
+    // Square corner ↔ axis points, CCW about +Y starting at +x, closed.
+    let local: [[f32; 3]; 9] = [
+        [r, y, 0.0],
+        [r, y, r],
+        [0.0, y, r],
+        [-r, y, r],
+        [-r, y, 0.0],
+        [-r, y, -r],
+        [0.0, y, -r],
+        [r, y, -r],
+        [r, y, 0.0],
+    ];
+    let control_points: Vec<[f64; 3]> = local.iter().map(|&p| xf_point(xf, p)).collect();
+    let s = std::f64::consts::FRAC_1_SQRT_2; // √2/2 for the square-corner points
+    let weights = vec![1.0, s, 1.0, s, 1.0, s, 1.0, s, 1.0];
+    // Clamped quadratic knot vector for four quarter-arc Bézier spans.
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+    NurbsCurve { degree: 2, control_points, weights, knots }
 }
 
 /// `R·(s·p) + t` for a rigid + uniform-scale transform (f32 in, f64 out).
@@ -1443,6 +1527,59 @@ mod tests {
         // on both routes — toggling parametric weaving never breaks a saved
         // selection. This also proves the SDF path produced the same clean
         // 6/12/8 topology (different handle sets would fail here).
+        assert_eq!(
+            topo_handles(&par),
+            topo_handles(&sdf),
+            "parametric and octree weave must yield identical element handles"
+        );
+    }
+
+    fn cylinder_body(radius: f32, half_height: f32) -> BoundedCsg {
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cylinder { center: [0.0, 0.0, 0.0], radius, half_height },
+        };
+        BoundedCsg::from_csg(&csg)
+    }
+
+    #[test]
+    fn parametric_cylinder_matches_octree_topology_and_handles() {
+        // A non-unit radius/height so the exactness check is discriminating.
+        let body = cylinder_body(1.5, 0.5);
+
+        let octree = Octree::build(&body, 0.0625);
+        let sdf = weave(&body, &octree);
+        let par = weave_parametric(&body).expect("a lone Cylinder is parametric-weavable");
+
+        // A cylinder is 3 faces (wall + 2 caps), 2 rim edges, NO vertices.
+        assert_eq!(par.faces.len(), 3, "cylinder has wall + 2 caps");
+        assert_eq!(par.edges.len(), 2, "cylinder has 2 rim circles");
+        assert_eq!(par.vertices.len(), 0, "a cylinder has no corner vertices");
+        assert!(par.shells[0].is_closed, "parametric cylinder is watertight");
+        assert_eq!(sdf.faces.len(), 3);
+        assert_eq!(sdf.edges.len(), 2);
+        assert_eq!(sdf.vertices.len(), 0);
+
+        // Both rims are exact rational-quadratic circles: every rim is a degree-2
+        // NURBS whose four axis control points (the even indices) lie EXACTLY on
+        // radius 1.5 at the cap plane y = ±0.5 — resolution-independent, the M1
+        // precision win (the octree fit only reaches this within a sample tol).
+        for edge in &par.edges {
+            let EdgeGeometry::Nurbs(curve) = &edge.geometry else {
+                panic!("rim must be a NURBS circle");
+            };
+            assert_eq!(curve.degree, 2, "exact circle is rational quadratic");
+            let y = curve.control_points[0][1];
+            assert!((y.abs() - 0.5).abs() < 1e-12, "rim sits on a cap plane");
+            for &p in curve.control_points.iter().step_by(2) {
+                let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                assert!((r - 1.5).abs() < 1e-6, "axis point off radius 1.5: r={r}");
+                assert!((p[1] - y).abs() < 1e-12, "rim is planar");
+            }
+        }
+
+        // Element handles (qFace/qEdge id_hash) are byte-identical on both routes,
+        // so a saved selection survives toggling parametric weaving.
         assert_eq!(
             topo_handles(&par),
             topo_handles(&sdf),

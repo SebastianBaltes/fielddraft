@@ -96,3 +96,55 @@ test("parametric weaving makes box corners exact and keeps handles stable", asyn
 
   console.log("=== PARAMETRIC WEAVE PROBE ===\n" + logs.join("\n"));
 });
+
+test("parametric weaving handles the cylinder grundform too", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const logs: string[] = [];
+  page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
+
+  await page.goto("/");
+  await page.evaluate(() => {
+    try {
+      window.localStorage.removeItem("fielddraft.project.v1");
+      window.localStorage.removeItem("fielddraft.parametricWeave");
+    } catch {
+      /* ignore */
+    }
+  });
+  await page.reload();
+  await expect(page.getByTestId("fielddraft-canvas")).toBeVisible();
+  await page.waitForTimeout(900);
+
+  await page.evaluate(() => {
+    (window as any).__fdStore?.addPrimitive("cylinder");
+  });
+  await page.waitForTimeout(500);
+
+  // A cylinder weaves with NO corner vertices (two rim circles only), so the
+  // discriminating selection element is the rim *edge*. Read edge handles both
+  // ways and prove the toggle keeps them byte-identical.
+  const edgeHandles = async () =>
+    (await page.evaluate(() => {
+      const k = (window as any).__fdKernel;
+      const edges = k ? k.bodyBrepEdges(0) : [];
+      return (edges as { idHash: string }[]).map((e) => e.idHash).sort();
+    })) as string[];
+
+  const before = await edgeHandles();
+  expect(before.length, "cylinder weaves 2 rim edges").toBe(2);
+
+  await page.evaluate(() => {
+    (window as any).__fdStore?.setParametricWeave(true);
+  });
+  await page.waitForTimeout(500);
+
+  const after = await edgeHandles();
+  expect(after.length, "still 2 rim edges").toBe(2);
+  expect(after, "rim-edge handles survive the parametric toggle").toEqual(
+    before,
+  );
+
+  console.log("=== PARAMETRIC CYLINDER PROBE ===\n" + logs.join("\n"));
+});
