@@ -1110,6 +1110,18 @@ pub fn build_sketch2d_from_sub_calls_raw(
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
     let mut acc: Option<Sketch2d> = None;
     for call in sub_calls {
+        // Construction geometry is reference-only: it participates in the
+        // constraint solve (the TS side still builds solver entities for
+        // it) but never contributes to the extrudable region. The flag
+        // is a plain param so it costs nothing in the tool schemas.
+        if call
+            .params
+            .get("construction")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let prim = match call.type_name.as_str() {
             "sketch_rectangle" => {
                 let d = match SketchRectangleDef::parse(&call.params) {
@@ -1955,6 +1967,45 @@ mod tests {
         let sketch = build_sketch2d_from_sub_calls(&calls);
         assert!(sketch.sdf([8.0, 0.0]) > 0.0, "near-edge point now outside");
         assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre still inside");
+    }
+
+    #[test]
+    fn build_sketch2d_excludes_construction_geometry() {
+        // A solid rectangle plus a construction circle. The circle must
+        // not contribute to the region: its centre is outside the solid.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_rectangle",
+                id(1),
+                json!({ "corner_a": [-10.0, -10.0], "corner_b": [10.0, 10.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_circle",
+                id(2),
+                json!({ "center": [50.0, 0.0], "radius": 5.0, "construction": true }),
+            ),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        // Only the rectangle survives — no Union with the circle.
+        let Sketch2d::Prim(Sketch2dPrimitive::Rectangle { .. }) = &sketch else {
+            panic!("expected a lone rectangle primitive, got {sketch:?}");
+        };
+        // The construction circle's centre is firmly outside the region.
+        assert!(sketch.sdf([50.0, 0.0]) > 0.0, "construction circle not extruded");
+    }
+
+    #[test]
+    fn build_sketch2d_construction_flag_defaults_false() {
+        // Without the flag the circle is a normal region primitive.
+        let calls = vec![FeatureCall::new(
+            "sketch_circle",
+            id(1),
+            json!({ "center": [0.0, 0.0], "radius": 5.0 }),
+        )];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Prim(Sketch2dPrimitive::Circle { .. })
+        ));
     }
 
     #[test]

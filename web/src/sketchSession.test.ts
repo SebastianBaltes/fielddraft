@@ -145,6 +145,20 @@ describe("sketchSession reducers", () => {
     expect(lines).toHaveLength(1);
   });
 
+  it("buildDraftSketchState still emits a solver entity for construction geometry", () => {
+    // Construction geometry is reference-only for the region, but it must
+    // remain a real solver entity so constraints can reference it.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_circle",
+        params: { center: [0, 0], radius: 5, construction: true },
+      },
+    ]);
+    const circles = state.entities.filter((e) => e.kind === "circle");
+    expect(circles).toHaveLength(1);
+    expect(circles[0].kind === "circle" && circles[0].radius).toBe(5);
+  });
+
   it("buildDraftSketchState injects the drag-start synthetic point when requested", () => {
     const state = buildDraftSketchState([], [5, 6]);
     const drag = state.entities.find((e) => e.id === DRAFT_DRAG_START_ID);

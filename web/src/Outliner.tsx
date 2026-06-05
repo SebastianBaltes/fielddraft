@@ -618,12 +618,36 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
             <ul className="sub-spine" data-testid="sketch-sub-spine">
               {sketchSession.subCalls.map((call, i) => {
                 const isConstraint = call.type.startsWith("sketch_constraint");
+                const isConstruction = Boolean(call.params.construction);
                 return (
-                  <li key={i} className={"row" + (isConstraint ? " is-constraint" : "")}>
+                  <li
+                    key={i}
+                    className={
+                      "row" +
+                      (isConstraint ? " is-constraint" : "") +
+                      (isConstruction ? " is-construction" : "")
+                    }
+                  >
                     <span className="kind">
                       {kindGlyph(call.type)}{" "}
                       {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
                     </span>
+                    {!isConstraint ? (
+                      <button
+                        type="button"
+                        className={"row-construction" + (isConstruction ? " is-active" : "")}
+                        title={
+                          isConstruction
+                            ? "Construction geometry (reference only) — click to make it solid"
+                            : "Make this construction geometry (reference only, not extruded)"
+                        }
+                        aria-pressed={isConstruction}
+                        data-testid={`sketch-sub-row-construction-${i}`}
+                        onClick={() => store.toggleSketchConstructionAt(i)}
+                      >
+                        ⊘
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="row-delete"

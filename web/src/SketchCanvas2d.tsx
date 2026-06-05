@@ -65,6 +65,10 @@ const COLOR_UNDER = "#2563eb";
 const COLOR_FULL = "#16a34a";
 const COLOR_OVER = "#dc2626";
 const COLOR_PREVIEW = "#93c5fd";
+// Construction (reference) geometry — muted amber, drawn dashed. Matches
+// the --color-construction token; the canvas needs a literal string.
+const COLOR_CONSTRUCTION = "#b07820";
+const CONSTRUCTION_DASH = [6, 4];
 
 function dofColor(dof: number): string {
   if (dof > 0) return COLOR_UNDER;
@@ -1313,27 +1317,32 @@ function drawOverlay(
   // Draw committed geometry first (darker), then the drag preview
   // on top (lighter) so the preview always reads as "unfinished".
   for (const call of session.subCalls) {
+    // Construction geometry renders muted + dashed: it constrains but
+    // is never extruded (the kernel drops it from the region).
+    const isConstruction = Boolean(call.params.construction);
+    const color = isConstruction ? COLOR_CONSTRUCTION : committedColor;
+    if (isConstruction) ctx.setLineDash(CONSTRUCTION_DASH);
     if (call.type === "sketch_line") {
       const start = toXy(call.params.start);
       const end = toXy(call.params.end);
       if (start && end) {
-        drawLine(ctx, start, end, cam, committedColor, STROKE_PX);
-        drawPoint(ctx, start, cam, committedColor);
-        drawPoint(ctx, end, cam, committedColor);
+        drawLine(ctx, start, end, cam, color, STROKE_PX);
+        drawPoint(ctx, start, cam, color);
+        drawPoint(ctx, end, cam, color);
       }
     } else if (call.type === "sketch_point") {
       const at = toXy(call.params.at);
-      if (at) drawPoint(ctx, at, cam, committedColor);
+      if (at) drawPoint(ctx, at, cam, color);
     } else if (call.type === "sketch_rectangle") {
       const a = toXy(call.params.corner_a);
       const b = toXy(call.params.corner_b);
-      if (a && b) drawRectangle(ctx, a, b, cam, committedColor);
+      if (a && b) drawRectangle(ctx, a, b, cam, color);
     } else if (call.type === "sketch_circle") {
       const center = toXy(call.params.center);
       const radius = Number(call.params.radius);
       if (center && Number.isFinite(radius) && radius > 0) {
-        drawCircle(ctx, center, radius, cam, committedColor);
-        drawPoint(ctx, center, cam, committedColor);
+        drawCircle(ctx, center, radius, cam, color);
+        drawPoint(ctx, center, cam, color);
       }
     } else if (call.type === "sketch_polygon") {
       const verts = call.params.vertices;
@@ -1345,10 +1354,10 @@ function drawOverlay(
         for (let i = 0; i < points.length; i++) {
           const a = points[i];
           const b = points[(i + 1) % points.length];
-          drawLine(ctx, a, b, cam, committedColor, STROKE_PX);
+          drawLine(ctx, a, b, cam, color, STROKE_PX);
         }
         for (const p of points) {
-          drawPoint(ctx, p, cam, committedColor);
+          drawPoint(ctx, p, cam, color);
         }
       }
     } else if (call.type === "sketch_arc") {
@@ -1363,10 +1372,11 @@ function drawOverlay(
         Number.isFinite(a0) &&
         Number.isFinite(sweep)
       ) {
-        drawArc(ctx, center, radius, a0, sweep, cam, committedColor, STROKE_PX);
-        drawPoint(ctx, center, cam, committedColor);
+        drawArc(ctx, center, radius, a0, sweep, cam, color, STROKE_PX);
+        drawPoint(ctx, center, cam, color);
       }
     }
+    if (isConstruction) ctx.setLineDash([]);
   }
 
   // Select mode: highlight the picked entities on top of the

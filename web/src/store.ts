@@ -2006,6 +2006,29 @@ export class KernelStore {
   }
 
   /**
+   * Toggle the construction flag on a drawing sub-call. Construction
+   * geometry still solves and can be referenced by constraints but is
+   * dropped from the extrudable region (kernel `build_sketch2d`) and
+   * drawn dashed. Constraint sub-calls have no construction state, so
+   * the toggle is a no-op on them. Re-solves because the region — and
+   * thus the DoF colour — changes.
+   */
+  toggleSketchConstructionAt(index: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const call = session.subCalls[index];
+    if (!call || call.type.startsWith("sketch_constraint")) return;
+    const wasConstruction = Boolean(call.params.construction);
+    const next = [...session.subCalls];
+    next[index] = {
+      ...call,
+      params: { ...call.params, construction: !wasConstruction },
+    };
+    this.updateSketch({ ...session, subCalls: next });
+    void solveAndReplace(this);
+  }
+
+  /**
    * K6b.3a: commit the current sketch session to the kernel as
    * a real `sketch` FeatureCall. Called from the "Finish"
    * button. Pushes the session's accumulated sub_calls through

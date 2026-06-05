@@ -731,6 +731,38 @@
         color: var(--color-accent);
         font-style: italic;
       }
+
+      /* Construction (reference) geometry reads muted with a dashed
+         underline so it stands apart from solid profile geometry. */
+      & .row.is-construction .kind {
+        color: var(--color-construction);
+        text-decoration: underline dashed;
+        text-underline-offset: 3px;
+      }
+
+      /* The construction toggle is a state control, so it stays visible
+         (muted when off, amber when on) rather than hiding until hover
+         like the delete affordance. */
+      & .row-construction {
+        flex: none;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0 var(--space-1);
+        font-size: var(--fs-base);
+        color: var(--color-text-muted);
+        opacity: 0.5;
+        transition: opacity var(--motion-fast), color var(--motion-fast);
+
+        &:hover {
+          opacity: 1;
+        }
+
+        &.is-active {
+          color: var(--color-construction);
+          opacity: 1;
+        }
+      }
     }
 
     & .constraint-manager {

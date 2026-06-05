@@ -32,6 +32,8 @@
   --color-intersect: #b07820; /* clipping */
   --color-intersect-soft: #f6ecd6;
 
+  --color-construction: #b07820; /* sketch reference geometry (dashed) */
+
   --color-error: #b53b3b;
   --color-warning: #b07820;
   --color-success: #2c8a4a;
@@ -125,6 +127,8 @@
   --color-difference-soft: #3a1a1a;
   --color-intersect: #d4952e;
   --color-intersect-soft: #3a2e14;
+
+  --color-construction: #d4952e; /* sketch reference geometry (dashed) */
 
   --color-error: #e05555;
   --color-warning: #d4952e;

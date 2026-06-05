@@ -473,6 +473,8 @@ graph TD
 
 **Arc gesture:** `sketch_arc` is a three-click *centre → start → end* gesture. The first click sets the centre, the second fixes radius and start angle, the third sweeps the arc; a live preview tracks the cursor between clicks. The pure geometry lives in `sketchArc.ts` (`buildArcSubCall`, `unwrapSweep`, `sampleArc`) so it is unit-testable in isolation. All angles are sketch-space (CCW from +x, Y-up) to match `sketchGrips.ts` and the kernel `SketchArcDef`; `unwrapSweep` keeps the sweep continuous across the ±180° seam so the gesture can wind toward a full turn. Rendering samples the arc into a polyline via `sampleArc` rather than `ctx.arc`, which would mirror the arc on the Y-down canvas.
 
+**Construction geometry:** Any drawing sub-call may carry a `construction: true` param (toggled per element from its sub-spine row). Construction geometry is reference-only: `buildDraftSketchState` still builds a full solver entity for it (so constraints can reference it), but the kernel's `build_sketch2d_from_sub_calls` skips any construction-flagged call up front, so it never contributes to the extrudable region. The 2D overlay renders it muted and dashed (`COLOR_CONSTRUCTION` / `--color-construction`). The flag is a plain param — it round-trips through the solve writeback untouched and costs nothing in the tool schemas.
+
 **Critical invariant:** Entity ID allocation order in TypeScript must exactly match kernel allocation. `buildDraftSketchState()` replicates this deterministically. Any mismatch silently corrupts constraint references.
 
 ### 4.5 Import/Export
