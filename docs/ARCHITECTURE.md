@@ -539,6 +539,14 @@ drawer states use explicit selectors and a plain shadow; and a CSS `transform`
 *transition* freezes off-canvas under the always-mounted WebGPU render loop's
 per-frame style recalc, so the drawer toggles instantly with no transition.
 
+The same 768px breakpoint also up-sizes interactive controls to a comfortable
+touch target. The `--touch-target` token (≈44px) raises the toolbar `.tool`
+buttons (lifting their desktop `max-height` cap) and the bottom-tab strip's
+add button, tabs, labels and carets — all otherwise ~32–40px. These rules live
+in plain `@media (max-width: 768px)` blocks at the foot of `toolbar.css` and
+`bottom-tabs.css` and stay scoped to mobile (a desktop E2E guards that the
+toolbar keeps its compact height).
+
 ---
 
 ## 5. Go Server

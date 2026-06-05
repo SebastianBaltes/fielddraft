@@ -61,6 +61,31 @@ test.describe("Mobile responsive layout", () => {
     expect(box.width).toBeGreaterThanOrEqual(44);
     expect(box.height).toBeGreaterThanOrEqual(44);
   });
+
+  test("toolbar buttons and bottom-tab controls meet the 44px touch target", async ({
+    page,
+  }) => {
+    // Toolbar button (always-enabled Measure tool).
+    const tool = (await page.getByTestId("measure-toggle").boundingBox())!;
+    expect(tool.height).toBeGreaterThanOrEqual(44);
+
+    // Bottom strip: add-tab button is a square ≥44px.
+    const add = (await page.getByTestId("tab-add").boundingBox())!;
+    expect(add.width).toBeGreaterThanOrEqual(44);
+    expect(add.height).toBeGreaterThanOrEqual(44);
+
+    // The first tab and its caret are tall/wide enough to tap.
+    const tab = (await page
+      .locator(".fd-bottom-tabs .tab")
+      .first()
+      .boundingBox())!;
+    expect(tab.height).toBeGreaterThanOrEqual(44);
+    const caret = (await page
+      .locator(".fd-bottom-tabs .caret")
+      .first()
+      .boundingBox())!;
+    expect(caret.width).toBeGreaterThanOrEqual(44);
+  });
 });
 
 test.describe("Desktop layout keeps the outliner docked", () => {
@@ -76,5 +101,14 @@ test.describe("Desktop layout keeps the outliner docked", () => {
     // Docked at the right, fully on-screen.
     expect(box.x).toBeGreaterThan(0);
     expect(box.x + box.width).toBeLessThanOrEqual(1281);
+  });
+
+  test("toolbar buttons keep their compact desktop height", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForTimeout(400);
+    // The mobile 44px up-size must stay scoped to the media query: on desktop
+    // the Measure button keeps its capped (~40px) height.
+    const tool = (await page.getByTestId("measure-toggle").boundingBox())!;
+    expect(tool.height).toBeLessThan(44);
   });
 });

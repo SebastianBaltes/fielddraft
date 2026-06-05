@@ -93,6 +93,9 @@
   --topbar-height: 3rem;
   --toolbar-height: 3rem;
   --outliner-width: 19rem;
+  /* Minimum comfortable touch target (≈44px) for coarse pointers; used to
+   * up-size toolbar/tab controls below the mobile breakpoint. */
+  --touch-target: 2.75rem;
 }
 
 /* ── Dark mode overrides ──────────────────────────────────── */

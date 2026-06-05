@@ -219,3 +219,15 @@
     opacity: 0.55;
   }
 }
+
+/* ── Mobile: comfortable touch targets ───────────────────────────────
+ * Below the mobile breakpoint (shared 768px literal, see useMediaQuery.ts)
+ * the desktop `max-height` cap (~40px) is lifted and each button gets a
+ * --touch-target (≈44px) min-height so it's finger-friendly. The toolbar
+ * already wraps, so taller buttons simply grow the bar. */
+@media (max-width: 768px) {
+  .fd-toolbar .tool {
+    min-height: var(--touch-target);
+    max-height: none;
+  }
+}

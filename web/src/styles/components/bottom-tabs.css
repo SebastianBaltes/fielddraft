@@ -180,3 +180,34 @@
     background: var(--color-bg-hover);
   }
 }
+
+/* ── Mobile: up-size controls to a comfortable touch target ──────────
+ * Below the mobile breakpoint (shared 768px literal, see useMediaQuery.ts)
+ * the strip's controls would otherwise sit at ~32px — too small for a
+ * finger. We raise each interactive surface to --touch-target (≈44px).
+ * Explicit (non-nested) selectors mirror the desktop nesting but stay flat
+ * here so the media block is unambiguous. */
+@media (max-width: 768px) {
+  .fd-bottom-tabs .add .add-button {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .fd-bottom-tabs .tab {
+    min-height: var(--touch-target);
+    align-items: center;
+  }
+
+  .fd-bottom-tabs .label {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--touch-target);
+  }
+
+  .fd-bottom-tabs .caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--touch-target);
+  }
+}
