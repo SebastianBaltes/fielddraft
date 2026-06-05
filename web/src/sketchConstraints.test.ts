@@ -84,6 +84,15 @@ describe("applicableConstraints", () => {
     ]);
   });
 
+  it("offers radius + diameter for a single circle or arc", () => {
+    const state = twoLinesAndCircle();
+    // circle id 8.
+    expect(applicableConstraints(state, [8]).map((o) => o.type)).toEqual([
+      "sketch_constraint_radius",
+      "sketch_constraint_diameter",
+    ]);
+  });
+
   it("offers nothing for unsupported / empty selections", () => {
     const state = twoLinesAndCircle();
     expect(applicableConstraints(state, [])).toEqual([]);
@@ -224,6 +233,23 @@ describe("buildConstraintCall", () => {
     });
   });
 
+  it("seeds radius from a circle's current radius", () => {
+    const state = twoLinesAndCircle();
+    // circle 8 has radius 5.
+    expect(buildConstraintCall("sketch_constraint_radius", [8], state)).toEqual({
+      type: "sketch_constraint_radius",
+      params: { entity: 8, value_mm: 5 },
+    });
+  });
+
+  it("seeds diameter as twice a circle's radius", () => {
+    const state = twoLinesAndCircle();
+    expect(buildConstraintCall("sketch_constraint_diameter", [8], state)).toEqual({
+      type: "sketch_constraint_diameter",
+      params: { entity: 8, value_mm: 10 },
+    });
+  });
+
   it("returns null when the selection doesn't match the constraint", () => {
     const state = twoLinesAndCircle();
     expect(buildConstraintCall("sketch_constraint_parallel", [3], state)).toBeNull();
@@ -233,5 +259,8 @@ describe("buildConstraintCall", () => {
     expect(buildConstraintCall("sketch_constraint_midpoint", [3, 6], state)).toBeNull();
     // symmetric needs two points + one line.
     expect(buildConstraintCall("sketch_constraint_symmetric", [1, 4], state)).toBeNull();
+    // radius / diameter need a single circle or arc, not a line.
+    expect(buildConstraintCall("sketch_constraint_radius", [3], state)).toBeNull();
+    expect(buildConstraintCall("sketch_constraint_diameter", [3], state)).toBeNull();
   });
 });

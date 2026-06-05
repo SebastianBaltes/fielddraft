@@ -424,6 +424,54 @@ function translateConstraint(
         l_id: entityOid(constraint.axis),
       };
     }
+    case "radius": {
+      // Dispatch by entity kind: circle → circle_radius, arc →
+      // arc_radius. The stored value is the radius in mm.
+      const e = entityIndex.get(constraint.entity);
+      if (!e || (e.kind !== "circle" && e.kind !== "arc")) {
+        throw new Error("solver: radius requires a circle or arc");
+      }
+      const driving = !(constraint.driven ?? false);
+      return e.kind === "circle"
+        ? {
+            type: "circle_radius",
+            id,
+            c_id: entityOid(constraint.entity),
+            radius: constraint.value_mm,
+            driving,
+          }
+        : {
+            type: "arc_radius",
+            id,
+            a_id: entityOid(constraint.entity),
+            radius: constraint.value_mm,
+            driving,
+          };
+    }
+    case "diameter": {
+      // Dispatch by entity kind: circle → circle_diameter, arc →
+      // arc_diameter. The stored value is the diameter in mm.
+      const e = entityIndex.get(constraint.entity);
+      if (!e || (e.kind !== "circle" && e.kind !== "arc")) {
+        throw new Error("solver: diameter requires a circle or arc");
+      }
+      const driving = !(constraint.driven ?? false);
+      return e.kind === "circle"
+        ? {
+            type: "circle_diameter",
+            id,
+            c_id: entityOid(constraint.entity),
+            diameter: constraint.value_mm,
+            driving,
+          }
+        : {
+            type: "arc_diameter",
+            a_id: entityOid(constraint.entity),
+            id,
+            diameter: constraint.value_mm,
+            driving,
+          };
+    }
   }
 }
 

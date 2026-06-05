@@ -53,6 +53,13 @@ function pointPos(state: SketchState, id: number): [number, number] | null {
   return null;
 }
 
+/** Radius of a circle or arc entity, or null for anything else. */
+function curveRadius(state: SketchState, id: number): number | null {
+  const e = entityOf(state, id);
+  if (!e || (e.kind !== "circle" && e.kind !== "arc")) return null;
+  return e.radius;
+}
+
 /** The two endpoint ids of a line entity, or null. */
 function lineEndpoints(
   state: SketchState,
@@ -164,6 +171,22 @@ export function applicableConstraints(
       label: "Distance",
       glyph: "↔",
       title: "Set the distance between the two points",
+    });
+  }
+
+  if (n === 1 && curves === 1) {
+    // A single circle or arc takes a radius or diameter dimension.
+    out.push({
+      type: "sketch_constraint_radius",
+      label: "Radius",
+      glyph: "⟜",
+      title: "Set the radius of this circle or arc",
+    });
+    out.push({
+      type: "sketch_constraint_diameter",
+      label: "Diameter",
+      glyph: "⌀",
+      title: "Set the diameter of this circle or arc",
     });
   }
 
@@ -301,6 +324,26 @@ export function buildConstraintCall(
       return {
         type,
         params: { line: selection[lineIdx], curve: selection[curveIdx] },
+      };
+    }
+
+    case "sketch_constraint_radius": {
+      if (selection.length !== 1 || !isCurvish(kinds[0])) return null;
+      const r = curveRadius(state, selection[0]);
+      if (r === null) return null;
+      // Seed with the current radius so applying it never makes the
+      // geometry jump; editable afterwards in the constraint manager.
+      return { type, params: { entity: selection[0], value_mm: roundDim(r) } };
+    }
+
+    case "sketch_constraint_diameter": {
+      if (selection.length !== 1 || !isCurvish(kinds[0])) return null;
+      const r = curveRadius(state, selection[0]);
+      if (r === null) return null;
+      // Stored value is the diameter (2·radius).
+      return {
+        type,
+        params: { entity: selection[0], value_mm: roundDim(2 * r) },
       };
     }
 

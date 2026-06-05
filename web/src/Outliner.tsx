@@ -86,6 +86,8 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_tangent: "Tangent",
   sketch_constraint_midpoint: "Midpoint",
   sketch_constraint_symmetric: "Symmetric",
+  sketch_constraint_radius: "Radius",
+  sketch_constraint_diameter: "Diameter",
 };
 
 interface OutlinerProps {
@@ -1659,14 +1661,17 @@ function ConstraintManagerPanel({
 
       <ul className="constraint-list" data-testid="constraint-list">
         {constraintEntries.map(({ call, index }) => {
-          const isDimensional =
+          // Distance, radius and diameter carry a millimetre value;
+          // angle carries a degree value. The rest are non-dimensional.
+          const isMmDim =
             call.type === "sketch_constraint_distance" ||
-            call.type === "sketch_constraint_angle";
+            call.type === "sketch_constraint_radius" ||
+            call.type === "sketch_constraint_diameter";
+          const isDimensional = isMmDim || call.type === "sketch_constraint_angle";
           const isDriven = isDimensional && Boolean(call.params.driven);
-          const isDistance = call.type === "sketch_constraint_distance";
-          const dimUnit = isDistance ? "mm" : "°";
+          const dimUnit = isMmDim ? "mm" : "°";
           const dimValue = isDimensional
-            ? Number(isDistance ? call.params.value_mm : call.params.value_deg)
+            ? Number(isMmDim ? call.params.value_mm : call.params.value_deg)
             : NaN;
 
           return (

@@ -365,6 +365,56 @@ describe("solveSketch: midpoint + symmetric", () => {
   });
 });
 
+describe("solveSketch: radius + diameter", () => {
+  /** A radius constraint pins a circle's radius to the target value. */
+  it("radius pins a circle's radius", async () => {
+    const sketch = emptySketch("radius");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "circle", id: 2, center: 1, radius: 5 });
+    sketch.next_entity_id = 3;
+    sketch.constraints.push({
+      kind: "radius",
+      id: 1,
+      entity: 2,
+      value_mm: 12,
+    });
+    sketch.next_constraint_id = 2;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const c = result.state.entities.find((e) => e.id === 2);
+    if (c && c.kind === "circle") {
+      expect(c.radius).toBeCloseTo(12, 4);
+    } else {
+      throw new Error("circle 2 missing from solved state");
+    }
+  });
+
+  /** A diameter constraint pins a circle to diameter/2 radius. */
+  it("diameter pins a circle to half the diameter", async () => {
+    const sketch = emptySketch("diameter");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "circle", id: 2, center: 1, radius: 5 });
+    sketch.next_entity_id = 3;
+    sketch.constraints.push({
+      kind: "diameter",
+      id: 1,
+      entity: 2,
+      value_mm: 20,
+    });
+    sketch.next_constraint_id = 2;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const c = result.state.entities.find((e) => e.id === 2);
+    if (c && c.kind === "circle") {
+      expect(c.radius).toBeCloseTo(10, 4);
+    } else {
+      throw new Error("circle 2 missing from solved state");
+    }
+  });
+});
+
 describe("solveSketch: conflict diagnostics", () => {
   /**
    * Two Distance constraints between the same two points with

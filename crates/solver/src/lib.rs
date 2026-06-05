@@ -253,6 +253,25 @@ pub enum Constraint {
         b: EntityId,
         axis: EntityId,
     },
+    /// A circle or arc has a fixed radius (mm). Dimensional, with the
+    /// same `driven` semantics as [`Constraint::Distance`].
+    Radius {
+        id: ConstraintId,
+        entity: EntityId,
+        value_mm: f64,
+        #[serde(default)]
+        driven: bool,
+    },
+    /// A circle or arc has a fixed diameter (mm). Stored as the
+    /// diameter so the UI annotation round-trips; the solver pins
+    /// `2·radius`. Dimensional, same `driven` semantics.
+    Diameter {
+        id: ConstraintId,
+        entity: EntityId,
+        value_mm: f64,
+        #[serde(default)]
+        driven: bool,
+    },
 }
 
 impl Constraint {
@@ -269,7 +288,9 @@ impl Constraint {
             | Constraint::Concentric { id, .. }
             | Constraint::Equal { id, .. }
             | Constraint::Midpoint { id, .. }
-            | Constraint::Symmetric { id, .. } => id,
+            | Constraint::Symmetric { id, .. }
+            | Constraint::Radius { id, .. }
+            | Constraint::Diameter { id, .. } => id,
         }
     }
 
@@ -287,6 +308,8 @@ impl Constraint {
             Constraint::Equal { .. } => "equal",
             Constraint::Midpoint { .. } => "midpoint",
             Constraint::Symmetric { .. } => "symmetric",
+            Constraint::Radius { .. } => "radius",
+            Constraint::Diameter { .. } => "diameter",
         }
     }
 
@@ -298,7 +321,10 @@ impl Constraint {
     pub fn is_dimensional(&self) -> bool {
         matches!(
             self,
-            Constraint::Distance { .. } | Constraint::Angle { .. }
+            Constraint::Distance { .. }
+                | Constraint::Angle { .. }
+                | Constraint::Radius { .. }
+                | Constraint::Diameter { .. }
         )
     }
 }

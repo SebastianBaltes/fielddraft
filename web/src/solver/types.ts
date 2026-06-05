@@ -85,11 +85,30 @@ export type Constraint =
       a: EntityId;
       b: EntityId;
       axis: EntityId;
+    }
+  | {
+      kind: "radius";
+      id: ConstraintId;
+      entity: EntityId;
+      value_mm: number;
+      driven?: boolean;
+    }
+  | {
+      kind: "diameter";
+      id: ConstraintId;
+      entity: EntityId;
+      value_mm: number;
+      driven?: boolean;
     };
 
 /** Does this constraint carry an editable numeric value? */
 export function isDimensional(c: Constraint): boolean {
-  return c.kind === "distance" || c.kind === "angle";
+  return (
+    c.kind === "distance" ||
+    c.kind === "angle" ||
+    c.kind === "radius" ||
+    c.kind === "diameter"
+  );
 }
 
 // ─── sketch state ────────────────────────────────────────────────

@@ -1990,7 +1990,9 @@ export class KernelStore {
     const call = session.subCalls[index];
     if (!call || !Number.isFinite(value)) return;
     const key =
-      call.type === "sketch_constraint_distance"
+      call.type === "sketch_constraint_distance" ||
+      call.type === "sketch_constraint_radius" ||
+      call.type === "sketch_constraint_diameter"
         ? "value_mm"
         : call.type === "sketch_constraint_angle"
           ? "value_deg"

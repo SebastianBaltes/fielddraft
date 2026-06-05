@@ -158,6 +158,8 @@ export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
   sketch_constraint_tangent: ["line", "curve"],
   sketch_constraint_midpoint: ["point", "line"],
   sketch_constraint_symmetric: ["entity_a", "entity_b", "axis"],
+  sketch_constraint_radius: ["entity"],
+  sketch_constraint_diameter: ["entity"],
 };
 
 // ─── K6b.3c: draft sketch-state rebuild for live inference ──────
@@ -450,6 +452,30 @@ export function buildDraftSketchState(
           a,
           b,
           axis,
+        });
+      }
+    } else if (call.type === "sketch_constraint_radius") {
+      const entity = Number(call.params.entity);
+      const value_mm = Number(call.params.value_mm);
+      if (Number.isFinite(entity) && Number.isFinite(value_mm)) {
+        state.constraints.push({
+          kind: "radius",
+          id: state.next_constraint_id++,
+          entity,
+          value_mm,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_diameter") {
+      const entity = Number(call.params.entity);
+      const value_mm = Number(call.params.value_mm);
+      if (Number.isFinite(entity) && Number.isFinite(value_mm)) {
+        state.constraints.push({
+          kind: "diameter",
+          id: state.next_constraint_id++,
+          entity,
+          value_mm,
+          driven: Boolean(call.params.driven),
         });
       }
     }

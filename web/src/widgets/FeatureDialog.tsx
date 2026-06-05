@@ -131,6 +131,8 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_constraint_tangent:       { label: "Tangent",       glyph: "⌒" },
   sketch_constraint_midpoint:      { label: "Midpoint",      glyph: "◆" },
   sketch_constraint_symmetric:     { label: "Symmetric",     glyph: "⇿" },
+  sketch_constraint_radius:        { label: "Radius",        glyph: "⟜" },
+  sketch_constraint_diameter:      { label: "Diameter",      glyph: "⌀" },
 };
 
 export const FEATURE_TYPE_LABELS: Record<string, string> = Object.fromEntries(

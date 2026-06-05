@@ -105,6 +105,8 @@ function constraintDof(constraint: Constraint): number {
     case "angle":
     case "equal":
     case "tangent":
+    case "radius":
+    case "diameter":
       return 1;
     case "concentric":
     case "midpoint":

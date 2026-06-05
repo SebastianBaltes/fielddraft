@@ -353,6 +353,8 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchTangentConstraintTool));
         r.register(Box::new(SketchMidpointConstraintTool));
         r.register(Box::new(SketchSymmetricConstraintTool));
+        r.register(Box::new(SketchRadiusConstraintTool));
+        r.register(Box::new(SketchDiameterConstraintTool));
         r
     }
 
@@ -894,6 +896,18 @@ constraint_tool!(SketchMidpointConstraintDef, SketchMidpointConstraintTool,
 pub struct SketchSymmetricConstraintDef { pub entity_a: u32, pub entity_b: u32, pub axis: u32 }
 constraint_tool!(SketchSymmetricConstraintDef, SketchSymmetricConstraintTool,
     |state, d| state.add_constraint(|cid| Constraint::Symmetric { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), axis: EntityId(d.axis) }));
+
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_radius")]
+pub struct SketchRadiusConstraintDef { pub entity: u32, pub value_mm: f32 }
+constraint_tool!(SketchRadiusConstraintDef, SketchRadiusConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Radius { id: cid, entity: EntityId(d.entity), value_mm: d.value_mm as f64, driven: false }));
+
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_diameter")]
+pub struct SketchDiameterConstraintDef { pub entity: u32, pub value_mm: f32 }
+constraint_tool!(SketchDiameterConstraintDef, SketchDiameterConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Diameter { id: cid, entity: EntityId(d.entity), value_mm: d.value_mm as f64, driven: false }));
 
 // ─── top-level `sketch` feature ─────────────────────────────────
 
@@ -1530,12 +1544,14 @@ mod tests {
                 "sketch_circle".to_string(),
                 "sketch_constraint_angle".to_string(),
                 "sketch_constraint_coincident".to_string(),
+                "sketch_constraint_diameter".to_string(),
                 "sketch_constraint_distance".to_string(),
                 "sketch_constraint_equal".to_string(),
                 "sketch_constraint_horizontal".to_string(),
                 "sketch_constraint_midpoint".to_string(),
                 "sketch_constraint_parallel".to_string(),
                 "sketch_constraint_perpendicular".to_string(),
+                "sketch_constraint_radius".to_string(),
                 "sketch_constraint_symmetric".to_string(),
                 "sketch_constraint_tangent".to_string(),
                 "sketch_constraint_vertical".to_string(),
