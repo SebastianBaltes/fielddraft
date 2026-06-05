@@ -15,9 +15,8 @@
  * plays there. This module mirrors that allocation; if the kernel's
  * allocation order ever changes, both must move together.
  *
- * Scope: lines, points and circles. Rectangles, polygons and arcs
- * advance the id counter (so later ids stay aligned) but expose no
- * grips yet — their corner/vertex editing lands in a later slice.
+ * Scope: lines, points, circles, rectangles (axis-aligned corner
+ * resize), polygons (per-vertex drag) and arcs (centre + radius).
  */
 
 export type SubCall = { type: string; params: Record<string, unknown> };
@@ -27,7 +26,16 @@ export type GripRole =
   | "line-start"
   | "line-end"
   | "circle-center"
-  | "circle-rim";
+  | "circle-rim"
+  // Rectangle corners. Dragging one keeps the diagonally opposite
+  // corner put so the box stays axis-aligned.
+  | "rect-bl"
+  | "rect-br"
+  | "rect-tr"
+  | "rect-tl"
+  | "polygon-vertex"
+  | "arc-center"
+  | "arc-rim";
 
 export interface Grip {
   /** Index into `subCalls` of the geometry call this grip edits. */
@@ -35,6 +43,9 @@ export interface Grip {
   role: GripRole;
   /** Current handle position in sketch-plane millimetres. */
   pos: [number, number];
+  /** For `polygon-vertex`: which vertex (index into the flat
+   *  `[x0,y0,x1,y1,…]` array, divided by two) this grip edits. */
+  vertexIndex?: number;
 }
 
 function asXy(value: unknown): [number, number] | null {
@@ -101,21 +112,84 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
         break;
       }
       case "sketch_rectangle": {
-        // 4 corner points + 4 edge lines. No grips yet, but the
-        // ids must still advance so later entities stay aligned.
+        // Kernel allocates: bl, br, tr, tl (points) then bottom,
+        // right, top, left (lines) — 8 ids. The box is axis-aligned,
+        // derived from min/max of the two stored corners.
         const a = asXy(call.params.corner_a);
         const b = asXy(call.params.corner_b);
-        if (!a || !b) return;
-        id += 8;
+        if (!a || !b) {
+          id += 8;
+          break;
+        }
+        const minX = Math.min(a[0], b[0]);
+        const minY = Math.min(a[1], b[1]);
+        const maxX = Math.max(a[0], b[0]);
+        const maxY = Math.max(a[1], b[1]);
+        const bl: Grip = { subCallIndex: i, role: "rect-bl", pos: [minX, minY] };
+        const br: Grip = { subCallIndex: i, role: "rect-br", pos: [maxX, minY] };
+        const tr: Grip = { subCallIndex: i, role: "rect-tr", pos: [maxX, maxY] };
+        const tl: Grip = { subCallIndex: i, role: "rect-tl", pos: [minX, maxY] };
+        const blId = id++;
+        const brId = id++;
+        const trId = id++;
+        const tlId = id++;
+        const bottomId = id++;
+        const rightId = id++;
+        const topId = id++;
+        const leftId = id++;
+        // A corner point selects its own grip; an edge line (or the
+        // whole rectangle) selects all four so any pick resizes it.
+        byEntity.set(blId, [bl]);
+        byEntity.set(brId, [br]);
+        byEntity.set(trId, [tr]);
+        byEntity.set(tlId, [tl]);
+        const all = [bl, br, tr, tl];
+        byEntity.set(bottomId, all);
+        byEntity.set(rightId, all);
+        byEntity.set(topId, all);
+        byEntity.set(leftId, all);
         break;
       }
       case "sketch_polygon": {
         const verts = call.params.vertices;
-        if (Array.isArray(verts)) id += Math.floor(verts.length / 2);
+        if (!Array.isArray(verts)) break;
+        const n = Math.floor(verts.length / 2);
+        for (let v = 0; v < n; v++) {
+          const x = Number(verts[v * 2]);
+          const y = Number(verts[v * 2 + 1]);
+          const vid = id++;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          byEntity.set(vid, [
+            { subCallIndex: i, role: "polygon-vertex", pos: [x, y], vertexIndex: v },
+          ]);
+        }
         break;
       }
       case "sketch_arc": {
-        if (asXy(call.params.center)) id += 1;
+        // Only the centre point is modelled as an entity. Map it to
+        // both a centre grip and a radius grip placed at the arc's
+        // mid-sweep angle (analogous to a circle's rim).
+        const center = asXy(call.params.center);
+        if (!center) break;
+        const radius = Number(call.params.radius);
+        const start = Number(call.params.start_angle);
+        const sweep = Number(call.params.sweep_angle);
+        const centerId = id++;
+        const centerGrip: Grip = {
+          subCallIndex: i,
+          role: "arc-center",
+          pos: center,
+        };
+        const grips = [centerGrip];
+        if (Number.isFinite(radius) && Number.isFinite(start) && Number.isFinite(sweep)) {
+          const mid = start + sweep / 2;
+          grips.push({
+            subCallIndex: i,
+            role: "arc-rim",
+            pos: [center[0] + radius * Math.cos(mid), center[1] + radius * Math.sin(mid)],
+          });
+        }
+        byEntity.set(centerId, grips);
         break;
       }
       default:
@@ -187,6 +261,50 @@ export function applyGripDrag(
       replace({ center: [to[0], to[1]] });
       break;
     case "circle-rim": {
+      const center = asXy(call.params.center);
+      if (!center) break;
+      const radius = Math.hypot(to[0] - center[0], to[1] - center[1]);
+      if (radius > 1e-6) replace({ radius });
+      break;
+    }
+    case "rect-bl":
+    case "rect-br":
+    case "rect-tr":
+    case "rect-tl": {
+      const a = asXy(call.params.corner_a);
+      const b = asXy(call.params.corner_b);
+      if (!a || !b) break;
+      const minX = Math.min(a[0], b[0]);
+      const minY = Math.min(a[1], b[1]);
+      const maxX = Math.max(a[0], b[0]);
+      const maxY = Math.max(a[1], b[1]);
+      // The corner diagonally opposite the dragged one stays put; the
+      // box re-derives from {dragged, opposite} so it stays
+      // axis-aligned even if the cursor crosses over.
+      const opposite: [number, number] =
+        grip.role === "rect-bl"
+          ? [maxX, maxY]
+          : grip.role === "rect-br"
+            ? [minX, maxY]
+            : grip.role === "rect-tr"
+              ? [minX, minY]
+              : [maxX, minY];
+      replace({ corner_a: opposite, corner_b: [to[0], to[1]] });
+      break;
+    }
+    case "polygon-vertex": {
+      const verts = call.params.vertices;
+      if (!Array.isArray(verts) || grip.vertexIndex === undefined) break;
+      const next2 = verts.slice();
+      next2[grip.vertexIndex * 2] = to[0];
+      next2[grip.vertexIndex * 2 + 1] = to[1];
+      replace({ vertices: next2 });
+      break;
+    }
+    case "arc-center":
+      replace({ center: [to[0], to[1]] });
+      break;
+    case "arc-rim": {
       const center = asXy(call.params.center);
       if (!center) break;
       const radius = Math.hypot(to[0] - center[0], to[1] - center[1]);

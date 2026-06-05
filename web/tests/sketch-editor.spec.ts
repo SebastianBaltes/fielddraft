@@ -1358,4 +1358,65 @@ test.describe("Sketch grip-drag (P0.3)", () => {
       `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
     ).toEqual([]);
   });
+
+  test("drag a rectangle corner grip to resize it, opposite corner fixed", async ({ page }) => {
+    const pageErrors: Error[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err));
+
+    await page.goto("/");
+    await page.waitForTimeout(600);
+
+    await page.getByTestId("enter-sketch").click();
+    // A precise rectangle (-20,-10)..(20,10) via the dialog.
+    await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await page.getByLabel("Corner a x").fill("-20");
+    await page.getByLabel("Corner a y").fill("-10");
+    await page.getByLabel("Corner b x").fill("20");
+    await page.getByLabel("Corner b y").fill("10");
+    await page.getByTestId("sketch-tool-apply").click();
+
+    // Select the rectangle by clicking its bottom edge midpoint
+    // (0, -10): an edge maps to all four corner grips.
+    await page.getByTestId("sketch-tool-select").click();
+    const project = await makeProjector(page);
+    const [ex, ey] = project(0, -10);
+    await page.mouse.click(ex, ey);
+    const sel = await readSketchSession(page);
+    expect(sel).not.toBeNull();
+    expect(sel!.selection.length).toBeGreaterThan(0);
+
+    // Grab the top-right corner grip (20, 10) and drag it to (40, 30).
+    // The internal H/V constraints keep it axis-aligned; the opposite
+    // corner (-20, -10) stays put.
+    const [trx, try_] = project(20, 10);
+    const [tx, ty] = project(40, 30);
+    await page.mouse.move(trx, try_);
+    await page.mouse.down();
+    await page.mouse.move((trx + tx) / 2, (try_ + ty) / 2, { steps: 5 });
+    await page.mouse.move(tx, ty, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(900);
+
+    await page.getByTestId("sketch-finish").click();
+    await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
+
+    const committed = await readCommittedSubCalls(page);
+    expect(committed).not.toBeNull();
+    const rect = committed!.find((c) => c.type === "sketch_rectangle") as unknown as {
+      params: { corner_a: [number, number]; corner_b: [number, number] };
+    };
+    expect(rect).toBeDefined();
+    const xs = [rect.params.corner_a[0], rect.params.corner_b[0]];
+    const ys = [rect.params.corner_a[1], rect.params.corner_b[1]];
+    // Opposite corner fixed at (-20,-10); dragged corner now ~(40,30).
+    expect(Math.abs(Math.min(...xs) - -20)).toBeLessThan(2);
+    expect(Math.abs(Math.min(...ys) - -10)).toBeLessThan(2);
+    expect(Math.abs(Math.max(...xs) - 40)).toBeLessThan(2);
+    expect(Math.abs(Math.max(...ys) - 30)).toBeLessThan(2);
+
+    expect(
+      pageErrors.map((e) => e.message),
+      `uncaught page errors:\n${pageErrors.map((e) => e.message).join("\n")}`,
+    ).toEqual([]);
+  });
 });

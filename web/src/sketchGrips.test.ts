@@ -58,7 +58,7 @@ describe("gripsForSelection", () => {
     ]);
   });
 
-  it("keeps ids aligned across a rectangle (no grips, 8 ids)", () => {
+  it("keeps ids aligned across a rectangle (8 ids)", () => {
     const subCalls: SubCall[] = [
       { type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [10, 10] } },
       { type: "sketch_point", params: { at: [3, 3] } },
@@ -67,8 +67,73 @@ describe("gripsForSelection", () => {
     expect(gripsForSelection(subCalls, [9]).map((g) => g.role)).toEqual([
       "point",
     ]);
-    // The rectangle itself exposes no grips yet.
-    expect(gripsForSelection(subCalls, [1, 2, 5, 8])).toEqual([]);
+  });
+
+  it("maps each rectangle corner point to its own corner grip", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [10, 20] } },
+    ];
+    // ids: bl=1, br=2, tr=3, tl=4, then 4 edge lines 5..8
+    expect(gripsForSelection(subCalls, [1])[0]).toMatchObject({ role: "rect-bl", pos: [0, 0] });
+    expect(gripsForSelection(subCalls, [2])[0]).toMatchObject({ role: "rect-br", pos: [10, 0] });
+    expect(gripsForSelection(subCalls, [3])[0]).toMatchObject({ role: "rect-tr", pos: [10, 20] });
+    expect(gripsForSelection(subCalls, [4])[0]).toMatchObject({ role: "rect-tl", pos: [0, 20] });
+  });
+
+  it("maps a rectangle edge to all four corner grips", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [10, 20] } },
+    ];
+    // selecting the bottom edge (id 5) reveals every corner
+    const grips = gripsForSelection(subCalls, [5]);
+    expect(grips.map((g) => g.role).sort()).toEqual([
+      "rect-bl",
+      "rect-br",
+      "rect-tl",
+      "rect-tr",
+    ]);
+  });
+
+  it("derives rectangle corners from min/max of stored corners", () => {
+    // corners stored out of order — grips must still be the box corners
+    const subCalls: SubCall[] = [
+      { type: "sketch_rectangle", params: { corner_a: [10, 20], corner_b: [0, 0] } },
+    ];
+    expect(gripsForSelection(subCalls, [1])[0]).toMatchObject({ role: "rect-bl", pos: [0, 0] });
+    expect(gripsForSelection(subCalls, [3])[0]).toMatchObject({ role: "rect-tr", pos: [10, 20] });
+  });
+
+  it("maps each polygon vertex to its own grip", () => {
+    const subCalls: SubCall[] = [
+      { type: "sketch_polygon", params: { vertices: [0, 0, 10, 0, 5, 8] } },
+    ];
+    // ids: v0=1, v1=2, v2=3
+    expect(gripsForSelection(subCalls, [2])[0]).toMatchObject({
+      role: "polygon-vertex",
+      pos: [10, 0],
+      vertexIndex: 1,
+    });
+    expect(gripsForSelection(subCalls, [3])[0]).toMatchObject({
+      role: "polygon-vertex",
+      pos: [5, 8],
+      vertexIndex: 2,
+    });
+  });
+
+  it("maps an arc centre to centre + rim grips at the mid-sweep angle", () => {
+    const subCalls: SubCall[] = [
+      {
+        type: "sketch_arc",
+        params: { center: [0, 0], radius: 10, start_angle: 0, sweep_angle: Math.PI },
+      },
+    ];
+    // ids: center=1
+    const grips = gripsForSelection(subCalls, [1]);
+    expect(grips.map((g) => g.role).sort()).toEqual(["arc-center", "arc-rim"]);
+    const rim = grips.find((g) => g.role === "arc-rim")!;
+    // mid angle = π/2 → rim at (0, 10)
+    expect(rim.pos[0]).toBeCloseTo(0, 6);
+    expect(rim.pos[1]).toBeCloseTo(10, 6);
   });
 
   it("dedupes when a line and its endpoint are both selected", () => {
@@ -120,6 +185,75 @@ describe("applyGripDrag", () => {
     const next = applyGripDrag([circle], { subCallIndex: 0, role: "circle-center", pos: [0, 0] }, [7, 8]);
     expect(next[0].params.center).toEqual([7, 8]);
     expect(next[0].params.radius).toBe(5);
+  });
+
+  it("rect corner drag keeps the diagonally opposite corner put", () => {
+    const rect: SubCall = {
+      type: "sketch_rectangle",
+      params: { corner_a: [0, 0], corner_b: [10, 20] },
+    };
+    // drag bl (0,0) to (-5,-5): opposite tr (10,20) stays
+    const next = applyGripDrag([rect], { subCallIndex: 0, role: "rect-bl", pos: [0, 0] }, [-5, -5]);
+    const a = next[0].params.corner_a as number[];
+    const b = next[0].params.corner_b as number[];
+    const minX = Math.min(a[0], b[0]);
+    const minY = Math.min(a[1], b[1]);
+    const maxX = Math.max(a[0], b[0]);
+    const maxY = Math.max(a[1], b[1]);
+    expect([minX, minY]).toEqual([-5, -5]);
+    expect([maxX, maxY]).toEqual([10, 20]);
+  });
+
+  it("rect corner drag stays axis-aligned when the cursor crosses over", () => {
+    const rect: SubCall = {
+      type: "sketch_rectangle",
+      params: { corner_a: [0, 0], corner_b: [10, 20] },
+    };
+    // drag tr (10,20) past bl, to (-3,-4): opposite bl (0,0) stays
+    const next = applyGripDrag([rect], { subCallIndex: 0, role: "rect-tr", pos: [10, 20] }, [-3, -4]);
+    const a = next[0].params.corner_a as number[];
+    const b = next[0].params.corner_b as number[];
+    const minX = Math.min(a[0], b[0]);
+    const minY = Math.min(a[1], b[1]);
+    const maxX = Math.max(a[0], b[0]);
+    const maxY = Math.max(a[1], b[1]);
+    expect([minX, minY]).toEqual([-3, -4]);
+    expect([maxX, maxY]).toEqual([0, 0]);
+  });
+
+  it("polygon vertex drag moves only that vertex", () => {
+    const poly: SubCall = {
+      type: "sketch_polygon",
+      params: { vertices: [0, 0, 10, 0, 5, 8] },
+    };
+    const next = applyGripDrag(
+      [poly],
+      { subCallIndex: 0, role: "polygon-vertex", pos: [10, 0], vertexIndex: 1 },
+      [12, 3],
+    );
+    expect(next[0].params.vertices).toEqual([0, 0, 12, 3, 5, 8]);
+  });
+
+  it("arc-rim sets a new radius, arc-center moves the centre", () => {
+    const arc: SubCall = {
+      type: "sketch_arc",
+      params: { center: [0, 0], radius: 10, start_angle: 0, sweep_angle: Math.PI },
+    };
+    const rimDrag = applyGripDrag(
+      [arc],
+      { subCallIndex: 0, role: "arc-rim", pos: [0, 10] },
+      [0, 25],
+    );
+    expect(rimDrag[0].params.radius).toBeCloseTo(25, 6);
+    expect(rimDrag[0].params.center).toEqual([0, 0]);
+
+    const centerDrag = applyGripDrag(
+      [arc],
+      { subCallIndex: 0, role: "arc-center", pos: [0, 0] },
+      [4, 5],
+    );
+    expect(centerDrag[0].params.center).toEqual([4, 5]);
+    expect(centerDrag[0].params.radius).toBe(10);
   });
 
   it("does not mutate the input array", () => {
