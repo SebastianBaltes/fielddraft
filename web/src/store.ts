@@ -49,7 +49,7 @@ import {
 } from "./sketchTrim";
 import type { Vec2 } from "./sketchTrim";
 import { mirrorCurve } from "./sketchMirror";
-import { offsetCurve } from "./sketchOffset";
+import { offsetCurve, offsetChain, buildChain } from "./sketchOffset";
 import {
   patternLinear,
   patternCircular,
@@ -2334,16 +2334,24 @@ export class KernelStore {
   }
 
   /**
-   * F15: append a parallel copy of the sub-call at `targetIndex` offset
-   * by `distance` mm toward the side the click `clickPoint` lies on.
-   * Reads the target's solved geometry via `curveOfSubCall`, computes the
-   * offset via [`offsetCurve`] (line: parallel toward the clicked side;
-   * circle/arc: concentric, grown if the click is outside / shrunk if
-   * inside), and appends the result as an ordinary `sketch_line` /
-   * `sketch_circle` / `sketch_arc` — the original stays put. The copy
-   * carries the source's construction flag. After appending, the sketch
-   * is re-solved. No-op when the target isn't a simple curve or no valid
-   * offset exists (collapsed inner offset, degenerate line, bad distance).
+   * F15 / F15-full: offset the whole connected CHAIN the clicked curve
+   * belongs to, toward the side the click `clickPoint` lies on.
+   *
+   * From `targetIndex` the connected component of line/arc curves whose
+   * endpoints coincide is walked ([`buildChain`]); every segment is
+   * offset on a globally consistent side and the joints are reconciled —
+   * concave corners trim to the support intersection, convex corners get
+   * a rounding fillet arc of radius = distance, a closed loop also closes
+   * the wrap-around joint ([`offsetChain`]). The result is appended as
+   * ordinary `sketch_line` / `sketch_arc` sub-calls (the originals stay
+   * put), each carrying its source's construction flag, then the sketch
+   * is re-solved.
+   *
+   * A full circle (no endpoints) is never part of a chain and falls
+   * through to the concentric single-curve [`offsetCurve`]; a lone
+   * line/arc with no coincident neighbour is the degenerate length-1
+   * chain. No-op when the target isn't a simple curve or no valid offset
+   * exists (collapsed offset, degenerate geometry, bad distance).
    */
   offsetSketchAt(targetIndex: number, clickPoint: Vec2, distance: number): void {
     const session = this.state.sketchSession;
@@ -2353,14 +2361,32 @@ export class KernelStore {
     const cv = curveOfSubCall(target);
     if (!cv) return;
 
-    const offset = offsetCurve(cv, distance, clickPoint);
-    if (!offset) return;
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined ? { construction: params.construction } : {};
 
-    const carry: Record<string, unknown> =
-      target.params.construction !== undefined
-        ? { construction: target.params.construction }
-        : {};
-    this.pushSketchSubCalls([subCallOfCurve(offset, carry)]);
+    // A full circle has no endpoints — offset it concentrically.
+    if (cv.kind === "circle") {
+      const offset = offsetCurve(cv, distance, clickPoint);
+      if (!offset) return;
+      this.pushSketchSubCalls([subCallOfCurve(offset, carry(target.params))]);
+      void solveAndReplace(this);
+      return;
+    }
+
+    // Build the connected chain of line/arc curves from the sub-spine,
+    // keeping each sub-call's curve at its own index so the seed maps in.
+    const curves = session.subCalls.map((c) => curveOfSubCall(c));
+    const chain = buildChain(curves, targetIndex);
+    if (!chain) return;
+    const clickedPos = chain.indices.indexOf(targetIndex);
+    if (clickedPos < 0) return;
+
+    const offsets = offsetChain(chain, clickedPos, distance, clickPoint);
+    if (!offsets || offsets.length === 0) return;
+
+    // The offset copies inherit the clicked source's construction flag.
+    const flags = carry(target.params);
+    this.pushSketchSubCalls(offsets.map((o) => subCallOfCurve(o, flags)));
     void solveAndReplace(this);
   }
 

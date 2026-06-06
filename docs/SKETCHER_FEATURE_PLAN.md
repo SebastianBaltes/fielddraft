@@ -338,3 +338,18 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 22 | SVG/DXF-Import | ✅ | 0.5.63 | 1ce78d3 |
 | 23 | Spline / B-Spline | ✅ | 0.5.64 | e93d549 |
 | 24 | Text | ✅ | 0.5.65 | 3be46db |
+
+---
+
+## 6. Vollausbau (Tiefe statt Breite)
+
+Nachdem alle 24 Features in der Breite umgesetzt waren, wurden vier bewusst vereinfachte
+Features auf die volle CAD-Tiefe gebracht. Gleiches Vorgehen: ein frischer Subagent pro
+Feature, Abnahme durch den Hauptagenten, Unit- + Grenzfall- + echte-WebGPU-E2E-Tests.
+
+| # | Vollausbau | Vorher | Nachher | Status | Version | Commit |
+|---|---|---|---|---|---|---|
+| V1 | Offset Ketten/Konturen | nur Einzelkurve | ganze verbundene Kette (offen/geschlossen), Joints getrimmt, konvexe Ecken gerundet | ✅ | 0.5.66 | (dieser Commit) |
+| V2 | SVG voller Transform-Stack | nur translate/scale/matrix, Bézier approximiert | rotate/skew/verschachtelte Transforms, exakte Bézier-Übernahme | 🔴 offen | — | — |
+| V3 | Text gefüllt + Kleinbuchstaben | Single-Stroke A–Z/0–9 | gefüllte Glyph-Konturen mit Löchern, Klein-/Satzzeichen, Font-Auswahl | 🔴 offen | — | — |
+| V4 | Echte B-Spline | Catmull-Rom→QuadBézier | kubische B-Spline (Knotenvektor + Kontrollpolygon-Grips + Tangenten) | 🔴 offen | — | — |
