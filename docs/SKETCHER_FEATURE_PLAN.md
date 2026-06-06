@@ -326,7 +326,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 10 | Sketch-Fillet | ✅ | 0.5.51 | 7e6c887 |
 | 11 | Sketch-Chamfer | ✅ | 0.5.52 | 4b82b12 |
 | 12 | Extend | ✅ | 0.5.53 | 5ac8f64 |
-| 13 | Split (explizit) | 🔴 offen | — | — |
+| 13 | Split (explizit) | ✅ | 0.5.54 | 98053dd |
 | 14 | Mirror interaktiv | 🔴 offen | — | — |
 | 15 | Offset interaktiv | 🔴 offen | — | — |
 | 16 | Sketch-Pattern (linear/circular) | 🔴 offen | — | — |
