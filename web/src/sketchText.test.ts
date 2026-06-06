@@ -1,172 +1,180 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
+import opentype, { type Font } from "opentype.js";
 import { textToSubCalls } from "./sketchText";
-import { GLYPHS } from "./sketchTextFont";
+import type { PathContour, SubCall } from "./importVector";
 
-/** Pull the four corners of every emitted line into flat x/y lists. */
-function coords(calls: ReturnType<typeof textToSubCalls>) {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (const c of calls) {
-    const s = c.params.start as [number, number];
-    const e = c.params.end as [number, number];
-    xs.push(s[0], e[0]);
-    ys.push(s[1], e[1]);
-  }
-  return { xs, ys };
+/**
+ * F24-full unit tests. We parse the bundled DejaVu Sans from disk (the same
+ * file shipped in public/fonts/) and assert the glyph→sketch_path layout:
+ * holes, lowercase/punctuation coverage, pen advance, cubic→quad, upright
+ * orientation, and the empty/space/unsupported edge cases.
+ */
+
+let font: Font;
+
+beforeAll(() => {
+  // Vitest runs with cwd at the web/ package root.
+  const fontPath = resolve(process.cwd(), "public/fonts/DejaVuSans.ttf");
+  const buf = readFileSync(fontPath);
+  // Hand opentype a tight ArrayBuffer slice of the file's bytes.
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  font = opentype.parse(ab);
+});
+
+/** Narrow a SubCall to its contour list (all our text calls are sketch_path). */
+function contoursOf(call: SubCall): PathContour[] {
+  expect(call.type).toBe("sketch_path");
+  return call.params.contours as PathContour[];
 }
 
-describe("textToSubCalls", () => {
-  it('emits "I" as scaled sketch_line strokes spanning y ~0..height', () => {
-    const calls = textToSubCalls("I", { origin: [0, 0], height: 10 });
+/** Every endpoint x of a sketch_path call (start + each segment `to`). */
+function xsOf(call: SubCall): number[] {
+  const xs: number[] = [];
+  for (const c of contoursOf(call)) {
+    xs.push(c.start[0]);
+    for (const s of c.segments) xs.push(s.to[0]);
+  }
+  return xs;
+}
 
-    // Every emitted call is a sketch_line.
-    expect(calls.every((c) => c.type === "sketch_line")).toBe(true);
+/** Every endpoint y of a sketch_path call. */
+function ysOf(call: SubCall): number[] {
+  const ys: number[] = [];
+  for (const c of contoursOf(call)) {
+    ys.push(c.start[1]);
+    for (const s of c.segments) ys.push(s.to[1]);
+  }
+  return ys;
+}
 
-    // The "I" glyph is one stroke of N points → N-1 segments.
-    const glyphSegments = GLYPHS["I"].reduce((n, s) => n + (s.length - 1), 0);
-    expect(calls.length).toBe(glyphSegments);
-
-    const { ys } = coords(calls);
-    expect(Math.min(...ys)).toBeCloseTo(0, 6);
-    expect(Math.max(...ys)).toBeCloseTo(10, 6);
+describe("textToSubCalls (filled glyphs)", () => {
+  it('"O" yields a sketch_path with a hole (>=2 contours)', () => {
+    const calls = textToSubCalls(font, "O", { origin: [0, 0], height: 10 });
+    expect(calls.length).toBe(1);
+    expect(calls[0].type).toBe("sketch_path");
+    expect(contoursOf(calls[0]).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('"AB" advances so B is to the right of A', () => {
-    const aOnly = textToSubCalls("A", { origin: [0, 0], height: 10 });
-    const ab = textToSubCalls("AB", { origin: [0, 0], height: 10 });
-
-    const aMaxX = Math.max(...coords(aOnly).xs);
-
-    // B's segments are the ones beyond A's count.
-    const bCalls = ab.slice(aOnly.length);
-    expect(bCalls.length).toBeGreaterThan(0);
-    const bMinX = Math.min(...coords(bCalls).xs);
-
-    expect(bMinX).toBeGreaterThan(aMaxX - 1e-9);
-    // And B starts well past the origin (~advance·height for A = 0.7·10).
-    expect(bMinX).toBeGreaterThan(6);
+  it('"A" yields a sketch_path with a counter (>=2 contours)', () => {
+    const calls = textToSubCalls(font, "A", { origin: [0, 0], height: 10 });
+    expect(calls.length).toBe(1);
+    expect(contoursOf(calls[0]).length).toBeGreaterThanOrEqual(2);
   });
 
-  it("space advances the pen but emits nothing for that char", () => {
-    const ab = textToSubCalls("AB", { origin: [0, 0], height: 10 });
-    const aSpaceB = textToSubCalls("A B", { origin: [0, 0], height: 10 });
-
-    // Same number of lines (space draws nothing).
-    expect(aSpaceB.length).toBe(ab.length);
-
-    // But the B in "A B" is shifted right by one space advance (0.5·10 = 5).
-    const aOnly = textToSubCalls("A", { origin: [0, 0], height: 10 });
-    const bInAB = Math.min(...coords(ab.slice(aOnly.length)).xs);
-    const bInASB = Math.min(...coords(aSpaceB.slice(aOnly.length)).xs);
-    expect(bInASB - bInAB).toBeCloseTo(5, 6);
-  });
-
-  it("height scaling: height 20 yields exactly double height 10", () => {
-    const h10 = textToSubCalls("AB", { origin: [0, 0], height: 10 });
-    const h20 = textToSubCalls("AB", { origin: [0, 0], height: 20 });
-    expect(h20.length).toBe(h10.length);
-    for (let i = 0; i < h10.length; i++) {
-      const s10 = h10[i].params.start as [number, number];
-      const s20 = h20[i].params.start as [number, number];
-      expect(s20[0]).toBeCloseTo(s10[0] * 2, 6);
-      expect(s20[1]).toBeCloseTo(s10[1] * 2, 6);
+  it("lowercase l and i produce geometry (no uppercase fold)", () => {
+    for (const ch of ["l", "i"]) {
+      const calls = textToSubCalls(font, ch, { origin: [0, 0], height: 10 });
+      expect(calls.length, ch).toBe(1);
+      expect(contoursOf(calls[0]).length, ch).toBeGreaterThanOrEqual(1);
     }
   });
 
-  it("construction flag propagates to every sub-call", () => {
-    const solid = textToSubCalls("ABC", { origin: [0, 0], height: 10 });
-    expect(solid.every((c) => c.params.construction === false)).toBe(true);
+  it("lowercase differs from uppercase (verbatim layout)", () => {
+    const lower = textToSubCalls(font, "a", { origin: [0, 0], height: 10 });
+    const upper = textToSubCalls(font, "A", { origin: [0, 0], height: 10 });
+    // Different glyph outlines → different contour signatures.
+    const sig = (c: SubCall) =>
+      contoursOf(c)
+        .map((x) => x.segments.length)
+        .join(",");
+    expect(sig(lower[0])).not.toBe(sig(upper[0]));
+  });
 
-    const constr = textToSubCalls("ABC", {
-      origin: [0, 0],
-      height: 10,
-      construction: true,
-    });
-    expect(constr.length).toBeGreaterThan(0);
-    expect(constr.every((c) => c.params.construction === true)).toBe(true);
+  it("punctuation '.' produces geometry", () => {
+    const calls = textToSubCalls(font, ".", { origin: [0, 0], height: 10 });
+    expect(calls.length).toBe(1);
+    expect(contoursOf(calls[0]).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('"AB" lays B to the right of A (pen advance)', () => {
+    const calls = textToSubCalls(font, "AB", { origin: [0, 0], height: 10 });
+    expect(calls.length).toBe(2);
+    const aMaxX = Math.max(...xsOf(calls[0]));
+    const bMinX = Math.min(...xsOf(calls[1]));
+    // B's left edge sits at/after A's right edge (glyphs don't overlap).
+    expect(bMinX).toBeGreaterThan(aMaxX - 1e-6);
+    // And B clearly starts past the origin.
+    expect(bMinX).toBeGreaterThan(3);
+  });
+
+  it("a glyph's cubic/curved outline becomes quad segments", () => {
+    // "O" is built from curves → its outline must carry quad segments.
+    const calls = textToSubCalls(font, "O", { origin: [0, 0], height: 10 });
+    const segs = contoursOf(calls[0]).flatMap((c) => c.segments);
+    const quads = segs.filter((s) => s.kind === "quad");
+    expect(quads.length).toBeGreaterThan(0);
+    // Every emitted segment is either a line or a quad (no cubics leak).
+    expect(segs.every((s) => s.kind === "line" || s.kind === "quad")).toBe(true);
+  });
+
+  it("a capital letter is right-side-up (top above baseline)", () => {
+    const calls = textToSubCalls(font, "T", { origin: [0, 0], height: 10 });
+    const ys = ysOf(calls[0]);
+    // The baseline sits at y≈0 (origin y); the glyph's top must be well
+    // above it (positive y), proving y-up orientation (not flipped).
+    expect(Math.max(...ys)).toBeGreaterThan(5);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(-0.5);
   });
 
   it("origin translates every coordinate", () => {
-    const at0 = textToSubCalls("A", { origin: [0, 0], height: 10 });
-    const at100 = textToSubCalls("A", { origin: [100, 50], height: 10 });
-    for (let i = 0; i < at0.length; i++) {
-      const s0 = at0[i].params.start as [number, number];
-      const s1 = at100[i].params.start as [number, number];
-      expect(s1[0]).toBeCloseTo(s0[0] + 100, 6);
-      expect(s1[1]).toBeCloseTo(s0[1] + 50, 6);
-    }
+    const at0 = textToSubCalls(font, "A", { origin: [0, 0], height: 10 });
+    const at100 = textToSubCalls(font, "A", { origin: [100, 50], height: 10 });
+    const s0 = contoursOf(at0[0])[0].start;
+    const s1 = contoursOf(at100[0])[0].start;
+    expect(s1[0]).toBeCloseTo(s0[0] + 100, 6);
+    expect(s1[1]).toBeCloseTo(s0[1] + 50, 6);
   });
 
-  it("letterSpacing widens the gap between glyphs", () => {
-    const tight = textToSubCalls("AB", { origin: [0, 0], height: 10 });
-    const loose = textToSubCalls("AB", {
-      origin: [0, 0],
-      height: 10,
-      letterSpacing: 5,
-    });
-    const aLen = textToSubCalls("A", { origin: [0, 0], height: 10 }).length;
-    const bTight = Math.min(...coords(tight.slice(aLen)).xs);
-    const bLoose = Math.min(...coords(loose.slice(aLen)).xs);
-    expect(bLoose - bTight).toBeCloseTo(5, 6);
+  it("height scaling: height 20 yields exactly double height 10", () => {
+    const h10 = textToSubCalls(font, "A", { origin: [0, 0], height: 10 });
+    const h20 = textToSubCalls(font, "A", { origin: [0, 0], height: 20 });
+    const s10 = contoursOf(h10[0])[0].start;
+    const s20 = contoursOf(h20[0])[0].start;
+    expect(s20[0]).toBeCloseTo(s10[0] * 2, 6);
+    expect(s20[1]).toBeCloseTo(s10[1] * 2, 6);
   });
 
   // ── edge cases ────────────────────────────────────────────────────
 
   it("empty string yields []", () => {
-    expect(textToSubCalls("", { origin: [0, 0], height: 10 })).toEqual([]);
+    expect(textToSubCalls(font, "", { origin: [0, 0], height: 10 })).toEqual([]);
   });
 
-  it("unknown char is skipped without throwing, pen still advances", () => {
-    expect(GLYPHS["@"]).toBeUndefined();
-    const calls = textToSubCalls("A@B", { origin: [0, 0], height: 10 });
-    // Only A and B drew lines.
-    const ab = textToSubCalls("AB", { origin: [0, 0], height: 10 });
-    expect(calls.length).toBe(ab.length);
-    // But the "@" advanced the pen, so B in "A@B" sits further right than in "AB".
-    const aLen = textToSubCalls("A", { origin: [0, 0], height: 10 }).length;
-    const bAtB = Math.min(...coords(ab.slice(aLen)).xs);
-    const bA_B = Math.min(...coords(calls.slice(aLen)).xs);
-    expect(bA_B).toBeGreaterThan(bAtB);
+  it("a space advances but emits nothing", () => {
+    // "A B" emits exactly two glyphs (the space draws nothing) ...
+    const aSpaceB = textToSubCalls(font, "A B", { origin: [0, 0], height: 10 });
+    expect(aSpaceB.length).toBe(2);
+    // ... and the space pushes B further right than in "AB".
+    const ab = textToSubCalls(font, "AB", { origin: [0, 0], height: 10 });
+    const bInAB = Math.min(...xsOf(ab[1]));
+    const bInASB = Math.min(...xsOf(aSpaceB[1]));
+    expect(bInASB).toBeGreaterThan(bInAB);
   });
 
-  it("lowercase is folded to uppercase glyphs", () => {
-    const lower = textToSubCalls("abc", { origin: [0, 0], height: 10 });
-    const upper = textToSubCalls("ABC", { origin: [0, 0], height: 10 });
-    expect(lower.length).toBe(upper.length);
-    for (let i = 0; i < lower.length; i++) {
-      expect(lower[i].params.start).toEqual(upper[i].params.start);
-      expect(lower[i].params.end).toEqual(upper[i].params.end);
-    }
-  });
-});
-
-describe("GLYPHS font table is well-formed", () => {
-  it("every glyph stroke has >=1 point and stays within the cell (+margin)", () => {
-    const MARGIN = 0.1; // small overshoot allowed for curve caps / descenders
-    for (const [ch, glyph] of Object.entries(GLYPHS)) {
-      for (const stroke of glyph) {
-        expect(stroke.length, `${ch}: empty stroke`).toBeGreaterThanOrEqual(1);
-        for (const [x, y] of stroke) {
-          expect(Number.isFinite(x), `${ch}: x not finite`).toBe(true);
-          expect(Number.isFinite(y), `${ch}: y not finite`).toBe(true);
-          expect(x, `${ch}: x below cell`).toBeGreaterThanOrEqual(-MARGIN);
-          expect(x, `${ch}: x above cell`).toBeLessThanOrEqual(1.2 + MARGIN);
-          expect(y, `${ch}: y below cell`).toBeGreaterThanOrEqual(-MARGIN);
-          expect(y, `${ch}: y above cell`).toBeLessThanOrEqual(1 + MARGIN);
-        }
-      }
-    }
+  it("only-space string yields []", () => {
+    expect(textToSubCalls(font, "   ", { origin: [0, 0], height: 10 })).toEqual(
+      [],
+    );
   });
 
-  it("covers A-Z, 0-9, space and . - _", () => {
-    for (let c = 65; c <= 90; c++) {
-      expect(GLYPHS[String.fromCharCode(c)], String.fromCharCode(c)).toBeDefined();
-    }
-    for (let d = 0; d <= 9; d++) {
-      expect(GLYPHS[String(d)], String(d)).toBeDefined();
-    }
-    for (const ch of [" ", ".", "-", "_"]) {
-      expect(GLYPHS[ch], ch).toBeDefined();
-    }
+  it("an unsupported control char is skipped (no crash)", () => {
+    // \x01 maps to .notdef which has no outline in DejaVu → emits nothing.
+    const calls = textToSubCalls(font, "A\x01B", { origin: [0, 0], height: 10 });
+    // Only A and B drew geometry.
+    expect(calls.length).toBe(2);
+  });
+
+  it("letterSpacing widens the gap between glyphs", () => {
+    const tight = textToSubCalls(font, "AB", { origin: [0, 0], height: 10 });
+    const loose = textToSubCalls(font, "AB", {
+      origin: [0, 0],
+      height: 10,
+      letterSpacing: 5,
+    });
+    const bTight = Math.min(...xsOf(tight[1]));
+    const bLoose = Math.min(...xsOf(loose[1]));
+    expect(bLoose - bTight).toBeCloseTo(5, 6);
   });
 });

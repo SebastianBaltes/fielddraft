@@ -1,0 +1,27 @@
+Bundled fonts
+=============
+
+DejaVuSans.ttf, DejaVuSerif.ttf — DejaVu Fonts
+
+The DejaVu fonts are based on the Bitstream Vera Fonts. They are free to use,
+study, modify and redistribute (including bundling with software) under the
+permissive Bitstream Vera and Arev fonts licenses, and the DejaVu changes are
+released into the public domain.
+
+Bitstream Vera Fonts Copyright
+------------------------------
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is
+a trademark of Bitstream, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of the fonts accompanying this license ("Fonts") and associated documentation
+files (the "Font Software"), to reproduce and distribute the Font Software,
+including without limitation the rights to use, copy, merge, publish,
+distribute, and/or sell copies of the Font Software, and to permit persons to
+whom the Font Software is furnished to do so, subject to the conditions in the
+full Bitstream Vera license text.
+
+Full license: https://dejavu-fonts.github.io/License.html
+
+These font files are redistributed unmodified solely to provide built-in
+glyph outlines for FieldDraft's sketch Text tool.

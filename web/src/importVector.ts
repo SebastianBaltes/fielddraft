@@ -155,8 +155,13 @@ function cubicQuadError(p0: Pt, p1: Pt, p2: Pt, p3: Pt, q1: Pt): number {
  *  within `tol`, by recursive subdivision (de Casteljau split at t=0.5).
  *  Each emitted quad uses the optimal degree-reduction control point.
  *  This preserves the curve AS curves (no polyline) while staying inside
- *  the kernel's quad-only `SketchSegment` vocabulary. */
-function cubicToQuads(
+ *  the kernel's quad-only `SketchSegment` vocabulary.
+ *
+ *  Exported so other vector producers (e.g. the F24 glyph→sketch_path
+ *  text layout in `sketchText.ts`) reuse the SAME cubic→quad math rather
+ *  than duplicating it. The emitted `to`/`ctrl` points are in the input
+ *  points' own coordinate space — the caller transforms them. */
+export function cubicToQuads(
   p0: Pt,
   p1: Pt,
   p2: Pt,

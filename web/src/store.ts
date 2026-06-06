@@ -62,6 +62,13 @@ import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
 import { textToSubCalls } from "./sketchText";
+import {
+  DEFAULT_FONT_ID,
+  cachedFont,
+  loadBundledFont,
+  parseFontBuffer,
+  registerUploadedFont,
+} from "./sketchTextFont";
 import { solveAndReplace } from "./solver/replaySolve";
 import type { SketchDiagnostics } from "./solver/types";
 import {
@@ -237,10 +244,18 @@ export interface StoreState {
    *  transform (rotates the selection about the sketch origin). */
   sketchRotateAngle: number;
   /** F24: the string the single-click `sketch_text` tool emits as
-   *  single-stroke geometry. */
+   *  filled glyph geometry. */
   sketchTextValue: string;
-  /** F24: cap height (mm) for the `sketch_text` tool. */
+  /** F24: cap/em height (mm) for the `sketch_text` tool. */
   sketchTextHeight: number;
+  /** F24-full: id of the font the `sketch_text` tool renders with —
+   *  a bundled-font id (see sketchTextFont.BUNDLED_FONTS) or a synthetic
+   *  `uploaded:…` id for a user-supplied .ttf/.otf. */
+  sketchTextFontId: string;
+  /** F24-full: true once the currently-selected text font has finished
+   *  loading + parsing (drives the UI's "loading font…" hint and gates
+   *  placement). */
+  sketchTextFontReady: boolean;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -527,8 +542,10 @@ export class KernelStore {
       sketchPatternSpacing: 20,
       sketchPatternAngle: 360,
       sketchRotateAngle: 90,
-      sketchTextValue: "TEXT",
+      sketchTextValue: "Text",
       sketchTextHeight: 10,
+      sketchTextFontId: DEFAULT_FONT_ID,
+      sketchTextFontReady: cachedFont(DEFAULT_FONT_ID) !== undefined,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -625,6 +642,8 @@ export class KernelStore {
       sketchRotateAngle: this.state.sketchRotateAngle,
       sketchTextValue: this.state.sketchTextValue,
       sketchTextHeight: this.state.sketchTextHeight,
+      sketchTextFontId: this.state.sketchTextFontId,
+      sketchTextFontReady: this.state.sketchTextFontReady,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -1925,6 +1944,11 @@ export class KernelStore {
     this.updateSketch(
       reduceSelect(this.state.sketchSession, typeName, initialDraft),
     );
+    // F24-full: preload the text font on Text-tool activation so the first
+    // placement click has a parsed font ready (load is async).
+    if (typeName === "sketch_text") {
+      void this.ensureTextFontLoaded();
+    }
   }
 
   /** Update the active sketch tool's FeatureDialog working copy. */
@@ -2404,19 +2428,85 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
+  /** F24-full: select the font the `sketch_text` tool renders with and
+   *  kick off its async load (no-op when already the current font). */
+  setSketchTextFontId(id: string): void {
+    if (this.state.sketchTextFontId === id) return;
+    this.patch({
+      sketchTextFontId: id,
+      sketchTextFontReady: cachedFont(id) !== undefined,
+    });
+    for (const listener of this.listeners) listener();
+    void this.ensureTextFontLoaded(id);
+  }
+
   /**
-   * F24: place the current text value as single-stroke sketch geometry with
-   * its lower-left corner at `origin`. Each glyph stroke becomes one or more
-   * ordinary `sketch_line` sub-calls (construction:false so the result can
-   * extrude), then the sketch is re-solved. No-op when no session is active
-   * or the text produces no strokes (e.g. an empty / all-space value).
+   * F24-full: ensure the currently-selected (or given) text font is
+   * fetched + parsed into the cache. Idempotent and safe to call on tool
+   * activation / font change. Flips `sketchTextFontReady` when the load
+   * settles. Uploaded fonts are already cached, so this returns fast.
+   */
+  async ensureTextFontLoaded(id = this.state.sketchTextFontId): Promise<void> {
+    if (cachedFont(id) !== undefined) {
+      if (this.state.sketchTextFontId === id && !this.state.sketchTextFontReady) {
+        this.patch({ sketchTextFontReady: true });
+        for (const listener of this.listeners) listener();
+      }
+      return;
+    }
+    try {
+      await loadBundledFont(id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: text font load failed", err);
+      return;
+    }
+    // Only flip ready if the user hasn't switched fonts meanwhile.
+    if (this.state.sketchTextFontId === id) {
+      this.patch({ sketchTextFontReady: true });
+      for (const listener of this.listeners) listener();
+    }
+  }
+
+  /**
+   * F24-full: parse an uploaded .ttf/.otf ArrayBuffer, register it under a
+   * synthetic id and make it the active text font. Returns the new id, or
+   * `null` when the buffer isn't a parseable font.
+   */
+  loadUploadedTextFont(name: string, buffer: ArrayBuffer): string | null {
+    let id: string;
+    try {
+      const font = parseFontBuffer(buffer);
+      id = registerUploadedFont(name, font);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: uploaded font parse failed", err);
+      return null;
+    }
+    this.patch({ sketchTextFontId: id, sketchTextFontReady: true });
+    for (const listener of this.listeners) listener();
+    return id;
+  }
+
+  /**
+   * F24-full: place the current text value as FILLED glyph sketch geometry
+   * with its baseline-left at `origin`, using the selected font. Each glyph
+   * becomes one `sketch_path` sub-call carrying its outer ring + holes (the
+   * kernel fills with even-odd holes), then the sketch is re-solved. No-op
+   * when no session is active, the font isn't loaded yet, or the text
+   * produces no geometry (e.g. an empty / all-space value).
    */
   placeSketchText(origin: [number, number]): void {
     if (!this.state.sketchSession.active) return;
-    const calls = textToSubCalls(this.state.sketchTextValue, {
+    const font = cachedFont(this.state.sketchTextFontId);
+    if (!font) {
+      // Font not ready — kick a load so a follow-up click works.
+      void this.ensureTextFontLoaded();
+      return;
+    }
+    const calls = textToSubCalls(font, this.state.sketchTextValue, {
       origin,
       height: this.state.sketchTextHeight,
-      construction: false,
     });
     if (calls.length === 0) return;
     this.pushSketchSubCalls(calls);

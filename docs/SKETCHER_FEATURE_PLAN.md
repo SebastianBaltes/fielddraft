@@ -351,5 +351,5 @@ Feature, Abnahme durch den Hauptagenten, Unit- + Grenzfall- + echte-WebGPU-E2E-T
 |---|---|---|---|---|---|---|
 | V1 | Offset Ketten/Konturen | nur Einzelkurve | ganze verbundene Kette (offen/geschlossen), Joints getrimmt, konvexe Ecken gerundet | ✅ | 0.5.66 | 0047ca0 |
 | V2 | SVG voller Transform-Stack | nur translate/scale/matrix, Bézier approximiert | rotate/skew/verschachtelte Transforms, exakte Bézier-Übernahme via neuem `sketch_path`-Kernel-Primitive (Line+QuadBezier, Even-Odd-Löcher) | ✅ | 0.5.67 | 3ba8fef |
-| V3 | Text gefüllt + Kleinbuchstaben | Single-Stroke A–Z/0–9 | gefüllte Glyph-Konturen mit Löchern, Klein-/Satzzeichen, Font-Auswahl | 🔴 offen | — | — |
+| V3 | Text gefüllt + Kleinbuchstaben | Single-Stroke A–Z/0–9 | echte Font-Outlines via opentype.js → `sketch_path` (gefüllt, Even-Odd-Löcher), volles Unicode/Klein-/Satzzeichen, Font-Dropdown (2 gebündelte DejaVu) + .ttf/.otf-Upload | ✅ | 0.5.68 | (dieser Commit) |
 | V4 | Echte B-Spline | Catmull-Rom→QuadBézier | kubische B-Spline (Knotenvektor + Kontrollpolygon-Grips + Tangenten) | 🔴 offen | — | — |

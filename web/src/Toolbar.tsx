@@ -6,6 +6,7 @@ import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import { buildDraftSketchState } from "./sketchSession";
 import { applicableConstraints } from "./sketchConstraints";
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
+import { BUNDLED_FONTS, UPLOADED_FONT_PREFIX } from "./sketchTextFont";
 
 /* ------------------------------------------------------------------ */
 /*  Meta helper                                                        */
@@ -490,12 +491,12 @@ export function Toolbar({ store, state }: ToolbarProps) {
               geometry
             </span>
           )}
-          {/* F24: Text — interactive editing mode, not a kernel tool. Type a
-              string + cap height, pick the tool, then click to place SINGLE-
-              STROKE (engraving-style) text as ordinary sketch_line geometry
-              with its lower-left at the click (see store.placeSketchText /
-              sketchText.ts). Filled TrueType outlines are a future
-              enhancement. */}
+          {/* F24-full: Text — interactive editing mode, not a kernel tool.
+              Type a string + em height, pick a font (bundled or uploaded),
+              pick the tool, then click to place FILLED glyph outlines. Each
+              glyph becomes one sketch_path sub-call carrying its outer ring +
+              holes (the kernel fills with even-odd holes). See
+              store.placeSketchText / sketchText.ts. */}
           <FeatureButton
             kind="sketch_text"
             active={sketchSession.selectedTool === "sketch_text"}
@@ -511,7 +512,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
               onChange={(e) => store.setSketchTextValue(e.currentTarget.value)}
             />
           </label>
-          <label className="corner-op-input" title="Text cap height (mm)">
+          <label className="corner-op-input" title="Text em height (mm)">
             H
             <input
               type="number"
@@ -524,6 +525,48 @@ export function Toolbar({ store, state }: ToolbarProps) {
               }
             />
           </label>
+          <label className="corner-op-input" title="Text font">
+            F
+            <select
+              data-testid="sketch-text-font"
+              value={state.sketchTextFontId}
+              onChange={(e) => store.setSketchTextFontId(e.currentTarget.value)}
+            >
+              {BUNDLED_FONTS.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
+                </option>
+              ))}
+              {state.sketchTextFontId.startsWith(UPLOADED_FONT_PREFIX) && (
+                <option value={state.sketchTextFontId}>
+                  {state.sketchTextFontId.slice(UPLOADED_FONT_PREFIX.length)}
+                </option>
+              )}
+            </select>
+          </label>
+          <label className="corner-op-input" title="Upload a .ttf/.otf font">
+            ⤓
+            <input
+              type="file"
+              accept=".ttf,.otf,font/ttf,font/otf"
+              data-testid="sketch-text-font-upload"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                if (!file) return;
+                void file.arrayBuffer().then((buf) => {
+                  store.loadUploadedTextFont(file.name, buf);
+                });
+                // Reset so re-selecting the same file fires onChange again.
+                e.currentTarget.value = "";
+              }}
+            />
+          </label>
+          {sketchSession.selectedTool === "sketch_text" &&
+            !state.sketchTextFontReady && (
+              <span className="hint" data-testid="sketch-text-font-loading">
+                Loading font…
+              </span>
+            )}
           {/* Split: the keep-both sibling of Trim — also an interactive
               editing mode, not a kernel tool. A single click cuts the curve
               under the cursor into two pieces meeting at the click point;
