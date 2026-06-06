@@ -289,6 +289,29 @@ describe("sketchSession reducers", () => {
     expect(state.next_constraint_id).toBe(2);
   });
 
+  it("buildDraftSketchState translates a point_on_object sub-call with a fresh constraint id", () => {
+    // A circle (centre 1, circle 2) and a free point (id 3) constrained
+    // onto the circle. The constraint must carry the right point/curve
+    // and a fresh id allocated after the geometry.
+    const state = buildDraftSketchState([
+      { type: "sketch_circle", params: { center: [0, 0], radius: 5 } },
+      { type: "sketch_point", params: { at: [3, 4] } },
+      {
+        type: "sketch_constraint_point_on_object",
+        params: { point: 3, curve: 2 },
+      },
+    ]);
+    const poc = state.constraints.find((c) => c.kind === "point_on_object");
+    expect(poc).toBeDefined();
+    if (poc && poc.kind === "point_on_object") {
+      expect(poc.point).toBe(3);
+      expect(poc.curve).toBe(2);
+      // First constraint allocated → id 1 (the counter starts at 1).
+      expect(poc.id).toBe(1);
+    }
+    expect(state.next_constraint_id).toBe(2);
+  });
+
   it("buildDraftSketchState carries the driven flag on dimensional constraints", () => {
     const state = buildDraftSketchState([
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },

@@ -488,6 +488,143 @@ describe("solveSketch: fix constraint", () => {
   });
 });
 
+describe("solveSketch: point_on_object constraint", () => {
+  /** Distance from a point to the infinite line through (a, b). */
+  function pointLineDistance(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+  ): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy);
+    return Math.abs((px - ax) * dy - (py - ay) * dx) / len;
+  }
+
+  it("pulls a point onto a line (point_on_line_pl)", async () => {
+    const sketch = emptySketch("poc-line");
+    // A horizontal line from (0,0) to (10,0), and a free point above it.
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 10, y: 0 } });
+    sketch.entities.push({ kind: "line", id: 3, start: 1, end: 2 });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 5, y: 6 } });
+    sketch.next_entity_id = 5;
+    // Pin the line so it can't move to meet the point.
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 3,
+      point: 4,
+      curve: 3,
+    });
+    sketch.next_constraint_id = 4;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const a = result.state.entities.find((e) => e.id === 1);
+    const b = result.state.entities.find((e) => e.id === 2);
+    const p = result.state.entities.find((e) => e.id === 4);
+    if (
+      a?.kind === "point" &&
+      b?.kind === "point" &&
+      p?.kind === "point"
+    ) {
+      const d = pointLineDistance(
+        p.at.x,
+        p.at.y,
+        a.at.x,
+        a.at.y,
+        b.at.x,
+        b.at.y,
+      );
+      expect(d).toBeCloseTo(0, 5);
+    } else {
+      throw new Error("entities missing from solved state");
+    }
+  });
+
+  it("pulls a point onto a circle (point_on_circle)", async () => {
+    const sketch = emptySketch("poc-circle");
+    // Circle of radius 5 centred at the origin, free point outside it.
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "circle", id: 2, center: 1, radius: 5 });
+    sketch.entities.push({ kind: "point", id: 3, at: { x: 12, y: 0 } });
+    sketch.next_entity_id = 4;
+    // Pin the centre and radius so the circle can't grow to meet the point.
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "radius", id: 2, entity: 2, value_mm: 5 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 3,
+      point: 3,
+      curve: 2,
+    });
+    sketch.next_constraint_id = 4;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const c = result.state.entities.find((e) => e.id === 1);
+    const p = result.state.entities.find((e) => e.id === 3);
+    if (c?.kind === "point" && p?.kind === "point") {
+      const dist = Math.hypot(p.at.x - c.at.x, p.at.y - c.at.y);
+      // The point lands on the rim → distance to centre ≈ radius.
+      expect(dist).toBeCloseTo(5, 4);
+    } else {
+      throw new Error("entities missing from solved state");
+    }
+  });
+
+  it("pulls a point onto an arc (point_on_arc)", async () => {
+    const sketch = emptySketch("poc-arc");
+    // Quarter arc of radius 5 centred at the origin (0°→90°), and a
+    // free point off the rim.
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } }); // centre
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 5, y: 0 } }); // start
+    sketch.entities.push({ kind: "point", id: 3, at: { x: 0, y: 5 } }); // end
+    sketch.entities.push({
+      kind: "arc",
+      id: 4,
+      center: 1,
+      start: 2,
+      end: 3,
+      radius: 5,
+    });
+    sketch.entities.push({ kind: "point", id: 5, at: { x: 6, y: 6 } });
+    sketch.next_entity_id = 6;
+    // Pin the arc geometry so only the free point moves. The arc's own
+    // radius parameter is a free DOF in PlaneGCS, so pin it explicitly —
+    // otherwise the solver could satisfy point_on_arc by GROWING the arc
+    // to meet the point instead of moving the point onto the rim.
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({ kind: "fix", id: 3, point: 3 });
+    sketch.constraints.push({ kind: "radius", id: 4, entity: 4, value_mm: 5 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 5,
+      point: 5,
+      curve: 4,
+    });
+    sketch.next_constraint_id = 6;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const c = result.state.entities.find((e) => e.id === 1);
+    const p = result.state.entities.find((e) => e.id === 5);
+    if (c?.kind === "point" && p?.kind === "point") {
+      const dist = Math.hypot(p.at.x - c.at.x, p.at.y - c.at.y);
+      // On the arc → distance to centre ≈ radius.
+      expect(dist).toBeCloseTo(5, 4);
+    } else {
+      throw new Error("entities missing from solved state");
+    }
+  });
+});
+
 describe("solveSketch: conflict diagnostics", () => {
   /**
    * Two Distance constraints between the same two points with

@@ -91,6 +91,20 @@ describe("countDegreesOfFreedom", () => {
     expect(countDegreesOfFreedom(s)).toBe(0);
   });
 
+  it("subtracts 1 for a point_on_object constraint (point slides along the curve)", () => {
+    const s = sketchWithOrigin();
+    // A circle (centre point 1 + circle 2) and a free point 3.
+    s.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    s.entities.push({ kind: "circle", id: 2, center: 1, radius: 5 });
+    s.entities.push({ kind: "point", id: 3, at: { x: 9, y: 0 } });
+    s.next_entity_id = 4;
+    // 2 (centre) + 1 (circle) + 2 (free point) = 5 DOF.
+    // point_on_object removes 1 → 4.
+    s.constraints.push({ kind: "point_on_object", id: 1, point: 3, curve: 2 });
+    s.next_constraint_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(4);
+  });
+
   it("counts the canonical rectangle with width constraint at DOF = 1", () => {
     // The rectangleSketch helper has four points (8 DOF), four
     // lines (0), four H/V constraints (-4), one coincident

@@ -241,6 +241,15 @@ pub enum Constraint {
         id: ConstraintId,
         point: EntityId,
     },
+    /// A point is constrained to lie on a curve — a line, circle, or
+    /// arc. Removes one of the point's DOFs (it keeps one freedom
+    /// sliding along the curve). Dispatched on the curve kind to the
+    /// matching PlaneGCS primitive.
+    PointOnObject {
+        id: ConstraintId,
+        point: EntityId,
+        curve: EntityId,
+    },
     /// Two equivalent entities have the same primary scalar —
     /// same length for lines, same radius for circles/arcs.
     Equal {
@@ -295,6 +304,7 @@ impl Constraint {
             | Constraint::Tangent { id, .. }
             | Constraint::Concentric { id, .. }
             | Constraint::Fix { id, .. }
+            | Constraint::PointOnObject { id, .. }
             | Constraint::Equal { id, .. }
             | Constraint::Midpoint { id, .. }
             | Constraint::Symmetric { id, .. }
@@ -315,6 +325,7 @@ impl Constraint {
             Constraint::Tangent { .. } => "tangent",
             Constraint::Concentric { .. } => "concentric",
             Constraint::Fix { .. } => "fix",
+            Constraint::PointOnObject { .. } => "point_on_object",
             Constraint::Equal { .. } => "equal",
             Constraint::Midpoint { .. } => "midpoint",
             Constraint::Symmetric { .. } => "symmetric",

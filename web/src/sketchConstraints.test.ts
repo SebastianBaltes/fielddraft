@@ -4,6 +4,7 @@ import {
   buildConstraintCall,
 } from "./sketchConstraints";
 import { buildDraftSketchState } from "./sketchSession";
+import type { SketchState } from "./solver/types";
 
 // Two lines (ids 3 and 6) plus a circle (centre 7, circle 8) for the
 // fixtures below.
@@ -65,15 +66,40 @@ describe("applicableConstraints", () => {
     ]);
   });
 
-  it("offers midpoint for a point + a line, order-independent", () => {
+  it("offers midpoint + on-curve for a point + a line, order-independent", () => {
     const state = twoLinesAndCircle();
     // line 3 + point 4 (start of line 2).
     expect(applicableConstraints(state, [3, 4]).map((o) => o.type)).toEqual([
       "sketch_constraint_midpoint",
+      "sketch_constraint_point_on_object",
     ]);
     expect(applicableConstraints(state, [4, 3]).map((o) => o.type)).toEqual([
       "sketch_constraint_midpoint",
+      "sketch_constraint_point_on_object",
     ]);
+  });
+
+  it("offers on-curve (and not midpoint) for a point + a circle/arc", () => {
+    const state = twoLinesAndCircle();
+    // point 4 + circle 8, order-independent.
+    expect(applicableConstraints(state, [4, 8]).map((o) => o.type)).toEqual([
+      "sketch_constraint_point_on_object",
+    ]);
+    expect(applicableConstraints(state, [8, 4]).map((o) => o.type)).toEqual([
+      "sketch_constraint_point_on_object",
+    ]);
+  });
+
+  it("does not offer on-curve for two points or a line + a curve", () => {
+    const state = twoLinesAndCircle();
+    // two points → coincident/distance, never on-curve.
+    expect(
+      applicableConstraints(state, [1, 4]).map((o) => o.type),
+    ).not.toContain("sketch_constraint_point_on_object");
+    // line + circle → tangent only.
+    expect(
+      applicableConstraints(state, [3, 8]).map((o) => o.type),
+    ).not.toContain("sketch_constraint_point_on_object");
   });
 
   it("offers symmetric for two points + a line axis", () => {
@@ -141,8 +167,6 @@ describe("applicableConstraints", () => {
   it("offers nothing for unsupported / empty selections", () => {
     const state = twoLinesAndCircle();
     expect(applicableConstraints(state, [])).toEqual([]);
-    // point + circle: no supported geometric constraint.
-    expect(applicableConstraints(state, [1, 8])).toEqual([]);
     // three lines: nothing.
     expect(applicableConstraints(state, [3, 6, 3])).toEqual([]);
   });
@@ -230,6 +254,87 @@ describe("buildConstraintCall", () => {
     expect(buildConstraintCall("sketch_constraint_fix", [8], state)).toBeNull();
     // two points: wrong count.
     expect(buildConstraintCall("sketch_constraint_fix", [1, 4], state)).toBeNull();
+  });
+
+  it("maps point + line to point/curve for point_on_object, order-independent", () => {
+    const state = twoLinesAndCircle();
+    // point 4 (start of line 2) onto line 3 — point first then curve first.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [4, 3], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 4, curve: 3 },
+    });
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [3, 4], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 4, curve: 3 },
+    });
+  });
+
+  it("maps point + circle to point/curve for point_on_object, order-independent", () => {
+    const state = twoLinesAndCircle();
+    // point 1 onto circle 8.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [1, 8], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 1, curve: 8 },
+    });
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [8, 1], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 1, curve: 8 },
+    });
+  });
+
+  it("maps point + arc to point/curve for point_on_object, order-independent", () => {
+    // buildDraftSketchState doesn't synthesise full arc entities, so
+    // assemble a minimal state with an arc (id 5) and a free point (id 1).
+    const state: SketchState = {
+      name: "poc-arc",
+      entities: [
+        { kind: "origin", id: 0 },
+        { kind: "point", id: 1, at: { x: 3, y: 4 } },
+        { kind: "point", id: 2, at: { x: 0, y: 0 } }, // arc centre
+        { kind: "point", id: 3, at: { x: 5, y: 0 } }, // arc start
+        { kind: "point", id: 4, at: { x: 0, y: 5 } }, // arc end
+        { kind: "arc", id: 5, center: 2, start: 3, end: 4, radius: 5 },
+      ],
+      constraints: [],
+      next_entity_id: 6,
+      next_constraint_id: 1,
+    };
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [1, 5], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 1, curve: 5 },
+    });
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [5, 1], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 1, curve: 5 },
+    });
+  });
+
+  it("returns null for point_on_object with wrong selections", () => {
+    const state = twoLinesAndCircle();
+    // two points: no curve.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [1, 4], state),
+    ).toBeNull();
+    // line + circle: no point.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [3, 8], state),
+    ).toBeNull();
+    // single entity: wrong count.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [1], state),
+    ).toBeNull();
   });
 
   it("normalises tangent so the line maps to `line` and curve to `curve`", () => {

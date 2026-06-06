@@ -108,6 +108,10 @@ function constraintDof(constraint: Constraint): number {
     case "radius":
     case "diameter":
       return 1;
+    case "point_on_object":
+      // The point keeps one freedom sliding along the curve, so only
+      // one DOF is removed.
+      return 1;
     case "concentric":
     case "midpoint":
     case "symmetric":

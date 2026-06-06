@@ -250,6 +250,44 @@ function translateConstraint(
     case "fix":
       // No primitive: realised via the entity's `fixed` flag.
       return null;
+    case "point_on_object": {
+      // Constrain a point onto a curve, dispatched by the curve's
+      // kind: a line uses `point_on_line_pl`, a circle
+      // `point_on_circle`, an arc `point_on_arc`.
+      const curve = entityIndex.get(constraint.curve);
+      if (!curve) {
+        throw new Error(
+          `solver: point_on_object references unknown curve id ${constraint.curve}`,
+        );
+      }
+      if (curve.kind === "line") {
+        return {
+          type: "point_on_line_pl",
+          id,
+          p_id: entityOid(constraint.point),
+          l_id: entityOid(constraint.curve),
+        };
+      }
+      if (curve.kind === "circle") {
+        return {
+          type: "point_on_circle",
+          id,
+          p_id: entityOid(constraint.point),
+          c_id: entityOid(constraint.curve),
+        };
+      }
+      if (curve.kind === "arc") {
+        return {
+          type: "point_on_arc",
+          id,
+          p_id: entityOid(constraint.point),
+          a_id: entityOid(constraint.curve),
+        };
+      }
+      throw new Error(
+        `solver: point_on_object curve must be a line, circle, or arc, got ${curve.kind}`,
+      );
+    }
     case "coincident":
       return {
         type: "p2p_coincident",

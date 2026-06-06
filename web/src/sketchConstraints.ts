@@ -234,6 +234,18 @@ export function applicableConstraints(
     });
   }
 
+  // A point plus a line/circle/arc constrains the point onto that
+  // curve. Additive to Midpoint for a point+line; the sole option for
+  // a point+circle/arc.
+  if (n === 2 && points === 1 && (lines === 1 || curves === 1)) {
+    out.push({
+      type: "sketch_constraint_point_on_object",
+      label: "On Curve",
+      glyph: "⊢",
+      title: "Constrain the point onto the line/circle/arc",
+    });
+  }
+
   // Two points plus a line make the points mirror across that line.
   if (n === 3 && points === 2 && lines === 1) {
     out.push({
@@ -352,6 +364,23 @@ export function buildConstraintCall(
     case "sketch_constraint_fix": {
       if (selection.length !== 1 || !isPointish(kinds[0])) return null;
       return { type, params: { point: selection[0] } };
+    }
+
+    case "sketch_constraint_point_on_object": {
+      if (selection.length !== 2) return null;
+      // Order-independent: exactly one point-like, and exactly one of
+      // {line, circle, arc} as the host curve.
+      const pointIdx = kinds.findIndex(isPointish);
+      const curveIdx = kinds.findIndex(
+        (k) => k === "line" || isCurvish(k),
+      );
+      if (pointIdx === -1 || curveIdx === -1 || pointIdx === curveIdx) {
+        return null;
+      }
+      return {
+        type,
+        params: { point: selection[pointIdx], curve: selection[curveIdx] },
+      };
     }
 
     case "sketch_constraint_radius": {
