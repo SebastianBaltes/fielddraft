@@ -139,14 +139,21 @@ fn collect_halfspaces(node: &BoundedCsg, out: &mut HashMap<u32, (HalfSpace, Tran
             ..
         } => {
             if let Some(hs) = primitive_halfspaces(primitive) {
-                // Fold the primitive `center` into the face transform as a
-                // local pre-translation: world ∘ translate(center) (DL-20).
-                let center_xf = Transform {
-                    translate: hs.center,
-                    ..Transform::IDENTITY
-                };
-                let face_xf = compose_transforms(world_transform, &center_xf);
+                // Fold the primitive `center` plus each face's `local_offset`
+                // into the face transform as a local pre-translation: world ∘
+                // translate(center + local_offset) (DL-20). The offset is zero
+                // for every face except a cone wall, which shifts to its true
+                // apex so its `HalfSpace::Cone` SDF lands on both rims (DL-76).
                 for f in hs.faces() {
+                    let translate = [
+                        hs.center[0] + f.local_offset[0],
+                        hs.center[1] + f.local_offset[1],
+                        hs.center[2] + f.local_offset[2],
+                    ];
+                    let face_xf = compose_transforms(
+                        world_transform,
+                        &Transform { translate, ..Transform::IDENTITY },
+                    );
                     let branch = BranchId::from_feature_sub(id, f.sub);
                     out.insert(branch.as_u32(), (f.half_space.clone(), face_xf));
                 }
@@ -1321,20 +1328,19 @@ fn build_cylinder_wireframe(body: &BoundedCsg) -> Option<BRep> {
     Some(brep)
 }
 
-// NOTE — the Cone (frustum) grundform is intentionally NOT handled here yet.
-// A truncated cone's analytic wall is a [`HalfSpace::Cone`] whose SDF
-// (`r·cosα − |y|·sinα`) puts the apex at the transform's LOCAL ORIGIN, but the
-// frustum's extrapolated apex sits at `y = r_top·2·half_height/(r_bottom−r_top)`
-// above centre — so the analytic cone surface stored on the wall face is
-// geometrically off-apex. The octree weaver already suffers from this: its
-// `chain_on_both_surfaces` membership test rejects BOTH rim seams (a frustum
-// comes out with 3 faces, 0 edges, NOT watertight), and STEP export places the
-// CONICAL_SURFACE apex at the wrong world point. A parametric cone would weave a
-// *correct* watertight 2-rim frustum, which — being better than the octree
-// route — would break the id_hash toggle-invariant (a selection made in one
-// route would vanish in the other). Fixing the apex convention (primitive cone
-// + revolve cone + octree validation + STEP, all consistently) is a focused
-// follow-up; until then the cone falls through to the octree route unchanged.
+// NOTE — the Cone (frustum) grundform is intentionally NOT handled in the
+// *parametric* route yet; it weaves correctly via the octree route. A truncated
+// cone's analytic wall is a [`HalfSpace::Cone`] whose SDF (`r·cosα − |y|·sinα`)
+// puts the apex at the transform's LOCAL ORIGIN. The frustum's extrapolated apex
+// sits up the axis at `y = half_height·(r_bottom+r_top)/(r_bottom−r_top)`, so
+// [`primitive_halfspaces`] carries that shift as the wall face's `local_offset`
+// and [`branch_halfspace_map`] folds it into the face transform (DL-76). With
+// the analytic cone now passing exactly through both rims, the octree weaver's
+// `chain_on_both_surfaces` accepts both rim seams (a frustum comes out 3 faces /
+// 2 edges, watertight) and STEP export places the CONICAL_SURFACE apex at the
+// correct world point. A *parametric* cone is still deferred: it would have to
+// reproduce the octree handles byte-for-byte to keep the id_hash toggle-
+// invariant, which is the only reason to add it — no correctness gap remains.
 
 /// Empty wireframe of a single closed-surface leaf with NO edges and NO vertices
 /// — a lone Sphere or Torus (SA-6). `None` unless `body` is exactly one such
@@ -1679,12 +1685,12 @@ mod tests {
         let union = union_box_sphere([1.0, 1.0, 1.0], [1.0, 0.0, 0.0], 0.8);
         assert!(weave_parametric(&union).is_none(), "union is not yet parametric");
 
-        // The Cone (frustum) is deliberately deferred: the analytic HalfSpace::Cone
-        // apex sits at the local origin, but a frustum's extrapolated apex is
-        // offset, so the octree route drops both rims (non-watertight) and a
-        // *correct* parametric cone could not be handle-identical to it. Until the
-        // apex convention is fixed, a cone falls through to the octree route. See
-        // the NOTE above `build_edgeless_wireframe`.
+        // The Cone (frustum) is deliberately not in the *parametric* route: it
+        // weaves correctly via the octree route (DL-76 corrects the analytic cone
+        // apex so both rims are watertight — see
+        // `frustum_octree_weaves_watertight_with_apex_corrected_cone_wall`). A
+        // parametric cone would only be added to keep handle-identity, which the
+        // octree route already provides. See the NOTE above `build_edgeless_wireframe`.
         let frustum = {
             let csg = CsgNode::Leaf {
                 id: FeatureId::from_u32(1),
@@ -1693,6 +1699,70 @@ mod tests {
             BoundedCsg::from_csg(&csg)
         };
         assert!(weave_parametric(&frustum).is_none(), "a cone falls back in M1 (apex convention)");
+    }
+
+    fn cone_body(r_bottom: f32, r_top: f32, half_height: f32) -> BoundedCsg {
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone { r_bottom, r_top, half_height },
+        };
+        BoundedCsg::from_csg(&csg)
+    }
+
+    // ── DL-76: a truncated cone octree-weaves into a watertight 3-face frustum ──
+    #[test]
+    fn frustum_octree_weaves_watertight_with_apex_corrected_cone_wall() {
+        // r_bottom=1.5 @ y=−0.6, r_top=0.8 @ y=+0.6 ⇒ extrapolated apex (r=0) at
+        // y = half_height·(r_bottom+r_top)/(r_bottom−r_top) = 0.6·2.3/0.7 ≈ 1.9714.
+        let body = cone_body(1.5, 0.8, 0.6);
+        let octree = Octree::build(&body, 0.1);
+        let brep = weave(&body, &octree);
+
+        // Topology: wall + 2 caps = 3 faces; 2 rim circles = 2 edges; no corners.
+        assert_eq!(brep.face_count(), 3, "frustum has wall + 2 caps");
+        assert_eq!(brep.edge_count(), 2, "frustum has 2 rim circles");
+        assert_eq!(brep.vertex_count(), 0, "rim circles are closed — no corners");
+        assert_eq!(brep.shell_count(), 1);
+        assert_eq!(brep.solid_count(), 1);
+        assert_eq!(brep.validate(), Ok(()), "frustum B-Rep must be well-formed");
+        assert!(
+            brep.shells[0].is_closed,
+            "DL-76: rim seams must be accepted → watertight frustum (was 3 faces, 0 edges)"
+        );
+
+        // Every rim edge is shared by exactly two loops — the annular wall carries
+        // one rim in its outer loop and the other as an inner (hole) loop, like a
+        // cylinder side, so both face loops must be counted.
+        let mut uses = vec![0u32; brep.edge_count()];
+        for f in &brep.faces {
+            for lp in std::iter::once(&f.outer).chain(f.inner.iter()) {
+                for &(EdgeId(idx), _) in &lp.edges {
+                    uses[idx as usize] += 1;
+                }
+            }
+        }
+        assert!(uses.iter().all(|&u| u == 2), "every rim edge used by exactly two loops");
+
+        // The wall is an analytic cone whose transform origin sits at the TRUE
+        // apex (≈1.9714 up the +Y axis), not at the frustum centre (DL-76).
+        let wall = brep
+            .faces
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.surface,
+                    SurfaceGeometry::Analytic { surface: HalfSpace::Cone { .. }, .. }
+                )
+            })
+            .expect("frustum has an analytic cone wall");
+        let SurfaceGeometry::Analytic { transform, .. } = &wall.surface else {
+            unreachable!()
+        };
+        assert!(
+            (transform.translate[1] - 1.971_428_5).abs() < 1e-3,
+            "cone wall apex at y≈1.9714, got {}",
+            transform.translate[1]
+        );
     }
 
     /// Regenerating the B-Rep from the *same* geometry must yield an identical

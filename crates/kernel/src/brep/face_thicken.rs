@@ -16,11 +16,16 @@
 //! - `Cylinder(r)`    → `Cyl(r+out, h) − Cyl(r−in, h)`         (radial normal;
 //!   the axial extent `h` is recovered from the face's rim loops)
 //! - `Torus(R, r)`    → `Torus(R, r+out) − Torus(R, r−in)`     (tube-radial normal)
+//! - `Cone(α)`        → `Frustum(r±Δ) − Frustum(r∓Δ)`          (slant normal;
+//!   a *normal* offset `t` is a *radial* shift `Δ = t/cos α` of both rim radii,
+//!   leaving the half-angle unchanged — a parallel cone. The frustum's two rim
+//!   radii + axial span are recovered from the rim loops; DL-76's apex-correct
+//!   cone weave makes those rims exist and the offset frustums weave watertight.)
 //!
-//! Closed surfaces (sphere, torus) need no boundary at all. A cylinder wall
-//! needs its axial span, read off the rim loops in surface-local `y`, plus a
-//! full-revolution check (a cut / partial cylinder would be overshot by a
-//! difference of *full* cylinders, so it is deferred).
+//! Closed surfaces (sphere, torus) need no boundary at all. A cylinder or cone
+//! wall needs its axial span, read off the rim loops in surface-local `y`, plus a
+//! full-revolution check (a cut / partial wall would be overshot by a difference
+//! of *full* solids, so it is deferred).
 //!
 //! ## Coordinate spaces
 //!
@@ -33,8 +38,8 @@
 //!
 //! ## Out of scope (first throw) — each returns a descriptive `Err`
 //!
-//! Cone (apex convention, DL-76), partial/cut cylinders, planar faces (use
-//! Extrude with `symmetric`), and tessellated/TPMS faces.
+//! Partial/cut cylinders & cones, planar faces (use Extrude with `symmetric`),
+//! and tessellated/TPMS faces.
 
 use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
@@ -67,8 +72,10 @@ pub fn thicken_face(
         return Err("face is tessellated (TPMS / non-analytic) — cannot thicken".to_string());
     };
     // Surface-local → world. The face transform places the centred HalfSpace
-    // into the body, the body placement into the world.
-    let world = crate::features::compose_placement(placement, transform);
+    // into the body, the body placement into the world. The cone arm folds its
+    // axial centre into `world` (a `Primitive::Cone` is always origin-centred),
+    // so it is mutable.
+    let mut world = crate::features::compose_placement(placement, transform);
 
     let (outer, inner) = match surface {
         HalfSpace::Plane { .. } => {
@@ -119,10 +126,36 @@ pub fn thicken_face(
                 },
             )
         }
-        HalfSpace::Cone { .. } => {
-            return Err(
-                "conical face thicken is deferred (apex convention, DL-76)".to_string()
+        HalfSpace::Cone { half_angle } => {
+            // The face transform's origin is the cone apex (DL-76); the rim loops
+            // give the axial slab and the two rim radii. A *normal* offset `t` is
+            // a *radial* shift `Δ = t / cos α` of both rims (parallel cone, same
+            // half-angle).
+            let (cy, hh, r_bottom, r_top) = cone_frustum_extent(brep, face_id, transform)?;
+            let cos_a = half_angle.cos().abs().max(1e-4);
+            let d_out = outer_off / cos_a;
+            let d_in = inner_off / cos_a;
+            // The narrower rim limits how far the wall can move inward.
+            guard_inner(r_bottom.min(r_top), d_in)?;
+            // A `Primitive::Cone` is origin-centred (no `center` field), so fold
+            // the frustum's axial centre into the placement: translate by `cy`
+            // along the surface-local axis, then map to world.
+            world = crate::features::compose_placement(
+                &world,
+                &Transform { translate: [0.0, cy, 0.0], ..Transform::IDENTITY },
             );
+            (
+                Primitive::Cone {
+                    r_bottom: r_bottom + d_out,
+                    r_top: r_top + d_out,
+                    half_height: hh,
+                },
+                Primitive::Cone {
+                    r_bottom: r_bottom - d_in,
+                    r_top: r_top - d_in,
+                    half_height: hh,
+                },
+            )
         }
         HalfSpace::Gyroid { .. } => {
             return Err("gyroid / TPMS face cannot be thickened analytically".to_string());
@@ -184,6 +217,63 @@ fn cylinder_axial_extent(
     }
     require_full_revolution(&mut thetas)?;
     Ok(((lo + hi) * 0.5, hh))
+}
+
+/// Recover a conical wall's frustum parameters — axial centre + half-height and
+/// the two rim radii (`r_bottom` at the lower `y`, `r_top` at the upper) — in the
+/// **apex-local** surface frame (the cone's transform origin is its apex, DL-76),
+/// and verify the wall is a **full** revolution and does not straddle the apex.
+/// Returns `(center_y, half_height, r_bottom, r_top)`.
+fn cone_frustum_extent(
+    brep: &BRep,
+    face_id: FaceId,
+    surf: &Transform,
+) -> Result<(f32, f32, f32, f32), String> {
+    // body-local → surface-local (apex-centred frame the HalfSpace is in).
+    let inv = crate::inverse(surf);
+    let face = brep.face(face_id);
+
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    let mut r_at_lo = 0.0_f32;
+    let mut r_at_hi = 0.0_f32;
+    let mut thetas: Vec<f32> = Vec::new();
+    let mut sample_loop = |lp: &Loop| {
+        for &(edge_id, _reversed) in &lp.edges {
+            for p in crate::brep::edge_sampling::sample_edge(&brep.edge(edge_id).geometry) {
+                let pl = place_point(&inv, [p[0] as f32, p[1] as f32, p[2] as f32]);
+                let r = (pl[0] * pl[0] + pl[2] * pl[2]).sqrt();
+                if pl[1] < lo {
+                    lo = pl[1];
+                    r_at_lo = r;
+                }
+                if pl[1] > hi {
+                    hi = pl[1];
+                    r_at_hi = r;
+                }
+                thetas.push(pl[2].atan2(pl[0]));
+            }
+        }
+    };
+    sample_loop(&face.outer);
+    for hole in &face.inner {
+        sample_loop(hole);
+    }
+
+    if !lo.is_finite() || !hi.is_finite() {
+        return Err("conical face has no boundary rim to size the wall".to_string());
+    }
+    // Both rims must sit on the same nappe — a wall that spanned the apex (apex at
+    // surface-local y = 0) would be overshot by a difference of full cones.
+    if lo < -1e-4 && hi > 1e-4 {
+        return Err("conical face spans the apex — cannot thicken as a single frustum".to_string());
+    }
+    let hh = (hi - lo) * 0.5;
+    if hh <= 1e-4 {
+        return Err("conical face is degenerate (zero axial height)".to_string());
+    }
+    require_full_revolution(&mut thetas)?;
+    Ok(((lo + hi) * 0.5, hh, r_at_lo, r_at_hi))
 }
 
 /// The rim azimuths must wrap the whole circle with no large gap; otherwise the

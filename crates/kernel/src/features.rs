@@ -6372,31 +6372,74 @@ mod tests {
     }
 
     #[test]
-    fn thicken_rejects_cone_face_as_deferred() {
+    fn thicken_cone_face_builds_offset_frustums() {
+        // DL-76: the cone wall now weaves as an apex-correct analytic Cone with
+        // two rims, so thicken reconstructs the frustum and offsets it. A 2 mm
+        // *normal* (wall) thickness is a *radial* shift Δ = 2/cos α of both rims.
+        // cone r_bottom=5 @ y=−6, r_top=2 @ y=+6, hh=6 ⇒ α = atan(3/12).
         let registry = FeatureRegistry::with_builtins();
+        let cone = FeatureCall::new(
+            "cone",
+            id(1),
+            json!({ "r_bottom": 5.0, "r_top": 2.0, "half_height": 6.0 }),
+        );
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
         registry
+            .regenerate(&mut ctx, std::slice::from_ref(&cone), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = analytic_face_hash(&brep, |s| {
+            matches!(s, fielddraft_protocol::HalfSpace::Cone { .. })
+        })
+        .expect("an apex-correct conical wall face (DL-76)");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
             .regenerate(
-                &mut ctx,
-                std::slice::from_ref(&FeatureCall::new(
-                    "cone",
-                    id(1),
-                    json!({ "r_bottom": 5.0, "r_top": 2.0, "half_height": 6.0 }),
-                )),
+                &mut ctx2,
+                &[
+                    cone.clone(),
+                    FeatureCall::new(
+                        "thicken",
+                        id(2),
+                        json!({
+                            "faces": format!("qFace({hash})"),
+                            "thickness": { "value": 2.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
                 None,
             )
             .unwrap();
-        let brep = weave_first(&mut ctx);
-        // Whatever the cone wall lowers to (analytic Cone or tessellated), it is
-        // not thickenable in the first throw.
-        let wall = curved_face_hash(&brep).expect("a curved cone face");
-        let err = ctx
-            .resolve_thicken_faces(&[format!("qFace({wall})")], 2.0, 0.0)
-            .unwrap_err();
+        let th = ctx2.features.iter().find(|f| f.id == id(2)).expect("thicken");
+        let (outer, inner) = thicken_offset_pair(&th.node);
+        let d = 2.0 / (0.25_f32.atan()).cos(); // radial shift for a 2 mm normal wall
+        match (outer, inner) {
+            (
+                Primitive::Cone { r_bottom: rbo, r_top: rto, half_height: hho },
+                Primitive::Cone { r_bottom: rbi, r_top: rti, half_height: hhi },
+            ) => {
+                // Outer frustum: both rims grown by the radial shift; same taper.
+                assert!((rbo - (5.0 + d)).abs() < 0.15, "outer r_bottom {rbo}");
+                assert!((rto - (2.0 + d)).abs() < 0.15, "outer r_top {rto}");
+                // Inner frustum: thickness_back = 0 → the original rims.
+                assert!((rbi - 5.0).abs() < 0.15, "inner r_bottom {rbi}");
+                assert!((rti - 2.0).abs() < 0.15, "inner r_top {rti}");
+                // Axial span recovered from the rims.
+                assert!((hho - 6.0).abs() < 0.1 && (hhi - 6.0).abs() < 0.1, "half {hho}/{hhi}");
+            }
+            other => panic!("expected two frustums, got {other:?}"),
+        }
+        // The axial centre folds into the feature placement: apex (y≈14) plus the
+        // frustum's apex-local centre (y≈−14) lands the origin-centred frustums
+        // back at the body origin (y≈0).
         assert!(
-            err.contains("cone") || err.contains("DL-76") || err.contains("tessellated"),
-            "got: {err}"
+            th.transform.translate[1].abs() < 0.4,
+            "frustum re-centred at body origin, got y={}",
+            th.transform.translate[1]
         );
     }
 

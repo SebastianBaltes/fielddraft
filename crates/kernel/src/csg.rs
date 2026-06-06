@@ -1911,10 +1911,21 @@ fn combine_max(
 /// [`HalfSpace`] surface it lies on. The half-space is expressed in the
 /// primitive's *centred* local frame (i.e. after subtracting the primitive
 /// `center`, the same `lp` the SDF tie-break is evaluated at).
+///
+/// `local_offset` is an extra per-face pre-translation (in the centred local
+/// frame) that moves the half-space's analytic *origin* to where its SDF
+/// expects it. It is zero for every face whose surface is centred on the
+/// primitive origin (all planes, cylinder, sphere, torus). The one exception
+/// is a [`HalfSpace::Cone`] wall: its SDF (`r·cosα − |y|·sinα`) puts the apex
+/// at the transform origin, but the frustum's true apex sits up the axis at
+/// `y_apex`, so the wall carries `[0, y_apex, 0]` (DL-76). The weaver folds
+/// this into the face transform; the hot SDF tie-break (which evaluates the
+/// truncated-cone formula, not the half-space) ignores it.
 #[derive(Debug, Clone)]
 pub(crate) struct HalfSpaceFace {
     pub sub: u32,
     pub half_space: HalfSpace,
+    pub local_offset: [f32; 3],
 }
 
 /// Fixed-capacity (no-heap) result of [`primitive_halfspaces`]: the primitive
@@ -1953,18 +1964,21 @@ impl PrimitiveHalfSpaces {
 /// weaver (caps as planes, wall as [`HalfSpace::Cone`]) but its hot-path wall
 /// distance uses a *truncated*-cone formula (`r - r_at_y`) that differs from the
 /// infinite-apex [`HalfSpace::Cone`] SDF; the cube/analytic-plane weaving path
-/// is unaffected.
+/// is unaffected. The cone wall's [`HalfSpaceFace::local_offset`] carries the
+/// apex shift the weaver needs (DL-76).
 pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpaces> {
     let plane = |normal: [f32; 3], offset: f32| HalfSpace::Plane { normal, offset };
     let mk = |center: [f32; 3], list: &[(u32, HalfSpace)]| {
         let mut faces = std::array::from_fn(|_| HalfSpaceFace {
             sub: 0,
             half_space: HalfSpace::Sphere { radius: 0.0 },
+            local_offset: [0.0, 0.0, 0.0],
         });
         for (slot, (sub, half_space)) in faces.iter_mut().zip(list.iter()) {
             *slot = HalfSpaceFace {
                 sub: *sub,
                 half_space: half_space.clone(),
+                local_offset: [0.0, 0.0, 0.0],
             };
         }
         PrimitiveHalfSpaces { center, faces, len: list.len() }
@@ -2011,14 +2025,31 @@ pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpac
         Primitive::Cone { r_bottom, r_top, half_height } => {
             // Wall half-angle of the truncated cone (apex direction along Y).
             let half_angle = ((r_bottom - r_top) / (2.0 * *half_height)).atan();
-            Some(mk(
+            let mut hs = mk(
                 [0.0, 0.0, 0.0],
                 &[
                     (0, HalfSpace::Cone { half_angle }),
                     (1, plane([0.0, 1.0, 0.0], *half_height)),
                     (2, plane([0.0, -1.0, 0.0], *half_height)),
                 ],
-            ))
+            );
+            // The frustum's radius is `r_bottom` at `y = −half_height` and
+            // `r_top` at `y = +half_height`; its extrapolated apex (`r = 0`)
+            // sits at `y_apex = half_height·(r_bottom + r_top)/(r_bottom −
+            // r_top)`. `HalfSpace::Cone`'s SDF assumes the apex at the
+            // transform origin, so the wall face carries that shift as its
+            // local offset (DL-76) — placing the analytic cone exactly through
+            // both rims so the weave classifies them as real seam edges. (A
+            // degenerate equal-radius "cone" is really a cylinder and never
+            // reaches here with `r_bottom ≠ r_top`; guard against ∞ anyway.)
+            let denom = r_bottom - r_top;
+            let apex_y = if denom.abs() > 1e-6 {
+                half_height * (r_bottom + r_top) / denom
+            } else {
+                0.0
+            };
+            hs.faces[0].local_offset = [0.0, apex_y, 0.0];
+            Some(hs)
         }
         _ => None,
     }
