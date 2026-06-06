@@ -35,8 +35,18 @@ export type GripRole =
   | "rect-tl"
   | "polygon-vertex"
   | "spline-point"
+  // sketch_path on-/off-curve vertex. The exact field is carried by
+  // `pathTarget` (contour start, a segment endpoint, or a quad
+  // control handle).
+  | "path-vertex"
   | "arc-center"
   | "arc-rim";
+
+/** Which coordinate of a sketch_path a `path-vertex` grip edits. */
+export type PathGripTarget =
+  | { contourIndex: number; kind: "start" }
+  | { contourIndex: number; kind: "to"; segIndex: number }
+  | { contourIndex: number; kind: "ctrl"; segIndex: number };
 
 export interface Grip {
   /** Index into `subCalls` of the geometry call this grip edits. */
@@ -47,6 +57,8 @@ export interface Grip {
   /** For `polygon-vertex`: which vertex (index into the flat
    *  `[x0,y0,x1,y1,…]` array, divided by two) this grip edits. */
   vertexIndex?: number;
+  /** For `path-vertex`: which contour coordinate this grip edits. */
+  pathTarget?: PathGripTarget;
 }
 
 function asXy(value: unknown): [number, number] | null {
@@ -85,7 +97,11 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
         const startId = id++;
         const endId = id++;
         const lineId = id++;
-        const startGrip: Grip = { subCallIndex: i, role: "line-start", pos: start };
+        const startGrip: Grip = {
+          subCallIndex: i,
+          role: "line-start",
+          pos: start,
+        };
         const endGrip: Grip = { subCallIndex: i, role: "line-end", pos: end };
         byEntity.set(startId, [startGrip]);
         byEntity.set(endId, [endGrip]);
@@ -126,10 +142,26 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
         const minY = Math.min(a[1], b[1]);
         const maxX = Math.max(a[0], b[0]);
         const maxY = Math.max(a[1], b[1]);
-        const bl: Grip = { subCallIndex: i, role: "rect-bl", pos: [minX, minY] };
-        const br: Grip = { subCallIndex: i, role: "rect-br", pos: [maxX, minY] };
-        const tr: Grip = { subCallIndex: i, role: "rect-tr", pos: [maxX, maxY] };
-        const tl: Grip = { subCallIndex: i, role: "rect-tl", pos: [minX, maxY] };
+        const bl: Grip = {
+          subCallIndex: i,
+          role: "rect-bl",
+          pos: [minX, minY],
+        };
+        const br: Grip = {
+          subCallIndex: i,
+          role: "rect-br",
+          pos: [maxX, minY],
+        };
+        const tr: Grip = {
+          subCallIndex: i,
+          role: "rect-tr",
+          pos: [maxX, maxY],
+        };
+        const tl: Grip = {
+          subCallIndex: i,
+          role: "rect-tl",
+          pos: [minX, maxY],
+        };
         const blId = id++;
         const brId = id++;
         const trId = id++;
@@ -161,7 +193,12 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
           const vid = id++;
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           byEntity.set(vid, [
-            { subCallIndex: i, role: "polygon-vertex", pos: [x, y], vertexIndex: v },
+            {
+              subCallIndex: i,
+              role: "polygon-vertex",
+              pos: [x, y],
+              vertexIndex: v,
+            },
           ]);
         }
         break;
@@ -179,9 +216,69 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
           const vid = id++;
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           byEntity.set(vid, [
-            { subCallIndex: i, role: "spline-point", pos: [x, y], vertexIndex: v },
+            {
+              subCallIndex: i,
+              role: "spline-point",
+              pos: [x, y],
+              vertexIndex: v,
+            },
           ]);
         }
+        break;
+      }
+      case "sketch_path": {
+        // One point entity per on-/off-curve vertex (mirrors the kernel
+        // `SketchPathTool::apply`). CANONICAL order per contour: start,
+        // then per segment (Quad → ctrl, to; Line → to). Each vertex
+        // gets a draggable grip writing back into its contour field.
+        const contours = call.params.contours;
+        if (!Array.isArray(contours)) break;
+        contours.forEach((c, contourIndex) => {
+          const cc = c as { start?: unknown; segments?: unknown };
+          const start = asXy(cc?.start);
+          const startId = id++;
+          if (start) {
+            byEntity.set(startId, [
+              {
+                subCallIndex: i,
+                role: "path-vertex",
+                pos: start,
+                pathTarget: { contourIndex, kind: "start" },
+              },
+            ]);
+          }
+          const segments = cc?.segments;
+          if (!Array.isArray(segments)) return;
+          segments.forEach((seg, segIndex) => {
+            const s = seg as { kind?: unknown; ctrl?: unknown; to?: unknown };
+            if (s?.kind === "quad") {
+              const ctrl = asXy(s.ctrl);
+              const ctrlId = id++;
+              if (ctrl) {
+                byEntity.set(ctrlId, [
+                  {
+                    subCallIndex: i,
+                    role: "path-vertex",
+                    pos: ctrl,
+                    pathTarget: { contourIndex, kind: "ctrl", segIndex },
+                  },
+                ]);
+              }
+            }
+            const to = asXy(s?.to);
+            const toId = id++;
+            if (to) {
+              byEntity.set(toId, [
+                {
+                  subCallIndex: i,
+                  role: "path-vertex",
+                  pos: to,
+                  pathTarget: { contourIndex, kind: "to", segIndex },
+                },
+              ]);
+            }
+          });
+        });
         break;
       }
       case "sketch_arc": {
@@ -200,12 +297,19 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
           pos: center,
         };
         const grips = [centerGrip];
-        if (Number.isFinite(radius) && Number.isFinite(start) && Number.isFinite(sweep)) {
+        if (
+          Number.isFinite(radius) &&
+          Number.isFinite(start) &&
+          Number.isFinite(sweep)
+        ) {
           const mid = start + sweep / 2;
           grips.push({
             subCallIndex: i,
             role: "arc-rim",
-            pos: [center[0] + radius * Math.cos(mid), center[1] + radius * Math.sin(mid)],
+            pos: [
+              center[0] + radius * Math.cos(mid),
+              center[1] + radius * Math.sin(mid),
+            ],
           });
         }
         byEntity.set(centerId, grips);
@@ -263,7 +367,10 @@ export function applyGripDrag(
   if (!call) return next;
 
   const replace = (params: Record<string, unknown>) => {
-    next[grip.subCallIndex] = { ...call, params: { ...call.params, ...params } };
+    next[grip.subCallIndex] = {
+      ...call,
+      params: { ...call.params, ...params },
+    };
   };
 
   switch (grip.role) {
@@ -327,6 +434,30 @@ export function applyGripDrag(
       next2[grip.vertexIndex * 2] = to[0];
       next2[grip.vertexIndex * 2 + 1] = to[1];
       replace({ points: next2 });
+      break;
+    }
+    case "path-vertex": {
+      const target = grip.pathTarget;
+      const contours = call.params.contours;
+      if (!target || !Array.isArray(contours)) break;
+      const newContours = contours.map((c, ci) => {
+        if (ci !== target.contourIndex) return c;
+        const cc = c as { start?: unknown; segments?: unknown };
+        if (target.kind === "start") {
+          return { ...(cc as object), start: [to[0], to[1]] };
+        }
+        const segments = Array.isArray(cc?.segments) ? cc.segments : [];
+        const newSegments = segments.map((seg, si) => {
+          if (si !== target.segIndex) return seg;
+          const s = seg as Record<string, unknown>;
+          if (target.kind === "ctrl") {
+            return { ...s, ctrl: [to[0], to[1]] };
+          }
+          return { ...s, to: [to[0], to[1]] };
+        });
+        return { ...(cc as object), segments: newSegments };
+      });
+      replace({ contours: newContours });
       break;
     }
     case "arc-center":

@@ -2598,6 +2598,15 @@ function drawOverlay(
           }
           let prev: [number, number] = [Number(start[0]), Number(start[1])];
           const first = prev;
+          // Collect on-curve anchors (start + each segment `to`) and
+          // quad control handles so they render AFTER the stroke as
+          // discoverable, grip-draggable vertices.
+          const anchors: [number, number][] = [first];
+          const ctrls: {
+            cp: [number, number];
+            a: [number, number];
+            b: [number, number];
+          }[] = [];
           for (const s of segs) {
             const seg = s as { kind?: unknown; to?: unknown; ctrl?: unknown };
             const to = seg.to;
@@ -2608,6 +2617,7 @@ function drawOverlay(
                 Number(seg.ctrl[0]),
                 Number(seg.ctrl[1]),
               ];
+              ctrls.push({ cp, a: prev, b: end });
               const STEPS = 16;
               let a = prev;
               for (let k = 1; k <= STEPS; k++) {
@@ -2623,12 +2633,27 @@ function drawOverlay(
             } else {
               drawLine(ctx, prev, end, cam, color, STROKE_PX);
             }
+            anchors.push(end);
             prev = end;
           }
           if (cc.closed === true) {
             drawLine(ctx, prev, first, cam, color, STROKE_PX);
           }
-          drawPoint(ctx, first, cam, color);
+          // Off-curve quad control handles: thin dashed connectors to
+          // both anchors + a hollow marker, so they read as off-curve
+          // handles (analogous to the spline control polygon).
+          for (const { cp, a, b } of ctrls) {
+            ctx.save();
+            ctx.setLineDash([4, 3]);
+            drawLine(ctx, a, cp, cam, COLOR_GUIDE, 1);
+            drawLine(ctx, cp, b, cam, COLOR_GUIDE, 1);
+            ctx.restore();
+            drawControlHandle(ctx, cp, cam, color);
+          }
+          // On-curve vertices: filled dots at start + each segment end.
+          for (const p of anchors) {
+            drawPoint(ctx, p, cam, color);
+          }
         }
       }
     } else if (call.type === "sketch_arc") {
@@ -3315,6 +3340,24 @@ function drawPoint(
   ctx.beginPath();
   ctx.arc(px, py, POINT_PX, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+}
+
+/** A hollow, smaller marker for an off-curve handle (e.g. a quad
+ *  control point) — distinct from filled on-curve vertex dots. */
+function drawControlHandle(
+  ctx: CanvasRenderingContext2D,
+  at: [number, number],
+  cam: Readonly<SketchCameraState>,
+  color: string,
+): void {
+  const [px, py] = sketchToScreen(at[0], at[1], cam);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(px, py, POINT_PX - 1, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 

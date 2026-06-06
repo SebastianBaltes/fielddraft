@@ -495,21 +495,57 @@ export function buildDraftSketchState(
         }
       }
     } else if (call.type === "sketch_path") {
-      // Mirrors the kernel `SketchPathTool::apply`, which registers one
-      // point entity per CONTOUR START (the analytic line+quad outline
-      // itself is a Path primitive built kernel-side, not a SketchState
-      // entity). Push exactly one point per contour, in order, or the
-      // entity-id allocation drifts.
+      // Mirrors the kernel `SketchPathTool::apply` BYTE-FOR-BYTE. The
+      // analytic line+quad outline is a Path primitive built kernel-side
+      // (not from these entities), but each on-/off-curve vertex IS a
+      // point entity so it is hit-testable & grip-draggable.
+      //
+      // CANONICAL allocation ORDER (must match the kernel and
+      // rebuildSubCallsFromSolved exactly, or later sub-calls' entity-id
+      // refs corrupt). For each contour, in contour order:
+      //   1. the contour `start` point
+      //   2. then for each segment in order:
+      //        - Quad → `ctrl`, THEN `to`
+      //        - Line → `to`
+      // The implicit closing edge of a closed contour adds NO entity.
       const contours = call.params.contours;
       if (Array.isArray(contours)) {
         for (const c of contours) {
-          const start = (c as { start?: unknown })?.start;
+          const cc = c as {
+            start?: unknown;
+            segments?: unknown;
+          };
+          const start = cc?.start;
           if (Array.isArray(start) && start.length === 2) {
             state.entities.push({
               kind: "point",
               id: state.next_entity_id++,
               at: { x: Number(start[0]), y: Number(start[1]) },
             });
+          }
+          const segments = cc?.segments;
+          if (Array.isArray(segments)) {
+            for (const seg of segments) {
+              const s = seg as {
+                kind?: unknown;
+                ctrl?: unknown;
+                to?: unknown;
+              };
+              if (s?.kind === "quad" && Array.isArray(s.ctrl)) {
+                state.entities.push({
+                  kind: "point",
+                  id: state.next_entity_id++,
+                  at: { x: Number(s.ctrl[0]), y: Number(s.ctrl[1]) },
+                });
+              }
+              if (Array.isArray(s?.to)) {
+                state.entities.push({
+                  kind: "point",
+                  id: state.next_entity_id++,
+                  at: { x: Number(s.to[0]), y: Number(s.to[1]) },
+                });
+              }
+            }
           }
         }
       }

@@ -137,36 +137,16 @@ pub(crate) fn basis_to_quat(c0: [f32; 3], c1: [f32; 3], c2: [f32; 3]) -> [f32; 4
     let trace = m00 + m11 + m22;
     if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
-        [
-            (m21 - m12) / s,
-            (m02 - m20) / s,
-            (m10 - m01) / s,
-            0.25 * s,
-        ]
+        [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]
     } else if m00 > m11 && m00 > m22 {
         let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
-        [
-            0.25 * s,
-            (m01 + m10) / s,
-            (m02 + m20) / s,
-            (m21 - m12) / s,
-        ]
+        [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]
     } else if m11 > m22 {
         let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
-        [
-            (m01 + m10) / s,
-            0.25 * s,
-            (m12 + m21) / s,
-            (m02 - m20) / s,
-        ]
+        [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]
     } else {
         let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
-        [
-            (m02 + m20) / s,
-            (m12 + m21) / s,
-            0.25 * s,
-            (m10 - m01) / s,
-        ]
+        [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]
     }
 }
 
@@ -232,13 +212,20 @@ pub fn face_plane_frame(
 
     // Centroid (body-local) → world via the placement.
     let fp = Fingerprint::of_face(brep, id);
-    let c_local = [fp.centroid[0] as f32, fp.centroid[1] as f32, fp.centroid[2] as f32];
+    let c_local = [
+        fp.centroid[0] as f32,
+        fp.centroid[1] as f32,
+        fp.centroid[2] as f32,
+    ];
     let origin = {
-        let p = crate::quat_rotate(placement.rotation, [
-            c_local[0] * placement.scale[0],
-            c_local[1] * placement.scale[1],
-            c_local[2] * placement.scale[2],
-        ]);
+        let p = crate::quat_rotate(
+            placement.rotation,
+            [
+                c_local[0] * placement.scale[0],
+                c_local[1] * placement.scale[1],
+                c_local[2] * placement.scale[2],
+            ],
+        );
         [
             p[0] + placement.translate[0],
             p[1] + placement.translate[1],
@@ -1012,8 +999,10 @@ pub struct PathContourDef {
 ///   because a profile must be closed; open contours exist for
 ///   non-region use (reference curves, future B-spline previews).
 ///
-/// Like the polygon/spline tools it registers one point entity per
-/// contour start so the TS entity-id mirror stays aligned.
+/// Like the polygon/spline tools it registers point entities so the
+/// TS entity-id mirror stays aligned — one per on-/off-curve vertex
+/// (contour start, then per segment ctrl?/to) so every vertex is
+/// hit-testable and grip-draggable.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_path")]
 pub struct SketchPathDef {
@@ -1047,11 +1036,37 @@ impl SketchToolKind for SketchPathTool {
                 message: "need at least one contour".to_string(),
             });
         }
-        // Register each contour's start point (mirrors SketchPolygonTool /
-        // SketchSplineTool), so the TS entity-id mirror aligns. The path
-        // outline itself is a Path primitive built at lower time.
+        // Register a point entity per on-/off-curve vertex so the TS
+        // entity-id mirror aligns AND the vertices become hit-testable /
+        // grip-draggable (like SketchSplineTool's control points). The
+        // path GEOMETRY (extrude/region) is still lowered from the raw
+        // sub-call params via `build_sketch2d_from_sub_calls`, NOT from
+        // these entities — so adding vertices does NOT change the profile.
+        //
+        // CANONICAL allocation ORDER (the web mirrors in
+        // web/src/sketchSession.ts `buildDraftSketchState` and
+        // web/src/solver/replaySolve.ts `rebuildSubCallsFromSolved` MUST
+        // match this byte-for-byte, or later sub-calls' entity-id refs
+        // corrupt). For each contour, in contour order:
+        //   1. the contour `start` point
+        //   2. then for each segment in order:
+        //        - Quad → allocate `ctrl`, THEN `to`
+        //        - Line → allocate `to`
+        // The implicit closing edge of a closed contour adds NO entity
+        // (it returns to the existing `start`).
         for c in &d.contours {
             state.add_point(Point2::new(c.start[0] as f64, c.start[1] as f64));
+            for seg in &c.segments {
+                match seg {
+                    PathSegmentDef::Quad { ctrl, to } => {
+                        state.add_point(Point2::new(ctrl[0] as f64, ctrl[1] as f64));
+                        state.add_point(Point2::new(to[0] as f64, to[1] as f64));
+                    }
+                    PathSegmentDef::Line { to } => {
+                        state.add_point(Point2::new(to[0] as f64, to[1] as f64));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1070,7 +1085,10 @@ fn path_contour_segments(contour: &PathContourDef) -> Option<Vec<SketchSegment>>
     for seg in &contour.segments {
         match seg {
             PathSegmentDef::Line { to } => {
-                out.push(SketchSegment::Line { start: prev, end: *to });
+                out.push(SketchSegment::Line {
+                    start: prev,
+                    end: *to,
+                });
                 prev = *to;
             }
             PathSegmentDef::Quad { ctrl, to } => {
@@ -1304,27 +1322,21 @@ pub fn catmull_rom_quad_beziers(
         [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
     };
     // Catmull-Rom tangent (derivative) at parameter t on the span.
-    let cr_tan =
-        |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
-            let t2 = t * t;
-            let f = |a: f32, b: f32, c: f32, d: f32| {
-                0.5 * ((-a + c)
-                    + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t
-                    + 3.0 * (-a + 3.0 * b - 3.0 * c + d) * t2)
-            };
-            [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
+    let cr_tan = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
+        let t2 = t * t;
+        let f = |a: f32, b: f32, c: f32, d: f32| {
+            0.5 * ((-a + c)
+                + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t
+                + 3.0 * (-a + 3.0 * b - 3.0 * c + d) * t2)
         };
+        [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
+    };
 
     let span_count = if closed { n } else { n - 1 };
     let mut segs = Vec::with_capacity(span_count * steps as usize);
     for i in 0..span_count {
         let (i0, i1, i2, i3) = if closed {
-            (
-                (i + n - 1) % n,
-                i % n,
-                (i + 1) % n,
-                (i + 2) % n,
-            )
+            ((i + n - 1) % n, i % n, (i + 1) % n, (i + 2) % n)
         } else {
             (
                 if i == 0 { 0 } else { i - 1 },
@@ -1692,7 +1704,9 @@ fn de_boor(poly: &[[f64; 2]], knots: &[f64], degree: usize, u: f64) -> [f64; 2] 
         k += 1;
     }
     // Local copy of the degree+1 affecting control points.
-    let mut d: Vec<[f64; 2]> = (0..=degree).map(|j| poly[(k - degree + j).min(n - 1)]).collect();
+    let mut d: Vec<[f64; 2]> = (0..=degree)
+        .map(|j| poly[(k - degree + j).min(n - 1)])
+        .collect();
     for r in 1..=degree {
         for j in (r..=degree).rev() {
             let i = k - degree + j;
@@ -1764,12 +1778,8 @@ pub fn regular_polygon_vertices(
     };
     let mut verts = Vec::with_capacity(n as usize);
     for k in 0..n {
-        let angle =
-            std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * (k as f32) / nf;
-        verts.push([
-            center[0] + eff * angle.cos(),
-            center[1] + eff * angle.sin(),
-        ]);
+        let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * (k as f32) / nf;
+        verts.push([center[0] + eff * angle.cos(), center[1] + eff * angle.sin()]);
     }
     Some(verts)
 }
@@ -1792,12 +1802,13 @@ impl SketchToolKind for SketchRegularPolygonTool {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = SketchRegularPolygonDef::parse(def)?;
-        let verts = regular_polygon_vertices(d.center, d.radius, d.sides, d.inscribed)
-            .ok_or(FeatureError::InvalidParameter {
+        let verts = regular_polygon_vertices(d.center, d.radius, d.sides, d.inscribed).ok_or(
+            FeatureError::InvalidParameter {
                 feature: SketchRegularPolygonDef::TYPE_NAME,
                 name: "radius",
                 message: "need radius ≥ 1e-6 and sides ≥ 3".to_string(),
-            })?;
+            },
+        )?;
         for v in verts {
             state.add_point(Point2::new(v[0] as f64, v[1] as f64));
         }
@@ -1823,9 +1834,18 @@ macro_rules! constraint_tool {
     ($def:ident, $tool:ident, |$st:ident, $d:ident| $body:expr) => {
         pub struct $tool;
         impl SketchToolKind for $tool {
-            fn type_name(&self) -> &'static str { $def::TYPE_NAME }
-            fn schema_json(&self) -> Value { $def::schema_json() }
-            fn apply(&self, $st: &mut SketchState, _id: &FeatureId, def: &Value) -> Result<(), FeatureError> {
+            fn type_name(&self) -> &'static str {
+                $def::TYPE_NAME
+            }
+            fn schema_json(&self) -> Value {
+                $def::schema_json()
+            }
+            fn apply(
+                &self,
+                $st: &mut SketchState,
+                _id: &FeatureId,
+                def: &Value,
+            ) -> Result<(), FeatureError> {
                 let $d = $def::parse(def)?;
                 $body;
                 Ok(())
@@ -1836,103 +1856,263 @@ macro_rules! constraint_tool {
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_horizontal")]
-pub struct SketchHorizontalConstraintDef { pub line: u32 }
-constraint_tool!(SketchHorizontalConstraintDef, SketchHorizontalConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Horizontal { id: cid, line: EntityId(d.line) }));
+pub struct SketchHorizontalConstraintDef {
+    pub line: u32,
+}
+constraint_tool!(
+    SketchHorizontalConstraintDef,
+    SketchHorizontalConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Horizontal {
+        id: cid,
+        line: EntityId(d.line)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_vertical")]
-pub struct SketchVerticalConstraintDef { pub line: u32 }
-constraint_tool!(SketchVerticalConstraintDef, SketchVerticalConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Vertical { id: cid, line: EntityId(d.line) }));
+pub struct SketchVerticalConstraintDef {
+    pub line: u32,
+}
+constraint_tool!(
+    SketchVerticalConstraintDef,
+    SketchVerticalConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Vertical {
+        id: cid,
+        line: EntityId(d.line)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_coincident")]
-pub struct SketchCoincidentConstraintDef { pub a: u32, pub b: u32 }
-constraint_tool!(SketchCoincidentConstraintDef, SketchCoincidentConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Coincident { id: cid, a: EntityId(d.a), b: EntityId(d.b) }));
+pub struct SketchCoincidentConstraintDef {
+    pub a: u32,
+    pub b: u32,
+}
+constraint_tool!(
+    SketchCoincidentConstraintDef,
+    SketchCoincidentConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Coincident {
+        id: cid,
+        a: EntityId(d.a),
+        b: EntityId(d.b)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_distance")]
-pub struct SketchDistanceConstraintDef { pub entity_a: u32, pub entity_b: u32, pub value_mm: f32 }
-constraint_tool!(SketchDistanceConstraintDef, SketchDistanceConstraintTool,
+pub struct SketchDistanceConstraintDef {
+    pub entity_a: u32,
+    pub entity_b: u32,
+    pub value_mm: f32,
+}
+constraint_tool!(
+    SketchDistanceConstraintDef,
+    SketchDistanceConstraintTool,
     |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Distance {
-        id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), value_mm: d.value_mm as f64, driven: false,
-    }));
+        id: cid,
+        a: EntityId(d.entity_a),
+        b: EntityId(d.entity_b),
+        value_mm: d.value_mm as f64,
+        driven: false,
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_angle")]
-pub struct SketchAngleConstraintDef { pub line_a: u32, pub line_b: u32, pub value_deg: f32 }
-constraint_tool!(SketchAngleConstraintDef, SketchAngleConstraintTool,
+pub struct SketchAngleConstraintDef {
+    pub line_a: u32,
+    pub line_b: u32,
+    pub value_deg: f32,
+}
+constraint_tool!(
+    SketchAngleConstraintDef,
+    SketchAngleConstraintTool,
     |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Angle {
-        id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b), value_deg: d.value_deg as f64, driven: false,
-    }));
+        id: cid,
+        a: EntityId(d.line_a),
+        b: EntityId(d.line_b),
+        value_deg: d.value_deg as f64,
+        driven: false,
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_equal")]
-pub struct SketchEqualConstraintDef { pub entity_a: u32, pub entity_b: u32 }
-constraint_tool!(SketchEqualConstraintDef, SketchEqualConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Equal { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b) }));
+pub struct SketchEqualConstraintDef {
+    pub entity_a: u32,
+    pub entity_b: u32,
+}
+constraint_tool!(
+    SketchEqualConstraintDef,
+    SketchEqualConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Equal {
+        id: cid,
+        a: EntityId(d.entity_a),
+        b: EntityId(d.entity_b)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_concentric")]
-pub struct SketchConcentricConstraintDef { pub a: u32, pub b: u32 }
-constraint_tool!(SketchConcentricConstraintDef, SketchConcentricConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Concentric { id: cid, a: EntityId(d.a), b: EntityId(d.b) }));
+pub struct SketchConcentricConstraintDef {
+    pub a: u32,
+    pub b: u32,
+}
+constraint_tool!(
+    SketchConcentricConstraintDef,
+    SketchConcentricConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Concentric {
+        id: cid,
+        a: EntityId(d.a),
+        b: EntityId(d.b)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_fix")]
-pub struct SketchFixConstraintDef { pub point: u32 }
-constraint_tool!(SketchFixConstraintDef, SketchFixConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Fix { id: cid, point: EntityId(d.point) }));
+pub struct SketchFixConstraintDef {
+    pub point: u32,
+}
+constraint_tool!(
+    SketchFixConstraintDef,
+    SketchFixConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Fix {
+        id: cid,
+        point: EntityId(d.point)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_point_on_object")]
-pub struct SketchPointOnObjectConstraintDef { pub point: u32, pub curve: u32 }
-constraint_tool!(SketchPointOnObjectConstraintDef, SketchPointOnObjectConstraintTool,
-    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::PointOnObject { id: cid, point: EntityId(d.point), curve: EntityId(d.curve) }));
+pub struct SketchPointOnObjectConstraintDef {
+    pub point: u32,
+    pub curve: u32,
+}
+constraint_tool!(
+    SketchPointOnObjectConstraintDef,
+    SketchPointOnObjectConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::PointOnObject {
+        id: cid,
+        point: EntityId(d.point),
+        curve: EntityId(d.curve)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_parallel")]
-pub struct SketchParallelConstraintDef { pub line_a: u32, pub line_b: u32 }
-constraint_tool!(SketchParallelConstraintDef, SketchParallelConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Parallel { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) }));
+pub struct SketchParallelConstraintDef {
+    pub line_a: u32,
+    pub line_b: u32,
+}
+constraint_tool!(
+    SketchParallelConstraintDef,
+    SketchParallelConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Parallel {
+        id: cid,
+        a: EntityId(d.line_a),
+        b: EntityId(d.line_b)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_perpendicular")]
-pub struct SketchPerpendicularConstraintDef { pub line_a: u32, pub line_b: u32 }
-constraint_tool!(SketchPerpendicularConstraintDef, SketchPerpendicularConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Perpendicular { id: cid, a: EntityId(d.line_a), b: EntityId(d.line_b) }));
+pub struct SketchPerpendicularConstraintDef {
+    pub line_a: u32,
+    pub line_b: u32,
+}
+constraint_tool!(
+    SketchPerpendicularConstraintDef,
+    SketchPerpendicularConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Perpendicular {
+        id: cid,
+        a: EntityId(d.line_a),
+        b: EntityId(d.line_b)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_tangent")]
-pub struct SketchTangentConstraintDef { pub line: u32, pub curve: u32 }
-constraint_tool!(SketchTangentConstraintDef, SketchTangentConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Tangent { id: cid, line: EntityId(d.line), curve: EntityId(d.curve) }));
+pub struct SketchTangentConstraintDef {
+    pub line: u32,
+    pub curve: u32,
+}
+constraint_tool!(
+    SketchTangentConstraintDef,
+    SketchTangentConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Tangent {
+        id: cid,
+        line: EntityId(d.line),
+        curve: EntityId(d.curve)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_midpoint")]
-pub struct SketchMidpointConstraintDef { pub point: u32, pub line: u32 }
-constraint_tool!(SketchMidpointConstraintDef, SketchMidpointConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Midpoint { id: cid, point: EntityId(d.point), line: EntityId(d.line) }));
+pub struct SketchMidpointConstraintDef {
+    pub point: u32,
+    pub line: u32,
+}
+constraint_tool!(
+    SketchMidpointConstraintDef,
+    SketchMidpointConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Midpoint {
+        id: cid,
+        point: EntityId(d.point),
+        line: EntityId(d.line)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_symmetric")]
-pub struct SketchSymmetricConstraintDef { pub entity_a: u32, pub entity_b: u32, pub axis: u32 }
-constraint_tool!(SketchSymmetricConstraintDef, SketchSymmetricConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Symmetric { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b), axis: EntityId(d.axis) }));
+pub struct SketchSymmetricConstraintDef {
+    pub entity_a: u32,
+    pub entity_b: u32,
+    pub axis: u32,
+}
+constraint_tool!(
+    SketchSymmetricConstraintDef,
+    SketchSymmetricConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Symmetric {
+        id: cid,
+        a: EntityId(d.entity_a),
+        b: EntityId(d.entity_b),
+        axis: EntityId(d.axis)
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_radius")]
-pub struct SketchRadiusConstraintDef { pub entity: u32, pub value_mm: f32 }
-constraint_tool!(SketchRadiusConstraintDef, SketchRadiusConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Radius { id: cid, entity: EntityId(d.entity), value_mm: d.value_mm as f64, driven: false }));
+pub struct SketchRadiusConstraintDef {
+    pub entity: u32,
+    pub value_mm: f32,
+}
+constraint_tool!(
+    SketchRadiusConstraintDef,
+    SketchRadiusConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Radius {
+        id: cid,
+        entity: EntityId(d.entity),
+        value_mm: d.value_mm as f64,
+        driven: false
+    })
+);
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_diameter")]
-pub struct SketchDiameterConstraintDef { pub entity: u32, pub value_mm: f32 }
-constraint_tool!(SketchDiameterConstraintDef, SketchDiameterConstraintTool,
-    |state, d| state.add_constraint(|cid| Constraint::Diameter { id: cid, entity: EntityId(d.entity), value_mm: d.value_mm as f64, driven: false }));
+pub struct SketchDiameterConstraintDef {
+    pub entity: u32,
+    pub value_mm: f32,
+}
+constraint_tool!(
+    SketchDiameterConstraintDef,
+    SketchDiameterConstraintTool,
+    |state, d| state.add_constraint(|cid| Constraint::Diameter {
+        id: cid,
+        entity: EntityId(d.entity),
+        value_mm: d.value_mm as f64,
+        driven: false
+    })
+);
 
 // ─── top-level `sketch` feature ─────────────────────────────────
 
@@ -2015,21 +2195,22 @@ impl ParsedSketchDef {
         let sub_calls = match def.get("sub_calls") {
             None | Some(Value::Null) => Vec::new(),
             Some(slot) => {
-                let arr = slot.as_array().ok_or_else(|| FeatureError::InvalidParameter {
-                    feature: SketchFeature::TYPE_NAME,
-                    name: "sub_calls",
-                    message: "expected an array of FeatureCalls".to_string(),
-                })?;
+                let arr = slot
+                    .as_array()
+                    .ok_or_else(|| FeatureError::InvalidParameter {
+                        feature: SketchFeature::TYPE_NAME,
+                        name: "sub_calls",
+                        message: "expected an array of FeatureCalls".to_string(),
+                    })?;
                 let mut out = Vec::with_capacity(arr.len());
                 for (i, entry) in arr.iter().enumerate() {
-                    let call: FeatureCall =
-                        serde_json::from_value(entry.clone()).map_err(|e| {
-                            FeatureError::InvalidParameter {
-                                feature: SketchFeature::TYPE_NAME,
-                                name: "sub_calls",
-                                message: format!("entry {i} is not a FeatureCall: {e}"),
-                            }
-                        })?;
+                    let call: FeatureCall = serde_json::from_value(entry.clone()).map_err(|e| {
+                        FeatureError::InvalidParameter {
+                            feature: SketchFeature::TYPE_NAME,
+                            name: "sub_calls",
+                            message: format!("entry {i} is not a FeatureCall: {e}"),
+                        }
+                    })?;
                     out.push(call);
                 }
                 out
@@ -2071,11 +2252,13 @@ impl FeatureKind for SketchFeature {
                 message: format!("could not parse plane query: {e}"),
             }
         })?;
-        let frame = ctx.resolve_plane_frame(&expr).ok_or(FeatureError::InvalidParameter {
-            feature: SketchFeature::TYPE_NAME,
-            name: "plane",
-            message: "plane query resolved to no datum and no face".to_string(),
-        })?;
+        let frame = ctx
+            .resolve_plane_frame(&expr)
+            .ok_or(FeatureError::InvalidParameter {
+                feature: SketchFeature::TYPE_NAME,
+                name: "plane",
+                message: "plane query resolved to no datum and no face".to_string(),
+            })?;
 
         let mut state = SketchState::with_origin();
         self.tools.apply_all(&mut state, &parsed.sub_calls)?;
@@ -2116,9 +2299,7 @@ impl FeatureKind for SketchFeature {
 /// K8.13: variant that takes raw JSON sub-call values
 /// (the format stored in FeatureCall params). Parses each
 /// into a FeatureCall and delegates.
-pub fn build_sketch2d_from_sub_calls_raw(
-    raw: &[serde_json::Value],
-) -> Sketch2d {
+pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d {
     let calls: Vec<FeatureCall> = raw
         .iter()
         .filter_map(|v| {
@@ -2483,7 +2664,11 @@ fn mirror_segment(seg: &SketchSegment, axis: u32) -> SketchSegment {
 }
 
 fn sort_pair(a: f32, b: f32) -> (f32, f32) {
-    if a <= b { (a, b) } else { (b, a) }
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 /// Build the closed stadium boundary for a centre-to-centre slot:
@@ -2522,8 +2707,8 @@ fn slot_path_segments(
     let b_plus = [(bx + r * nx) as f32, (by + r * ny) as f32]; // B+r·n
     let b_minus = [(bx - r * nx) as f32, (by - r * ny) as f32]; // B−r·n
     let a_minus = [(ax - r * nx) as f32, (ay - r * ny) as f32]; // A−r·n
-    // Cap B starts at B+r·n (angle of +n); sweep −π takes it through
-    // +u (outside, away from A) to B−r·n.
+                                                                // Cap B starts at B+r·n (angle of +n); sweep −π takes it through
+                                                                // +u (outside, away from A) to B−r·n.
     let cap_b_start = (ny as f32).atan2(nx as f32);
     // Cap A starts at A−r·n (angle of −n); sweep −π takes it through
     // −u (outside, away from B) to A+r·n.
@@ -2575,7 +2760,9 @@ mod tests {
         let tools = SketchToolRegistry::with_builtins();
         let mut state = SketchState::with_origin();
         let call = FeatureCall::new("sketch_point", id(1), json!({ "at": [3.0, 4.0] }));
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         // origin + the new point
         assert_eq!(state.entities.len(), 2);
     }
@@ -2589,7 +2776,9 @@ mod tests {
             id(1),
             json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         // two points + one line
         assert_eq!(state.entities.len(), 3);
     }
@@ -2599,8 +2788,13 @@ mod tests {
         let tools = SketchToolRegistry::with_builtins();
         let mut state = SketchState::new();
         let call = FeatureCall::new("not_a_tool", id(1), json!({}));
-        let err = tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap_err();
-        assert_eq!(err, FeatureError::UnknownFeatureType("not_a_tool".to_string()));
+        let err = tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            FeatureError::UnknownFeatureType("not_a_tool".to_string())
+        );
     }
 
     #[test]
@@ -2634,7 +2828,9 @@ mod tests {
 
         let mut doc = Document::default();
         let mut ctx = Context::new(&mut doc);
-        registry.regenerate(&mut ctx, std::slice::from_ref(&call), None).unwrap();
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&call), None)
+            .unwrap();
 
         let data = ctx
             .sketches
@@ -2668,7 +2864,10 @@ mod tests {
         let err = registry
             .regenerate(&mut ctx, std::slice::from_ref(&call), None)
             .unwrap_err();
-        assert_eq!(err, FeatureError::UnknownFeatureType("not_a_tool".to_string()));
+        assert_eq!(
+            err,
+            FeatureError::UnknownFeatureType("not_a_tool".to_string())
+        );
     }
 
     #[test]
@@ -2765,7 +2964,9 @@ mod tests {
             id(1),
             json!({ "center": [0.0, 0.0], "radius": 10.0, "sides": 4.0, "inscribed": true }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         let pts: Vec<(f64, f64)> = state
             .entities
             .iter()
@@ -2815,7 +3016,9 @@ mod tests {
             id(1),
             json!({ "center": [5.0, -2.0], "radius": 7.5 }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         let point_count = state
             .entities
             .iter()
@@ -2851,7 +3054,9 @@ mod tests {
             id(1),
             json!({ "corner_a": [0.0, 0.0], "corner_b": [20.0, 10.0] }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         let point_count = state
             .entities
             .iter()
@@ -2899,7 +3104,15 @@ mod tests {
         let bl = state
             .entities
             .iter()
-            .find(|e| matches!(e, fielddraft_solver::Entity::Point { id: fielddraft_solver::EntityId(1), .. }))
+            .find(|e| {
+                matches!(
+                    e,
+                    fielddraft_solver::Entity::Point {
+                        id: fielddraft_solver::EntityId(1),
+                        ..
+                    }
+                )
+            })
             .unwrap();
         if let fielddraft_solver::Entity::Point { at, .. } = bl {
             assert!((at.x - 0.0).abs() < 1e-9);
@@ -2931,7 +3144,10 @@ mod tests {
         assert_eq!(state.constraints.len(), 1);
         assert!(matches!(
             state.constraints[0],
-            Constraint::Horizontal { line: EntityId(3), .. }
+            Constraint::Horizontal {
+                line: EntityId(3),
+                ..
+            }
         ));
     }
 
@@ -2956,22 +3172,25 @@ mod tests {
                         id(4),
                         json!({ "start": [0.0, 0.0], "end": [0.5, 10.0] }),
                     ),
-                    FeatureCall::new(
-                        "sketch_constraint_vertical",
-                        id(5),
-                        json!({ "line": 5 }),
-                    ),
+                    FeatureCall::new("sketch_constraint_vertical", id(5), json!({ "line": 5 })),
                 ],
             )
             .unwrap();
         assert_eq!(state.constraints.len(), 2);
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::Coincident { a: EntityId(1), b: EntityId(2), .. }
+            Constraint::Coincident {
+                a: EntityId(1),
+                b: EntityId(2),
+                ..
+            }
         )));
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::Vertical { line: EntityId(5), .. }
+            Constraint::Vertical {
+                line: EntityId(5),
+                ..
+            }
         )));
     }
 
@@ -3005,7 +3224,11 @@ mod tests {
         assert_eq!(state.constraints.len(), 1);
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::Concentric { a: EntityId(2), b: EntityId(4), .. }
+            Constraint::Concentric {
+                a: EntityId(2),
+                b: EntityId(4),
+                ..
+            }
         )));
     }
 
@@ -3018,23 +3241,18 @@ mod tests {
             .apply_all(
                 &mut state,
                 &[
-                    FeatureCall::new(
-                        "sketch_point",
-                        id(1),
-                        json!({ "at": [3.0, 4.0] }),
-                    ),
-                    FeatureCall::new(
-                        "sketch_constraint_fix",
-                        id(2),
-                        json!({ "point": 1 }),
-                    ),
+                    FeatureCall::new("sketch_point", id(1), json!({ "at": [3.0, 4.0] })),
+                    FeatureCall::new("sketch_constraint_fix", id(2), json!({ "point": 1 })),
                 ],
             )
             .unwrap();
         assert_eq!(state.constraints.len(), 1);
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::Fix { point: EntityId(1), .. }
+            Constraint::Fix {
+                point: EntityId(1),
+                ..
+            }
         )));
     }
 
@@ -3052,11 +3270,7 @@ mod tests {
                         id(1),
                         json!({ "center": [0.0, 0.0], "radius": 5.0 }),
                     ),
-                    FeatureCall::new(
-                        "sketch_point",
-                        id(2),
-                        json!({ "at": [3.0, 4.0] }),
-                    ),
+                    FeatureCall::new("sketch_point", id(2), json!({ "at": [3.0, 4.0] })),
                     FeatureCall::new(
                         "sketch_constraint_point_on_object",
                         id(3),
@@ -3068,7 +3282,11 @@ mod tests {
         assert_eq!(state.constraints.len(), 1);
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::PointOnObject { point: EntityId(2), curve: EntityId(1), .. }
+            Constraint::PointOnObject {
+                point: EntityId(2),
+                curve: EntityId(1),
+                ..
+            }
         )));
     }
 
@@ -3113,11 +3331,7 @@ mod tests {
             json!({ "corner_a": [20.0, 10.0], "corner_b": [-5.0, -5.0] }),
         )];
         let sketch = build_sketch2d_from_sub_calls(&calls);
-        if let Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
-            half_extents,
-            ..
-        }) = sketch
-        {
+        if let Sketch2d::Prim(Sketch2dPrimitive::Rectangle { half_extents, .. }) = sketch {
             assert!(half_extents[0] > 0.0);
             assert!(half_extents[1] > 0.0);
         } else {
@@ -3133,9 +3347,7 @@ mod tests {
             json!({ "center": [3.0, -4.0], "radius": 7.0 }),
         )];
         let sketch = build_sketch2d_from_sub_calls(&calls);
-        if let Sketch2d::Prim(Sketch2dPrimitive::Circle { center, radius }) =
-            sketch
-        {
+        if let Sketch2d::Prim(Sketch2dPrimitive::Circle { center, radius }) = sketch {
             assert!((center[0] - 3.0).abs() < 1e-6);
             assert!((center[1] + 4.0).abs() < 1e-6);
             assert!((radius - 7.0).abs() < 1e-6);
@@ -3266,7 +3478,9 @@ mod tests {
             id(1),
             json!({ "center_a": [1.0, 2.0], "center_b": [9.0, 2.0], "radius": 3.0 }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         let pts: Vec<(f64, f64)> = state
             .entities
             .iter()
@@ -3296,7 +3510,9 @@ mod tests {
                 "closed": false
             }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         let pts: Vec<(f64, f64)> = state
             .entities
             .iter()
@@ -3315,7 +3531,9 @@ mod tests {
         let tools = SketchToolRegistry::with_builtins();
         let mut state = SketchState::with_origin();
         let call = FeatureCall::new("sketch_spline", id(1), json!({ "points": [1.0, 2.0] }));
-        assert!(tools.apply_all(&mut state, std::slice::from_ref(&call)).is_err());
+        assert!(tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .is_err());
     }
 
     #[test]
@@ -3336,7 +3554,11 @@ mod tests {
             panic!("expected a closed Path primitive, got {sketch:?}");
         };
         assert!(*closed, "closed spline path must be closed");
-        assert!(segments.len() >= 4, "expected multiple segments, got {}", segments.len());
+        assert!(
+            segments.len() >= 4,
+            "expected multiple segments, got {}",
+            segments.len()
+        );
         assert!(segments
             .iter()
             .all(|s| matches!(s, SketchSegment::QuadBezier { .. })));
@@ -3410,8 +3632,7 @@ mod tests {
     fn spline_def_roundtrip_with_mode() {
         // The new `mode` field round-trips through parse, defaulting to
         // interpolate when absent and accepting "control".
-        let d_default =
-            SketchSplineDef::parse(&json!({ "points": [0.0, 0.0, 1.0, 1.0] })).unwrap();
+        let d_default = SketchSplineDef::parse(&json!({ "points": [0.0, 0.0, 1.0, 1.0] })).unwrap();
         assert_eq!(d_default.mode, SplineMode::Interpolate);
         assert!(!d_default.closed);
         let d_ctrl = SketchSplineDef::parse(&json!({
@@ -3462,13 +3683,25 @@ mod tests {
         // control points — the lowered chain starts at P0 and ends at
         // P_{n-1}. (This is what makes endpoint Coincident a real
         // endpoint constraint.)
-        let cp = [[0.0, 0.0], [10.0, 20.0], [20.0, -20.0], [30.0, 0.0], [40.0, 10.0]];
+        let cp = [
+            [0.0, 0.0],
+            [10.0, 20.0],
+            [20.0, -20.0],
+            [30.0, 0.0],
+            [40.0, 10.0],
+        ];
         let segs = bspline_quad_beziers(&cp, false, 0.01);
         assert!(!segs.is_empty());
         let start = segs[0].point_at(0.0);
         let end = segs.last().unwrap().point_at(1.0);
-        assert!((start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3, "start {start:?}");
-        assert!((end[0] - 40.0).abs() < 1e-3 && (end[1] - 10.0).abs() < 1e-3, "end {end:?}");
+        assert!(
+            (start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3,
+            "start {start:?}"
+        );
+        assert!(
+            (end[0] - 40.0).abs() < 1e-3 && (end[1] - 10.0).abs() < 1e-3,
+            "end {end:?}"
+        );
     }
 
     // ---- F23 endpoint tangent: control-polygon end-legs ---------------
@@ -3478,7 +3711,9 @@ mod tests {
         let tools = SketchToolRegistry::with_builtins();
         let mut state = SketchState::with_origin();
         let call = FeatureCall::new("sketch_spline", id(1), params);
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
         state.entities
     }
 
@@ -3674,7 +3909,13 @@ mod tests {
         // including the mid-parameter, within the flatness tolerance.
         // (de Boor is the analytic ground truth; the lowered chain
         // must lie on it.)
-        let cp = [[0.0, 0.0], [10.0, 30.0], [30.0, 30.0], [40.0, 0.0], [50.0, 20.0]];
+        let cp = [
+            [0.0, 0.0],
+            [10.0, 30.0],
+            [30.0, 30.0],
+            [40.0, 0.0],
+            [50.0, 20.0],
+        ];
         let segs = bspline_quad_beziers(&cp, false, 0.005);
         for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
             let analytic = bspline_eval_open(&cp, 3, t);
@@ -3814,10 +4055,15 @@ mod tests {
         tools.apply_all(&mut state, &calls).unwrap();
         // Entity 2 is the spline's FIRST control point, at (0,0) — the
         // clamped curve endpoint.
-        let first_ctrl = state
-            .entities
-            .iter()
-            .find(|e| matches!(e, fielddraft_solver::Entity::Point { id: EntityId(2), .. }));
+        let first_ctrl = state.entities.iter().find(|e| {
+            matches!(
+                e,
+                fielddraft_solver::Entity::Point {
+                    id: EntityId(2),
+                    ..
+                }
+            )
+        });
         if let Some(fielddraft_solver::Entity::Point { at, .. }) = first_ctrl {
             assert!((at.x - 0.0).abs() < 1e-6 && (at.y - 0.0).abs() < 1e-6);
         } else {
@@ -3827,7 +4073,11 @@ mod tests {
         // first control point (2).
         assert!(state.constraints.iter().any(|c| matches!(
             c,
-            Constraint::Coincident { a: EntityId(1), b: EntityId(2), .. }
+            Constraint::Coincident {
+                a: EntityId(1),
+                b: EntityId(2),
+                ..
+            }
         )));
     }
 
@@ -3870,11 +4120,7 @@ mod tests {
                 json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
             ),
             FeatureCall::new("sketch_point", id(2), json!({ "at": [5.0, 5.0] })),
-            FeatureCall::new(
-                "sketch_constraint_horizontal",
-                id(3),
-                json!({ "line": 3 }),
-            ),
+            FeatureCall::new("sketch_constraint_horizontal", id(3), json!({ "line": 3 })),
         ];
         assert!(matches!(
             build_sketch2d_from_sub_calls(&calls),
@@ -3907,7 +4153,11 @@ mod tests {
     #[test]
     fn build_sketch2d_mirror_without_prior_geometry_is_empty() {
         // Mirror has nothing to reflect when no region precedes it.
-        let calls = vec![FeatureCall::new("sketch_mirror", id(1), json!({ "axis": 0.0 }))];
+        let calls = vec![FeatureCall::new(
+            "sketch_mirror",
+            id(1),
+            json!({ "axis": 0.0 }),
+        )];
         assert!(matches!(
             build_sketch2d_from_sub_calls(&calls),
             Sketch2d::Empty
@@ -3932,9 +4182,15 @@ mod tests {
             panic!("expected an Offset node wrapping the profile, got {sketch:?}");
         };
         assert!((distance - 5.0).abs() < 1e-6, "offset distance preserved");
-        assert!(sketch.sdf([13.0, 0.0]) < 0.0, "point inside the grown profile");
+        assert!(
+            sketch.sdf([13.0, 0.0]) < 0.0,
+            "point inside the grown profile"
+        );
         // Beyond the grown boundary it is still outside.
-        assert!(sketch.sdf([16.0, 0.0]) > 0.0, "point past the grown boundary");
+        assert!(
+            sketch.sdf([16.0, 0.0]) > 0.0,
+            "point past the grown boundary"
+        );
     }
 
     #[test]
@@ -3976,7 +4232,10 @@ mod tests {
             panic!("expected a lone rectangle primitive, got {sketch:?}");
         };
         // The construction circle's centre is firmly outside the region.
-        assert!(sketch.sdf([50.0, 0.0]) > 0.0, "construction circle not extruded");
+        assert!(
+            sketch.sdf([50.0, 0.0]) > 0.0,
+            "construction circle not extruded"
+        );
     }
 
     #[test]
@@ -4043,7 +4302,10 @@ mod tests {
     fn datum_plane_frames_are_orthonormal_and_well_known() {
         let xy = datum_plane_frame(&FeatureId::from_str("origin_plane_xy").unwrap()).unwrap();
         assert_eq!(xy, SketchFrame::IDENTITY);
-        assert!(xy.to_transform().is_identity(), "xy datum is the identity placement");
+        assert!(
+            xy.to_transform().is_identity(),
+            "xy datum is the identity placement"
+        );
 
         let xz = datum_plane_frame(&FeatureId::from_str("origin_plane_xz").unwrap()).unwrap();
         assert_eq!(xz.normal, [0.0, 1.0, 0.0]);
@@ -4066,7 +4328,11 @@ mod tests {
         registry
             .regenerate(
                 &mut ctx,
-                &[FeatureCall::new("box", id(1), json!({ "half_extents": [5.0, 5.0, 5.0] }))],
+                &[FeatureCall::new(
+                    "box",
+                    id(1),
+                    json!({ "half_extents": [5.0, 5.0, 5.0] }),
+                )],
                 None,
             )
             .unwrap();
@@ -4074,7 +4340,10 @@ mod tests {
         let (brep, placement) = &woven[0];
         for i in 0..brep.face_count() {
             let frame = face_plane_frame(brep, crate::brep::FaceId(i as u32), placement);
-            assert!(is_orthonormal(&frame), "face {i} frame not orthonormal: {frame:?}");
+            assert!(
+                is_orthonormal(&frame),
+                "face {i} frame not orthonormal: {frame:?}"
+            );
         }
     }
 
@@ -4102,7 +4371,11 @@ mod tests {
             )
             .unwrap();
         let data = ctx.sketches.get(&sketch_id).unwrap();
-        assert_eq!(data.frame, SketchFrame::IDENTITY, "xy sketch is the identity frame");
+        assert_eq!(
+            data.frame,
+            SketchFrame::IDENTITY,
+            "xy sketch is the identity frame"
+        );
         assert!(data.frame.to_transform().is_identity());
     }
 
@@ -4116,7 +4389,9 @@ mod tests {
         let mut ctx = Context::new(&mut doc);
 
         let box_call = FeatureCall::new("box", id(1), json!({ "half_extents": [5.0, 5.0, 5.0] }));
-        registry.regenerate(&mut ctx, std::slice::from_ref(&box_call), None).unwrap();
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call), None)
+            .unwrap();
 
         // Learn the +Z face id_hash.
         let woven = crate::body::weave_all(&ctx.features);
@@ -4169,8 +4444,16 @@ mod tests {
 
         // The sketch frame sits on the +Z face.
         let frame = ctx.sketches.get(&sketch_id).unwrap().frame;
-        assert!((frame.normal[2] - 1.0).abs() < 1e-3, "sketch normal +Z, got {:?}", frame.normal);
-        assert!((frame.origin[2] - 5.0).abs() < 1e-2, "sketch origin on the +Z face, got {:?}", frame.origin);
+        assert!(
+            (frame.normal[2] - 1.0).abs() < 1e-3,
+            "sketch normal +Z, got {:?}",
+            frame.normal
+        );
+        assert!(
+            (frame.origin[2] - 5.0).abs() < 1e-2,
+            "sketch origin on the +Z face, got {:?}",
+            frame.origin
+        );
 
         // The extrude inherits a non-identity placement (the frame),
         // unlike an xy sketch — its translate lifts the profile to z≈5.
@@ -4218,12 +4501,96 @@ mod tests {
         assert_eq!(seg_json["ctrl"], json!([1.0, 2.0]));
     }
 
+    /// Collect all registered Point entity coords in entity order.
+    #[cfg(test)]
+    fn path_point_coords(state: &SketchState) -> Vec<(f64, f64)> {
+        state
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn sketch_path_tool_registers_one_point_per_contour_start() {
-        // Each contour start becomes a point entity (mirrors the
-        // polygon/spline tools) so the TS entity-id mirror aligns.
+    fn sketch_path_tool_allocates_canonical_vertex_entities() {
+        // CANONICAL order: contour start, then per segment
+        // (Quad → ctrl, to; Line → to). A one-contour path with
+        // [line, quad, line] => start + (to) + (ctrl, to) + (to) = 5
+        // point entities in that exact order & coords.
         let tools = SketchToolRegistry::with_builtins();
-        let mut state = SketchState::with_origin();
+        let mut state = SketchState::new(); // no origin, keep coords clean
+        let call = FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": false, "segments": [
+                        { "kind": "line", "to": [10.0, 0.0] },
+                        { "kind": "quad", "ctrl": [15.0, 5.0], "to": [20.0, 10.0] },
+                        { "kind": "line", "to": [0.0, 10.0] }
+                    ]}
+                ]
+            }),
+        );
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
+        let pts = path_point_coords(&state);
+        assert_eq!(
+            pts,
+            vec![
+                (0.0, 0.0),   // start
+                (10.0, 0.0),  // line.to
+                (15.0, 5.0),  // quad.ctrl
+                (20.0, 10.0), // quad.to
+                (0.0, 10.0),  // line.to
+            ]
+        );
+    }
+
+    #[test]
+    fn sketch_path_tool_two_contours_allocate_in_order() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::new();
+        let call = FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": false, "segments": [
+                        { "kind": "line", "to": [10.0, 0.0] }
+                    ]},
+                    { "start": [3.0, 3.0], "closed": false, "segments": [
+                        { "kind": "quad", "ctrl": [5.0, 5.0], "to": [7.0, 3.0] }
+                    ]}
+                ]
+            }),
+        );
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
+        let pts = path_point_coords(&state);
+        assert_eq!(
+            pts,
+            vec![
+                (0.0, 0.0),  // c0 start
+                (10.0, 0.0), // c0 line.to
+                (3.0, 3.0),  // c1 start
+                (5.0, 5.0),  // c1 quad.ctrl
+                (7.0, 3.0),  // c1 quad.to
+            ]
+        );
+    }
+
+    #[test]
+    fn sketch_path_tool_closed_contour_adds_no_closing_entity() {
+        // A closed contour's implicit closing edge returns to `start`
+        // and allocates NO extra entity.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::new();
         let call = FeatureCall::new(
             "sketch_path",
             id(1),
@@ -4233,28 +4600,55 @@ mod tests {
                         { "kind": "line", "to": [10.0, 0.0] },
                         { "kind": "line", "to": [10.0, 10.0] },
                         { "kind": "line", "to": [0.0, 10.0] }
-                    ]},
-                    { "start": [3.0, 3.0], "closed": true, "segments": [
-                        { "kind": "line", "to": [7.0, 3.0] },
-                        { "kind": "line", "to": [7.0, 7.0] },
-                        { "kind": "line", "to": [3.0, 7.0] }
                     ]}
                 ]
             }),
         );
-        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
-        let pts: Vec<(f64, f64)> = state
-            .entities
-            .iter()
-            .filter_map(|e| match e {
-                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
-                _ => None,
-            })
-            .collect();
-        // Two contour start points registered, in order.
-        assert_eq!(pts.len(), 2);
-        assert!((pts[0].0 - 0.0).abs() < 1e-6 && (pts[0].1 - 0.0).abs() < 1e-6);
-        assert!((pts[1].0 - 3.0).abs() < 1e-6 && (pts[1].1 - 3.0).abs() < 1e-6);
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
+        let pts = path_point_coords(&state);
+        // start + 3 line.to = 4 (NOT 5 — closing edge adds nothing).
+        assert_eq!(pts.len(), 4);
+        assert_eq!(
+            pts,
+            vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn build_geometry_is_unchanged_by_path_vertex_entities() {
+        // The vertex point entities live ONLY in the entity world. The
+        // extrude profile is lowered from the sub-call params via
+        // build_sketch2d_from_sub_calls, which never reads entities, so
+        // the lowered Path is identical regardless of vertex allocation.
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [40.0, 0.0] },
+                        { "kind": "line", "to": [40.0, 20.0] },
+                        { "kind": "quad", "ctrl": [20.0, 40.0], "to": [0.0, 20.0] }
+                    ]}
+                ]
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a Path primitive, got {sketch:?}");
+        };
+        assert!(*closed);
+        // Same segment make-up as before: only Line/QuadBezier, no
+        // spurious vertex geometry.
+        assert!(segments.iter().all(|s| matches!(
+            s,
+            SketchSegment::QuadBezier { .. } | SketchSegment::Line { .. }
+        )));
+        // Quad apex region check unchanged from the geometry test.
+        assert!(sketch.sdf([20.0, 26.0]) < 0.0, "under quad bulge inside");
+        assert!(sketch.sdf([20.0, 38.0]) > 0.0, "above bulge outside");
     }
 
     #[test]

@@ -158,18 +158,44 @@ export function rebuildSubCallsFromSolved(
       return call;
     }
     if (call.type === "sketch_path") {
-      // Mirrors buildDraftSketchState: ONE point per contour start.
+      // Mirrors buildDraftSketchState / the kernel BYTE-FOR-BYTE:
+      // CANONICAL order per contour = start, then per segment
+      // (Quad → ctrl, to; Line → to). Advance nextId over EVERY vertex
+      // entity and write back solved coords into start/segment-to/
+      // quad-ctrl so solver moves are reflected. Closing edge adds none.
       const contours = call.params.contours;
       if (Array.isArray(contours)) {
         const newContours = contours.map((c) => {
-          const start = (c as { start?: unknown })?.start;
-          if (Array.isArray(start) && start.length === 2) {
+          const cc = c as {
+            start?: unknown;
+            segments?: unknown;
+          };
+          let newStart = cc?.start;
+          if (Array.isArray(cc?.start) && cc.start.length === 2) {
             const pt = pointAt(nextId++);
-            if (pt) {
-              return { ...(c as object), start: pt };
-            }
+            if (pt) newStart = pt;
           }
-          return c;
+          let newSegments = cc?.segments;
+          if (Array.isArray(cc?.segments)) {
+            newSegments = cc.segments.map((seg) => {
+              const s = seg as {
+                kind?: unknown;
+                ctrl?: unknown;
+                to?: unknown;
+              };
+              const next: Record<string, unknown> = { ...s };
+              if (s?.kind === "quad" && Array.isArray(s.ctrl)) {
+                const cp = pointAt(nextId++);
+                if (cp) next.ctrl = cp;
+              }
+              if (Array.isArray(s?.to)) {
+                const tp = pointAt(nextId++);
+                if (tp) next.to = tp;
+              }
+              return next;
+            });
+          }
+          return { ...(c as object), start: newStart, segments: newSegments };
         });
         return { ...call, params: { ...call.params, contours: newContours } };
       }

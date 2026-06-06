@@ -1073,3 +1073,124 @@ describe("sketch_spline draft state", () => {
     expect(state.next_entity_id).toBe(10);
   });
 });
+
+describe("sketch_path draft state", () => {
+  it("allocates canonical vertex entities for a multi-segment contour incl. a quad", () => {
+    // CANONICAL order per contour: start, then per segment
+    // (Quad → ctrl, to; Line → to). One contour with [line, quad, line]
+    // ⇒ start + (to) + (ctrl, to) + (to) = 5 point entities, ids 1..=5.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_path",
+        params: {
+          contours: [
+            {
+              start: [0, 0],
+              closed: false,
+              segments: [
+                { kind: "line", to: [10, 0] },
+                { kind: "quad", ctrl: [15, 5], to: [20, 10] },
+                { kind: "line", to: [0, 10] },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points.map((p) => p.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(
+      points.map((p) => (p.kind === "point" ? [p.at.x, p.at.y] : null)),
+    ).toEqual([
+      [0, 0], // start
+      [10, 0], // line.to
+      [15, 5], // quad.ctrl
+      [20, 10], // quad.to
+      [0, 10], // line.to
+    ]);
+    expect(state.next_entity_id).toBe(6);
+  });
+
+  it("allocates two contours' vertices in order", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_path",
+        params: {
+          contours: [
+            {
+              start: [0, 0],
+              closed: false,
+              segments: [{ kind: "line", to: [10, 0] }],
+            },
+            {
+              start: [3, 3],
+              closed: false,
+              segments: [{ kind: "quad", ctrl: [5, 5], to: [7, 3] }],
+            },
+          ],
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(
+      points.map((p) => (p.kind === "point" ? [p.at.x, p.at.y] : null)),
+    ).toEqual([
+      [0, 0], // c0 start
+      [10, 0], // c0 line.to
+      [3, 3], // c1 start
+      [5, 5], // c1 quad.ctrl
+      [7, 3], // c1 quad.to
+    ]);
+    expect(state.next_entity_id).toBe(6);
+  });
+
+  it("closed contour adds no extra entity for the implicit closing edge", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_path",
+        params: {
+          contours: [
+            {
+              start: [0, 0],
+              closed: true,
+              segments: [
+                { kind: "line", to: [10, 0] },
+                { kind: "line", to: [10, 10] },
+                { kind: "line", to: [0, 10] },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    // start + 3 line.to = 4 (NOT 5 — closing edge adds nothing).
+    expect(points).toHaveLength(4);
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("keeps entity ids aligned for a following sub-call", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_path",
+        params: {
+          contours: [
+            {
+              start: [0, 0],
+              closed: false,
+              segments: [{ kind: "quad", ctrl: [5, 5], to: [10, 0] }],
+            },
+          ],
+        },
+      },
+      { type: "sketch_circle", params: { center: [50, 50], radius: 5 } },
+    ]);
+    // Path consumes ids 1..=3 (start, ctrl, to); circle takes 4 (centre)
+    // and 5 (circle).
+    const circleCentre = state.entities.find(
+      (e) => e.kind === "point" && e.at.x === 50 && e.at.y === 50,
+    );
+    expect(circleCentre?.id).toBe(4);
+    expect(state.next_entity_id).toBe(6);
+  });
+});

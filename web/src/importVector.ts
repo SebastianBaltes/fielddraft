@@ -328,10 +328,7 @@ function parseTransform(attr: string | null): Mat {
       if (nums.length >= 3) {
         const cx = nums[1];
         const cy = nums[2];
-        t = matMul(
-          matMul([1, 0, 0, 1, cx, cy], rot),
-          [1, 0, 0, 1, -cx, -cy],
-        );
+        t = matMul(matMul([1, 0, 0, 1, cx, cy], rot), [1, 0, 0, 1, -cx, -cy]);
       } else {
         t = rot;
       }
@@ -355,7 +352,10 @@ function num(el: Element, name: string, dflt = 0): number {
 /** Parse the whitespace/comma separated point list of a polyline/polygon. */
 function parsePointList(attr: string | null): Pt[] {
   if (!attr) return [];
-  const nums = attr.split(/[\s,]+/).map(Number).filter(isFiniteNum);
+  const nums = attr
+    .split(/[\s,]+/)
+    .map(Number)
+    .filter(isFiniteNum);
   const pts: Pt[] = [];
   for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
   return pts;
@@ -385,14 +385,7 @@ function emitTransformedEllipse(
   // Pre-scale the unit linear part by the element radii, then decompose:
   // map the ellipse basis vectors (rx,0) and (0,ry) through the linear
   // part and SVD the resulting 2×2.
-  const lin: Mat = [
-    m[0] * rx,
-    m[1] * rx,
-    m[2] * ry,
-    m[3] * ry,
-    0,
-    0,
-  ];
+  const lin: Mat = [m[0] * rx, m[1] * rx, m[2] * ry, m[3] * ry, 0, 0];
   const { scaleX, scaleY, rotation } = decomposeLinear(lin);
   if (!(scaleX > 0) || !(scaleY > 0)) {
     out.skipped++;
@@ -456,16 +449,71 @@ function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
         out.skipped++;
         return;
       }
-      // Rounded rects (rx/ry) are flattened to sharp corners in v1.
-      const corners: Pt[] = (
-        [
-          [x, y],
-          [x + w, y],
-          [x + w, y + h],
-          [x, y + h],
-        ] as Pt[]
-      ).map(xf);
-      out.calls.push(...lineChain(corners, true));
+      // SVG rx/ry rules: if only one is present use it for both; clamp
+      // rx ≤ w/2, ry ≤ h/2. rx/ry ≤ 0 or absent → sharp corners.
+      const hasRx = el.hasAttribute("rx");
+      const hasRy = el.hasAttribute("ry");
+      let rx = hasRx ? num(el, "rx") : NaN;
+      let ry = hasRy ? num(el, "ry") : NaN;
+      if (!Number.isFinite(rx) && Number.isFinite(ry)) rx = ry;
+      if (!Number.isFinite(ry) && Number.isFinite(rx)) ry = rx;
+      rx = Number.isFinite(rx) ? Math.min(Math.max(rx, 0), w / 2) : 0;
+      ry = Number.isFinite(ry) ? Math.min(Math.max(ry, 0), h / 2) : 0;
+      if (!(rx > 0) || !(ry > 0)) {
+        // Sharp rectangle: unchanged 4-line chain.
+        const corners: Pt[] = (
+          [
+            [x, y],
+            [x + w, y],
+            [x + w, y + h],
+            [x, y + h],
+          ] as Pt[]
+        ).map(xf);
+        out.calls.push(...lineChain(corners, true));
+        return;
+      }
+      // Rounded rectangle: ONE closed sketch_path contour of 4 straight
+      // edges + 4 corner arcs. Corner arcs reuse arcToQuadSegs (the same
+      // SVG-arc→quad helper as elliptical-arc commands) so fidelity
+      // matches the rest of the importer. Build in local space, then
+      // transform every emitted point via `xf` so rotate/skew/scale
+      // carry through (circular corners turn elliptical exactly like
+      // <circle>/<ellipse>). SVG y-down: corners sweep clockwise (sweep=1).
+      const xl = x;
+      const xr = x + w;
+      const yt = y;
+      const yb = y + h;
+      const xfSeg = (seg: PathSeg): PathSeg =>
+        seg.kind === "quad"
+          ? { kind: "quad", ctrl: xf(seg.ctrl), to: xf(seg.to) }
+          : { kind: "line", to: xf(seg.to) };
+      const corner = (from: Pt, to: Pt): PathSeg[] =>
+        arcToQuadSegs(from, rx, ry, 0, false, true, to).map(xfSeg);
+      const segments: PathSeg[] = [];
+      // top edge → top-right corner
+      segments.push({ kind: "line", to: xf([xr - rx, yt]) });
+      segments.push(...corner([xr - rx, yt], [xr, yt + ry]));
+      // right edge → bottom-right corner
+      segments.push({ kind: "line", to: xf([xr, yb - ry]) });
+      segments.push(...corner([xr, yb - ry], [xr - rx, yb]));
+      // bottom edge → bottom-left corner
+      segments.push({ kind: "line", to: xf([xl + rx, yb]) });
+      segments.push(...corner([xl + rx, yb], [xl, yb - ry]));
+      // left edge → top-left corner
+      segments.push({ kind: "line", to: xf([xl, yt + ry]) });
+      segments.push(...corner([xl, yt + ry], [xl + rx, yt]));
+      out.calls.push({
+        type: "sketch_path",
+        params: {
+          contours: [
+            {
+              start: xf([xl + rx, yt]),
+              segments,
+              closed: true,
+            },
+          ],
+        },
+      });
       return;
     }
     case "circle": {
@@ -553,7 +601,10 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
   while ((match = cmdRe.exec(d)) !== null) {
     const cmd = match[1];
     const rel = cmd === cmd.toLowerCase() && cmd !== cmd.toUpperCase();
-    const args = match[2].split(/[\s,]+/).map(Number).filter(isFiniteNum);
+    const args = match[2]
+      .split(/[\s,]+/)
+      .map(Number)
+      .filter(isFiniteNum);
     const up = cmd.toUpperCase();
     let i = 0;
 
@@ -599,9 +650,15 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
     } else if (up === "C") {
       ensureContour();
       for (; i + 5 < args.length; i += 6) {
-        const p1: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
-        const p2: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
-        const p3: Pt = rel ? [cur[0] + args[i + 4], cur[1] + args[i + 5]] : [args[i + 4], args[i + 5]];
+        const p1: Pt = rel
+          ? [cur[0] + args[i], cur[1] + args[i + 1]]
+          : [args[i], args[i + 1]];
+        const p2: Pt = rel
+          ? [cur[0] + args[i + 2], cur[1] + args[i + 3]]
+          : [args[i + 2], args[i + 3]];
+        const p3: Pt = rel
+          ? [cur[0] + args[i + 4], cur[1] + args[i + 5]]
+          : [args[i + 4], args[i + 5]];
         for (const q of cubicToQuads(cur, p1, p2, p3, CUBIC_TOL)) {
           active!.segments.push(xfSeg(q, xf));
         }
@@ -615,8 +672,12 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
         const reflect: Pt = prevCubicCtrl
           ? [2 * cur[0] - prevCubicCtrl[0], 2 * cur[1] - prevCubicCtrl[1]]
           : [cur[0], cur[1]];
-        const p2: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
-        const p3: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
+        const p2: Pt = rel
+          ? [cur[0] + args[i], cur[1] + args[i + 1]]
+          : [args[i], args[i + 1]];
+        const p3: Pt = rel
+          ? [cur[0] + args[i + 2], cur[1] + args[i + 3]]
+          : [args[i + 2], args[i + 3]];
         for (const q of cubicToQuads(cur, reflect, p2, p3, CUBIC_TOL)) {
           active!.segments.push(xfSeg(q, xf));
         }
@@ -627,8 +688,12 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
     } else if (up === "Q") {
       ensureContour();
       for (; i + 3 < args.length; i += 4) {
-        const p1: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
-        const p2: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
+        const p1: Pt = rel
+          ? [cur[0] + args[i], cur[1] + args[i + 1]]
+          : [args[i], args[i + 1]];
+        const p2: Pt = rel
+          ? [cur[0] + args[i + 2], cur[1] + args[i + 3]]
+          : [args[i + 2], args[i + 3]];
         active!.segments.push({ kind: "quad", ctrl: xf(p1), to: xf(p2) });
         cur = p2;
         prevQuadCtrl = p1;
@@ -640,7 +705,9 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
         const p1: Pt = prevQuadCtrl
           ? [2 * cur[0] - prevQuadCtrl[0], 2 * cur[1] - prevQuadCtrl[1]]
           : [cur[0], cur[1]];
-        const p2: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
+        const p2: Pt = rel
+          ? [cur[0] + args[i], cur[1] + args[i + 1]]
+          : [args[i], args[i + 1]];
         active!.segments.push({ kind: "quad", ctrl: xf(p1), to: xf(p2) });
         cur = p2;
         prevQuadCtrl = p1;
@@ -657,7 +724,15 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
         const end: Pt = rel
           ? [cur[0] + args[i + 5], cur[1] + args[i + 6]]
           : [args[i + 5], args[i + 6]];
-        for (const q of arcToQuadSegs(cur, rx, ry, xRot, largeArc, sweep, end)) {
+        for (const q of arcToQuadSegs(
+          cur,
+          rx,
+          ry,
+          xRot,
+          largeArc,
+          sweep,
+          end,
+        )) {
           active!.segments.push(xfSeg(q, xf));
         }
         cur = end;
@@ -690,7 +765,10 @@ function xfSeg(seg: PathSeg, xf: (p: Pt) => Pt): PathSeg {
 
 /** Parse SVG text into sub-calls. Returns `[]` on a missing/garbage root.
  *  Coordinates are y-flipped (SVG y-down → sketch y-up). */
-export function svgToSubCalls(svgText: string, opts: ImportOpts = {}): SubCall[] {
+export function svgToSubCalls(
+  svgText: string,
+  opts: ImportOpts = {},
+): SubCall[] {
   const steps = opts.curveSteps ?? CURVE_STEPS;
   let doc: Document;
   try {
@@ -780,7 +858,10 @@ function dxfNum(e: DxfEntity, code: number, idx = 0): number {
 
 /** Parse DXF text into sub-calls. DXF is already y-UP — no flip. Unknown
  *  entities are skipped. Returns `[]` on empty / section-less input. */
-export function dxfToSubCalls(dxfText: string, opts: ImportOpts = {}): SubCall[] {
+export function dxfToSubCalls(
+  dxfText: string,
+  opts: ImportOpts = {},
+): SubCall[] {
   const steps = opts.curveSteps ?? CURVE_STEPS;
   const pairs = dxfPairs(dxfText);
   if (pairs.length === 0) return [];

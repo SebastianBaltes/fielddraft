@@ -162,7 +162,7 @@ describe("rebuildSubCallsFromSolved", () => {
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 
-  it("writes back contour starts and keeps a following line aligned (path)", () => {
+  it("writes back start/to/ctrl and keeps a following line aligned (path)", () => {
     const original = [
       {
         type: "sketch_path",
@@ -170,7 +170,10 @@ describe("rebuildSubCallsFromSolved", () => {
           contours: [
             {
               start: [0, 0],
-              segments: [{ kind: "line", to: [10, 0] }],
+              segments: [
+                { kind: "line", to: [10, 0] },
+                { kind: "quad", ctrl: [15, 5], to: [20, 10] },
+              ],
               closed: false,
             },
           ],
@@ -178,14 +181,31 @@ describe("rebuildSubCallsFromSolved", () => {
       },
       { type: "sketch_line", params: { start: [50, 50], end: [60, 60] } },
     ];
-    // path contour start = id 1; following line start = id 2.
+    // CANONICAL order: start (id 1), line.to (id 2), quad.ctrl (id 3),
+    // quad.to (id 4); following line start = id 5.
     const solved = solvedFrom(original, 1, [3, 4]);
-    const ls = solved.entities.find((x) => x.id === 2);
-    if (ls && ls.kind === "point") ls.at = { x: 51, y: 51 };
+    const setPt = (id: number, x: number, y: number) => {
+      const e = solved.entities.find((p) => p.id === id);
+      if (e && e.kind === "point") e.at = { x, y };
+    };
+    setPt(2, 11, 1); // line.to
+    setPt(3, 16, 6); // quad.ctrl
+    setPt(4, 21, 11); // quad.to
+    setPt(5, 51, 51); // following line start
 
     const rebuilt = rebuildSubCallsFromSolved(original, solved);
-    const contours = rebuilt[0].params.contours as { start: number[] }[];
+    const contours = rebuilt[0].params.contours as {
+      start: number[];
+      segments: { kind: string; to: number[]; ctrl?: number[] }[];
+    }[];
     expect(contours[0].start).toEqual([3, 4]);
+    expect(contours[0].segments[0]).toMatchObject({ to: [11, 1] });
+    expect(contours[0].segments[1]).toMatchObject({
+      ctrl: [16, 6],
+      to: [21, 11],
+    });
+    // Following line stays aligned (proves nextId advanced over all 4
+    // path vertices).
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 });

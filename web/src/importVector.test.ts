@@ -59,6 +59,63 @@ describe("svgToSubCalls", () => {
     expect(ends).toContainEqual([10, -5]);
   });
 
+  it("maps <rect rx ry> to a closed sketch_path with quad corner arcs", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="20" height="10" rx="3" ry="2"/></svg>`,
+    );
+    // No sharp line chain; exactly one rounded-rect sketch_path.
+    expect(ofType(calls, "sketch_line")).toHaveLength(0);
+    const paths = ofType(calls, "sketch_path");
+    expect(paths).toHaveLength(1);
+    const c = (paths[0].params.contours as PathContour[])[0];
+    expect(c.closed).toBe(true);
+    // 4 straight edges (line segments) + 4 corner arcs (≥1 quad each).
+    const lines = c.segments.filter((s) => s.kind === "line");
+    const quads = c.segments.filter((s) => s.kind === "quad");
+    expect(lines).toHaveLength(4);
+    expect(quads.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("a plain <rect> still emits the sharp 4-line chain (no rx/ry)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="10" height="5"/></svg>`,
+    );
+    expect(ofType(calls, "sketch_path")).toHaveLength(0);
+    expect(ofType(calls, "sketch_line")).toHaveLength(4);
+  });
+
+  it("clamps rx to w/2 for a rounded rect", () => {
+    // rx=999 must clamp to w/2=10 → corner arcs span the full half-width,
+    // so the top straight edge collapses to a degenerate (zero-length)
+    // line between the two top corners at x=10.
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="20" height="20" rx="999"/></svg>`,
+    );
+    const c = (
+      ofType(calls, "sketch_path")[0].params.contours as PathContour[]
+    )[0];
+    // Start = (x+rx, y) flipped = (10, 0). Sane finite coords (no NaN).
+    expect(c.start[0]).toBeCloseTo(10, 6);
+    expect(Number.isFinite(c.start[0]) && Number.isFinite(c.start[1])).toBe(
+      true,
+    );
+  });
+
+  it("mirrors one-of rx/ry to both (rx only → ry=rx)", () => {
+    // rx present, ry absent → ry := rx. A circular-corner rounded rect.
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="20" height="20" rx="4"/></svg>`,
+    );
+    const c = (
+      ofType(calls, "sketch_path")[0].params.contours as PathContour[]
+    )[0];
+    // start = (x+rx, y) = (4, 0) flipped → (4, -0).
+    expect(c.start[0]).toBeCloseTo(4, 6);
+    expect(
+      c.segments.filter((s) => s.kind === "quad").length,
+    ).toBeGreaterThanOrEqual(4);
+  });
+
   it("maps <circle> to sketch_circle (centre y negated)", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><circle cx="3" cy="4" r="7"/></svg>`,
@@ -140,7 +197,9 @@ describe("svgToSubCalls", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 Q5 10 10 0"/></svg>`,
     );
-    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    const c = (
+      ofType(calls, "sketch_path")[0].params.contours as PathContour[]
+    )[0];
     expect(c.segments).toHaveLength(1);
     const q = c.segments[0] as { kind: string; ctrl: number[]; to: number[] };
     expect(q.kind).toBe("quad");
@@ -153,7 +212,9 @@ describe("svgToSubCalls", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 l10 0 l0 10 z"/></svg>`,
     );
-    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    const c = (
+      ofType(calls, "sketch_path")[0].params.contours as PathContour[]
+    )[0];
     expect(c.closed).toBe(true);
     expect(c.segments).toHaveLength(2);
   });
@@ -162,7 +223,9 @@ describe("svgToSubCalls", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 A5 5 0 0 1 10 0"/></svg>`,
     );
-    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    const c = (
+      ofType(calls, "sketch_path")[0].params.contours as PathContour[]
+    )[0];
     expect(c.segments.length).toBeGreaterThanOrEqual(1);
     expect(c.segments.every((s) => s.kind === "quad")).toBe(true);
   });
@@ -324,7 +387,9 @@ describe("dxfToSubCalls", () => {
 
   it("parses a closed LWPOLYLINE", () => {
     const calls = dxfToSubCalls(
-      wrap(`0\nLWPOLYLINE\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n`),
+      wrap(
+        `0\nLWPOLYLINE\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n`,
+      ),
     );
     // 3 vertices, closed → 3 lines.
     expect(ofType(calls, "sketch_line")).toHaveLength(3);
@@ -332,7 +397,9 @@ describe("dxfToSubCalls", () => {
 
   it("parses an open LWPOLYLINE", () => {
     const calls = dxfToSubCalls(
-      wrap(`0\nLWPOLYLINE\n70\n0\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n`),
+      wrap(
+        `0\nLWPOLYLINE\n70\n0\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n`,
+      ),
     );
     // 3 vertices, open → 2 lines.
     expect(ofType(calls, "sketch_line")).toHaveLength(2);
