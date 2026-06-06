@@ -39,6 +39,15 @@ export class Kernel {
      */
     addExtrude(sketch_id: number, depth_mm: number, op: number, tz: number): number;
     /**
+     * Extrude one or more coplanar B-Rep faces (P1). `faces` is one or more
+     * comma-separated planar face queries (e.g. `qFace(<id_hash>)`); their
+     * boundary loops are projected into their shared plane and swept by
+     * `depth_mm`. `symmetric` grows `±depth/2` about the plane; `false` is a
+     * blind / two-sided extrude `[−depth_back, +depth]` along the face normal
+     * (the default the UI sends, matching Onshape). Adds material (Union).
+     */
+    addExtrudeFaces(faces: string, depth_mm: number, symmetric: boolean, depth_back_mm: number): number;
+    /**
      * Insert a feature instance of an arbitrary registered type
      * (built-in OR a document FieldSkript whose id == `type_name`),
      * with `params_json` as its parameter blob. Returns the new flat
@@ -680,6 +689,7 @@ export interface InitOutput {
     readonly kernel_addBoolean: (a: number) => [number, number, number];
     readonly kernel_addCircularPattern: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly kernel_addExtrude: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly kernel_addExtrudeFaces: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addFeatureCall: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly kernel_addFilletEdge: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addGyroid: (a: number, b: number, c: number, d: number) => [number, number, number];

@@ -42,6 +42,7 @@ function makeState(
 ): StoreState {
   return {
     selectedElement: el,
+    selectedElements: [el],
     features: [],
   } as unknown as StoreState;
 }

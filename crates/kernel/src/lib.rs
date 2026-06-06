@@ -1602,6 +1602,29 @@ impl Kernel {
         }))
     }
 
+    /// Extrude one or more coplanar B-Rep faces (P1). `faces` is one or more
+    /// comma-separated planar face queries (e.g. `qFace(<id_hash>)`); their
+    /// boundary loops are projected into their shared plane and swept by
+    /// `depth_mm`. `symmetric` grows `±depth/2` about the plane; `false` is a
+    /// blind / two-sided extrude `[−depth_back, +depth]` along the face normal
+    /// (the default the UI sends, matching Onshape). Adds material (Union).
+    #[wasm_bindgen(js_name = addExtrudeFaces)]
+    pub fn add_extrude_faces(
+        &mut self,
+        faces: String,
+        depth_mm: f32,
+        symmetric: bool,
+        depth_back_mm: f32,
+    ) -> Result<u32, JsError> {
+        self.push_feature_call("extrude", serde_json::json!({
+            "profiles": "",
+            "faces": faces,
+            "depth": { "value": depth_mm, "unit": "mm" },
+            "symmetric": symmetric,
+            "depth_back": { "value": depth_back_mm, "unit": "mm" },
+        }))
+    }
+
     /// K8.13: list the connected inside-regions of a sketch.
     /// Returns a JSON array of `{index, centroid, aabb, area}`
     /// objects. The sketch is identified by its feature id.

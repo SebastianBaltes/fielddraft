@@ -359,13 +359,15 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { r
       return;
     }
 
-    // Chunk 3a: tool-free B-Rep element selection. A plain click on a hovered
-    // face/edge/vertex persistently selects it (no multi-select / modifiers in
-    // this chunk). Otherwise clear any element selection and fall through to
-    // feature-level selection.
+    // Tool-free B-Rep element selection. A plain click on a hovered
+    // face/edge/vertex persistently selects it; Shift/Ctrl-click toggles it in
+    // the multi-select set (used to gather coplanar faces for one extrude).
+    // Otherwise clear any element selection and fall through to feature-level.
     const hovered = getHoveredElement();
     if (hovered) {
-      store.selectElement(hovered);
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+      if (additive) store.toggleElement(hovered);
+      else store.selectElement(hovered);
       invalidateCanvas();
       return;
     }

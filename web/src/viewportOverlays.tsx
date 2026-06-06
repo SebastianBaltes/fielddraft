@@ -951,6 +951,10 @@ export function BRepSelectionOverlay({
 export function BRepSelectedOverlay() {
   const { store, state } = useKernelStore();
   const selected = state?.selectedElement ?? null;
+  // Full multi-select set: a face primary highlights every selected face
+  // (the coplanar extrude gather); edges/vertices stay single-primary.
+  const selectedList = state?.selectedElements ?? [];
+  const selectedKey = selectedList.map((e) => `${e.kind}:${e.idHash}`).join(",");
 
   const faceGeomRef = useRef(new THREE.BufferGeometry());
   const faceMatRef = useRef(
@@ -1009,6 +1013,12 @@ export function BRepSelectedOverlay() {
     const count = k.bodyCount();
 
     if (selected.kind === "face") {
+      // Highlight EVERY selected face (multi-select gather), accumulating their
+      // triangles across all bodies into the shared face geometry.
+      const faceHashes = new Set(
+        selectedList.filter((e) => e.kind === "face").map((e) => e.idHash),
+      );
+      const tris: number[] = [];
       for (let i = 0; i < count; i++) {
         let faces: BRepFace[];
         let placement: Placement;
@@ -1024,11 +1034,12 @@ export function BRepSelectedOverlay() {
         } catch {
           continue;
         }
-        const face = faces.find((f) => f.idHash === selected.idHash);
-        if (!face) continue;
-        const tris: number[] = [];
+        const wanted = new Set(
+          faces.filter((f) => faceHashes.has(f.idHash)).map((f) => f.faceIndex),
+        );
+        if (wanted.size === 0) continue;
         for (let t = 0; t < faceIndexView.length; t++) {
-          if (faceIndexView[t] !== face.faceIndex) continue;
+          if (!wanted.has(faceIndexView[t])) continue;
           for (let c = 0; c < 3; c++) {
             const vi = indices[t * 3 + c];
             const local: [number, number, number] = [
@@ -1040,15 +1051,14 @@ export function BRepSelectedOverlay() {
             tris.push(w[0], w[1], w[2]);
           }
         }
-        if (tris.length === 0) continue;
-        faceGeomRef.current.setAttribute(
-          "position",
-          new THREE.Float32BufferAttribute(tris, 3),
-        );
-        faceGeomRef.current.computeBoundingSphere();
-        return { kind: "face" };
       }
-      return null;
+      if (tris.length === 0) return null;
+      faceGeomRef.current.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(tris, 3),
+      );
+      faceGeomRef.current.computeBoundingSphere();
+      return { kind: "face" };
     }
 
     if (selected.kind === "edge") {
@@ -1098,7 +1108,8 @@ export function BRepSelectedOverlay() {
       return { kind: "vertex", world: localToWorld(v.positionLocal, placement) };
     }
     return null;
-  }, [store, selected, bodyFingerprint]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, selected, selectedKey, bodyFingerprint]);
 
   if (!resolved) return null;
 

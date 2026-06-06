@@ -259,6 +259,83 @@ impl<'a> Context<'a> {
         None
     }
 
+    /// Resolve a coplanar set of `qFace(...)` queries into a single 2D extrude
+    /// profile plus the shared world [`SketchFrame`] it sits on (face extrude,
+    /// P1). Every selected face must be planar and coplanar with the first; the
+    /// boundary loops are projected into the first face's frame and unioned, so
+    /// a multi-face selection extrudes as one merged profile (see
+    /// [`crate::brep::face_profile`]).
+    ///
+    /// Errors are returned as a message the caller wraps in a [`FeatureError`]:
+    /// a non-`qFace` query, an unresolvable handle, a non-planar (curved) face,
+    /// or a face not coplanar with the first.
+    pub fn resolve_extrude_faces(
+        &mut self,
+        queries: &[String],
+    ) -> Result<(::fielddraft_protocol::Sketch2d, crate::sketch_features::SketchFrame), String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+
+        // Locate each requested face → (brep index, FaceId, world frame).
+        let mut hits: Vec<(usize, FaceId, crate::sketch_features::SketchFrame)> = Vec::new();
+        for q in queries {
+            let expr = crate::queries::parse_query(q)
+                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+            let QueryExpr::Face(hash) = expr else {
+                return Err(format!(
+                    "extrude faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                ));
+            };
+            let mut found = false;
+            'scan: for (bi, (brep, placement)) in woven.iter().enumerate() {
+                for i in 0..brep.faces.len() {
+                    let fid = FaceId(i as u32);
+                    if TopoRef::from_face(brep, fid).id_hash == hash {
+                        hits.push((
+                            bi,
+                            fid,
+                            crate::sketch_features::face_plane_frame(brep, fid, placement),
+                        ));
+                        found = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if !found {
+                return Err(format!("face {hash} not found in the current model"));
+            }
+        }
+        if hits.is_empty() {
+            return Err("no faces selected to extrude".to_string());
+        }
+
+        // First face's frame is the shared (u, v) plane for the whole group.
+        let frame = hits[0].2;
+        for (_, _, f) in &hits[1..] {
+            if !coplanar(&frame, f) {
+                return Err("all selected faces must be coplanar (curved / multi-plane extrude is not supported yet)".to_string());
+            }
+        }
+
+        // Project each face's loops into the shared frame and union the regions.
+        let mut region: Option<::fielddraft_protocol::Sketch2d> = None;
+        for (bi, fid, _) in &hits {
+            let (brep, placement) = &woven[*bi];
+            let r = crate::brep::face_profile::face_region_2d(brep, *fid, &frame, placement)
+                .ok_or_else(|| {
+                    "face has no planar extrudable profile (curved faces deferred)".to_string()
+                })?;
+            region = Some(match region {
+                None => r,
+                Some(acc) => ::fielddraft_protocol::Sketch2d::Union(Box::new(acc), Box::new(r)),
+            });
+        }
+        Ok((region.unwrap(), frame))
+    }
+
     /// Resolve a *plane* query to a world-space [`SketchFrame`],
     /// accepting both the well-known datum planes
     /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
@@ -362,6 +439,26 @@ impl<'a> Context<'a> {
         }
         out
     }
+}
+
+/// Two world [`SketchFrame`](crate::sketch_features::SketchFrame)s are coplanar
+/// iff their normals are (anti)parallel and the second origin lies in the first
+/// frame's plane. Used to gate a coplanar multi-face extrude selection.
+fn coplanar(
+    a: &crate::sketch_features::SketchFrame,
+    b: &crate::sketch_features::SketchFrame,
+) -> bool {
+    let dn = a.normal[0] * b.normal[0] + a.normal[1] * b.normal[1] + a.normal[2] * b.normal[2];
+    if dn.abs() < 0.999 {
+        return false;
+    }
+    let d = [
+        b.origin[0] - a.origin[0],
+        b.origin[1] - a.origin[1],
+        b.origin[2] - a.origin[2],
+    ];
+    let off = d[0] * a.normal[0] + d[1] * a.normal[1] + d[2] * a.normal[2];
+    off.abs() < 1e-2
 }
 
 /// Apply a body `placement` (rotate·scale then translate) to a point.
@@ -2214,6 +2311,28 @@ pub struct ExtrudeDef {
     /// [`PrimitiveModifiers`], producing a thin-walled closed shell.
     #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub shell_thickness: ::fielddraft_protocol::Length,
+
+    /// Planar B-Rep face(s) to extrude instead of a sketch — the face-extrude
+    /// path (P1). Comma-separated `qFace(<id_hash>)` selections; all faces must
+    /// be coplanar. When non-empty this takes precedence over `profiles`: the
+    /// faces' boundary loops are projected into their shared plane and unioned
+    /// into the extrude profile (see [`Context::resolve_extrude_faces`]).
+    #[param(name = "Faces", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "FACE")]
+    pub faces: ::fielddraft_protocol::MultiQuery,
+
+    /// Direction mode. `true` (default) grows the profile symmetrically by
+    /// `±depth/2` about the plane — the established sketch-extrude behaviour.
+    /// `false` is a one-sided (blind) extrude `[−depth_back, +depth]` along the
+    /// plane normal; the web face-extrude tool sends `false` for the Onshape
+    /// default of growing outward from the picked face.
+    #[param(name = "Symmetric", default = true)]
+    pub symmetric: bool,
+
+    /// Backward depth for a two-sided (asymmetric) extrude, measured against the
+    /// plane normal. Only consulted when `symmetric` is `false`; `0` (default)
+    /// makes a pure blind extrude.
+    #[param(name = "Back depth", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub depth_back: ::fielddraft_protocol::Length,
 }
 
 pub struct ExtrudeFeature;
@@ -2246,6 +2365,63 @@ impl FeatureKind for ExtrudeFeature {
                 name: "depth",
                 message: format!("must be > 0 mm, got {depth_mm}"),
             });
+        }
+
+        // Direction mode → (half-height, centre offset along the plane normal).
+        // Symmetric (default) is ±depth/2 about the plane — the legacy sketch
+        // behaviour (dz = 0). Blind / two-sided spans `[−back, +depth]` → centre
+        // at `(depth − back)/2` along local Z (which the frame maps to the plane
+        // normal). The `center[2]` shift is folded into the primitive below.
+        let back_mm = d.depth_back.to_mm().max(0.0);
+        let (half_depth_z, dz) = if d.symmetric {
+            (depth_mm / 2.0, 0.0)
+        } else {
+            ((depth_mm + back_mm) / 2.0, (depth_mm - back_mm) / 2.0)
+        };
+
+        let name = optional_display_name(def, || format!("Extrude {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+        let mods = PrimitiveModifiers {
+            shell_thickness: d.shell_thickness.to_mm().max(0.0),
+            ..PrimitiveModifiers::NONE
+        };
+
+        // ── Face-extrude path (P1) ──────────────────────────────────────────
+        // A coplanar `qFace(...)` selection drives the profile and takes
+        // precedence over `profiles`. The selected faces' boundary loops are
+        // projected into their shared plane, unioned, and swept exactly like a
+        // sketch profile; the face frame places that profile back onto the plane.
+        let face_queries: Vec<String> =
+            d.faces.queries().iter().map(|s| s.to_string()).collect();
+        if !face_queries.is_empty() {
+            let (sketch, frame) =
+                ctx.resolve_extrude_faces(&face_queries).map_err(|message| {
+                    FeatureError::InvalidParameter {
+                        feature: ExtrudeDef::TYPE_NAME,
+                        name: "faces",
+                        message,
+                    }
+                })?;
+            let primitive = Primitive::Extrude {
+                sketch,
+                half_depth_z,
+                center: [0.0, 0.0, dz],
+            };
+            let transform = crate::compose_transforms(
+                &frame.to_transform(),
+                &Transform { translate: [0.0, 0.0, 0.0], rotation, scale },
+            );
+            ctx.features.push(DecodedFeature::from_parts(
+                id.clone(),
+                name,
+                d.operation,
+                primitive,
+                transform,
+                mods,
+                vec![],
+            ));
+            return Ok(());
         }
 
         // K7.3: resolve the `profiles` query against the
@@ -2299,15 +2475,13 @@ impl FeatureKind for ExtrudeFeature {
             });
         }
 
-        let name = optional_display_name(def, || format!("Extrude {id}"));
-        let rotation = optional_rotation(def);
-        let scale = optional_scale(def);
-
+        // Direction mode folds into `center[2]` (along local Z / plane normal).
+        let center = [d.center[0], d.center[1], d.center[2] + dz];
         let primitive = match resolved_sketch {
             Some(sketch) => Primitive::Extrude {
                 sketch,
-                half_depth_z: depth_mm / 2.0,
-                center: d.center,
+                half_depth_z,
+                center,
             },
             None => {
                 // Fallback: legacy hand-written half-extents.
@@ -2322,8 +2496,8 @@ impl FeatureKind for ExtrudeFeature {
                     "profile_half_y",
                 )?;
                 Primitive::Box {
-                    center: d.center,
-                    half_extents: [d.profile_half_x, d.profile_half_y, depth_mm / 2.0],
+                    center,
+                    half_extents: [d.profile_half_x, d.profile_half_y, half_depth_z],
                 }
             }
         };
@@ -2348,10 +2522,7 @@ impl FeatureKind for ExtrudeFeature {
             d.operation,
             primitive,
             transform,
-            PrimitiveModifiers {
-                shell_thickness: d.shell_thickness.to_mm().max(0.0),
-                ..PrimitiveModifiers::NONE
-            },
+            mods,
             vec![],
         ));
         Ok(())
@@ -3271,7 +3442,7 @@ mod tests {
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
         let params = extrude_schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 7);
+        assert_eq!(params.len(), 10);
     }
 
     #[test]
@@ -4153,7 +4324,7 @@ mod tests {
         let schema = ExtrudeDef::schema_json();
         assert_eq!(schema["type"], json!("extrude"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 7);
+        assert_eq!(params.len(), 10);
 
         // Each key / type pair documents the K4.5.4f vocabulary
         // demonstrated in a single definition.
@@ -4183,6 +4354,13 @@ mod tests {
         // #9: optional shell thickness hollows the extruded body.
         assert_eq!(map["shell_thickness"]["type"], json!("length"));
         assert_eq!(map["shell_thickness"]["required"], json!(false));
+        // Face-extrude (P1): an optional multi-face source + direction modes.
+        assert_eq!(map["faces"]["type"], json!("multi_query"));
+        assert_eq!(map["faces"]["required"], json!(false));
+        assert_eq!(map["symmetric"]["type"], json!("bool"));
+        assert_eq!(map["symmetric"]["required"], json!(false));
+        assert_eq!(map["depth_back"]["type"], json!("length"));
+        assert_eq!(map["depth_back"]["required"], json!(false));
     }
 
     #[test]
@@ -5521,6 +5699,255 @@ mod tests {
             assert_eq!(b_ctx.vertex_count(), b_all.vertex_count());
             assert_eq!(p_ctx, p_all, "placements match");
         }
+    }
+
+    // ─── Face extrude (P1): B-Rep faces as an extrude source ──────
+
+    /// Find the planar face whose world normal points along `want`.
+    fn planar_face_hash(brep: &crate::brep::BRep, want: [f32; 3]) -> Option<u64> {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        use fielddraft_protocol::HalfSpace;
+        for i in 0..brep.face_count() {
+            let fid = FaceId(i as u32);
+            if let SurfaceGeometry::Analytic {
+                surface: HalfSpace::Plane { normal, .. },
+                transform,
+            } = &brep.face(fid).surface
+            {
+                let n = crate::quat_rotate(transform.rotation, *normal);
+                if n[0] * want[0] + n[1] * want[1] + n[2] * want[2] > 0.99 {
+                    return Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find a curved (non-planar analytic) face — e.g. a cylinder wall.
+    fn curved_face_hash(brep: &crate::brep::BRep) -> Option<u64> {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        use fielddraft_protocol::HalfSpace;
+        for i in 0..brep.face_count() {
+            let fid = FaceId(i as u32);
+            match &brep.face(fid).surface {
+                SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. } => {}
+                _ => return Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash),
+            }
+        }
+        None
+    }
+
+    /// Does any leaf `Path` of the sketch tree carry an analytic `Arc`?
+    fn has_arc(s: &::fielddraft_protocol::Sketch2d) -> bool {
+        use ::fielddraft_protocol::{Sketch2d as S, Sketch2dPrimitive as P, SketchSegment as Seg};
+        match s {
+            S::Prim(P::Path { segments, .. }) => {
+                segments.iter().any(|seg| matches!(seg, Seg::Arc { .. }))
+            }
+            S::Prim(_) | S::Empty => false,
+            S::Union(a, b) | S::Difference(a, b) | S::Intersection(a, b) => {
+                has_arc(a) || has_arc(b)
+            }
+            S::Offset { inner, .. } => has_arc(inner),
+        }
+    }
+
+    fn weave_first(ctx: &mut Context<'_>) -> crate::brep::BRep {
+        crate::body::weave_all(&ctx.features)[0].0.clone()
+    }
+
+    #[test]
+    fn extrude_box_top_face_builds_blind_square_slab() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    box_call(1, 10.0),
+                    FeatureCall::new(
+                        "extrude",
+                        id(2),
+                        json!({
+                            "profiles": "",
+                            "faces": format!("qFace({hash})"),
+                            "depth": { "value": 5.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+
+        let ex = ctx2.features.iter().find(|f| f.id == id(2)).expect("extrude");
+        let prim = ex.export_primitive().expect("primitive");
+        let Primitive::Extrude { sketch, half_depth_z, center } = prim else {
+            panic!("expected Primitive::Extrude, got {prim:?}");
+        };
+        // Blind 5 mm grows [0, 5] along the face normal → half 2.5, centre +2.5.
+        assert!((half_depth_z - 2.5).abs() < 1e-4, "half {half_depth_z}");
+        assert!((center[2] - 2.5).abs() < 1e-4, "centre z {}", center[2]);
+        // The 20×20 top face projects to a [-10, 10]² profile.
+        let bb = sketch.aabb();
+        assert!((bb.min[0] + 10.0).abs() < 1e-2 && (bb.max[0] - 10.0).abs() < 1e-2, "aabb {bb:?}");
+        assert!((bb.min[1] + 10.0).abs() < 1e-2 && (bb.max[1] - 10.0).abs() < 1e-2, "aabb {bb:?}");
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside the profile");
+        assert!(sketch.sdf([30.0, 0.0]) > 0.0, "far point outside");
+    }
+
+    #[test]
+    fn extrude_cylinder_cap_builds_circular_arc_profile() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let cyl = FeatureCall::new(
+            "cylinder",
+            id(1),
+            json!({ "radius": 3.0, "half_height": 4.0 }),
+        );
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&cyl), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        // A cylinder's cap normal is ±Y; take whichever exists.
+        let hash = planar_face_hash(&brep, [0.0, 1.0, 0.0])
+            .or_else(|| planar_face_hash(&brep, [0.0, -1.0, 0.0]))
+            .expect("a cap face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    cyl.clone(),
+                    FeatureCall::new(
+                        "extrude",
+                        id(2),
+                        json!({
+                            "profiles": "",
+                            "faces": format!("qFace({hash})"),
+                            "depth": { "value": 2.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        let ex = ctx2.features.iter().find(|f| f.id == id(2)).expect("extrude");
+        let Primitive::Extrude { sketch, .. } = ex.export_primitive().expect("primitive") else {
+            panic!("expected Primitive::Extrude");
+        };
+        // The cap rim is one closed circular edge → an exact Arc, not a polygon.
+        assert!(has_arc(&sketch), "circular cap should yield an analytic Arc");
+        let bb = sketch.aabb();
+        let (wx, wy) = (bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
+        assert!((wx - wy).abs() < 1e-2 * wx.max(1.0), "round profile: {wx} vs {wy}");
+        assert!(((bb.min[0] + bb.max[0]) * 0.5).abs() < 1e-2, "centred in u");
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "centre inside the disc");
+    }
+
+    #[test]
+    fn extrude_faces_rejects_non_coplanar_selection() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).unwrap();
+        let side = planar_face_hash(&brep, [1.0, 0.0, 0.0]).unwrap();
+
+        let err = ctx
+            .resolve_extrude_faces(&[format!("qFace({top})"), format!("qFace({side})")])
+            .unwrap_err();
+        assert!(err.contains("coplanar"), "got: {err}");
+    }
+
+    #[test]
+    fn extrude_faces_rejects_curved_face() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                std::slice::from_ref(&FeatureCall::new(
+                    "cylinder",
+                    id(1),
+                    json!({ "radius": 3.0, "half_height": 4.0 }),
+                )),
+                None,
+            )
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let wall = curved_face_hash(&brep).expect("a curved cylinder wall face");
+
+        let err = ctx.resolve_extrude_faces(&[format!("qFace({wall})")]).unwrap_err();
+        assert!(
+            err.contains("planar") || err.contains("curved"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn extrude_direction_modes_set_half_and_centre() {
+        let registry = FeatureRegistry::with_builtins();
+        // Learn the box's top-face handle once.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let face_q = format!("qFace({})", planar_face_hash(&brep, [0.0, 0.0, 1.0]).unwrap());
+
+        // Each mode in its own fresh regen (a second extrude would bury the
+        // first's top face, so they cannot share a spine).
+        let half_centre = |extra: serde_json::Value| -> (f32, f32) {
+            let mut params = json!({
+                "profiles": "",
+                "faces": face_q,
+                "depth": { "value": 6.0, "unit": "mm" },
+            });
+            let obj = params.as_object_mut().unwrap();
+            for (k, v) in extra.as_object().unwrap() {
+                obj.insert(k.clone(), v.clone());
+            }
+            let mut d = empty_ctx();
+            let mut c = Context::new(&mut d);
+            registry
+                .regenerate(
+                    &mut c,
+                    &[box_call(1, 10.0), FeatureCall::new("extrude", id(2), params)],
+                    None,
+                )
+                .unwrap();
+            let ex = c.features.iter().find(|f| f.id == id(2)).unwrap();
+            match ex.export_primitive().unwrap() {
+                Primitive::Extrude { half_depth_z, center, .. } => (half_depth_z, center[2]),
+                p => panic!("expected Extrude, got {p:?}"),
+            }
+        };
+        assert_eq!(half_centre(json!({ "symmetric": true })), (3.0, 0.0), "symmetric");
+        assert_eq!(half_centre(json!({ "symmetric": false })), (3.0, 3.0), "blind");
+        assert_eq!(
+            half_centre(json!({ "symmetric": false, "depth_back": { "value": 2.0, "unit": "mm" } })),
+            (4.0, 2.0),
+            "two-sided"
+        );
     }
 
     // ─── C2: mate-connector-on-face ────────────────────────────────

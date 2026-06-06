@@ -142,6 +142,10 @@ export interface StoreState {
    *  Ephemeral UI state — NOT persisted to the project. Mutually exclusive
    *  with the feature-level `selection` set: setting one clears the other. */
   selectedElement: PickedElement | null;
+  /** The full multi-select set (Shift/Ctrl-click accumulates faces for a
+   *  coplanar face-extrude). `selectedElement` is the primary (last-picked)
+   *  member; an empty array means nothing is element-selected. */
+  selectedElements: PickedElement[];
   canUndo: boolean;
   undoDepth: number;
   canRedo: boolean;
@@ -444,6 +448,7 @@ export class KernelStore {
       selection: new Set(),
       selectionAnchor: null,
       selectedElement: null,
+      selectedElements: [],
       canUndo: kernel.canUndo(),
       undoDepth: kernel.undoDepth(),
       canRedo: kernel.canRedo(),
@@ -531,6 +536,7 @@ export class KernelStore {
       // A document mutation invalidates any picked element (its idHash may no
       // longer resolve), and the two selection notions are mutually exclusive.
       selectedElement: null,
+      selectedElements: [],
       canUndo: this.kernel.canUndo(),
       undoDepth: this.kernel.undoDepth(),
       canRedo: this.kernel.canRedo(),
@@ -1203,6 +1209,7 @@ export class KernelStore {
       selectionAnchor: id,
       // Feature selection and element selection are mutually exclusive.
       selectedElement: null,
+      selectedElements: [],
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1218,6 +1225,7 @@ export class KernelStore {
       selection: next,
       selectionAnchor: id,
       selectedElement: null,
+      selectedElements: [],
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1254,6 +1262,7 @@ export class KernelStore {
       // Anchor stays put — that's the standard finder/Onshape behaviour.
       selectionAnchor: anchor,
       selectedElement: null,
+      selectedElements: [],
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1412,6 +1421,26 @@ export class KernelStore {
     } catch (err) {
       console.error("fielddraft: addFilletAtEdge failed", err);
       this.setTransientError(formatKernelError(err, "Fillet failed"));
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
+  /** Extrude one or more coplanar planar faces (P1). `faceQueries` are
+   *  `qFace(<idHash>)` strings (one per selected face); they are joined into a
+   *  single multi-query and swept `depthMm` blind (outward from the face, the
+   *  Onshape default). Depth/mode stay editable afterwards via the feature
+   *  dialog. Returns the new feature id, or `null` on a kernel error (e.g. the
+   *  faces are not coplanar). */
+  addExtrudeFaces(faceQueries: string[], depthMm = 10): number | null {
+    if (faceQueries.length === 0) return null;
+    let id: number;
+    try {
+      id = this.kernel.addExtrudeFaces(faceQueries.join(","), depthMm, false, 0);
+    } catch (err) {
+      console.error("fielddraft: addExtrudeFaces failed", err);
+      this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
     this.commit(new Set([id]), id);
@@ -1736,6 +1765,7 @@ export class KernelStore {
       selection: new Set(),
       selectionAnchor: null,
       selectedElement: null,
+      selectedElements: [],
     });
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1753,6 +1783,29 @@ export class KernelStore {
       selection: new Set(),
       selectionAnchor: null,
       selectedElement: el,
+      selectedElements: [el],
+    };
+    this.syncActiveBody();
+    this.notify();
+  }
+
+  /** Add or remove `el` from the multi-select set (Shift/Ctrl-click). The
+   *  primary `selectedElement` becomes the toggled element when added, or the
+   *  new last member when removed. Used to gather coplanar faces for a single
+   *  face-extrude. Clears the feature-level selection like {@link selectElement}. */
+  toggleElement(el: PickedElement): void {
+    const same = (a: PickedElement, b: PickedElement) =>
+      a.kind === b.kind && a.idHash === b.idHash;
+    const present = this.state.selectedElements.some((e) => same(e, el));
+    const next = present
+      ? this.state.selectedElements.filter((e) => !same(e, el))
+      : [...this.state.selectedElements, el];
+    this.state = {
+      ...this.state,
+      selection: new Set(),
+      selectionAnchor: null,
+      selectedElement: next.length > 0 ? next[next.length - 1] : null,
+      selectedElements: next,
     };
     this.syncActiveBody();
     this.notify();
@@ -1760,8 +1813,9 @@ export class KernelStore {
 
   /** Clear the persistent element selection. No-op when nothing is selected. */
   clearElementSelection(): void {
-    if (this.state.selectedElement === null) return;
-    this.patch({ selectedElement: null });
+    if (this.state.selectedElement === null && this.state.selectedElements.length === 0)
+      return;
+    this.patch({ selectedElement: null, selectedElements: [] });
     this.notify();
   }
 

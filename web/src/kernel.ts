@@ -1099,6 +1099,18 @@ export class Kernel {
     return this.inner.addShell(openFaces, thicknessMm);
   }
 
+  /** Extrude one or more coplanar planar faces (P1). `faces` is a
+   *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
+   *  is the blind/two-sided Onshape default growing outward from the face. */
+  addExtrudeFaces(
+    faces: string,
+    depthMm: number,
+    symmetric: boolean,
+    depthBackMm: number,
+  ): number {
+    return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm);
+  }
+
   /** K9.1: overall scene AABB in mm. */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {

@@ -86,6 +86,28 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * Extrude one or more coplanar B-Rep faces (P1). `faces` is one or more
+     * comma-separated planar face queries (e.g. `qFace(<id_hash>)`); their
+     * boundary loops are projected into their shared plane and swept by
+     * `depth_mm`. `symmetric` grows `±depth/2` about the plane; `false` is a
+     * blind / two-sided extrude `[−depth_back, +depth]` along the face normal
+     * (the default the UI sends, matching Onshape). Adds material (Union).
+     * @param {string} faces
+     * @param {number} depth_mm
+     * @param {boolean} symmetric
+     * @param {number} depth_back_mm
+     * @returns {number}
+     */
+    addExtrudeFaces(faces, depth_mm, symmetric, depth_back_mm) {
+        const ptr0 = passStringToWasm0(faces, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addExtrudeFaces(this.__wbg_ptr, ptr0, len0, depth_mm, symmetric, depth_back_mm);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Insert a feature instance of an arbitrary registered type
      * (built-in OR a document FieldSkript whose id == `type_name`),
      * with `params_json` as its parameter blob. Returns the new flat

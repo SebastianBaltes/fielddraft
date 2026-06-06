@@ -232,7 +232,11 @@ export function ElementInfo({ store, state }: { store: KernelStore; state: Store
           <dd><code className="query" data-testid="element-info-query">{query}</code></dd>
         </div>
       </dl>
-      <ElementActions store={store} el={el} />
+      <ElementActions
+        store={store}
+        el={el}
+        faces={state.selectedElements.filter((e) => e.kind === "face")}
+      />
     </section>
   );
 }
@@ -246,13 +250,23 @@ export function ElementInfo({ store, state }: { store: KernelStore; state: Store
  *
  * Vertices have no actions in this chunk → the section renders nothing.
  */
-function ElementActions({ store, el }: { store: KernelStore; el: PickedElement }) {
+function ElementActions({
+  store,
+  el,
+  faces,
+}: {
+  store: KernelStore;
+  el: PickedElement;
+  faces: PickedElement[];
+}) {
   if (el.kind === "vertex") return null;
 
   const fire = (run: () => void) => {
     run();
     store.clearElementSelection();
   };
+  const extrudeLabel =
+    faces.length > 1 ? `${faces.length} Flächen extrudieren` : "Fläche extrudieren";
 
   return (
     <div className="actions" data-testid="element-info-actions">
@@ -275,6 +289,20 @@ function ElementActions({ store, el }: { store: KernelStore; el: PickedElement }
               onClick={() => fire(() => store.addMateConnectorAtFace(elementQueryString(el)))}
             >
               Mate-Connector
+            </button>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-extrude"
+              onClick={() =>
+                fire(() =>
+                  store.addExtrudeFaces(
+                    (faces.length > 0 ? faces : [el]).map(elementQueryString),
+                  ),
+                )
+              }
+            >
+              {extrudeLabel}
             </button>
           </>
         )}
