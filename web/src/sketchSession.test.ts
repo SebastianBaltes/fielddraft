@@ -16,7 +16,10 @@ import {
   subCallsForSelection,
   idsOfSubCall,
   constraintRefIds,
+  constraintIdsOfSubCall,
+  summarizeDiagnostics,
 } from "./sketchSession";
+import { emptyDiagnostics } from "./solver/types";
 
 describe("sketchSession reducers", () => {
   it("starts in the inactive shape", () => {
@@ -192,6 +195,7 @@ describe("sketchSession reducers", () => {
       toolDraft: {},
       editingFeatureId: null,
       selection: [],
+      diagnostics: emptyDiagnostics(),
       subCalls: [
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
         { type: "sketch_constraint_horizontal", params: { line: 3 } },
@@ -214,6 +218,7 @@ describe("sketchSession reducers", () => {
       toolDraft: {},
       editingFeatureId: null,
       selection: [],
+      diagnostics: emptyDiagnostics(),
       subCalls: [
         // Call 0: sketch_point — allocates entity 1.
         { type: "sketch_point", params: { at: [0, 0] } },
@@ -337,6 +342,7 @@ describe("sketchSession reducers", () => {
       toolDraft: {},
       editingFeatureId: null,
       selection: [],
+      diagnostics: emptyDiagnostics(),
       subCalls: [
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 1-3
         { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 4-6
@@ -358,6 +364,7 @@ describe("sketchSession reducers", () => {
       toolDraft: {},
       editingFeatureId: null,
       selection: [],
+      diagnostics: emptyDiagnostics(),
       subCalls: [
         { type: "sketch_point", params: { at: [0, 0] } }, // entity 1
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 2-4 (line=4)
@@ -741,5 +748,118 @@ describe("constraintRefIds (F19 constraint-row → referenced entity ids)", () =
       { type: "sketch_constraint_coincident", params: { a: 1 } },
     ];
     expect(constraintRefIds(calls, 2)).toEqual([1]);
+  });
+});
+
+describe("constraintIdsOfSubCall (F20)", () => {
+  it("returns the ConstraintId a constraint sub-call allocates", () => {
+    // Line (entities 1-3), then a horizontal constraint → id 1.
+    const calls = [
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+      { type: "sketch_constraint_horizontal", params: { line: 3 } },
+    ];
+    expect(constraintIdsOfSubCall(calls, 1)).toEqual([1]);
+  });
+
+  it("returns [] for a geometry sub-call", () => {
+    const calls = [
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+      { type: "sketch_constraint_horizontal", params: { line: 3 } },
+    ];
+    expect(constraintIdsOfSubCall(calls, 0)).toEqual([]);
+  });
+
+  it("aligns ids across multiple constraints in spine order", () => {
+    // Two lines, each with one constraint placed after some geometry +
+    // a prior constraint. Constraint ids are allocated monotonically.
+    const calls = [
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // ent 1-3
+      { type: "sketch_constraint_horizontal", params: { line: 3 } }, // cid 1
+      { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // ent 4-6
+      { type: "sketch_constraint_vertical", params: { line: 6 } }, // cid 2
+    ];
+    expect(constraintIdsOfSubCall(calls, 1)).toEqual([1]);
+    expect(constraintIdsOfSubCall(calls, 3)).toEqual([2]);
+    // Geometry rows in between own no constraint ids.
+    expect(constraintIdsOfSubCall(calls, 2)).toEqual([]);
+  });
+
+  it("attributes a composite's constraints to the geometry row, not a constraint row", () => {
+    // sketch_rectangle allocates 4 internal constraints (cids 1-4); a
+    // following user horizontal constraint is cid 5.
+    const calls = [
+      { type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [10, 5] } },
+      { type: "sketch_constraint_horizontal", params: { line: 5 } },
+    ];
+    expect(constraintIdsOfSubCall(calls, 0)).toEqual([1, 2, 3, 4]);
+    expect(constraintIdsOfSubCall(calls, 1)).toEqual([5]);
+  });
+
+  it("returns [] for out-of-range indices", () => {
+    const calls = [
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    ];
+    expect(constraintIdsOfSubCall(calls, -1)).toEqual([]);
+    expect(constraintIdsOfSubCall(calls, 5)).toEqual([]);
+  });
+});
+
+describe("summarizeDiagnostics (F20)", () => {
+  // Two lines, each with one constraint → constraint ids 1 and 2 at
+  // sub-call indices 1 and 3 respectively.
+  const calls = [
+    { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    { type: "sketch_constraint_horizontal", params: { line: 3 } }, // cid 1
+    { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } },
+    { type: "sketch_constraint_vertical", params: { line: 6 } }, // cid 2
+  ];
+
+  it("flags the constraint sub-call index whose id is in `conflicting`", () => {
+    const out = summarizeDiagnostics(calls, {
+      ...emptyDiagnostics(),
+      conflicting: [1],
+    });
+    expect([...out.conflicts]).toEqual([1]);
+    expect([...out.redundants]).toEqual([]);
+    expect(out.conflictCount).toBe(1);
+    expect(out.redundantCount).toBe(0);
+  });
+
+  it("empty diagnostics → no flags", () => {
+    const out = summarizeDiagnostics(calls, emptyDiagnostics());
+    expect(out.conflictCount).toBe(0);
+    expect(out.redundantCount).toBe(0);
+    expect([...out.conflicts]).toEqual([]);
+    expect([...out.redundants]).toEqual([]);
+  });
+
+  it("partially_redundant ids count as redundant", () => {
+    const out = summarizeDiagnostics(calls, {
+      ...emptyDiagnostics(),
+      partially_redundant: [2],
+    });
+    expect([...out.redundants]).toEqual([3]); // sub-call index of cid 2
+    expect(out.redundantCount).toBe(1);
+    expect(out.conflictCount).toBe(0);
+  });
+
+  it("conflict wins over redundant when an id is in both buckets", () => {
+    const out = summarizeDiagnostics(calls, {
+      ...emptyDiagnostics(),
+      conflicting: [1],
+      redundant: [1],
+    });
+    expect([...out.conflicts]).toEqual([1]);
+    expect([...out.redundants]).toEqual([]);
+  });
+
+  it("maps multiple flagged constraints to their sub-call indices", () => {
+    const out = summarizeDiagnostics(calls, {
+      ...emptyDiagnostics(),
+      conflicting: [1],
+      redundant: [2],
+    });
+    expect([...out.conflicts]).toEqual([1]);
+    expect([...out.redundants]).toEqual([3]);
   });
 });

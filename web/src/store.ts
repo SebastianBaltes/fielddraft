@@ -61,6 +61,7 @@ import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { solveAndReplace } from "./solver/replaySolve";
+import type { SketchDiagnostics } from "./solver/types";
 import {
   INACTIVE_ASSEMBLY,
   allocateAssemblyId,
@@ -163,6 +164,14 @@ export interface SketchSessionState {
    *  `buildDraftSketchState(subCalls)`. Empty when nothing is
    *  picked. */
   selection: ReadonlyArray<number>;
+  /** F20: latest solve diagnostics for the session geometry —
+   *  which committed constraints the solver flagged as conflicting
+   *  or (partially) redundant. Written by the centralized solve
+   *  pass (`solveAndReplace`) after every successful solve; reset
+   *  to empty on session enter. Constraint ids live in the same id
+   *  space as `buildDraftSketchState(subCalls)`, so the Outliner can
+   *  map them back to constraint sub-call rows. */
+  diagnostics: SketchDiagnostics;
 }
 
 export interface StoreState {
@@ -1959,6 +1968,25 @@ export class KernelStore {
       sketchSession: {
         ...this.state.sketchSession,
         subCalls: [...calls],
+      },
+    };
+    this.notify();
+  }
+
+  /**
+   * F20: stash the latest solve diagnostics on the active session so
+   * the Outliner constraints panel can flag conflicting / redundant
+   * constraint rows. No-op when no session is active. Called by
+   * `solveAndReplace` after a successful solve; the snapshot-identity
+   * guard there ensures a stale solve can't write outdated flags.
+   */
+  setSketchDiagnostics(diagnostics: SketchDiagnostics): void {
+    if (!this.state.sketchSession.active) return;
+    this.state = {
+      ...this.state,
+      sketchSession: {
+        ...this.state.sketchSession,
+        diagnostics,
       },
     };
     this.notify();

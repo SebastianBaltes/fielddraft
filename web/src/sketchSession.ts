@@ -10,7 +10,9 @@
 
 import type { SketchSessionState } from "./store";
 import {
+  emptyDiagnostics,
   sketchWithOrigin,
+  type ConstraintId,
   type EntityId,
   type SketchState,
 } from "./solver/types";
@@ -23,6 +25,7 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   subCalls: [],
   editingFeatureId: null,
   selection: [],
+  diagnostics: emptyDiagnostics(),
 };
 
 /** Options for the `enterSketchSession` reducer. K6b.3b adds the
@@ -51,6 +54,7 @@ export function enterSketchSession(
     subCalls: opts.initialSubCalls ?? [],
     editingFeatureId: opts.editingFeatureId ?? null,
     selection: [],
+    diagnostics: emptyDiagnostics(),
   };
 }
 
@@ -669,6 +673,85 @@ export function idsOfSubCall(
   const ids: number[] = [];
   for (let id = lo; id < hi; id++) ids.push(id);
   return ids;
+}
+
+/**
+ * F20 (diagnostics): the ConstraintId(s) a single CONSTRAINT sub-call
+ * allocated, the constraint-id analogue of [`idsOfSubCall`]. Re-runs the spine
+ * up to and including `index` and returns the `next_constraint_id` range this
+ * call alone consumed against [`buildDraftSketchState`] — the SAME id
+ * allocation the solve input uses, so diagnostics' constraint ids map straight
+ * onto sub-call rows.
+ *
+ * Most `sketch_constraint_*` calls allocate exactly one constraint, but the
+ * range form also covers any future multi-constraint call. Returns `[]` for a
+ * geometry sub-call (it allocates no constraints — note that composite geometry
+ * like `sketch_rectangle` DOES allocate constraints, which this correctly
+ * attributes to that geometry row, not to any constraint row).
+ */
+export function constraintIdsOfSubCall(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): ConstraintId[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const lo = buildDraftSketchState(
+    subCalls.slice(0, index),
+  ).next_constraint_id;
+  const hi = buildDraftSketchState(
+    subCalls.slice(0, index + 1),
+  ).next_constraint_id;
+  const ids: ConstraintId[] = [];
+  for (let id = lo; id < hi; id++) ids.push(id);
+  return ids;
+}
+
+/**
+ * F20 (diagnostics): minimal shape consumed by [`summarizeDiagnostics`] — the
+ * three constraint-id buckets the solver fills. A subset of
+ * `SketchDiagnostics`.
+ */
+export interface DiagnosticsBuckets {
+  conflicting: ReadonlyArray<ConstraintId>;
+  redundant: ReadonlyArray<ConstraintId>;
+  partially_redundant: ReadonlyArray<ConstraintId>;
+}
+
+/**
+ * F20 (diagnostics): one flag per constraint sub-call index. `conflicts` and
+ * `redundants` map a sub-call index → true when any ConstraintId that index
+ * allocated falls in the corresponding diagnostics bucket. `conflict` wins over
+ * `redundant` when an id appears in both. `partially_redundant` counts as
+ * redundant. Both counts ignore geometry rows (they allocate no constraints, or
+ * — for composites — constraints the user can't individually delete).
+ */
+export function summarizeDiagnostics(
+  subCalls: SketchSessionState["subCalls"],
+  diagnostics: DiagnosticsBuckets,
+): {
+  conflicts: Set<number>;
+  redundants: Set<number>;
+  conflictCount: number;
+  redundantCount: number;
+} {
+  const conflicting = new Set(diagnostics.conflicting);
+  const redundant = new Set([
+    ...diagnostics.redundant,
+    ...diagnostics.partially_redundant,
+  ]);
+  const conflicts = new Set<number>();
+  const redundants = new Set<number>();
+  for (let i = 0; i < subCalls.length; i++) {
+    if (!subCalls[i].type.startsWith("sketch_constraint")) continue;
+    const ids = constraintIdsOfSubCall(subCalls, i);
+    if (ids.some((id) => conflicting.has(id))) conflicts.add(i);
+    else if (ids.some((id) => redundant.has(id))) redundants.add(i);
+  }
+  return {
+    conflicts,
+    redundants,
+    conflictCount: conflicts.size,
+    redundantCount: redundants.size,
+  };
 }
 
 /**

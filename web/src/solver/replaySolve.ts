@@ -11,7 +11,7 @@
 
 import { buildDraftSketchState } from "../sketchSession";
 import { solveSketch } from "./planegcs";
-import type { SketchState } from "./types";
+import type { SketchDiagnostics, SketchState } from "./types";
 
 /** Minimal shape of a sketch sub-call (mirrors the session slice). */
 export interface SubCall {
@@ -27,6 +27,9 @@ export interface SketchSolveHost {
     sketchSession: { active: boolean; subCalls: ReadonlyArray<SubCall> };
   };
   replaceSketchSubCalls(calls: ReadonlyArray<SubCall>): void;
+  /** F20: stash the latest solve diagnostics on the session so the
+   *  Outliner can flag conflicting / redundant constraint rows. */
+  setSketchDiagnostics(diagnostics: SketchDiagnostics): void;
 }
 
 /**
@@ -128,6 +131,12 @@ export async function solveAndReplace(host: SketchSolveHost): Promise<void> {
     const after = host.getState().sketchSession;
     if (!after.active || after.subCalls !== snapshot) return;
     host.replaceSketchSubCalls(rebuilt);
+    // Diagnostics' constraint ids are in the session's id space:
+    // `buildDraftSketchState(snapshot)` is the solve input and uses
+    // the same monotonic constraint-id allocation the Outliner reads
+    // back via `constraintIdsOfSubCall`. Stash them under the same
+    // snapshot-identity guard so a stale solve can't clobber.
+    host.setSketchDiagnostics(result.diagnostics);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("fielddraft: solveSketch failed", err);

@@ -788,6 +788,43 @@
           opacity: 1;
         }
       }
+
+      /* F20: per-constraint diagnostics badge. Red flags a conflicting
+         constraint (over-constrained), amber a (partially) redundant one. */
+      & .badge {
+        flex: none;
+        font-size: var(--fs-base);
+        font-weight: var(--fw-semibold);
+        line-height: 1;
+        padding: 2px var(--space-2);
+        border-radius: var(--radius-pill);
+        text-transform: lowercase;
+        letter-spacing: 0.02em;
+
+        &.is-conflict {
+          color: var(--color-error-text);
+          background: var(--color-error-soft, rgba(181, 59, 59, 0.14));
+        }
+
+        &.is-redundant {
+          color: var(--color-warning);
+          background: var(--color-warning-soft, rgba(176, 120, 32, 0.14));
+        }
+      }
+
+      /* F20: one-line roll-up shown above the constraint rows whenever
+         the last solve flagged anything. Hidden when all clean. */
+      & .diagnostics-summary {
+        padding: var(--space-2) var(--space-4);
+        font-size: var(--fs-base);
+        font-weight: var(--fw-semibold);
+        color: var(--color-warning);
+        border-bottom: 1px solid var(--color-divider);
+
+        &.has-conflict {
+          color: var(--color-error-text);
+        }
+      }
     }
 
     & .constraint-manager {

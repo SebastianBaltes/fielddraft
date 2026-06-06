@@ -27,6 +27,7 @@ import {
   buildDraftSketchState,
   idsOfSubCall,
   constraintRefIds,
+  summarizeDiagnostics,
 } from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { formatQueryDisplay } from "./queryLabels";
@@ -628,6 +629,12 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                   else geometry.push(i);
                 });
 
+                // F20: which constraint rows the last solve flagged.
+                const diag = summarizeDiagnostics(
+                  sketchSession.subCalls,
+                  sketchSession.diagnostics,
+                );
+
                 const renderRow = (i: number) => {
                   const call = sketchSession.subCalls[i];
                   const isConstraint = call.type.startsWith("sketch_constraint");
@@ -664,6 +671,23 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                         {kindGlyph(call.type)}{" "}
                         {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
                       </span>
+                      {isConstraint && diag.conflicts.has(i) ? (
+                        <span
+                          className="badge is-conflict"
+                          title="This constraint conflicts with the others — delete one of them to resolve the over-constrained sketch."
+                          data-testid={`sketch-constraint-conflict-${i}`}
+                        >
+                          conflict
+                        </span>
+                      ) : isConstraint && diag.redundants.has(i) ? (
+                        <span
+                          className="badge is-redundant"
+                          title="This constraint is redundant — it is already implied by the others and can be removed."
+                          data-testid={`sketch-constraint-redundant-${i}`}
+                        >
+                          redundant
+                        </span>
+                      ) : null}
                       {!isConstraint ? (
                         <button
                           type="button"
@@ -722,6 +746,18 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                         data-testid="sketch-elements-constraints"
                       >
                         Constraints ({constraints.length})
+                      </li>
+                    ) : null}
+                    {diag.conflictCount > 0 || diag.redundantCount > 0 ? (
+                      <li
+                        className={
+                          "diagnostics-summary" +
+                          (diag.conflictCount > 0 ? " has-conflict" : "")
+                        }
+                        data-testid="sketch-diagnostics-summary"
+                      >
+                        ⚠ {diag.conflictCount} conflicting, {diag.redundantCount}{" "}
+                        redundant
                       </li>
                     ) : null}
                     {constraints.map(renderRow)}
