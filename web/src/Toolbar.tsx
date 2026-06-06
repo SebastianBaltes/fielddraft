@@ -388,6 +388,30 @@ export function Toolbar({ store, state }: ToolbarProps) {
               />
             );
           })}
+          {/* F7: primitive-construction variants. These are UI-only tools
+              (like trim) — they aren't kernel feature tools but emit
+              ordinary sub-calls at commit time (sketch_rectangle /
+              sketch_circle / sketch_line + perpendicular constraints), so
+              they're hard-coded buttons here and the gestures are handled
+              in SketchCanvas2d keyed on the selectedTool string. */}
+          <FeatureButton
+            kind="sketch_rectangle_center"
+            active={sketchSession.selectedTool === "sketch_rectangle_center"}
+            testId="sketch-tool-sketch_rectangle_center"
+            onClick={() => store.selectSketchTool("sketch_rectangle_center", {})}
+          />
+          <FeatureButton
+            kind="sketch_rectangle_3p"
+            active={sketchSession.selectedTool === "sketch_rectangle_3p"}
+            testId="sketch-tool-sketch_rectangle_3p"
+            onClick={() => store.selectSketchTool("sketch_rectangle_3p", {})}
+          />
+          <FeatureButton
+            kind="sketch_circle_3p"
+            active={sketchSession.selectedTool === "sketch_circle_3p"}
+            testId="sketch-tool-sketch_circle_3p"
+            onClick={() => store.selectSketchTool("sketch_circle_3p", {})}
+          />
           {/* Trim is an interactive editing mode, not a kernel feature
               tool, so it isn't in `sketchToolTypes`. Selecting it makes a
               canvas click cut the curve under the cursor at its nearest

@@ -43,6 +43,11 @@ import {
   unwrapSweep,
 } from "./sketchArc";
 import {
+  circleThrough3,
+  rectCenterCorners,
+  rect3pCorners,
+} from "./sketchPrimitiveVariants";
+import {
   inferCandidates,
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
@@ -262,8 +267,36 @@ type DragState =
       current: [number, number];
     }
   | {
+      /** F7: rectangle-from-centre. Drag from the centre outward to a
+       *  corner; the axis-aligned rectangle spans center ∓ |delta|. On
+       *  drop we emit a single `sketch_rectangle` sub-call. */
+      kind: "rect_center";
+      center: [number, number];
+      current: [number, number];
+    }
+  | {
       kind: "circle";
       center: [number, number];
+      current: [number, number];
+    }
+  | {
+      /** F7: circle through three points. Click 1 and 2 fix two points
+       *  on the circumference; the 3rd click fixes the third and commits
+       *  the circumcircle as a `sketch_circle` (aborted if collinear).
+       *  `p2` is null until the 2nd click. */
+      kind: "circle_3p";
+      p1: [number, number];
+      p2: [number, number] | null;
+      current: [number, number];
+    }
+  | {
+      /** F7: rotated rectangle from three points. p1→p2 is one edge;
+       *  the 3rd click sets the perpendicular width. On the 3rd click we
+       *  emit four `sketch_line` sub-calls forming the loop plus
+       *  perpendicular constraints. `p2` is null until the 2nd click. */
+      kind: "rect_3p";
+      p1: [number, number];
+      p2: [number, number] | null;
       current: [number, number];
     }
   | {
@@ -335,6 +368,61 @@ interface SnapResolution {
    *  when the snap is orientation-only (horizontal/vertical/
    *  parallel) or when there is no snap at all. */
   coincidentTargetId: number | null;
+}
+
+/**
+ * F7: expand a rotated rectangle (four corners) into the sub-calls that
+ * realise it: four `sketch_line` edges around the loop, coincident
+ * constraints joining adjacent corners so the loop stays closed under
+ * solving, and perpendicular constraints on adjacent edges so the right
+ * angles are locked (three suffice to fix all four corners). Entity ids
+ * are predicted the way the line-commit path does — each `sketch_line`
+ * allocates start, end, line in that order — so the constraints reference
+ * the lines/points the kernel is about to create.
+ */
+function buildRect3pSubCalls(
+  corners: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number],
+  ],
+  subCalls: SketchSessionState["subCalls"],
+): Array<{ type: string; params: Record<string, unknown> }> {
+  const base = predictNextLineIds(subCalls).start;
+  // Per line i: startPt = base + 3i, endPt = base + 3i + 1, line = base + 3i + 2.
+  const startPt = (i: number) => base + 3 * i;
+  const endPt = (i: number) => base + 3 * i + 1;
+  const lineId = (i: number) => base + 3 * i + 2;
+
+  const calls: Array<{ type: string; params: Record<string, unknown> }> = [];
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i];
+    const b = corners[(i + 1) % 4];
+    calls.push({
+      type: "sketch_line",
+      params: {
+        start: [a[0], a[1]] as [number, number],
+        end: [b[0], b[1]] as [number, number],
+      },
+    });
+  }
+  // Close the loop: line i's end coincides with line (i+1)'s start.
+  for (let i = 0; i < 4; i++) {
+    calls.push({
+      type: "sketch_constraint_coincident",
+      params: { a: endPt(i), b: startPt((i + 1) % 4) },
+    });
+  }
+  // Lock the right angles: perpendicular between consecutive edges. Three
+  // constraints pin all four corners (the fourth angle follows).
+  for (let i = 0; i < 3; i++) {
+    calls.push({
+      type: "sketch_constraint_perpendicular",
+      params: { line_a: lineId(i), line_b: lineId(i + 1) },
+    });
+  }
+  return calls;
 }
 
 function resolveSnap(
@@ -596,11 +684,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Reset an in-progress multi-click arc draft when the active tool
-  // changes, so a stale centre/start can't get committed as the first
-  // click of the next gesture.
+  // Reset an in-progress multi-click draft (arc / circle-3p / rect-3p)
+  // when the active tool changes, so a stale point can't get committed as
+  // the first click of the next gesture.
   useEffect(() => {
-    if (dragRef.current.kind === "arc") {
+    const k = dragRef.current.kind;
+    if (k === "arc" || k === "circle_3p" || k === "rect_3p") {
       dragRef.current = { kind: "idle" };
       lastCamVersionRef.current = -1;
     }
@@ -796,6 +885,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_rectangle_center") {
+      dragRef.current = {
+        kind: "rect_center",
+        center: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (session.selectedTool === "sketch_regular_polygon") {
       dragRef.current = {
         kind: "regular_polygon",
@@ -877,6 +975,53 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         dragRef.current = { kind: "idle" };
         if (call) {
           store.pushSketchSubCalls([call]);
+          scheduleSolverReplay();
+        }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    if (session.selectedTool === "sketch_circle_3p") {
+      const drag = dragRef.current;
+      if (drag.kind !== "circle_3p") {
+        // Click 1 — first point on the circumference.
+        dragRef.current = { kind: "circle_3p", p1: [su, sv], p2: null, current: [su, sv] };
+      } else if (drag.p2 === null) {
+        // Click 2 — second point.
+        dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
+      } else {
+        // Click 3 — solve the circumcircle and commit (or discard if
+        // the three points are collinear).
+        const res = circleThrough3(drag.p1, drag.p2, [su, sv]);
+        dragRef.current = { kind: "idle" };
+        if (res) {
+          store.pushSketchSubCalls([
+            {
+              type: "sketch_circle",
+              params: { center: res.center, radius: res.radius },
+            },
+          ]);
+          scheduleSolverReplay();
+        }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    if (session.selectedTool === "sketch_rectangle_3p") {
+      const drag = dragRef.current;
+      if (drag.kind !== "rect_3p") {
+        // Click 1 — first edge endpoint.
+        dragRef.current = { kind: "rect_3p", p1: [su, sv], p2: null, current: [su, sv] };
+      } else if (drag.p2 === null) {
+        // Click 2 — second edge endpoint (fixes the edge direction).
+        dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
+      } else {
+        // Click 3 — the perpendicular width; commit four lines + two
+        // perpendicular constraints (or discard if degenerate).
+        const corners = rect3pCorners(drag.p1, drag.p2, [su, sv]);
+        dragRef.current = { kind: "idle" };
+        if (corners) {
+          store.pushSketchSubCalls(buildRect3pSubCalls(corners, session.subCalls));
           scheduleSolverReplay();
         }
       }
@@ -1008,6 +1153,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         coincidentTargetId: null,
       };
     } else if (dragRef.current.kind === "circle") {
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "rect_center") {
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+      snapRef.current = {
+        snapped: [u, v],
+        candidate: null,
+        anchor: null,
+        coincidentTargetId: null,
+      };
+    } else if (
+      dragRef.current.kind === "circle_3p" ||
+      dragRef.current.kind === "rect_3p"
+    ) {
       dragRef.current = { ...dragRef.current, current: [u, v] };
     } else if (dragRef.current.kind === "regular_polygon") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
@@ -1188,6 +1346,36 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             center: [center[0], center[1]] as [number, number],
             radius,
           },
+        },
+      ]);
+      scheduleSolverReplay();
+      return;
+    }
+    if (dragRef.current.kind === "rect_center") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { center, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const res = rectCenterCorners(center, current);
+      if (!res) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readCamForCanvas(canvas),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+            projectedEdgesRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_rectangle",
+          params: { corner_a: res.cornerA, corner_b: res.cornerB },
         },
       ]);
       scheduleSolverReplay();
@@ -1615,6 +1803,51 @@ function drawOverlay(
     drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
     drawPoint(ctx, center, cam, COLOR_PREVIEW);
     drawRadiusLabel(ctx, center, radius, cam);
+  } else if (drag.kind === "rect_center") {
+    // Mirror the cursor about the centre to ghost the axis-aligned box.
+    const { center, current } = drag;
+    const opp: [number, number] = [
+      2 * center[0] - current[0],
+      2 * center[1] - current[1],
+    ];
+    drawRectangle(ctx, opp, current, cam, COLOR_PREVIEW);
+    drawPoint(ctx, center, cam, COLOR_PREVIEW);
+    drawSizeLabel(ctx, opp, current, cam);
+  } else if (drag.kind === "circle_3p") {
+    const { p1, p2, current } = drag;
+    drawPoint(ctx, p1, cam, COLOR_PREVIEW);
+    if (p2 === null) {
+      // Stage 1: rubber-band chord from p1 to the cursor.
+      drawLine(ctx, p1, current, cam, COLOR_PREVIEW, STROKE_PX);
+    } else {
+      // Stage 2: ghost the circumcircle through the three current points.
+      drawPoint(ctx, p2, cam, COLOR_PREVIEW);
+      const res = circleThrough3(p1, p2, current);
+      if (res) {
+        drawCircle(ctx, res.center, res.radius, cam, COLOR_PREVIEW);
+        drawRadiusLabel(ctx, res.center, res.radius, cam);
+      }
+      drawPoint(ctx, current, cam, COLOR_PREVIEW);
+    }
+  } else if (drag.kind === "rect_3p") {
+    const { p1, p2, current } = drag;
+    drawPoint(ctx, p1, cam, COLOR_PREVIEW);
+    if (p2 === null) {
+      // Stage 1: rubber-band the first edge.
+      drawLine(ctx, p1, current, cam, COLOR_PREVIEW, STROKE_PX);
+    } else {
+      // Stage 2: ghost the rotated rectangle through the width point.
+      drawPoint(ctx, p2, cam, COLOR_PREVIEW);
+      const corners = rect3pCorners(p1, p2, current);
+      if (corners) {
+        for (let i = 0; i < 4; i++) {
+          drawLine(ctx, corners[i], corners[(i + 1) % 4], cam, COLOR_PREVIEW, STROKE_PX);
+          drawPoint(ctx, corners[i], cam, COLOR_PREVIEW);
+        }
+      } else {
+        drawLine(ctx, p1, p2, cam, COLOR_PREVIEW, STROKE_PX);
+      }
+    }
   } else if (drag.kind === "regular_polygon") {
     const { center, current } = drag;
     const radius = Math.hypot(current[0] - center[0], current[1] - center[1]);
