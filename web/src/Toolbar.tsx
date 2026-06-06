@@ -424,6 +424,17 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_trim"
             onClick={() => store.selectSketchTool("sketch_trim", {})}
           />
+          {/* Split: the keep-both sibling of Trim — also an interactive
+              editing mode, not a kernel tool. A single click cuts the curve
+              under the cursor into two pieces meeting at the click point;
+              both halves survive (see store.splitSketchAt /
+              sketchSplit.ts). */}
+          <FeatureButton
+            kind="sketch_split"
+            active={sketchSession.selectedTool === "sketch_split"}
+            testId="sketch-tool-sketch_split"
+            onClick={() => store.selectSketchTool("sketch_split", {})}
+          />
           {/* Extend: the complement of Trim — also an interactive editing
               mode, not a kernel tool. A single click picks the nearest line
               and lengthens its grabbed end to the nearest other curve (see

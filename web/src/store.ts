@@ -49,6 +49,7 @@ import {
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
+import { splitCurveAt } from "./sketchSplit";
 import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
@@ -1960,6 +1961,44 @@ export class KernelStore {
     if (!result) return;
     this.updateSketch(
       reduceReplaceAt(session, result.index, result.newCalls),
+    );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F13: Split — the keep-both sibling of Trim. The curve at
+   * `targetIndex` is cut at `click` into two sub-curves that meet at the
+   * click point; nothing is deleted. The clicked line/arc is replaced in
+   * place by its two pieces (each carrying the target's construction
+   * flag); downstream constraint refs are rewritten by
+   * [`replaceSketchSubCallAt`] and the sketch is re-solved. No-op when
+   * the target isn't a simple line/arc, or the click is at an endpoint /
+   * on a full circle (see sketchSplit.ts). `click` is in sketch mm.
+   */
+  splitSketchAt(
+    targetIndex: number,
+    click: [number, number],
+    _tolMm: number,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const cv = curveOfSubCall(target);
+    if (!cv) return; // composites / unsupported kinds: keep v1 simple
+
+    const pieces = splitCurveAt(cv, click);
+    if (!pieces) return;
+
+    const carry: Record<string, unknown> =
+      target.params.construction !== undefined
+        ? { construction: target.params.construction }
+        : {};
+    this.updateSketch(
+      reduceReplaceAt(session, targetIndex, [
+        subCallOfCurve(pieces[0], carry),
+        subCallOfCurve(pieces[1], carry),
+      ]),
     );
     void solveAndReplace(this);
   }

@@ -48,7 +48,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
-import { curveOfSubCall, distToCurve } from "./sketchTrim";
+import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -890,6 +890,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (session.selectedTool === "sketch_trim") {
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       store.trimSketchAt([u, v], tolMm);
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // Split: keep-both sibling of Trim — also a single-click editing mode
+    // (not a kernel tool). The click picks the nearest curve under the
+    // cursor and cuts it into two pieces meeting at the click point; both
+    // halves survive (see store.splitSketchAt / sketchSplit.ts).
+    if (session.selectedTool === "sketch_split") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
+      if (pick !== null) store.splitSketchAt(pick, [u, v], tolMm);
       lastCamVersionRef.current = -1;
       return;
     }

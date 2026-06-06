@@ -125,6 +125,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_arc:         { label: "Arc",              glyph: "◠" },
   sketch_mirror:      { label: "Mirror",           glyph: "◧" },
   sketch_trim:        { label: "Trim",             glyph: "✂" },
+  sketch_split:       { label: "Split",            glyph: "⊷" },
   sketch_extend:      { label: "Extend",           glyph: "⊶" },
   sketch_fillet:      { label: "Fillet",           glyph: "⌒" },
   sketch_chamfer:     { label: "Chamfer",          glyph: "◣" },
