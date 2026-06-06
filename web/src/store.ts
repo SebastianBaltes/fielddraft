@@ -40,9 +40,15 @@ import {
   buildDraftSketchState,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
-import { computeTrim, curveOfSubCall, subCallOfCurve } from "./sketchTrim";
+import {
+  computeTrim,
+  curveOfSubCall,
+  edgesOfSubCall,
+  subCallOfCurve,
+} from "./sketchTrim";
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
+import { extendLine } from "./sketchExtend";
 import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
@@ -1954,6 +1960,46 @@ export class KernelStore {
     if (!result) return;
     this.updateSketch(
       reduceReplaceAt(session, result.index, result.newCalls),
+    );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F12: Extend (complement of Trim). Lengthen the line sub-call at
+   * `targetIndex` along its own direction until it meets the nearest other
+   * sketch curve. The endpoint nearer `click` is the grabbed end that
+   * moves outward; the far endpoint is preserved. The lengthened line
+   * replaces the target in place (carrying its construction flag);
+   * downstream constraint refs are rewritten by [`replaceSketchSubCallAt`]
+   * and the sketch is re-solved. No-op when the target isn't a line or
+   * nothing lies in the forward extension. `click` is in sketch mm.
+   */
+  extendSketchAt(
+    targetIndex: number,
+    click: [number, number],
+    _tolMm: number,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const line = curveOfSubCall(target);
+    if (!line || line.kind !== "line") return;
+
+    // Every edge of every OTHER sub-call is a curve to extend into.
+    const others = session.subCalls.flatMap((call, i) =>
+      i === targetIndex ? [] : edgesOfSubCall(call),
+    );
+
+    const extended = extendLine(line, click, others);
+    if (!extended) return;
+
+    const carry: Record<string, unknown> =
+      target.params.construction !== undefined
+        ? { construction: target.params.construction }
+        : {};
+    this.updateSketch(
+      reduceReplaceAt(session, targetIndex, [subCallOfCurve(extended, carry)]),
     );
     void solveAndReplace(this);
   }

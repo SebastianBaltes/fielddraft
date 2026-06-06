@@ -424,6 +424,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_trim"
             onClick={() => store.selectSketchTool("sketch_trim", {})}
           />
+          {/* Extend: the complement of Trim — also an interactive editing
+              mode, not a kernel tool. A single click picks the nearest line
+              and lengthens its grabbed end to the nearest other curve (see
+              store.extendSketchAt / sketchExtend.ts). */}
+          <FeatureButton
+            kind="sketch_extend"
+            active={sketchSession.selectedTool === "sketch_extend"}
+            testId="sketch-tool-sketch_extend"
+            onClick={() => store.selectSketchTool("sketch_extend", {})}
+          />
           {/* Fillet: like Trim, an interactive editing mode, not a kernel
               tool. Two clicks pick the lines whose corner is rounded by a
               tangent arc of the radius below (see store.filletSketchAt /

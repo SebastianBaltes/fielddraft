@@ -893,6 +893,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    // Extend: complement of Trim, also a single-click editing mode (not a
+    // kernel tool). The click picks the nearest LINE under the cursor and
+    // lengthens its grabbed end (the one nearer the click) toward the
+    // nearest other curve (see store.extendSketchAt / sketchExtend.ts).
+    if (session.selectedTool === "sketch_extend") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+      if (pick !== null) store.extendSketchAt(pick, [u, v], tolMm);
+      lastCamVersionRef.current = -1;
+      return;
+    }
     // Fillet: two-click flow. Each click picks the line sub-call nearest
     // the cursor (line-only — composites aren't filleted here). The first
     // pick is held pending in `filletFirstRef`; the second pick applies
