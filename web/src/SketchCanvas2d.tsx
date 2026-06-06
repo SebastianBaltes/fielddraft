@@ -32,6 +32,7 @@ import {
   buildDraftSketchState,
   DRAFT_DRAG_START_ID,
   predictNextLineIds,
+  regularPolygonVertices,
 } from "./sketchSession";
 import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
 import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
@@ -262,6 +263,15 @@ type DragState =
     }
   | {
       kind: "circle";
+      center: [number, number];
+      current: [number, number];
+    }
+  | {
+      /** F6: regular N-gon. Drag from the centre outward to set the
+       *  radius; the side count + inscribed/circumscribed come from
+       *  the tool's parameter dialog. On drop we emit a single
+       *  `sketch_regular_polygon` sub-call. */
+      kind: "regular_polygon";
       center: [number, number];
       current: [number, number];
     }
@@ -786,6 +796,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_regular_polygon") {
+      dragRef.current = {
+        kind: "regular_polygon",
+        center: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (session.selectedTool === "sketch_polygon") {
       // If the previous polygon was applied (draft cleared),
       // start fresh rather than appending to the old one.
@@ -990,6 +1009,14 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       };
     } else if (dragRef.current.kind === "circle") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "regular_polygon") {
+      dragRef.current = { ...dragRef.current, current: [u, v] };
+      snapRef.current = {
+        snapped: [u, v],
+        candidate: null,
+        anchor: null,
+        coincidentTargetId: null,
+      };
     } else if (dragRef.current.kind === "arc") {
       const d = dragRef.current;
       if (d.start === null) {
@@ -1094,6 +1121,41 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         const state = buildDraftSketchState(session.subCalls);
         store.setSketchSelection(entitiesInBox(state, min, max, mode));
       }
+      return;
+    }
+    if (dragRef.current.kind === "regular_polygon") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { center, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const radius = Math.hypot(current[0] - center[0], current[1] - center[1]);
+      if (radius < 1e-2) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readCamForCanvas(canvas),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+            projectedEdgesRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_regular_polygon",
+          params: {
+            center: [center[0], center[1]] as [number, number],
+            radius,
+            sides: Number(session.toolDraft?.sides) || 6,
+            inscribed: session.toolDraft?.inscribed ?? true,
+          },
+        },
+      ]);
+      scheduleSolverReplay();
       return;
     }
     if (dragRef.current.kind === "circle") {
@@ -1553,6 +1615,33 @@ function drawOverlay(
     drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
     drawPoint(ctx, center, cam, COLOR_PREVIEW);
     drawRadiusLabel(ctx, center, radius, cam);
+  } else if (drag.kind === "regular_polygon") {
+    const { center, current } = drag;
+    const radius = Math.hypot(current[0] - center[0], current[1] - center[1]);
+    const verts = regularPolygonVertices(
+      center,
+      radius,
+      Number(session.toolDraft?.sides) || 6,
+      session.toolDraft?.inscribed !== false,
+    );
+    if (verts.length >= 3) {
+      ctx.strokeStyle = COLOR_PREVIEW;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const [px0, py0] = sketchToScreen(verts[0][0], verts[0][1], cam);
+      ctx.moveTo(px0, py0);
+      for (let i = 1; i < verts.length; i++) {
+        const [px, py] = sketchToScreen(verts[i][0], verts[i][1], cam);
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      for (const v of verts) {
+        drawPoint(ctx, v, cam, COLOR_PREVIEW);
+      }
+      drawPoint(ctx, center, cam, COLOR_PREVIEW);
+      drawRadiusLabel(ctx, center, radius, cam);
+    }
   } else if (drag.kind === "polygon") {
     const { vertices, current } = drag;
     if (vertices.length > 0) {

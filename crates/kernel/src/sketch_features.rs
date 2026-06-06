@@ -337,6 +337,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchRectangleTool));
         r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchPolygonTool));
+        r.register(Box::new(SketchRegularPolygonTool));
         r.register(Box::new(SketchArcTool));
         r.register(Box::new(SketchEllipseTool));
         r.register(Box::new(SketchMirrorTool));
@@ -769,6 +770,89 @@ impl SketchToolKind for SketchPolygonTool {
             if chunk.len() == 2 {
                 state.add_point(Point2::new(chunk[0] as f64, chunk[1] as f64));
             }
+        }
+        Ok(())
+    }
+}
+
+/// `sketch_regular_polygon` — a regular N-gon defined by centre,
+/// radius and side count. Expands to N point entities forming a
+/// closed loop, exactly like the free [`SketchPolygonTool`]. The
+/// vertex math here MUST stay byte-for-byte identical to the
+/// TypeScript `buildDraftSketchState` branch, or constraint refs
+/// drift between the predicted and regenerated entity ids.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_regular_polygon")]
+pub struct SketchRegularPolygonDef {
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// Side count as a schema number; rounded and clamped to ≥ 3.
+    #[param(default = 6.0)]
+    pub sides: f32,
+    /// `true` ⇒ vertices lie on the radius circle (inscribed);
+    /// `false` ⇒ the given radius is the apothem (circumscribed).
+    #[param(default = true)]
+    pub inscribed: bool,
+}
+
+/// Shared vertex computation for the regular polygon. Returns the
+/// N vertices in CCW order starting at the top (angle = π/2), or
+/// `None` if the parameters are degenerate (n < 3 or radius < ε).
+/// This is the canonical formula the TS side mirrors.
+pub fn regular_polygon_vertices(
+    center: [f32; 2],
+    radius: f32,
+    sides: f32,
+    inscribed: bool,
+) -> Option<Vec<[f32; 2]>> {
+    let n = (sides.round() as i64).max(3);
+    if !(radius.abs() >= 1e-6) {
+        return None;
+    }
+    let nf = n as f32;
+    let eff = if inscribed {
+        radius
+    } else {
+        radius / (std::f32::consts::PI / nf).cos()
+    };
+    let mut verts = Vec::with_capacity(n as usize);
+    for k in 0..n {
+        let angle =
+            std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * (k as f32) / nf;
+        verts.push([
+            center[0] + eff * angle.cos(),
+            center[1] + eff * angle.sin(),
+        ]);
+    }
+    Some(verts)
+}
+
+pub struct SketchRegularPolygonTool;
+
+impl SketchToolKind for SketchRegularPolygonTool {
+    fn type_name(&self) -> &'static str {
+        SketchRegularPolygonDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchRegularPolygonDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchRegularPolygonDef::parse(def)?;
+        let verts = regular_polygon_vertices(d.center, d.radius, d.sides, d.inscribed)
+            .ok_or(FeatureError::InvalidParameter {
+                feature: SketchRegularPolygonDef::TYPE_NAME,
+                name: "radius",
+                message: "need radius ≥ 1e-6 and sides ≥ 3".to_string(),
+            })?;
+        for v in verts {
+            state.add_point(Point2::new(v[0] as f64, v[1] as f64));
         }
         Ok(())
     }
@@ -1208,6 +1292,16 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 }
                 Some(Sketch2dPrimitive::Polygon { vertices: verts })
             }
+            "sketch_regular_polygon" => {
+                let d = match SketchRegularPolygonDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                match regular_polygon_vertices(d.center, d.radius, d.sides, d.inscribed) {
+                    Some(verts) => Some(Sketch2dPrimitive::Polygon { vertices: verts }),
+                    None => continue,
+                }
+            }
             "sketch_mirror" => {
                 // Mirror the accumulated tree so far across an axis.
                 let d = match SketchMirrorDef::parse(&call.params) {
@@ -1571,8 +1665,59 @@ mod tests {
                 "sketch_point".to_string(),
                 "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
+                "sketch_regular_polygon".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn sketch_regular_polygon_square_inscribed_emits_four_points() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_regular_polygon",
+            id(1),
+            json!({ "center": [0.0, 0.0], "radius": 10.0, "sides": 4.0, "inscribed": true }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let pts: Vec<(f64, f64)> = state
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pts.len(), 4);
+        // Square inscribed in r=10: vertices at top, left, bottom, right
+        // (angle = π/2 + k·π/2, CCW).
+        let expected = [(0.0, 10.0), (-10.0, 0.0), (0.0, -10.0), (10.0, 0.0)];
+        for (got, exp) in pts.iter().zip(expected.iter()) {
+            assert!(
+                (got.0 - exp.0).abs() < 1e-4 && (got.1 - exp.1).abs() < 1e-4,
+                "vertex {:?} != expected {:?}",
+                got,
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn sketch_regular_polygon_edge_cases() {
+        // sides < 3 clamps to 3.
+        let v = regular_polygon_vertices([0.0, 0.0], 5.0, 2.0, true).unwrap();
+        assert_eq!(v.len(), 3);
+        // non-integer sides rounds (5.6 → 6).
+        let v = regular_polygon_vertices([0.0, 0.0], 5.0, 5.6, true).unwrap();
+        assert_eq!(v.len(), 6);
+        // circumscribed circumradius > inscribed for the same radius.
+        let hex_in = regular_polygon_vertices([0.0, 0.0], 10.0, 6.0, true).unwrap();
+        let hex_circ = regular_polygon_vertices([0.0, 0.0], 10.0, 6.0, false).unwrap();
+        let r_in = (hex_in[0][0].powi(2) + hex_in[0][1].powi(2)).sqrt();
+        let r_circ = (hex_circ[0][0].powi(2) + hex_circ[0][1].powi(2)).sqrt();
+        assert!(r_circ > r_in + 1e-3, "{} !> {}", r_circ, r_in);
+        // radius 0 → no vertices (rejected).
+        assert!(regular_polygon_vertices([0.0, 0.0], 0.0, 6.0, true).is_none());
     }
 
     #[test]

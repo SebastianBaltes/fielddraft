@@ -165,6 +165,38 @@ export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
   sketch_constraint_diameter: ["entity"],
 };
 
+/**
+ * Compute the vertices of a regular N-gon. MUST stay byte-for-byte
+ * identical to the kernel's `regular_polygon_vertices` (Rust) — same
+ * vertex order, same first-vertex angle — or constraint refs drift.
+ *
+ * Convention: n = max(3, round(sides)); effectiveRadius = inscribed
+ * ? radius : radius / cos(π/n); vertex k angle = π/2 + 2π·k/n (start
+ * at the top, CCW). Returns `[]` when degenerate (n < 3 already
+ * clamped, or |radius| < 1e-6).
+ */
+export function regularPolygonVertices(
+  center: [number, number],
+  radius: number,
+  sides: number,
+  inscribed: boolean,
+): Array<[number, number]> {
+  const n = Math.max(3, Math.round(sides));
+  if (!(Math.abs(radius) >= 1e-6) || !Number.isFinite(radius)) {
+    return [];
+  }
+  const eff = inscribed ? radius : radius / Math.cos(Math.PI / n);
+  const out: Array<[number, number]> = [];
+  for (let k = 0; k < n; k++) {
+    const angle = Math.PI / 2 + (2 * Math.PI * k) / n;
+    out.push([
+      center[0] + eff * Math.cos(angle),
+      center[1] + eff * Math.sin(angle),
+    ]);
+  }
+  return out;
+}
+
 // ─── K6b.3c: draft sketch-state rebuild for live inference ──────
 
 /** ID the [`buildDraftSketchState`] helper assigns to an in-flight
@@ -320,6 +352,28 @@ export function buildDraftSketchState(
             kind: "point",
             id: state.next_entity_id++,
             at: { x: Number(verts[i]), y: Number(verts[i + 1]) },
+          });
+        }
+      }
+    } else if (call.type === "sketch_regular_polygon") {
+      // Mirrors the kernel `SketchRegularPolygonTool`: compute the
+      // N vertices from centre/radius/sides/inscribed and push one
+      // point per vertex. The formula MUST stay byte-for-byte
+      // identical to `regular_polygon_vertices` in Rust.
+      const center = call.params.center;
+      const radius = Number(call.params.radius);
+      if (Array.isArray(center) && center.length === 2) {
+        const verts = regularPolygonVertices(
+          [Number(center[0]), Number(center[1])],
+          radius,
+          Number(call.params.sides),
+          call.params.inscribed !== false,
+        );
+        for (const v of verts) {
+          state.entities.push({
+            kind: "point",
+            id: state.next_entity_id++,
+            at: { x: v[0], y: v[1] },
           });
         }
       }

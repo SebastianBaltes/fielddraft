@@ -8,6 +8,7 @@ import {
   enterSketchSession,
   exitSketchSession,
   removeSketchSubCallAt,
+  regularPolygonVertices,
   selectSketchTool,
   setSketchSelection,
   setSketchToolDraft,
@@ -431,5 +432,92 @@ describe("sketchSession reducers", () => {
     const exited = exitSketchSession(session);
     expect(exited.subCalls).toEqual([]);
     expect(exited.active).toBe(false);
+  });
+});
+
+describe("regularPolygonVertices + sketch_regular_polygon draft", () => {
+  const close = (a: number, b: number) => Math.abs(a - b) < 1e-4;
+
+  it("square (sides=4, inscribed, r=10) yields the expected 4 vertices", () => {
+    const v = regularPolygonVertices([0, 0], 10, 4, true);
+    expect(v).toHaveLength(4);
+    // angle = π/2 + k·π/2 → top, left, bottom, right (CCW).
+    const expected = [
+      [0, 10],
+      [-10, 0],
+      [0, -10],
+      [10, 0],
+    ];
+    v.forEach((p, i) => {
+      expect(close(p[0], expected[i][0])).toBe(true);
+      expect(close(p[1], expected[i][1])).toBe(true);
+    });
+  });
+
+  it("buildDraftSketchState emits exactly 4 points for a square n-gon", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_regular_polygon",
+        params: { center: [0, 0], radius: 10, sides: 4, inscribed: true },
+      },
+    ]);
+    // The sketch origin is a distinct `kind: "origin"` entity, so the
+    // only `"point"` entities are the 4 polygon vertices.
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(4);
+    const ngon = points.map((p) =>
+      p.kind === "point" ? [p.at.x, p.at.y] : [NaN, NaN],
+    );
+    const expected = [
+      [0, 10],
+      [-10, 0],
+      [0, -10],
+      [10, 0],
+    ];
+    ngon.forEach((p, i) => {
+      expect(close(p[0], expected[i][0])).toBe(true);
+      expect(close(p[1], expected[i][1])).toBe(true);
+    });
+  });
+
+  it("triangle (sides=3) yields 3 vertices, first at the top", () => {
+    const v = regularPolygonVertices([0, 0], 5, 3, true);
+    expect(v).toHaveLength(3);
+    expect(close(v[0][0], 0)).toBe(true);
+    expect(close(v[0][1], 5)).toBe(true);
+  });
+
+  it("hexagon (sides=6) yields 6 vertices", () => {
+    expect(regularPolygonVertices([0, 0], 7, 6, true)).toHaveLength(6);
+  });
+
+  it("clamps sides < 3 up to 3", () => {
+    expect(regularPolygonVertices([0, 0], 5, 2, true)).toHaveLength(3);
+    expect(regularPolygonVertices([0, 0], 5, 0, true)).toHaveLength(3);
+  });
+
+  it("rounds non-integer sides (5.6 → 6, 5.4 → 5)", () => {
+    expect(regularPolygonVertices([0, 0], 5, 5.6, true)).toHaveLength(6);
+    expect(regularPolygonVertices([0, 0], 5, 5.4, true)).toHaveLength(5);
+  });
+
+  it("circumscribed produces a larger circumradius than inscribed", () => {
+    const inscribed = regularPolygonVertices([0, 0], 10, 6, true);
+    const circ = regularPolygonVertices([0, 0], 10, 6, false);
+    const rIn = Math.hypot(inscribed[0][0], inscribed[0][1]);
+    const rCirc = Math.hypot(circ[0][0], circ[0][1]);
+    expect(rCirc).toBeGreaterThan(rIn + 1e-3);
+  });
+
+  it("radius 0 → no vertices (degenerate reject)", () => {
+    expect(regularPolygonVertices([0, 0], 0, 6, true)).toHaveLength(0);
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_regular_polygon",
+        params: { center: [0, 0], radius: 0, sides: 6, inscribed: true },
+      },
+    ]);
+    // no polygon vertices added (origin is kind "origin", not "point").
+    expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
   });
 });

@@ -255,6 +255,7 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_rectangle",
   "sketch_circle",
   "sketch_polygon",
+  "sketch_regular_polygon",
   "sketch_arc",
   "sketch_mirror",
   "sketch_offset",
