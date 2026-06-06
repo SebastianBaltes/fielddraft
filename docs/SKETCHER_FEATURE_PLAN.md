@@ -322,7 +322,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 6 | Reguläres n-Eck | ✅ | 0.5.47 | ecc1a1a |
 | 7 | Primitiv-Varianten (Rect/Circle) | ✅ | 0.5.48 | 7d94332 |
 | 8 | Ellipse fertigstellen | ✅ | 0.5.49 | 032913b |
-| 9 | Slot (Langloch) | 🔴 offen | — | — |
+| 9 | Slot (Langloch) | ✅ | 0.5.50 | 493e069 |
 | 10 | Sketch-Fillet | 🔴 offen | — | — |
 | 11 | Sketch-Chamfer | 🔴 offen | — | — |
 | 12 | Extend | 🔴 offen | — | — |
