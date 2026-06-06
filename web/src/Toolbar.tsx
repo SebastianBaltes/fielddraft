@@ -258,6 +258,7 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_slot",
   "sketch_polygon",
   "sketch_regular_polygon",
+  "sketch_spline",
   "sketch_arc",
   // `sketch_trim` (F14 `sketch_mirror`, F15 `sketch_offset`) are not in
   // this allowlist because they aren't kernel tools at all — they're

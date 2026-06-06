@@ -60,6 +60,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
+import { catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
 import {
@@ -380,6 +381,17 @@ type DragState =
   | {
       kind: "polygon";
       vertices: [number, number][];
+      current: [number, number];
+    }
+  | {
+      /** F23: interpolating spline. Click to drop control points; the
+       *  smooth Catmull-Rom curve is previewed live. Finish by double-
+       *  clicking (or clicking within 8 px of) the last point for an
+       *  OPEN spline, or by clicking within 8 px of the FIRST point to
+       *  CLOSE it. On finish we emit one `sketch_spline` sub-call with
+       *  the flat `points` array and the `closed` flag. */
+      kind: "spline";
+      points: [number, number][];
       current: [number, number];
     }
   | {
@@ -1175,6 +1187,49 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       store.setSketchToolDraft({
         vertices: verts.flat(),
       });
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    if (session.selectedTool === "sketch_spline") {
+      // Multi-click control-point placement (mirrors the polygon
+      // gesture). Finish gestures:
+      //   • click within 8 px of the FIRST point (≥ 3 pts) → CLOSE
+      //   • double-click, or click within 8 px of the LAST point
+      //     (≥ 2 pts) → finish OPEN
+      const existing =
+        dragRef.current.kind === "spline" ? dragRef.current.points : [];
+      const cam2 = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [cpx, cpy] = sketchToScreen(su, sv, cam2);
+      const commitSpline = (closed: boolean) => {
+        store.pushSketchSubCalls([
+          {
+            type: "sketch_spline",
+            params: { points: existing.flat(), closed },
+          },
+        ]);
+        scheduleSolverReplay();
+        dragRef.current = { kind: "idle" };
+        lastCamVersionRef.current = -1;
+      };
+      // Close on first point.
+      if (existing.length >= 3) {
+        const [fpx, fpy] = sketchToScreen(existing[0][0], existing[0][1], cam2);
+        if (Math.hypot(cpx - fpx, cpy - fpy) < 8) {
+          commitSpline(true);
+          return;
+        }
+      }
+      // Finish open: double-click, or click near the last point.
+      if (existing.length >= 2) {
+        const last = existing[existing.length - 1];
+        const [lpx, lpy] = sketchToScreen(last[0], last[1], cam2);
+        if (e.detail >= 2 || Math.hypot(cpx - lpx, cpy - lpy) < 8) {
+          commitSpline(false);
+          return;
+        }
+      }
+      const points: [number, number][] = [...existing, [su, sv]];
+      dragRef.current = { kind: "spline", points, current: [su, sv] };
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2027,6 +2082,35 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     return () => window.removeEventListener("keydown", onKey);
   }, [hud === null]);
 
+  // F23: keyboard finish for the spline gesture — Enter commits the
+  // in-progress spline (open, needs ≥ 2 control points); Escape cancels
+  // it. Mirrors the click/double-click finish in onPointerDown.
+  useEffect(() => {
+    if (!store || session.selectedTool !== "sketch_spline") return;
+    const onKey = (e: KeyboardEvent) => {
+      const drag = dragRef.current;
+      if (drag.kind !== "spline") return;
+      if (e.key === "Enter" && drag.points.length >= 2) {
+        e.preventDefault();
+        store.pushSketchSubCalls([
+          {
+            type: "sketch_spline",
+            params: { points: drag.points.flat(), closed: false },
+          },
+        ]);
+        scheduleSolverReplay();
+        dragRef.current = { kind: "idle" };
+        lastCamVersionRef.current = -1;
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        dragRef.current = { kind: "idle" };
+        lastCamVersionRef.current = -1;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [store, session.selectedTool]);
+
   if (!session.active) return null;
 
   const toolActive = session.selectedTool !== null;
@@ -2302,6 +2386,36 @@ function drawOverlay(
           drawPoint(ctx, p, cam, color);
         }
       }
+    } else if (call.type === "sketch_spline") {
+      // The smooth curve isn't made of SketchState entities (only the
+      // control points are), so it's stroked here directly from the
+      // sub-call params via the Catmull-Rom sampler — otherwise it'd be
+      // invisible despite extruding.
+      const raw = call.params.points;
+      const closed = call.params.closed === true;
+      if (Array.isArray(raw) && raw.length >= 4) {
+        const ctrl: Vec2[] = [];
+        for (let i = 0; i + 1 < raw.length; i += 2) {
+          ctrl.push([Number(raw[i]), Number(raw[i + 1])]);
+        }
+        const sampled = catmullRomPoints(ctrl, closed, 16);
+        for (let i = 0; i + 1 < sampled.length; i++) {
+          drawLine(ctx, sampled[i], sampled[i + 1], cam, color, STROKE_PX);
+        }
+        if (closed && sampled.length >= 2) {
+          drawLine(
+            ctx,
+            sampled[sampled.length - 1],
+            sampled[0],
+            cam,
+            color,
+            STROKE_PX,
+          );
+        }
+        for (const p of ctrl) {
+          drawPoint(ctx, p, cam, color);
+        }
+      }
     } else if (call.type === "sketch_arc") {
       const center = toXy(call.params.center);
       const radius = Number(call.params.radius);
@@ -2499,6 +2613,29 @@ function drawOverlay(
       // Draw vertex dots.
       for (const v of vertices) {
         drawPoint(ctx, v, cam, COLOR_PREVIEW);
+      }
+    }
+  } else if (drag.kind === "spline") {
+    const { points, current } = drag;
+    if (points.length > 0) {
+      // Live curve through the placed control points plus the cursor.
+      const ctrl: Vec2[] = [...points, current];
+      const sampled = catmullRomPoints(ctrl, false, 16);
+      if (sampled.length >= 2) {
+        ctx.strokeStyle = COLOR_PREVIEW;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const [sx0, sy0] = sketchToScreen(sampled[0][0], sampled[0][1], cam);
+        ctx.moveTo(sx0, sy0);
+        for (let i = 1; i < sampled.length; i++) {
+          const [px, py] = sketchToScreen(sampled[i][0], sampled[i][1], cam);
+          ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      // Control-point dots (the placed ones, not the cursor).
+      for (const p of points) {
+        drawPoint(ctx, p, cam, COLOR_PREVIEW);
       }
     }
   } else if (drag.kind === "arc") {

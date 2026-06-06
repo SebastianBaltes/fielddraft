@@ -337,6 +337,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchRectangleTool));
         r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchPolygonTool));
+        r.register(Box::new(SketchSplineTool));
         r.register(Box::new(SketchRegularPolygonTool));
         r.register(Box::new(SketchArcTool));
         r.register(Box::new(SketchEllipseTool));
@@ -819,6 +820,176 @@ impl SketchToolKind for SketchPolygonTool {
         }
         Ok(())
     }
+}
+
+/// `sketch_spline` — a smooth interpolating spline through a list
+/// of control points. Like [`SketchPolygonTool`] it registers one
+/// point entity per control point (so grips / selection / the TS
+/// id mirror align). The smooth curve itself is NOT a SketchState
+/// entity: at build time it lowers to a `Sketch2dPrimitive::Path`
+/// of quadratic Béziers sampled from a Catmull-Rom interpolation
+/// (see [`catmull_rom_quad_beziers`]) — exactly how
+/// [`SketchEllipseTool`] lowers to a closed quad-Bézier Path.
+///
+/// `closed` selects a wrap-around loop (extrudable region) versus
+/// an open reference curve. Requires ≥ 2 control points.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_spline")]
+pub struct SketchSplineDef {
+    /// Flat array of 2D control points: `[x0, y0, x1, y1, …]`.
+    pub points: Vec<f32>,
+    /// `true` ⇒ the spline wraps into a closed loop; `false` ⇒ an
+    /// open curve with endpoint-duplicated end tangents.
+    #[param(default = false)]
+    pub closed: bool,
+}
+
+pub struct SketchSplineTool;
+
+impl SketchToolKind for SketchSplineTool {
+    fn type_name(&self) -> &'static str {
+        SketchSplineDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchSplineDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchSplineDef::parse(def)?;
+        if d.points.len() < 4 {
+            return Err(FeatureError::InvalidParameter {
+                feature: SketchSplineDef::TYPE_NAME,
+                name: "points",
+                message: "need at least 2 control points (4 floats)".to_string(),
+            });
+        }
+        // Register each control point as a point entity (mirrors
+        // SketchPolygonTool), so the TS entity-id mirror aligns. The
+        // smooth curve is a Path primitive built at lower time.
+        for chunk in d.points.chunks(2) {
+            if chunk.len() == 2 {
+                state.add_point(Point2::new(chunk[0] as f64, chunk[1] as f64));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Sample a Catmull-Rom interpolating spline through `control_pts`
+/// and emit one [`SketchSegment::QuadBezier`] per sub-step, forming
+/// a Path that passes through every control point.
+///
+/// Method: each Catmull-Rom span (between consecutive control
+/// points `p1`→`p2`, with neighbours `p0`/`p3` for tangents) is a
+/// cubic. We sample the span at `steps` uniformly-spaced parameters
+/// and, between successive samples, fit a quadratic Bézier whose
+/// control point `p1` is the intersection of the curve tangents at
+/// the two sample endpoints (falling back to the chord midpoint
+/// when the tangents are near-parallel). Sampling densely keeps the
+/// quadratic approximation visually faithful while reusing the
+/// kernel's exact QuadBezier SDF machinery.
+///
+/// * Open splines (`closed == false`) duplicate the first/last
+///   control point to synthesise the end tangents.
+/// * Closed splines wrap the neighbour indices and append a final
+///   span back to the first point.
+///
+/// Returns an empty vec for fewer than 2 control points.
+pub fn catmull_rom_quad_beziers(
+    control_pts: &[[f32; 2]],
+    closed: bool,
+    steps: u32,
+) -> Vec<SketchSegment> {
+    let n = control_pts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let steps = steps.max(1);
+
+    // Catmull-Rom position at parameter t∈[0,1] on the span p1→p2.
+    let cr = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let f = |a: f32, b: f32, c: f32, d: f32| {
+            0.5 * ((2.0 * b)
+                + (-a + c) * t
+                + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+                + (-a + 3.0 * b - 3.0 * c + d) * t3)
+        };
+        [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
+    };
+    // Catmull-Rom tangent (derivative) at parameter t on the span.
+    let cr_tan =
+        |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
+            let t2 = t * t;
+            let f = |a: f32, b: f32, c: f32, d: f32| {
+                0.5 * ((-a + c)
+                    + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t
+                    + 3.0 * (-a + 3.0 * b - 3.0 * c + d) * t2)
+            };
+            [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
+        };
+
+    let span_count = if closed { n } else { n - 1 };
+    let mut segs = Vec::with_capacity(span_count * steps as usize);
+    for i in 0..span_count {
+        let (i0, i1, i2, i3) = if closed {
+            (
+                (i + n - 1) % n,
+                i % n,
+                (i + 1) % n,
+                (i + 2) % n,
+            )
+        } else {
+            (
+                if i == 0 { 0 } else { i - 1 },
+                i,
+                i + 1,
+                if i + 2 >= n { n - 1 } else { i + 2 },
+            )
+        };
+        let p0 = control_pts[i0];
+        let p1 = control_pts[i1];
+        let p2 = control_pts[i2];
+        let p3 = control_pts[i3];
+
+        for s in 0..steps {
+            let ta = s as f32 / steps as f32;
+            let tb = (s + 1) as f32 / steps as f32;
+            let a = cr(p0, p1, p2, p3, ta);
+            let b = cr(p0, p1, p2, p3, tb);
+            let tan_a = cr_tan(p0, p1, p2, p3, ta);
+            let tan_b = cr_tan(p0, p1, p2, p3, tb);
+            // Quad-Bézier control point = intersection of the two
+            // tangent lines (a + u·tan_a) and (b − w·tan_b); falls
+            // back to the chord midpoint if near-parallel.
+            let ctrl = line_intersection(a, tan_a, b, tan_b)
+                .unwrap_or([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
+            segs.push(SketchSegment::QuadBezier {
+                p0: a,
+                p1: ctrl,
+                p2: b,
+            });
+        }
+    }
+    segs
+}
+
+/// Intersect line `(p + t·d)` with line `(q + s·e)`. Returns `None`
+/// when the directions are near-parallel.
+fn line_intersection(p: [f32; 2], d: [f32; 2], q: [f32; 2], e: [f32; 2]) -> Option<[f32; 2]> {
+    let denom = d[0] * e[1] - d[1] * e[0];
+    if denom.abs() < 1e-6 {
+        return None;
+    }
+    let t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / denom;
+    Some([p[0] + t * d[0], p[1] + t * d[1]])
 }
 
 /// `sketch_regular_polygon` — a regular N-gon defined by centre,
@@ -1351,6 +1522,33 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 }
                 Some(Sketch2dPrimitive::Polygon { vertices: verts })
             }
+            "sketch_spline" => {
+                let d = match SketchSplineDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let pts: Vec<[f32; 2]> = d
+                    .points
+                    .chunks(2)
+                    .filter(|c| c.len() == 2)
+                    .map(|c| [c[0], c[1]])
+                    .collect();
+                if pts.len() < 2 {
+                    continue;
+                }
+                // Sample the Catmull-Rom spline into a Path of
+                // quadratic Béziers (16 sub-steps per span), like the
+                // ellipse lowering. Closed → an extrudable region;
+                // open → a reference curve.
+                let segs = catmull_rom_quad_beziers(&pts, d.closed, 16);
+                if segs.is_empty() {
+                    continue;
+                }
+                Some(Sketch2dPrimitive::Path {
+                    segments: segs,
+                    closed: d.closed,
+                })
+            }
             "sketch_regular_polygon" => {
                 let d = match SketchRegularPolygonDef::parse(&call.params) {
                     Ok(d) => d,
@@ -1793,6 +1991,7 @@ mod tests {
                 "sketch_rectangle".to_string(),
                 "sketch_regular_polygon".to_string(),
                 "sketch_slot".to_string(),
+                "sketch_spline".to_string(),
             ]
         );
     }
@@ -2320,6 +2519,116 @@ mod tests {
         assert_eq!(pts.len(), 2);
         assert!((pts[0].0 - 1.0).abs() < 1e-6 && (pts[0].1 - 2.0).abs() < 1e-6);
         assert!((pts[1].0 - 9.0).abs() < 1e-6 && (pts[1].1 - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sketch_spline_tool_registers_one_point_per_control_point() {
+        // The TS mirror must add exactly N points (one per control
+        // point), in order. Origin is id 0, so the four control points
+        // land at ids 1..=4.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({
+                "points": [0.0, 0.0, 10.0, 5.0, 20.0, 0.0, 10.0, -5.0],
+                "closed": false
+            }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let pts: Vec<(f64, f64)> = state
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pts.len(), 4);
+        assert!((pts[0].0 - 0.0).abs() < 1e-6 && (pts[0].1 - 0.0).abs() < 1e-6);
+        assert!((pts[3].0 - 10.0).abs() < 1e-6 && (pts[3].1 + 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sketch_spline_too_few_points_is_rejected() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new("sketch_spline", id(1), json!({ "points": [1.0, 2.0] }));
+        assert!(tools.apply_all(&mut state, std::slice::from_ref(&call)).is_err());
+    }
+
+    #[test]
+    fn build_sketch2d_emits_a_closed_spline_as_quad_bezier_path() {
+        // A closed spline through 4 points lowers to a closed Path of
+        // many QuadBezier segments whose flattened bbox roughly covers
+        // the control points (diamond ±10).
+        let calls = vec![FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({
+                "points": [0.0, 10.0, 10.0, 0.0, 0.0, -10.0, -10.0, 0.0],
+                "closed": true
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a closed Path primitive, got {sketch:?}");
+        };
+        assert!(*closed, "closed spline path must be closed");
+        assert!(segments.len() >= 4, "expected multiple segments, got {}", segments.len());
+        assert!(segments
+            .iter()
+            .all(|s| matches!(s, SketchSegment::QuadBezier { .. })));
+        // Flattened bbox roughly covers the control diamond.
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for seg in segments {
+            for k in 0..=8 {
+                let p = seg.point_at(k as f32 / 8.0);
+                min_x = min_x.min(p[0]);
+                max_x = max_x.max(p[0]);
+                min_y = min_y.min(p[1]);
+                max_y = max_y.max(p[1]);
+            }
+        }
+        assert!(min_x <= -9.0 && max_x >= 9.0, "x bbox {min_x}..{max_x}");
+        assert!(min_y <= -9.0 && max_y >= 9.0, "y bbox {min_y}..{max_y}");
+        // The interior is inside the closed region.
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "spline centre inside");
+    }
+
+    #[test]
+    fn build_sketch2d_open_spline_is_an_open_path() {
+        let calls = vec![FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({ "points": [0.0, 0.0, 10.0, 5.0, 20.0, 0.0], "closed": false }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { closed, .. }) = &sketch else {
+            panic!("expected a Path primitive, got {sketch:?}");
+        };
+        assert!(!*closed, "open spline path must be open");
+    }
+
+    #[test]
+    fn catmull_rom_quad_beziers_interpolates_control_points() {
+        // The fitted Path must pass through every control point: the
+        // start of each span sits exactly on a control point.
+        let pts = [[0.0, 0.0], [10.0, 5.0], [20.0, 0.0], [30.0, 5.0]];
+        let segs = catmull_rom_quad_beziers(&pts, false, 8);
+        assert!(!segs.is_empty());
+        // First sample of the first span is p0.
+        let first = segs[0].point_at(0.0);
+        assert!((first[0] - 0.0).abs() < 1e-3 && (first[1] - 0.0).abs() < 1e-3);
+        // Last sample of the last span is the final control point.
+        let last = segs.last().unwrap().point_at(1.0);
+        assert!((last[0] - 30.0).abs() < 1e-3 && (last[1] - 5.0).abs() < 1e-3);
+        // < 2 points → empty.
+        assert!(catmull_rom_quad_beziers(&[[0.0, 0.0]], false, 8).is_empty());
     }
 
     #[test]

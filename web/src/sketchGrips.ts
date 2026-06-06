@@ -34,6 +34,7 @@ export type GripRole =
   | "rect-tr"
   | "rect-tl"
   | "polygon-vertex"
+  | "spline-point"
   | "arc-center"
   | "arc-rim";
 
@@ -161,6 +162,24 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
           if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
           byEntity.set(vid, [
             { subCallIndex: i, role: "polygon-vertex", pos: [x, y], vertexIndex: v },
+          ]);
+        }
+        break;
+      }
+      case "sketch_spline": {
+        // One point entity per control point (mirrors the kernel
+        // `SketchSplineTool::apply`). Each control point gets a
+        // draggable vertex grip; editing it re-fits the smooth curve.
+        const pts = call.params.points;
+        if (!Array.isArray(pts)) break;
+        const n = Math.floor(pts.length / 2);
+        for (let v = 0; v < n; v++) {
+          const x = Number(pts[v * 2]);
+          const y = Number(pts[v * 2 + 1]);
+          const vid = id++;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          byEntity.set(vid, [
+            { subCallIndex: i, role: "spline-point", pos: [x, y], vertexIndex: v },
           ]);
         }
         break;
@@ -299,6 +318,15 @@ export function applyGripDrag(
       next2[grip.vertexIndex * 2] = to[0];
       next2[grip.vertexIndex * 2 + 1] = to[1];
       replace({ vertices: next2 });
+      break;
+    }
+    case "spline-point": {
+      const pts = call.params.points;
+      if (!Array.isArray(pts) || grip.vertexIndex === undefined) break;
+      const next2 = pts.slice();
+      next2[grip.vertexIndex * 2] = to[0];
+      next2[grip.vertexIndex * 2 + 1] = to[1];
+      replace({ points: next2 });
       break;
     }
     case "arc-center":

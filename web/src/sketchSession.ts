@@ -406,6 +406,22 @@ export function buildDraftSketchState(
           });
         }
       }
+    } else if (call.type === "sketch_spline") {
+      // Mirrors the kernel `SketchSplineTool::apply`, which registers
+      // one point entity per control point (like `sketch_polygon`).
+      // The smooth curve is a Path primitive built kernel-side, not a
+      // SketchState entity, so we push exactly N points here — same
+      // count and order — or entity-id allocation drifts.
+      const points = call.params.points;
+      if (Array.isArray(points)) {
+        for (let i = 0; i + 1 < points.length; i += 2) {
+          state.entities.push({
+            kind: "point",
+            id: state.next_entity_id++,
+            at: { x: Number(points[i]), y: Number(points[i + 1]) },
+          });
+        }
+      }
     } else if (call.type === "sketch_regular_polygon") {
       // Mirrors the kernel `SketchRegularPolygonTool`: compute the
       // N vertices from centre/radius/sides/inscribed and push one

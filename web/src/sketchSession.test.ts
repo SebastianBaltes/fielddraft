@@ -863,3 +863,45 @@ describe("summarizeDiagnostics (F20)", () => {
     expect([...out.redundants]).toEqual([3]);
   });
 });
+
+describe("sketch_spline draft state", () => {
+  it("rebuilds a 4-point spline to exactly 4 control-point entities with consecutive ids", () => {
+    // The kernel's SketchSplineTool::apply registers one point entity
+    // per control point (like sketch_polygon). With 4 control points
+    // (8 floats), the TS mirror allocates ids 1..=4 and advances the
+    // counter to 5 (origin is id 0).
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: { points: [0, 0, 10, 5, 20, 0, 10, -5], closed: false },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(4);
+    expect(points.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    expect(points[0].kind === "point" && points[0].at).toEqual({ x: 0, y: 0 });
+    expect(points[3].kind === "point" && points[3].at).toEqual({ x: 10, y: -5 });
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("keeps entity ids aligned for a following sub-call", () => {
+    // After the spline consumes ids 1..=4, a following circle takes the
+    // next contiguous ids (centre 5, circle 6) — proving the spline
+    // branch advanced the counter by exactly the kernel's N points.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: { points: [0, 0, 10, 5, 20, 0, 10, -5], closed: true },
+      },
+      { type: "sketch_circle", params: { center: [50, 50], radius: 5 } },
+    ]);
+    const circleCentre = state.entities.find(
+      (e) => e.kind === "point" && e.at.x === 50 && e.at.y === 50,
+    );
+    const circle = state.entities.find((e) => e.kind === "circle");
+    expect(circleCentre?.id).toBe(5);
+    expect(circle && circle.kind === "circle" && circle.center).toBe(5);
+    expect(circle?.id).toBe(6);
+    expect(state.next_entity_id).toBe(7);
+  });
+});
