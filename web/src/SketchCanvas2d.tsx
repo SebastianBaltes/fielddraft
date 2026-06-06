@@ -2425,6 +2425,65 @@ function drawOverlay(
           drawPoint(ctx, p, cam, color);
         }
       }
+    } else if (call.type === "sketch_path") {
+      // An imported analytic path: one or more contours of explicit
+      // line + quadratic-Bézier segments. The outline isn't made of
+      // SketchState entities (only each contour start is), so it's
+      // stroked here directly from the sub-call params. Quads are
+      // sampled into short line segments for the 2D stroke (the kernel
+      // keeps them as EXACT QuadBezier for SDF/extrude).
+      const contours = call.params.contours;
+      if (Array.isArray(contours)) {
+        for (const c of contours) {
+          const cc = c as {
+            start?: unknown;
+            segments?: unknown;
+            closed?: unknown;
+          };
+          const start = cc.start;
+          const segs = cc.segments;
+          if (
+            !Array.isArray(start) ||
+            start.length !== 2 ||
+            !Array.isArray(segs)
+          ) {
+            continue;
+          }
+          let prev: [number, number] = [Number(start[0]), Number(start[1])];
+          const first = prev;
+          for (const s of segs) {
+            const seg = s as { kind?: unknown; to?: unknown; ctrl?: unknown };
+            const to = seg.to;
+            if (!Array.isArray(to) || to.length !== 2) continue;
+            const end: [number, number] = [Number(to[0]), Number(to[1])];
+            if (seg.kind === "quad" && Array.isArray(seg.ctrl)) {
+              const cp: [number, number] = [
+                Number(seg.ctrl[0]),
+                Number(seg.ctrl[1]),
+              ];
+              const STEPS = 16;
+              let a = prev;
+              for (let k = 1; k <= STEPS; k++) {
+                const t = k / STEPS;
+                const mt = 1 - t;
+                const b: [number, number] = [
+                  mt * mt * prev[0] + 2 * mt * t * cp[0] + t * t * end[0],
+                  mt * mt * prev[1] + 2 * mt * t * cp[1] + t * t * end[1],
+                ];
+                drawLine(ctx, a, b, cam, color, STROKE_PX);
+                a = b;
+              }
+            } else {
+              drawLine(ctx, prev, end, cam, color, STROKE_PX);
+            }
+            prev = end;
+          }
+          if (cc.closed === true) {
+            drawLine(ctx, prev, first, cam, color, STROKE_PX);
+          }
+          drawPoint(ctx, first, cam, color);
+        }
+      }
     } else if (call.type === "sketch_arc") {
       const center = toXy(call.params.center);
       const radius = Number(call.params.radius);

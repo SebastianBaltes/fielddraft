@@ -338,6 +338,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchCircleTool));
         r.register(Box::new(SketchPolygonTool));
         r.register(Box::new(SketchSplineTool));
+        r.register(Box::new(SketchPathTool));
         r.register(Box::new(SketchRegularPolygonTool));
         r.register(Box::new(SketchArcTool));
         r.register(Box::new(SketchEllipseTool));
@@ -879,6 +880,313 @@ impl SketchToolKind for SketchSplineTool {
         }
         Ok(())
     }
+}
+
+/// One segment of a [`SketchPathDef`] contour. A `Line` walks
+/// straight to `to`; a `Quad` is a quadratic Bézier with control
+/// point `ctrl` ending at `to`. The contour's start point lives on
+/// the contour, so the previous segment's end (or the contour
+/// start, for the first segment) is the implicit `p0`.
+///
+/// This is a tagged enum serialised as `{ "kind": "line", "to": …}`
+/// / `{ "kind": "quad", "ctrl": …, "to": … }` — the same wire shape
+/// the TS importer (`web/src/importVector.ts`) emits. Cubic Béziers
+/// are deliberately absent: any cubic upstream must be subdivided
+/// into quads at construction time (mirrors [`SketchSegment`]).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathSegmentDef {
+    /// Straight line to `to` from the previous point.
+    Line { to: [f32; 2] },
+    /// Quadratic Bézier through control `ctrl`, ending at `to`.
+    Quad { ctrl: [f32; 2], to: [f32; 2] },
+}
+
+/// One contour of a [`SketchPathDef`]: a chain of [`PathSegmentDef`]
+/// segments starting at `start`. `closed` marks the contour as a
+/// fillable loop (an implicit closing segment back to `start` is
+/// added at lower time if the last segment doesn't already land
+/// there). Open contours are non-region reference curves.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PathContourDef {
+    /// First point of the contour (implicit `p0` of segment 0).
+    pub start: [f32; 2],
+    /// Ordered segments walking from `start`.
+    pub segments: Vec<PathSegmentDef>,
+    /// `true` ⇒ a closed, fillable loop; `false` ⇒ an open curve.
+    #[serde(default)]
+    pub closed: bool,
+}
+
+/// `sketch_path` — an explicit path of arbitrary line + quadratic
+/// Bézier segments, grouped into one or more contours with
+/// **even-odd hole semantics**. This is the general region
+/// primitive the SVG importer (F22-full), filled glyphs (F24) and
+/// the B-spline tool (F23) all lower onto.
+///
+/// Lowering ([`build_sketch2d_from_sub_calls`]):
+///
+/// * Each CLOSED contour becomes a `Sketch2dPrimitive::Path` of
+///   `SketchSegment::Line` / `QuadBezier` (a `Line { to }` →
+///   `Line { start: prev, end: to }`; a `Quad { ctrl, to }` →
+///   `QuadBezier { p0: prev, p1: ctrl, p2: to }`).
+/// * Multiple contours of ONE `sketch_path` combine by nesting
+///   depth: containment (point-in-contour at build time) decides
+///   which contour sits inside which. Even-depth contours (0, 2, …)
+///   are **added** (`Union`); odd-depth contours (1, 3, …) are
+///   **subtracted** (`Difference`) from their immediate even-depth
+///   parent — so a ring inside an outer becomes a hole, and an
+///   island inside that hole becomes solid again.
+/// * A lone OPEN contour produces no region (skipped for filling),
+///   because a profile must be closed; open contours exist for
+///   non-region use (reference curves, future B-spline previews).
+///
+/// Like the polygon/spline tools it registers one point entity per
+/// contour start so the TS entity-id mirror stays aligned.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_path")]
+pub struct SketchPathDef {
+    /// One or more contours. Multiple contours nest by even-odd
+    /// containment to form holes.
+    pub contours: Vec<PathContourDef>,
+}
+
+pub struct SketchPathTool;
+
+impl SketchToolKind for SketchPathTool {
+    fn type_name(&self) -> &'static str {
+        SketchPathDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        SketchPathDef::schema_json()
+    }
+
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchPathDef::parse(def)?;
+        if d.contours.is_empty() {
+            return Err(FeatureError::InvalidParameter {
+                feature: SketchPathDef::TYPE_NAME,
+                name: "contours",
+                message: "need at least one contour".to_string(),
+            });
+        }
+        // Register each contour's start point (mirrors SketchPolygonTool /
+        // SketchSplineTool), so the TS entity-id mirror aligns. The path
+        // outline itself is a Path primitive built at lower time.
+        for c in &d.contours {
+            state.add_point(Point2::new(c.start[0] as f64, c.start[1] as f64));
+        }
+        Ok(())
+    }
+}
+
+/// Lower one [`PathContourDef`] into a list of [`SketchSegment`]s.
+/// Returns `None` when the contour has no segments. When `closed`,
+/// an implicit closing `Line` back to `start` is appended unless the
+/// last segment already lands on `start`.
+fn path_contour_segments(contour: &PathContourDef) -> Option<Vec<SketchSegment>> {
+    if contour.segments.is_empty() {
+        return None;
+    }
+    let mut out: Vec<SketchSegment> = Vec::with_capacity(contour.segments.len() + 1);
+    let mut prev = contour.start;
+    for seg in &contour.segments {
+        match seg {
+            PathSegmentDef::Line { to } => {
+                out.push(SketchSegment::Line { start: prev, end: *to });
+                prev = *to;
+            }
+            PathSegmentDef::Quad { ctrl, to } => {
+                out.push(SketchSegment::QuadBezier {
+                    p0: prev,
+                    p1: *ctrl,
+                    p2: *to,
+                });
+                prev = *to;
+            }
+        }
+    }
+    if contour.closed {
+        let dx = prev[0] - contour.start[0];
+        let dy = prev[1] - contour.start[1];
+        if dx * dx + dy * dy > 1e-12 {
+            out.push(SketchSegment::Line {
+                start: prev,
+                end: contour.start,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// Sample points along a lowered segment chain for point-in-contour
+/// containment tests. Curves are flattened (a few points per quad)
+/// since containment only needs a representative polygon.
+fn contour_polyline(segments: &[SketchSegment]) -> Vec<[f32; 2]> {
+    let mut pts: Vec<[f32; 2]> = Vec::new();
+    for seg in segments {
+        match seg {
+            SketchSegment::Line { start, end } => {
+                if pts.is_empty() {
+                    pts.push(*start);
+                }
+                pts.push(*end);
+            }
+            SketchSegment::QuadBezier { .. } | SketchSegment::Arc { .. } => {
+                if pts.is_empty() {
+                    pts.push(seg.point_at(0.0));
+                }
+                for k in 1..=6 {
+                    pts.push(seg.point_at(k as f32 / 6.0));
+                }
+            }
+        }
+    }
+    pts
+}
+
+/// Even-odd point-in-polygon test (ray casting).
+fn point_in_polyline(pt: [f32; 2], poly: &[[f32; 2]]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let yi = poly[i][1];
+        let yj = poly[j][1];
+        if ((yi > pt[1]) != (yj > pt[1]))
+            && (pt[0] < (poly[j][0] - poly[i][0]) * (pt[1] - yi) / (yj - yi) + poly[i][0])
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Lower a whole `sketch_path` def into one [`Sketch2d`] tree with
+/// even-odd hole semantics. Returns `None` when no closed contour
+/// yields a region. See [`SketchPathDef`] for the depth rules.
+fn build_sketch_path(def: &SketchPathDef) -> Option<Sketch2d> {
+    // Lower each contour; keep only closed contours with ≥1 segment
+    // for region building (open contours are reference-only).
+    struct Lowered {
+        segments: Vec<SketchSegment>,
+        poly: Vec<[f32; 2]>,
+        rep: [f32; 2], // representative interior-ish point for containment
+    }
+    let mut lowered: Vec<Lowered> = Vec::new();
+    for c in &def.contours {
+        if !c.closed {
+            continue;
+        }
+        let Some(segs) = path_contour_segments(c) else {
+            continue;
+        };
+        let poly = contour_polyline(&segs);
+        if poly.len() < 3 {
+            continue;
+        }
+        // Representative point: a point just INSIDE this contour near
+        // its first vertex. A vertex itself sits ON other contours'
+        // boundaries ambiguously and the centroid can fall inside a
+        // hole, so neither is robust. Instead nudge the first vertex a
+        // hair toward the polygon centroid — that lands strictly
+        // inside a simple contour while staying clearly outside any
+        // sibling it doesn't enclose. (Containment here only ranks
+        // nesting between *different* contours of one path.)
+        let mut cx = 0.0f32;
+        let mut cy = 0.0f32;
+        for p in &poly {
+            cx += p[0];
+            cy += p[1];
+        }
+        let cx = cx / poly.len() as f32;
+        let cy = cy / poly.len() as f32;
+        let v0 = poly[0];
+        let rep = [v0[0] + (cx - v0[0]) * 1e-3, v0[1] + (cy - v0[1]) * 1e-3];
+        lowered.push(Lowered {
+            segments: segs,
+            poly,
+            rep,
+        });
+    }
+    if lowered.is_empty() {
+        return None;
+    }
+
+    // Compute nesting depth: depth[i] = number of OTHER contours that
+    // contain contour i's representative point.
+    let n = lowered.len();
+    let mut depth = vec![0usize; n];
+    for i in 0..n {
+        for (j, other) in lowered.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if point_in_polyline(lowered[i].rep, &other.poly) {
+                depth[i] += 1;
+            }
+        }
+    }
+
+    // Each contour → a Path prim node.
+    let prim_of = |l: &Lowered| {
+        Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: l.segments.clone(),
+            closed: true,
+        })
+    };
+
+    // Find the immediate parent of each odd-depth contour: the
+    // enclosing contour with the greatest depth strictly less than
+    // its own (i.e. depth[i]-1).
+    let parent_of = |i: usize| -> Option<usize> {
+        let target = depth[i].checked_sub(1)?;
+        let mut best: Option<usize> = None;
+        for j in 0..n {
+            if j == i || depth[j] != target {
+                continue;
+            }
+            if point_in_polyline(lowered[i].rep, &lowered[j].poly) {
+                best = Some(j);
+                break;
+            }
+        }
+        best
+    };
+
+    // Build each even-depth contour as a solid, subtracting its
+    // direct odd-depth children as holes. Then Union all even-depth
+    // results together. Holes that themselves contain a deeper
+    // even-depth island are handled because that island is built as
+    // its own top-level solid and Union'd back in (even-odd).
+    let mut acc: Option<Sketch2d> = None;
+    for i in 0..n {
+        if depth[i] % 2 != 0 {
+            continue; // odd → a hole, handled by its parent
+        }
+        let mut node = prim_of(&lowered[i]);
+        // Subtract direct children (depth+1) that nest in this one.
+        for k in 0..n {
+            if depth[k] == depth[i] + 1 && parent_of(k) == Some(i) {
+                node = Sketch2d::Difference(Box::new(node), Box::new(prim_of(&lowered[k])));
+            }
+        }
+        acc = Some(match acc {
+            None => node,
+            Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
+        });
+    }
+    acc
 }
 
 /// Sample a Catmull-Rom interpolating spline through `control_pts`
@@ -1549,6 +1857,24 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     closed: d.closed,
                 })
             }
+            "sketch_path" => {
+                // An explicit line+quad path of one or more contours,
+                // combined with even-odd hole semantics into a subtree.
+                // Union the whole subtree into the accumulator (it may
+                // itself contain Difference nodes for holes).
+                let d = match SketchPathDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let Some(node) = build_sketch_path(&d) else {
+                    continue;
+                };
+                acc = Some(match acc {
+                    None => node,
+                    Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
+                });
+                continue;
+            }
             "sketch_regular_polygon" => {
                 let d = match SketchRegularPolygonDef::parse(&call.params) {
                     Ok(d) => d,
@@ -1986,6 +2312,7 @@ mod tests {
                 "sketch_line".to_string(),
                 "sketch_mirror".to_string(),
                 "sketch_offset".to_string(),
+                "sketch_path".to_string(),
                 "sketch_point".to_string(),
                 "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
@@ -2980,5 +3307,233 @@ mod tests {
             "extrude placement lifted to the face, got {:?}",
             extrude.transform.translate
         );
+    }
+
+    // ─── sketch_path (F22-full) ─────────────────────────────────────
+
+    #[test]
+    fn sketch_path_def_round_trips_through_serde() {
+        // A def with a closed contour mixing line + quad segments must
+        // serialise and parse back identically through the FeatureSchema
+        // generic (serde) path.
+        let original = SketchPathDef {
+            contours: vec![PathContourDef {
+                start: [0.0, 0.0],
+                segments: vec![
+                    PathSegmentDef::Line { to: [10.0, 0.0] },
+                    PathSegmentDef::Quad {
+                        ctrl: [10.0, 10.0],
+                        to: [0.0, 10.0],
+                    },
+                    PathSegmentDef::Line { to: [0.0, 0.0] },
+                ],
+                closed: true,
+            }],
+        };
+        let value = json!({
+            "contours": [serde_json::to_value(&original.contours[0]).unwrap()]
+        });
+        let parsed = SketchPathDef::parse(&value).expect("parse");
+        assert_eq!(parsed.contours, original.contours);
+        // Tagged-enum wire shape: quad carries kind/ctrl/to.
+        let seg_json = serde_json::to_value(PathSegmentDef::Quad {
+            ctrl: [1.0, 2.0],
+            to: [3.0, 4.0],
+        })
+        .unwrap();
+        assert_eq!(seg_json["kind"], "quad");
+        assert_eq!(seg_json["ctrl"], json!([1.0, 2.0]));
+    }
+
+    #[test]
+    fn sketch_path_tool_registers_one_point_per_contour_start() {
+        // Each contour start becomes a point entity (mirrors the
+        // polygon/spline tools) so the TS entity-id mirror aligns.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [10.0, 0.0] },
+                        { "kind": "line", "to": [10.0, 10.0] },
+                        { "kind": "line", "to": [0.0, 10.0] }
+                    ]},
+                    { "start": [3.0, 3.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [7.0, 3.0] },
+                        { "kind": "line", "to": [7.0, 7.0] },
+                        { "kind": "line", "to": [3.0, 7.0] }
+                    ]}
+                ]
+            }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let pts: Vec<(f64, f64)> = state
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
+                _ => None,
+            })
+            .collect();
+        // Two contour start points registered, in order.
+        assert_eq!(pts.len(), 2);
+        assert!((pts[0].0 - 0.0).abs() < 1e-6 && (pts[0].1 - 0.0).abs() < 1e-6);
+        assert!((pts[1].0 - 3.0).abs() < 1e-6 && (pts[1].1 - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn build_sketch_path_single_closed_contour_fills() {
+        // A single closed triangle contour lowers to one Path region.
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [20.0, 0.0] },
+                        { "kind": "line", "to": [10.0, 20.0] }
+                    ]}
+                ]
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { closed, .. }) = &sketch else {
+            panic!("expected a closed Path primitive, got {sketch:?}");
+        };
+        assert!(*closed);
+        // Interior centroid-ish point inside, far point outside.
+        assert!(sketch.sdf([10.0, 6.0]) < 0.0, "interior inside");
+        assert!(sketch.sdf([100.0, 100.0]) > 0.0, "far point outside");
+    }
+
+    #[test]
+    fn build_sketch_path_implicitly_closes_unclosed_segment_chain() {
+        // The last segment doesn't return to start; the lowering must
+        // append the closing edge so the region fills.
+        let d = SketchPathDef {
+            contours: vec![PathContourDef {
+                start: [0.0, 0.0],
+                segments: vec![
+                    PathSegmentDef::Line { to: [10.0, 0.0] },
+                    PathSegmentDef::Line { to: [10.0, 10.0] },
+                    PathSegmentDef::Line { to: [0.0, 10.0] },
+                ],
+                closed: true,
+            }],
+        };
+        let segs = path_contour_segments(&d.contours[0]).unwrap();
+        // 3 explicit + 1 implicit closing line.
+        assert_eq!(segs.len(), 4);
+        let tree = build_sketch_path(&d).unwrap();
+        assert!(tree.sdf([5.0, 5.0]) < 0.0, "square interior inside");
+    }
+
+    #[test]
+    fn build_sketch_path_donut_yields_difference_with_real_hole() {
+        // Outer 0..20 square with an inner 5..15 square hole. The
+        // build must subtract the hole: a point in the ring is inside,
+        // a point in the hole is outside.
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [20.0, 0.0] },
+                        { "kind": "line", "to": [20.0, 20.0] },
+                        { "kind": "line", "to": [0.0, 20.0] }
+                    ]},
+                    { "start": [5.0, 5.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [15.0, 5.0] },
+                        { "kind": "line", "to": [15.0, 15.0] },
+                        { "kind": "line", "to": [5.0, 15.0] }
+                    ]}
+                ]
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Difference(_, _) = &sketch else {
+            panic!("expected a Difference (outer − hole), got {sketch:?}");
+        };
+        // Point in the ring (between outer and inner): inside.
+        assert!(sketch.sdf([2.0, 10.0]) < 0.0, "ring inside");
+        // Point in the hole centre: outside.
+        assert!(sketch.sdf([10.0, 10.0]) > 0.0, "hole outside");
+        // Point far outside the outer: outside.
+        assert!(sketch.sdf([100.0, 100.0]) > 0.0, "far outside");
+    }
+
+    #[test]
+    fn build_sketch_path_island_in_hole_is_solid_again() {
+        // Even-odd nesting: outer (depth 0) ⊃ hole (depth 1) ⊃ island
+        // (depth 2). The island must be solid again.
+        let outer = |sz: f32, o: f32| {
+            json!({ "start": [o, o], "closed": true, "segments": [
+                { "kind": "line", "to": [o + sz, o] },
+                { "kind": "line", "to": [o + sz, o + sz] },
+                { "kind": "line", "to": [o, o + sz] }
+            ]})
+        };
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({ "contours": [ outer(40.0, 0.0), outer(24.0, 8.0), outer(8.0, 16.0) ] }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        // Island centre (20,20): solid. Ring between hole & island
+        // (e.g. (10,20) inside hole region): hole → outside. Outer
+        // ring (2,20): inside.
+        assert!(sketch.sdf([20.0, 20.0]) < 0.0, "island solid");
+        assert!(sketch.sdf([11.0, 20.0]) > 0.0, "hole outside");
+        assert!(sketch.sdf([2.0, 20.0]) < 0.0, "outer ring inside");
+    }
+
+    #[test]
+    fn build_sketch_path_open_lone_contour_skipped() {
+        // An open contour alone forms no region.
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": false, "segments": [
+                        { "kind": "line", "to": [10.0, 0.0] },
+                        { "kind": "quad", "ctrl": [20.0, 10.0], "to": [30.0, 0.0] }
+                    ]}
+                ]
+            }),
+        )];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+    }
+
+    #[test]
+    fn build_sketch_path_quad_segment_curves_outward() {
+        // A closed contour whose top edge is a quad bulging up to y=30
+        // must include points above the chord (y>20) in its region.
+        let calls = vec![FeatureCall::new(
+            "sketch_path",
+            id(1),
+            json!({
+                "contours": [
+                    { "start": [0.0, 0.0], "closed": true, "segments": [
+                        { "kind": "line", "to": [40.0, 0.0] },
+                        { "kind": "line", "to": [40.0, 20.0] },
+                        { "kind": "quad", "ctrl": [20.0, 40.0], "to": [0.0, 20.0] }
+                    ]}
+                ]
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        // The quad apex reaches y≈30 at x=20; a point at (20, 26) lies
+        // under the bulge → inside.
+        assert!(sketch.sdf([20.0, 26.0]) < 0.0, "under quad bulge inside");
+        // A point well above the bulge is outside.
+        assert!(sketch.sdf([20.0, 38.0]) > 0.0, "above bulge outside");
     }
 }

@@ -4,11 +4,37 @@ import {
   dxfToSubCalls,
   importVectorToSubCalls,
   type SubCall,
+  type PathContour,
 } from "./importVector";
 
 /** Sub-calls of a given type. */
 function ofType(calls: SubCall[], type: string): SubCall[] {
   return calls.filter((c) => c.type === type);
+}
+
+/** Walk a sketch_path contour at global parameter `u` ∈ [0,1] across all
+ *  its segments, evaluating the line / quad at the local parameter. Used
+ *  to spot-check that the reconstructed curve matches the analytic one. */
+function sampleSketchPathAt(c: PathContour, u: number): [number, number] {
+  const n = c.segments.length;
+  const idx = Math.min(n - 1, Math.floor(u * n));
+  const t = u * n - idx;
+  let prev = c.start;
+  for (let i = 0; i < idx; i++) {
+    prev = (c.segments[i] as { to: [number, number] }).to;
+  }
+  const seg = c.segments[idx];
+  if (seg.kind === "line") {
+    return [
+      prev[0] + (seg.to[0] - prev[0]) * t,
+      prev[1] + (seg.to[1] - prev[1]) * t,
+    ];
+  }
+  const mt = 1 - t;
+  return [
+    mt * mt * prev[0] + 2 * mt * t * seg.ctrl[0] + t * t * seg.to[0],
+    mt * mt * prev[1] + 2 * mt * t * seg.ctrl[1] + t * t * seg.to[1],
+  ];
 }
 
 describe("svgToSubCalls", () => {
@@ -18,7 +44,7 @@ describe("svgToSubCalls", () => {
     );
     expect(calls).toHaveLength(1);
     expect(calls[0].type).toBe("sketch_line");
-    expect(calls[0].params.start).toEqual([0, -0]);
+    expect(calls[0].params.start).toEqual([0, 0]);
     // y is flipped: SVG y-down 20 → sketch y-up -20.
     expect(calls[0].params.end).toEqual([10, -20]);
   });
@@ -70,42 +96,90 @@ describe("svgToSubCalls", () => {
     expect(ofType(calls, "sketch_line")).toHaveLength(3);
   });
 
-  it("maps a path M/L/Z to 3 closing lines", () => {
+  it("maps a path M/L/Z to one closed sketch_path contour of lines", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L10 0 L10 10 Z"/></svg>`,
     );
-    expect(ofType(calls, "sketch_line")).toHaveLength(3);
-    // Z closes back to the subpath start (0,0) → (0,-0).
-    const last = calls[calls.length - 1];
-    expect(last.params.end).toEqual([0, -0]);
+    const paths = ofType(calls, "sketch_path");
+    expect(paths).toHaveLength(1);
+    const contours = paths[0].params.contours as PathContour[];
+    expect(contours).toHaveLength(1);
+    expect(contours[0].closed).toBe(true);
+    expect(contours[0].start).toEqual([0, 0]);
+    // Two explicit L segments, all lines (Z is implicit in `closed`).
+    expect(contours[0].segments).toHaveLength(2);
+    expect(contours[0].segments.every((s) => s.kind === "line")).toBe(true);
+    expect((contours[0].segments[1] as { to: number[] }).to).toEqual([10, -10]);
   });
 
-  it("tessellates a path C cubic into a multi-segment line chain", () => {
+  it("preserves a path C cubic as quad-bezier segments (not a line chain)", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 C0 10 10 10 10 0"/></svg>`,
-      { curveSteps: 16 },
     );
-    const lines = ofType(calls, "sketch_line");
-    expect(lines.length).toBeGreaterThan(1);
-    expect(lines.length).toBe(16);
-    // Endpoints match the cubic's P0 (0,0→0,-0) and P3 (10,0→10,-0).
-    expect(lines[0].params.start).toEqual([0, -0]);
-    expect(lines[lines.length - 1].params.end).toEqual([10, -0]);
+    const paths = ofType(calls, "sketch_path");
+    expect(paths).toHaveLength(1);
+    expect(ofType(calls, "sketch_line")).toHaveLength(0);
+    const c = (paths[0].params.contours as PathContour[])[0];
+    // Cubic → a small number of quad segments (curve preserved as curve).
+    expect(c.segments.length).toBeGreaterThanOrEqual(1);
+    expect(c.segments.length).toBeLessThan(8);
+    expect(c.segments.every((s) => s.kind === "quad")).toBe(true);
+    // Endpoints match the cubic P0 (0,0→0,-0) and P3 (10,0→10,-0).
+    expect(c.start).toEqual([0, 0]);
+    const last = c.segments[c.segments.length - 1] as { to: number[] };
+    expect(last.to[0]).toBeCloseTo(10, 6);
+    expect(last.to[1]).toBeCloseTo(-0, 6);
+    // The reconstructed curve midpoint matches the analytic cubic point.
+    // Cubic at t=0.5 (y-down): (5, 7.5) → sketch (5, -7.5).
+    const mid = sampleSketchPathAt(c, 0.5);
+    expect(mid[0]).toBeCloseTo(5, 2);
+    expect(mid[1]).toBeCloseTo(-7.5, 2);
   });
 
-  it("handles relative path commands (lowercase)", () => {
+  it("maps a quadratic Q exactly to one quad segment", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 Q5 10 10 0"/></svg>`,
+    );
+    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    expect(c.segments).toHaveLength(1);
+    const q = c.segments[0] as { kind: string; ctrl: number[]; to: number[] };
+    expect(q.kind).toBe("quad");
+    // Control + end transformed (y-flipped), EXACT.
+    expect(q.ctrl).toEqual([5, -10]);
+    expect(q.to).toEqual([10, 0]);
+  });
+
+  it("handles relative path commands (lowercase) as a sketch_path", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 l10 0 l0 10 z"/></svg>`,
     );
-    expect(ofType(calls, "sketch_line")).toHaveLength(3);
+    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    expect(c.closed).toBe(true);
+    expect(c.segments).toHaveLength(2);
   });
 
-  it("tessellates an elliptical arc A command into lines", () => {
+  it("converts an elliptical arc A command into quad segments", () => {
     const calls = svgToSubCalls(
       `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 A5 5 0 0 1 10 0"/></svg>`,
-      { curveSteps: 8 },
     );
-    expect(ofType(calls, "sketch_line").length).toBeGreaterThan(1);
+    const c = (ofType(calls, "sketch_path")[0].params.contours as PathContour[])[0];
+    expect(c.segments.length).toBeGreaterThanOrEqual(1);
+    expect(c.segments.every((s) => s.kind === "quad")).toBe(true);
+  });
+
+  it("groups M…Z M…Z subpaths into ONE sketch_path with 2 contours (donut)", () => {
+    // Outer square + inner square (a glyph-like donut). Both subpaths
+    // land in a single sketch_path so the kernel cuts a real hole.
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L20 0 L20 20 L0 20 Z M5 5 L15 5 L15 15 L5 15 Z"/></svg>`,
+    );
+    const paths = ofType(calls, "sketch_path");
+    expect(paths).toHaveLength(1);
+    const contours = paths[0].params.contours as PathContour[];
+    expect(contours).toHaveLength(2);
+    expect(contours[0].closed).toBe(true);
+    expect(contours[1].closed).toBe(true);
+    expect(contours[1].start).toEqual([5, -5]);
   });
 
   it("traverses nested <g> groups", () => {
@@ -120,6 +194,83 @@ describe("svgToSubCalls", () => {
       `<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(100,50)"><circle cx="0" cy="0" r="1"/></g></svg>`,
     );
     expect(calls[0].params.center).toEqual([100, -50]);
+  });
+
+  it("applies a rotate(90) transform (with y-flip)", () => {
+    // A point at (10,0) rotated +90° in SVG space → (0,10), then
+    // y-flipped to sketch space → (0,-10).
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><g transform="rotate(90)"><line x1="10" y1="0" x2="10" y2="0"/></g></svg>`,
+    );
+    const s = calls[0].params.start as number[];
+    expect(s[0]).toBeCloseTo(0, 6);
+    expect(s[1]).toBeCloseTo(-10, 6);
+  });
+
+  it("rotates a rect about a point: rotate(a cx cy)", () => {
+    // 180° about (5,5) maps corner (0,0)→(10,10); y-flip → (10,-10).
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="10" height="10" transform="rotate(180 5 5)"/></svg>`,
+    );
+    const lines = ofType(calls, "sketch_line");
+    expect(lines).toHaveLength(4);
+    const starts = lines.map((l) => l.params.start as number[]);
+    // The (0,0) corner became (10,10) → sketch (10,-10) appears.
+    const hit = starts.some(
+      (p) => Math.abs(p[0] - 10) < 1e-6 && Math.abs(p[1] + 10) < 1e-6,
+    );
+    expect(hit).toBe(true);
+  });
+
+  it("applies skewX", () => {
+    // skewX(45): x' = x + tan(45)·y = x + y. Point (0,10): x'=10,y'=10;
+    // y-flip → (10,-10).
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="10" x2="0" y2="10" transform="skewX(45)"/></svg>`,
+    );
+    const s = calls[0].params.start as number[];
+    expect(s[0]).toBeCloseTo(10, 6);
+    expect(s[1]).toBeCloseTo(-10, 6);
+  });
+
+  it("applies skewY", () => {
+    // skewY(45): y' = y + tan(45)·x = y + x. Point (10,0): x'=10,y'=10;
+    // y-flip → (10,-10).
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><line x1="10" y1="0" x2="10" y2="0" transform="skewY(45)"/></svg>`,
+    );
+    const s = calls[0].params.start as number[];
+    expect(s[0]).toBeCloseTo(10, 6);
+    expect(s[1]).toBeCloseTo(-10, 6);
+  });
+
+  it("composes nested g transforms in document order (rotate ∘ translate)", () => {
+    // Outer translate(10,0), inner rotate(90). A point at (5,0) is first
+    // rotated +90° → (0,5), then translated → (10,5); y-flip → (10,-5).
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><g transform="translate(10,0)"><g transform="rotate(90)"><line x1="5" y1="0" x2="5" y2="0"/></g></g></svg>`,
+    );
+    const s = calls[0].params.start as number[];
+    expect(s[0]).toBeCloseTo(10, 6);
+    expect(s[1]).toBeCloseTo(-5, 6);
+  });
+
+  it("keeps a circle a circle but turns a non-uniform scale into an ellipse", () => {
+    // Uniform scale(2): circle stays a circle, radius doubles.
+    const uniform = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><circle cx="0" cy="0" r="3" transform="scale(2)"/></svg>`,
+    );
+    expect(uniform[0].type).toBe("sketch_circle");
+    expect(uniform[0].params.radius).toBeCloseTo(6, 6);
+    // Anisotropic scale(2,1): circle → ellipse with radii 6 and 3.
+    const aniso = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><circle cx="0" cy="0" r="3" transform="scale(2,1)"/></svg>`,
+    );
+    expect(aniso[0].type).toBe("sketch_ellipse");
+    const rx = aniso[0].params.radius_x as number;
+    const ry = aniso[0].params.radius_y as number;
+    expect(Math.max(rx, ry)).toBeCloseTo(6, 6);
+    expect(Math.min(rx, ry)).toBeCloseTo(3, 6);
   });
 
   it("returns [] for empty / garbage input", () => {

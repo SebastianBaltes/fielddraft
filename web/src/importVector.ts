@@ -14,18 +14,40 @@
  *    treat one user unit as one mm. DXF likewise passes coordinates
  *    through unscaled.
  *
- * ── Curve tessellation ─────────────────────────────────────────────────
- *  There is no Bézier / spline sub-call, so every cubic / quadratic Bézier,
- *  smooth-curve and SVG elliptical-arc segment is flattened into a chain of
- *  short `sketch_line` segments. We use a FIXED step count
- *  (`CURVE_STEPS = 16`) per curve segment — simple and predictable; fine for
- *  import where the user can refine afterwards. SPLINEs in DXF connect their
- *  fit points (or, lacking those, control points) directly with lines.
+ * ── Curve handling (F22-full) ───────────────────────────────────────────
+ *  SVG path Béziers are preserved AS curves, not flattened. A path becomes a
+ *  single `sketch_path` sub-call carrying one contour per subpath (so a glyph
+ *  donut imports with a real hole via the kernel's even-odd nesting). Quads
+ *  (Q/T) map 1:1 to an EXACT quad segment; cubics (C/S) are degree-reduced
+ *  into quad segments by recursive subdivision to a tight flatness tolerance
+ *  (`CUBIC_TOL`). Lines (L/H/V) and the implicit Z close become line
+ *  segments. SVG elliptical arcs (A) are converted to quad segments via the
+ *  endpoint→centre parameterisation and a per-quarter-turn quad fit.
+ *
+ *  The SVG y-down → sketch y-up flip is FOLDED into the transform matrix as
+ *  the outermost factor, so every control point and curve angle comes out in
+ *  sketch space correctly (a rotated/skewed curve transforms as a whole).
+ *
+ *  DXF still tessellates curves into `sketch_line` chains (out of scope here;
+ *  unchanged) and connects SPLINE fit/control points with lines.
  */
 
 export interface SubCall {
   type: string;
   params: Record<string, unknown>;
+}
+
+/** One segment of a `sketch_path` contour. Tagged enum matching the
+ *  kernel `PathSegmentDef` wire shape (snake_case `kind`). */
+export type PathSeg =
+  | { kind: "line"; to: Pt }
+  | { kind: "quad"; ctrl: Pt; to: Pt };
+
+/** One contour of a `sketch_path`: a start point + ordered segments. */
+export interface PathContour {
+  start: Pt;
+  segments: PathSeg[];
+  closed: boolean;
 }
 
 export interface ImportOpts {
@@ -37,11 +59,6 @@ export interface ImportOpts {
 export const CURVE_STEPS = 16;
 
 type Pt = [number, number];
-
-/** Negate y to convert SVG (y-down) into sketch (y-up) space. */
-function flipY(p: Pt): Pt {
-  return [p[0], -p[1]];
-}
 
 function line(start: Pt, end: Pt): SubCall {
   return { type: "sketch_line", params: { start, end } };
@@ -60,40 +77,6 @@ function lineChain(points: Pt[], close: boolean): SubCall[] {
   return out;
 }
 
-/** Sample a cubic Bézier P0→P3 (controls P1, P2) into `steps` line pts,
- *  excluding the start point (caller already has it). */
-function cubic(p0: Pt, p1: Pt, p2: Pt, p3: Pt, steps: number): Pt[] {
-  const out: Pt[] = [];
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const mt = 1 - t;
-    const a = mt * mt * mt;
-    const b = 3 * mt * mt * t;
-    const c = 3 * mt * t * t;
-    const d = t * t * t;
-    out.push([
-      a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
-      a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
-    ]);
-  }
-  return out;
-}
-
-/** Sample a quadratic Bézier P0→P2 (control P1) into `steps` line pts,
- *  excluding the start point. */
-function quad(p0: Pt, p1: Pt, p2: Pt, steps: number): Pt[] {
-  const out: Pt[] = [];
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const mt = 1 - t;
-    out.push([
-      mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0],
-      mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1],
-    ]);
-  }
-  return out;
-}
-
 function isFiniteNum(n: number): boolean {
   return Number.isFinite(n);
 }
@@ -101,11 +84,13 @@ function isFiniteNum(n: number): boolean {
 /* ───────────────────────── SVG ───────────────────────── */
 
 /** Parse a `transform` attribute into a 2×3 affine matrix [a,b,c,d,e,f]
- *  mapping (x,y) → (a·x + c·y + e, b·x + d·y + f). Supports translate,
- *  scale, and matrix; unsupported ops (rotate/skew) are skipped — a
- *  documented v1 limitation. Returns identity when empty/unparseable. */
+ *  mapping (x,y) → (a·x + c·y + e, b·x + d·y + f). Supports the full SVG
+ *  transform list: translate, scale, matrix, rotate (with optional
+ *  centre), skewX and skewY. Returns identity when empty/unparseable. */
 type Mat = [number, number, number, number, number, number];
 const IDENTITY: Mat = [1, 0, 0, 1, 0, 0];
+/** SVG y-down → sketch y-up flip, applied as the outermost transform. */
+const FLIP_Y: Mat = [1, 0, 0, -1, 0, 0];
 
 function matMul(m: Mat, n: Mat): Mat {
   // m ∘ n  (apply n first, then m)
@@ -121,6 +106,191 @@ function matMul(m: Mat, n: Mat): Mat {
 
 function applyMat(m: Mat, p: Pt): Pt {
   return [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
+}
+
+/** Flatness tolerance (in path units ≈ mm) for cubic → quad reduction. */
+export const CUBIC_TOL = 0.05;
+/** Hard recursion cap so a pathological cubic can't explode the segment
+ *  count — at depth 6 a single cubic yields ≤ 64 quads, far past the
+ *  tolerance for any realistic glyph/outline cubic. */
+const CUBIC_MAX_DEPTH = 6;
+
+/** Evaluate a cubic Bézier at parameter t. */
+function cubicAt(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
+  const mt = 1 - t;
+  const a = mt * mt * mt;
+  const b = 3 * mt * mt * t;
+  const c = 3 * mt * t * t;
+  const d = t * t * t;
+  return [
+    a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+    a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+  ];
+}
+
+/** Best single-quad control point for a cubic span: the classic
+ *  degree-reduction `q1 = (3·p1 + 3·p2 − p0 − p3) / 4`. */
+function quadCtrlFromCubic(p0: Pt, p1: Pt, p2: Pt, p3: Pt): Pt {
+  return [
+    (3 * p1[0] + 3 * p2[0] - p0[0] - p3[0]) / 4,
+    (3 * p1[1] + 3 * p2[1] - p0[1] - p3[1]) / 4,
+  ];
+}
+
+/** Max deviation of the fitted quad from the cubic, sampled at a few
+ *  interior parameters (cheap, conservative flatness proxy). */
+function cubicQuadError(p0: Pt, p1: Pt, p2: Pt, p3: Pt, q1: Pt): number {
+  let max = 0;
+  for (const t of [0.25, 0.5, 0.75]) {
+    const c = cubicAt(p0, p1, p2, p3, t);
+    const mt = 1 - t;
+    const qx = mt * mt * p0[0] + 2 * mt * t * q1[0] + t * t * p3[0];
+    const qy = mt * mt * p0[1] + 2 * mt * t * q1[1] + t * t * p3[1];
+    max = Math.max(max, Math.hypot(c[0] - qx, c[1] - qy));
+  }
+  return max;
+}
+
+/** Degree-reduce a cubic Bézier into a chain of EXACT quad segments to
+ *  within `tol`, by recursive subdivision (de Casteljau split at t=0.5).
+ *  Each emitted quad uses the optimal degree-reduction control point.
+ *  This preserves the curve AS curves (no polyline) while staying inside
+ *  the kernel's quad-only `SketchSegment` vocabulary. */
+function cubicToQuads(
+  p0: Pt,
+  p1: Pt,
+  p2: Pt,
+  p3: Pt,
+  tol: number,
+  depth = 0,
+): PathSeg[] {
+  const q1 = quadCtrlFromCubic(p0, p1, p2, p3);
+  if (depth >= CUBIC_MAX_DEPTH || cubicQuadError(p0, p1, p2, p3, q1) <= tol) {
+    return [{ kind: "quad", ctrl: q1, to: p3 }];
+  }
+  // de Casteljau split at t = 0.5.
+  const p01: Pt = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+  const p12: Pt = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+  const p23: Pt = [(p2[0] + p3[0]) / 2, (p2[1] + p3[1]) / 2];
+  const p012: Pt = [(p01[0] + p12[0]) / 2, (p01[1] + p12[1]) / 2];
+  const p123: Pt = [(p12[0] + p23[0]) / 2, (p12[1] + p23[1]) / 2];
+  const mid: Pt = [(p012[0] + p123[0]) / 2, (p012[1] + p123[1]) / 2];
+  return [
+    ...cubicToQuads(p0, p01, p012, mid, tol, depth + 1),
+    ...cubicToQuads(mid, p123, p23, p3, tol, depth + 1),
+  ];
+}
+
+/** Convert one SVG elliptical-arc command into quad segments by sampling
+ *  the arc and fitting a quad per ~quarter-turn span (control point at
+ *  the tangent intersection). All output points are in the arc's own
+ *  (pre-transform) space; the caller transforms them. */
+function arcToQuadSegs(
+  start: Pt,
+  rxIn: number,
+  ryIn: number,
+  phi: number,
+  largeArc: boolean,
+  sweep: boolean,
+  end: Pt,
+): PathSeg[] {
+  let rx = Math.abs(rxIn);
+  let ry = Math.abs(ryIn);
+  if (rx === 0 || ry === 0) return [{ kind: "line", to: end }];
+  const cosP = Math.cos(phi);
+  const sinP = Math.sin(phi);
+  const dx = (start[0] - end[0]) / 2;
+  const dy = (start[1] - end[1]) / 2;
+  const x1p = cosP * dx + sinP * dy;
+  const y1p = -sinP * dx + cosP * dy;
+  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lambda > 1) {
+    const s = Math.sqrt(lambda);
+    rx *= s;
+    ry *= s;
+  }
+  const sign = largeArc !== sweep ? 1 : -1;
+  const numr = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+  const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  const co = sign * Math.sqrt(Math.max(0, numr / den));
+  const cxp = (co * rx * y1p) / ry;
+  const cyp = (-co * ry * x1p) / rx;
+  const cx = cosP * cxp - sinP * cyp + (start[0] + end[0]) / 2;
+  const cy = sinP * cxp + cosP * cyp + (start[1] + end[1]) / 2;
+  const ang = (ux: number, uy: number, vx: number, vy: number): number => {
+    const dot = ux * vx + uy * vy;
+    const len = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+    let a = Math.acos(Math.min(1, Math.max(-1, dot / len)));
+    if (ux * vy - uy * vx < 0) a = -a;
+    return a;
+  };
+  const theta1 = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+  let dTheta = ang(
+    (x1p - cxp) / rx,
+    (y1p - cyp) / ry,
+    (-x1p - cxp) / rx,
+    (-y1p - cyp) / ry,
+  );
+  if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI;
+  if (sweep && dTheta < 0) dTheta += 2 * Math.PI;
+  const onArc = (t: number): Pt => [
+    cosP * rx * Math.cos(t) - sinP * ry * Math.sin(t) + cx,
+    sinP * rx * Math.cos(t) + cosP * ry * Math.sin(t) + cy,
+  ];
+  const tangent = (t: number): Pt => [
+    -cosP * rx * Math.sin(t) - sinP * ry * Math.cos(t),
+    -sinP * rx * Math.sin(t) + cosP * ry * Math.cos(t),
+  ];
+  // One quad per ≤90° span keeps the single-quad fit tight.
+  const spans = Math.max(1, Math.ceil(Math.abs(dTheta) / (Math.PI / 2)));
+  const segs: PathSeg[] = [];
+  for (let i = 0; i < spans; i++) {
+    const ta = theta1 + (dTheta * i) / spans;
+    const tb = theta1 + (dTheta * (i + 1)) / spans;
+    const a = onArc(ta);
+    const b = onArc(tb);
+    const da = tangent(ta);
+    const db = tangent(tb);
+    // Control = intersection of tangent lines a+s·da and b−u·db.
+    const denom = da[0] * db[1] - da[1] * db[0];
+    let ctrl: Pt;
+    if (Math.abs(denom) < 1e-9) {
+      ctrl = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    } else {
+      const s = ((b[0] - a[0]) * db[1] - (b[1] - a[1]) * db[0]) / denom;
+      ctrl = [a[0] + s * da[0], a[1] + s * da[1]];
+    }
+    segs.push({ kind: "quad", ctrl, to: b });
+  }
+  return segs;
+}
+
+/** Decompose the linear part of an affine matrix into rotation +
+ *  axis-aligned scale via SVD of the 2×2 (Jacobi one-sided). Returns the
+ *  semi-axis lengths a single radius `r` maps to and the rotation of the
+ *  major axis. Used to map a circle/ellipse under a rotating/skewing
+ *  transform to an `sketch_ellipse` (radii + rotation) rather than
+ *  dropping the rotation. */
+function decomposeLinear(m: Mat): {
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+} {
+  // 2×2 linear part [[a, c], [b, d]] (column-major in our Mat layout).
+  const a = m[0];
+  const b = m[1];
+  const c = m[2];
+  const d = m[3];
+  // Singular values via the M·Mᵀ symmetric eigen-decomposition.
+  const e = (a * a + b * b + c * c + d * d) / 2;
+  const f = (a * a + b * b - c * c - d * d) / 2;
+  const g = a * c + b * d;
+  const hyp = Math.sqrt(f * f + g * g);
+  const sx = Math.sqrt(Math.max(0, e + hyp));
+  const sy = Math.sqrt(Math.max(0, e - hyp));
+  // Rotation of the major axis (eigenvector direction of M·Mᵀ).
+  const rotation = f === 0 && g === 0 ? 0 : 0.5 * Math.atan2(g, f);
+  return { scaleX: sx, scaleY: sy, rotation };
 }
 
 function parseTransform(attr: string | null): Mat {
@@ -143,8 +313,30 @@ function parseTransform(attr: string | null): Mat {
       t = [sx, 0, 0, sy, 0, 0];
     } else if (op === "matrix" && nums.length === 6) {
       t = [nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]];
+    } else if (op === "rotate") {
+      // rotate(a) or rotate(a cx cy) — degrees. About a point =
+      // translate(c) · rotate(a) · translate(−c).
+      const a = ((nums[0] ?? 0) * Math.PI) / 180;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      const rot: Mat = [cos, sin, -sin, cos, 0, 0];
+      if (nums.length >= 3) {
+        const cx = nums[1];
+        const cy = nums[2];
+        t = matMul(
+          matMul([1, 0, 0, 1, cx, cy], rot),
+          [1, 0, 0, 1, -cx, -cy],
+        );
+      } else {
+        t = rot;
+      }
+    } else if (op === "skewX") {
+      const a = ((nums[0] ?? 0) * Math.PI) / 180;
+      t = [1, 0, Math.tan(a), 1, 0, 0];
+    } else if (op === "skewY") {
+      const a = ((nums[0] ?? 0) * Math.PI) / 180;
+      t = [1, Math.tan(a), 0, 1, 0, 0];
     }
-    // rotate / skewX / skewY: documented limitation — ignored.
     if (t) m = matMul(m, t);
   }
   return m;
@@ -169,12 +361,69 @@ interface SvgWalk {
   skipped: number;
 }
 
+/** Emit an `sketch_ellipse` (or `sketch_circle`) for a circle/ellipse
+ *  whose centre and radii live in the element's local space, transformed
+ *  by `m` (which already folds in the y-flip + all ancestor transforms).
+ *  The linear part of `m` is SVD-decomposed so a circle under a rotating
+ *  or skewing transform becomes a correctly oriented ellipse instead of
+ *  silently dropping the rotation. */
+function emitTransformedEllipse(
+  out: SvgWalk,
+  m: Mat,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  steps: number,
+): void {
+  const center = applyMat(m, [cx, cy]);
+  // Pre-scale the unit linear part by the element radii, then decompose:
+  // map the ellipse basis vectors (rx,0) and (0,ry) through the linear
+  // part and SVD the resulting 2×2.
+  const lin: Mat = [
+    m[0] * rx,
+    m[1] * rx,
+    m[2] * ry,
+    m[3] * ry,
+    0,
+    0,
+  ];
+  const { scaleX, scaleY, rotation } = decomposeLinear(lin);
+  if (!(scaleX > 0) || !(scaleY > 0)) {
+    out.skipped++;
+    return;
+  }
+  // A conformal transform (uniform scale + rotation, no skew) maps a
+  // circle to a circle — keep it a `sketch_circle`. Only a genuinely
+  // anisotropic transform yields an ellipse (with the right rotation).
+  const rel = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY);
+  if (rel < 1e-4) {
+    out.calls.push({
+      type: "sketch_circle",
+      params: { center, radius: (scaleX + scaleY) / 2 },
+    });
+    return;
+  }
+  out.calls.push({
+    type: "sketch_ellipse",
+    params: {
+      center,
+      radius_x: scaleX,
+      radius_y: scaleY,
+      rotation,
+      segments: Math.max(16, steps * 2),
+    },
+  });
+}
+
 function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
   const tag = el.tagName.toLowerCase();
   // Apply this element's own transform on top of the inherited matrix.
+  // `mat` already carries the outermost y-flip, so curve control points
+  // and angles all transform together in one space.
   const local = parseTransform(el.getAttribute("transform"));
   const m = matMul(mat, local);
-  const xf = (p: Pt): Pt => flipY(applyMat(m, p));
+  const xf = (p: Pt): Pt => applyMat(m, p);
 
   switch (tag) {
     case "svg":
@@ -222,10 +471,9 @@ function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
         out.skipped++;
         return;
       }
-      out.calls.push({
-        type: "sketch_circle",
-        params: { center: xf([cx, cy]), radius: r },
-      });
+      // A uniformly-scaled circle stays a circle; under rotation/skew it
+      // becomes an ellipse — emitTransformedEllipse handles both.
+      emitTransformedEllipse(out, m, cx, cy, r, r, steps);
       return;
     }
     case "ellipse": {
@@ -237,17 +485,7 @@ function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
         out.skipped++;
         return;
       }
-      out.calls.push({
-        type: "sketch_ellipse",
-        params: {
-          center: xf([cx, cy]),
-          radius_x: rx,
-          radius_y: ry,
-          // rotation negated: SVG y-down flip mirrors the angle.
-          rotation: 0,
-          segments: Math.max(16, steps * 2),
-        },
-      });
+      emitTransformedEllipse(out, m, cx, cy, rx, ry, steps);
       return;
     }
     case "polyline": {
@@ -261,7 +499,8 @@ function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
       return;
     }
     case "path": {
-      out.calls.push(...parsePath(el.getAttribute("d") ?? "", xf, steps));
+      const call = parsePathToSketchPath(el.getAttribute("d") ?? "", m);
+      if (call) out.calls.push(call);
       return;
     }
     default:
@@ -271,130 +510,139 @@ function walkSvg(el: Element, mat: Mat, steps: number, out: SvgWalk): void {
   }
 }
 
-/** Tokenise + walk an SVG path `d` string. Emits lines for L/H/V, line
- *  chains for tessellated C/S/Q/T and A, and closes on Z. The `xf`
- *  transform is applied (matrix + y-flip) to every output point; curve
- *  math runs in the path's own coordinate space first so tessellation
- *  is correct, then each sampled point goes through `xf`. */
-function parsePath(d: string, xf: (p: Pt) => Pt, steps: number): SubCall[] {
-  // Split into command tokens: a letter followed by its number run.
+/** Parse an SVG path `d` string into ONE `sketch_path` sub-call whose
+ *  contours preserve curves AS curves. Each subpath (M…) becomes a
+ *  contour; Z marks it closed. Quads (Q/T) map 1:1 to an EXACT quad
+ *  segment; cubics (C/S) are degree-reduced to quad segments
+ *  ([`cubicToQuads`], tolerance [`CUBIC_TOL`]); elliptical arcs (A)
+ *  become quad segments per ≤90° span; L/H/V become line segments.
+ *
+ *  All geometry is parsed in the path's RAW space, then every endpoint
+ *  and control point is transformed by `m` (which already folds in the
+ *  y-flip and ancestor transforms). Quadratic Béziers are affine-
+ *  invariant, so transforming the control points yields the exact
+ *  transformed curve — including correct angles under rotate/skew.
+ *
+ *  Returns `null` when no contour with at least one segment results. */
+function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
   const cmdRe = /([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g;
-  const out: SubCall[] = [];
-  let cur: Pt = [0, 0]; // current point, RAW (pre-xf) coordinates
+  const xf = (p: Pt): Pt => applyMat(m, p);
+  const contours: PathContour[] = [];
+  let cur: Pt = [0, 0]; // current point, RAW
   let sub: Pt = [0, 0]; // subpath start, RAW
-  let prevCubicCtrl: Pt | null = null; // last cubic control reflection
-  let prevQuadCtrl: Pt | null = null; // last quad control reflection
-  let chain: Pt[] = []; // current subpath point chain (RAW)
+  let prevCubicCtrl: Pt | null = null;
+  let prevQuadCtrl: Pt | null = null;
+  let active: PathContour | null = null; // current contour (transformed)
 
-  const flushChain = (close: boolean) => {
-    if (chain.length >= 2) {
-      out.push(...lineChain(chain.map(xf) as Pt[], close));
+  const ensureContour = () => {
+    if (!active) {
+      active = { start: xf(cur), segments: [], closed: false };
+      contours.push(active);
     }
-    chain = [];
+  };
+  const finish = () => {
+    active = null;
   };
 
   let match: RegExpExecArray | null;
   while ((match = cmdRe.exec(d)) !== null) {
     const cmd = match[1];
     const rel = cmd === cmd.toLowerCase() && cmd !== cmd.toUpperCase();
-    const args = match[2]
-      .split(/[\s,]+/)
-      .map(Number)
-      .filter(isFiniteNum);
+    const args = match[2].split(/[\s,]+/).map(Number).filter(isFiniteNum);
     const up = cmd.toUpperCase();
     let i = 0;
 
-    const startChainIfEmpty = () => {
-      if (chain.length === 0) chain.push([cur[0], cur[1]]);
-    };
-
     if (up === "M") {
-      // First pair = moveto; subsequent pairs are implicit linetos.
       if (args.length >= 2) {
-        flushChain(false);
+        finish();
         cur = rel ? [cur[0] + args[0], cur[1] + args[1]] : [args[0], args[1]];
         sub = [cur[0], cur[1]];
-        chain = [[cur[0], cur[1]]];
+        active = { start: xf(cur), segments: [], closed: false };
+        contours.push(active);
         i = 2;
         for (; i + 1 < args.length; i += 2) {
           cur = rel
             ? [cur[0] + args[i], cur[1] + args[i + 1]]
             : [args[i], args[i + 1]];
-          chain.push([cur[0], cur[1]]);
+          active.segments.push({ kind: "line", to: xf(cur) });
         }
       }
       prevCubicCtrl = prevQuadCtrl = null;
     } else if (up === "L") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 1 < args.length; i += 2) {
         cur = rel
           ? [cur[0] + args[i], cur[1] + args[i + 1]]
           : [args[i], args[i + 1]];
-        chain.push([cur[0], cur[1]]);
+        active!.segments.push({ kind: "line", to: xf(cur) });
       }
       prevCubicCtrl = prevQuadCtrl = null;
     } else if (up === "H") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i < args.length; i++) {
         cur = rel ? [cur[0] + args[i], cur[1]] : [args[i], cur[1]];
-        chain.push([cur[0], cur[1]]);
+        active!.segments.push({ kind: "line", to: xf(cur) });
       }
       prevCubicCtrl = prevQuadCtrl = null;
     } else if (up === "V") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i < args.length; i++) {
         cur = rel ? [cur[0], cur[1] + args[i]] : [cur[0], args[i]];
-        chain.push([cur[0], cur[1]]);
+        active!.segments.push({ kind: "line", to: xf(cur) });
       }
       prevCubicCtrl = prevQuadCtrl = null;
     } else if (up === "C") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 5 < args.length; i += 6) {
         const p1: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
         const p2: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
         const p3: Pt = rel ? [cur[0] + args[i + 4], cur[1] + args[i + 5]] : [args[i + 4], args[i + 5]];
-        chain.push(...cubic(cur, p1, p2, p3, steps));
+        for (const q of cubicToQuads(cur, p1, p2, p3, CUBIC_TOL)) {
+          active!.segments.push(xfSeg(q, xf));
+        }
         cur = p3;
         prevCubicCtrl = p2;
       }
       prevQuadCtrl = null;
     } else if (up === "S") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 3 < args.length; i += 4) {
         const reflect: Pt = prevCubicCtrl
           ? [2 * cur[0] - prevCubicCtrl[0], 2 * cur[1] - prevCubicCtrl[1]]
           : [cur[0], cur[1]];
         const p2: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
         const p3: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
-        chain.push(...cubic(cur, reflect, p2, p3, steps));
+        for (const q of cubicToQuads(cur, reflect, p2, p3, CUBIC_TOL)) {
+          active!.segments.push(xfSeg(q, xf));
+        }
         cur = p3;
         prevCubicCtrl = p2;
       }
       prevQuadCtrl = null;
     } else if (up === "Q") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 3 < args.length; i += 4) {
         const p1: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
         const p2: Pt = rel ? [cur[0] + args[i + 2], cur[1] + args[i + 3]] : [args[i + 2], args[i + 3]];
-        chain.push(...quad(cur, p1, p2, steps));
+        active!.segments.push({ kind: "quad", ctrl: xf(p1), to: xf(p2) });
         cur = p2;
         prevQuadCtrl = p1;
       }
       prevCubicCtrl = null;
     } else if (up === "T") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 1 < args.length; i += 2) {
         const p1: Pt = prevQuadCtrl
           ? [2 * cur[0] - prevQuadCtrl[0], 2 * cur[1] - prevQuadCtrl[1]]
           : [cur[0], cur[1]];
         const p2: Pt = rel ? [cur[0] + args[i], cur[1] + args[i + 1]] : [args[i], args[i + 1]];
-        chain.push(...quad(cur, p1, p2, steps));
+        active!.segments.push({ kind: "quad", ctrl: xf(p1), to: xf(p2) });
         cur = p2;
         prevQuadCtrl = p1;
       }
       prevCubicCtrl = null;
     } else if (up === "A") {
-      startChainIfEmpty();
+      ensureContour();
       for (; i + 6 < args.length; i += 7) {
         const rx = args[i];
         const ry = args[i + 1];
@@ -404,85 +652,35 @@ function parsePath(d: string, xf: (p: Pt) => Pt, steps: number): SubCall[] {
         const end: Pt = rel
           ? [cur[0] + args[i + 5], cur[1] + args[i + 6]]
           : [args[i + 5], args[i + 6]];
-        chain.push(...arcToPoints(cur, rx, ry, xRot, largeArc, sweep, end, steps));
+        for (const q of arcToQuadSegs(cur, rx, ry, xRot, largeArc, sweep, end)) {
+          active!.segments.push(xfSeg(q, xf));
+        }
         cur = end;
       }
       prevCubicCtrl = prevQuadCtrl = null;
     } else if (up === "Z") {
-      // Close: append segment back to subpath start, flush as closed.
-      flushChain(true);
+      if (active) active.closed = true;
       cur = [sub[0], sub[1]];
+      // A subsequent command without an M re-opens from the close point.
+      finish();
       prevCubicCtrl = prevQuadCtrl = null;
     }
   }
-  flushChain(false);
-  return out;
+
+  const kept = contours.filter((c) => c.segments.length > 0);
+  if (kept.length === 0) return null;
+  return {
+    type: "sketch_path",
+    params: { contours: kept },
+  };
 }
 
-/** Tessellate an SVG elliptical-arc (endpoint parameterisation) into
- *  sampled points, excluding the start point. Implements the SVG spec's
- *  endpoint→center conversion (w3.org/TR/SVG/implnote.html). */
-function arcToPoints(
-  start: Pt,
-  rxIn: number,
-  ryIn: number,
-  phi: number,
-  largeArc: boolean,
-  sweep: boolean,
-  end: Pt,
-  steps: number,
-): Pt[] {
-  let rx = Math.abs(rxIn);
-  let ry = Math.abs(ryIn);
-  if (rx === 0 || ry === 0) return [end]; // degenerate → straight line
-  const cosP = Math.cos(phi);
-  const sinP = Math.sin(phi);
-  const dx = (start[0] - end[0]) / 2;
-  const dy = (start[1] - end[1]) / 2;
-  const x1p = cosP * dx + sinP * dy;
-  const y1p = -sinP * dx + cosP * dy;
-  // Correct out-of-range radii.
-  const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
-  if (lambda > 1) {
-    const s = Math.sqrt(lambda);
-    rx *= s;
-    ry *= s;
-  }
-  const sign = largeArc !== sweep ? 1 : -1;
-  const num =
-    rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
-  const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
-  const co = sign * Math.sqrt(Math.max(0, num / den));
-  const cxp = (co * rx * y1p) / ry;
-  const cyp = (-co * ry * x1p) / rx;
-  const cx = cosP * cxp - sinP * cyp + (start[0] + end[0]) / 2;
-  const cy = sinP * cxp + cosP * cyp + (start[1] + end[1]) / 2;
-
-  const angle = (ux: number, uy: number, vx: number, vy: number): number => {
-    const dot = ux * vx + uy * vy;
-    const len = Math.hypot(ux, uy) * Math.hypot(vx, vy);
-    let a = Math.acos(Math.min(1, Math.max(-1, dot / len)));
-    if (ux * vy - uy * vx < 0) a = -a;
-    return a;
-  };
-  const theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
-  let dTheta = angle(
-    (x1p - cxp) / rx,
-    (y1p - cyp) / ry,
-    (-x1p - cxp) / rx,
-    (-y1p - cyp) / ry,
-  );
-  if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI;
-  if (sweep && dTheta < 0) dTheta += 2 * Math.PI;
-
-  const out: Pt[] = [];
-  for (let i = 1; i <= steps; i++) {
-    const t = theta1 + (dTheta * i) / steps;
-    const x = cosP * rx * Math.cos(t) - sinP * ry * Math.sin(t) + cx;
-    const y = sinP * rx * Math.cos(t) + cosP * ry * Math.sin(t) + cy;
-    out.push([x, y]);
-  }
-  return out;
+/** Transform a raw-space path segment's points through `xf`. Quads are
+ *  affine-invariant, so transforming the control + end point yields the
+ *  exact transformed quad. */
+function xfSeg(seg: PathSeg, xf: (p: Pt) => Pt): PathSeg {
+  if (seg.kind === "line") return { kind: "line", to: xf(seg.to) };
+  return { kind: "quad", ctrl: xf(seg.ctrl), to: xf(seg.to) };
 }
 
 /** Parse SVG text into sub-calls. Returns `[]` on a missing/garbage root.
@@ -500,7 +698,9 @@ export function svgToSubCalls(svgText: string, opts: ImportOpts = {}): SubCall[]
   // A parse error yields a <parsererror> element somewhere in the tree.
   if (doc.getElementsByTagName("parsererror").length > 0) return [];
   const out: SvgWalk = { calls: [], skipped: 0 };
-  walkSvg(root, IDENTITY, steps, out);
+  // Seed with the y-flip as the OUTERMOST transform so every point,
+  // curve control point and angle transforms together into sketch space.
+  walkSvg(root, FLIP_Y, steps, out);
   return out.calls;
 }
 

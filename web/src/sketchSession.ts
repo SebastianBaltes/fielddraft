@@ -422,6 +422,25 @@ export function buildDraftSketchState(
           });
         }
       }
+    } else if (call.type === "sketch_path") {
+      // Mirrors the kernel `SketchPathTool::apply`, which registers one
+      // point entity per CONTOUR START (the analytic line+quad outline
+      // itself is a Path primitive built kernel-side, not a SketchState
+      // entity). Push exactly one point per contour, in order, or the
+      // entity-id allocation drifts.
+      const contours = call.params.contours;
+      if (Array.isArray(contours)) {
+        for (const c of contours) {
+          const start = (c as { start?: unknown })?.start;
+          if (Array.isArray(start) && start.length === 2) {
+            state.entities.push({
+              kind: "point",
+              id: state.next_entity_id++,
+              at: { x: Number(start[0]), y: Number(start[1]) },
+            });
+          }
+        }
+      }
     } else if (call.type === "sketch_regular_polygon") {
       // Mirrors the kernel `SketchRegularPolygonTool`: compute the
       // N vertices from centre/radius/sides/inscribed and push one
