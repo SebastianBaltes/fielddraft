@@ -259,11 +259,12 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_polygon",
   "sketch_regular_polygon",
   "sketch_arc",
-  "sketch_mirror",
   "sketch_offset",
-  // `sketch_trim` is not in this allowlist because it isn't a kernel tool
-  // at all — it's an interactive editing mode rendered as a separate
-  // button below the kernel-driven row (see the JSX).
+  // `sketch_trim` (and F14 `sketch_mirror`) are not in this allowlist
+  // because they aren't kernel tools at all — they're interactive editing
+  // modes rendered as separate buttons below the kernel-driven row (see
+  // the JSX). The kernel `sketch_mirror` whole-profile stub is no longer
+  // surfaced; the interactive Mirror replaces it.
 ]);
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
@@ -492,6 +493,22 @@ export function Toolbar({ store, state }: ToolbarProps) {
               }
             />
           </label>
+          {/* F14: Mirror — interactive editing mode, not a kernel tool.
+              Select source geometry first (Select mode), then pick this
+              tool and click the axis LINE: every selected line/circle/arc
+              is reflected across it as an editable mirrored copy (see
+              store.mirrorSketchSelection / sketchMirror.ts). */}
+          <FeatureButton
+            kind="sketch_mirror"
+            active={sketchSession.selectedTool === "sketch_mirror"}
+            testId="sketch-tool-sketch_mirror"
+            onClick={() => store.selectSketchTool("sketch_mirror", {})}
+          />
+          {sketchSession.selectedTool === "sketch_mirror" && (
+            <span className="hint" data-testid="sketch-mirror-hint">
+              Click the axis line to mirror the selected geometry
+            </span>
+          )}
         </div>
 
         {!sketchSession.selectedTool ? (

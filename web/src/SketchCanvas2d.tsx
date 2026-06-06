@@ -1165,17 +1165,26 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
-    if (
-      session.selectedTool === "sketch_mirror" ||
-      session.selectedTool === "sketch_offset"
-    ) {
-      // Whole-profile operation tools. They don't draw an entity; they
-      // transform the geometry accumulated so far (mirror reflects it
-      // across an axis, offset grows/shrinks it) at commit time. A click
-      // applies the operation with the parameters from the tool dialog
-      // (mirror axis / offset distance) so the canvas isn't a dead
-      // surface for these tools. The op carries no solver entity, so we
-      // just append the sub-call — no inference replay needed.
+    // F14: Mirror is an interactive editing mode, not a kernel tool. The
+    // user first selects the source geometry (Select mode: click / box-
+    // select), then picks the Mirror tool, then clicks the AXIS LINE here.
+    // The click resolves the nearest line sub-call and reflects every
+    // selected simple-geometry sub-call across it, appending editable
+    // mirrored copies (see store.mirrorSketchSelection / sketchMirror.ts).
+    if (session.selectedTool === "sketch_mirror") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+      if (axis !== null) store.mirrorSketchSelection(axis);
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    if (session.selectedTool === "sketch_offset") {
+      // Whole-profile operation tool. It doesn't draw an entity; it
+      // transforms the geometry accumulated so far (offset grows/shrinks
+      // it) at commit time. A click applies the operation with the
+      // parameters from the tool dialog (offset distance) so the canvas
+      // isn't a dead surface for it. The op carries no solver entity, so
+      // we just append the sub-call — no inference replay needed.
       store.applySketchToolDraft();
       lastCamVersionRef.current = -1;
       return;

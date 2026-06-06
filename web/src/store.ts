@@ -38,6 +38,7 @@ import {
   setSketchSelection as reduceSetSelection,
   clearSketchSelection as reduceClearSelection,
   buildDraftSketchState,
+  subCallsForSelection,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
 import {
@@ -46,6 +47,7 @@ import {
   edgesOfSubCall,
   subCallOfCurve,
 } from "./sketchTrim";
+import { mirrorCurve } from "./sketchMirror";
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
@@ -2040,6 +2042,66 @@ export class KernelStore {
     this.updateSketch(
       reduceReplaceAt(session, targetIndex, [subCallOfCurve(extended, carry)]),
     );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F14: interactive Mirror. Reflect the currently-selected source
+   * geometry across the axis line at sub-call index `axisLineIndex` and
+   * append the mirrored copies as ordinary `sketch_line` /
+   * `sketch_circle` / `sketch_arc` sub-calls (so they stay editable —
+   * this is a UI-side rewrite, no kernel mirror tool).
+   *
+   * Selection → sub-call rule: mirror every SIMPLE geometry sub-call
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null) that owns at
+   * least one selected entity, EXCLUDING the axis line itself. The axis
+   * line's two solved endpoints (read from `buildDraftSketchState`)
+   * define the infinite reflection axis. Each mirrored copy carries the
+   * source's construction flag. After appending, the sketch is re-solved
+   * and the selection is cleared.
+   *
+   * No-op when the axis isn't a line, the selection is empty, or nothing
+   * mirrorable remains after excluding the axis.
+   */
+  mirrorSketchSelection(axisLineIndex: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const axisCall = session.subCalls[axisLineIndex];
+    if (!axisCall) return;
+    const axisCurve = curveOfSubCall(axisCall);
+    if (!axisCurve || axisCurve.kind !== "line") return;
+    const axisA = axisCurve.a;
+    const axisB = axisCurve.b;
+
+    // Map the entity-id selection back to the simple-geometry sub-calls
+    // that produced it, dropping the axis line and any non-simple kinds.
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => {
+      if (i === axisLineIndex) return false;
+      return curveOfSubCall(session.subCalls[i]) !== null;
+    });
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const mirrored: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      mirrored.push(subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)));
+    }
+    if (mirrored.length === 0) return;
+
+    this.pushSketchSubCalls(mirrored);
+    this.updateSketch(reduceClearSelection(this.state.sketchSession));
     void solveAndReplace(this);
   }
 

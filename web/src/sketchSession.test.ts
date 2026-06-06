@@ -13,6 +13,7 @@ import {
   setSketchSelection,
   setSketchToolDraft,
   toggleSketchSelection,
+  subCallsForSelection,
 } from "./sketchSession";
 
 describe("sketchSession reducers", () => {
@@ -617,5 +618,37 @@ describe("sketch_slot draft state", () => {
     ]);
     expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
     expect(state.next_entity_id).toBe(1);
+  });
+});
+
+describe("subCallsForSelection (F14 mirror selection mapping)", () => {
+  // Spine: origin (id 0) + line (start 1, end 2, line 3) +
+  // circle (centre 4, circle 5). next_entity_id ends at 6.
+  const spine = [
+    { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    { type: "sketch_circle", params: { center: [-5, 3], radius: 2 } },
+  ];
+
+  it("maps a line's entity id to its sub-call index", () => {
+    expect(subCallsForSelection(spine, [3])).toEqual([0]);
+    expect(subCallsForSelection(spine, [1])).toEqual([0]); // endpoint too
+  });
+
+  it("maps a circle's entity id to its sub-call index", () => {
+    expect(subCallsForSelection(spine, [5])).toEqual([1]);
+    expect(subCallsForSelection(spine, [4])).toEqual([1]); // centre too
+  });
+
+  it("collapses multiple ids of the same sub-call to one index", () => {
+    expect(subCallsForSelection(spine, [1, 2, 3])).toEqual([0]);
+  });
+
+  it("returns both indices ascending when both are selected", () => {
+    expect(subCallsForSelection(spine, [5, 1])).toEqual([0, 1]);
+  });
+
+  it("ignores ids that map to nothing (e.g. the origin point)", () => {
+    expect(subCallsForSelection(spine, [0])).toEqual([]);
+    expect(subCallsForSelection(spine, [])).toEqual([]);
   });
 });

@@ -74,12 +74,16 @@ export function selectSketchTool(
   if (state.selectedTool === typeName) return state;
   // Switching tools leaves select-mode: clear any picked geometry so
   // a stale selection can't drive the constraint palette while the
-  // user is drawing.
+  // user is drawing. EXCEPTION: the interactive Mirror tool consumes the
+  // current selection (it reflects the selected source geometry across
+  // the axis line clicked next), so it must keep it.
+  const keepSelection = typeName === "sketch_mirror";
   return {
     ...state,
     selectedTool: typeName,
     toolDraft: typeName === null ? {} : initialDraft,
-    selection: state.selection.length === 0 ? state.selection : [],
+    selection:
+      keepSelection || state.selection.length === 0 ? state.selection : [],
   };
 }
 
@@ -616,6 +620,47 @@ export function buildDraftSketchState(
     });
   }
   return state;
+}
+
+/**
+ * F14 (mirror): map every committed entity id to the index of the
+ * sub-call that allocated it. [`buildDraftSketchState`] allocates ids
+ * monotonically per sub-call in spine order, so re-running it one
+ * sub-call at a time and bracketing the id range each call consumes tells
+ * us which sub-call owns any given id.
+ *
+ * Used to turn an entity-id selection (what the canvas stores) back into
+ * the set of source sub-calls to mirror: "mirror every simple geometry
+ * sub-call (line / circle / arc) that owns at least one selected entity".
+ */
+export function entityOwnerSubCalls(
+  subCalls: SketchSessionState["subCalls"],
+): Map<number, number> {
+  const owner = new Map<number, number>();
+  let lo = sketchWithOrigin().next_entity_id;
+  for (let i = 0; i < subCalls.length; i++) {
+    const hi = buildDraftSketchState(subCalls.slice(0, i + 1)).next_entity_id;
+    for (let id = lo; id < hi; id++) owner.set(id, i);
+    lo = hi;
+  }
+  return owner;
+}
+
+/**
+ * F14 (mirror): the set of sub-call indices that own at least one of the
+ * `selection` entity ids. Order ascending. Empty when nothing maps.
+ */
+export function subCallsForSelection(
+  subCalls: SketchSessionState["subCalls"],
+  selection: ReadonlyArray<number>,
+): number[] {
+  const owner = entityOwnerSubCalls(subCalls);
+  const indices = new Set<number>();
+  for (const id of selection) {
+    const idx = owner.get(id);
+    if (idx !== undefined) indices.add(idx);
+  }
+  return [...indices].sort((a, b) => a - b);
 }
 
 /**

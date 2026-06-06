@@ -123,7 +123,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_polygon:     { label: "Polygon",          glyph: "⬠" },
   sketch_regular_polygon: { label: "N-gon",        glyph: "⬡" },
   sketch_arc:         { label: "Arc",              glyph: "◠" },
-  sketch_mirror:      { label: "Mirror",           glyph: "◧" },
+  sketch_mirror:      { label: "Mirror",           glyph: "⇆" },
   sketch_trim:        { label: "Trim",             glyph: "✂" },
   sketch_split:       { label: "Split",            glyph: "⊷" },
   sketch_extend:      { label: "Extend",           glyph: "⊶" },
