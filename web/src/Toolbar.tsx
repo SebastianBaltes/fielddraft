@@ -532,6 +532,79 @@ export function Toolbar({ store, state }: ToolbarProps) {
               }
             />
           </label>
+          {/* F16: Pattern — interactive editing mode, not a kernel tool.
+              Select source geometry first (Select mode), set count +
+              spacing / angle, then click Linear X / Linear Y / Circular:
+              every selected line/circle/arc is repeated as editable copies
+              (see store.linearPatternSketch / circularPatternSketch /
+              sketchPattern.ts). */}
+          <label className="corner-op-input" title="Pattern instance count">
+            N
+            <input
+              type="number"
+              min="1"
+              step="1"
+              data-testid="sketch-pattern-count"
+              value={state.sketchPatternCount}
+              onChange={(e) =>
+                store.setSketchPatternCount(Number(e.currentTarget.value))
+              }
+            />
+          </label>
+          <label className="corner-op-input" title="Linear pattern spacing (mm)">
+            S
+            <input
+              type="number"
+              step="1"
+              data-testid="sketch-pattern-spacing"
+              value={state.sketchPatternSpacing}
+              onChange={(e) =>
+                store.setSketchPatternSpacing(Number(e.currentTarget.value))
+              }
+            />
+          </label>
+          <label className="corner-op-input" title="Circular pattern total angle (deg)">
+            A
+            <input
+              type="number"
+              step="15"
+              data-testid="sketch-pattern-angle"
+              value={state.sketchPatternAngle}
+              onChange={(e) =>
+                store.setSketchPatternAngle(Number(e.currentTarget.value))
+              }
+            />
+          </label>
+          <button
+            type="button"
+            className="tool"
+            title="Linear pattern along X"
+            data-testid="sketch-pattern-linear-x"
+            disabled={sketchSelection.length === 0}
+            onClick={() => store.linearPatternSketch("x")}
+          >
+            Linear X
+          </button>
+          <button
+            type="button"
+            className="tool"
+            title="Linear pattern along Y"
+            data-testid="sketch-pattern-linear-y"
+            disabled={sketchSelection.length === 0}
+            onClick={() => store.linearPatternSketch("y")}
+          >
+            Linear Y
+          </button>
+          <button
+            type="button"
+            className="tool"
+            title="Circular pattern about the origin"
+            data-testid="sketch-pattern-circular"
+            disabled={sketchSelection.length === 0}
+            onClick={() => store.circularPatternSketch()}
+          >
+            Circular
+          </button>
         </div>
 
         {!sketchSession.selectedTool ? (

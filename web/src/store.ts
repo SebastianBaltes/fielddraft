@@ -50,6 +50,7 @@ import {
 import type { Vec2 } from "./sketchTrim";
 import { mirrorCurve } from "./sketchMirror";
 import { offsetCurve } from "./sketchOffset";
+import { patternLinear, patternCircular } from "./sketchPattern";
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
@@ -210,6 +211,12 @@ export interface StoreState {
   /** F15: sketch-offset distance (mm) used by the single-click
    *  `sketch_offset` tool to place a parallel copy of the picked curve. */
   sketchOffsetDistance: number;
+  /** F16: number of instances (original + copies) for a sketch pattern. */
+  sketchPatternCount: number;
+  /** F16: per-step spacing (mm) for a linear sketch pattern. */
+  sketchPatternSpacing: number;
+  /** F16: total span (degrees) for a circular sketch pattern. */
+  sketchPatternAngle: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -492,6 +499,9 @@ export class KernelStore {
       sketchFilletRadius: 5,
       sketchChamferDistance: 5,
       sketchOffsetDistance: 5,
+      sketchPatternCount: 3,
+      sketchPatternSpacing: 20,
+      sketchPatternAngle: 360,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -582,6 +592,9 @@ export class KernelStore {
       sketchFilletRadius: this.state.sketchFilletRadius,
       sketchChamferDistance: this.state.sketchChamferDistance,
       sketchOffsetDistance: this.state.sketchOffsetDistance,
+      sketchPatternCount: this.state.sketchPatternCount,
+      sketchPatternSpacing: this.state.sketchPatternSpacing,
+      sketchPatternAngle: this.state.sketchPatternAngle,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -2277,6 +2290,131 @@ export class KernelStore {
         ? { construction: target.params.construction }
         : {};
     this.pushSketchSubCalls([subCallOfCurve(offset, carry)]);
+    void solveAndReplace(this);
+  }
+
+  /** F16: set the number of pattern instances (original + copies). Must be
+   *  an integer ≥ 1; no-op for anything else. A value < 2 makes the
+   *  pattern actions no-ops (no copies). */
+  setSketchPatternCount(count: number): void {
+    if (!Number.isFinite(count) || count < 1) return;
+    this.patch({ sketchPatternCount: Math.round(count) });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F16: set the per-step spacing (mm) for a linear pattern. May be
+   *  negative (steps the opposite way); no-op for non-finite values. */
+  setSketchPatternSpacing(spacing: number): void {
+    if (!Number.isFinite(spacing)) return;
+    this.patch({ sketchPatternSpacing: spacing });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F16: set the total span (degrees) for a circular pattern. No-op for
+   *  non-finite values. */
+  setSketchPatternAngle(angleDeg: number): void {
+    if (!Number.isFinite(angleDeg)) return;
+    this.patch({ sketchPatternAngle: angleDeg });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F16: linear pattern of the current selection along `axis`.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null), produces the
+   * `count − 1` translated copies of each via [`patternLinear`] (per-step
+   * spacing `(spacing, 0)` for X, `(0, spacing)` for Y), and appends them
+   * as ordinary `sketch_line` / `sketch_circle` / `sketch_arc` sub-calls.
+   * Each copy carries its source's construction flag. The originals stay
+   * in place; the sketch is re-solved and the selection is kept.
+   *
+   * No-op when the selection is empty, nothing simple maps, or
+   * `count < 2`.
+   */
+  linearPatternSketch(axis: "x" | "y"): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const count = this.state.sketchPatternCount;
+    const spacing = this.state.sketchPatternSpacing;
+    const dx = axis === "x" ? spacing : 0;
+    const dy = axis === "x" ? 0 : spacing;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      for (const out of patternLinear([cv], count, dx, dy)) {
+        copies.push(subCallOfCurve(out, carry(call.params)));
+      }
+    }
+    if (copies.length === 0) return;
+
+    this.pushSketchSubCalls(copies);
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F16: circular pattern of the current selection about the sketch
+   * origin `[0, 0]`, spanning `sketchPatternAngle` degrees.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls and
+   * produces the `count − 1` rotated copies of each via
+   * [`patternCircular`] — see that helper for the full-vs-partial step
+   * rule (full revolution → 2π/count so copies don't overlap the
+   * original; partial → totalAngle/(count−1), inclusive span). Each copy
+   * is appended as an ordinary `sketch_line` / `sketch_circle` /
+   * `sketch_arc` carrying its source's construction flag. The originals
+   * stay in place; the sketch is re-solved and the selection is kept.
+   *
+   * No-op when the selection is empty, nothing simple maps, or
+   * `count < 2`.
+   */
+  circularPatternSketch(): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const count = this.state.sketchPatternCount;
+    const angleRad = (this.state.sketchPatternAngle * Math.PI) / 180;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      for (const out of patternCircular([cv], count, [0, 0], angleRad)) {
+        copies.push(subCallOfCurve(out, carry(call.params)));
+      }
+    }
+    if (copies.length === 0) return;
+
+    this.pushSketchSubCalls(copies);
     void solveAndReplace(this);
   }
 
