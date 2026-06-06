@@ -320,7 +320,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 4 | Box-Select / Marquee | ✅ | 0.5.45 | c8f6057 |
 | 5 | DoF-Zähler | ✅ | 0.5.46 | 749236b |
 | 6 | Reguläres n-Eck | ✅ | 0.5.47 | ecc1a1a |
-| 7 | Primitiv-Varianten (Rect/Circle) | 🔴 offen | — | — |
+| 7 | Primitiv-Varianten (Rect/Circle) | ✅ | 0.5.48 | 7d94332 |
 | 8 | Ellipse fertigstellen | 🔴 offen | — | — |
 | 9 | Slot (Langloch) | 🔴 offen | — | — |
 | 10 | Sketch-Fillet | 🔴 offen | — | — |
