@@ -337,4 +337,4 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 21 | External/Projected Geometry | ✅ | 0.5.62 | 88d9d08 |
 | 22 | SVG/DXF-Import | ✅ | 0.5.63 | 1ce78d3 |
 | 23 | Spline / B-Spline | ✅ | 0.5.64 | e93d549 |
-| 24 | Text | 🔴 offen | — | — |
+| 24 | Text | ✅ | 0.5.65 | 3be46db |
