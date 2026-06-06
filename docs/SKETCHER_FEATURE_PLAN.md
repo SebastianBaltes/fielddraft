@@ -328,7 +328,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 12 | Extend | ✅ | 0.5.53 | 5ac8f64 |
 | 13 | Split (explizit) | ✅ | 0.5.54 | 98053dd |
 | 14 | Mirror interaktiv | ✅ | 0.5.55 | 449935b |
-| 15 | Offset interaktiv | 🔴 offen | — | — |
+| 15 | Offset interaktiv | ✅ | 0.5.56 | 82b38f5 |
 | 16 | Sketch-Pattern (linear/circular) | 🔴 offen | — | — |
 | 17 | Copy/Move/Transform | 🔴 offen | — | — |
 | 18 | Live-Numerikeingabe | 🔴 offen | — | — |
