@@ -23,7 +23,11 @@ import {
   type FeatureSchema,
 } from "./widgets/schema";
 import { countDegreesOfFreedom } from "./solver/dofPreflight";
-import { buildDraftSketchState } from "./sketchSession";
+import {
+  buildDraftSketchState,
+  idsOfSubCall,
+  constraintRefIds,
+} from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { formatQueryDisplay } from "./queryLabels";
 import { ElementInfo } from "./ElementInfo";
@@ -614,54 +618,117 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               Pick a sketch tool in the toolbar.
             </div>
           )}
-          {sketchSession.subCalls.length > 0 ? (
-            <ul className="sub-spine" data-testid="sketch-sub-spine">
-              {sketchSession.subCalls.map((call, i) => {
-                const isConstraint = call.type.startsWith("sketch_constraint");
-                const isConstruction = Boolean(call.params.construction);
-                return (
-                  <li
-                    key={i}
-                    className={
-                      "row" +
-                      (isConstraint ? " is-constraint" : "") +
-                      (isConstruction ? " is-construction" : "")
-                    }
-                  >
-                    <span className="kind">
-                      {kindGlyph(call.type)}{" "}
-                      {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
-                    </span>
-                    {!isConstraint ? (
+          {sketchSession.subCalls.length > 0
+            ? (() => {
+                const selection = new Set(sketchSession.selection);
+                const geometry: number[] = [];
+                const constraints: number[] = [];
+                sketchSession.subCalls.forEach((call, i) => {
+                  if (call.type.startsWith("sketch_constraint")) constraints.push(i);
+                  else geometry.push(i);
+                });
+
+                const renderRow = (i: number) => {
+                  const call = sketchSession.subCalls[i];
+                  const isConstraint = call.type.startsWith("sketch_constraint");
+                  const isConstruction = Boolean(call.params.construction);
+                  const refIds = isConstraint
+                    ? constraintRefIds(sketchSession.subCalls, i)
+                    : idsOfSubCall(sketchSession.subCalls, i);
+                  const isActive =
+                    refIds.length > 0 && refIds.every((id) => selection.has(id));
+                  const selectRow = () =>
+                    store.setSketchSelection(refIds);
+                  return (
+                    <li
+                      key={i}
+                      className={
+                        "row" +
+                        (isConstraint ? " is-constraint" : "") +
+                        (isConstruction ? " is-construction" : "") +
+                        (isActive ? " is-active" : "")
+                      }
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isActive}
+                      data-testid={`sketch-element-row-${i}`}
+                      onClick={selectRow}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          selectRow();
+                        }
+                      }}
+                    >
+                      <span className="kind">
+                        {kindGlyph(call.type)}{" "}
+                        {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
+                      </span>
+                      {!isConstraint ? (
+                        <button
+                          type="button"
+                          className={"row-construction" + (isConstruction ? " is-active" : "")}
+                          title={
+                            isConstruction
+                              ? "Construction geometry (reference only) — click to make it solid"
+                              : "Make this construction geometry (reference only, not extruded)"
+                          }
+                          aria-pressed={isConstruction}
+                          data-testid={`sketch-sub-row-construction-${i}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            store.toggleSketchConstructionAt(i);
+                          }}
+                        >
+                          ⊘
+                        </button>
+                      ) : null}
                       <button
                         type="button"
-                        className={"row-construction" + (isConstruction ? " is-active" : "")}
-                        title={
-                          isConstruction
-                            ? "Construction geometry (reference only) — click to make it solid"
-                            : "Make this construction geometry (reference only, not extruded)"
-                        }
-                        aria-pressed={isConstruction}
-                        data-testid={`sketch-sub-row-construction-${i}`}
-                        onClick={() => store.toggleSketchConstructionAt(i)}
+                        className="row-delete"
+                        title="Delete"
+                        data-testid={`sketch-sub-row-delete-${i}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          store.removeSketchSubCall(i);
+                        }}
                       >
-                        ⊘
+                        ×
                       </button>
+                    </li>
+                  );
+                };
+
+                // Single list so the `.row` count contract stays
+                // geometry + constraints; section headers are
+                // non-`.row` list items that split the two groups.
+                return (
+                  <ul
+                    className="sub-spine elements"
+                    data-testid="sketch-sub-spine"
+                  >
+                    {geometry.length > 0 ? (
+                      <li
+                        className="elements-header"
+                        data-testid="sketch-elements-geometry"
+                      >
+                        Geometry ({geometry.length})
+                      </li>
                     ) : null}
-                    <button
-                      type="button"
-                      className="row-delete"
-                      title="Delete"
-                      data-testid={`sketch-sub-row-delete-${i}`}
-                      onClick={() => store.removeSketchSubCall(i)}
-                    >
-                      ×
-                    </button>
-                  </li>
+                    {geometry.map(renderRow)}
+                    {constraints.length > 0 ? (
+                      <li
+                        className="elements-header"
+                        data-testid="sketch-elements-constraints"
+                      >
+                        Constraints ({constraints.length})
+                      </li>
+                    ) : null}
+                    {constraints.map(renderRow)}
+                  </ul>
                 );
-              })}
-            </ul>
-          ) : null}
+              })()
+            : null}
           <ConstraintManagerPanel
             subCalls={sketchSession.subCalls}
             store={store}

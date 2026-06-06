@@ -650,6 +650,50 @@ export function entityOwnerSubCalls(
 }
 
 /**
+ * F19 (elements panel): the entity ids a single GEOMETRY sub-call allocated,
+ * the inverse of [`entityOwnerSubCalls`] for one index. Re-runs the spine up
+ * to and including `index` and returns the id range that this call alone
+ * consumed (e.g. a line yields its [start, end, line] ids, a circle its
+ * [centre, circle] ids, a rectangle all its corner-point + edge-line ids).
+ *
+ * Constraint sub-calls allocate no entities, so this returns `[]` for them —
+ * use [`constraintRefIds`] to get the entities a constraint references.
+ */
+export function idsOfSubCall(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): number[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const lo = buildDraftSketchState(subCalls.slice(0, index)).next_entity_id;
+  const hi = buildDraftSketchState(subCalls.slice(0, index + 1)).next_entity_id;
+  const ids: number[] = [];
+  for (let id = lo; id < hi; id++) ids.push(id);
+  return ids;
+}
+
+/**
+ * F19 (elements panel): the entity ids a CONSTRAINT sub-call references, read
+ * from [`CONSTRAINT_ENTITY_PARAMS`]. Clicking a constraint row "selects" these
+ * referents so the user sees what the constraint affects. Returns `[]` for a
+ * geometry sub-call (no entity-ref params) or unknown/invalid references.
+ */
+export function constraintRefIds(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): number[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const call = subCalls[index];
+  const params = CONSTRAINT_ENTITY_PARAMS[call.type];
+  if (!params) return [];
+  const ids: number[] = [];
+  for (const key of params) {
+    const n = Number(call.params[key]);
+    if (Number.isFinite(n)) ids.push(n);
+  }
+  return ids;
+}
+
+/**
  * F14 (mirror): the set of sub-call indices that own at least one of the
  * `selection` entity ids. Order ascending. Empty when nothing maps.
  */

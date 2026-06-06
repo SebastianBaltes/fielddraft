@@ -14,6 +14,8 @@ import {
   setSketchToolDraft,
   toggleSketchSelection,
   subCallsForSelection,
+  idsOfSubCall,
+  constraintRefIds,
 } from "./sketchSession";
 
 describe("sketchSession reducers", () => {
@@ -650,5 +652,94 @@ describe("subCallsForSelection (F14 mirror selection mapping)", () => {
   it("ignores ids that map to nothing (e.g. the origin point)", () => {
     expect(subCallsForSelection(spine, [0])).toEqual([]);
     expect(subCallsForSelection(spine, [])).toEqual([]);
+  });
+});
+
+describe("idsOfSubCall (F19 geometry-row → entity ids)", () => {
+  // Spine: origin (id 0) + line (start 1, end 2, line 3) +
+  // circle (centre 4, circle 5).
+  const lineCircle = [
+    { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    { type: "sketch_circle", params: { center: [-5, 3], radius: 2 } },
+  ];
+
+  it("returns a line's start/end/line ids", () => {
+    expect(idsOfSubCall(lineCircle, 0)).toEqual([1, 2, 3]);
+  });
+
+  it("returns a circle's centre/circle ids", () => {
+    expect(idsOfSubCall(lineCircle, 1)).toEqual([4, 5]);
+  });
+
+  it("returns all of a rectangle's point + line ids", () => {
+    // Rectangle allocates 4 corner points + 4 edge lines = 8 ids,
+    // starting after the origin (id 0): ids 1..8.
+    const rect = [
+      {
+        type: "sketch_rectangle",
+        params: { corner_a: [0, 0], corner_b: [10, 5] },
+      },
+    ];
+    expect(idsOfSubCall(rect, 0)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("returns [] for an out-of-range index", () => {
+    expect(idsOfSubCall(lineCircle, -1)).toEqual([]);
+    expect(idsOfSubCall(lineCircle, 5)).toEqual([]);
+  });
+
+  it("returns [] for a constraint sub-call (allocates no entities)", () => {
+    const withConstraint = [
+      ...lineCircle,
+      { type: "sketch_constraint_horizontal", params: { line: 3 } },
+    ];
+    expect(idsOfSubCall(withConstraint, 2)).toEqual([]);
+  });
+});
+
+describe("constraintRefIds (F19 constraint-row → referenced entity ids)", () => {
+  // origin 0, line (1,2,3), circle (4,5).
+  const spine = [
+    { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
+    { type: "sketch_circle", params: { center: [-5, 3], radius: 2 } },
+  ];
+
+  it("reads a single-ref constraint (horizontal → line)", () => {
+    const calls = [
+      ...spine,
+      { type: "sketch_constraint_horizontal", params: { line: 3 } },
+    ];
+    expect(constraintRefIds(calls, 2)).toEqual([3]);
+  });
+
+  it("reads a two-ref constraint (coincident → a, b)", () => {
+    const calls = [
+      ...spine,
+      { type: "sketch_constraint_coincident", params: { a: 1, b: 4 } },
+    ];
+    expect(constraintRefIds(calls, 2)).toEqual([1, 4]);
+  });
+
+  it("reads a distance constraint via CONSTRAINT_ENTITY_PARAMS keys", () => {
+    const calls = [
+      ...spine,
+      {
+        type: "sketch_constraint_distance",
+        params: { entity_a: 1, entity_b: 2, value: 10 },
+      },
+    ];
+    expect(constraintRefIds(calls, 2)).toEqual([1, 2]);
+  });
+
+  it("returns [] for a geometry sub-call", () => {
+    expect(constraintRefIds(spine, 0)).toEqual([]);
+  });
+
+  it("skips non-finite references", () => {
+    const calls = [
+      ...spine,
+      { type: "sketch_constraint_coincident", params: { a: 1 } },
+    ];
+    expect(constraintRefIds(calls, 2)).toEqual([1]);
   });
 });
