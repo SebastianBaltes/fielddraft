@@ -324,7 +324,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 8 | Ellipse fertigstellen | ✅ | 0.5.49 | 032913b |
 | 9 | Slot (Langloch) | ✅ | 0.5.50 | 493e069 |
 | 10 | Sketch-Fillet | ✅ | 0.5.51 | 7e6c887 |
-| 11 | Sketch-Chamfer | 🔴 offen | — | — |
+| 11 | Sketch-Chamfer | ✅ | 0.5.52 | 4b82b12 |
 | 12 | Extend | 🔴 offen | — | — |
 | 13 | Split (explizit) | 🔴 offen | — | — |
 | 14 | Mirror interaktiv | 🔴 offen | — | — |
