@@ -197,6 +197,12 @@ export function applicableConstraints(
       glyph: "=",
       title: "Make the two radii equal",
     });
+    out.push({
+      type: "sketch_constraint_concentric",
+      label: "Concentric",
+      glyph: "⊚",
+      title: "Make the two circles/arcs concentric",
+    });
   }
 
   if (n === 2 && lines === 1 && curves === 1) {
@@ -270,6 +276,12 @@ export function buildConstraintCall(
         return null;
       }
       return { type, params: { entity_a: selection[0], entity_b: selection[1] } };
+
+    case "sketch_constraint_concentric":
+      if (selection.length !== 2 || !isCurvish(kinds[0]) || !isCurvish(kinds[1])) {
+        return null;
+      }
+      return { type, params: { a: selection[0], b: selection[1] } };
 
     case "sketch_constraint_distance": {
       // Two shapes drive a p2p_distance: a single line (its two

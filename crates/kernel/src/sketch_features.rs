@@ -347,6 +347,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchDistanceConstraintTool));
         r.register(Box::new(SketchAngleConstraintTool));
         r.register(Box::new(SketchEqualConstraintTool));
+        r.register(Box::new(SketchConcentricConstraintTool));
         r.register(Box::new(SketchParallelConstraintTool));
         r.register(Box::new(SketchPerpendicularConstraintTool));
         r.register(Box::new(SketchTangentConstraintTool));
@@ -839,6 +840,12 @@ constraint_tool!(SketchAngleConstraintDef, SketchAngleConstraintTool,
 pub struct SketchEqualConstraintDef { pub entity_a: u32, pub entity_b: u32 }
 constraint_tool!(SketchEqualConstraintDef, SketchEqualConstraintTool,
     |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Equal { id: cid, a: EntityId(d.entity_a), b: EntityId(d.entity_b) }));
+
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_concentric")]
+pub struct SketchConcentricConstraintDef { pub a: u32, pub b: u32 }
+constraint_tool!(SketchConcentricConstraintDef, SketchConcentricConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Concentric { id: cid, a: EntityId(d.a), b: EntityId(d.b) }));
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_parallel")]
@@ -1529,6 +1536,7 @@ mod tests {
                 "sketch_circle".to_string(),
                 "sketch_constraint_angle".to_string(),
                 "sketch_constraint_coincident".to_string(),
+                "sketch_constraint_concentric".to_string(),
                 "sketch_constraint_diameter".to_string(),
                 "sketch_constraint_distance".to_string(),
                 "sketch_constraint_equal".to_string(),
@@ -1717,6 +1725,40 @@ mod tests {
         assert!(state.constraints.iter().any(|c| matches!(
             c,
             Constraint::Vertical { line: EntityId(5), .. }
+        )));
+    }
+
+    #[test]
+    fn sketch_concentric_constraint_tool_wires_through() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        // Two circles so the concentric constraint has curve refs.
+        tools
+            .apply_all(
+                &mut state,
+                &[
+                    FeatureCall::new(
+                        "sketch_circle",
+                        id(1),
+                        json!({ "center": [0.0, 0.0], "radius": 3.0 }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_circle",
+                        id(2),
+                        json!({ "center": [9.0, 0.0], "radius": 4.0 }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_constraint_concentric",
+                        id(3),
+                        json!({ "a": 2, "b": 4 }),
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(state.constraints.len(), 1);
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Concentric { a: EntityId(2), b: EntityId(4), .. }
         )));
     }
 

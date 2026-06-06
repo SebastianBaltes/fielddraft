@@ -251,6 +251,27 @@ describe("sketchSession reducers", () => {
     expect(dist && dist.kind === "distance" && dist.value_mm).toBe(7);
   });
 
+  it("buildDraftSketchState translates a concentric sub-call with a fresh constraint id", () => {
+    // Two circles: circle 1 = center 1 / curve 2, circle 2 = center 3 /
+    // curve 4. The concentric sub-call references the two curve ids and
+    // must get a fresh constraint id allocated after the geometry.
+    const state = buildDraftSketchState([
+      { type: "sketch_circle", params: { center: [0, 0], radius: 3 } },
+      { type: "sketch_circle", params: { center: [9, 0], radius: 4 } },
+      { type: "sketch_constraint_concentric", params: { a: 2, b: 4 } },
+    ]);
+    const concentric = state.constraints.find((c) => c.kind === "concentric");
+    expect(concentric).toBeDefined();
+    if (concentric && concentric.kind === "concentric") {
+      expect(concentric.a).toBe(2);
+      expect(concentric.b).toBe(4);
+      // First constraint allocated → id 1 (the counter starts at 1), and
+      // the counter advanced past it.
+      expect(concentric.id).toBe(1);
+    }
+    expect(state.next_constraint_id).toBe(2);
+  });
+
   it("buildDraftSketchState carries the driven flag on dimensional constraints", () => {
     const state = buildDraftSketchState([
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },

@@ -153,6 +153,7 @@ export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
   sketch_constraint_distance: ["entity_a", "entity_b"],
   sketch_constraint_angle: ["line_a", "line_b"],
   sketch_constraint_equal: ["entity_a", "entity_b"],
+  sketch_constraint_concentric: ["a", "b"],
   sketch_constraint_parallel: ["line_a", "line_b"],
   sketch_constraint_perpendicular: ["line_a", "line_b"],
   sketch_constraint_tangent: ["line", "curve"],
@@ -353,6 +354,17 @@ export function buildDraftSketchState(
       if (Number.isFinite(a) && Number.isFinite(b)) {
         state.constraints.push({
           kind: "coincident",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_concentric") {
+      const a = Number(call.params.a);
+      const b = Number(call.params.b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "concentric",
           id: state.next_constraint_id++,
           a,
           b,

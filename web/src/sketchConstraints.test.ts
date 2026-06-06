@@ -93,6 +93,29 @@ describe("applicableConstraints", () => {
     ]);
   });
 
+  it("offers equal + concentric for two circles/arcs", () => {
+    const s2 = buildDraftSketchState([
+      { type: "sketch_circle", params: { center: [0, 0], radius: 3 } }, // circle 2
+      { type: "sketch_circle", params: { center: [9, 0], radius: 4 } }, // circle 4
+    ]);
+    const opts = applicableConstraints(s2, [2, 4]).map((o) => o.type);
+    expect(opts).toContain("sketch_constraint_equal");
+    expect(opts).toContain("sketch_constraint_concentric");
+  });
+
+  it("does not offer concentric for a line + a circle", () => {
+    const state = twoLinesAndCircle();
+    // line 3 + circle 8 → only tangent, never concentric.
+    const opts = applicableConstraints(state, [3, 8]).map((o) => o.type);
+    expect(opts).not.toContain("sketch_constraint_concentric");
+  });
+
+  it("does not offer concentric for a single circle", () => {
+    const state = twoLinesAndCircle();
+    const opts = applicableConstraints(state, [8]).map((o) => o.type);
+    expect(opts).not.toContain("sketch_constraint_concentric");
+  });
+
   it("offers nothing for unsupported / empty selections", () => {
     const state = twoLinesAndCircle();
     expect(applicableConstraints(state, [])).toEqual([]);
@@ -141,6 +164,27 @@ describe("buildConstraintCall", () => {
       params: { entity_a: 2, entity_b: 4 },
     });
     void state;
+  });
+
+  it("maps two curves to a / b for concentric", () => {
+    const s2 = buildDraftSketchState([
+      { type: "sketch_circle", params: { center: [0, 0], radius: 3 } }, // circle 2
+      { type: "sketch_circle", params: { center: [9, 0], radius: 4 } }, // circle 4
+    ]);
+    expect(buildConstraintCall("sketch_constraint_concentric", [2, 4], s2)).toEqual({
+      type: "sketch_constraint_concentric",
+      params: { a: 2, b: 4 },
+    });
+  });
+
+  it("returns null for concentric with wrong selections", () => {
+    const state = twoLinesAndCircle();
+    // two points (1, 4): not curves.
+    expect(buildConstraintCall("sketch_constraint_concentric", [1, 4], state)).toBeNull();
+    // a single curve (circle 8): wrong count.
+    expect(buildConstraintCall("sketch_constraint_concentric", [8], state)).toBeNull();
+    // mixed line + curve (3, 8): one is not curvish.
+    expect(buildConstraintCall("sketch_constraint_concentric", [3, 8], state)).toBeNull();
   });
 
   it("normalises tangent so the line maps to `line` and curve to `curve`", () => {
