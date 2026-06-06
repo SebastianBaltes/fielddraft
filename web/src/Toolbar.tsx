@@ -5,6 +5,7 @@ import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import { buildDraftSketchState } from "./sketchSession";
 import { applicableConstraints } from "./sketchConstraints";
+import { countDegreesOfFreedom } from "./solver/dofPreflight";
 
 /* ------------------------------------------------------------------ */
 /*  Meta helper                                                        */
@@ -315,6 +316,17 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   }, [sketchSession.active, sketchSession.subCalls, sketchSelection]);
 
+  // F5: live degrees-of-freedom tally for the sketch HUD. Rebuilds the
+  // draft SketchState from the session sub-calls and runs the naive DoF
+  // count; null on failure so the readout simply disappears.
+  const dof = useMemo(() => {
+    try {
+      return countDegreesOfFreedom(buildDraftSketchState(sketchSession.subCalls));
+    } catch {
+      return null;
+    }
+  }, [sketchSession.subCalls]);
+
   const hasSketch = state.features.some((f) => f.kind === "sketch");
   const hasFeatures = state.features.length > 0;
 
@@ -331,6 +343,21 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <button type="button" className="tool" title="Cancel sketch" data-testid="sketch-cancel" onClick={() => store.exitSketch()}>
             ✗ Cancel
           </button>
+          {dof !== null && (
+            <span
+              className={
+                "dof" + (dof === 0 ? " is-ok" : dof < 0 ? " is-over" : "")
+              }
+              data-testid="sketch-dof"
+              title="Remaining degrees of freedom"
+            >
+              {dof > 0
+                ? `${dof} DoF`
+                : dof === 0
+                  ? "Fully constrained"
+                  : `Over-constrained (${dof})`}
+            </span>
+          )}
         </div>
 
         <div className="group sketch-tool-row">

@@ -105,6 +105,18 @@ describe("countDegreesOfFreedom", () => {
     expect(countDegreesOfFreedom(s)).toBe(4);
   });
 
+  it("goes negative when over-constrained", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    // 2 DOF for the point, then pin it twice (fix removes 2 each) →
+    // 2 - 2 - 2 = -2: redundantly over-constrained.
+    s.constraints.push({ kind: "fix", id: 1, point: 1 });
+    s.constraints.push({ kind: "fix", id: 2, point: 1 });
+    s.next_constraint_id = 3;
+    expect(countDegreesOfFreedom(s)).toBe(-2);
+  });
+
   it("counts the canonical rectangle with width constraint at DOF = 1", () => {
     // The rectangleSketch helper has four points (8 DOF), four
     // lines (0), four H/V constraints (-4), one coincident

@@ -38,6 +38,11 @@
   --color-warning: #b07820;
   --color-success: #2c8a4a;
 
+  /* Text-on-light variants of the semantic colors — darkened so they
+   * stay legible as small-caps labels on the elevated toolbar bg. */
+  --color-success-text: #1f6b38;
+  --color-error-text: #9a2f2f;
+
   /* ── B-Rep element selection (chunk 3a) ─────────────────────
    * Distinct from the orange hover (--color-warning) and the blue
    * picker-highlight (--color-accent): a teal that reads as "selected"
@@ -133,6 +138,9 @@
   --color-error: #e05555;
   --color-warning: #d4952e;
   --color-success: #4db86a;
+
+  --color-success-text: #5fcf80;
+  --color-error-text: #f07070;
 
   --color-element-selection: #2bc4c4;
   --color-element-selection-soft: #133a3a;

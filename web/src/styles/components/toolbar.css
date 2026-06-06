@@ -120,6 +120,23 @@
     margin-right: var(--space-1);
   }
 
+  /* F5: live degrees-of-freedom readout in sketch mode. Neutral by
+   * default (under-constrained), green when fully constrained, red
+   * when over-constrained. */
+  & .dof {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+
+    &.is-ok {
+      color: var(--color-success-text);
+    }
+    &.is-over {
+      color: var(--color-error-text);
+    }
+  }
+
   & .tool {
     display: inline-flex;
     align-items: center;
