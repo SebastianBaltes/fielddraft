@@ -118,6 +118,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_rectangle_3p: { label: "Rect (3-pt)",      glyph: "◇" },
   sketch_circle:      { label: "Circle",           glyph: "○" },
   sketch_circle_3p:   { label: "Circle (3-pt)",    glyph: "◎" },
+  sketch_ellipse:     { label: "Ellipse",          glyph: "⬭" },
   sketch_polygon:     { label: "Polygon",          glyph: "⬠" },
   sketch_regular_polygon: { label: "N-gon",        glyph: "⬡" },
   sketch_arc:         { label: "Arc",              glyph: "◠" },

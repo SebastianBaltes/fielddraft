@@ -280,6 +280,15 @@ type DragState =
       current: [number, number];
     }
   | {
+      /** F8: axis-aligned ellipse. Drag from the centre outward to a
+       *  corner; radius_x = |dx|, radius_y = |dy|. Rotation defaults to
+       *  0 and is adjustable via the FeatureDialog. On drop we emit a
+       *  single `sketch_ellipse` sub-call. */
+      kind: "ellipse";
+      center: [number, number];
+      current: [number, number];
+    }
+  | {
       /** F7: circle through three points. Click 1 and 2 fix two points
        *  on the circumference; the 3rd click fixes the third and commits
        *  the circumcircle as a `sketch_circle` (aborted if collinear).
@@ -885,6 +894,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_ellipse") {
+      dragRef.current = {
+        kind: "ellipse",
+        center: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (session.selectedTool === "sketch_rectangle_center") {
       dragRef.current = {
         kind: "rect_center",
@@ -1154,6 +1172,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       };
     } else if (dragRef.current.kind === "circle") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "ellipse") {
+      dragRef.current = { ...dragRef.current, current: [u, v] };
     } else if (dragRef.current.kind === "rect_center") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
@@ -1310,6 +1330,43 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             radius,
             sides: Number(session.toolDraft?.sides) || 6,
             inscribed: session.toolDraft?.inscribed ?? true,
+          },
+        },
+      ]);
+      scheduleSolverReplay();
+      return;
+    }
+    if (dragRef.current.kind === "ellipse") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { center, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const radiusX = Math.abs(current[0] - center[0]);
+      const radiusY = Math.abs(current[1] - center[1]);
+      if (radiusX < 1e-2 || radiusY < 1e-2) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readCamForCanvas(canvas),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+            projectedEdgesRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_ellipse",
+          params: {
+            center: [center[0], center[1]] as [number, number],
+            radius_x: radiusX,
+            radius_y: radiusY,
+            rotation: Number(session.toolDraft?.rotation) || 0,
+            segments: Number(session.toolDraft?.segments) || 0,
           },
         },
       ]);
@@ -1698,6 +1755,24 @@ function drawOverlay(
         drawCircle(ctx, center, radius, cam, color);
         drawPoint(ctx, center, cam, color);
       }
+    } else if (call.type === "sketch_ellipse") {
+      // The ellipse outline isn't a SketchState entity (only its centre
+      // point is), so it's stroked here directly from the sub-call params
+      // — otherwise it'd be invisible in the sketcher despite extruding.
+      const center = toXy(call.params.center);
+      const radiusX = Number(call.params.radius_x);
+      const radiusY = Number(call.params.radius_y);
+      const rotation = Number(call.params.rotation) || 0;
+      if (
+        center &&
+        Number.isFinite(radiusX) &&
+        Number.isFinite(radiusY) &&
+        radiusX > 0 &&
+        radiusY > 0
+      ) {
+        drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, color);
+        drawPoint(ctx, center, cam, color);
+      }
     } else if (call.type === "sketch_polygon") {
       const verts = call.params.vertices;
       if (Array.isArray(verts) && verts.length >= 4) {
@@ -1803,6 +1878,13 @@ function drawOverlay(
     drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
     drawPoint(ctx, center, cam, COLOR_PREVIEW);
     drawRadiusLabel(ctx, center, radius, cam);
+  } else if (drag.kind === "ellipse") {
+    const { center, current } = drag;
+    const radiusX = Math.abs(current[0] - center[0]);
+    const radiusY = Math.abs(current[1] - center[1]);
+    const rotation = Number(session.toolDraft?.rotation) || 0;
+    drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, COLOR_PREVIEW);
+    drawPoint(ctx, center, cam, COLOR_PREVIEW);
   } else if (drag.kind === "rect_center") {
     // Mirror the cursor about the centre to ghost the axis-aligned box.
     const { center, current } = drag;
@@ -2084,6 +2166,35 @@ function drawCircle(
   ctx.lineWidth = STROKE_PX;
   ctx.beginPath();
   ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Draw an axis-aligned (optionally rotated) ellipse via `ctx.ellipse`
+ * in SCREEN space. radius_x/radius_y are sketch-space lengths scaled by
+ * the camera zoom. Sketch space is Y-up but the canvas is Y-down, so the
+ * rotation is negated to keep the on-screen tilt matching the kernel's
+ * CCW convention (no-op at rotation 0). Skips degenerate ellipses.
+ */
+function drawEllipse(
+  ctx: CanvasRenderingContext2D,
+  center: [number, number],
+  radiusXMm: number,
+  radiusYMm: number,
+  rotation: number,
+  cam: Readonly<SketchCameraState>,
+  color: string,
+): void {
+  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
+  const rxPx = radiusXMm * cam.zoom;
+  const ryPx = radiusYMm * cam.zoom;
+  if (rxPx < 0.5 || ryPx < 0.5) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = STROKE_PX;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rxPx, ryPx, -rotation, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }

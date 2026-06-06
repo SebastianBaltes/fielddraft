@@ -285,6 +285,20 @@ export function buildDraftSketchState(
           radius,
         });
       }
+    } else if (call.type === "sketch_ellipse") {
+      // Mirrors the kernel `SketchEllipseTool::apply`, which registers
+      // ONLY the centre point. The ellipse outline is rendered as a
+      // dedicated pass from the sub-call params (not as a SketchState
+      // entity), so we must push exactly one point here or entity-id
+      // allocation drifts out of sync with the kernel.
+      const center = call.params.center;
+      if (Array.isArray(center) && center.length === 2) {
+        state.entities.push({
+          kind: "point",
+          id: state.next_entity_id++,
+          at: { x: Number(center[0]), y: Number(center[1]) },
+        });
+      }
     } else if (call.type === "sketch_rectangle") {
       // Mirror the kernel `SketchRectangleTool` allocation
       // order: bl, br, tr, tl, bottom, right, top, left,

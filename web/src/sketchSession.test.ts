@@ -521,3 +521,47 @@ describe("regularPolygonVertices + sketch_regular_polygon draft", () => {
     expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
   });
 });
+
+describe("sketch_ellipse draft state", () => {
+  it("pushes exactly one centre point with the next id", () => {
+    // Origin is id 0, so next_entity_id starts at 1. The kernel's
+    // SketchEllipseTool::apply registers ONLY the centre point, so the
+    // TS mirror must allocate exactly one entity (id 1) and advance the
+    // counter by exactly 1 — to 2.
+    const state = buildDraftSketchState([
+      { type: "sketch_ellipse", params: { center: [1, 2], radius_x: 5, radius_y: 3 } },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(1);
+    const centre = points[0];
+    expect(centre.kind === "point" && centre.at).toEqual({ x: 1, y: 2 });
+    expect(centre.id).toBe(1);
+    expect(state.next_entity_id).toBe(2);
+  });
+
+  it("keeps entity ids aligned for a following sub-call", () => {
+    // After the ellipse consumes id 1, a following circle must take the
+    // next contiguous ids (centre 2, circle 3) — proving the ellipse
+    // branch advanced the counter by exactly the kernel's one point.
+    const state = buildDraftSketchState([
+      { type: "sketch_ellipse", params: { center: [0, 0], radius_x: 4, radius_y: 2 } },
+      { type: "sketch_circle", params: { center: [10, 10], radius: 5 } },
+    ]);
+    const circleCentre = state.entities.find(
+      (e) => e.kind === "point" && e.at.x === 10 && e.at.y === 10,
+    );
+    const circle = state.entities.find((e) => e.kind === "circle");
+    expect(circleCentre?.id).toBe(2);
+    expect(circle && circle.kind === "circle" && circle.center).toBe(2);
+    expect(circle?.id).toBe(3);
+    expect(state.next_entity_id).toBe(4);
+  });
+
+  it("ignores a malformed centre (no entity added)", () => {
+    const state = buildDraftSketchState([
+      { type: "sketch_ellipse", params: { center: [1], radius_x: 5, radius_y: 3 } },
+    ]);
+    expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
+    expect(state.next_entity_id).toBe(1);
+  });
+});
