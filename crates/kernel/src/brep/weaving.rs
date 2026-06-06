@@ -1183,7 +1183,9 @@ fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
 pub fn weave_parametric(body: &BoundedCsg) -> Option<BRep> {
     // Each handled grundform contributes one `build_*_wireframe`; the first that
     // recognises `body` wins, anything else falls through to `None` (→ octree).
-    let wireframe = build_box_wireframe(body).or_else(|| build_cylinder_wireframe(body))?;
+    let wireframe = build_box_wireframe(body)
+        .or_else(|| build_cylinder_wireframe(body))
+        .or_else(|| build_edgeless_wireframe(body))?;
     Some(finish_weave(wireframe, body))
 }
 
@@ -1317,6 +1319,41 @@ fn build_cylinder_wireframe(body: &BoundedCsg) -> Option<BRep> {
         None,
     ));
     Some(brep)
+}
+
+// NOTE — the Cone (frustum) grundform is intentionally NOT handled here yet.
+// A truncated cone's analytic wall is a [`HalfSpace::Cone`] whose SDF
+// (`r·cosα − |y|·sinα`) puts the apex at the transform's LOCAL ORIGIN, but the
+// frustum's extrapolated apex sits at `y = r_top·2·half_height/(r_bottom−r_top)`
+// above centre — so the analytic cone surface stored on the wall face is
+// geometrically off-apex. The octree weaver already suffers from this: its
+// `chain_on_both_surfaces` membership test rejects BOTH rim seams (a frustum
+// comes out with 3 faces, 0 edges, NOT watertight), and STEP export places the
+// CONICAL_SURFACE apex at the wrong world point. A parametric cone would weave a
+// *correct* watertight 2-rim frustum, which — being better than the octree
+// route — would break the id_hash toggle-invariant (a selection made in one
+// route would vanish in the other). Fixing the apex convention (primitive cone
+// + revolve cone + octree validation + STEP, all consistently) is a focused
+// follow-up; until then the cone falls through to the octree route unchanged.
+
+/// Empty wireframe of a single closed-surface leaf with NO edges and NO vertices
+/// — a lone Sphere or Torus (SA-6). `None` unless `body` is exactly one such
+/// primitive.
+///
+/// These grundforms are a single un-split analytic face bounded by nothing:
+/// there is no closed-form wireframe to build, only the (empty) edge set.
+/// [`finish_weave`] step (2b) then materialises the lone closed face directly
+/// from [`branch_halfspace_map`] — the same path the octree route takes when an
+/// edgeless body produces no edge cells — so the `id_hash` handle is byte-
+/// identical to the SDF route.
+fn build_edgeless_wireframe(body: &BoundedCsg) -> Option<BRep> {
+    match body {
+        BoundedCsg::Leaf {
+            primitive: Primitive::Sphere { .. } | Primitive::Torus { .. },
+            ..
+        } => Some(BRep::new()),
+        _ => None,
+    }
 }
 
 /// The exact closed circle of `radius` in the plane `y = y_local` of the
@@ -1587,6 +1624,54 @@ mod tests {
         );
     }
 
+    fn torus_body(major_radius: f32, minor_radius: f32) -> BoundedCsg {
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Torus { center: [0.0, 0.0, 0.0], major_radius, minor_radius },
+        };
+        BoundedCsg::from_csg(&csg)
+    }
+
+    #[test]
+    fn parametric_edgeless_grundforms_match_octree_topology_and_handles() {
+        // Sphere and torus are each ONE closed analytic face: no edges, no
+        // vertices. The parametric route emits an empty wireframe and lets
+        // `finish_weave` step (2b) materialise the lone closed face — identical
+        // to the octree route, which produces no edge cells either.
+        for (label, body) in
+            [("sphere", sphere_body([0.0, 0.0, 0.0], 1.3)), ("torus", torus_body(2.0, 0.5))]
+        {
+            let octree = Octree::build(&body, 0.0625);
+            let sdf = weave(&body, &octree);
+            let par = weave_parametric(&body)
+                .unwrap_or_else(|| panic!("a lone {label} is parametric-weavable"));
+
+            assert_eq!(par.faces.len(), 1, "{label} is one closed face");
+            assert_eq!(par.edges.len(), 0, "{label} has no edges");
+            assert_eq!(par.vertices.len(), 0, "{label} has no vertices");
+            assert!(par.shells[0].is_closed, "parametric {label} is a closed shell");
+            assert_eq!(sdf.faces.len(), 1, "octree {label} is one closed face");
+            assert_eq!(sdf.edges.len(), 0);
+            assert_eq!(sdf.vertices.len(), 0);
+
+            // The single face's analytic surface must be the right kind — a true
+            // Sphere/Torus half-space, not a tessellated fallback.
+            let SurfaceGeometry::Analytic { surface, .. } = &par.faces[0].surface else {
+                panic!("{label} face must be analytic");
+            };
+            match (label, surface) {
+                ("sphere", HalfSpace::Sphere { .. }) | ("torus", HalfSpace::Torus { .. }) => {}
+                other => panic!("{label} got wrong analytic surface: {other:?}"),
+            }
+
+            assert_eq!(
+                topo_handles(&par),
+                topo_handles(&sdf),
+                "{label}: parametric and octree weave must yield identical handles"
+            );
+        }
+    }
+
     #[test]
     fn parametric_weave_falls_back_for_non_grundform() {
         // A boolean union is milestone 2, not yet analytic → None, so the
@@ -1594,18 +1679,20 @@ mod tests {
         let union = union_box_sphere([1.0, 1.0, 1.0], [1.0, 0.0, 0.0], 0.8);
         assert!(weave_parametric(&union).is_none(), "union is not yet parametric");
 
-        // A lone sphere is closed analytic but not a Box → also falls back in M1.
-        let sphere = {
+        // The Cone (frustum) is deliberately deferred: the analytic HalfSpace::Cone
+        // apex sits at the local origin, but a frustum's extrapolated apex is
+        // offset, so the octree route drops both rims (non-watertight) and a
+        // *correct* parametric cone could not be handle-identical to it. Until the
+        // apex convention is fixed, a cone falls through to the octree route. See
+        // the NOTE above `build_edgeless_wireframe`.
+        let frustum = {
             let csg = CsgNode::Leaf {
                 id: FeatureId::from_u32(1),
-                primitive: Primitive::Sphere {
-                    center: [0.0; 3],
-                    radius: 1.0,
-                },
+                primitive: Primitive::Cone { r_bottom: 1.5, r_top: 0.8, half_height: 0.6 },
             };
             BoundedCsg::from_csg(&csg)
         };
-        assert!(weave_parametric(&sphere).is_none(), "sphere is not handled in M1");
+        assert!(weave_parametric(&frustum).is_none(), "a cone falls back in M1 (apex convention)");
     }
 
     /// Regenerating the B-Rep from the *same* geometry must yield an identical

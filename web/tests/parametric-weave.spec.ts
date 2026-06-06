@@ -4,8 +4,11 @@ import { expect, test } from "@playwright/test";
  * Parametric weaving — milestone 1 (roadmap point E), live-browser proof.
  *
  * Toggling the "Parametric weaving" setting flips the kernel onto an exact
- * analytic B-Rep for pure grundforms (the Box). This test weaves a box both
- * ways in the real WebGPU kernel and proves, end-to-end through the store:
+ * analytic B-Rep for pure grundforms (Box, Cylinder, Sphere, Torus). These
+ * tests weave each grundform both ways in the real WebGPU kernel and prove,
+ * end-to-end through the store, that the discriminating selection element
+ * (corner / rim edge / lone face) keeps a byte-identical `idHash` across the
+ * toggle. For the box we additionally prove, end-to-end through the store:
  *
  *  1) PLUMBING — `store.setParametricWeave(true)` reaches the kernel and the
  *     B-Rep refetches (body version bumps), and the element handles (`idHash`)
@@ -147,4 +150,64 @@ test("parametric weaving handles the cylinder grundform too", async ({
   );
 
   console.log("=== PARAMETRIC CYLINDER PROBE ===\n" + logs.join("\n"));
+});
+
+test("parametric weaving handles the edgeless sphere grundform too", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const logs: string[] = [];
+  page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
+
+  await page.goto("/");
+  await page.evaluate(() => {
+    try {
+      window.localStorage.removeItem("fielddraft.project.v1");
+      window.localStorage.removeItem("fielddraft.parametricWeave");
+    } catch {
+      /* ignore */
+    }
+  });
+  await page.reload();
+  await expect(page.getByTestId("fielddraft-canvas")).toBeVisible();
+  await page.waitForTimeout(900);
+
+  await page.evaluate(() => {
+    (window as any).__fdStore?.addPrimitive("sphere");
+  });
+  await page.waitForTimeout(500);
+
+  // A sphere weaves into ONE closed analytic face with NO edges and NO vertices,
+  // so the only selectable element is that face — read its handle + surface kind
+  // both ways and prove the toggle keeps them byte-identical.
+  const faceInfo = async () =>
+    (await page.evaluate(() => {
+      const k = (window as any).__fdKernel;
+      const faces = k ? k.bodyBrepFaces(0) : [];
+      return (faces as { idHash: string; surfaceKind: string }[]).map((f) => ({
+        idHash: f.idHash,
+        surfaceKind: f.surfaceKind,
+      }));
+    })) as { idHash: string; surfaceKind: string }[];
+
+  const before = await faceInfo();
+  expect(before.length, "sphere weaves a single closed face").toBe(1);
+  expect(before[0].surfaceKind, "the lone face is an analytic sphere").toBe(
+    "sphere",
+  );
+
+  await page.evaluate(() => {
+    (window as any).__fdStore?.setParametricWeave(true);
+  });
+  await page.waitForTimeout(500);
+
+  const after = await faceInfo();
+  expect(after.length, "still a single closed face").toBe(1);
+  expect(after[0].surfaceKind, "still an analytic sphere").toBe("sphere");
+  expect(
+    after[0].idHash,
+    "the sphere face handle survives the parametric toggle",
+  ).toEqual(before[0].idHash);
+
+  console.log("=== PARAMETRIC SPHERE PROBE ===\n" + logs.join("\n"));
 });
