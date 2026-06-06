@@ -48,6 +48,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
+import { curveOfSubCall, distToCurve } from "./sketchTrim";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -113,6 +114,32 @@ const MARQUEE_CROSSING_DASH = [6, 4];
 /** Pick radius for select-mode hit-testing, in CSS pixels. Divided
  *  by the camera zoom to get the sketch-plane tolerance. */
 const SELECT_PICK_PX = 6;
+
+/**
+ * F10 fillet pick: index of the line sub-call nearest `click` (within
+ * `tolMm`), or null. Restricted to `sketch_line` calls — fillet only
+ * rounds the corner between two plain lines, so composites and curves
+ * are skipped. Mirrors `nearestTrimTarget` but line-only.
+ */
+function nearestLineSubCall(
+  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  click: [number, number],
+  tolMm: number,
+): number | null {
+  let bestIdx: number | null = null;
+  let bestDist = tolMm;
+  subCalls.forEach((call, i) => {
+    const cv = curveOfSubCall(call);
+    if (!cv || cv.kind !== "line") return;
+    const d = distToCurve(click, cv);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  });
+  return bestIdx;
+}
+
 /** Grip handle half-size (drawn as a filled square) in CSS pixels. */
 const GRIP_PX = 4;
 /** Grip pick radius in CSS pixels — generous so the small handles
@@ -623,6 +650,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const lastCamVersionRef = useRef<number>(-1);
   const lastSessionRef = useRef<SketchSessionState | null>(null);
   const projectedEdgesRef = useRef<ProjectedEdge[]>([]);
+  // F10: the first line picked in the two-click fillet flow (sub-call
+  // index), pending the second pick. Reset whenever the tool changes.
+  const filletFirstRef = useRef<number | null>(null);
   // Latest session, readable from imperative (non-React) listeners
   // like the native wheel handler below.
   const sessionRef = useRef<SketchSessionState>(session);
@@ -711,6 +741,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       dragRef.current = { kind: "idle" };
       lastCamVersionRef.current = -1;
     }
+    // F10: drop a pending first fillet pick when leaving the tool.
+    filletFirstRef.current = null;
   }, [session.selectedTool]);
 
   // Size the canvas to its container on mount and on resize.
@@ -853,6 +885,25 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (session.selectedTool === "sketch_trim") {
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       store.trimSketchAt([u, v], tolMm);
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // Fillet: two-click flow. Each click picks the line sub-call nearest
+    // the cursor (line-only — composites aren't filleted here). The first
+    // pick is held pending in `filletFirstRef`; the second pick applies
+    // the fillet with the current radius and clears the pending state.
+    if (session.selectedTool === "sketch_fillet") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+      if (pick !== null) {
+        const first = filletFirstRef.current;
+        if (first === null || first === pick) {
+          filletFirstRef.current = pick;
+        } else {
+          store.filletSketchAt(first, pick, store.getState().sketchFilletRadius);
+          filletFirstRef.current = null;
+        }
+      }
       lastCamVersionRef.current = -1;
       return;
     }

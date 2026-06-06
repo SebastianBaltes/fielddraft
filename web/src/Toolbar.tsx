@@ -424,6 +424,29 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_trim"
             onClick={() => store.selectSketchTool("sketch_trim", {})}
           />
+          {/* Fillet: like Trim, an interactive editing mode, not a kernel
+              tool. Two clicks pick the lines whose corner is rounded by a
+              tangent arc of the radius below (see store.filletSketchAt /
+              sketchFillet.ts). */}
+          <FeatureButton
+            kind="sketch_fillet"
+            active={sketchSession.selectedTool === "sketch_fillet"}
+            testId="sketch-tool-sketch_fillet"
+            onClick={() => store.selectSketchTool("sketch_fillet", {})}
+          />
+          <label className="fillet-radius" title="Fillet radius (mm)">
+            R
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              data-testid="sketch-fillet-radius"
+              value={state.sketchFilletRadius}
+              onChange={(e) =>
+                store.setSketchFilletRadius(Number(e.currentTarget.value))
+              }
+            />
+          </label>
         </div>
 
         {!sketchSession.selectedTool ? (

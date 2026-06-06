@@ -40,7 +40,8 @@ import {
   buildDraftSketchState,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
-import { computeTrim } from "./sketchTrim";
+import { computeTrim, curveOfSubCall, subCallOfCurve } from "./sketchTrim";
+import { filletLines } from "./sketchFillet";
 import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
@@ -188,6 +189,9 @@ export interface StoreState {
   measureMode: boolean;
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
+  /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
+   *  tool to round the corner between two picked lines. */
+  sketchFilletRadius: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -467,6 +471,7 @@ export class KernelStore {
       meshedBodies: [],
       measureMode: false,
       filletMode: false,
+      sketchFilletRadius: 5,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -554,6 +559,7 @@ export class KernelStore {
       meshedBodies: this.state.meshedBodies,
       measureMode: this.state.measureMode,
       filletMode: this.state.filletMode,
+      sketchFilletRadius: this.state.sketchFilletRadius,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -1943,6 +1949,69 @@ export class KernelStore {
     this.updateSketch(
       reduceReplaceAt(session, result.index, result.newCalls),
     );
+    void solveAndReplace(this);
+  }
+
+  /** F10: set the radius (mm) the two-click `sketch_fillet` tool uses to
+   *  round the next corner. No-op for a non-finite / non-positive value. */
+  setSketchFilletRadius(radius: number): void {
+    if (!Number.isFinite(radius) || radius <= 0) return;
+    this.patch({ sketchFilletRadius: radius });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F10: round the corner between the two line sub-calls at
+   * `firstIndex` and `secondIndex` with a tangent arc of `radius` mm.
+   * Reads both lines' solved geometry, computes the fillet via
+   * [`filletLines`], then rewrites the spine: the first line is replaced
+   * by its trimmed remainder in place, the second line is replaced by
+   * its trimmed remainder in place, and the rounding arc is appended.
+   * Downstream constraint refs are rewritten by [`replaceSketchSubCallAt`]
+   * and the sketch is re-solved. No-op when either pick isn't a line,
+   * they're the same call, or no fillet is geometrically possible
+   * (parallel, radius too large, no shared corner).
+   */
+  filletSketchAt(firstIndex: number, secondIndex: number, radius: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (firstIndex === secondIndex) return;
+    const c1 = session.subCalls[firstIndex];
+    const c2 = session.subCalls[secondIndex];
+    if (!c1 || !c2) return;
+    const cv1 = curveOfSubCall(c1);
+    const cv2 = curveOfSubCall(c2);
+    if (!cv1 || !cv2 || cv1.kind !== "line" || cv2.kind !== "line") return;
+
+    const fillet = filletLines(cv1, cv2, radius);
+    if (!fillet) return;
+
+    // Carry each line's construction flag onto its trimmed remainder; the
+    // arc inherits the first line's flag (a fillet of two construction
+    // lines stays construction).
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    // Replace the two lines in place (each a single trimmed line), then
+    // append the arc. Apply the higher index first so the lower index
+    // stays valid across the first rewrite.
+    const lo = Math.min(firstIndex, secondIndex);
+    const hi = Math.max(firstIndex, secondIndex);
+    const loCurve = lo === firstIndex ? fillet.trimmed1 : fillet.trimmed2;
+    const hiCurve = hi === firstIndex ? fillet.trimmed1 : fillet.trimmed2;
+    const loParams = lo === firstIndex ? c1.params : c2.params;
+    const hiParams = hi === firstIndex ? c1.params : c2.params;
+
+    let next = reduceReplaceAt(session, hi, [
+      subCallOfCurve(hiCurve, carry(hiParams)),
+    ]);
+    next = reduceReplaceAt(next, lo, [
+      subCallOfCurve(loCurve, carry(loParams)),
+    ]);
+    this.updateSketch(next);
+    this.pushSketchSubCalls([subCallOfCurve(fillet.arc, carry(c1.params))]);
     void solveAndReplace(this);
   }
 

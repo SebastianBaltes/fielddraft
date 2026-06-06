@@ -42,7 +42,7 @@ const TAU = Math.PI * 2;
 
 // ── geometry extracted from sub-call params ─────────────────────────
 
-type Curve =
+export type Curve =
   | { kind: "line"; a: Vec2; b: Vec2 }
   | { kind: "circle"; c: Vec2; r: number }
   | { kind: "arc"; c: Vec2; r: number; start: number; sweep: number };
@@ -373,7 +373,10 @@ function carryFlags(params: Record<string, unknown>): Record<string, unknown> {
 
 /** Reproduce a curve as a standalone sub-call — used for the sibling edges
  *  of a composite that survive untrimmed when one of its edges is cut. */
-function subCallOfCurve(cv: Curve, carry: Record<string, unknown>): SubCall {
+export function subCallOfCurve(
+  cv: Curve,
+  carry: Record<string, unknown>,
+): SubCall {
   if (cv.kind === "line") {
     return {
       type: "sketch_line",
