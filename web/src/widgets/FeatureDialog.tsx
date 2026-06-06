@@ -132,6 +132,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_chamfer:     { label: "Chamfer",          glyph: "◣" },
   sketch_offset:      { label: "Offset",           glyph: "⧉" },
   sketch_project:     { label: "Project",          glyph: "⇲" },
+  sketch_text:        { label: "Text",             glyph: "T" },
   sketch_move:        { label: "Move",             glyph: "✥" },
   sketch_copy:        { label: "Copy",             glyph: "⎘" },
   sketch_constraint_horizontal:    { label: "Horizontal",    glyph: "—" },

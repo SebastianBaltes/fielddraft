@@ -960,6 +960,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    // Text: not a drawing tool — a single click places the current text
+    // value as single-stroke geometry with its lower-left at the click
+    // point. Mirrors the trim-style single-click editing branch (see
+    // store.placeSketchText / sketchText.ts).
+    if (session.selectedTool === "sketch_text") {
+      store.placeSketchText([u, v]);
+      lastCamVersionRef.current = -1;
+      return;
+    }
     // Split: keep-both sibling of Trim — also a single-click editing mode
     // (not a kernel tool). The click picks the nearest curve under the
     // cursor and cuts it into two pieces meeting at the click point; both

@@ -490,6 +490,40 @@ export function Toolbar({ store, state }: ToolbarProps) {
               geometry
             </span>
           )}
+          {/* F24: Text — interactive editing mode, not a kernel tool. Type a
+              string + cap height, pick the tool, then click to place SINGLE-
+              STROKE (engraving-style) text as ordinary sketch_line geometry
+              with its lower-left at the click (see store.placeSketchText /
+              sketchText.ts). Filled TrueType outlines are a future
+              enhancement. */}
+          <FeatureButton
+            kind="sketch_text"
+            active={sketchSession.selectedTool === "sketch_text"}
+            testId="sketch-tool-sketch_text"
+            onClick={() => store.selectSketchTool("sketch_text", {})}
+          />
+          <label className="corner-op-input" title="Text to place">
+            T
+            <input
+              type="text"
+              data-testid="sketch-text-value"
+              value={state.sketchTextValue}
+              onChange={(e) => store.setSketchTextValue(e.currentTarget.value)}
+            />
+          </label>
+          <label className="corner-op-input" title="Text cap height (mm)">
+            H
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              data-testid="sketch-text-height"
+              value={state.sketchTextHeight}
+              onChange={(e) =>
+                store.setSketchTextHeight(Number(e.currentTarget.value))
+              }
+            />
+          </label>
           {/* Split: the keep-both sibling of Trim — also an interactive
               editing mode, not a kernel tool. A single click cuts the curve
               under the cursor into two pieces meeting at the click point;

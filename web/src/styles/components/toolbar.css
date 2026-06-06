@@ -224,6 +224,11 @@
       background: var(--color-bg-elevated);
       color: var(--color-text);
     }
+
+    /* F24: the Text tool's string field needs room for a few words. */
+    & input[type="text"] {
+      width: 9rem;
+    }
   }
 
   /* P0.1: context-sensitive constraint palette, shown in select

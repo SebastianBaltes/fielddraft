@@ -61,6 +61,7 @@ import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
+import { textToSubCalls } from "./sketchText";
 import { solveAndReplace } from "./solver/replaySolve";
 import type { SketchDiagnostics } from "./solver/types";
 import {
@@ -235,6 +236,11 @@ export interface StoreState {
   /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
    *  transform (rotates the selection about the sketch origin). */
   sketchRotateAngle: number;
+  /** F24: the string the single-click `sketch_text` tool emits as
+   *  single-stroke geometry. */
+  sketchTextValue: string;
+  /** F24: cap height (mm) for the `sketch_text` tool. */
+  sketchTextHeight: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -521,6 +527,8 @@ export class KernelStore {
       sketchPatternSpacing: 20,
       sketchPatternAngle: 360,
       sketchRotateAngle: 90,
+      sketchTextValue: "TEXT",
+      sketchTextHeight: 10,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -615,6 +623,8 @@ export class KernelStore {
       sketchPatternSpacing: this.state.sketchPatternSpacing,
       sketchPatternAngle: this.state.sketchPatternAngle,
       sketchRotateAngle: this.state.sketchRotateAngle,
+      sketchTextValue: this.state.sketchTextValue,
+      sketchTextHeight: this.state.sketchTextHeight,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -2351,6 +2361,39 @@ export class KernelStore {
         ? { construction: target.params.construction }
         : {};
     this.pushSketchSubCalls([subCallOfCurve(offset, carry)]);
+    void solveAndReplace(this);
+  }
+
+  /** F24: set the string the `sketch_text` tool emits. */
+  setSketchTextValue(value: string): void {
+    this.patch({ sketchTextValue: value });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F24: set the cap height (mm) for the `sketch_text` tool. No-op for a
+   *  non-finite / non-positive value. */
+  setSketchTextHeight(height: number): void {
+    if (!Number.isFinite(height) || height <= 0) return;
+    this.patch({ sketchTextHeight: height });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F24: place the current text value as single-stroke sketch geometry with
+   * its lower-left corner at `origin`. Each glyph stroke becomes one or more
+   * ordinary `sketch_line` sub-calls (construction:false so the result can
+   * extrude), then the sketch is re-solved. No-op when no session is active
+   * or the text produces no strokes (e.g. an empty / all-space value).
+   */
+  placeSketchText(origin: [number, number]): void {
+    if (!this.state.sketchSession.active) return;
+    const calls = textToSubCalls(this.state.sketchTextValue, {
+      origin,
+      height: this.state.sketchTextHeight,
+      construction: false,
+    });
+    if (calls.length === 0) return;
+    this.pushSketchSubCalls(calls);
     void solveAndReplace(this);
   }
 
