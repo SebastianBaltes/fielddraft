@@ -909,19 +909,28 @@ impl SketchToolKind for SketchSplineTool {
             }
         }
 
-        // F23 endpoint tangent ("G1") support: for a CLAMPED CUBIC
-        // B-spline (control mode, open) the curve's tangent at the
-        // clamped start endpoint runs exactly along the first
-        // control-polygon edge cp[0]→cp[1], and at the end endpoint
-        // along cp[N-2]→cp[N-1]. We expose those endpoint "legs" as
-        // ordinary `line` entities so ALL existing line constraints
-        // (parallel/perpendicular/angle/tangent/horizontal/vertical/
-        // length) apply for free — no new constraint type needed.
+        // F23 endpoint tangent ("G1") support: for an OPEN spline the
+        // curve's endpoint tangent runs PARALLEL to the first/last
+        // control-polygon edge in BOTH modes:
+        //   - Clamped cubic B-spline (control mode): the tangent at the
+        //     clamped start endpoint runs exactly along cp[0]→cp[1], and
+        //     at the end endpoint along cp[N-2]→cp[N-1].
+        //   - Catmull-Rom (interpolation mode) with the phantom-
+        //     duplication end condition (p_{-1}=p0, p_n=p_{n-1}):
+        //     P'(0)=0.5·(p1−p0) and P'(1)=0.5·(p[n-1]−p[n-2]) — i.e.
+        //     parallel to the same first/last chord. The 0.5 magnitude
+        //     is irrelevant for G1 tangency, which is direction-only
+        //     (parallel/perpendicular/angle/tangent), so the leg is an
+        //     EXACT G1 tangent handle, identical in form to control
+        //     mode.
+        // We expose those endpoint "legs" as ordinary `line` entities so
+        // ALL existing line constraints (parallel/perpendicular/angle/
+        // tangent/horizontal/vertical/length) apply for free — no new
+        // constraint type needed.
         //
         // Scope (MUST match the TS mirror in web/src/sketchSession.ts
-        // exactly): legs only when mode == Control && !closed.
-        // Interpolate/Catmull-Rom: endpoint tangent is NOT the polygon
-        // leg → no legs. Closed: no free endpoints → no legs.
+        // exactly): legs whenever !closed (ANY mode). Closed: periodic,
+        // no free endpoints → no legs, in both modes.
         //
         // Allocation ORDER (critical, the web mirror depends on it):
         // first the N control-point entities (above), THEN the start
@@ -930,7 +939,7 @@ impl SketchToolKind for SketchSplineTool {
         // constraint/entity world — `build_sketch2d_from_sub_calls`
         // lowers the spline from the sub-call params, not from these
         // entities, so the extrude profile is unaffected.
-        if d.mode == SplineMode::Control && !d.closed {
+        if !d.closed {
             let n = cp_ids.len();
             // START leg = Line(cp[0], cp[1]).
             state.add_line(cp_ids[0], cp_ids[1]);
@@ -3515,13 +3524,49 @@ mod tests {
     }
 
     #[test]
-    fn spline_interpolate_has_no_legs() {
+    fn spline_interpolate_open_n4_has_two_legs() {
+        // interpolate + open, N>=3 → 2 legs, identical in form to control
+        // mode: Catmull-Rom endpoint tangent P'(0)=0.5·(p1−p0) is parallel
+        // to cp0→cp1 and P'(1)=0.5·(p[n-1]−p[n-2]) parallel to cp[N-2]→
+        // cp[N-1]. Origin is id 0, so cp ids are 1..=4.
         let ents = spline_entities(json!({
             "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
             "closed": false,
             "mode": "interpolate"
         }));
-        assert!(legs(&ents).is_empty(), "interpolate mode: no endpoint legs");
+        let pts = ents
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Point { .. }))
+            .count();
+        assert_eq!(pts, 4, "4 control points");
+        // cp ids: 1,2,3,4. start leg = (1,2), end leg = (3,4).
+        assert_eq!(legs(&ents), vec![(1, 2), (3, 4)]);
+    }
+
+    #[test]
+    fn spline_interpolate_open_n2_has_one_leg() {
+        // N==2: start and end coincide → exactly one leg.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0],
+            "closed": false,
+            "mode": "interpolate"
+        }));
+        // cp ids 1,2; single leg (1,2).
+        assert_eq!(legs(&ents), vec![(1, 2)]);
+    }
+
+    #[test]
+    fn spline_interpolate_closed_has_no_legs() {
+        // Closed (periodic) interpolation spline: no free endpoints → no legs.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": true,
+            "mode": "interpolate"
+        }));
+        assert!(
+            legs(&ents).is_empty(),
+            "closed interpolate spline: no endpoint legs"
+        );
     }
 
     #[test]

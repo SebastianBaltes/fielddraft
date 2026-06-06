@@ -41,9 +41,7 @@ describe("rebuildSubCallsFromSolved", () => {
   });
 
   it("preserves the call when the solver dropped an entity", () => {
-    const original = [
-      { type: "sketch_point", params: { at: [5, 5] } },
-    ];
+    const original = [{ type: "sketch_point", params: { at: [5, 5] } }];
     // Solved state without point id 1 → call returned unchanged.
     const solved = sketchWithOrigin();
     const rebuilt = rebuildSubCallsFromSolved(original, solved);
@@ -94,6 +92,32 @@ describe("rebuildSubCallsFromSolved", () => {
     // Control point 0 written back.
     expect((rebuilt[0].params.points as number[]).slice(0, 2)).toEqual([1, 1]);
     // Following line stays correctly aligned (proves legs were skipped).
+    expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
+  });
+
+  it("writes back control points and keeps a following line aligned (interpolate spline)", () => {
+    // V4: open interpolation splines allocate the SAME legs (ids 5,6) as
+    // control mode, so nextId must advance identically.
+    const original = [
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: false,
+          mode: "interpolate",
+        },
+      },
+      { type: "sketch_line", params: { start: [50, 50], end: [60, 60] } },
+    ];
+    // Spline cp0 = id 1; legs = ids 5,6; following line start = id 7.
+    const solved = solvedFrom(original, 1, [1, 1]);
+    const ls = solved.entities.find((x) => x.id === 7);
+    if (ls && ls.kind === "point") ls.at = { x: 51, y: 51 };
+
+    const rebuilt = rebuildSubCallsFromSolved(original, solved);
+    expect((rebuilt[0].params.points as number[]).slice(0, 2)).toEqual([1, 1]);
+    // Following line stays aligned (proves legs were skipped just like
+    // in control mode).
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 

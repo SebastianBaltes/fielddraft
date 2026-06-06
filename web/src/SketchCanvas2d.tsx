@@ -190,7 +190,9 @@ function viewportCanvas(overlay: HTMLCanvasElement): HTMLCanvasElement | null {
  *  pointerdown handler takes a pointer-capture on its own element,
  *  so forwarding just the initial down is enough for the drag to
  *  continue there. */
-function forwardPointerToViewport(e: React.PointerEvent<HTMLCanvasElement>): void {
+function forwardPointerToViewport(
+  e: React.PointerEvent<HTMLCanvasElement>,
+): void {
   const target = viewportCanvas(e.currentTarget as HTMLCanvasElement);
   if (!target) return;
   target.dispatchEvent(
@@ -270,16 +272,25 @@ function projectEdgesToSketchPlane(
   return edges.map((e) => {
     let u0: number, v0: number, u1: number, v1: number;
     if (isXZ) {
-      u0 = e.p0[0]; v0 = e.p0[2];
-      u1 = e.p1[0]; v1 = e.p1[2];
+      u0 = e.p0[0];
+      v0 = e.p0[2];
+      u1 = e.p1[0];
+      v1 = e.p1[2];
     } else if (isYZ) {
-      u0 = e.p0[1]; v0 = e.p0[2];
-      u1 = e.p1[1]; v1 = e.p1[2];
+      u0 = e.p0[1];
+      v0 = e.p0[2];
+      u1 = e.p1[1];
+      v1 = e.p1[2];
     } else {
-      u0 = e.p0[0]; v0 = e.p0[1];
-      u1 = e.p1[0]; v1 = e.p1[1];
+      u0 = e.p0[0];
+      v0 = e.p0[1];
+      u1 = e.p1[0];
+      v1 = e.p1[1];
     }
-    return { p0: [u0, v0] as [number, number], p1: [u1, v1] as [number, number] };
+    return {
+      p0: [u0, v0] as [number, number],
+      p1: [u1, v1] as [number, number],
+    };
   });
 }
 
@@ -292,7 +303,10 @@ function nearestPointOnSegment(
   const dy = b[1] - a[1];
   const lenSq = dx * dx + dy * dy;
   if (lenSq < 1e-10) return a;
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq));
+  const t = Math.max(
+    0,
+    Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq),
+  );
   return [a[0] + t * dx, a[1] + t * dy];
 }
 
@@ -553,13 +567,22 @@ function resolveSnap(
     for (const edge of projectedEdges) {
       // Snap to edge endpoints (vertices)
       const d0 = dist2d(cursor, edge.p0);
-      if (d0 < bestDist) { bestDist = d0; bestPt = edge.p0; }
+      if (d0 < bestDist) {
+        bestDist = d0;
+        bestPt = edge.p0;
+      }
       const d1 = dist2d(cursor, edge.p1);
-      if (d1 < bestDist) { bestDist = d1; bestPt = edge.p1; }
+      if (d1 < bestDist) {
+        bestDist = d1;
+        bestPt = edge.p1;
+      }
       // Snap to nearest point on edge segment
       const np = nearestPointOnSegment(cursor, edge.p0, edge.p1);
       const dn = dist2d(cursor, np);
-      if (dn < bestDist) { bestDist = dn; bestPt = np; }
+      if (dn < bestDist) {
+        bestDist = dn;
+        bestPt = np;
+      }
     }
     if (bestPt) {
       return {
@@ -628,12 +651,7 @@ function resolveSnap(
     if (other && other.kind === "line") {
       const os = state.entities.find((e) => e.id === other.start);
       const oe = state.entities.find((e) => e.id === other.end);
-      if (
-        os &&
-        oe &&
-        os.kind === "point" &&
-        oe.kind === "point"
-      ) {
+      if (os && oe && os.kind === "point" && oe.kind === "point") {
         const dx = oe.at.x - os.at.x;
         const dy = oe.at.y - os.at.y;
         const len = Math.hypot(dx, dy);
@@ -747,7 +765,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
 
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
-    if (!store) { projectedEdgesRef.current = []; return; }
+    if (!store) {
+      projectedEdgesRef.current = [];
+      return;
+    }
     try {
       const segs: { p0: number[]; p1: number[] }[] = [];
       const count = store.kernel.bodyCount();
@@ -763,12 +784,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           for (let p = 0; p < n - 1; p++) {
             segs.push({
               p0: [e.points[p * 3], e.points[p * 3 + 1], e.points[p * 3 + 2]],
-              p1: [e.points[(p + 1) * 3], e.points[(p + 1) * 3 + 1], e.points[(p + 1) * 3 + 2]],
+              p1: [
+                e.points[(p + 1) * 3],
+                e.points[(p + 1) * 3 + 1],
+                e.points[(p + 1) * 3 + 2],
+              ],
             });
           }
         }
       }
-      projectedEdgesRef.current = projectEdgesToSketchPlane(segs, session.planeQuery);
+      projectedEdgesRef.current = projectEdgesToSketchPlane(
+        segs,
+        session.planeQuery,
+      );
     } catch {
       projectedEdgesRef.current = [];
     }
@@ -899,7 +927,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             /* this pointer wasn't captured — fine */
           }
         }
-        pinchRef.current = { active: true, lastDist: touchSpan(touchPtsRef.current).dist };
+        pinchRef.current = {
+          active: true,
+          lastDist: touchSpan(touchPtsRef.current).dist,
+        };
         lastCamVersionRef.current = -1;
         e.preventDefault();
         return;
@@ -1015,7 +1046,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         if (first === null || first === pick) {
           filletFirstRef.current = pick;
         } else {
-          store.filletSketchAt(first, pick, store.getState().sketchFilletRadius);
+          store.filletSketchAt(
+            first,
+            pick,
+            store.getState().sketchFilletRadius,
+          );
           filletFirstRef.current = null;
         }
       }
@@ -1077,7 +1112,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Resolve snap at pointerdown so the placed point/line-start
     // respects endpoint / origin magnetism even on a dead-stop
     // click (no prior move events).
-    const snap = resolveSnap([u, v], session, null, e.shiftKey, projectedEdgesRef.current);
+    const snap = resolveSnap(
+      [u, v],
+      session,
+      null,
+      e.shiftKey,
+      projectedEdgesRef.current,
+    );
     snapRef.current = snap;
     const [su, sv] = snap.snapped;
     if (session.selectedTool === "sketch_point") {
@@ -1170,7 +1211,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // If the previous polygon was applied (draft cleared),
       // start fresh rather than appending to the old one.
       const draftVerts = session.toolDraft?.vertices;
-      const draftEmpty = !draftVerts || (Array.isArray(draftVerts) && draftVerts.length === 0);
+      const draftEmpty =
+        !draftVerts || (Array.isArray(draftVerts) && draftVerts.length === 0);
       const existing =
         dragRef.current.kind === "polygon" && !draftEmpty
           ? dragRef.current.vertices
@@ -1181,11 +1223,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // close and commit instead of adding another vertex.
       if (existing.length >= 3) {
         const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
-        const [fpx, fpy] = sketchToScreen(
-          existing[0][0],
-          existing[0][1],
-          cam,
-        );
+        const [fpx, fpy] = sketchToScreen(existing[0][0], existing[0][1], cam);
         const [cpx, cpy] = sketchToScreen(su, sv, cam);
         const dist = Math.hypot(cpx - fpx, cpy - fpy);
         if (dist < 8) {
@@ -1289,7 +1327,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         };
       } else {
         // Click 3 — fix the sweep and commit (or discard if degenerate).
-        const call = buildArcSubCall(drag.center, drag.start, [su, sv], drag.sweep);
+        const call = buildArcSubCall(
+          drag.center,
+          drag.start,
+          [su, sv],
+          drag.sweep,
+        );
         dragRef.current = { kind: "idle" };
         if (call) {
           store.pushSketchSubCalls([call]);
@@ -1303,7 +1346,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const drag = dragRef.current;
       if (drag.kind !== "circle_3p") {
         // Click 1 — first point on the circumference.
-        dragRef.current = { kind: "circle_3p", p1: [su, sv], p2: null, current: [su, sv] };
+        dragRef.current = {
+          kind: "circle_3p",
+          p1: [su, sv],
+          p2: null,
+          current: [su, sv],
+        };
       } else if (drag.p2 === null) {
         // Click 2 — second point.
         dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
@@ -1329,7 +1377,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const drag = dragRef.current;
       if (drag.kind !== "rect_3p") {
         // Click 1 — first edge endpoint.
-        dragRef.current = { kind: "rect_3p", p1: [su, sv], p2: null, current: [su, sv] };
+        dragRef.current = {
+          kind: "rect_3p",
+          p1: [su, sv],
+          p2: null,
+          current: [su, sv],
+        };
       } else if (drag.p2 === null) {
         // Click 2 — second edge endpoint (fixes the edge direction).
         dragRef.current = { ...drag, p2: [su, sv], current: [su, sv] };
@@ -1339,7 +1392,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         const corners = rect3pCorners(drag.p1, drag.p2, [su, sv]);
         dragRef.current = { kind: "idle" };
         if (corners) {
-          store.pushSketchSubCalls(buildRect3pSubCalls(corners, session.subCalls));
+          store.pushSketchSubCalls(
+            buildRect3pSubCalls(corners, session.subCalls),
+          );
           scheduleSolverReplay();
         }
       }
@@ -1369,7 +1424,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
       if (pick !== null) {
-        store.offsetSketchAt(pick, [u, v], store.getState().sketchOffsetDistance);
+        store.offsetSketchAt(
+          pick,
+          [u, v],
+          store.getState().sketchOffsetDistance,
+        );
       }
       lastCamVersionRef.current = -1;
       return;
@@ -1382,7 +1441,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // reference" convention (visible + snappable, excluded from the profile).
     if (session.selectedTool === "sketch_project") {
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const idx = nearestProjectedEdge(projectedEdgesRef.current, [u, v], tolMm);
+      const idx = nearestProjectedEdge(
+        projectedEdgesRef.current,
+        [u, v],
+        tolMm,
+      );
       if (idx !== null) {
         const edge = projectedEdgesRef.current[idx];
         store.pushSketchSubCalls([
@@ -1552,7 +1615,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         dragRef.current = { ...d, current: [u, v] };
       } else {
         // Stage 2: sweep, unwrapped so it tracks past ±180°.
-        const sweep = unwrapSweep(d.startAngle, angleAbout(d.center, [u, v]), d.sweep);
+        const sweep = unwrapSweep(
+          d.startAngle,
+          angleAbout(d.center, [u, v]),
+          d.sweep,
+        );
         dragRef.current = { ...d, current: [u, v], sweep };
       }
       snapRef.current = {
@@ -1573,7 +1640,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
       // land on.
-      const snap = resolveSnap([u, v], session, null, e.shiftKey, projectedEdgesRef.current);
+      const snap = resolveSnap(
+        [u, v],
+        session,
+        null,
+        e.shiftKey,
+        projectedEdgesRef.current,
+      );
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
@@ -1840,7 +1913,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
       const { center_a, current } = dragRef.current;
       dragRef.current = { kind: "idle" };
-      const len = Math.hypot(current[0] - center_a[0], current[1] - center_a[1]);
+      const len = Math.hypot(
+        current[0] - center_a[0],
+        current[1] - center_a[1],
+      );
       if (len < 1e-2) {
         const canvas = canvasRef.current;
         if (canvas) {
@@ -2028,8 +2104,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         end: [su, sv] as [number, number],
       },
     };
-    const newCalls: Array<{ type: string; params: Record<string, unknown> }> =
-      [lineCall];
+    const newCalls: Array<{ type: string; params: Record<string, unknown> }> = [
+      lineCall,
+    ];
 
     // Start coincident: the line's start snapped to a pre-
     // existing entity at pointerdown. Emit a coincident
@@ -2054,10 +2131,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           type: "sketch_constraint_vertical",
           params: { line: predictedIds.line },
         });
-      } else if (
-        c.kind === "coincident" &&
-        snap.coincidentTargetId !== null
-      ) {
+      } else if (c.kind === "coincident" && snap.coincidentTargetId !== null) {
         newCalls.push({
           type: "sketch_constraint_coincident",
           params: { a: predictedIds.end, b: snap.coincidentTargetId },
@@ -2128,7 +2202,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         store.pushSketchSubCalls([
           {
             type: "sketch_spline",
-            params: { points: drag.points.flat(), closed: false, mode: drag.mode },
+            params: {
+              points: drag.points.flat(),
+              closed: false,
+              mode: drag.mode,
+            },
           },
         ]);
         scheduleSolverReplay();
@@ -2154,7 +2232,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // stale).
   const commitFromHud = () => {
     if (dragRef.current.kind !== "pending_line" || hud === null) return;
-    commitPendingLine(dragRef.current, { length: hud.length, angle: hud.angle });
+    commitPendingLine(dragRef.current, {
+      length: hud.length,
+      angle: hud.angle,
+    });
   };
 
   return (
@@ -2432,25 +2513,27 @@ function drawOverlay(
         for (let i = 0; i + 1 < raw.length; i += 2) {
           ctrl.push([Number(raw[i]), Number(raw[i + 1])]);
         }
-        // F23-full: in control mode, draw the control polygon as a
-        // dashed guide (lines between consecutive control points; the
-        // closing edge for a closed loop). F23 endpoint tangent: for an
-        // OPEN spline the first/last edges are real `line` entities
-        // ("tangent legs") the user can select + constrain, so draw them
-        // distinctly (solid, accent colour, thicker) from the rest of
-        // the dashed guide to make them discoverable as handles.
+        // F23 endpoint tangent: for an OPEN spline (BOTH modes) the
+        // first/last polygon edges are real `line` entities ("tangent
+        // legs") the user can select + constrain — drawn distinctly
+        // (solid, accent colour, thicker) so they're discoverable as
+        // handles. Indices of the leg edges (edge i = ctrl[i]→ctrl[i+1]).
+        const n = ctrl.length;
+        const legSet = new Set<number>();
+        if (!closed && n >= 2) {
+          legSet.add(0); // start leg = edge cp0→cp1
+          if (n >= 3) legSet.add(n - 2); // end leg = edge cp[N-2]→cp[N-1]
+        }
+        const drawLeg = (i: number) =>
+          drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_TANGENT_LEG, 2);
         if (isControl) {
+          // F23-full: control mode draws the full control polygon as a
+          // dashed guide, with the endpoint legs overlaid solid.
           ctx.save();
-          const n = ctrl.length;
-          const legSet = new Set<number>();
-          if (!closed && n >= 2) {
-            legSet.add(0); // start leg = edge cp0→cp1
-            if (n >= 3) legSet.add(n - 2); // end leg = edge cp[N-2]→cp[N-1]
-          }
           for (let i = 0; i + 1 < n; i++) {
             if (legSet.has(i)) {
               ctx.setLineDash([]);
-              drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_TANGENT_LEG, 2);
+              drawLeg(i);
             } else {
               ctx.setLineDash([6, 4]);
               drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_GUIDE, 1);
@@ -2461,6 +2544,11 @@ function drawOverlay(
             drawLine(ctx, ctrl[n - 1], ctrl[0], cam, COLOR_GUIDE, 1);
           }
           ctx.restore();
+        } else {
+          // Interpolation mode has NO control polygon to show, so draw
+          // ONLY the endpoint legs (solid accent) — they're the only
+          // selectable line entities the user can constrain.
+          for (const i of legSet) drawLeg(i);
         }
         const sampled = isControl
           ? bsplinePoints(ctrl, 3, closed, 64)
@@ -2683,7 +2771,14 @@ function drawOverlay(
       const corners = rect3pCorners(p1, p2, current);
       if (corners) {
         for (let i = 0; i < 4; i++) {
-          drawLine(ctx, corners[i], corners[(i + 1) % 4], cam, COLOR_PREVIEW, STROKE_PX);
+          drawLine(
+            ctx,
+            corners[i],
+            corners[(i + 1) % 4],
+            cam,
+            COLOR_PREVIEW,
+            STROKE_PX,
+          );
           drawPoint(ctx, corners[i], cam, COLOR_PREVIEW);
         }
       } else {
@@ -2871,7 +2966,10 @@ function drawSelectionHighlight(
     const e = state.entities.find((x) => x.id === id);
     if (!e) continue;
     if (e.kind === "point" || e.kind === "origin") {
-      const at = e.kind === "origin" ? ([0, 0] as [number, number]) : [e.at.x, e.at.y] as [number, number];
+      const at =
+        e.kind === "origin"
+          ? ([0, 0] as [number, number])
+          : ([e.at.x, e.at.y] as [number, number]);
       const [px, py] = sketchToScreen(at[0], at[1], cam);
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -3190,7 +3288,14 @@ function drawSizeLabel(
   ctx.fillStyle = LABEL_BG;
   ctx.strokeStyle = COLOR_UNDER;
   ctx.lineWidth = 1;
-  roundRect(ctx, boxX, boxY, textW + LABEL_PADDING * 2, textH + LABEL_PADDING, 4);
+  roundRect(
+    ctx,
+    boxX,
+    boxY,
+    textW + LABEL_PADDING * 2,
+    textH + LABEL_PADDING,
+    4,
+  );
   ctx.fill();
   ctx.stroke();
   ctx.fillStyle = LABEL_FG;

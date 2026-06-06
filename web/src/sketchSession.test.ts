@@ -30,7 +30,10 @@ describe("sketchSession reducers", () => {
   });
 
   it("enterSketchSession flips the active flag and locks the plane", () => {
-    const next = enterSketchSession(INACTIVE_SKETCH_SESSION, "qFaceOf(extrude_1)");
+    const next = enterSketchSession(
+      INACTIVE_SKETCH_SESSION,
+      "qFaceOf(extrude_1)",
+    );
     expect(next.active).toBe(true);
     expect(next.planeQuery).toBe("qFaceOf(extrude_1)");
     expect(next.selectedTool).toBeNull();
@@ -182,7 +185,9 @@ describe("sketchSession reducers", () => {
     expect(session.subCalls).toHaveLength(2);
     const after = removeSketchSubCallAt(session, 0);
     expect(after.subCalls).toHaveLength(1);
-    expect((after.subCalls[0].params as { at: [number, number] }).at).toEqual([2, 2]);
+    expect((after.subCalls[0].params as { at: [number, number] }).at).toEqual([
+      2, 2,
+    ]);
   });
 
   it("removeSketchSubCallAt drops dangling constraint refs and shifts survivors", () => {
@@ -245,10 +250,19 @@ describe("sketchSession reducers", () => {
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
       { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } },
       { type: "sketch_constraint_parallel", params: { line_a: 3, line_b: 6 } },
-      { type: "sketch_constraint_perpendicular", params: { line_a: 3, line_b: 6 } },
+      {
+        type: "sketch_constraint_perpendicular",
+        params: { line_a: 3, line_b: 6 },
+      },
       { type: "sketch_constraint_equal", params: { entity_a: 3, entity_b: 6 } },
-      { type: "sketch_constraint_angle", params: { line_a: 3, line_b: 6, value_deg: 45 } },
-      { type: "sketch_constraint_distance", params: { entity_a: 1, entity_b: 4, value_mm: 7 } },
+      {
+        type: "sketch_constraint_angle",
+        params: { line_a: 3, line_b: 6, value_deg: 45 },
+      },
+      {
+        type: "sketch_constraint_distance",
+        params: { entity_a: 1, entity_b: 4, value_mm: 7 },
+      },
     ]);
     const kinds = state.constraints.map((c) => c.kind).sort();
     expect(kinds).toEqual(
@@ -346,7 +360,10 @@ describe("sketchSession reducers", () => {
       subCalls: [
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 1-3
         { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 4-6
-        { type: "sketch_constraint_parallel", params: { line_a: 3, line_b: 6 } },
+        {
+          type: "sketch_constraint_parallel",
+          params: { line_a: 3, line_b: 6 },
+        },
       ],
     };
     // Remove the first line (entities 1-3). The parallel ref line_a=3
@@ -369,7 +386,10 @@ describe("sketchSession reducers", () => {
         { type: "sketch_point", params: { at: [0, 0] } }, // entity 1
         { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // 2-4 (line=4)
         { type: "sketch_line", params: { start: [0, 5], end: [10, 5] } }, // 5-7 (line=7)
-        { type: "sketch_constraint_parallel", params: { line_a: 4, line_b: 7 } },
+        {
+          type: "sketch_constraint_parallel",
+          params: { line_a: 4, line_b: 7 },
+        },
       ],
     };
     // Remove the leading point (entity 1). Both lines shift down by
@@ -539,7 +559,10 @@ describe("sketch_ellipse draft state", () => {
     // TS mirror must allocate exactly one entity (id 1) and advance the
     // counter by exactly 1 — to 2.
     const state = buildDraftSketchState([
-      { type: "sketch_ellipse", params: { center: [1, 2], radius_x: 5, radius_y: 3 } },
+      {
+        type: "sketch_ellipse",
+        params: { center: [1, 2], radius_x: 5, radius_y: 3 },
+      },
     ]);
     const points = state.entities.filter((e) => e.kind === "point");
     expect(points).toHaveLength(1);
@@ -554,7 +577,10 @@ describe("sketch_ellipse draft state", () => {
     // next contiguous ids (centre 2, circle 3) — proving the ellipse
     // branch advanced the counter by exactly the kernel's one point.
     const state = buildDraftSketchState([
-      { type: "sketch_ellipse", params: { center: [0, 0], radius_x: 4, radius_y: 2 } },
+      {
+        type: "sketch_ellipse",
+        params: { center: [0, 0], radius_x: 4, radius_y: 2 },
+      },
       { type: "sketch_circle", params: { center: [10, 10], radius: 5 } },
     ]);
     const circleCentre = state.entities.find(
@@ -569,7 +595,10 @@ describe("sketch_ellipse draft state", () => {
 
   it("ignores a malformed centre (no entity added)", () => {
     const state = buildDraftSketchState([
-      { type: "sketch_ellipse", params: { center: [1], radius_x: 5, radius_y: 3 } },
+      {
+        type: "sketch_ellipse",
+        params: { center: [1], radius_x: 5, radius_y: 3 },
+      },
     ]);
     expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
     expect(state.next_entity_id).toBe(1);
@@ -788,7 +817,10 @@ describe("constraintIdsOfSubCall (F20)", () => {
     // sketch_rectangle allocates 4 internal constraints (cids 1-4); a
     // following user horizontal constraint is cid 5.
     const calls = [
-      { type: "sketch_rectangle", params: { corner_a: [0, 0], corner_b: [10, 5] } },
+      {
+        type: "sketch_rectangle",
+        params: { corner_a: [0, 0], corner_b: [10, 5] },
+      },
       { type: "sketch_constraint_horizontal", params: { line: 5 } },
     ];
     expect(constraintIdsOfSubCall(calls, 0)).toEqual([1, 2, 3, 4]);
@@ -869,18 +901,22 @@ describe("sketch_spline draft state", () => {
     // The kernel's SketchSplineTool::apply registers one point entity
     // per control point (like sketch_polygon). With 4 control points
     // (8 floats), the TS mirror allocates ids 1..=4 and advances the
-    // counter to 5 (origin is id 0).
+    // counter to 5 (origin is id 0). Use a CLOSED spline so no endpoint
+    // legs are added — this test only checks pure point allocation.
     const state = buildDraftSketchState([
       {
         type: "sketch_spline",
-        params: { points: [0, 0, 10, 5, 20, 0, 10, -5], closed: false },
+        params: { points: [0, 0, 10, 5, 20, 0, 10, -5], closed: true },
       },
     ]);
     const points = state.entities.filter((e) => e.kind === "point");
     expect(points).toHaveLength(4);
     expect(points.map((p) => p.id)).toEqual([1, 2, 3, 4]);
     expect(points[0].kind === "point" && points[0].at).toEqual({ x: 0, y: 0 });
-    expect(points[3].kind === "point" && points[3].at).toEqual({ x: 10, y: -5 });
+    expect(points[3].kind === "point" && points[3].at).toEqual({
+      x: 10,
+      y: -5,
+    });
     expect(state.next_entity_id).toBe(5);
   });
 
@@ -947,13 +983,52 @@ describe("sketch_spline draft state", () => {
     expect(state.next_entity_id).toBe(4);
   });
 
-  it("adds NO legs for an interpolate-mode spline", () => {
+  it("adds two endpoint tangent legs for an interpolate-mode OPEN spline (N>=3)", () => {
+    // V4: open interpolation (Catmull-Rom) splines get the SAME endpoint
+    // legs as control mode — same ids, same point refs, same order.
     const state = buildDraftSketchState([
       {
         type: "sketch_spline",
         params: {
           points: [0, 0, 10, 5, 20, 0, 30, 5],
           closed: false,
+          mode: "interpolate",
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    const lines = state.entities.filter((e) => e.kind === "line");
+    expect(
+      lines.map((l) => (l.kind === "line" ? [l.id, l.start, l.end] : null)),
+    ).toEqual([
+      [5, 1, 2], // start leg
+      [6, 3, 4], // end leg
+    ]);
+    expect(state.next_entity_id).toBe(7);
+  });
+
+  it("adds exactly one leg for an interpolate-mode OPEN spline with N==2", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: { points: [0, 0, 10, 5], closed: false, mode: "interpolate" },
+      },
+    ]);
+    const lines = state.entities.filter((e) => e.kind === "line");
+    expect(
+      lines.map((l) => (l.kind === "line" ? [l.id, l.start, l.end] : null)),
+    ).toEqual([[3, 1, 2]]);
+    expect(state.next_entity_id).toBe(4);
+  });
+
+  it("adds NO legs for an interpolate-mode CLOSED spline", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: true,
           mode: "interpolate",
         },
       },

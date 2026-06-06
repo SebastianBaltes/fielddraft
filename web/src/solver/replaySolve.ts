@@ -86,7 +86,10 @@ export function rebuildSubCallsFromSolved(
       nextId += 1; // tl
       nextId += 4; // bottom, right, top, left
       if (!bl || !tr) return call;
-      return { ...call, params: { ...call.params, corner_a: bl, corner_b: tr } };
+      return {
+        ...call,
+        params: { ...call.params, corner_a: bl, corner_b: tr },
+      };
     }
     if (call.type === "sketch_polygon") {
       const verts = call.params.vertices;
@@ -121,14 +124,17 @@ export function rebuildSubCallsFromSolved(
       const ca = pointAt(nextId++);
       const cb = pointAt(nextId++);
       if (!ca || !cb) return call;
-      return { ...call, params: { ...call.params, center_a: ca, center_b: cb } };
+      return {
+        ...call,
+        params: { ...call.params, center_a: ca, center_b: cb },
+      };
     }
     if (call.type === "sketch_spline") {
       // Mirrors buildDraftSketchState: N control-point entities, then
-      // (for an open control-mode spline) the endpoint leg line(s).
-      // Write back the solved control points (so spline constraints are
-      // visible) and advance nextId past the legs (so later sub-calls
-      // stay id-aligned). Scope MUST match the kernel / session mirror.
+      // (for any open spline) the endpoint leg line(s). Write back the
+      // solved control points (so spline constraints are visible) and
+      // advance nextId past the legs (so later sub-calls stay
+      // id-aligned). Scope MUST match the kernel / session mirror.
       const points = call.params.points;
       if (Array.isArray(points)) {
         const numPoints = Math.floor(points.length / 2);
@@ -141,13 +147,9 @@ export function rebuildSubCallsFromSolved(
             newPoints.push(Number(points[i * 2]), Number(points[i * 2 + 1]));
           }
         }
-        // Endpoint legs: control mode, open, N>=2 → start leg always;
+        // Endpoint legs: any open spline, N>=2 → start leg always;
         // N>=3 → also end leg. (N==2 → exactly one leg.)
-        if (
-          call.params.mode === "control" &&
-          call.params.closed !== true &&
-          numPoints >= 2
-        ) {
+        if (call.params.closed !== true && numPoints >= 2) {
           nextId += 1; // start leg
           if (numPoints >= 3) nextId += 1; // end leg
         }

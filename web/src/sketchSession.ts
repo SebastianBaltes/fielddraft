@@ -359,21 +359,57 @@ export function buildDraftSketchState(
         const maxX = Math.max(ax, bx);
         const maxY = Math.max(ay, by);
         const blId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: blId, at: { x: minX, y: minY } });
+        state.entities.push({
+          kind: "point",
+          id: blId,
+          at: { x: minX, y: minY },
+        });
         const brId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: brId, at: { x: maxX, y: minY } });
+        state.entities.push({
+          kind: "point",
+          id: brId,
+          at: { x: maxX, y: minY },
+        });
         const trId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: trId, at: { x: maxX, y: maxY } });
+        state.entities.push({
+          kind: "point",
+          id: trId,
+          at: { x: maxX, y: maxY },
+        });
         const tlId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: tlId, at: { x: minX, y: maxY } });
+        state.entities.push({
+          kind: "point",
+          id: tlId,
+          at: { x: minX, y: maxY },
+        });
         const bottomId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: bottomId, start: blId, end: brId });
+        state.entities.push({
+          kind: "line",
+          id: bottomId,
+          start: blId,
+          end: brId,
+        });
         const rightId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: rightId, start: brId, end: trId });
+        state.entities.push({
+          kind: "line",
+          id: rightId,
+          start: brId,
+          end: trId,
+        });
         const topId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: topId, start: trId, end: tlId });
+        state.entities.push({
+          kind: "line",
+          id: topId,
+          start: trId,
+          end: tlId,
+        });
         const leftId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: leftId, start: tlId, end: blId });
+        state.entities.push({
+          kind: "line",
+          id: leftId,
+          start: tlId,
+          end: blId,
+        });
         state.constraints.push({
           kind: "horizontal",
           id: state.next_constraint_id++,
@@ -425,22 +461,21 @@ export function buildDraftSketchState(
           cpIds.push(cpId);
         }
       }
-      // F23 endpoint tangent ("G1"): for a CLAMPED CUBIC B-spline
-      // (mode "control", open) the curve's tangent at the clamped
-      // endpoints runs exactly along the first/last control-polygon
-      // edges. Expose those endpoint "legs" as ordinary `line`
-      // entities so all existing line constraints apply for free.
+      // F23 endpoint tangent ("G1"): for an OPEN spline the curve's
+      // endpoint tangent runs PARALLEL to the first/last control-polygon
+      // edge in BOTH modes — clamped cubic B-spline (mode "control")
+      // runs exactly along the edge, Catmull-Rom (mode "interpolate")
+      // has P'(0)=0.5·(p1−p0) / P'(1)=0.5·(p[n-1]−p[n-2]), parallel to
+      // the same edge (direction-only G1, so the leg is exact). Expose
+      // those endpoint "legs" as ordinary `line` entities so all
+      // existing line constraints apply for free.
       //
       // Scope MUST match the kernel (SketchSplineTool::apply) EXACTLY:
-      // legs only when mode == "control" && closed !== true. Order:
-      // control points first (above), THEN start leg, THEN (N>=3) end
-      // leg. Legs reference existing points → no new DOF, and they do
-      // not affect the lowered extrude profile.
-      if (
-        call.params.mode === "control" &&
-        call.params.closed !== true &&
-        cpIds.length >= 2
-      ) {
+      // legs whenever closed !== true (ANY mode). Order: control points
+      // first (above), THEN start leg, THEN (N>=3) end leg. Legs
+      // reference existing points → no new DOF, and they do not affect
+      // the lowered extrude profile.
+      if (call.params.closed !== true && cpIds.length >= 2) {
         const n = cpIds.length;
         // START leg = Line(cp[0], cp[1]).
         state.entities.push({
@@ -628,7 +663,11 @@ export function buildDraftSketchState(
       const a = Number(call.params.entity_a);
       const b = Number(call.params.entity_b);
       const value_mm = Number(call.params.value_mm);
-      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(value_mm)) {
+      if (
+        Number.isFinite(a) &&
+        Number.isFinite(b) &&
+        Number.isFinite(value_mm)
+      ) {
         state.constraints.push({
           kind: "distance",
           id: state.next_constraint_id++,
@@ -642,7 +681,11 @@ export function buildDraftSketchState(
       const a = Number(call.params.line_a);
       const b = Number(call.params.line_b);
       const value_deg = Number(call.params.value_deg);
-      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(value_deg)) {
+      if (
+        Number.isFinite(a) &&
+        Number.isFinite(b) &&
+        Number.isFinite(value_deg)
+      ) {
         state.constraints.push({
           kind: "angle",
           id: state.next_constraint_id++,
@@ -766,9 +809,7 @@ export function constraintIdsOfSubCall(
   index: number,
 ): ConstraintId[] {
   if (index < 0 || index >= subCalls.length) return [];
-  const lo = buildDraftSketchState(
-    subCalls.slice(0, index),
-  ).next_constraint_id;
+  const lo = buildDraftSketchState(subCalls.slice(0, index)).next_constraint_id;
   const hi = buildDraftSketchState(
     subCalls.slice(0, index + 1),
   ).next_constraint_id;
@@ -958,9 +999,11 @@ export function removeSketchSubCallAt(
  * for actually appending the line + any constraints that
  * reference these IDs in the same commit.
  */
-export function predictNextLineIds(
-  subCalls: SketchSessionState["subCalls"],
-): { start: number; end: number; line: number } {
+export function predictNextLineIds(subCalls: SketchSessionState["subCalls"]): {
+  start: number;
+  end: number;
+  line: number;
+} {
   const state = buildDraftSketchState(subCalls);
   const startId = state.next_entity_id;
   const endId = startId + 1;
