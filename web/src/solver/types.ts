@@ -77,6 +77,7 @@ export type Constraint =
     }
   | { kind: "tangent"; id: ConstraintId; line: EntityId; curve: EntityId }
   | { kind: "concentric"; id: ConstraintId; a: EntityId; b: EntityId }
+  | { kind: "fix"; id: ConstraintId; point: EntityId }
   | { kind: "equal"; id: ConstraintId; a: EntityId; b: EntityId }
   | { kind: "midpoint"; id: ConstraintId; point: EntityId; line: EntityId }
   | {

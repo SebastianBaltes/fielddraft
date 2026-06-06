@@ -136,16 +136,20 @@ function parseConstraintOid(oid: string): number | null {
 function translateEntity(
   entity: Entity,
   entityIndex: Map<EntityId, Entity>,
+  fixedPoints: Set<EntityId>,
 ): SketchPrimitive[] {
   switch (entity.kind) {
     case "point":
+      // A `fix` constraint pins a point in place by flagging the
+      // point itself `fixed: true` (the same mechanism the origin
+      // uses) — there's no separate PlaneGCS primitive for it.
       return [
         {
           type: "point",
           id: entityOid(entity.id),
           x: entity.at.x,
           y: entity.at.y,
-          fixed: false,
+          fixed: fixedPoints.has(entity.id),
         },
       ];
     case "origin":
@@ -231,13 +235,21 @@ function requirePoint(
  * the referenced entity shape, `Concentric` is modelled as a
  * coincidence between two circle centres, and `Symmetric` is
  * unsupported in K5a (throws).
+ *
+ * Returns `null` for `fix`: the constraint has no own PlaneGCS
+ * primitive — it's realised through the target point's
+ * `fixed: true` flag (see [`translateEntity`]). The caller filters
+ * the nulls out of the primitive stream.
  */
 function translateConstraint(
   constraint: Constraint,
   entityIndex: Map<EntityId, Entity>,
-): SketchPrimitive {
+): SketchPrimitive | null {
   const id = constraintOid(constraint.id);
   switch (constraint.kind) {
+    case "fix":
+      // No primitive: realised via the entity's `fixed` flag.
+      return null;
     case "coincident":
       return {
         type: "p2p_coincident",
@@ -513,16 +525,25 @@ async function solveSketchInner(input: SketchState): Promise<SolveResult> {
   const entityIndex = new Map<EntityId, Entity>();
   for (const e of input.entities) entityIndex.set(e.id, e);
 
+  // Collect every point id targeted by a `fix` constraint before
+  // translating entities — a fixed point emits `fixed: true` so the
+  // solver treats it as having zero DOFs.
+  const fixedPoints = new Set<EntityId>();
+  for (const c of input.constraints) {
+    if (c.kind === "fix") fixedPoints.add(c.point);
+  }
+
   // Push entities first so later constraints can reference them
   // by oid without ordering surprises.
   for (const entity of input.entities) {
-    for (const primitive of translateEntity(entity, entityIndex)) {
+    for (const primitive of translateEntity(entity, entityIndex, fixedPoints)) {
       wrapper.push_primitive(primitive);
     }
   }
 
   for (const constraint of input.constraints) {
-    wrapper.push_primitive(translateConstraint(constraint, entityIndex));
+    const primitive = translateConstraint(constraint, entityIndex);
+    if (primitive !== null) wrapper.push_primitive(primitive);
   }
 
   const status = wrapper.solve();

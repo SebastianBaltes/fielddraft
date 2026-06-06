@@ -174,6 +174,16 @@ export function applicableConstraints(
     });
   }
 
+  // A single point pins at its current position via a fix constraint.
+  if (n === 1 && points === 1) {
+    out.push({
+      type: "sketch_constraint_fix",
+      label: "Fix",
+      glyph: "⌖",
+      title: "Fix this point at its position",
+    });
+  }
+
   if (n === 1 && curves === 1) {
     // A single circle or arc takes a radius or diameter dimension.
     out.push({
@@ -337,6 +347,11 @@ export function buildConstraintCall(
         type,
         params: { line: selection[lineIdx], curve: selection[curveIdx] },
       };
+    }
+
+    case "sketch_constraint_fix": {
+      if (selection.length !== 1 || !isPointish(kinds[0])) return null;
+      return { type, params: { point: selection[0] } };
     }
 
     case "sketch_constraint_radius": {

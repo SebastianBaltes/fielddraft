@@ -415,6 +415,79 @@ describe("solveSketch: radius + diameter", () => {
   });
 });
 
+describe("solveSketch: fix constraint", () => {
+  /**
+   * A fixed point and a free point joined by a distance
+   * constraint. The fix must pin the first point at its original
+   * coordinates while the distance pulls only the free point.
+   * This proves the `fix` constraint realises the `fixed: true`
+   * entity flag end to end.
+   */
+  it("keeps a fixed point still while a free point is pulled to length", async () => {
+    const sketch = emptySketch("fix-distance");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 3, y: 4 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 10, y: 4 } });
+    sketch.next_entity_id = 3;
+    // Pin point 1 in place.
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    // Pull point 2 so the segment is 20 mm long.
+    sketch.constraints.push({
+      kind: "distance",
+      id: 2,
+      a: 1,
+      b: 2,
+      value_mm: 20,
+    });
+    sketch.next_constraint_id = 3;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const a = result.state.entities.find((e) => e.id === 1);
+    const b = result.state.entities.find((e) => e.id === 2);
+    expect(a && a.kind === "point").toBe(true);
+    expect(b && b.kind === "point").toBe(true);
+    if (a && a.kind === "point" && b && b.kind === "point") {
+      // The fixed point did not move at all.
+      expect(a.at.x).toBeCloseTo(3, 6);
+      expect(a.at.y).toBeCloseTo(4, 6);
+      // The free point absorbed the whole distance change.
+      const dist = Math.hypot(b.at.x - a.at.x, b.at.y - a.at.y);
+      expect(dist).toBeCloseTo(20, 5);
+    }
+  });
+
+  it("a fixed point ignores a distance pull toward another fixed point", async () => {
+    // Two fixed points 7 mm apart with a 20 mm distance constraint
+    // between them. Because both points are pinned, neither can
+    // move — so the distance can't be satisfied and the sketch is
+    // not fully constrained, yet the coordinates stay put.
+    const sketch = emptySketch("fix-vs-fix");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 7, y: 0 } });
+    sketch.next_entity_id = 3;
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({
+      kind: "distance",
+      id: 3,
+      a: 1,
+      b: 2,
+      value_mm: 20,
+    });
+    sketch.next_constraint_id = 4;
+
+    const result = await solveSketch(sketch);
+    const a = result.state.entities.find((e) => e.id === 1);
+    const b = result.state.entities.find((e) => e.id === 2);
+    if (a && a.kind === "point" && b && b.kind === "point") {
+      expect(a.at.x).toBeCloseTo(0, 6);
+      expect(a.at.y).toBeCloseTo(0, 6);
+      expect(b.at.x).toBeCloseTo(7, 6);
+      expect(b.at.y).toBeCloseTo(0, 6);
+    }
+  });
+});
+
 describe("solveSketch: conflict diagnostics", () => {
   /**
    * Two Distance constraints between the same two points with

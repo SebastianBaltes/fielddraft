@@ -111,6 +111,7 @@ function constraintDof(constraint: Constraint): number {
     case "concentric":
     case "midpoint":
     case "symmetric":
+    case "fix":
       return 2;
   }
 }

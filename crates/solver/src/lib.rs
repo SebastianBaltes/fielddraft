@@ -233,6 +233,14 @@ pub enum Constraint {
         a: EntityId,
         b: EntityId,
     },
+    /// Pin a point at its current position — removes both of the
+    /// point's DOFs. Realised on the PlaneGCS side via the entity's
+    /// `fixed: true` flag (the same mechanism the origin uses), not
+    /// a dedicated solver primitive.
+    Fix {
+        id: ConstraintId,
+        point: EntityId,
+    },
     /// Two equivalent entities have the same primary scalar —
     /// same length for lines, same radius for circles/arcs.
     Equal {
@@ -286,6 +294,7 @@ impl Constraint {
             | Constraint::Angle { id, .. }
             | Constraint::Tangent { id, .. }
             | Constraint::Concentric { id, .. }
+            | Constraint::Fix { id, .. }
             | Constraint::Equal { id, .. }
             | Constraint::Midpoint { id, .. }
             | Constraint::Symmetric { id, .. }
@@ -305,6 +314,7 @@ impl Constraint {
             Constraint::Angle { .. } => "angle",
             Constraint::Tangent { .. } => "tangent",
             Constraint::Concentric { .. } => "concentric",
+            Constraint::Fix { .. } => "fix",
             Constraint::Equal { .. } => "equal",
             Constraint::Midpoint { .. } => "midpoint",
             Constraint::Symmetric { .. } => "symmetric",

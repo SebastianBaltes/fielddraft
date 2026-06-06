@@ -116,6 +116,28 @@ describe("applicableConstraints", () => {
     expect(opts).not.toContain("sketch_constraint_concentric");
   });
 
+  it("offers fix for a single point", () => {
+    const state = twoLinesAndCircle();
+    // point 1 (start of line 1).
+    expect(applicableConstraints(state, [1]).map((o) => o.type)).toEqual([
+      "sketch_constraint_fix",
+    ]);
+    // the origin is point-like too.
+    expect(applicableConstraints(state, [0]).map((o) => o.type)).toEqual([
+      "sketch_constraint_fix",
+    ]);
+  });
+
+  it("does not offer fix for a single line or curve", () => {
+    const state = twoLinesAndCircle();
+    expect(applicableConstraints(state, [3]).map((o) => o.type)).not.toContain(
+      "sketch_constraint_fix",
+    );
+    expect(applicableConstraints(state, [8]).map((o) => o.type)).not.toContain(
+      "sketch_constraint_fix",
+    );
+  });
+
   it("offers nothing for unsupported / empty selections", () => {
     const state = twoLinesAndCircle();
     expect(applicableConstraints(state, [])).toEqual([]);
@@ -185,6 +207,29 @@ describe("buildConstraintCall", () => {
     expect(buildConstraintCall("sketch_constraint_concentric", [8], state)).toBeNull();
     // mixed line + curve (3, 8): one is not curvish.
     expect(buildConstraintCall("sketch_constraint_concentric", [3, 8], state)).toBeNull();
+  });
+
+  it("maps a single point to the fix param name", () => {
+    const state = twoLinesAndCircle();
+    expect(buildConstraintCall("sketch_constraint_fix", [1], state)).toEqual({
+      type: "sketch_constraint_fix",
+      params: { point: 1 },
+    });
+    // the origin (id 0) is point-like and fixable too.
+    expect(buildConstraintCall("sketch_constraint_fix", [0], state)).toEqual({
+      type: "sketch_constraint_fix",
+      params: { point: 0 },
+    });
+  });
+
+  it("returns null for fix with wrong selections", () => {
+    const state = twoLinesAndCircle();
+    // a single line (3): not point-like.
+    expect(buildConstraintCall("sketch_constraint_fix", [3], state)).toBeNull();
+    // a single curve (circle 8): not point-like.
+    expect(buildConstraintCall("sketch_constraint_fix", [8], state)).toBeNull();
+    // two points: wrong count.
+    expect(buildConstraintCall("sketch_constraint_fix", [1, 4], state)).toBeNull();
   });
 
   it("normalises tangent so the line maps to `line` and curve to `curve`", () => {

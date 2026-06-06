@@ -81,6 +81,16 @@ describe("countDegreesOfFreedom", () => {
     expect(countDegreesOfFreedom(s)).toBe(2);
   });
 
+  it("subtracts 2 for a fix constraint (pins both DOFs of a point)", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    // 2 DOFs - 2 fix = 0 DOFs (the point is fully pinned).
+    s.constraints.push({ kind: "fix", id: 1, point: 1 });
+    s.next_constraint_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(0);
+  });
+
   it("counts the canonical rectangle with width constraint at DOF = 1", () => {
     // The rectangleSketch helper has four points (8 DOF), four
     // lines (0), four H/V constraints (-4), one coincident

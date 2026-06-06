@@ -183,5 +183,7 @@ export function entitiesReferencedBy(
     case "radius":
     case "diameter":
       return [constraint.entity];
+    case "fix":
+      return [constraint.point];
   }
 }

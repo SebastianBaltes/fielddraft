@@ -348,6 +348,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchAngleConstraintTool));
         r.register(Box::new(SketchEqualConstraintTool));
         r.register(Box::new(SketchConcentricConstraintTool));
+        r.register(Box::new(SketchFixConstraintTool));
         r.register(Box::new(SketchParallelConstraintTool));
         r.register(Box::new(SketchPerpendicularConstraintTool));
         r.register(Box::new(SketchTangentConstraintTool));
@@ -846,6 +847,12 @@ constraint_tool!(SketchEqualConstraintDef, SketchEqualConstraintTool,
 pub struct SketchConcentricConstraintDef { pub a: u32, pub b: u32 }
 constraint_tool!(SketchConcentricConstraintDef, SketchConcentricConstraintTool,
     |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Concentric { id: cid, a: EntityId(d.a), b: EntityId(d.b) }));
+
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_constraint_fix")]
+pub struct SketchFixConstraintDef { pub point: u32 }
+constraint_tool!(SketchFixConstraintDef, SketchFixConstraintTool,
+    |state, d| state.add_constraint(|cid: ConstraintId| Constraint::Fix { id: cid, point: EntityId(d.point) }));
 
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_constraint_parallel")]
@@ -1540,6 +1547,7 @@ mod tests {
                 "sketch_constraint_diameter".to_string(),
                 "sketch_constraint_distance".to_string(),
                 "sketch_constraint_equal".to_string(),
+                "sketch_constraint_fix".to_string(),
                 "sketch_constraint_horizontal".to_string(),
                 "sketch_constraint_midpoint".to_string(),
                 "sketch_constraint_parallel".to_string(),
@@ -1759,6 +1767,35 @@ mod tests {
         assert!(state.constraints.iter().any(|c| matches!(
             c,
             Constraint::Concentric { a: EntityId(2), b: EntityId(4), .. }
+        )));
+    }
+
+    #[test]
+    fn sketch_fix_constraint_tool_wires_through() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        // A single point to pin in place.
+        tools
+            .apply_all(
+                &mut state,
+                &[
+                    FeatureCall::new(
+                        "sketch_point",
+                        id(1),
+                        json!({ "at": [3.0, 4.0] }),
+                    ),
+                    FeatureCall::new(
+                        "sketch_constraint_fix",
+                        id(2),
+                        json!({ "point": 1 }),
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(state.constraints.len(), 1);
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Fix { point: EntityId(1), .. }
         )));
     }
 

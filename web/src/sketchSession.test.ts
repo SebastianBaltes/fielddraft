@@ -272,6 +272,23 @@ describe("sketchSession reducers", () => {
     expect(state.next_constraint_id).toBe(2);
   });
 
+  it("buildDraftSketchState translates a fix sub-call with a fresh constraint id", () => {
+    // A single point (id 1) pinned in place. The fix sub-call must get a
+    // fresh constraint id allocated after the geometry.
+    const state = buildDraftSketchState([
+      { type: "sketch_point", params: { at: [3, 4] } },
+      { type: "sketch_constraint_fix", params: { point: 1 } },
+    ]);
+    const fix = state.constraints.find((c) => c.kind === "fix");
+    expect(fix).toBeDefined();
+    if (fix && fix.kind === "fix") {
+      expect(fix.point).toBe(1);
+      // First constraint allocated → id 1 (the counter starts at 1).
+      expect(fix.id).toBe(1);
+    }
+    expect(state.next_constraint_id).toBe(2);
+  });
+
   it("buildDraftSketchState carries the driven flag on dimensional constraints", () => {
     const state = buildDraftSketchState([
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } },
