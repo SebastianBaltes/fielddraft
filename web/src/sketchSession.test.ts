@@ -904,4 +904,97 @@ describe("sketch_spline draft state", () => {
     expect(circle?.id).toBe(6);
     expect(state.next_entity_id).toBe(7);
   });
+
+  it("adds two endpoint tangent legs for a control-mode OPEN spline (N>=3)", () => {
+    // F23 endpoint tangent: control + open, N>=3 → control points
+    // 1..=4, then start leg (id 5 = Line(cp0,cp1)) and end leg
+    // (id 6 = Line(cp[N-2],cp[N-1])). Allocation order: points, then
+    // start leg, then end leg — mirrors the kernel exactly.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: false,
+          mode: "control",
+        },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    const lines = state.entities.filter((e) => e.kind === "line");
+    expect(
+      lines.map((l) => (l.kind === "line" ? [l.id, l.start, l.end] : null)),
+    ).toEqual([
+      [5, 1, 2], // start leg
+      [6, 3, 4], // end leg
+    ]);
+    expect(state.next_entity_id).toBe(7);
+  });
+
+  it("adds exactly one leg for a control-mode OPEN spline with N==2", () => {
+    // N==2: start and end coincide → exactly one leg = Line(cp0,cp1).
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: { points: [0, 0, 10, 5], closed: false, mode: "control" },
+      },
+    ]);
+    const lines = state.entities.filter((e) => e.kind === "line");
+    expect(
+      lines.map((l) => (l.kind === "line" ? [l.id, l.start, l.end] : null)),
+    ).toEqual([[3, 1, 2]]);
+    expect(state.next_entity_id).toBe(4);
+  });
+
+  it("adds NO legs for an interpolate-mode spline", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: false,
+          mode: "interpolate",
+        },
+      },
+    ]);
+    expect(state.entities.filter((e) => e.kind === "line")).toHaveLength(0);
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("adds NO legs for a control-mode CLOSED spline", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: true,
+          mode: "control",
+        },
+      },
+    ]);
+    expect(state.entities.filter((e) => e.kind === "line")).toHaveLength(0);
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("keeps a following line's entity ids aligned after a control-open spline + its legs", () => {
+    // control+open N=4 consumes ids 1..=4 (points) + 5,6 (legs). The
+    // following sketch_line must take ids 7 (start), 8 (end), 9 (line).
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: false,
+          mode: "control",
+        },
+      },
+      { type: "sketch_line", params: { start: [50, 50], end: [60, 60] } },
+    ]);
+    const lineStart = state.entities.find(
+      (e) => e.kind === "point" && e.at.x === 50 && e.at.y === 50,
+    );
+    expect(lineStart?.id).toBe(7);
+    expect(state.next_entity_id).toBe(10);
+  });
 });

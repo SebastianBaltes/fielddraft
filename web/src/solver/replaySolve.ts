@@ -110,6 +110,69 @@ export function rebuildSubCallsFromSolved(
       if (!center) return call;
       return { ...call, params: { ...call.params, center } };
     }
+    if (call.type === "sketch_ellipse") {
+      // Mirrors buildDraftSketchState: ONE centre point entity.
+      const center = pointAt(nextId++);
+      if (!center) return call;
+      return { ...call, params: { ...call.params, center } };
+    }
+    if (call.type === "sketch_slot") {
+      // Mirrors buildDraftSketchState: TWO end-cap centres in order.
+      const ca = pointAt(nextId++);
+      const cb = pointAt(nextId++);
+      if (!ca || !cb) return call;
+      return { ...call, params: { ...call.params, center_a: ca, center_b: cb } };
+    }
+    if (call.type === "sketch_spline") {
+      // Mirrors buildDraftSketchState: N control-point entities, then
+      // (for an open control-mode spline) the endpoint leg line(s).
+      // Write back the solved control points (so spline constraints are
+      // visible) and advance nextId past the legs (so later sub-calls
+      // stay id-aligned). Scope MUST match the kernel / session mirror.
+      const points = call.params.points;
+      if (Array.isArray(points)) {
+        const numPoints = Math.floor(points.length / 2);
+        const newPoints: number[] = [];
+        for (let i = 0; i < numPoints; i++) {
+          const pt = pointAt(nextId++);
+          if (pt) {
+            newPoints.push(pt[0], pt[1]);
+          } else {
+            newPoints.push(Number(points[i * 2]), Number(points[i * 2 + 1]));
+          }
+        }
+        // Endpoint legs: control mode, open, N>=2 → start leg always;
+        // N>=3 → also end leg. (N==2 → exactly one leg.)
+        if (
+          call.params.mode === "control" &&
+          call.params.closed !== true &&
+          numPoints >= 2
+        ) {
+          nextId += 1; // start leg
+          if (numPoints >= 3) nextId += 1; // end leg
+        }
+        return { ...call, params: { ...call.params, points: newPoints } };
+      }
+      return call;
+    }
+    if (call.type === "sketch_path") {
+      // Mirrors buildDraftSketchState: ONE point per contour start.
+      const contours = call.params.contours;
+      if (Array.isArray(contours)) {
+        const newContours = contours.map((c) => {
+          const start = (c as { start?: unknown })?.start;
+          if (Array.isArray(start) && start.length === 2) {
+            const pt = pointAt(nextId++);
+            if (pt) {
+              return { ...(c as object), start: pt };
+            }
+          }
+          return c;
+        });
+        return { ...call, params: { ...call.params, contours: newContours } };
+      }
+      return call;
+    }
     return call;
   });
 }

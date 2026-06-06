@@ -170,6 +170,50 @@ describe("applicableConstraints", () => {
     // three lines: nothing.
     expect(applicableConstraints(state, [3, 6, 3])).toEqual([]);
   });
+
+  // F23 endpoint tangent: a control-mode OPEN spline's endpoint legs are
+  // plain `line` entities, so every existing line constraint applies to
+  // them with no special-casing.
+  it("treats a spline endpoint leg as an ordinary line for constraints", () => {
+    // control+open N=4: control points 1..=4, start leg id 5,
+    // end leg id 6. Then a circle (centre 7, circle 8) and a line
+    // (start 9, end 10, line 11).
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 5, 20, 0, 30, 5],
+          closed: false,
+          mode: "control",
+        },
+      },
+      { type: "sketch_circle", params: { center: [50, 50], radius: 5 } },
+      { type: "sketch_line", params: { start: [0, 20], end: [10, 20] } },
+    ]);
+    const startLeg = 5;
+    const endLeg = 6;
+    const circle = 8;
+    const line = 11;
+    // leg alone → horizontal/vertical/length.
+    expect(applicableConstraints(state, [startLeg]).map((o) => o.type)).toEqual([
+      "sketch_constraint_horizontal",
+      "sketch_constraint_vertical",
+      "sketch_constraint_distance",
+    ]);
+    // leg + circle → tangent (order-independent).
+    expect(
+      applicableConstraints(state, [endLeg, circle]).map((o) => o.type),
+    ).toContain("sketch_constraint_tangent");
+    expect(
+      applicableConstraints(state, [circle, endLeg]).map((o) => o.type),
+    ).toContain("sketch_constraint_tangent");
+    // leg + line → parallel/perpendicular/angle.
+    expect(applicableConstraints(state, [endLeg, line]).map((o) => o.type)).toEqual([
+      "sketch_constraint_parallel",
+      "sketch_constraint_perpendicular",
+      "sketch_constraint_angle",
+    ]);
+  });
 });
 
 describe("buildConstraintCall", () => {

@@ -902,9 +902,42 @@ impl SketchToolKind for SketchSplineTool {
         // Register each control point as a point entity (mirrors
         // SketchPolygonTool), so the TS entity-id mirror aligns. The
         // smooth curve is a Path primitive built at lower time.
+        let mut cp_ids: Vec<EntityId> = Vec::with_capacity(d.points.len() / 2);
         for chunk in d.points.chunks(2) {
             if chunk.len() == 2 {
-                state.add_point(Point2::new(chunk[0] as f64, chunk[1] as f64));
+                cp_ids.push(state.add_point(Point2::new(chunk[0] as f64, chunk[1] as f64)));
+            }
+        }
+
+        // F23 endpoint tangent ("G1") support: for a CLAMPED CUBIC
+        // B-spline (control mode, open) the curve's tangent at the
+        // clamped start endpoint runs exactly along the first
+        // control-polygon edge cp[0]→cp[1], and at the end endpoint
+        // along cp[N-2]→cp[N-1]. We expose those endpoint "legs" as
+        // ordinary `line` entities so ALL existing line constraints
+        // (parallel/perpendicular/angle/tangent/horizontal/vertical/
+        // length) apply for free — no new constraint type needed.
+        //
+        // Scope (MUST match the TS mirror in web/src/sketchSession.ts
+        // exactly): legs only when mode == Control && !closed.
+        // Interpolate/Catmull-Rom: endpoint tangent is NOT the polygon
+        // leg → no legs. Closed: no free endpoints → no legs.
+        //
+        // Allocation ORDER (critical, the web mirror depends on it):
+        // first the N control-point entities (above), THEN the start
+        // leg, THEN (if N>=3) the end leg. The legs reference existing
+        // points so they add NO new DOF, and they live ONLY in the
+        // constraint/entity world — `build_sketch2d_from_sub_calls`
+        // lowers the spline from the sub-call params, not from these
+        // entities, so the extrude profile is unaffected.
+        if d.mode == SplineMode::Control && !d.closed {
+            let n = cp_ids.len();
+            // START leg = Line(cp[0], cp[1]).
+            state.add_line(cp_ids[0], cp_ids[1]);
+            // END leg = Line(cp[N-2], cp[N-1]) — only distinct when N>=3
+            // (for N==2 start and end coincide → exactly one leg).
+            if n >= 3 {
+                state.add_line(cp_ids[n - 2], cp_ids[n - 1]);
             }
         }
         Ok(())
@@ -3427,6 +3460,137 @@ mod tests {
         let end = segs.last().unwrap().point_at(1.0);
         assert!((start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3, "start {start:?}");
         assert!((end[0] - 40.0).abs() < 1e-3 && (end[1] - 10.0).abs() < 1e-3, "end {end:?}");
+    }
+
+    // ---- F23 endpoint tangent: control-polygon end-legs ---------------
+
+    /// Apply a spline tool call and return the resulting entities.
+    fn spline_entities(params: Value) -> Vec<fielddraft_solver::Entity> {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new("sketch_spline", id(1), params);
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        state.entities
+    }
+
+    /// Collect (start, end) of every Line entity.
+    fn legs(entities: &[fielddraft_solver::Entity]) -> Vec<(u32, u32)> {
+        entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Line { start, end, .. } => Some((start.0, end.0)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spline_control_open_n4_has_two_legs() {
+        // control + open, N>=3 → 2 legs: start=Line(cp0,cp1),
+        // end=Line(cp[N-2],cp[N-1]). Origin is id 0, so cp ids are 1..=4.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": false,
+            "mode": "control"
+        }));
+        let pts = ents
+            .iter()
+            .filter(|e| matches!(e, fielddraft_solver::Entity::Point { .. }))
+            .count();
+        assert_eq!(pts, 4, "4 control points");
+        // cp ids: 1,2,3,4. start leg = (1,2), end leg = (3,4).
+        assert_eq!(legs(&ents), vec![(1, 2), (3, 4)]);
+    }
+
+    #[test]
+    fn spline_control_open_n2_has_one_leg() {
+        // N==2: start and end coincide → exactly one leg.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0],
+            "closed": false,
+            "mode": "control"
+        }));
+        // cp ids 1,2; single leg (1,2).
+        assert_eq!(legs(&ents), vec![(1, 2)]);
+    }
+
+    #[test]
+    fn spline_interpolate_has_no_legs() {
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": false,
+            "mode": "interpolate"
+        }));
+        assert!(legs(&ents).is_empty(), "interpolate mode: no endpoint legs");
+    }
+
+    #[test]
+    fn spline_control_closed_has_no_legs() {
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": true,
+            "mode": "control"
+        }));
+        assert!(legs(&ents).is_empty(), "closed spline: no endpoint legs");
+    }
+
+    #[test]
+    fn tangent_constraint_on_leg_roundtrips_through_serde() {
+        // A Tangent (and Parallel) constraint referencing a leg line id
+        // round-trips through serde JSON. The leg is just a `line`, so
+        // existing line constraints apply unchanged.
+        let tangent = Constraint::Tangent {
+            id: ConstraintId(7),
+            line: EntityId(3),
+            curve: EntityId(9),
+        };
+        let json = serde_json::to_value(&tangent).unwrap();
+        let back: Constraint = serde_json::from_value(json).unwrap();
+        assert_eq!(tangent, back);
+
+        let parallel = Constraint::Parallel {
+            id: ConstraintId(8),
+            a: EntityId(3),
+            b: EntityId(5),
+        };
+        let json = serde_json::to_value(&parallel).unwrap();
+        let back: Constraint = serde_json::from_value(json).unwrap();
+        assert_eq!(parallel, back);
+    }
+
+    #[test]
+    fn build_geometry_is_unchanged_by_leg_lines() {
+        // The leg lines live ONLY in the entity/constraint world. The
+        // extrude profile is lowered from the sub-call params via
+        // build_sketch2d_from_sub_calls, which never reads entities, so
+        // the resulting Path primitive is identical whether or not legs
+        // would have been allocated. We assert the lowered Path here is
+        // exactly what bspline_control_mode_lowers_to_quad_path expects.
+        let calls = vec![FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({
+                "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+                "closed": false,
+                "mode": "control"
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a Path primitive, got {sketch:?}");
+        };
+        assert!(!*closed);
+        assert!(!segments.is_empty());
+        // All segments are still Line/QuadBezier — no spurious leg geometry.
+        assert!(segments.iter().all(|s| matches!(
+            s,
+            SketchSegment::QuadBezier { .. } | SketchSegment::Line { .. }
+        )));
+        // Endpoints unchanged: chain starts at cp0 and ends at cp[N-1].
+        let start = segments[0].point_at(0.0);
+        let end = segments.last().unwrap().point_at(1.0);
+        assert!((start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3);
+        assert!((end[0] - 30.0).abs() < 1e-3 && (end[1] - 0.0).abs() < 1e-3);
     }
 
     /// Min distance from `q` to the polyline of lowered segments.

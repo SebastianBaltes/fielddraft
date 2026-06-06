@@ -119,6 +119,11 @@ const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
 /** F23-full: dashed control-polygon guide for a control-point
  *  B-spline (lines between consecutive control points). */
 const COLOR_GUIDE = "rgba(100, 116, 139, 0.6)";
+/** F23 endpoint tangent: the first/last control-polygon edges of an
+ *  open control-mode B-spline are real `line` entities ("tangent
+ *  legs") that the user can select and constrain. Draw them distinctly
+ *  from the rest of the dashed guide so they read as tangent handles. */
+const COLOR_TANGENT_LEG = "#7c3aed";
 /** Highlight colour for entities picked in select mode. */
 const COLOR_SELECTED = "#f97316";
 /** F4 marquee: enclosing ("window", left→right) = solid blue border;
@@ -2429,15 +2434,31 @@ function drawOverlay(
         }
         // F23-full: in control mode, draw the control polygon as a
         // dashed guide (lines between consecutive control points; the
-        // closing edge for a closed loop).
+        // closing edge for a closed loop). F23 endpoint tangent: for an
+        // OPEN spline the first/last edges are real `line` entities
+        // ("tangent legs") the user can select + constrain, so draw them
+        // distinctly (solid, accent colour, thicker) from the rest of
+        // the dashed guide to make them discoverable as handles.
         if (isControl) {
           ctx.save();
-          ctx.setLineDash([6, 4]);
-          for (let i = 0; i + 1 < ctrl.length; i++) {
-            drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_GUIDE, 1);
+          const n = ctrl.length;
+          const legSet = new Set<number>();
+          if (!closed && n >= 2) {
+            legSet.add(0); // start leg = edge cp0→cp1
+            if (n >= 3) legSet.add(n - 2); // end leg = edge cp[N-2]→cp[N-1]
           }
-          if (closed && ctrl.length >= 2) {
-            drawLine(ctx, ctrl[ctrl.length - 1], ctrl[0], cam, COLOR_GUIDE, 1);
+          for (let i = 0; i + 1 < n; i++) {
+            if (legSet.has(i)) {
+              ctx.setLineDash([]);
+              drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_TANGENT_LEG, 2);
+            } else {
+              ctx.setLineDash([6, 4]);
+              drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_GUIDE, 1);
+            }
+          }
+          if (closed && n >= 2) {
+            ctx.setLineDash([6, 4]);
+            drawLine(ctx, ctrl[n - 1], ctrl[0], cam, COLOR_GUIDE, 1);
           }
           ctx.restore();
         }

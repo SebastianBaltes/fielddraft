@@ -413,12 +413,49 @@ export function buildDraftSketchState(
       // SketchState entity, so we push exactly N points here — same
       // count and order — or entity-id allocation drifts.
       const points = call.params.points;
+      const cpIds: number[] = [];
       if (Array.isArray(points)) {
         for (let i = 0; i + 1 < points.length; i += 2) {
+          const cpId = state.next_entity_id++;
           state.entities.push({
             kind: "point",
-            id: state.next_entity_id++,
+            id: cpId,
             at: { x: Number(points[i]), y: Number(points[i + 1]) },
+          });
+          cpIds.push(cpId);
+        }
+      }
+      // F23 endpoint tangent ("G1"): for a CLAMPED CUBIC B-spline
+      // (mode "control", open) the curve's tangent at the clamped
+      // endpoints runs exactly along the first/last control-polygon
+      // edges. Expose those endpoint "legs" as ordinary `line`
+      // entities so all existing line constraints apply for free.
+      //
+      // Scope MUST match the kernel (SketchSplineTool::apply) EXACTLY:
+      // legs only when mode == "control" && closed !== true. Order:
+      // control points first (above), THEN start leg, THEN (N>=3) end
+      // leg. Legs reference existing points → no new DOF, and they do
+      // not affect the lowered extrude profile.
+      if (
+        call.params.mode === "control" &&
+        call.params.closed !== true &&
+        cpIds.length >= 2
+      ) {
+        const n = cpIds.length;
+        // START leg = Line(cp[0], cp[1]).
+        state.entities.push({
+          kind: "line",
+          id: state.next_entity_id++,
+          start: cpIds[0],
+          end: cpIds[1],
+        });
+        // END leg = Line(cp[N-2], cp[N-1]) — only distinct when N>=3.
+        if (n >= 3) {
+          state.entities.push({
+            kind: "line",
+            id: state.next_entity_id++,
+            start: cpIds[n - 2],
+            end: cpIds[n - 1],
           });
         }
       }
