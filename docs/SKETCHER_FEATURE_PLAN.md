@@ -349,7 +349,7 @@ Feature, Abnahme durch den Hauptagenten, Unit- + Grenzfall- + echte-WebGPU-E2E-T
 
 | # | Vollausbau | Vorher | Nachher | Status | Version | Commit |
 |---|---|---|---|---|---|---|
-| V1 | Offset Ketten/Konturen | nur Einzelkurve | ganze verbundene Kette (offen/geschlossen), Joints getrimmt, konvexe Ecken gerundet | ✅ | 0.5.66 | (dieser Commit) |
+| V1 | Offset Ketten/Konturen | nur Einzelkurve | ganze verbundene Kette (offen/geschlossen), Joints getrimmt, konvexe Ecken gerundet | ✅ | 0.5.66 | 0047ca0 |
 | V2 | SVG voller Transform-Stack | nur translate/scale/matrix, Bézier approximiert | rotate/skew/verschachtelte Transforms, exakte Bézier-Übernahme | 🔴 offen | — | — |
 | V3 | Text gefüllt + Kleinbuchstaben | Single-Stroke A–Z/0–9 | gefüllte Glyph-Konturen mit Löchern, Klein-/Satzzeichen, Font-Auswahl | 🔴 offen | — | — |
 | V4 | Echte B-Spline | Catmull-Rom→QuadBézier | kubische B-Spline (Knotenvektor + Kontrollpolygon-Grips + Tangenten) | 🔴 offen | — | — |
