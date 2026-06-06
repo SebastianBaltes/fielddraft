@@ -6444,6 +6444,81 @@ mod tests {
     }
 
     #[test]
+    fn thicken_uniform_scale_renormalises_offset_to_world_mm() {
+        // A 2× uniformly-scaled body: a 2 mm *world* wall is a 1 mm *local* shift,
+        // so the displayed thickness stays 2 mm whatever the body scale. Without
+        // the renormalisation a scaled body would over-thicken by the scale factor.
+        use crate::brep::{FaceId, SurfaceGeometry};
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sphere = FeatureCall::new("sphere", id(1), json!({ "radius": 5.0 }));
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&sphere), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let (fid, r) = (0..brep.face_count())
+            .find_map(|i| {
+                let fid = FaceId(i as u32);
+                match &brep.face(fid).surface {
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::Sphere { radius },
+                        ..
+                    } => Some((fid, *radius)),
+                    _ => None,
+                }
+            })
+            .expect("a spherical face");
+
+        let scaled = Transform { scale: [2.0, 2.0, 2.0], ..Transform::IDENTITY };
+        let solid =
+            crate::brep::face_thicken::thicken_face(&brep, fid, &scaled, 2.0, 0.0).unwrap();
+        match (solid.outer, solid.inner) {
+            (
+                Primitive::Sphere { radius: ro, .. },
+                Primitive::Sphere { radius: ri, .. },
+            ) => {
+                // world 2 mm / scale 2 = 1 mm local.
+                assert!((ro - (r + 1.0)).abs() < 1e-3, "outer {ro} vs {}", r + 1.0);
+                assert!((ri - r).abs() < 1e-3, "inner {ri} vs {r}");
+            }
+            other => panic!("expected two spheres, got {other:?}"),
+        }
+        assert!((solid.world.scale[0] - 2.0).abs() < 1e-4, "scale stays in placement");
+    }
+
+    #[test]
+    fn thicken_rejects_non_uniform_scale() {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sphere = FeatureCall::new("sphere", id(1), json!({ "radius": 5.0 }));
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&sphere), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let fid = (0..brep.face_count())
+            .map(|i| FaceId(i as u32))
+            .find(|&f| {
+                matches!(
+                    &brep.face(f).surface,
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::Sphere { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("a spherical face");
+        // Anisotropic scale → the offset surface is an ellipsoid shell, not a
+        // sphere: thicken must refuse rather than emit wrong geometry.
+        let aniso = Transform { scale: [2.0, 1.0, 1.0], ..Transform::IDENTITY };
+        let err = crate::brep::face_thicken::thicken_face(&brep, fid, &aniso, 2.0, 0.0)
+            .unwrap_err();
+        assert!(err.contains("non-uniform"), "got: {err}");
+    }
+
+    #[test]
     fn thicken_direction_modes_set_outer_and_inner_radii() {
         let registry = FeatureRegistry::with_builtins();
         let sphere = FeatureCall::new("sphere", id(1), json!({ "radius": 5.0 }));

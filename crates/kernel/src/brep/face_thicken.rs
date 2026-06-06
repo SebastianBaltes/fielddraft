@@ -36,6 +36,14 @@
 //! `world` as the feature placement — so a single-face thicken keeps a
 //! separable placement (DL-56 move-cache).
 //!
+//! ## Scaled placements
+//!
+//! The offsets are given in world millimetres but the offset solids are built in
+//! the surface-local frame, so a uniform body scale `s` is divided out
+//! (`δ_local = t / s`) — a thicken reads the same wall thickness whatever the
+//! body's scale. A *non-uniform* scale is rejected: the offset of these surfaces
+//! under anisotropic scale is not an analytic primitive.
+//!
 //! ## Out of scope (first throw) — each returns a descriptive `Err`
 //!
 //! Partial/cut cylinders & cones, planar faces (use Extrude with `symmetric`),
@@ -59,8 +67,9 @@ pub struct ThickenSolid {
 
 /// Build the offset-solid pair for a curved analytic face. `outer_off` grows
 /// the surface along +normal (outside the source solid), `inner_off` shrinks it
-/// along −normal; both must be `≥ 0`. Returns a descriptive `Err` for planar,
-/// cone, tessellated, partial-revolution or degenerate faces.
+/// along −normal; both are world millimetres and `≥ 0`. Returns a descriptive
+/// `Err` for planar, tessellated, partial-revolution, non-uniformly-scaled or
+/// degenerate faces.
 pub fn thicken_face(
     brep: &BRep,
     face_id: FaceId,
@@ -76,6 +85,33 @@ pub fn thicken_face(
     // axial centre into `world` (a `Primitive::Cone` is always origin-centred),
     // so it is mutable.
     let mut world = crate::features::compose_placement(placement, transform);
+
+    // Eikonal-renormalise the offsets to world millimetres. The offset solids
+    // are built in the surface-local frame and then placed by `world`, which may
+    // carry a body scale `s`: a local radius delta `δ` shows up as `s·δ` in the
+    // model. So a *world* wall thickness `t` is a *local* shift `t/s`. Without
+    // this, a 2×-scaled body would render a 2 mm thicken as a 4 mm wall.
+    //
+    // A *non-uniform* scale is rejected: the normal offset of a sphere (or any
+    // of these surfaces) under anisotropic scale is an offset ellipsoid, not an
+    // analytic primitive — the whole parameter-shift reduction breaks. Honest
+    // error beats silently-wrong geometry.
+    let (outer_off, inner_off) = {
+        let s = world.scale;
+        let uniform =
+            (s[0] - s[1]).abs() < 1e-4 * s[0].abs().max(1.0) && (s[1] - s[2]).abs() < 1e-4 * s[1].abs().max(1.0);
+        if !uniform {
+            return Err(format!(
+                "face has a non-uniform scale ({:.3}, {:.3}, {:.3}) — its normal offset is not an \
+                 analytic primitive; apply a uniform scale or thicken before scaling",
+                s[0], s[1], s[2]
+            ));
+        }
+        if s[0].abs() < 1e-6 {
+            return Err("face placement scale is degenerate (zero) — cannot thicken".to_string());
+        }
+        (outer_off / s[0], inner_off / s[0])
+    };
 
     let (outer, inner) = match surface {
         HalfSpace::Plane { .. } => {
