@@ -267,6 +267,8 @@ function ElementActions({
   };
   const extrudeLabel =
     faces.length > 1 ? `${faces.length} Flächen extrudieren` : "Fläche extrudieren";
+  const thickenLabel =
+    faces.length > 1 ? `${faces.length} Flächen verdicken` : "Fläche verdicken";
 
   return (
     <div className="actions" data-testid="element-info-actions">
@@ -303,6 +305,20 @@ function ElementActions({
               }
             >
               {extrudeLabel}
+            </button>
+            <button
+              type="button"
+              className="action"
+              data-testid="element-action-thicken"
+              onClick={() =>
+                fire(() =>
+                  store.addThicken(
+                    (faces.length > 0 ? faces : [el]).map(elementQueryString),
+                  ),
+                )
+              }
+            >
+              {thickenLabel}
             </button>
           </>
         )}

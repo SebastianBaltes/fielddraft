@@ -372,6 +372,27 @@ export class Kernel {
         return ret[0] >>> 0;
     }
     /**
+     * Thicken one or more **curved** analytic faces into a thin solid wall by
+     * offsetting their surfaces along the normal (sphere / cylinder / torus).
+     * `faces` is a comma-separated list of `qFace(<id_hash>)` selections;
+     * `thickness_mm` grows the wall outward, `thickness_back_mm` inward (only
+     * when `symmetric` is false), `symmetric` splits the wall about the surface.
+     * @param {string} faces
+     * @param {number} thickness_mm
+     * @param {boolean} symmetric
+     * @param {number} thickness_back_mm
+     * @returns {number}
+     */
+    addThicken(faces, thickness_mm, symmetric, thickness_back_mm) {
+        const ptr0 = passStringToWasm0(faces, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addThicken(this.__wbg_ptr, ptr0, len0, thickness_mm, symmetric, thickness_back_mm);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * @param {number} target_id
      * @param {number} rx
      * @param {number} ry

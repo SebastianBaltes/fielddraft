@@ -1111,6 +1111,19 @@ export class Kernel {
     return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm);
   }
 
+  /** Thicken one or more curved analytic faces (sphere / cylinder / torus)
+   *  into a thin solid wall offset along the normal. `faces` is a
+   *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
+   *  grows `thicknessMm` outward (Onshape default). */
+  addThicken(
+    faces: string,
+    thicknessMm: number,
+    symmetric: boolean,
+    thicknessBackMm: number,
+  ): number {
+    return this.inner.addThicken(faces, thicknessMm, symmetric, thicknessBackMm);
+  }
+
   /** K9.1: overall scene AABB in mm. */
   sceneAabb(): { min: number[]; max: number[]; size: number[] } {
     return JSON.parse(this.inner.sceneAabb()) as {

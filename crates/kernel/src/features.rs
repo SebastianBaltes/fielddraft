@@ -42,7 +42,7 @@ use serde_json::Value;
 
 use fielddraft_protocol::{BoolOp, Document, FeatureId, MultiQuery, Primitive, Transform};
 
-use crate::csg::{DecodedFeature, PrimitiveModifiers};
+use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
 
 /// Derive macro that generates `TYPE_NAME`, `type_name()`,
 /// `schema_json()` and `parse()` helpers on a feature definition
@@ -336,6 +336,59 @@ impl<'a> Context<'a> {
         Ok((region.unwrap(), frame))
     }
 
+    /// Resolve a set of `qFace(...)` queries into per-face thickened-wall solids
+    /// (face thicken — the curved counterpart to [`Context::resolve_extrude_faces`]).
+    /// Each face's analytic surface is offset by `outer_off` along +normal and
+    /// `inner_off` along −normal into a [`ThickenSolid`](crate::brep::face_thicken::ThickenSolid)
+    /// pair (see [`crate::brep::face_thicken`]). The caller differences and
+    /// unions them into one feature.
+    ///
+    /// Errors (returned as a message the caller wraps in a [`FeatureError`]): a
+    /// non-`qFace` query, an unresolvable handle, or a face the surface layer
+    /// refuses to thicken (planar / cone / partial cylinder / tessellated).
+    pub fn resolve_thicken_faces(
+        &mut self,
+        queries: &[String],
+        outer_off: f32,
+        inner_off: f32,
+    ) -> Result<Vec<crate::brep::face_thicken::ThickenSolid>, String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        let mut out = Vec::new();
+        for q in queries {
+            let expr = crate::queries::parse_query(q)
+                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+            let QueryExpr::Face(hash) = expr else {
+                return Err(format!(
+                    "thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                ));
+            };
+            let mut found = false;
+            'scan: for (brep, placement) in woven.iter() {
+                for i in 0..brep.faces.len() {
+                    let fid = FaceId(i as u32);
+                    if TopoRef::from_face(brep, fid).id_hash == hash {
+                        out.push(crate::brep::face_thicken::thicken_face(
+                            brep, fid, placement, outer_off, inner_off,
+                        )?);
+                        found = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if !found {
+                return Err(format!("face {hash} not found in the current model"));
+            }
+        }
+        if out.is_empty() {
+            return Err("no faces selected to thicken".to_string());
+        }
+        Ok(out)
+    }
+
     /// Resolve a *plane* query to a world-space [`SketchFrame`],
     /// accepting both the well-known datum planes
     /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
@@ -548,6 +601,7 @@ impl FeatureRegistry {
         r.register(Box::new(SpherePrimitive));
         r.register(Box::new(CylinderPrimitive));
         r.register(Box::new(ExtrudeFeature));
+        r.register(Box::new(ThickenFeature));
         r.register(Box::new(RevolveFeature));
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
@@ -2529,6 +2583,143 @@ impl FeatureKind for ExtrudeFeature {
     }
 }
 
+// ─── Thicken: offset a curved analytic face into a thin solid ─────
+//
+// The curved counterpart to the face-extrude path above. Where a planar face
+// reduces to `Primitive::Extrude` (linear sweep of its 2D boundary), a curved
+// analytic face reduces to the **difference of two coaxial offset solid
+// primitives** — `Sphere(r+out) − Sphere(r−in)`, `Cyl(r+out) − Cyl(r−in)`,
+// `Torus(R, r+out) − Torus(R, r−in)` — so the thickened wall inherits the whole
+// solid pipeline (SDF, weave, picking) for free (see
+// [`crate::brep::face_thicken`]). First throw: sphere / cylinder / torus.
+
+/// `thicken` — make a thin solid wall from one or more **curved** analytic
+/// B-Rep faces by offsetting their surfaces along the normal.
+#[derive(FeatureSchema)]
+#[schema(type = "thicken")]
+pub struct ThickenDef {
+    /// Curved B-Rep face(s) to thicken. Comma-separated `qFace(<id_hash>)`
+    /// selections; each becomes its own offset-solid shell and they are unioned.
+    #[param(name = "Faces", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "FACE")]
+    pub faces: ::fielddraft_protocol::MultiQuery,
+
+    /// Wall thickness grown along the face normal (outside the source solid).
+    /// When `symmetric` is set this is split half in / half out instead.
+    #[param(name = "Thickness", default = ::fielddraft_protocol::Length::mm(2.0))]
+    pub thickness: ::fielddraft_protocol::Length,
+
+    /// `true` splits the wall symmetrically about the surface (`±thickness/2`).
+    /// `false` (default, Onshape-style) grows `thickness` outward and
+    /// `inner_thickness` inward.
+    #[param(name = "Symmetric", default = false)]
+    pub symmetric: bool,
+
+    /// Inward wall depth (along −normal) for a two-sided thicken. Only consulted
+    /// when `symmetric` is `false`; `0` (default) makes a pure outward wall.
+    #[param(name = "Inner thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
+    pub thickness_back: ::fielddraft_protocol::Length,
+
+    /// Boolean op used to fold the thickened wall into the running spine.
+    /// Defaults to [`BoolOp::Union`].
+    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    pub operation: BoolOp,
+}
+
+pub struct ThickenFeature;
+
+impl FeatureKind for ThickenFeature {
+    fn type_name(&self) -> &'static str {
+        ThickenDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        ThickenDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = ThickenDef::parse(def)?;
+
+        // No faces picked yet — the dialog was just opened. Emit nothing rather
+        // than failing the regen; the wall appears once a face is picked.
+        let face_queries: Vec<String> =
+            d.faces.queries().iter().map(|s| s.to_string()).collect();
+        if face_queries.is_empty() {
+            return Ok(());
+        }
+
+        let t = d.thickness.to_mm();
+        if t <= 0.0 {
+            return Err(FeatureError::InvalidParameter {
+                feature: ThickenDef::TYPE_NAME,
+                name: "thickness",
+                message: format!("must be > 0 mm, got {t}"),
+            });
+        }
+        // Direction modes → (outward offset, inward offset).
+        let back = d.thickness_back.to_mm().max(0.0);
+        let (outer_off, inner_off) =
+            if d.symmetric { (t / 2.0, t / 2.0) } else { (t, back) };
+
+        let shells = ctx
+            .resolve_thicken_faces(&face_queries, outer_off, inner_off)
+            .map_err(|message| FeatureError::InvalidParameter {
+                feature: ThickenDef::TYPE_NAME,
+                name: "faces",
+                message,
+            })?;
+
+        let name = optional_display_name(def, || format!("Thicken {id}"));
+
+        // Each face → `Difference(outer, inner)` (the wall). A single face keeps
+        // a separable placement (feature.transform = world surface frame, node =
+        // local difference → DL-56 move-cache). Multiple faces bake each world
+        // transform into the node and union the walls.
+        let diff_node = |i: usize, s: &crate::brep::face_thicken::ThickenSolid| -> CsgNode {
+            CsgNode::Difference(
+                Box::new(CsgNode::Leaf {
+                    id: id.child(format!("{i}o")),
+                    primitive: s.outer.clone(),
+                }),
+                Box::new(CsgNode::Leaf {
+                    id: id.child(format!("{i}i")),
+                    primitive: s.inner.clone(),
+                }),
+            )
+        };
+
+        let (transform, node) = if shells.len() == 1 {
+            (shells[0].world, diff_node(0, &shells[0]))
+        } else {
+            let mut acc: Option<CsgNode> = None;
+            for (i, s) in shells.iter().enumerate() {
+                let placed = CsgNode::Transform(s.world, Box::new(diff_node(i, s)));
+                acc = Some(match acc {
+                    None => placed,
+                    Some(a) => CsgNode::Union(Box::new(a), Box::new(placed)),
+                });
+            }
+            (Transform::IDENTITY, acc.unwrap())
+        };
+
+        ctx.features.push(DecodedFeature {
+            id: id.clone(),
+            name,
+            op: d.operation,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids: vec![],
+            transform,
+            node,
+        });
+        Ok(())
+    }
+}
+
 // ─── K8.4: Revolve ───────────────────────────────────────────────
 //
 // Twin of ExtrudeFeature — consumes a sketch profile, but sweeps
@@ -3408,11 +3599,12 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 27);
+        assert_eq!(registry.len(), 28);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
         assert!(registry.get("extrude").is_some());
+        assert!(registry.get("thicken").is_some());
         assert!(registry.get("revolve").is_some());
         assert!(registry.get("hole").is_some());
         assert!(registry.get("torus").is_some());
@@ -3483,6 +3675,7 @@ mod tests {
                 "sketch",
                 "sphere",
                 "sweep",
+                "thicken",
                 "thread",
                 "torus",
                 "translate",
@@ -5948,6 +6141,332 @@ mod tests {
             (4.0, 2.0),
             "two-sided"
         );
+    }
+
+    // ─── Thicken: curved B-Rep faces as a thin-wall source ────────
+
+    /// First analytic face whose [`HalfSpace`] satisfies `pred`, by id_hash.
+    fn analytic_face_hash(
+        brep: &crate::brep::BRep,
+        pred: impl Fn(&fielddraft_protocol::HalfSpace) -> bool,
+    ) -> Option<u64> {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        for i in 0..brep.face_count() {
+            let fid = FaceId(i as u32);
+            if let SurfaceGeometry::Analytic { surface, .. } = &brep.face(fid).surface {
+                if pred(surface) {
+                    return Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                }
+            }
+        }
+        None
+    }
+
+    /// Pull the `(outer, inner)` offset primitives out of a single-face thicken
+    /// node — `Difference(Leaf(outer), Leaf(inner))`.
+    fn thicken_offset_pair(node: &CsgNode) -> (Primitive, Primitive) {
+        let leaf = |n: &CsgNode| match n {
+            CsgNode::Leaf { primitive, .. } => primitive.clone(),
+            other => panic!("expected Leaf, got {other:?}"),
+        };
+        match node {
+            CsgNode::Difference(o, i) => (leaf(o), leaf(i)),
+            other => panic!("expected Difference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thicken_sphere_face_builds_concentric_shell() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sphere = FeatureCall::new("sphere", id(1), json!({ "radius": 5.0 }));
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&sphere), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = analytic_face_hash(&brep, |s| {
+            matches!(s, fielddraft_protocol::HalfSpace::Sphere { .. })
+        })
+        .expect("a spherical face");
+        // Read the real surface radius so the assertion is scale-agnostic.
+        let r = match &brep.face(
+            crate::brep::FaceId(
+                (0..brep.face_count())
+                    .find(|&i| {
+                        crate::brep::naming::TopoRef::from_face(&brep, crate::brep::FaceId(i as u32))
+                            .id_hash
+                            == hash
+                    })
+                    .unwrap() as u32,
+            ),
+        )
+        .surface
+        {
+            crate::brep::SurfaceGeometry::Analytic {
+                surface: fielddraft_protocol::HalfSpace::Sphere { radius },
+                ..
+            } => *radius,
+            other => panic!("not a sphere face: {other:?}"),
+        };
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    sphere.clone(),
+                    FeatureCall::new(
+                        "thicken",
+                        id(2),
+                        json!({
+                            "faces": format!("qFace({hash})"),
+                            "thickness": { "value": 1.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        let th = ctx2.features.iter().find(|f| f.id == id(2)).expect("thicken");
+        let (outer, inner) = thicken_offset_pair(&th.node);
+        match (outer, inner) {
+            (
+                Primitive::Sphere { radius: ro, .. },
+                Primitive::Sphere { radius: ri, .. },
+            ) => {
+                assert!((ro - (r + 1.0)).abs() < 1e-3, "outer {ro} vs {}", r + 1.0);
+                assert!((ri - r).abs() < 1e-3, "inner {ri} vs {r}");
+            }
+            other => panic!("expected two spheres, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thicken_cylinder_wall_builds_bounded_tube() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let cyl = FeatureCall::new(
+            "cylinder",
+            id(1),
+            json!({ "radius": 3.0, "half_height": 4.0 }),
+        );
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&cyl), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = analytic_face_hash(&brep, |s| {
+            matches!(s, fielddraft_protocol::HalfSpace::InfiniteCylinder { .. })
+        })
+        .expect("a cylinder wall face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    cyl.clone(),
+                    FeatureCall::new(
+                        "thicken",
+                        id(2),
+                        json!({
+                            "faces": format!("qFace({hash})"),
+                            "thickness": { "value": 1.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        let th = ctx2.features.iter().find(|f| f.id == id(2)).expect("thicken");
+        let (outer, inner) = thicken_offset_pair(&th.node);
+        match (outer, inner) {
+            (
+                Primitive::Cylinder { radius: ro, half_height: ho, center: co },
+                Primitive::Cylinder { radius: ri, half_height: hi, center: ci },
+            ) => {
+                assert!((ro - 4.0).abs() < 1e-2, "outer r {ro}");
+                assert!((ri - 3.0).abs() < 1e-2, "inner r {ri}");
+                // Axial extent recovered from the ±4 cap rims → centred, half 4.
+                assert!((ho - 4.0).abs() < 1e-2 && (hi - 4.0).abs() < 1e-2, "half {ho}/{hi}");
+                assert!(co[1].abs() < 1e-2 && ci[1].abs() < 1e-2, "centred axially");
+            }
+            other => panic!("expected two cylinders, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thicken_torus_face_offsets_the_minor_radius() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let torus = FeatureCall::new(
+            "torus",
+            id(1),
+            json!({ "major_radius": 10.0, "minor_radius": 2.0 }),
+        );
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&torus), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let hash = analytic_face_hash(&brep, |s| {
+            matches!(s, fielddraft_protocol::HalfSpace::Torus { .. })
+        })
+        .expect("a toroidal face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    torus.clone(),
+                    FeatureCall::new(
+                        "thicken",
+                        id(2),
+                        json!({
+                            "faces": format!("qFace({hash})"),
+                            "thickness": { "value": 0.5, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        let th = ctx2.features.iter().find(|f| f.id == id(2)).expect("thicken");
+        let (outer, inner) = thicken_offset_pair(&th.node);
+        match (outer, inner) {
+            (
+                Primitive::Torus { major_radius: ro_maj, minor_radius: ro_min, .. },
+                Primitive::Torus { major_radius: ri_maj, minor_radius: ri_min, .. },
+            ) => {
+                assert!((ro_maj - 10.0).abs() < 1e-3 && (ri_maj - 10.0).abs() < 1e-3, "major fixed");
+                assert!((ro_min - 2.5).abs() < 1e-3, "outer minor {ro_min}");
+                assert!((ri_min - 2.0).abs() < 1e-3, "inner minor {ri_min}");
+            }
+            other => panic!("expected two tori, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thicken_rejects_planar_face_pointing_at_extrude() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).unwrap();
+
+        let err = ctx
+            .resolve_thicken_faces(&[format!("qFace({top})")], 2.0, 0.0)
+            .unwrap_err();
+        assert!(err.contains("planar") || err.contains("Extrude"), "got: {err}");
+    }
+
+    #[test]
+    fn thicken_rejects_cone_face_as_deferred() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                std::slice::from_ref(&FeatureCall::new(
+                    "cone",
+                    id(1),
+                    json!({ "r_bottom": 5.0, "r_top": 2.0, "half_height": 6.0 }),
+                )),
+                None,
+            )
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        // Whatever the cone wall lowers to (analytic Cone or tessellated), it is
+        // not thickenable in the first throw.
+        let wall = curved_face_hash(&brep).expect("a curved cone face");
+        let err = ctx
+            .resolve_thicken_faces(&[format!("qFace({wall})")], 2.0, 0.0)
+            .unwrap_err();
+        assert!(
+            err.contains("cone") || err.contains("DL-76") || err.contains("tessellated"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn thicken_direction_modes_set_outer_and_inner_radii() {
+        let registry = FeatureRegistry::with_builtins();
+        let sphere = FeatureCall::new("sphere", id(1), json!({ "radius": 5.0 }));
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&sphere), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let face_q = format!(
+            "qFace({})",
+            analytic_face_hash(&brep, |s| matches!(
+                s,
+                fielddraft_protocol::HalfSpace::Sphere { .. }
+            ))
+            .unwrap()
+        );
+
+        let radii = |extra: serde_json::Value| -> (f32, f32) {
+            let mut params = json!({
+                "faces": face_q,
+                "thickness": { "value": 2.0, "unit": "mm" },
+            });
+            let obj = params.as_object_mut().unwrap();
+            for (k, v) in extra.as_object().unwrap() {
+                obj.insert(k.clone(), v.clone());
+            }
+            let mut d = empty_ctx();
+            let mut c = Context::new(&mut d);
+            registry
+                .regenerate(
+                    &mut c,
+                    &[sphere.clone(), FeatureCall::new("thicken", id(2), params)],
+                    None,
+                )
+                .unwrap();
+            let th = c.features.iter().find(|f| f.id == id(2)).unwrap();
+            match thicken_offset_pair(&th.node) {
+                (
+                    Primitive::Sphere { radius: ro, .. },
+                    Primitive::Sphere { radius: ri, .. },
+                ) => (ro, ri),
+                other => panic!("expected spheres, got {other:?}"),
+            }
+        };
+        // r = 5. symmetric: ±1 → (6, 4). outward: +2 / +0 → (7, 5).
+        // two-sided: +2 outward, 1 inward → (7, 4).
+        let (ro, ri) = radii(json!({ "symmetric": true }));
+        assert!((ro - 6.0).abs() < 1e-3 && (ri - 4.0).abs() < 1e-3, "symmetric {ro}/{ri}");
+        let (ro, ri) = radii(json!({ "symmetric": false }));
+        assert!((ro - 7.0).abs() < 1e-3 && (ri - 5.0).abs() < 1e-3, "outward {ro}/{ri}");
+        let (ro, ri) = radii(
+            json!({ "symmetric": false, "thickness_back": { "value": 1.0, "unit": "mm" } }),
+        );
+        assert!((ro - 7.0).abs() < 1e-3 && (ri - 4.0).abs() < 1e-3, "two-sided {ro}/{ri}");
+    }
+
+    #[test]
+    fn thicken_def_schema_has_five_params() {
+        let schema = ThickenDef::schema_json();
+        let params = schema["params"].as_array().expect("params array");
+        assert_eq!(params.len(), 5, "faces, thickness, symmetric, thickness_back, operation");
+        let names: Vec<&str> =
+            params.iter().filter_map(|p| p["name"].as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("Faces")), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("Thickness")), "{names:?}");
     }
 
     // ─── C2: mate-connector-on-face ────────────────────────────────

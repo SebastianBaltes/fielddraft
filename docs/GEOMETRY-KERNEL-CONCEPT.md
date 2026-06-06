@@ -1648,4 +1648,26 @@ Der reale M2-Gewinn ist damit schmal — nur **exakte Überlebenden-Flächen** (
 
 **Web.** WASM `addExtrudeFaces(faces, depth_mm, symmetric, depth_back_mm)`; `store.addExtrudeFaces(faceQueries)` (Default blind 10 mm, danach im Feature-Dialog editierbar); `StoreState.selectedElements[]` + `toggleElement` (Shift/Ctrl-Klick im Viewport); `BRepSelectedOverlay` hebt **alle** selektierten Flächen teal hervor; `ElementInfo` „Fläche(n) extrudieren". Tests: kernel `extrude_box_top_face_builds_blind_square_slab`, `extrude_cylinder_cap_builds_circular_arc_profile` (Arc, kein Polygon), `extrude_faces_rejects_non_coplanar_selection`, `extrude_faces_rejects_curved_face`, `extrude_direction_modes_set_half_and_centre` + `face_profile`-Unit-Tests; web vitest 328; headful-WebGPU-E2E `face-extrude.spec.ts` (Top-Fläche live extrudiert → Solid wächst in +Z, +1 Feature).
 
-**Vertagt (nicht autonom starten).** Gekrümmte Flächen (Thicken/Offset, eigenes Feature); offene Kanten / Rib-Wall (User: nur geschlossene Ränder = Flächen extrudierbar); nicht-koplanarer Multi-Plane-Extrude; up-to-face/up-to-body-Tiefenziele.
+**Vertagt (nicht autonom starten).** Offene Kanten / Rib-Wall (User: nur geschlossene Ränder = Flächen extrudierbar); nicht-koplanarer Multi-Plane-Extrude; up-to-face/up-to-body-Tiefenziele. (Gekrümmte Flächen → siehe Thicken unten.)
+
+### Thicken — gekrümmte B-Rep-Flächen als Wand-Quelle (P1), 2026-06-06, 0.5.32
+
+**Was.** Das gekrümmte Gegenstück zu Face Extrude (Onshape „Thicken"): der Benutzer selektiert eine oder mehrere **gekrümmte analytische** Flächen (Kugel / Zylinder / Torus) und versetzt deren Fläche entlang der Normalen zu einer dünnen Volumenwand. Eigenes `thicken`-Feature (kein Sweep — Normal-Offset). Erster Wurf: Kugel, Zylinder, Torus. Vertagt mit klarer Fehlermeldung: Kegel (Apex-Konvention, DL-76), partielle/geschnittene Zylinder, planare Flächen (→ Extrude), tessellierte/TPMS.
+
+**Kern-Reduktion (gleiche Idee wie Extrude).** Für die analytischen Flächen, deren Normal-Offset ein reiner Parameter-Shift ist, ist die verdickte Wand schlicht die **Differenz zweier koaxialer Offset-Solid-Primitive** — also erbt sie die ganze Solid-Pipeline (SDF, Weave, Picking) gratis, exakt wie Extrude die Skizzen-Maschine erbte:
+
+| Flächen-Surface | Verdicktes Solid |
+|---|---|
+| `Sphere(r)` | `Sphere(r+out) − Sphere(r−in)` → Kugelschale (radiale Normale) |
+| `Cylinder(r)`-Wand | `Cyl(r+out,h) − Cyl(r−in,h)` → Rohr (Axialspanne `h` aus den Rim-Loops) |
+| `Torus(R,r)` | `Torus(R,r+out) − Torus(R,r−in)` → Torusschale (tube-radiale Normale) |
+
+Geschlossene Flächen (Kugel, Torus) brauchen **keine** Randanalyse (Parameter direkt aus `HalfSpace`). Eine Zylinderwand braucht ihre Axialspanne: Modul `brep/face_thicken.rs::thicken_face` sampelt die Rim-Loops, mappt sie via `inverse(surface.transform)` in den surface-lokalen Frame, liest die `y`-Spanne (→ `center_y`, `half_height`) und prüft **volle Umdrehung** (max. Azimut-Lücke ≤ ~34°; ein Schnitt entfernt ≥90° → Fehler, weil eine Differenz *voller* Zylinder eine Teilwand überschießen würde). `guard_inner` lehnt einen Innen-Offset ≥ Radius ab (Wand würde sich selbst schneiden).
+
+**Richtungsmodi (zwei Offsets, wie Extrudes `depth`/`depth_back`).** `symmetric` splittet `±thickness/2`; sonst `thickness` nach außen (+Normale, außerhalb des Quellkörpers) und `thickness_back` nach innen. Web-Default `symmetric=false`, rein auswärts (Onshape).
+
+**In `ThickenDef` (5 Params).** `faces: MultiQuery` (FACE), `thickness: Length` (default 2 mm), `symmetric: bool` (default false), `thickness_back: Length`, `operation: BoolOp` (default Union). `Context::resolve_thicken_faces(queries, outer_off, inner_off)` → `Vec<ThickenSolid{outer, inner, world}>`. execute baut je Fläche `Difference(Leaf(outer), Leaf(inner))`: **eine** Fläche behält separierbare Platzierung (`feature.transform = world`, node lokal → DL-56 Move-Cache); **mehrere** backen je `world` in `Transform(world_i, diff_i)` und unionieren. Identität/TNP: Wand hängt am Flächen-`id_hash` (`qFace`), regenerationsstabil.
+
+**Web.** WASM `addThicken(faces, thickness_mm, symmetric, thickness_back_mm)`; `store.addThicken(faceQueries, thicknessMm=2)` (auswärts, danach editierbar); `ElementInfo` Button „Fläche(n) verdicken" neben „extrudieren" (beide bei jeder Fläche sichtbar; der Kernel weist die falsche Quelle mit klarer Meldung ab — planar→Extrude, curved→Thicken). Tests: kernel `thicken_sphere_face_builds_concentric_shell`, `thicken_cylinder_wall_builds_bounded_tube`, `thicken_torus_face_offsets_the_minor_radius`, `thicken_direction_modes_set_outer_and_inner_radii`, `thicken_rejects_planar_face_pointing_at_extrude`, `thicken_rejects_cone_face_as_deferred` + `face_thicken`-Unit-Tests (Voll-Umdrehungs-Gate, Inverse-Round-Trip); web vitest 328; headful-WebGPU-E2E `face-thicken.spec.ts` (Kugelfläche live verdickt → Solid wächst auswärts, +1 Feature).
+
+**Vertagt (nicht autonom starten).** Kegelwand (gekoppelt an DL-76 Apex-Konvention); partielle/geschnittene Zylinder & angularer Lateral-Bound; up-to-face-Ziele; tessellierte/Sweep-Flächen (kein analytischer Normal-Offset). Skalierte Platzierungen: der Offset wird nicht Eikonal-renormalisiert (rigide Platzierungen angenommen).

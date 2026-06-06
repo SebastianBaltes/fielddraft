@@ -1447,6 +1447,23 @@ export class KernelStore {
     return id;
   }
 
+  /** Thicken curved analytic face(s) into a thin wall (sphere/cylinder/torus).
+   *  Outward (Onshape default) by `thicknessMm`; the kernel rejects planar /
+   *  cone / partial faces with a helpful message. */
+  addThicken(faceQueries: string[], thicknessMm = 2): number | null {
+    if (faceQueries.length === 0) return null;
+    let id: number;
+    try {
+      id = this.kernel.addThicken(faceQueries.join(","), thicknessMm, false, 0);
+    } catch (err) {
+      console.error("fielddraft: addThicken failed", err);
+      this.setTransientError(formatKernelError(err, "Thicken failed"));
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   toggleMeasureMode(): void {
     this.patch({ measureMode: !this.state.measureMode, filletMode: false, mateMode: false });
     for (const listener of this.listeners) listener();
