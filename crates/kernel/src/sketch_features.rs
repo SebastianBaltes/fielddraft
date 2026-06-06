@@ -823,26 +823,55 @@ impl SketchToolKind for SketchPolygonTool {
     }
 }
 
-/// `sketch_spline` — a smooth interpolating spline through a list
-/// of control points. Like [`SketchPolygonTool`] it registers one
-/// point entity per control point (so grips / selection / the TS
-/// id mirror align). The smooth curve itself is NOT a SketchState
-/// entity: at build time it lowers to a `Sketch2dPrimitive::Path`
-/// of quadratic Béziers sampled from a Catmull-Rom interpolation
-/// (see [`catmull_rom_quad_beziers`]) — exactly how
-/// [`SketchEllipseTool`] lowers to a closed quad-Bézier Path.
+/// `sketch_spline` — a smooth spline through / governed by a list of
+/// points. Like [`SketchPolygonTool`] it registers one point entity
+/// per point (so grips / selection / the TS id mirror align). The
+/// smooth curve itself is NOT a SketchState entity: at build time it
+/// lowers to a `Sketch2dPrimitive::Path` of quadratic Béziers.
 ///
-/// `closed` selects a wrap-around loop (extrudable region) versus
-/// an open reference curve. Requires ≥ 2 control points.
+/// Two modes (no backward-compat — `mode` is required-with-default):
+///
+/// * **`Interpolate`** (`SplineMode::Interpolate`) — a Catmull-Rom
+///   spline that passes through every point (see
+///   [`catmull_rom_quad_beziers`]).
+/// * **`Control`** (`SplineMode::Control`) — a *real* cubic
+///   (degree-3) B-spline whose points are the **control polygon**.
+///   For OPEN curves a clamped-uniform knot vector makes the curve
+///   pass through the first/last control points; for CLOSED curves a
+///   periodic/uniform knot vector wraps it into a loop. The B-spline
+///   is lowered EXACTLY (no point-sampling of the whole curve): each
+///   knot span is converted to one cubic Bézier via Boehm knot
+///   insertion, then each cubic is subdivided to a flatness tolerance
+///   into [`SketchSegment::QuadBezier`] segments (see
+///   [`bspline_quad_beziers`]).
+///
+/// `closed` selects a wrap-around loop (extrudable region) versus an
+/// open reference curve. Requires ≥ 2 control points.
 #[derive(FeatureSchema)]
 #[schema(type = "sketch_spline")]
 pub struct SketchSplineDef {
-    /// Flat array of 2D control points: `[x0, y0, x1, y1, …]`.
+    /// Flat array of 2D points: `[x0, y0, x1, y1, …]`. In
+    /// `Interpolate` mode the curve passes through them; in `Control`
+    /// mode they are the B-spline control polygon.
     pub points: Vec<f32>,
     /// `true` ⇒ the spline wraps into a closed loop; `false` ⇒ an
-    /// open curve with endpoint-duplicated end tangents.
+    /// open curve.
     #[param(default = false)]
     pub closed: bool,
+    /// Which spline family to build from `points`.
+    #[param(default = SplineMode::Interpolate)]
+    pub mode: SplineMode,
+}
+
+/// Spline family selector for [`SketchSplineDef`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SplineMode {
+    /// Catmull-Rom interpolating spline (passes through the points).
+    #[default]
+    Interpolate,
+    /// Cubic (degree-3) B-spline with the points as control polygon.
+    Control,
 }
 
 pub struct SketchSplineTool;
@@ -1287,6 +1316,357 @@ pub fn catmull_rom_quad_beziers(
         }
     }
     segs
+}
+
+/// Lower a cubic (degree-3) B-spline with control polygon
+/// `control_pts` into a chain of [`SketchSegment::QuadBezier`]
+/// segments, EXACTLY (no whole-curve point sampling).
+///
+/// Knot-vector scheme:
+/// * **Open** (`closed == false`): a clamped-uniform knot vector of
+///   degree 3 — `[0,0,0,0, 1,2,…, m,m,m,m]`. The clamping makes the
+///   curve interpolate the first and last control points, so those
+///   are the curve endpoints (and the registered point entities), and
+///   a Coincident constraint on them is a true endpoint constraint.
+/// * **Closed** (`closed == true`): a periodic/uniform knot vector.
+///   The control polygon is wrapped by repeating the first `degree`
+///   control points at the end (`P0…P_{n-1}, P0,P1,P2`) over a uniform
+///   knot vector, giving a smooth C² wrap-around loop (an extrudable
+///   region).
+///
+/// Exact lowering pipeline:
+/// 1. Build the (possibly wrapped) control points + knot vector.
+/// 2. Convert each non-empty knot span into ONE cubic Bézier via
+///    Boehm's knot-insertion algorithm (insert each interior knot up
+///    to multiplicity `degree`, i.e. the Bézier control points of a
+///    span are read straight off the fully-refined polygon).
+/// 3. Subdivide each cubic Bézier to a flatness tolerance into
+///    quadratic Béziers (the kernel `SketchSegment` has no cubic).
+///
+/// Edge cases (no panic, NaN-free):
+/// * `< 2` control points → empty.
+/// * exactly `2` → a single straight `Line`.
+/// * exactly `3` → a degree-2 curve: one quad through the control
+///   triangle (open) / a small wrapped loop (closed).
+/// * collinear control points → the cubic collapses to a straight
+///   curve (still emitted, no division by zero).
+pub fn bspline_quad_beziers(
+    control_pts: &[[f64; 2]],
+    closed: bool,
+    flatness: f64,
+) -> Vec<SketchSegment> {
+    let n = control_pts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    // Two points: a straight line, regardless of mode.
+    if n == 2 {
+        return vec![SketchSegment::Line {
+            start: [control_pts[0][0] as f32, control_pts[0][1] as f32],
+            end: [control_pts[1][0] as f32, control_pts[1][1] as f32],
+        }];
+    }
+
+    // Degree: cubic when we have enough control points, else drop to
+    // n-1 so 3 control points give a degree-2 curve, 2 a line.
+    let degree = 3usize.min(n - 1);
+
+    // Build the working control polygon + clamped/periodic knots and
+    // the valid loop / curve parameter domain [u_lo, u_hi].
+    let (poly, knots, u_lo, u_hi): (Vec<[f64; 2]>, Vec<f64>, f64, f64) = if closed {
+        // Periodic: wrap the first `degree` control points to the end
+        // and use a uniform knot vector over the padded polygon. The
+        // closed loop lives on the parameter sub-domain
+        // [knots[degree], knots[degree + n]] — the part where all the
+        // wrapped basis functions overlap into a seamless C² loop.
+        let mut poly = control_pts.to_vec();
+        for k in 0..degree {
+            poly.push(control_pts[k % n]);
+        }
+        let m = poly.len() + degree + 1; // knot count
+        let knots: Vec<f64> = (0..m).map(|i| i as f64).collect();
+        let u_lo = knots[degree];
+        let u_hi = knots[degree + n];
+        (poly, knots, u_lo, u_hi)
+    } else {
+        // Clamped-uniform: degree+1 repeats at each end.
+        let poly = control_pts.to_vec();
+        let interior = poly.len() - degree - 1; // # interior knots
+        let mut knots: Vec<f64> = Vec::with_capacity(poly.len() + degree + 1);
+        for _ in 0..=degree {
+            knots.push(0.0);
+        }
+        for i in 1..=interior {
+            knots.push(i as f64);
+        }
+        let last = (interior + 1) as f64;
+        for _ in 0..=degree {
+            knots.push(last);
+        }
+        (poly, knots, 0.0, last)
+    };
+
+    // Decompose the B-spline into per-span Bézier control points via
+    // repeated knot insertion (Boehm), restricted to the [u_lo, u_hi]
+    // domain (clamping both ends to multiplicity `degree`). The refined
+    // polygon then reads off as consecutive Bézier segments of
+    // `degree+1` control points sharing endpoints.
+    let beziers = bspline_to_beziers(&poly, &knots, degree, u_lo, u_hi);
+
+    // Subdivide each Bézier (degree 2 or 3) into quads.
+    let mut segs: Vec<SketchSegment> = Vec::new();
+    for bez in &beziers {
+        match bez.len() {
+            4 => cubic_to_quads(bez[0], bez[1], bez[2], bez[3], flatness, &mut segs),
+            3 => {
+                // Already a quad.
+                segs.push(SketchSegment::QuadBezier {
+                    p0: [bez[0][0] as f32, bez[0][1] as f32],
+                    p1: [bez[1][0] as f32, bez[1][1] as f32],
+                    p2: [bez[2][0] as f32, bez[2][1] as f32],
+                });
+            }
+            2 => segs.push(SketchSegment::Line {
+                start: [bez[0][0] as f32, bez[0][1] as f32],
+                end: [bez[1][0] as f32, bez[1][1] as f32],
+            }),
+            _ => {}
+        }
+    }
+    segs
+}
+
+/// Boehm knot-insertion decomposition restricted to the parameter
+/// domain `[u_lo, u_hi]`: turn a B-spline (`poly`, `knots`, `degree`)
+/// into a list of per-span Bézier control-point arrays (each of length
+/// `degree+1`) covering exactly that domain.
+///
+/// Method: clamp both domain ends to multiplicity `degree` (so the
+/// refined polygon has a control point landing exactly on the curve at
+/// `u_lo` and `u_hi`), raise every interior knot inside `(u_lo, u_hi)`
+/// to multiplicity `degree`, then read off consecutive Bézier segments
+/// starting at the polygon index that corresponds to `u_lo`.
+fn bspline_to_beziers(
+    poly: &[[f64; 2]],
+    knots: &[f64],
+    degree: usize,
+    u_lo: f64,
+    u_hi: f64,
+) -> Vec<Vec<[f64; 2]>> {
+    let mut poly: Vec<[f64; 2]> = poly.to_vec();
+    let mut knots: Vec<f64> = knots.to_vec();
+
+    // Distinct knot values within [u_lo, u_hi] (inclusive of the ends)
+    // that must reach multiplicity `degree`.
+    let mut vals: Vec<f64> = Vec::new();
+    let push_val = |v: f64, vals: &mut Vec<f64>| {
+        if !vals.iter().any(|&p| (p - v).abs() < 1e-9) {
+            vals.push(v);
+        }
+    };
+    push_val(u_lo, &mut vals);
+    for &k in &knots {
+        if k > u_lo + 1e-9 && k < u_hi - 1e-9 {
+            push_val(k, &mut vals);
+        }
+    }
+    push_val(u_hi, &mut vals);
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    for &val in &vals {
+        let mult = knots.iter().filter(|&&k| (k - val).abs() < 1e-9).count();
+        for _ in mult..degree {
+            insert_knot(&mut poly, &mut knots, degree, val);
+        }
+    }
+
+    // Find the polygon index whose corresponding knot reaches u_lo:
+    // after clamping, the control point at the start of the first
+    // in-domain span is the one whose left knot equals u_lo. Count the
+    // control points whose knot index is < the first knot == u_lo at
+    // full multiplicity. The standard relation: the i-th control point
+    // is associated with knots[i+1..=i+degree]; the first span in the
+    // domain begins at the control point index = (index of first knot
+    // == u_lo) — for a clamped end that is `degree` repeats. We locate
+    // the first knot index k0 with knots[k0] == u_lo and knots reaching
+    // full multiplicity there; the span start control index is k0.
+    let k0 = knots
+        .iter()
+        .position(|&k| (k - u_lo).abs() < 1e-9)
+        .unwrap_or(0);
+
+    // Number of in-domain spans = distinct interior values + 1.
+    let span_count = vals.len() - 1;
+    let mut out: Vec<Vec<[f64; 2]>> = Vec::with_capacity(span_count);
+    for s in 0..span_count {
+        let start = k0 + s * degree;
+        let mut seg: Vec<[f64; 2]> = Vec::with_capacity(degree + 1);
+        for k in 0..=degree {
+            let idx = (start + k).min(poly.len() - 1);
+            seg.push(poly[idx]);
+        }
+        out.push(seg);
+    }
+    out
+}
+
+/// Insert knot value `u` once into (`poly`, `knots`) for a B-spline of
+/// the given `degree` (Boehm's algorithm). Mutates both in place.
+fn insert_knot(poly: &mut Vec<[f64; 2]>, knots: &mut Vec<f64>, degree: usize, u: f64) {
+    // Find the span index k such that knots[k] <= u < knots[k+1].
+    // Clamp at poly.len()-1 so the affected control indices
+    // (k-degree+1)..=k stay in range (Boehm requires k ≤ n-1).
+    let mut k = degree;
+    while k + 1 < knots.len() && knots[k + 1] <= u && k + 1 <= poly.len() - 1 {
+        k += 1;
+    }
+    // New control points P'_i for i in (k-degree+1)..=k are blended.
+    let mut new_poly: Vec<[f64; 2]> = Vec::with_capacity(poly.len() + 1);
+    for i in 0..=(k - degree) {
+        new_poly.push(poly[i]);
+    }
+    for i in (k - degree + 1)..=k {
+        let denom = knots[i + degree] - knots[i];
+        let a = if denom.abs() < 1e-12 {
+            0.0
+        } else {
+            (u - knots[i]) / denom
+        };
+        let prev = poly[i - 1];
+        let cur = poly[i];
+        new_poly.push([
+            (1.0 - a) * prev[0] + a * cur[0],
+            (1.0 - a) * prev[1] + a * cur[1],
+        ]);
+    }
+    for i in k..poly.len() {
+        new_poly.push(poly[i]);
+    }
+    *poly = new_poly;
+    knots.insert(k + 1, u);
+}
+
+/// Subdivide a cubic Bézier (`p0,p1,p2,p3`) into [`SketchSegment::
+/// QuadBezier`] segments, recursing until the cubic is flat enough
+/// (control points within `flatness` of the chord) to be replaced by
+/// a single quad whose control point is the average of the cubic's
+/// elevated mid controls. Pushes onto `out`.
+fn cubic_to_quads(
+    p0: [f64; 2],
+    p1: [f64; 2],
+    p2: [f64; 2],
+    p3: [f64; 2],
+    flatness: f64,
+    out: &mut Vec<SketchSegment>,
+) {
+    // Flatness: max distance of p1,p2 from the chord p0→p3.
+    let dx = p3[0] - p0[0];
+    let dy = p3[1] - p0[1];
+    let chord = (dx * dx + dy * dy).sqrt();
+    let dist = |p: [f64; 2]| -> f64 {
+        if chord < 1e-12 {
+            ((p[0] - p0[0]).powi(2) + (p[1] - p0[1]).powi(2)).sqrt()
+        } else {
+            ((p[0] - p0[0]) * dy - (p[1] - p0[1]) * dx).abs() / chord
+        }
+    };
+    let d = dist(p1).max(dist(p2));
+    if d <= flatness {
+        // Approximate the cubic by a single quad. The quad control
+        // point is the intersection of the end tangents (p0→p1 and
+        // p3→p2); fall back to the chord midpoint when degenerate.
+        let t0 = [p1[0] - p0[0], p1[1] - p0[1]];
+        let t1 = [p2[0] - p3[0], p2[1] - p3[1]];
+        let ctrl = line_intersection(
+            [p0[0] as f32, p0[1] as f32],
+            [t0[0] as f32, t0[1] as f32],
+            [p3[0] as f32, p3[1] as f32],
+            [t1[0] as f32, t1[1] as f32],
+        )
+        .unwrap_or([
+            (0.5 * (p0[0] + p3[0])) as f32,
+            (0.5 * (p0[1] + p3[1])) as f32,
+        ]);
+        // Guard against NaN/Inf from a pathological intersection.
+        let ctrl = if ctrl[0].is_finite() && ctrl[1].is_finite() {
+            ctrl
+        } else {
+            [
+                (0.5 * (p0[0] + p3[0])) as f32,
+                (0.5 * (p0[1] + p3[1])) as f32,
+            ]
+        };
+        out.push(SketchSegment::QuadBezier {
+            p0: [p0[0] as f32, p0[1] as f32],
+            p1: ctrl,
+            p2: [p3[0] as f32, p3[1] as f32],
+        });
+        return;
+    }
+    // de Casteljau split at t = 0.5.
+    let mid = |a: [f64; 2], b: [f64; 2]| [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
+    let p01 = mid(p0, p1);
+    let p12 = mid(p1, p2);
+    let p23 = mid(p2, p3);
+    let p012 = mid(p01, p12);
+    let p123 = mid(p12, p23);
+    let p0123 = mid(p012, p123);
+    cubic_to_quads(p0, p01, p012, p0123, flatness, out);
+    cubic_to_quads(p0123, p123, p23, p3, flatness, out);
+}
+
+/// Evaluate a cubic (degree-3) B-spline at parameter `t` via de Boor,
+/// for the open (clamped-uniform) knot vector. `t` is in `[0, 1]`,
+/// remapped onto the clamped knot domain. This mirrors the TS
+/// `bsplinePoints` de Boor and is used by tests to validate the
+/// exact lowering against direct evaluation.
+#[cfg(test)]
+pub fn bspline_eval_open(control_pts: &[[f64; 2]], degree: usize, t: f64) -> [f64; 2] {
+    let n = control_pts.len();
+    let interior = n - degree - 1;
+    let mut knots: Vec<f64> = Vec::with_capacity(n + degree + 1);
+    for _ in 0..=degree {
+        knots.push(0.0);
+    }
+    for i in 1..=interior {
+        knots.push(i as f64);
+    }
+    let last = (interior + 1) as f64;
+    for _ in 0..=degree {
+        knots.push(last);
+    }
+    let u = t * last;
+    de_boor(control_pts, &knots, degree, u)
+}
+
+/// de Boor evaluation of a B-spline at parameter `u`.
+#[cfg(test)]
+fn de_boor(poly: &[[f64; 2]], knots: &[f64], degree: usize, u: f64) -> [f64; 2] {
+    let n = poly.len();
+    // Find knot span k: knots[k] <= u < knots[k+1] (clamp so the last
+    // affecting control point stays in range, k ∈ degree..=n-1).
+    let mut k = degree;
+    while k + 1 <= n - 1 && knots[k + 1] <= u {
+        k += 1;
+    }
+    // Local copy of the degree+1 affecting control points.
+    let mut d: Vec<[f64; 2]> = (0..=degree).map(|j| poly[(k - degree + j).min(n - 1)]).collect();
+    for r in 1..=degree {
+        for j in (r..=degree).rev() {
+            let i = k - degree + j;
+            let denom = knots[i + degree - r + 1] - knots[i];
+            let alpha = if denom.abs() < 1e-12 {
+                0.0
+            } else {
+                (u - knots[i]) / denom
+            };
+            d[j] = [
+                (1.0 - alpha) * d[j - 1][0] + alpha * d[j][0],
+                (1.0 - alpha) * d[j - 1][1] + alpha * d[j][1],
+            ];
+        }
+    }
+    d[degree]
 }
 
 /// Intersect line `(p + t·d)` with line `(q + s·e)`. Returns `None`
@@ -1844,11 +2224,22 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 if pts.len() < 2 {
                     continue;
                 }
-                // Sample the Catmull-Rom spline into a Path of
-                // quadratic Béziers (16 sub-steps per span), like the
-                // ellipse lowering. Closed → an extrudable region;
-                // open → a reference curve.
-                let segs = catmull_rom_quad_beziers(&pts, d.closed, 16);
+                let segs = match d.mode {
+                    SplineMode::Interpolate => {
+                        // Catmull-Rom interpolating spline lowered to a
+                        // quad-Bézier Path (16 sub-steps per span).
+                        catmull_rom_quad_beziers(&pts, d.closed, 16)
+                    }
+                    SplineMode::Control => {
+                        // Real cubic B-spline: exact Boehm → Bézier →
+                        // quad lowering. Flatness 0.05 mm keeps the
+                        // quad fit visually exact while reusing the
+                        // kernel's QuadBezier SDF machinery.
+                        let cp: Vec<[f64; 2]> =
+                            pts.iter().map(|p| [p[0] as f64, p[1] as f64]).collect();
+                        bspline_quad_beziers(&cp, d.closed, 0.05)
+                    }
+                };
                 if segs.is_empty() {
                     continue;
                 }
@@ -2956,6 +3347,279 @@ mod tests {
         assert!((last[0] - 30.0).abs() < 1e-3 && (last[1] - 5.0).abs() < 1e-3);
         // < 2 points → empty.
         assert!(catmull_rom_quad_beziers(&[[0.0, 0.0]], false, 8).is_empty());
+    }
+
+    // ---- F23-full: real cubic B-spline (control mode) ----------------
+
+    /// Sample a lowered segment chain at a fraction of total arc-ish
+    /// parameter (segment index proportion), returning the point.
+    fn seg_point(segs: &[SketchSegment], frac: f32) -> [f32; 2] {
+        let n = segs.len();
+        if n == 0 {
+            return [0.0, 0.0];
+        }
+        let pos = (frac * n as f32).clamp(0.0, n as f32);
+        let i = (pos.floor() as usize).min(n - 1);
+        let local = pos - i as f32;
+        segs[i].point_at(local.clamp(0.0, 1.0))
+    }
+
+    #[test]
+    fn spline_def_roundtrip_with_mode() {
+        // The new `mode` field round-trips through parse, defaulting to
+        // interpolate when absent and accepting "control".
+        let d_default =
+            SketchSplineDef::parse(&json!({ "points": [0.0, 0.0, 1.0, 1.0] })).unwrap();
+        assert_eq!(d_default.mode, SplineMode::Interpolate);
+        assert!(!d_default.closed);
+        let d_ctrl = SketchSplineDef::parse(&json!({
+            "points": [0.0, 0.0, 1.0, 1.0, 2.0, 0.0, 3.0, 1.0],
+            "closed": true,
+            "mode": "control"
+        }))
+        .unwrap();
+        assert_eq!(d_ctrl.mode, SplineMode::Control);
+        assert!(d_ctrl.closed);
+    }
+
+    #[test]
+    fn bspline_control_mode_lowers_to_quad_path() {
+        // A 4-control-point open B-spline (control mode) lowers to a
+        // non-empty open Path of Line/Quad segments.
+        let calls = vec![FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({
+                "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+                "closed": false,
+                "mode": "control"
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a Path primitive, got {sketch:?}");
+        };
+        assert!(!*closed);
+        assert!(!segments.is_empty());
+        assert!(segments.iter().all(|s| matches!(
+            s,
+            SketchSegment::QuadBezier { .. } | SketchSegment::Line { .. }
+        )));
+        // No NaN/Inf anywhere.
+        for s in segments {
+            for k in 0..=8 {
+                let p = s.point_at(k as f32 / 8.0);
+                assert!(p[0].is_finite() && p[1].is_finite(), "NaN/Inf in lowering");
+            }
+        }
+    }
+
+    #[test]
+    fn bspline_clamped_endpoints_are_first_and_last_control() {
+        // A clamped open cubic B-spline interpolates its first/last
+        // control points — the lowered chain starts at P0 and ends at
+        // P_{n-1}. (This is what makes endpoint Coincident a real
+        // endpoint constraint.)
+        let cp = [[0.0, 0.0], [10.0, 20.0], [20.0, -20.0], [30.0, 0.0], [40.0, 10.0]];
+        let segs = bspline_quad_beziers(&cp, false, 0.01);
+        assert!(!segs.is_empty());
+        let start = segs[0].point_at(0.0);
+        let end = segs.last().unwrap().point_at(1.0);
+        assert!((start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3, "start {start:?}");
+        assert!((end[0] - 40.0).abs() < 1e-3 && (end[1] - 10.0).abs() < 1e-3, "end {end:?}");
+    }
+
+    /// Min distance from `q` to the polyline of lowered segments.
+    fn dist_to_chain(segs: &[SketchSegment], q: [f64; 2]) -> f64 {
+        let mut best = f64::INFINITY;
+        for s in segs {
+            let mut prev = s.point_at(0.0);
+            for k in 1..=16 {
+                let cur = s.point_at(k as f32 / 16.0);
+                // distance from q to segment prev→cur
+                let ax = prev[0] as f64;
+                let ay = prev[1] as f64;
+                let bx = cur[0] as f64;
+                let by = cur[1] as f64;
+                let dx = bx - ax;
+                let dy = by - ay;
+                let len2 = dx * dx + dy * dy;
+                let t = if len2 < 1e-12 {
+                    0.0
+                } else {
+                    (((q[0] - ax) * dx + (q[1] - ay) * dy) / len2).clamp(0.0, 1.0)
+                };
+                let px = ax + t * dx;
+                let py = ay + t * dy;
+                best = best.min(((q[0] - px).powi(2) + (q[1] - py).powi(2)).sqrt());
+                prev = cur;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn bspline_midparam_matches_de_boor() {
+        // The exactly-lowered curve must pass through the de Boor
+        // evaluation of the same B-spline at several parameters,
+        // including the mid-parameter, within the flatness tolerance.
+        // (de Boor is the analytic ground truth; the lowered chain
+        // must lie on it.)
+        let cp = [[0.0, 0.0], [10.0, 30.0], [30.0, 30.0], [40.0, 0.0], [50.0, 20.0]];
+        let segs = bspline_quad_beziers(&cp, false, 0.005);
+        for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
+            let analytic = bspline_eval_open(&cp, 3, t);
+            let d = dist_to_chain(&segs, analytic);
+            assert!(
+                d < 0.05,
+                "de Boor t={t} {analytic:?} is {d} from lowered chain"
+            );
+        }
+        // Spot-check the hand-relevant mid value sits on the curve.
+        let mid = bspline_eval_open(&cp, 3, 0.5);
+        assert!(mid[0].is_finite() && mid[1].is_finite());
+    }
+
+    #[test]
+    fn bspline_two_control_points_is_a_line() {
+        let cp = [[0.0, 0.0], [10.0, 5.0]];
+        let segs = bspline_quad_beziers(&cp, false, 0.05);
+        assert_eq!(segs.len(), 1);
+        assert!(matches!(segs[0], SketchSegment::Line { .. }));
+        let start = segs[0].point_at(0.0);
+        let end = segs[0].point_at(1.0);
+        assert!((start[0] - 0.0).abs() < 1e-4 && (end[0] - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bspline_three_control_points_is_degree_two() {
+        // 3 control points → degree 2; the lowered curve still starts
+        // and ends at the first/last control point (clamped quad).
+        let cp = [[0.0, 0.0], [5.0, 10.0], [10.0, 0.0]];
+        let segs = bspline_quad_beziers(&cp, false, 0.05);
+        assert!(!segs.is_empty());
+        let start = segs[0].point_at(0.0);
+        let end = segs.last().unwrap().point_at(1.0);
+        assert!((start[0] - 0.0).abs() < 1e-3 && (start[1] - 0.0).abs() < 1e-3);
+        assert!((end[0] - 10.0).abs() < 1e-3 && (end[1] - 0.0).abs() < 1e-3);
+        // Mid bows up toward the middle control point.
+        let mid = seg_point(&segs, 0.5);
+        assert!(mid[1] > 0.5, "degree-2 curve should bow up, mid={mid:?}");
+    }
+
+    #[test]
+    fn bspline_collinear_stays_straight() {
+        // Collinear control points → a straight curve (all samples on
+        // the x-axis), no division-by-zero / NaN.
+        let cp = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [30.0, 0.0]];
+        let segs = bspline_quad_beziers(&cp, false, 0.05);
+        assert!(!segs.is_empty());
+        for s in &segs {
+            for k in 0..=8 {
+                let p = s.point_at(k as f32 / 8.0);
+                assert!(p[1].abs() < 1e-3, "off-axis point {p:?}");
+                assert!(p[0].is_finite() && p[1].is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn bspline_closed_wraps_into_a_region() {
+        // A closed (periodic) cubic B-spline over a square-ish control
+        // polygon lowers to a closed Path whose interior contains the
+        // centroid (extrudable region), and the curve forms a loop.
+        let calls = vec![FeatureCall::new(
+            "sketch_spline",
+            id(1),
+            json!({
+                "points": [-10.0, -10.0, 10.0, -10.0, 10.0, 10.0, -10.0, 10.0],
+                "closed": true,
+                "mode": "control"
+            }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected closed Path, got {sketch:?}");
+        };
+        assert!(*closed, "closed B-spline path must be closed");
+        assert!(segments.len() >= 4);
+        // The wrap is a true loop: end of last seg ≈ start of first.
+        let first = segments[0].point_at(0.0);
+        let last = segments.last().unwrap().point_at(1.0);
+        let gap = ((first[0] - last[0]).powi(2) + (first[1] - last[1]).powi(2)).sqrt();
+        assert!(gap < 1e-2, "closed loop gap {gap}");
+        // Centre inside the region.
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "closed spline centre inside");
+        // No NaN/Inf.
+        for s in segments {
+            for k in 0..=8 {
+                let p = s.point_at(k as f32 / 8.0);
+                assert!(p[0].is_finite() && p[1].is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn bspline_too_few_control_points_no_panic() {
+        // < 2 control points → empty (no panic), and a closed 3-point
+        // spline lowers without panicking.
+        assert!(bspline_quad_beziers(&[[0.0, 0.0]], false, 0.05).is_empty());
+        assert!(bspline_quad_beziers(&[], true, 0.05).is_empty());
+        let segs = bspline_quad_beziers(&[[0.0, 0.0], [10.0, 0.0], [5.0, 8.0]], true, 0.05);
+        assert!(!segs.is_empty());
+        for s in &segs {
+            let p = s.point_at(0.5);
+            assert!(p[0].is_finite() && p[1].is_finite());
+        }
+    }
+
+    #[test]
+    fn bspline_endpoint_coincident_constraint_wires_to_first_control() {
+        // F23-full solver: a clamped B-spline's first control point IS
+        // the curve endpoint AND a registered point entity (control mode
+        // registers one point per control point, same as interpolate).
+        // So a Coincident constraint referencing that entity id is a
+        // true endpoint constraint the solver acts on. Here we confirm
+        // the constraint wires through to the spline's first control
+        // point entity (id 2 after origin=0, free point=1, spline
+        // controls=2..=5).
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let calls = vec![
+            FeatureCall::new("sketch_point", id(1), json!({ "at": [5.0, 5.0] })),
+            FeatureCall::new(
+                "sketch_spline",
+                id(2),
+                json!({
+                    "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+                    "closed": false,
+                    "mode": "control"
+                }),
+            ),
+            FeatureCall::new(
+                "sketch_constraint_coincident",
+                id(3),
+                json!({ "a": 1, "b": 2 }),
+            ),
+        ];
+        tools.apply_all(&mut state, &calls).unwrap();
+        // Entity 2 is the spline's FIRST control point, at (0,0) — the
+        // clamped curve endpoint.
+        let first_ctrl = state
+            .entities
+            .iter()
+            .find(|e| matches!(e, fielddraft_solver::Entity::Point { id: EntityId(2), .. }));
+        if let Some(fielddraft_solver::Entity::Point { at, .. }) = first_ctrl {
+            assert!((at.x - 0.0).abs() < 1e-6 && (at.y - 0.0).abs() < 1e-6);
+        } else {
+            panic!("entity 2 is not the spline's first control point");
+        }
+        // The coincident constraint binds the free point (1) to that
+        // first control point (2).
+        assert!(state.constraints.iter().any(|c| matches!(
+            c,
+            Constraint::Coincident { a: EntityId(1), b: EntityId(2), .. }
+        )));
     }
 
     #[test]

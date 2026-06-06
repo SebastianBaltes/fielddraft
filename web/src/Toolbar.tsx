@@ -439,6 +439,46 @@ export function Toolbar({ store, state }: ToolbarProps) {
               />
             );
           })}
+          {/* F23-full: spline-mode toggle. Shown only while the spline
+              tool is active. `interpolate` = Catmull-Rom through the
+              clicked points; `control` = a real cubic B-spline whose
+              clicked points are the control polygon. The chosen mode is
+              carried into the emitted `sketch_spline` sub-call. */}
+          {sketchSession.selectedTool === "sketch_spline" && (
+            <div
+              className="spline-mode"
+              data-testid="sketch-spline-mode"
+              role="radiogroup"
+              aria-label="Spline mode"
+            >
+              <button
+                type="button"
+                className={
+                  "tool" +
+                  (state.sketchSplineMode === "interpolate" ? " is-active" : "")
+                }
+                data-testid="sketch-spline-mode-interpolate"
+                aria-pressed={state.sketchSplineMode === "interpolate"}
+                title="Interpolating spline (passes through points)"
+                onClick={() => store.setSketchSplineMode("interpolate")}
+              >
+                <span className="tool-label">Through pts</span>
+              </button>
+              <button
+                type="button"
+                className={
+                  "tool" +
+                  (state.sketchSplineMode === "control" ? " is-active" : "")
+                }
+                data-testid="sketch-spline-mode-control"
+                aria-pressed={state.sketchSplineMode === "control"}
+                title="Control-point cubic B-spline"
+                onClick={() => store.setSketchSplineMode("control")}
+              >
+                <span className="tool-label">Control pts</span>
+              </button>
+            </div>
+          )}
           {/* F7: primitive-construction variants. These are UI-only tools
               (like trim) — they aren't kernel feature tools but emit
               ordinary sub-calls at commit time (sketch_rectangle /

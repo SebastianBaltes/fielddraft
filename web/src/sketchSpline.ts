@@ -84,3 +84,119 @@ export function catmullRomPoints(
   }
   return out;
 }
+
+/**
+ * de Boor evaluation of a B-spline (`poly`, `knots`, `degree`) at
+ * parameter `u`. Numerically stable (no basis-function powers).
+ */
+function deBoor(
+  poly: Vec2[],
+  knots: number[],
+  degree: number,
+  u: number,
+): Vec2 {
+  const n = poly.length;
+  // Knot span k with knots[k] <= u < knots[k+1], clamped to n-1.
+  let k = degree;
+  while (k + 1 <= n - 1 && knots[k + 1] <= u) k++;
+  const d: Vec2[] = [];
+  for (let j = 0; j <= degree; j++) {
+    d.push(poly[Math.min(k - degree + j, n - 1)]);
+  }
+  for (let r = 1; r <= degree; r++) {
+    for (let j = degree; j >= r; j--) {
+      const i = k - degree + j;
+      const denom = knots[i + degree - r + 1] - knots[i];
+      const alpha = Math.abs(denom) < 1e-12 ? 0 : (u - knots[i]) / denom;
+      d[j] = [
+        (1 - alpha) * d[j - 1][0] + alpha * d[j][0],
+        (1 - alpha) * d[j - 1][1] + alpha * d[j][1],
+      ];
+    }
+  }
+  return d[degree];
+}
+
+/**
+ * Sample a REAL cubic (degree-3) B-spline whose `controls` are the
+ * control polygon — the TS mirror of the kernel's `bspline_quad_beziers`
+ * (de Boor over the same clamped-uniform / periodic knot vectors). Used
+ * for the live preview + canvas rendering of a CONTROL-mode spline and
+ * for the grip re-eval.
+ *
+ * Knot-vector scheme (matches the kernel):
+ * - **Open** (`closed === false`): clamped-uniform — the curve passes
+ *   through the first and last control points.
+ * - **Closed** (`closed === true`): periodic/uniform — the curve wraps
+ *   into a smooth loop (the first `degree` controls are repeated and
+ *   the loop sub-domain `[knots[d], knots[d+n]]` is sampled).
+ *
+ * Edge cases:
+ * - `< 2` controls → `[]`.
+ * - exactly `2` → a straight line (`samples + 1` points).
+ * - `3` → degree-2 curve.
+ * - collinear controls → a straight curve.
+ *
+ * `degree` clamps to `n - 1` so small control counts degrade sensibly.
+ * Returns `samples + 1` points spanning the parameter domain.
+ */
+export function bsplinePoints(
+  controls: Vec2[],
+  degree: number,
+  closed: boolean,
+  samples: number,
+): Vec2[] {
+  const n = controls.length;
+  if (n < 2) return [];
+  const m = Math.max(1, Math.floor(samples));
+  if (n === 2) {
+    // Straight line A→B.
+    const out: Vec2[] = [];
+    for (let s = 0; s <= m; s++) {
+      const t = s / m;
+      out.push([
+        controls[0][0] + t * (controls[1][0] - controls[0][0]),
+        controls[0][1] + t * (controls[1][1] - controls[0][1]),
+      ]);
+    }
+    return out;
+  }
+  const deg = Math.min(Math.max(1, Math.floor(degree)), n - 1);
+
+  let poly: Vec2[];
+  let knots: number[];
+  let uLo: number;
+  let uHi: number;
+  if (closed) {
+    poly = controls.slice();
+    for (let i = 0; i < deg; i++) poly.push(controls[i % n]);
+    const knotCount = poly.length + deg + 1;
+    knots = [];
+    for (let i = 0; i < knotCount; i++) knots.push(i);
+    uLo = knots[deg];
+    uHi = knots[deg + n];
+  } else {
+    poly = controls.slice();
+    const interior = poly.length - deg - 1;
+    knots = [];
+    for (let i = 0; i <= deg; i++) knots.push(0);
+    for (let i = 1; i <= interior; i++) knots.push(i);
+    const last = interior + 1;
+    for (let i = 0; i <= deg; i++) knots.push(last);
+    uLo = 0;
+    uHi = last;
+  }
+
+  const out: Vec2[] = [];
+  for (let s = 0; s <= m; s++) {
+    const u = uLo + ((uHi - uLo) * s) / m;
+    out.push(deBoor(poly, knots, deg, Math.min(u, uHi - 1e-9 * (uHi - uLo))));
+  }
+  // Snap exact endpoints for the open (clamped) case so the curve
+  // visibly touches the first/last control points.
+  if (!closed) {
+    out[0] = [controls[0][0], controls[0][1]];
+    out[out.length - 1] = [controls[n - 1][0], controls[n - 1][1]];
+  }
+  return out;
+}

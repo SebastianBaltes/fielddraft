@@ -60,7 +60,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
-import { catmullRomPoints, type Vec2 } from "./sketchSpline";
+import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
 import {
@@ -116,6 +116,9 @@ const SNAP_RADIUS_MM = 10;
 const SNAP_RING_PX = 8;
 
 const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
+/** F23-full: dashed control-polygon guide for a control-point
+ *  B-spline (lines between consecutive control points). */
+const COLOR_GUIDE = "rgba(100, 116, 139, 0.6)";
 /** Highlight colour for entities picked in select mode. */
 const COLOR_SELECTED = "#f97316";
 /** F4 marquee: enclosing ("window", left→right) = solid blue border;
@@ -393,6 +396,10 @@ type DragState =
       kind: "spline";
       points: [number, number][];
       current: [number, number];
+      /** F23-full: `interpolate` (Catmull-Rom) or `control` (cubic
+       *  B-spline control polygon). Snapshotted when the gesture
+       *  starts so the live preview + commit stay consistent. */
+      mode: "interpolate" | "control";
     }
   | {
       /** Arc: a centre → start → end three-click gesture. `start` is
@@ -1207,13 +1214,20 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       //     (≥ 2 pts) → finish OPEN
       const existing =
         dragRef.current.kind === "spline" ? dragRef.current.points : [];
+      // Mode is locked in when the gesture begins (first click); a
+      // mid-gesture toggle would desync the preview, so reuse the
+      // in-flight drag's mode if one exists.
+      const splineMode =
+        dragRef.current.kind === "spline"
+          ? dragRef.current.mode
+          : store.getState().sketchSplineMode;
       const cam2 = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       const [cpx, cpy] = sketchToScreen(su, sv, cam2);
       const commitSpline = (closed: boolean) => {
         store.pushSketchSubCalls([
           {
             type: "sketch_spline",
-            params: { points: existing.flat(), closed },
+            params: { points: existing.flat(), closed, mode: splineMode },
           },
         ]);
         scheduleSolverReplay();
@@ -1238,7 +1252,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         }
       }
       const points: [number, number][] = [...existing, [su, sv]];
-      dragRef.current = { kind: "spline", points, current: [su, sv] };
+      dragRef.current = {
+        kind: "spline",
+        points,
+        current: [su, sv],
+        mode: splineMode,
+      };
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2104,7 +2123,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         store.pushSketchSubCalls([
           {
             type: "sketch_spline",
-            params: { points: drag.points.flat(), closed: false },
+            params: { points: drag.points.flat(), closed: false, mode: drag.mode },
           },
         ]);
         scheduleSolverReplay();
@@ -2397,21 +2416,40 @@ function drawOverlay(
       }
     } else if (call.type === "sketch_spline") {
       // The smooth curve isn't made of SketchState entities (only the
-      // control points are), so it's stroked here directly from the
-      // sub-call params via the Catmull-Rom sampler — otherwise it'd be
-      // invisible despite extruding.
+      // control/interpolation points are), so it's stroked here
+      // directly from the sub-call params — otherwise it'd be invisible
+      // despite extruding. F23-full: dispatch on `mode`.
       const raw = call.params.points;
       const closed = call.params.closed === true;
+      const isControl = call.params.mode === "control";
       if (Array.isArray(raw) && raw.length >= 4) {
         const ctrl: Vec2[] = [];
         for (let i = 0; i + 1 < raw.length; i += 2) {
           ctrl.push([Number(raw[i]), Number(raw[i + 1])]);
         }
-        const sampled = catmullRomPoints(ctrl, closed, 16);
+        // F23-full: in control mode, draw the control polygon as a
+        // dashed guide (lines between consecutive control points; the
+        // closing edge for a closed loop).
+        if (isControl) {
+          ctx.save();
+          ctx.setLineDash([6, 4]);
+          for (let i = 0; i + 1 < ctrl.length; i++) {
+            drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_GUIDE, 1);
+          }
+          if (closed && ctrl.length >= 2) {
+            drawLine(ctx, ctrl[ctrl.length - 1], ctrl[0], cam, COLOR_GUIDE, 1);
+          }
+          ctx.restore();
+        }
+        const sampled = isControl
+          ? bsplinePoints(ctrl, 3, closed, 64)
+          : catmullRomPoints(ctrl, closed, 16);
         for (let i = 0; i + 1 < sampled.length; i++) {
           drawLine(ctx, sampled[i], sampled[i + 1], cam, color, STROKE_PX);
         }
-        if (closed && sampled.length >= 2) {
+        // Catmull-Rom needs an explicit closing stroke; bspline's
+        // periodic sampling already returns to the start.
+        if (!isControl && closed && sampled.length >= 2) {
           drawLine(
             ctx,
             sampled[sampled.length - 1],
@@ -2684,11 +2722,31 @@ function drawOverlay(
       }
     }
   } else if (drag.kind === "spline") {
-    const { points, current } = drag;
+    const { points, current, mode } = drag;
     if (points.length > 0) {
-      // Live curve through the placed control points plus the cursor.
+      // Live curve through the placed points plus the cursor. F23-full:
+      // in control mode use de Boor (B-spline) + a dashed control
+      // polygon guide; otherwise Catmull-Rom interpolation.
       const ctrl: Vec2[] = [...points, current];
-      const sampled = catmullRomPoints(ctrl, false, 16);
+      const isControl = mode === "control";
+      if (isControl) {
+        ctx.save();
+        ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = COLOR_GUIDE;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const [gx0, gy0] = sketchToScreen(ctrl[0][0], ctrl[0][1], cam);
+        ctx.moveTo(gx0, gy0);
+        for (let i = 1; i < ctrl.length; i++) {
+          const [px, py] = sketchToScreen(ctrl[i][0], ctrl[i][1], cam);
+          ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      const sampled = isControl
+        ? bsplinePoints(ctrl, 3, false, 48)
+        : catmullRomPoints(ctrl, false, 16);
       if (sampled.length >= 2) {
         ctx.strokeStyle = COLOR_PREVIEW;
         ctx.lineWidth = 2;

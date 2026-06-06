@@ -247,6 +247,15 @@
     }
   }
 
+  /* F23-full: spline-mode toggle (interpolate vs control-point
+   * B-spline), shown only while the spline tool is active. Two
+   * `.tool` buttons grouped as a segmented control. */
+  & .spline-mode {
+    display: inline-flex;
+    gap: var(--space-1);
+    align-items: center;
+  }
+
   /* P0.1: context-sensitive constraint palette, shown in select
    * mode and gated by the current selection. */
   & .sketch-constraint-row {

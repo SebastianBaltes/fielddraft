@@ -243,6 +243,10 @@ export interface StoreState {
   /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
    *  transform (rotates the selection about the sketch origin). */
   sketchRotateAngle: number;
+  /** F23-full: which spline family the `sketch_spline` tool draws —
+   *  `"interpolate"` (Catmull-Rom through the points) or `"control"`
+   *  (real cubic B-spline with the points as control polygon). */
+  sketchSplineMode: "interpolate" | "control";
   /** F24: the string the single-click `sketch_text` tool emits as
    *  filled glyph geometry. */
   sketchTextValue: string;
@@ -542,6 +546,7 @@ export class KernelStore {
       sketchPatternSpacing: 20,
       sketchPatternAngle: 360,
       sketchRotateAngle: 90,
+      sketchSplineMode: "interpolate",
       sketchTextValue: "Text",
       sketchTextHeight: 10,
       sketchTextFontId: DEFAULT_FONT_ID,
@@ -640,6 +645,7 @@ export class KernelStore {
       sketchPatternSpacing: this.state.sketchPatternSpacing,
       sketchPatternAngle: this.state.sketchPatternAngle,
       sketchRotateAngle: this.state.sketchRotateAngle,
+      sketchSplineMode: this.state.sketchSplineMode,
       sketchTextValue: this.state.sketchTextValue,
       sketchTextHeight: this.state.sketchTextHeight,
       sketchTextFontId: this.state.sketchTextFontId,
@@ -2412,6 +2418,12 @@ export class KernelStore {
     const flags = carry(target.params);
     this.pushSketchSubCalls(offsets.map((o) => subCallOfCurve(o, flags)));
     void solveAndReplace(this);
+  }
+
+  /** F23-full: choose the spline family the `sketch_spline` tool draws. */
+  setSketchSplineMode(mode: "interpolate" | "control"): void {
+    this.patch({ sketchSplineMode: mode });
+    for (const listener of this.listeners) listener();
   }
 
   /** F24: set the string the `sketch_text` tool emits. */
