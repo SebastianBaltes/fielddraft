@@ -74,10 +74,13 @@ export function selectSketchTool(
   if (state.selectedTool === typeName) return state;
   // Switching tools leaves select-mode: clear any picked geometry so
   // a stale selection can't drive the constraint palette while the
-  // user is drawing. EXCEPTION: the interactive Mirror tool consumes the
-  // current selection (it reflects the selected source geometry across
-  // the axis line clicked next), so it must keep it.
-  const keepSelection = typeName === "sketch_mirror";
+  // user is drawing. EXCEPTION: tools that CONSUME the current selection
+  // must keep it — Mirror reflects it across the axis line clicked next;
+  // Move / Copy (F17) translate it via the next two canvas clicks.
+  const keepSelection =
+    typeName === "sketch_mirror" ||
+    typeName === "sketch_move" ||
+    typeName === "sketch_copy";
   return {
     ...state,
     selectedTool: typeName,

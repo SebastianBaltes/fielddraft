@@ -50,7 +50,12 @@ import {
 import type { Vec2 } from "./sketchTrim";
 import { mirrorCurve } from "./sketchMirror";
 import { offsetCurve } from "./sketchOffset";
-import { patternLinear, patternCircular } from "./sketchPattern";
+import {
+  patternLinear,
+  patternCircular,
+  translateCurve,
+  rotateCurve,
+} from "./sketchPattern";
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
@@ -217,6 +222,9 @@ export interface StoreState {
   sketchPatternSpacing: number;
   /** F16: total span (degrees) for a circular sketch pattern. */
   sketchPatternAngle: number;
+  /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
+   *  transform (rotates the selection about the sketch origin). */
+  sketchRotateAngle: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -502,6 +510,7 @@ export class KernelStore {
       sketchPatternCount: 3,
       sketchPatternSpacing: 20,
       sketchPatternAngle: 360,
+      sketchRotateAngle: 90,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -595,6 +604,7 @@ export class KernelStore {
       sketchPatternCount: this.state.sketchPatternCount,
       sketchPatternSpacing: this.state.sketchPatternSpacing,
       sketchPatternAngle: this.state.sketchPatternAngle,
+      sketchRotateAngle: this.state.sketchRotateAngle,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -2415,6 +2425,149 @@ export class KernelStore {
     if (copies.length === 0) return;
 
     this.pushSketchSubCalls(copies);
+    void solveAndReplace(this);
+  }
+
+  /** F17: set the rotation angle (degrees) the `rotateSketchSelection`
+   *  transform applies. No-op for non-finite values. */
+  setSketchRotateAngle(angleDeg: number): void {
+    if (!Number.isFinite(angleDeg)) return;
+    this.patch({ sketchRotateAngle: angleDeg });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F17: translate the current selection by `(dx, dy)`.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null) and translates
+   * each via [`translateCurve`].
+   *
+   *  - `copy === false` (Move): each selected geometry sub-call is replaced
+   *    IN PLACE by its translated version. A translation never changes a
+   *    sub-call's entity COUNT (a line stays a line, a circle a circle), so
+   *    the replacement allocates exactly as many ids as it freed — all
+   *    downstream entity ids stay put and no constraint refs shift. The
+   *    target indices are SNAPSHOTTED first and the replacements applied
+   *    highest-index-first so each index stays valid across the loop. The
+   *    selection is preserved (the same entity ids still own the moved
+   *    geometry).
+   *  - `copy === true` (Copy): the originals stay; one translated copy of
+   *    each selected geometry sub-call is appended as an ordinary
+   *    `sketch_line` / `sketch_circle` / `sketch_arc` carrying its source's
+   *    construction flag. The selection is preserved (still points at the
+   *    originals).
+   *
+   * Re-solves afterwards. No-op when the session is inactive, the
+   * selection is empty, or nothing simple maps.
+   */
+  moveSketchSelection(dx: number, dy: number, copy: boolean): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    if (copy) {
+      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      for (const i of sources) {
+        const call = session.subCalls[i];
+        const cv = curveOfSubCall(call);
+        if (!cv) continue;
+        copies.push(subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)));
+      }
+      if (copies.length === 0) return;
+      this.pushSketchSubCalls(copies);
+      void solveAndReplace(this);
+      return;
+    }
+
+    // In-place Move: replace each selected geometry sub-call with its
+    // translated self. Same entity count → ids stay stable, so we can
+    // apply against the SNAPSHOT of indices. Highest index first keeps the
+    // lower indices valid across each rewrite (replaceSketchSubCallAt
+    // clears the selection, but we restore it below).
+    let next = session;
+    for (const i of [...sources].sort((a, b) => b - a)) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      next = reduceReplaceAt(next, i, [
+        subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)),
+      ]);
+    }
+    // Entity ids are unchanged by an equal-count replace, so the original
+    // selection still points at the moved geometry — restore it.
+    this.updateSketch(reduceSetSelection(next, session.selection));
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F17: rotate the current selection about the sketch origin `[0, 0]` by
+   * `angleDeg` degrees (CCW). Same selection → simple-geometry mapping and
+   * id-stability reasoning as [`moveSketchSelection`]: a rotation preserves
+   * each sub-call's entity count, so an in-place replace leaves all
+   * downstream ids and constraint refs intact.
+   *
+   *  - `copy === false`: replace each selected geometry sub-call in place
+   *    by its rotated version (selection preserved).
+   *  - `copy === true`: append one rotated copy of each (originals kept).
+   *
+   * Re-solves afterwards. No-op when the session is inactive, the
+   * selection is empty, or nothing simple maps.
+   */
+  rotateSketchSelection(angleDeg: number, copy: boolean): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    if (copy) {
+      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      for (const i of sources) {
+        const call = session.subCalls[i];
+        const cv = curveOfSubCall(call);
+        if (!cv) continue;
+        copies.push(
+          subCallOfCurve(rotateCurve(cv, [0, 0], angleRad), carry(call.params)),
+        );
+      }
+      if (copies.length === 0) return;
+      this.pushSketchSubCalls(copies);
+      void solveAndReplace(this);
+      return;
+    }
+
+    let next = session;
+    for (const i of [...sources].sort((a, b) => b - a)) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      next = reduceReplaceAt(next, i, [
+        subCallOfCurve(rotateCurve(cv, [0, 0], angleRad), carry(call.params)),
+      ]);
+    }
+    this.updateSketch(reduceSetSelection(next, session.selection));
     void solveAndReplace(this);
   }
 

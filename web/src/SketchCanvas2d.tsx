@@ -656,6 +656,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // F11: the first line picked in the two-click chamfer flow (sub-call
   // index), pending the second pick. Reset whenever the tool changes.
   const chamferFirstRef = useRef<number | null>(null);
+  // F17: the base point of the two-click Move / Copy flow (sketch mm),
+  // pending the target click. Reset whenever the tool changes.
+  const moveBaseRef = useRef<[number, number] | null>(null);
   // Latest session, readable from imperative (non-React) listeners
   // like the native wheel handler below.
   const sessionRef = useRef<SketchSessionState>(session);
@@ -746,6 +749,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     // F10: drop a pending first fillet pick when leaving the tool.
     filletFirstRef.current = null;
+    // F17: drop a pending Move / Copy base point when leaving the tool.
+    moveBaseRef.current = null;
     // F11: drop a pending first chamfer pick when leaving the tool.
     chamferFirstRef.current = null;
   }, [session.selectedTool]);
@@ -953,6 +958,27 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           );
           chamferFirstRef.current = null;
         }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // F17: Move / Copy — two-click transform of the current selection (not a
+    // kernel tool). The user selects geometry first (Select mode), picks
+    // Move or Copy, then clicks a BASE point and a TARGET point: the
+    // selection is translated by (target − base), in place for Move or as
+    // appended copies for Copy. The first click records the base in
+    // `moveBaseRef`; the second click applies the delta and clears it.
+    if (
+      session.selectedTool === "sketch_move" ||
+      session.selectedTool === "sketch_copy"
+    ) {
+      const base = moveBaseRef.current;
+      if (base === null) {
+        moveBaseRef.current = [u, v];
+      } else {
+        const copy = session.selectedTool === "sketch_copy";
+        store.moveSketchSelection(u - base[0], v - base[1], copy);
+        moveBaseRef.current = null;
       }
       lastCamVersionRef.current = -1;
       return;

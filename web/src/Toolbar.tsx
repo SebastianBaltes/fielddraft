@@ -605,6 +605,56 @@ export function Toolbar({ store, state }: ToolbarProps) {
           >
             Circular
           </button>
+          {/* F17: Move / Copy — interactive transforms, not kernel tools.
+              Select source geometry first (Select mode), pick Move or Copy,
+              then click a base point and a target point: the selection is
+              translated by (target − base), in place for Move or as appended
+              copies for Copy (see store.moveSketchSelection /
+              SketchCanvas2d). */}
+          <FeatureButton
+            kind="sketch_move"
+            active={sketchSession.selectedTool === "sketch_move"}
+            testId="sketch-tool-sketch_move"
+            onClick={() => store.selectSketchTool("sketch_move", {})}
+          />
+          <FeatureButton
+            kind="sketch_copy"
+            active={sketchSession.selectedTool === "sketch_copy"}
+            testId="sketch-tool-sketch_copy"
+            onClick={() => store.selectSketchTool("sketch_copy", {})}
+          />
+          {(sketchSession.selectedTool === "sketch_move" ||
+            sketchSession.selectedTool === "sketch_copy") && (
+            <span className="hint" data-testid="sketch-move-hint">
+              Click a base point, then a target point
+            </span>
+          )}
+          {/* F17: Rotate — rotate the current selection about the sketch
+              origin by the angle below (degrees). Acts immediately on the
+              selection; no canvas gesture (see
+              store.rotateSketchSelection). */}
+          <label className="corner-op-input" title="Rotation angle (deg)">
+            ∠
+            <input
+              type="number"
+              step="15"
+              data-testid="sketch-rotate-angle"
+              value={state.sketchRotateAngle}
+              onChange={(e) =>
+                store.setSketchRotateAngle(Number(e.currentTarget.value))
+              }
+            />
+          </label>
+          <button
+            type="button"
+            className="tool"
+            title="Rotate selection about the origin"
+            data-testid="sketch-rotate-apply"
+            disabled={sketchSelection.length === 0}
+            onClick={() => store.rotateSketchSelection(state.sketchRotateAngle, false)}
+          >
+            Rotate
+          </button>
         </div>
 
         {!sketchSession.selectedTool ? (
