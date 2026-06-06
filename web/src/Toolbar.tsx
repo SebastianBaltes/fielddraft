@@ -425,6 +425,24 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_trim"
             onClick={() => store.selectSketchTool("sketch_trim", {})}
           />
+          {/* F21: Project / Use — interactive editing mode, not a kernel
+              tool. Existing bodies' B-Rep edges are drawn as faint reference
+              guides projected onto the sketch plane; a single click adopts
+              the highlighted guide under the cursor as a CONSTRUCTION
+              sketch_line the solver can constrain against (see
+              nearestProjectedEdge / sketchProject.ts). */}
+          <FeatureButton
+            kind="sketch_project"
+            active={sketchSession.selectedTool === "sketch_project"}
+            testId="sketch-tool-sketch_project"
+            onClick={() => store.selectSketchTool("sketch_project", {})}
+          />
+          {sketchSession.selectedTool === "sketch_project" && (
+            <span className="hint" data-testid="sketch-project-hint">
+              Click a highlighted reference edge to adopt it as construction
+              geometry
+            </span>
+          )}
           {/* Split: the keep-both sibling of Trim — also an interactive
               editing mode, not a kernel tool. A single click cuts the curve
               under the cursor into two pieces meeting at the click point;

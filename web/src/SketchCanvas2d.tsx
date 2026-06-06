@@ -61,6 +61,7 @@ import {
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
+import { nearestProjectedEdge } from "./sketchProject";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -1281,6 +1282,28 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
       if (pick !== null) {
         store.offsetSketchAt(pick, [u, v], store.getState().sketchOffsetDistance);
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // F21: Project / Use external geometry. The faint guides drawn from
+    // existing bodies' B-Rep edges (projected onto the sketch plane in
+    // `projectedEdgesRef`) are inert reference lines. A single click adopts
+    // the nearest guide as a real CONSTRUCTION `sketch_line`, so the solver
+    // can constrain against it. Construction matches the CAD "projected
+    // reference" convention (visible + snappable, excluded from the profile).
+    if (session.selectedTool === "sketch_project") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const idx = nearestProjectedEdge(projectedEdgesRef.current, [u, v], tolMm);
+      if (idx !== null) {
+        const edge = projectedEdgesRef.current[idx];
+        store.pushSketchSubCalls([
+          {
+            type: "sketch_line",
+            params: { start: edge.p0, end: edge.p1, construction: true },
+          },
+        ]);
+        scheduleSolverReplay();
       }
       lastCamVersionRef.current = -1;
       return;
