@@ -333,7 +333,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 17 | Copy/Move/Transform | ✅ | 0.5.58 | 74a4724 |
 | 18 | Live-Numerikeingabe | ✅ | 0.5.59 | 51deeb8 |
 | 19 | Constraint-/Element-Panel | ✅ | 0.5.60 | 7750cb1 |
-| 20 | Konflikt-/Redundanz-Diagnose | 🔴 offen | — | — |
+| 20 | Konflikt-/Redundanz-Diagnose | ✅ | 0.5.61 | e99e4df |
 | 21 | External/Projected Geometry | 🔴 offen | — | — |
 | 22 | SVG/DXF-Import | 🔴 offen | — | — |
 | 23 | Spline / B-Spline | 🔴 offen | — | — |
