@@ -33,7 +33,7 @@ import {
   DRAFT_DRAG_START_ID,
   predictNextLineIds,
 } from "./sketchSession";
-import { hitTestSketchEntity } from "./sketchHitTest";
+import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
 import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
 import {
   angleAbout,
@@ -96,6 +96,13 @@ const SNAP_RING_PX = 8;
 const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
 /** Highlight colour for entities picked in select mode. */
 const COLOR_SELECTED = "#f97316";
+/** F4 marquee: enclosing ("window", left→right) = solid blue border;
+ *  crossing (right→left) = dashed green border. Translucent fills. */
+const COLOR_MARQUEE_ENCLOSING = "#2563eb";
+const COLOR_MARQUEE_CROSSING = "#16a34a";
+const FILL_MARQUEE_ENCLOSING = "rgba(37, 99, 235, 0.12)";
+const FILL_MARQUEE_CROSSING = "rgba(22, 163, 74, 0.12)";
+const MARQUEE_CROSSING_DASH = [6, 4];
 /** Pick radius for select-mode hit-testing, in CSS pixels. Divided
  *  by the camera zoom to get the sketch-plane tolerance. */
 const SELECT_PICK_PX = 6;
@@ -281,6 +288,21 @@ type DragState =
        *  on drop so existing constraints snap the sketch back. */
       kind: "grip";
       grip: Grip;
+    }
+  | {
+      /** F4: box-select / marquee in select mode. The user drags a
+       *  rectangle on empty canvas; on drop we pick every entity the
+       *  box matches. Drag direction picks the mode: left→right is an
+       *  enclosing "window" select, right→left a "crossing" select.
+       *  `start` is captured in sketch mm at pointerdown; `current`
+       *  tracks the cursor. `startPx`/`currentPx` are the matching
+       *  client-pixel corners, used to decide whether the gesture was
+       *  a real drag or just a click. */
+      kind: "marquee";
+      start: [number, number];
+      current: [number, number];
+      startPx: [number, number];
+      currentPx: [number, number];
     };
 
 /**
@@ -679,7 +701,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
       if (hit === null) {
-        store.clearSketchSelection();
+        // Empty space: begin a marquee. We DON'T clear the selection
+        // yet — that happens on pointerup if the gesture turns out to
+        // be a plain click (no drag).
+        const canvas = e.currentTarget as HTMLCanvasElement;
+        canvas.setPointerCapture(e.pointerId);
+        const rect = canvas.getBoundingClientRect();
+        const startPx: [number, number] = [
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+        ];
+        dragRef.current = {
+          kind: "marquee",
+          start: [u, v],
+          current: [u, v],
+          startPx,
+          currentPx: startPx,
+        };
       } else {
         store.toggleSketchSelection(hit);
       }
@@ -892,6 +930,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    // F4: marquee drag also lives in select mode (no tool active), so
+    // it runs before the drawing-tool guard. Track both the sketch-mm
+    // corner and the client-pixel corner, then redraw.
+    if (dragRef.current.kind === "marquee") {
+      const canvas = e.currentTarget as HTMLCanvasElement;
+      const cam = readCamForCanvas(canvas);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const rect = canvas.getBoundingClientRect();
+      dragRef.current = {
+        ...dragRef.current,
+        current: [u, v],
+        currentPx: [e.clientX - rect.left, e.clientY - rect.top],
+      };
+      lastCamVersionRef.current = -1;
+      drawOverlay(
+        canvas,
+        session,
+        cam,
+        dragRef.current,
+        hoverRef.current,
+        snapRef.current,
+        projectedEdgesRef.current,
+      );
+      return;
+    }
     if (!session.active || !session.selectedTool) return;
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
     let [u, v] = screenToSketchFromEvent(e, cam);
@@ -999,6 +1062,38 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // reassert themselves (the live drag moved coordinates freely).
       scheduleSolverReplay();
       lastCamVersionRef.current = -1;
+      return;
+    }
+    if (dragRef.current.kind === "marquee") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { start, current, startPx, currentPx } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      lastCamVersionRef.current = -1;
+      // A gesture under a few pixels is a plain click → fall back to
+      // the existing clear-selection behaviour.
+      const movedPx = Math.hypot(
+        currentPx[0] - startPx[0],
+        currentPx[1] - startPx[1],
+      );
+      if (movedPx < 4) {
+        if (store) store.clearSketchSelection();
+        return;
+      }
+      // Drag direction picks the mode: left→right (startU ≤ endU) is an
+      // enclosing "window" select; right→left is a crossing select.
+      const mode = start[0] <= current[0] ? "enclosing" : "crossing";
+      const min: [number, number] = [
+        Math.min(start[0], current[0]),
+        Math.min(start[1], current[1]),
+      ];
+      const max: [number, number] = [
+        Math.max(start[0], current[0]),
+        Math.max(start[1], current[1]),
+      ];
+      if (store) {
+        const state = buildDraftSketchState(session.subCalls);
+        store.setSketchSelection(entitiesInBox(state, min, max, mode));
+      }
       return;
     }
     if (dragRef.current.kind === "circle") {
@@ -1501,6 +1596,8 @@ function drawOverlay(
       drawPoint(ctx, start, cam, COLOR_PREVIEW);
       drawRadiusLabel(ctx, center, r, cam);
     }
+  } else if (drag.kind === "marquee") {
+    drawMarquee(ctx, drag.start, drag.current, cam);
   } else if (hover) {
     // Hover preview outside of a drag — shows where a click
     // would land, which is crucial to see the snap magnetism
@@ -1762,6 +1859,37 @@ function drawRectangle(
   drawPoint(ctx, br, cam, color);
   drawPoint(ctx, tr, cam, color);
   drawPoint(ctx, tl, cam, color);
+}
+
+/**
+ * F4: draw the box-select marquee. The drag direction decides the
+ * style — left→right (start.x ≤ current.x) is an enclosing "window"
+ * select drawn with a solid blue border, right→left a crossing select
+ * drawn with a dashed green border. Both get a faint matching fill.
+ */
+function drawMarquee(
+  ctx: CanvasRenderingContext2D,
+  start: [number, number],
+  current: [number, number],
+  cam: Readonly<SketchCameraState>,
+): void {
+  const enclosing = start[0] <= current[0];
+  const [sx, sy] = sketchToScreen(start[0], start[1], cam);
+  const [cx, cy] = sketchToScreen(current[0], current[1], cam);
+  const x = Math.min(sx, cx);
+  const y = Math.min(sy, cy);
+  const w = Math.abs(cx - sx);
+  const h = Math.abs(cy - sy);
+  ctx.save();
+  ctx.fillStyle = enclosing ? FILL_MARQUEE_ENCLOSING : FILL_MARQUEE_CROSSING;
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = enclosing
+    ? COLOR_MARQUEE_ENCLOSING
+    : COLOR_MARQUEE_CROSSING;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash(enclosing ? [] : MARQUEE_CROSSING_DASH);
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
 }
 
 function drawSizeLabel(
