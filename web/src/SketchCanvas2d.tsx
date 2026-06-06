@@ -653,6 +653,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // F10: the first line picked in the two-click fillet flow (sub-call
   // index), pending the second pick. Reset whenever the tool changes.
   const filletFirstRef = useRef<number | null>(null);
+  // F11: the first line picked in the two-click chamfer flow (sub-call
+  // index), pending the second pick. Reset whenever the tool changes.
+  const chamferFirstRef = useRef<number | null>(null);
   // Latest session, readable from imperative (non-React) listeners
   // like the native wheel handler below.
   const sessionRef = useRef<SketchSessionState>(session);
@@ -743,6 +746,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     // F10: drop a pending first fillet pick when leaving the tool.
     filletFirstRef.current = null;
+    // F11: drop a pending first chamfer pick when leaving the tool.
+    chamferFirstRef.current = null;
   }, [session.selectedTool]);
 
   // Size the canvas to its container on mount and on resize.
@@ -902,6 +907,29 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         } else {
           store.filletSketchAt(first, pick, store.getState().sketchFilletRadius);
           filletFirstRef.current = null;
+        }
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
+    // Chamfer: two-click flow. Each click picks the line sub-call nearest
+    // the cursor (line-only — composites aren't chamfered here). The first
+    // pick is held pending in `chamferFirstRef`; the second pick applies
+    // the chamfer with the current setback and clears the pending state.
+    if (session.selectedTool === "sketch_chamfer") {
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+      if (pick !== null) {
+        const first = chamferFirstRef.current;
+        if (first === null || first === pick) {
+          chamferFirstRef.current = pick;
+        } else {
+          store.chamferSketchAt(
+            first,
+            pick,
+            store.getState().sketchChamferDistance,
+          );
+          chamferFirstRef.current = null;
         }
       }
       lastCamVersionRef.current = -1;

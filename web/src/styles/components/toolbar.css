@@ -206,9 +206,9 @@
     gap: var(--space-2);
   }
 
-  /* F10: numeric radius input for the two-click fillet tool, sat next
-   * to the Fillet button in the sketch tool row. */
-  & .fillet-radius {
+  /* F10/F11: numeric input for the two-click corner ops (Fillet radius,
+   * Chamfer distance), sat next to their buttons in the sketch tool row. */
+  & .corner-op-input {
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);

@@ -126,6 +126,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch_mirror:      { label: "Mirror",           glyph: "◧" },
   sketch_trim:        { label: "Trim",             glyph: "✂" },
   sketch_fillet:      { label: "Fillet",           glyph: "⌒" },
+  sketch_chamfer:     { label: "Chamfer",          glyph: "◣" },
   sketch_offset:      { label: "Offset",           glyph: "⇔" },
   sketch_constraint_horizontal:    { label: "Horizontal",    glyph: "—" },
   sketch_constraint_vertical:      { label: "Vertical",      glyph: "|" },

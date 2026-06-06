@@ -434,7 +434,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_fillet"
             onClick={() => store.selectSketchTool("sketch_fillet", {})}
           />
-          <label className="fillet-radius" title="Fillet radius (mm)">
+          <label className="corner-op-input" title="Fillet radius (mm)">
             R
             <input
               type="number"
@@ -444,6 +444,30 @@ export function Toolbar({ store, state }: ToolbarProps) {
               value={state.sketchFilletRadius}
               onChange={(e) =>
                 store.setSketchFilletRadius(Number(e.currentTarget.value))
+              }
+            />
+          </label>
+          {/* Chamfer: straight-edge sibling of Fillet, an interactive
+              editing mode, not a kernel tool. Two clicks pick the lines
+              whose corner is bevelled by a straight line at the setback
+              distance below (see store.chamferSketchAt /
+              sketchChamfer.ts). */}
+          <FeatureButton
+            kind="sketch_chamfer"
+            active={sketchSession.selectedTool === "sketch_chamfer"}
+            testId="sketch-tool-sketch_chamfer"
+            onClick={() => store.selectSketchTool("sketch_chamfer", {})}
+          />
+          <label className="corner-op-input" title="Chamfer distance (mm)">
+            D
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              data-testid="sketch-chamfer-distance"
+              value={state.sketchChamferDistance}
+              onChange={(e) =>
+                store.setSketchChamferDistance(Number(e.currentTarget.value))
               }
             />
           </label>

@@ -42,6 +42,7 @@ import {
 import { buildConstraintCall } from "./sketchConstraints";
 import { computeTrim, curveOfSubCall, subCallOfCurve } from "./sketchTrim";
 import { filletLines } from "./sketchFillet";
+import { chamferLines } from "./sketchChamfer";
 import { solveAndReplace } from "./solver/replaySolve";
 import {
   INACTIVE_ASSEMBLY,
@@ -192,6 +193,9 @@ export interface StoreState {
   /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
    *  tool to round the corner between two picked lines. */
   sketchFilletRadius: number;
+  /** F11: sketch-chamfer setback distance (mm) used by the two-click
+   *  `sketch_chamfer` tool to bevel the corner between two picked lines. */
+  sketchChamferDistance: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -472,6 +476,7 @@ export class KernelStore {
       measureMode: false,
       filletMode: false,
       sketchFilletRadius: 5,
+      sketchChamferDistance: 5,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -560,6 +565,7 @@ export class KernelStore {
       measureMode: this.state.measureMode,
       filletMode: this.state.filletMode,
       sketchFilletRadius: this.state.sketchFilletRadius,
+      sketchChamferDistance: this.state.sketchChamferDistance,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -2012,6 +2018,71 @@ export class KernelStore {
     ]);
     this.updateSketch(next);
     this.pushSketchSubCalls([subCallOfCurve(fillet.arc, carry(c1.params))]);
+    void solveAndReplace(this);
+  }
+
+  /** F11: set the setback distance (mm) the two-click `sketch_chamfer`
+   *  tool uses to bevel the next corner. No-op for a non-finite /
+   *  non-positive value. */
+  setSketchChamferDistance(dist: number): void {
+    if (!Number.isFinite(dist) || dist <= 0) return;
+    this.patch({ sketchChamferDistance: dist });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F11: bevel the corner between the two line sub-calls at
+   * `firstIndex` and `secondIndex` with a straight chamfer at setback
+   * `dist` mm. Reads both lines' solved geometry, computes the chamfer
+   * via [`chamferLines`], then rewrites the spine: the first line is
+   * replaced by its trimmed remainder in place, the second line is
+   * replaced by its trimmed remainder in place, and the connecting bevel
+   * line is appended. Downstream constraint refs are rewritten by
+   * [`replaceSketchSubCallAt`] and the sketch is re-solved. No-op when
+   * either pick isn't a line, they're the same call, or no chamfer is
+   * geometrically possible (parallel, setback too large, no shared
+   * corner).
+   */
+  chamferSketchAt(firstIndex: number, secondIndex: number, dist: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (firstIndex === secondIndex) return;
+    const c1 = session.subCalls[firstIndex];
+    const c2 = session.subCalls[secondIndex];
+    if (!c1 || !c2) return;
+    const cv1 = curveOfSubCall(c1);
+    const cv2 = curveOfSubCall(c2);
+    if (!cv1 || !cv2 || cv1.kind !== "line" || cv2.kind !== "line") return;
+
+    const chamfer = chamferLines(cv1, cv2, dist);
+    if (!chamfer) return;
+
+    // Carry each line's construction flag onto its trimmed remainder; the
+    // bevel inherits the first line's flag (a chamfer of two construction
+    // lines stays construction).
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    // Replace the two lines in place (each a single trimmed line), then
+    // append the bevel. Apply the higher index first so the lower index
+    // stays valid across the first rewrite.
+    const lo = Math.min(firstIndex, secondIndex);
+    const hi = Math.max(firstIndex, secondIndex);
+    const loCurve = lo === firstIndex ? chamfer.trimmed1 : chamfer.trimmed2;
+    const hiCurve = hi === firstIndex ? chamfer.trimmed1 : chamfer.trimmed2;
+    const loParams = lo === firstIndex ? c1.params : c2.params;
+    const hiParams = hi === firstIndex ? c1.params : c2.params;
+
+    let next = reduceReplaceAt(session, hi, [
+      subCallOfCurve(hiCurve, carry(hiParams)),
+    ]);
+    next = reduceReplaceAt(next, lo, [
+      subCallOfCurve(loCurve, carry(loParams)),
+    ]);
+    this.updateSketch(next);
+    this.pushSketchSubCalls([subCallOfCurve(chamfer.line, carry(c1.params))]);
     void solveAndReplace(this);
   }
 
