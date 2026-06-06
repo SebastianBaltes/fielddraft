@@ -60,6 +60,7 @@ import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
+import { importVectorToSubCalls } from "./importVector";
 import { solveAndReplace } from "./solver/replaySolve";
 import type { SketchDiagnostics } from "./solver/types";
 import {
@@ -1950,6 +1951,28 @@ export class KernelStore {
       },
     };
     this.notify();
+  }
+
+  /**
+   * F22: parse an SVG / DXF file's text into sketch sub-calls and append
+   * them to the active session, then re-solve. Returns the number of
+   * sub-calls imported (0 when nothing parsed or no session is active),
+   * so the caller can surface a hint on an empty result. SVG coordinates
+   * are y-flipped (y-down → y-up); DXF passes through unflipped. Curves
+   * are tessellated into `sketch_line` chains.
+   */
+  importVectorSubCalls(text: string, filename: string): number {
+    if (!this.state.sketchSession.active) return 0;
+    let calls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>;
+    try {
+      calls = importVectorToSubCalls(text, filename);
+    } catch {
+      return 0;
+    }
+    if (calls.length === 0) return 0;
+    this.pushSketchSubCalls(calls);
+    void solveAndReplace(this);
+    return calls.length;
   }
 
   /**

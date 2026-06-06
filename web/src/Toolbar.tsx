@@ -282,6 +282,24 @@ export function Toolbar({ store, state }: ToolbarProps) {
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
   const sketchSession = state.sketchSession;
 
+  // F22: hidden file input for SVG / DXF import.
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importHint, setImportHint] = useState<string | null>(null);
+  const handleImportFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const count = store.importVectorSubCalls(text, file.name);
+      setImportHint(
+        count > 0
+          ? `Imported ${count} element${count === 1 ? "" : "s"}`
+          : "No geometry found in file",
+      );
+    } catch {
+      setImportHint("Could not read file");
+    }
+  };
+
   const [sketchToolTypes, setSketchToolTypes] = useState<readonly string[]>([]);
   useEffect(() => {
     try {
@@ -347,6 +365,34 @@ export function Toolbar({ store, state }: ToolbarProps) {
           <button type="button" className="tool" title="Cancel sketch" data-testid="sketch-cancel" onClick={() => store.exitSketch()}>
             ✗ Cancel
           </button>
+          {/* F22: import SVG / DXF geometry into the active sketch. A
+              visible button triggers the visually-hidden file input. */}
+          <button
+            type="button"
+            className="tool"
+            title="Import SVG / DXF geometry"
+            data-testid="sketch-import"
+            onClick={() => importInputRef.current?.click()}
+          >
+            <span className="glyph" aria-hidden="true">📐</span>
+            <span className="tool-label">Import</span>
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".svg,.dxf"
+            className="hidden-file-input"
+            data-testid="sketch-import-input"
+            onChange={(e) => {
+              void handleImportFile(e.currentTarget.files?.[0]);
+              e.currentTarget.value = "";
+            }}
+          />
+          {importHint && (
+            <span className="hint" data-testid="sketch-import-hint">
+              {importHint}
+            </span>
+          )}
           {dof !== null && (
             <span
               className={
