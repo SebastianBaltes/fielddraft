@@ -1178,14 +1178,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    // F15: Offset is an interactive editing mode, not a kernel tool. A
+    // single click picks the nearest curve and appends a parallel copy at
+    // the toolbar distance toward the clicked side — the click point
+    // doubles as the side selector (a line offsets to the click's side; a
+    // circle/arc grows if the click is outside its rim, shrinks if inside).
+    // See store.offsetSketchAt / sketchOffset.ts.
     if (session.selectedTool === "sketch_offset") {
-      // Whole-profile operation tool. It doesn't draw an entity; it
-      // transforms the geometry accumulated so far (offset grows/shrinks
-      // it) at commit time. A click applies the operation with the
-      // parameters from the tool dialog (offset distance) so the canvas
-      // isn't a dead surface for it. The op carries no solver entity, so
-      // we just append the sub-call — no inference replay needed.
-      store.applySketchToolDraft();
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const pick = nearestTrimTarget(session.subCalls, [u, v], tolMm);
+      if (pick !== null) {
+        store.offsetSketchAt(pick, [u, v], store.getState().sketchOffsetDistance);
+      }
       lastCamVersionRef.current = -1;
       return;
     }

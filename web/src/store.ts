@@ -47,7 +47,9 @@ import {
   edgesOfSubCall,
   subCallOfCurve,
 } from "./sketchTrim";
+import type { Vec2 } from "./sketchTrim";
 import { mirrorCurve } from "./sketchMirror";
+import { offsetCurve } from "./sketchOffset";
 import { filletLines } from "./sketchFillet";
 import { chamferLines } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
@@ -205,6 +207,9 @@ export interface StoreState {
   /** F11: sketch-chamfer setback distance (mm) used by the two-click
    *  `sketch_chamfer` tool to bevel the corner between two picked lines. */
   sketchChamferDistance: number;
+  /** F15: sketch-offset distance (mm) used by the single-click
+   *  `sketch_offset` tool to place a parallel copy of the picked curve. */
+  sketchOffsetDistance: number;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -486,6 +491,7 @@ export class KernelStore {
       filletMode: false,
       sketchFilletRadius: 5,
       sketchChamferDistance: 5,
+      sketchOffsetDistance: 5,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -575,6 +581,7 @@ export class KernelStore {
       filletMode: this.state.filletMode,
       sketchFilletRadius: this.state.sketchFilletRadius,
       sketchChamferDistance: this.state.sketchChamferDistance,
+      sketchOffsetDistance: this.state.sketchOffsetDistance,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -2230,6 +2237,46 @@ export class KernelStore {
     ]);
     this.updateSketch(next);
     this.pushSketchSubCalls([subCallOfCurve(chamfer.line, carry(c1.params))]);
+    void solveAndReplace(this);
+  }
+
+  /** F15: set the distance (mm) the single-click `sketch_offset` tool
+   *  uses to place a parallel copy. No-op for a non-finite / non-positive
+   *  value. */
+  setSketchOffsetDistance(dist: number): void {
+    if (!Number.isFinite(dist) || dist <= 0) return;
+    this.patch({ sketchOffsetDistance: dist });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F15: append a parallel copy of the sub-call at `targetIndex` offset
+   * by `distance` mm toward the side the click `clickPoint` lies on.
+   * Reads the target's solved geometry via `curveOfSubCall`, computes the
+   * offset via [`offsetCurve`] (line: parallel toward the clicked side;
+   * circle/arc: concentric, grown if the click is outside / shrunk if
+   * inside), and appends the result as an ordinary `sketch_line` /
+   * `sketch_circle` / `sketch_arc` — the original stays put. The copy
+   * carries the source's construction flag. After appending, the sketch
+   * is re-solved. No-op when the target isn't a simple curve or no valid
+   * offset exists (collapsed inner offset, degenerate line, bad distance).
+   */
+  offsetSketchAt(targetIndex: number, clickPoint: Vec2, distance: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const cv = curveOfSubCall(target);
+    if (!cv) return;
+
+    const offset = offsetCurve(cv, distance, clickPoint);
+    if (!offset) return;
+
+    const carry: Record<string, unknown> =
+      target.params.construction !== undefined
+        ? { construction: target.params.construction }
+        : {};
+    this.pushSketchSubCalls([subCallOfCurve(offset, carry)]);
     void solveAndReplace(this);
   }
 

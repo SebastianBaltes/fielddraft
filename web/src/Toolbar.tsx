@@ -259,12 +259,12 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   "sketch_polygon",
   "sketch_regular_polygon",
   "sketch_arc",
-  "sketch_offset",
-  // `sketch_trim` (and F14 `sketch_mirror`) are not in this allowlist
-  // because they aren't kernel tools at all — they're interactive editing
-  // modes rendered as separate buttons below the kernel-driven row (see
-  // the JSX). The kernel `sketch_mirror` whole-profile stub is no longer
-  // surfaced; the interactive Mirror replaces it.
+  // `sketch_trim` (F14 `sketch_mirror`, F15 `sketch_offset`) are not in
+  // this allowlist because they aren't kernel tools at all — they're
+  // interactive editing modes rendered as separate buttons below the
+  // kernel-driven row (see the JSX). The kernel `sketch_mirror` and
+  // `sketch_offset` whole-profile stubs are no longer surfaced; the
+  // interactive Mirror / Offset replace them.
 ]);
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
@@ -509,6 +509,29 @@ export function Toolbar({ store, state }: ToolbarProps) {
               Click the axis line to mirror the selected geometry
             </span>
           )}
+          {/* F15: Offset — interactive editing mode, not a kernel tool. A
+              single click picks the nearest curve and appends a parallel
+              copy at the distance below, toward the clicked side (see
+              store.offsetSketchAt / sketchOffset.ts). */}
+          <FeatureButton
+            kind="sketch_offset"
+            active={sketchSession.selectedTool === "sketch_offset"}
+            testId="sketch-tool-sketch_offset"
+            onClick={() => store.selectSketchTool("sketch_offset", {})}
+          />
+          <label className="corner-op-input" title="Offset distance (mm)">
+            D
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              data-testid="sketch-offset-distance"
+              value={state.sketchOffsetDistance}
+              onChange={(e) =>
+                store.setSketchOffsetDistance(Number(e.currentTarget.value))
+              }
+            />
+          </label>
         </div>
 
         {!sketchSession.selectedTool ? (
