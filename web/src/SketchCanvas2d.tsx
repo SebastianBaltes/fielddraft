@@ -2574,11 +2574,12 @@ function drawOverlay(
       }
     } else if (call.type === "sketch_path") {
       // An imported analytic path: one or more contours of explicit
-      // line + quadratic-Bézier segments. The outline isn't made of
-      // SketchState entities (only each contour start is), so it's
-      // stroked here directly from the sub-call params. Quads are
-      // sampled into short line segments for the 2D stroke (the kernel
-      // keeps them as EXACT QuadBezier for SDF/extrude).
+      // line + quadratic-Bézier segments. Every on-/off-curve vertex is
+      // a SketchState point entity (so it's pickable + grip-draggable),
+      // but the smooth outline itself is lowered kernel-side from the
+      // sub-call params, so it's stroked here directly from them. Quads
+      // are sampled into short line segments for the 2D stroke (the
+      // kernel keeps them as EXACT QuadBezier for SDF/extrude).
       const contours = call.params.contours;
       if (Array.isArray(contours)) {
         for (const c of contours) {
