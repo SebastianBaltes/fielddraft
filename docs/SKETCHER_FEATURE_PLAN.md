@@ -336,5 +336,5 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 | 20 | Konflikt-/Redundanz-Diagnose | ✅ | 0.5.61 | e99e4df |
 | 21 | External/Projected Geometry | ✅ | 0.5.62 | 88d9d08 |
 | 22 | SVG/DXF-Import | ✅ | 0.5.63 | 1ce78d3 |
-| 23 | Spline / B-Spline | 🔴 offen | — | — |
+| 23 | Spline / B-Spline | ✅ | 0.5.64 | e93d549 |
 | 24 | Text | 🔴 offen | — | — |
