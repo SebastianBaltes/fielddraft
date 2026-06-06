@@ -20,7 +20,13 @@
  * general case drops in later.
  */
 
-import { useEffect, useLayoutEffect, useRef, type ReactElement } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import type { KernelStore, SketchSessionState } from "./store";
 import {
   readSketchCamera,
@@ -34,6 +40,12 @@ import {
   predictNextLineIds,
   regularPolygonVertices,
 } from "./sketchSession";
+import {
+  buildTypedLineBundle,
+  measuredAngleDeg,
+  measuredLength,
+  resolveLengthAngle,
+} from "./sketchLiveInput";
 import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
 import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
 import {
@@ -287,6 +299,17 @@ type DragState =
       /** Entity id the start snapped to at pointerdown time, if
        *  the snap was a coincident-to-point hit. Used by the
        *  commit path to emit a matching coincident constraint. */
+      startAnchorId: number | null;
+    }
+  | {
+      /** F18: a click-without-drag started a line; it now rubber-bands
+       *  to the cursor with NO button held, and a HUD lets the user type
+       *  an exact length / angle. A second click OR Enter commits; Esc
+       *  cancels. `startAnchorId` carries any coincident-to-point hit
+       *  from the first click, same as the drag path. */
+      kind: "pending_line";
+      start: [number, number];
+      current: [number, number];
       startAnchorId: number | null;
     }
   | {
@@ -679,6 +702,24 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastDist: 0,
   });
 
+  // F18: live-numeric-input HUD shown while a click-started line is
+  // rubber-banding (kind: "pending_line"). `hud` is null when no pending
+  // line is in flight. `left`/`top` position it at the line midpoint in
+  // client pixels; `length`/`angle` are the editable field strings,
+  // refreshed from the live measurement on every move UNLESS the user has
+  // typed into that field (tracked by `lengthDirty`/`angleDirty`).
+  const [hud, setHud] = useState<{
+    left: number;
+    top: number;
+    length: string;
+    angle: string;
+  } | null>(null);
+  // The user's typed-override flags, kept in refs so the imperative
+  // pointermove handler can read them without a re-render dependency.
+  const lengthDirtyRef = useRef(false);
+  const angleDirtyRef = useRef(false);
+  const lengthInputRef = useRef<HTMLInputElement | null>(null);
+
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
     if (!store) { projectedEdgesRef.current = []; return; }
@@ -745,6 +786,14 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const k = dragRef.current.kind;
     if (k === "arc" || k === "circle_3p" || k === "rect_3p") {
       dragRef.current = { kind: "idle" };
+      lastCamVersionRef.current = -1;
+    }
+    // F18: drop an in-flight pending line + its HUD when leaving the tool.
+    if (k === "pending_line") {
+      dragRef.current = { kind: "idle" };
+      lengthDirtyRef.current = false;
+      angleDirtyRef.current = false;
+      setHud(null);
       lastCamVersionRef.current = -1;
     }
     // F10: drop a pending first fillet pick when leaving the tool.
@@ -1003,6 +1052,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       return;
     }
     if (session.selectedTool === "sketch_line") {
+      // F18: a second click while a pending (click-started) line is in
+      // flight commits it — at the typed exact length/angle if the HUD
+      // carries an override, otherwise as a free line to the click point.
+      if (dragRef.current.kind === "pending_line") {
+        const pending: Extract<DragState, { kind: "pending_line" }> = {
+          ...dragRef.current,
+          current: [su, sv],
+        };
+        const committed = commitPendingLine(pending, hud);
+        if (!committed) {
+          // Degenerate (e.g. clicked the start again with no typed value):
+          // keep the pending line alive rather than dropping it silently.
+          dragRef.current = pending;
+        }
+        lastCamVersionRef.current = -1;
+        return;
+      }
       dragRef.current = {
         kind: "line",
         start: [su, sv],
@@ -1316,6 +1382,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
+    } else if (dragRef.current.kind === "pending_line") {
+      // F18: rubber-band the click-started line to the cursor (no button
+      // held) and refresh the HUD's live length/angle + position.
+      const snap = resolveSnap(
+        [u, v],
+        session,
+        dragRef.current.start,
+        e.shiftKey,
+        projectedEdgesRef.current,
+      );
+      snapRef.current = snap;
+      dragRef.current = { ...dragRef.current, current: snap.snapped };
+      updateHudFromPending(dragRef.current.start, snap.snapped);
     } else if (dragRef.current.kind === "rectangle") {
       // Rectangles don't run inference at the drag endpoint —
       // the H/V constraints are implicit in the tool itself, so
@@ -1404,6 +1483,119 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const scheduleSolverReplay = () => {
     if (!store) return;
     void solveAndReplace(store);
+  };
+
+  // F18: refresh the HUD position + (non-dirty) field values from a
+  // pending line. Position is the line midpoint in client pixels;
+  // dirty fields keep the user's typed text.
+  const updateHudFromPending = (
+    start: [number, number],
+    current: [number, number],
+  ) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cam = readCamForCanvas(canvas);
+    const mid: [number, number] = [
+      (start[0] + current[0]) / 2,
+      (start[1] + current[1]) / 2,
+    ];
+    const [mx, my] = sketchToScreen(mid[0], mid[1], cam);
+    const len = measuredLength(start, current);
+    const ang = measuredAngleDeg(start, current);
+    setHud((prev) => ({
+      left: mx,
+      top: my,
+      length: lengthDirtyRef.current
+        ? (prev?.length ?? "")
+        : len > 1e-6
+          ? len.toFixed(2)
+          : "",
+      angle: angleDirtyRef.current
+        ? (prev?.angle ?? "")
+        : len > 1e-6
+          ? ang.toFixed(1)
+          : "",
+    }));
+  };
+
+  // F18: tear down the pending-line draft + HUD without committing.
+  const cancelPendingLine = () => {
+    dragRef.current = { kind: "idle" };
+    lengthDirtyRef.current = false;
+    angleDirtyRef.current = false;
+    setHud(null);
+    lastCamVersionRef.current = -1;
+  };
+
+  // F18: commit the in-flight pending line. When the HUD carries a typed
+  // length/angle override we emit the line + a DRIVEN distance bundle so
+  // the line stays parametric; a plain commit (no typed value) emits a
+  // free line, identical to the drag path. Returns true when something
+  // was committed. `fields` is the latest HUD text (Enter passes its own
+  // closure-fresh copy; the second-click path reads current `hud`).
+  const commitPendingLine = (
+    drag: Extract<DragState, { kind: "pending_line" }>,
+    fields: { length: string; angle: string } | null,
+  ): boolean => {
+    if (!store) return false;
+    const { start, current, startAnchorId } = drag;
+    const liveLen = measuredLength(start, current);
+    const liveAng = measuredAngleDeg(start, current);
+    const typed =
+      fields !== null && (lengthDirtyRef.current || angleDirtyRef.current);
+
+    if (typed) {
+      const resolved = resolveLengthAngle(
+        fields.length,
+        fields.angle,
+        liveLen,
+        liveAng,
+      );
+      if (!resolved) return false;
+      const bundle = buildTypedLineBundle(
+        session.subCalls,
+        start,
+        resolved.length,
+        resolved.angleDeg,
+      );
+      if (!bundle) return false;
+      // A coincident start anchor still applies to the typed line.
+      if (startAnchorId !== null) {
+        const ids = predictNextLineIds(session.subCalls);
+        bundle.push({
+          type: "sketch_constraint_coincident",
+          params: { a: ids.start, b: startAnchorId },
+        });
+      }
+      store.pushSketchSubCalls(bundle);
+      cancelPendingLine();
+      scheduleSolverReplay();
+      return true;
+    }
+
+    // No typed value → commit a free line (no forced dimension). Reject a
+    // degenerate zero-length line.
+    if (liveLen < 1e-3) return false;
+    const ids = predictNextLineIds(session.subCalls);
+    const calls: Array<{ type: string; params: Record<string, unknown> }> = [
+      {
+        type: "sketch_line",
+        params: {
+          start: [start[0], start[1]] as [number, number],
+          end: [current[0], current[1]] as [number, number],
+        },
+      },
+    ];
+    if (startAnchorId !== null) {
+      calls.push({
+        type: "sketch_constraint_coincident",
+        params: { a: ids.start, b: startAnchorId },
+      });
+    }
+    store.pushSketchSubCalls(calls);
+    cancelPendingLine();
+    scheduleSolverReplay();
+    return true;
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1684,24 +1876,28 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const { start, startAnchorId } = dragRef.current;
     dragRef.current = { kind: "idle" };
     const [su, sv] = snap.snapped;
-    // Reject zero-length lines — a click without drag on an
-    // already-placed point would otherwise land as a degenerate
-    // line.
-    const dx = su - start[0];
-    const dy = sv - start[1];
-    if (dx * dx + dy * dy < 1e-6) {
-      const canvas = canvasRef.current;
-      if (canvas) {
-        drawOverlay(
-          canvas,
-          session,
-          cam,
-          dragRef.current,
-          hoverRef.current,
-          snapRef.current,
-          projectedEdgesRef.current,
-        );
-      }
+    // F18: a click-without-drag (the pointer barely moved between down and
+    // up) is the entry point for the type-while-drawing path. Instead of
+    // dropping it as a degenerate line, start a PENDING line that
+    // rubber-bands to the cursor and shows the live numeric HUD; a second
+    // click OR Enter commits, Esc cancels. A real drag (moved past the
+    // pixel threshold) commits a free line below, exactly as before.
+    const [sx0, sy0] = sketchToScreen(start[0], start[1], cam);
+    const [sx1, sy1] = sketchToScreen(su, sv, cam);
+    const movedPx = Math.hypot(sx1 - sx0, sy1 - sy0);
+    if (movedPx < 4) {
+      dragRef.current = {
+        kind: "pending_line",
+        start: [start[0], start[1]],
+        current: [start[0], start[1]],
+        startAnchorId,
+      };
+      lengthDirtyRef.current = false;
+      angleDirtyRef.current = false;
+      updateHudFromPending(start, start);
+      // Focus the length field so the user can type immediately.
+      requestAnimationFrame(() => lengthInputRef.current?.focus());
+      lastCamVersionRef.current = -1;
       return;
     }
     if (!store) return;
@@ -1791,25 +1987,111 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
+  // F18: Esc cancels an in-flight pending line from anywhere (canvas or
+  // the HUD input), Enter commits. A window-level listener catches Esc
+  // even when the canvas has focus; the HUD inputs also wire their own
+  // key handlers (so Enter in a field commits without losing the typed
+  // value to a stale closure).
+  useEffect(() => {
+    if (hud === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelPendingLine();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hud === null]);
+
   if (!session.active) return null;
 
   const toolActive = session.selectedTool !== null;
   const selectMode = session.active && !toolActive;
+
+  // F18: commit the pending line from the HUD using the latest field
+  // strings (closure-fresh on every render, so the typed value is never
+  // stale).
+  const commitFromHud = () => {
+    if (dragRef.current.kind !== "pending_line" || hud === null) return;
+    commitPendingLine(dragRef.current, { length: hud.length, angle: hud.angle });
+  };
+
   return (
-    <canvas
-      ref={canvasRef}
-      data-testid="sketch-canvas-2d"
-      className={
-        "fd-sketch-canvas" +
-        (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "")
-      }
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerCancel}
-      onPointerLeave={onPointerLeave}
-      onContextMenu={(e) => e.preventDefault()}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        data-testid="sketch-canvas-2d"
+        className={
+          "fd-sketch-canvas" +
+          (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "")
+        }
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={onPointerLeave}
+        onContextMenu={(e) => e.preventDefault()}
+      />
+      {hud !== null && (
+        <div
+          className="fd-sketch-live-input"
+          style={{ left: `${hud.left}px`, top: `${hud.top}px` }}
+        >
+          <label className="field">
+            <span className="cap">L</span>
+            <input
+              ref={lengthInputRef}
+              data-testid="sketch-live-length"
+              type="text"
+              inputMode="decimal"
+              value={hud.length}
+              onChange={(e) => {
+                lengthDirtyRef.current = true;
+                setHud((prev) =>
+                  prev === null ? prev : { ...prev, length: e.target.value },
+                );
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitFromHud();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelPendingLine();
+                }
+              }}
+            />
+            <span className="unit">mm</span>
+          </label>
+          <label className="field">
+            <span className="cap">∠</span>
+            <input
+              data-testid="sketch-live-angle"
+              type="text"
+              inputMode="decimal"
+              value={hud.angle}
+              onChange={(e) => {
+                angleDirtyRef.current = true;
+                setHud((prev) =>
+                  prev === null ? prev : { ...prev, angle: e.target.value },
+                );
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitFromHud();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelPendingLine();
+                }
+              }}
+            />
+            <span className="unit">°</span>
+          </label>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -2068,7 +2350,7 @@ function drawOverlay(
     }
   }
 
-  if (drag.kind === "line") {
+  if (drag.kind === "line" || drag.kind === "pending_line") {
     const { start, current } = drag;
     drawLine(ctx, start, current, cam, COLOR_PREVIEW, STROKE_PX);
     drawPoint(ctx, start, cam, COLOR_PREVIEW);
