@@ -53,8 +53,13 @@ mysql -u root -e "CREATE DATABASE fielddraft; CREATE USER 'fielddraft'@'%' IDENT
 # 2. Build and run the server
 cd server && go build -o fielddraft-server . && ./fielddraft-server
 
-# 3. Build and serve the frontend
-cd web && npm run build
+# 3. Build and serve the frontend (WASM kernel + Vite bundle)
+just build
+# `just build` runs `build-wasm` first, so the bundle always carries a
+# freshly compiled kernel stamped with the web/package.json version.
+# (`cd web && npm run build` alone would NOT rebuild the kernel — the
+# wasm-pack output in web/src/wasm/ is a gitignored build artifact and is
+# not committed.)
 # Serve web/dist/ via nginx/caddy with /api proxied to :8080
 ```
 
