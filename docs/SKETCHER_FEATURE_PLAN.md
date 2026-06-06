@@ -314,7 +314,7 @@ Editier-Tools auf vorhandener Infrastruktur, zuletzt die großen Brocken (Spline
 
 | # | Feature | Status | Version | Commit |
 |---|---|---|---|---|
-| 1 | Concentric-Constraint in UI | ✅ | 0.5.42 | 244b3e6 |
+| 1 | Concentric-Constraint in UI | ✅ | 0.5.42 | 1049f68 |
 | 2 | Fix/Lock-Constraint | 🔴 offen | — | — |
 | 3 | Point-on-object-Constraint | 🔴 offen | — | — |
 | 4 | Box-Select / Marquee | 🔴 offen | — | — |
