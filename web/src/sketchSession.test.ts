@@ -565,3 +565,57 @@ describe("sketch_ellipse draft state", () => {
     expect(state.next_entity_id).toBe(1);
   });
 });
+
+describe("sketch_slot draft state", () => {
+  it("pushes exactly two centre points (A then B) with consecutive ids", () => {
+    // The kernel's SketchSlotTool::apply registers the two end-cap
+    // centres in order (center_a then center_b). The TS mirror must
+    // allocate exactly two entities (ids 1, 2) and advance the counter
+    // by exactly 2 — to 3.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_slot",
+        params: { center_a: [1, 2], center_b: [9, 2], radius: 5 },
+      },
+    ]);
+    const points = state.entities.filter((e) => e.kind === "point");
+    expect(points).toHaveLength(2);
+    expect(points[0].kind === "point" && points[0].at).toEqual({ x: 1, y: 2 });
+    expect(points[0].id).toBe(1);
+    expect(points[1].kind === "point" && points[1].at).toEqual({ x: 9, y: 2 });
+    expect(points[1].id).toBe(2);
+    expect(state.next_entity_id).toBe(3);
+  });
+
+  it("keeps entity ids aligned for a following sub-call", () => {
+    // After the slot consumes ids 1 and 2, a following circle must take
+    // the next contiguous ids (centre 3, circle 4) — proving the slot
+    // branch advanced the counter by exactly the kernel's two points.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_slot",
+        params: { center_a: [0, 0], center_b: [20, 0], radius: 4 },
+      },
+      { type: "sketch_circle", params: { center: [50, 50], radius: 5 } },
+    ]);
+    const circleCentre = state.entities.find(
+      (e) => e.kind === "point" && e.at.x === 50 && e.at.y === 50,
+    );
+    const circle = state.entities.find((e) => e.kind === "circle");
+    expect(circleCentre?.id).toBe(3);
+    expect(circle && circle.kind === "circle" && circle.center).toBe(3);
+    expect(circle?.id).toBe(4);
+    expect(state.next_entity_id).toBe(5);
+  });
+
+  it("ignores a malformed slot (no entity added)", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_slot",
+        params: { center_a: [1], center_b: [9, 2], radius: 5 },
+      },
+    ]);
+    expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
+    expect(state.next_entity_id).toBe(1);
+  });
+});

@@ -47,6 +47,7 @@ import {
   rectCenterCorners,
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
+import { slotOutline } from "./sketchSlot";
 import {
   inferCandidates,
   type InferenceCandidate,
@@ -286,6 +287,14 @@ type DragState =
        *  single `sketch_ellipse` sub-call. */
       kind: "ellipse";
       center: [number, number];
+      current: [number, number];
+    }
+  | {
+      /** F9: centre-to-centre slot (stadium). Drag from end-centre A to
+       *  end-centre B; the radius comes from the FeatureDialog (default
+       *  8 mm). On drop we emit a single `sketch_slot` sub-call. */
+      kind: "slot";
+      center_a: [number, number];
       current: [number, number];
     }
   | {
@@ -903,6 +912,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
+    if (session.selectedTool === "sketch_slot") {
+      dragRef.current = {
+        kind: "slot",
+        center_a: [su, sv],
+        current: [su, sv],
+      };
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (session.selectedTool === "sketch_rectangle_center") {
       dragRef.current = {
         kind: "rect_center",
@@ -1174,6 +1192,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       dragRef.current = { ...dragRef.current, current: [u, v] };
     } else if (dragRef.current.kind === "ellipse") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
+    } else if (dragRef.current.kind === "slot") {
+      dragRef.current = { ...dragRef.current, current: [u, v] };
     } else if (dragRef.current.kind === "rect_center") {
       dragRef.current = { ...dragRef.current, current: [u, v] };
       snapRef.current = {
@@ -1367,6 +1387,41 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             radius_y: radiusY,
             rotation: Number(session.toolDraft?.rotation) || 0,
             segments: Number(session.toolDraft?.segments) || 0,
+          },
+        },
+      ]);
+      scheduleSolverReplay();
+      return;
+    }
+    if (dragRef.current.kind === "slot") {
+      (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      const { center_a, current } = dragRef.current;
+      dragRef.current = { kind: "idle" };
+      const len = Math.hypot(current[0] - center_a[0], current[1] - center_a[1]);
+      if (len < 1e-2) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          drawOverlay(
+            canvas,
+            session,
+            readCamForCanvas(canvas),
+            dragRef.current,
+            hoverRef.current,
+            snapRef.current,
+            projectedEdgesRef.current,
+          );
+        }
+        return;
+      }
+      if (!store) return;
+      const radius = Number(session.toolDraft?.radius) || 8;
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_slot",
+          params: {
+            center_a: [center_a[0], center_a[1]] as [number, number],
+            center_b: [current[0], current[1]] as [number, number],
+            radius,
           },
         },
       ]);
@@ -1773,6 +1828,19 @@ function drawOverlay(
         drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, color);
         drawPoint(ctx, center, cam, color);
       }
+    } else if (call.type === "sketch_slot") {
+      // The slot outline isn't made of SketchState entities (only the
+      // two cap centres are), so it's stroked here directly from the
+      // sub-call params — otherwise it'd be invisible in the sketcher
+      // despite extruding.
+      const a = toXy(call.params.center_a);
+      const b = toXy(call.params.center_b);
+      const radius = Number(call.params.radius);
+      if (a && b && Number.isFinite(radius) && radius > 0) {
+        drawSlot(ctx, a, b, radius, cam, color);
+        drawPoint(ctx, a, cam, color);
+        drawPoint(ctx, b, cam, color);
+      }
     } else if (call.type === "sketch_polygon") {
       const verts = call.params.vertices;
       if (Array.isArray(verts) && verts.length >= 4) {
@@ -1885,6 +1953,12 @@ function drawOverlay(
     const rotation = Number(session.toolDraft?.rotation) || 0;
     drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, COLOR_PREVIEW);
     drawPoint(ctx, center, cam, COLOR_PREVIEW);
+  } else if (drag.kind === "slot") {
+    const { center_a, current } = drag;
+    const radius = Number(session.toolDraft?.radius) || 8;
+    drawSlot(ctx, center_a, current, radius, cam, COLOR_PREVIEW);
+    drawPoint(ctx, center_a, cam, COLOR_PREVIEW);
+    drawPoint(ctx, current, cam, COLOR_PREVIEW);
   } else if (drag.kind === "rect_center") {
     // Mirror the cursor about the centre to ghost the axis-aligned box.
     const { center, current } = drag;
@@ -2195,6 +2269,44 @@ function drawEllipse(
   ctx.lineWidth = STROKE_PX;
   ctx.beginPath();
   ctx.ellipse(cx, cy, rxPx, ryPx, -rotation, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Draw a centre-to-centre slot (stadium) outline: two straight edges
+ * joined by two outward-bulging semicircle caps. The boundary geometry
+ * comes from {@link slotOutline} (the same math the kernel lowers to),
+ * and the caps are sampled in sketch space via {@link sampleArc} so the
+ * ±π sweeps render correctly on the Y-down canvas (`ctx.arc` would
+ * misinterpret the sketch-space angles). Skips degenerate slots.
+ */
+function drawSlot(
+  ctx: CanvasRenderingContext2D,
+  a: [number, number],
+  b: [number, number],
+  radiusMm: number,
+  cam: Readonly<SketchCameraState>,
+  color: string,
+): void {
+  const o = slotOutline(a, b, radiusMm);
+  if (!o || radiusMm * cam.zoom < 0.5) return;
+  // One continuous loop: A+r·n → B+r·n, cap B, B−r·n → A−r·n, cap A.
+  const loop: [number, number][] = [o.aPlus, o.bPlus];
+  loop.push(...sampleArc(o.centerB, o.radius, o.capBStart, -Math.PI));
+  loop.push(o.aMinus);
+  loop.push(...sampleArc(o.centerA, o.radius, o.capAStart, -Math.PI));
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = STROKE_PX;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let i = 0; i < loop.length; i++) {
+    const [px, py] = sketchToScreen(loop[i][0], loop[i][1], cam);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
   ctx.stroke();
   ctx.restore();
 }

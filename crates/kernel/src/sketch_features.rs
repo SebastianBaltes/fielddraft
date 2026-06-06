@@ -340,6 +340,7 @@ impl SketchToolRegistry {
         r.register(Box::new(SketchRegularPolygonTool));
         r.register(Box::new(SketchArcTool));
         r.register(Box::new(SketchEllipseTool));
+        r.register(Box::new(SketchSlotTool));
         r.register(Box::new(SketchMirrorTool));
         r.register(Box::new(SketchOffsetTool));
         r.register(Box::new(SketchHorizontalConstraintTool));
@@ -657,6 +658,51 @@ impl SketchToolKind for SketchEllipseTool {
         // Mirror the circle tool: register the centre point so the
         // TS entity-id mirror stays aligned.
         state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        Ok(())
+    }
+}
+
+/// `sketch_slot` — a centre-to-centre rounded slot (stadium). Two
+/// parallel straight edges capped by two semicircles of radius
+/// `radius`, drawn by dragging end-centre A → end-centre B. Lowers
+/// to a closed `Sketch2dPrimitive::Path` of 2 line + 2 arc segments
+/// (mirrors how `sketch_ellipse` lowers to a closed Path), so it can
+/// serve as an extrudable region boundary — unlike `sketch_arc`,
+/// which lowers to a FILLED `Sector`.
+#[derive(FeatureSchema)]
+#[schema(type = "sketch_slot")]
+pub struct SketchSlotDef {
+    /// Centre of the first (A) end cap.
+    pub center_a: [f32; 2],
+    /// Centre of the second (B) end cap.
+    pub center_b: [f32; 2],
+    /// Slot radius (half-width). Default 8 mm.
+    #[param(default = 8.0)]
+    pub radius: f32,
+}
+
+pub struct SketchSlotTool;
+
+impl SketchToolKind for SketchSlotTool {
+    fn type_name(&self) -> &'static str {
+        SketchSlotDef::TYPE_NAME
+    }
+    fn schema_json(&self) -> Value {
+        SketchSlotDef::schema_json()
+    }
+    fn apply(
+        &self,
+        state: &mut SketchState,
+        _id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = SketchSlotDef::parse(def)?;
+        // Register the two end-cap centres in a fixed order (A then
+        // B) so the TS entity-id mirror stays aligned. The slot
+        // outline itself is a Path primitive (not SketchState
+        // entities), like the ellipse.
+        state.add_point(Point2::new(d.center_a[0] as f64, d.center_a[1] as f64));
+        state.add_point(Point2::new(d.center_b[0] as f64, d.center_b[1] as f64));
         Ok(())
     }
 }
@@ -1276,6 +1322,19 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                     closed: true,
                 })
             }
+            "sketch_slot" => {
+                let d = match SketchSlotDef::parse(&call.params) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                match slot_path_segments(d.center_a, d.center_b, d.radius) {
+                    Some(segments) => Some(Sketch2dPrimitive::Path {
+                        segments,
+                        closed: true,
+                    }),
+                    None => continue,
+                }
+            }
             "sketch_polygon" => {
                 let d = match SketchPolygonDef::parse(&call.params) {
                     Ok(d) => d,
@@ -1468,6 +1527,73 @@ fn mirror_segment(seg: &SketchSegment, axis: u32) -> SketchSegment {
 
 fn sort_pair(a: f32, b: f32) -> (f32, f32) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Build the closed stadium boundary for a centre-to-centre slot:
+/// two parallel straight edges between the end caps, joined by two
+/// outward-bulging semicircles. Returns `None` for a degenerate slot
+/// (coincident centres or non-positive radius).
+///
+/// Winding (consistent CCW for r·n on the +n side first):
+/// Line(A+r·n → B+r·n); Arc capping B; Line(B−r·n → A−r·n); Arc
+/// capping A. Each cap is a semicircle (`sweep_angle = −π`) starting
+/// at its first boundary point's angle so the cap bulges away from
+/// the opposite centre — verified by the build test's bounding box.
+fn slot_path_segments(
+    center_a: [f32; 2],
+    center_b: [f32; 2],
+    radius: f32,
+) -> Option<Vec<SketchSegment>> {
+    let ax = center_a[0] as f64;
+    let ay = center_a[1] as f64;
+    let bx = center_b[0] as f64;
+    let by = center_b[1] as f64;
+    let r = radius as f64;
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 || r < 1e-6 {
+        return None;
+    }
+    // Unit axis A→B and its left normal n = (−u.y, u.x).
+    let ux = dx / len;
+    let uy = dy / len;
+    let nx = -uy;
+    let ny = ux;
+    // Four boundary points.
+    let a_plus = [(ax + r * nx) as f32, (ay + r * ny) as f32]; // A+r·n
+    let b_plus = [(bx + r * nx) as f32, (by + r * ny) as f32]; // B+r·n
+    let b_minus = [(bx - r * nx) as f32, (by - r * ny) as f32]; // B−r·n
+    let a_minus = [(ax - r * nx) as f32, (ay - r * ny) as f32]; // A−r·n
+    // Cap B starts at B+r·n (angle of +n); sweep −π takes it through
+    // +u (outside, away from A) to B−r·n.
+    let cap_b_start = (ny as f32).atan2(nx as f32);
+    // Cap A starts at A−r·n (angle of −n); sweep −π takes it through
+    // −u (outside, away from B) to A+r·n.
+    let cap_a_start = (-ny as f32).atan2(-nx as f32);
+    let pi = std::f32::consts::PI;
+    Some(vec![
+        SketchSegment::Line {
+            start: a_plus,
+            end: b_plus,
+        },
+        SketchSegment::Arc {
+            center: [bx as f32, by as f32],
+            radius,
+            start_angle: cap_b_start,
+            sweep_angle: -pi,
+        },
+        SketchSegment::Line {
+            start: b_minus,
+            end: a_minus,
+        },
+        SketchSegment::Arc {
+            center: [ax as f32, ay as f32],
+            radius,
+            start_angle: cap_a_start,
+            sweep_angle: -pi,
+        },
+    ])
 }
 
 // ─── tests ──────────────────────────────────────────────────────
@@ -1666,6 +1792,7 @@ mod tests {
                 "sketch_polygon".to_string(),
                 "sketch_rectangle".to_string(),
                 "sketch_regular_polygon".to_string(),
+                "sketch_slot".to_string(),
             ]
         );
     }
@@ -2082,6 +2209,117 @@ mod tests {
         assert!(sketch.sdf([8.0, 0.0]) < 0.0, "inside along major axis");
         assert!(sketch.sdf([11.0, 0.0]) > 0.0, "outside past major axis");
         assert!(sketch.sdf([0.0, 5.0]) > 0.0, "outside past minor axis");
+    }
+
+    #[test]
+    fn build_sketch2d_emits_a_slot_as_closed_line_arc_path() {
+        // A horizontal slot A=(0,0) B=(20,0) r=5 lowers to a closed
+        // Path of 2 lines + 2 arcs whose caps bulge OUTWARD, so the
+        // bounding box is x∈[−5,25], y∈[−5,5].
+        let calls = vec![FeatureCall::new(
+            "sketch_slot",
+            id(1),
+            json!({ "center_a": [0.0, 0.0], "center_b": [20.0, 0.0], "radius": 5.0 }),
+        )];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        let Sketch2d::Prim(Sketch2dPrimitive::Path { segments, closed }) = &sketch else {
+            panic!("expected a closed Path primitive, got {sketch:?}");
+        };
+        assert!(*closed, "slot path must be closed");
+        assert_eq!(segments.len(), 4, "expected 2 lines + 2 arcs");
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|s| matches!(s, SketchSegment::Line { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|s| matches!(s, SketchSegment::Arc { .. }))
+                .count(),
+            2
+        );
+
+        // Bounding box from flattened contour samples: caps must bulge
+        // outward (to x=−5 and x=+25), straight edges sit at y=±5.
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for seg in segments {
+            for k in 0..=16 {
+                let t = k as f32 / 16.0;
+                let p = seg.point_at(t);
+                min_x = min_x.min(p[0]);
+                max_x = max_x.max(p[0]);
+                min_y = min_y.min(p[1]);
+                max_y = max_y.max(p[1]);
+            }
+        }
+        assert!((min_x - (-5.0)).abs() < 1e-3, "min_x={min_x}");
+        assert!((max_x - 25.0).abs() < 1e-3, "max_x={max_x}");
+        assert!((min_y - (-5.0)).abs() < 1e-3, "min_y={min_y}");
+        assert!((max_y - 5.0).abs() < 1e-3, "max_y={max_y}");
+
+        // Sign sanity: centre line inside, well outside the caps out.
+        assert!(sketch.sdf([10.0, 0.0]) < 0.0, "slot interior");
+        assert!(sketch.sdf([0.0, 0.0]) < 0.0, "cap-A centre inside");
+        assert!(sketch.sdf([20.0, 0.0]) < 0.0, "cap-B centre inside");
+        assert!(sketch.sdf([-6.0, 0.0]) > 0.0, "past cap A outside");
+        assert!(sketch.sdf([26.0, 0.0]) > 0.0, "past cap B outside");
+        assert!(sketch.sdf([10.0, 6.0]) > 0.0, "past straight edge outside");
+    }
+
+    #[test]
+    fn build_sketch2d_rejects_degenerate_slot() {
+        // Zero-length (coincident centres) → no primitive.
+        let calls = vec![FeatureCall::new(
+            "sketch_slot",
+            id(1),
+            json!({ "center_a": [5.0, 5.0], "center_b": [5.0, 5.0], "radius": 4.0 }),
+        )];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+        // Zero radius → no primitive.
+        let calls = vec![FeatureCall::new(
+            "sketch_slot",
+            id(1),
+            json!({ "center_a": [0.0, 0.0], "center_b": [20.0, 0.0], "radius": 0.0 }),
+        )];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+    }
+
+    #[test]
+    fn slot_tool_apply_registers_two_centre_points() {
+        // The TS mirror must add exactly two points (A then B). Origin
+        // is id 0, so A=1, B=2.
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::with_origin();
+        let call = FeatureCall::new(
+            "sketch_slot",
+            id(1),
+            json!({ "center_a": [1.0, 2.0], "center_b": [9.0, 2.0], "radius": 3.0 }),
+        );
+        tools.apply_all(&mut state, std::slice::from_ref(&call)).unwrap();
+        let pts: Vec<(f64, f64)> = state
+            .entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::Point { at, .. } => Some((at.x, at.y)),
+                _ => None,
+            })
+            .collect();
+        // Exactly two centre points, A then B.
+        assert_eq!(pts.len(), 2);
+        assert!((pts[0].0 - 1.0).abs() < 1e-6 && (pts[0].1 - 2.0).abs() < 1e-6);
+        assert!((pts[1].0 - 9.0).abs() < 1e-6 && (pts[1].1 - 2.0).abs() < 1e-6);
     }
 
     #[test]
