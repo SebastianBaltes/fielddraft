@@ -1114,14 +1114,17 @@ export class Kernel {
   /** Thicken one or more curved analytic faces (sphere / cylinder / torus)
    *  into a thin solid wall offset along the normal. `faces` is a
    *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
-   *  grows `thicknessMm` outward (Onshape default). */
+   *  grows `thicknessMm` outward (Onshape default). `upToFace` is an optional
+   *  `qFace(<idHash>)` target: when non-empty the wall grows up to that coaxial
+   *  face and the thickness arguments are ignored. */
   addThicken(
     faces: string,
     thicknessMm: number,
     symmetric: boolean,
     thicknessBackMm: number,
+    upToFace = "",
   ): number {
-    return this.inner.addThicken(faces, thicknessMm, symmetric, thicknessBackMm);
+    return this.inner.addThicken(faces, thicknessMm, symmetric, thicknessBackMm, upToFace);
   }
 
   /** K9.1: overall scene AABB in mm. */

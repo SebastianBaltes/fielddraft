@@ -161,8 +161,10 @@ export class Kernel {
      * `faces` is a comma-separated list of `qFace(<id_hash>)` selections;
      * `thickness_mm` grows the wall outward, `thickness_back_mm` inward (only
      * when `symmetric` is false), `symmetric` splits the wall about the surface.
+     * `up_to_face` is an optional `qFace(<id_hash>)` target: when non-empty the
+     * wall grows up to that coaxial face and the thickness params are ignored.
      */
-    addThicken(faces: string, thickness_mm: number, symmetric: boolean, thickness_back_mm: number): number;
+    addThicken(faces: string, thickness_mm: number, symmetric: boolean, thickness_back_mm: number, up_to_face: string): number;
     applyGizmoRotate(target_id: number, rx: number, ry: number, rz: number, rw: number): boolean;
     applyGizmoScale(target_id: number, sx: number, sy: number, sz: number): boolean;
     applyGizmoTranslate(target_id: number, tx: number, ty: number, tz: number): boolean;
@@ -711,7 +713,7 @@ export interface InitOutput {
     readonly kernel_addRevolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly kernel_addShell: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly kernel_addSketch: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly kernel_addThicken: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly kernel_addThicken: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly kernel_applyGizmoRotate: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly kernel_applyGizmoScale: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly kernel_applyGizmoTranslate: (a: number, b: number, c: number, d: number, e: number) => number;

@@ -377,16 +377,21 @@ export class Kernel {
      * `faces` is a comma-separated list of `qFace(<id_hash>)` selections;
      * `thickness_mm` grows the wall outward, `thickness_back_mm` inward (only
      * when `symmetric` is false), `symmetric` splits the wall about the surface.
+     * `up_to_face` is an optional `qFace(<id_hash>)` target: when non-empty the
+     * wall grows up to that coaxial face and the thickness params are ignored.
      * @param {string} faces
      * @param {number} thickness_mm
      * @param {boolean} symmetric
      * @param {number} thickness_back_mm
+     * @param {string} up_to_face
      * @returns {number}
      */
-    addThicken(faces, thickness_mm, symmetric, thickness_back_mm) {
+    addThicken(faces, thickness_mm, symmetric, thickness_back_mm, up_to_face) {
         const ptr0 = passStringToWasm0(faces, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.kernel_addThicken(this.__wbg_ptr, ptr0, len0, thickness_mm, symmetric, thickness_back_mm);
+        const ptr1 = passStringToWasm0(up_to_face, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.kernel_addThicken(this.__wbg_ptr, ptr0, len0, thickness_mm, symmetric, thickness_back_mm, ptr1, len1);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

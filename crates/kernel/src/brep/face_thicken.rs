@@ -44,10 +44,22 @@
 //! body's scale. A *non-uniform* scale is rejected: the offset of these surfaces
 //! under anisotropic scale is not an analytic primitive.
 //!
+//! ## Up-to-face targets
+//!
+//! Instead of a fixed thickness the wall can grow up to a coaxial **target**
+//! face: [`offset_to_target`] measures the signed world-mm normal gap between a
+//! source surface and a coaxial target of the *same* analytic kind (concentric
+//! sphere, coaxial cylinder, coaxial torus) and turns it into the `(outer, inner)`
+//! offsets [`thicken_face`] already consumes — so the whole reduction above is
+//! reused verbatim. The gap's sign picks the direction (target outside → outward
+//! wall, inside → inward). A non-coaxial, type-mismatched or cone target is
+//! rejected (its normal gap is not a constant offset, so the wall would not be a
+//! difference of two coaxial primitives).
+//!
 //! ## Out of scope (first throw) — each returns a descriptive `Err`
 //!
 //! Partial/cut cylinders & cones, planar faces (use Extrude with `symmetric`),
-//! and tessellated/TPMS faces.
+//! tessellated/TPMS faces, and cone up-to-face targets.
 
 use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
@@ -97,20 +109,8 @@ pub fn thicken_face(
     // analytic primitive — the whole parameter-shift reduction breaks. Honest
     // error beats silently-wrong geometry.
     let (outer_off, inner_off) = {
-        let s = world.scale;
-        let uniform =
-            (s[0] - s[1]).abs() < 1e-4 * s[0].abs().max(1.0) && (s[1] - s[2]).abs() < 1e-4 * s[1].abs().max(1.0);
-        if !uniform {
-            return Err(format!(
-                "face has a non-uniform scale ({:.3}, {:.3}, {:.3}) — its normal offset is not an \
-                 analytic primitive; apply a uniform scale or thicken before scaling",
-                s[0], s[1], s[2]
-            ));
-        }
-        if s[0].abs() < 1e-6 {
-            return Err("face placement scale is degenerate (zero) — cannot thicken".to_string());
-        }
-        (outer_off / s[0], inner_off / s[0])
+        let s = uniform_scale(&world)?;
+        (outer_off / s, inner_off / s)
     };
 
     let (outer, inner) = match surface {
@@ -209,6 +209,170 @@ fn guard_inner(radius: f32, inner_off: f32) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Verify a surface-local → world placement carries a **uniform**, non-degenerate
+/// scale and return its signed magnitude `s` (local length × `s` = world length).
+/// The analytic normal-offset reduction only holds under uniform scale — an
+/// anisotropic scale turns these surfaces' offsets into non-primitive (ellipsoid)
+/// shapes — so a non-uniform scale is an honest `Err` rather than silently-wrong
+/// geometry.
+fn uniform_scale(world: &Transform) -> Result<f32, String> {
+    let s = world.scale;
+    let uniform = (s[0] - s[1]).abs() < 1e-4 * s[0].abs().max(1.0)
+        && (s[1] - s[2]).abs() < 1e-4 * s[1].abs().max(1.0);
+    if !uniform {
+        return Err(format!(
+            "face has a non-uniform scale ({:.3}, {:.3}, {:.3}) — its normal offset is not an \
+             analytic primitive; apply a uniform scale or thicken before scaling",
+            s[0], s[1], s[2]
+        ));
+    }
+    if s[0].abs() < 1e-6 {
+        return Err("face placement scale is degenerate (zero) — cannot thicken".to_string());
+    }
+    Ok(s[0])
+}
+
+/// A source/target analytic surface lifted to world space for the up-to-face
+/// mode: its [`HalfSpace`] (with surface-local params), its surface-local → world
+/// placement, and the uniform world scale magnitude.
+struct WorldSurface {
+    kind: HalfSpace,
+    world: Transform,
+    /// World scale magnitude (`local_radius × s_abs = world_radius`).
+    s_abs: f32,
+}
+
+/// Lift a face's analytic surface to world space (see [`WorldSurface`]). Errors
+/// for tessellated faces and non-uniform / degenerate scales.
+fn world_surface(brep: &BRep, face_id: FaceId, placement: &Transform) -> Result<WorldSurface, String> {
+    let SurfaceGeometry::Analytic { surface, transform } = &brep.face(face_id).surface else {
+        return Err("face is tessellated (TPMS / non-analytic) — cannot use as a thicken target".to_string());
+    };
+    let world = crate::features::compose_placement(placement, transform);
+    let s_abs = uniform_scale(&world)?.abs();
+    Ok(WorldSurface { kind: surface.clone(), world, s_abs })
+}
+
+/// Compute the `(outer_off, inner_off)` world-millimetre offsets that grow a
+/// `source` face's surface up to a coaxial `target` face — the up-to-face thicken
+/// mode. Both surfaces must be the **same** analytic kind and coaxial; the signed
+/// normal gap decides the direction (target outside → outward wall, inside →
+/// inward). First throw: sphere, cylinder, torus. A cone target, a type mismatch,
+/// a non-coaxial target or a coincident target each returns a descriptive `Err`.
+///
+/// The returned offsets are world millimetres, so the caller feeds them straight
+/// into [`thicken_face`] (which renormalises them by the source's own scale) — the
+/// outer/inner solid then reaches exactly the target surface.
+pub fn offset_to_target(
+    src_brep: &BRep,
+    src_face: FaceId,
+    src_placement: &Transform,
+    tgt_brep: &BRep,
+    tgt_face: FaceId,
+    tgt_placement: &Transform,
+) -> Result<(f32, f32), String> {
+    let src = world_surface(src_brep, src_face, src_placement)?;
+    let tgt = world_surface(tgt_brep, tgt_face, tgt_placement)?;
+    let gap = coaxial_gap(&src, &tgt)?;
+    if gap.abs() < 1e-4 {
+        return Err(
+            "target face is coincident with the source surface — there is no wall to fill".to_string(),
+        );
+    }
+    if gap > 0.0 {
+        Ok((gap, 0.0)) // target outside the source → grow outward
+    } else {
+        Ok((0.0, -gap)) // target inside → grow inward
+    }
+}
+
+/// The signed world-mm normal gap `target − source` between two coaxial analytic
+/// surfaces of the same kind. Errors when the kinds differ, the target is a cone
+/// (deferred), or the two surfaces are not coaxial.
+fn coaxial_gap(src: &WorldSurface, tgt: &WorldSurface) -> Result<f32, String> {
+    match (&src.kind, &tgt.kind) {
+        (HalfSpace::Sphere { radius: rs }, HalfSpace::Sphere { radius: rt }) => {
+            let rs_w = rs * src.s_abs;
+            let rt_w = rt * tgt.s_abs;
+            let tol = 1e-3 * rs_w.max(rt_w).max(1.0);
+            if dist(src.world.translate, tgt.world.translate) > tol {
+                return Err(
+                    "source and target spheres are not concentric — up-to-face needs a coaxial target"
+                        .to_string(),
+                );
+            }
+            Ok(rt_w - rs_w)
+        }
+        (HalfSpace::InfiniteCylinder { radius: rs }, HalfSpace::InfiniteCylinder { radius: rt }) => {
+            let rs_w = rs * src.s_abs;
+            let rt_w = rt * tgt.s_abs;
+            require_coaxial_axis(src, tgt, 1e-3 * rs_w.max(rt_w).max(1.0))?;
+            Ok(rt_w - rs_w)
+        }
+        (
+            HalfSpace::Torus { major_radius: rmaj_s, minor_radius: rs },
+            HalfSpace::Torus { major_radius: rmaj_t, minor_radius: rt },
+        ) => {
+            let rmaj_s_w = rmaj_s * src.s_abs;
+            let rmaj_t_w = rmaj_t * tgt.s_abs;
+            let tol = 1e-3 * rmaj_s_w.max(rmaj_t_w).max(1.0);
+            require_coaxial_axis(src, tgt, tol)?;
+            if dist(src.world.translate, tgt.world.translate) > tol
+                || (rmaj_s_w - rmaj_t_w).abs() > tol
+            {
+                return Err(
+                    "source and target tori are not coaxial with an equal major radius".to_string(),
+                );
+            }
+            Ok(rt * tgt.s_abs - rs * src.s_abs)
+        }
+        (HalfSpace::Cone { .. }, _) | (_, HalfSpace::Cone { .. }) => Err(
+            "cone up-to-face targets are deferred — give the wall an explicit thickness instead"
+                .to_string(),
+        ),
+        (HalfSpace::Plane { .. }, _) | (_, HalfSpace::Plane { .. }) => Err(
+            "planar faces are not a curved thicken source/target — use Extrude".to_string(),
+        ),
+        _ => Err(
+            "source and target faces must be the same coaxial analytic kind \
+             (sphere/cylinder/torus) for up-to-face"
+                .to_string(),
+        ),
+    }
+}
+
+/// Require two surfaces' local-Y axes to be the same world line (parallel and
+/// colinear within `tol`). Used for the cylinder/torus up-to-face targets.
+fn require_coaxial_axis(src: &WorldSurface, tgt: &WorldSurface, tol: f32) -> Result<(), String> {
+    let ds = crate::quat_rotate(src.world.rotation, [0.0, 1.0, 0.0]);
+    let dt = crate::quat_rotate(tgt.world.rotation, [0.0, 1.0, 0.0]);
+    let dot = ds[0] * dt[0] + ds[1] * dt[1] + ds[2] * dt[2];
+    if dot.abs() < 1.0 - 1e-3 {
+        return Err(
+            "source and target axes are not parallel — up-to-face needs a coaxial target".to_string(),
+        );
+    }
+    // Perpendicular distance between the two axis lines: the component of the
+    // centre-to-centre vector orthogonal to the (unit) axis direction.
+    let ps = src.world.translate;
+    let pt = tgt.world.translate;
+    let w = [pt[0] - ps[0], pt[1] - ps[1], pt[2] - ps[2]];
+    let wd = w[0] * ds[0] + w[1] * ds[1] + w[2] * ds[2];
+    let perp = [w[0] - wd * ds[0], w[1] - wd * ds[1], w[2] - wd * ds[2]];
+    let off = (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
+    if off > tol {
+        return Err(
+            "source and target axes are offset — up-to-face needs a coaxial target".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Euclidean distance between two points.
+fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 /// Recover a cylindrical wall's axial centre + half-height (surface-local `y`)

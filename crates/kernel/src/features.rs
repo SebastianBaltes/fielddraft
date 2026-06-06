@@ -389,6 +389,65 @@ impl<'a> Context<'a> {
         Ok(out)
     }
 
+    /// Thicken each source face **up to** a coaxial `target` face: the wall grows
+    /// from the source surface until it reaches the target (concentric sphere,
+    /// coaxial cylinder, coaxial torus). The signed normal gap
+    /// ([`offset_to_target`](crate::brep::face_thicken::offset_to_target)) sets
+    /// the thickness *and* direction per source face, then the same
+    /// [`thicken_face`](crate::brep::face_thicken::thicken_face) reduction builds
+    /// the offset-solid pair — so up-to-face reuses the whole solid pipeline.
+    ///
+    /// Errors on a non-`qFace` query, an unresolvable handle, a source the
+    /// surface layer refuses to thicken, or a target that is not a coaxial
+    /// same-kind surface (a cone / mismatched / non-coaxial target is deferred).
+    pub fn resolve_thicken_to_face(
+        &mut self,
+        face_queries: &[String],
+        target_query: &str,
+    ) -> Result<Vec<crate::brep::face_thicken::ThickenSolid>, String> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        let woven = self.brep_cache.ensure(&self.features);
+
+        // Locate a `qFace(<hash>)` selection → (body index, FaceId).
+        let find_face = |q: &str| -> Result<(usize, FaceId), String> {
+            let expr = crate::queries::parse_query(q)
+                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+            let QueryExpr::Face(hash) = expr else {
+                return Err(format!("thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"));
+            };
+            for (bi, (brep, _placement)) in woven.iter().enumerate() {
+                for i in 0..brep.faces.len() {
+                    let fid = FaceId(i as u32);
+                    if TopoRef::from_face(brep, fid).id_hash == hash {
+                        return Ok((bi, fid));
+                    }
+                }
+            }
+            Err(format!("face {hash} not found in the current model"))
+        };
+
+        let (tgt_bi, tgt_fid) = find_face(target_query)?;
+        let mut out = Vec::new();
+        for q in face_queries {
+            let (src_bi, src_fid) = find_face(q)?;
+            let (src_brep, src_placement) = &woven[src_bi];
+            let (tgt_brep, tgt_placement) = &woven[tgt_bi];
+            let (outer_off, inner_off) = crate::brep::face_thicken::offset_to_target(
+                src_brep, src_fid, src_placement, tgt_brep, tgt_fid, tgt_placement,
+            )?;
+            out.push(crate::brep::face_thicken::thicken_face(
+                src_brep, src_fid, src_placement, outer_off, inner_off,
+            )?);
+        }
+        if out.is_empty() {
+            return Err("no faces selected to thicken".to_string());
+        }
+        Ok(out)
+    }
+
     /// Resolve a *plane* query to a world-space [`SketchFrame`],
     /// accepting both the well-known datum planes
     /// (`qCreatedBy(origin_plane_xy|xz|yz)`) and real B-Rep faces.
@@ -2619,6 +2678,14 @@ pub struct ThickenDef {
     #[param(name = "Inner thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub thickness_back: ::fielddraft_protocol::Length,
 
+    /// Optional coaxial **target** face: when set, the wall grows from each source
+    /// surface *up to* this face instead of by a fixed `thickness` (Onshape's
+    /// "Up to face" end condition). The target must be the same coaxial analytic
+    /// kind as the source (concentric sphere / coaxial cylinder / coaxial torus);
+    /// the signed gap picks the direction. Empty (default) → fixed-thickness mode.
+    #[param(name = "Up to face", default = ::fielddraft_protocol::Query::new(""), entity_filter = "FACE")]
+    pub up_to_face: ::fielddraft_protocol::Query,
+
     /// Boolean op used to fold the thickened wall into the running spine.
     /// Defaults to [`BoolOp::Union`].
     #[param(default = ::fielddraft_protocol::BoolOp::Union)]
@@ -2652,26 +2719,38 @@ impl FeatureKind for ThickenFeature {
             return Ok(());
         }
 
-        let t = d.thickness.to_mm();
-        if t <= 0.0 {
-            return Err(FeatureError::InvalidParameter {
-                feature: ThickenDef::TYPE_NAME,
-                name: "thickness",
-                message: format!("must be > 0 mm, got {t}"),
-            });
-        }
-        // Direction modes → (outward offset, inward offset).
-        let back = d.thickness_back.to_mm().max(0.0);
-        let (outer_off, inner_off) =
-            if d.symmetric { (t / 2.0, t / 2.0) } else { (t, back) };
+        // Up-to-face mode: when a target face is given the wall grows up to it
+        // and the fixed thickness / direction params are ignored. Otherwise the
+        // thickness is split per the direction mode below.
+        let target = d.up_to_face.as_str().trim();
+        let shells = if !target.is_empty() {
+            ctx.resolve_thicken_to_face(&face_queries, target)
+                .map_err(|message| FeatureError::InvalidParameter {
+                    feature: ThickenDef::TYPE_NAME,
+                    name: "up_to_face",
+                    message,
+                })?
+        } else {
+            let t = d.thickness.to_mm();
+            if t <= 0.0 {
+                return Err(FeatureError::InvalidParameter {
+                    feature: ThickenDef::TYPE_NAME,
+                    name: "thickness",
+                    message: format!("must be > 0 mm, got {t}"),
+                });
+            }
+            // Direction modes → (outward offset, inward offset).
+            let back = d.thickness_back.to_mm().max(0.0);
+            let (outer_off, inner_off) =
+                if d.symmetric { (t / 2.0, t / 2.0) } else { (t, back) };
 
-        let shells = ctx
-            .resolve_thicken_faces(&face_queries, outer_off, inner_off)
-            .map_err(|message| FeatureError::InvalidParameter {
-                feature: ThickenDef::TYPE_NAME,
-                name: "faces",
-                message,
-            })?;
+            ctx.resolve_thicken_faces(&face_queries, outer_off, inner_off)
+                .map_err(|message| FeatureError::InvalidParameter {
+                    feature: ThickenDef::TYPE_NAME,
+                    name: "faces",
+                    message,
+                })?
+        };
 
         let name = optional_display_name(def, || format!("Thicken {id}"));
 
@@ -6518,6 +6597,183 @@ mod tests {
         assert!(err.contains("non-uniform"), "got: {err}");
     }
 
+    /// Weave a single solid sphere and return its `(brep, spherical FaceId,
+    /// surface radius)` — a one-face body to drive the up-to-face geometry tests.
+    #[cfg(test)]
+    fn weave_sphere_face(registry: &FeatureRegistry, r: f32) -> (crate::brep::BRep, crate::brep::FaceId, f32) {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let s = FeatureCall::new("sphere", id(1), json!({ "radius": r }));
+        registry.regenerate(&mut ctx, std::slice::from_ref(&s), None).unwrap();
+        let brep = weave_first(&mut ctx);
+        let (fid, rad) = (0..brep.face_count())
+            .find_map(|i| {
+                let fid = FaceId(i as u32);
+                match &brep.face(fid).surface {
+                    SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::Sphere { radius },
+                        ..
+                    } => Some((fid, *radius)),
+                    _ => None,
+                }
+            })
+            .expect("a spherical face");
+        (brep, fid, rad)
+    }
+
+    #[test]
+    fn offset_to_target_grows_source_up_to_coaxial_target() {
+        // Two independent, concentric sphere bodies (radius 5 and 7). Thickening
+        // the small one up to the big one is a 2 mm outward wall; the reverse is a
+        // 2 mm inward wall. The signed gap picks the direction.
+        let registry = FeatureRegistry::with_builtins();
+        let (src, sfid, sr) = weave_sphere_face(&registry, 5.0);
+        let (tgt, tfid, tr) = weave_sphere_face(&registry, 7.0);
+        let idt = Transform::IDENTITY;
+
+        let (oo, io) =
+            crate::brep::face_thicken::offset_to_target(&src, sfid, &idt, &tgt, tfid, &idt).unwrap();
+        assert!((oo - (tr - sr)).abs() < 1e-3 && io.abs() < 1e-6, "outward {oo}/{io}");
+
+        let (oo2, io2) =
+            crate::brep::face_thicken::offset_to_target(&tgt, tfid, &idt, &src, sfid, &idt).unwrap();
+        assert!(oo2.abs() < 1e-6 && (io2 - (tr - sr)).abs() < 1e-3, "inward {oo2}/{io2}");
+    }
+
+    #[test]
+    fn offset_to_target_renormalises_target_scale() {
+        // Target on a 2×-scaled body: its world radius is 7 × 2 = 14, so a source
+        // sphere of world radius 5 grows by a 9 mm *world* wall — the offset is in
+        // world millimetres regardless of either body's scale.
+        let registry = FeatureRegistry::with_builtins();
+        let (src, sfid, sr) = weave_sphere_face(&registry, 5.0);
+        let (tgt, tfid, tr) = weave_sphere_face(&registry, 7.0);
+        let idt = Transform::IDENTITY;
+        let scaled = Transform { scale: [2.0, 2.0, 2.0], ..Transform::IDENTITY };
+
+        let (oo, io) = crate::brep::face_thicken::offset_to_target(
+            &src, sfid, &idt, &tgt, tfid, &scaled,
+        )
+        .unwrap();
+        assert!((oo - (tr * 2.0 - sr)).abs() < 1e-3 && io.abs() < 1e-6, "outward {oo}/{io}");
+    }
+
+    #[test]
+    fn offset_to_target_rejects_non_coaxial_and_mismatched_kinds() {
+        let registry = FeatureRegistry::with_builtins();
+        let (sbrep, sfid, _) = weave_sphere_face(&registry, 5.0);
+
+        // A cylinder body, for a type-mismatched target.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(
+                &mut ctx,
+                std::slice::from_ref(&FeatureCall::new(
+                    "cylinder",
+                    id(1),
+                    json!({ "radius": 3.0, "half_height": 4.0 }),
+                )),
+                None,
+            )
+            .unwrap();
+        let cbrep = weave_first(&mut ctx);
+        let cfid = (0..cbrep.face_count())
+            .map(|i| crate::brep::FaceId(i as u32))
+            .find(|&f| {
+                matches!(
+                    &cbrep.face(f).surface,
+                    crate::brep::SurfaceGeometry::Analytic {
+                        surface: fielddraft_protocol::HalfSpace::InfiniteCylinder { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("a cylinder wall face");
+        let idt = Transform::IDENTITY;
+
+        // Sphere source, cylinder target → different kinds.
+        let err = crate::brep::face_thicken::offset_to_target(&sbrep, sfid, &idt, &cbrep, cfid, &idt)
+            .unwrap_err();
+        assert!(err.contains("coaxial analytic kind") || err.contains("same"), "kind: {err}");
+
+        // Same sphere, but the target placement is shifted off-centre → not concentric.
+        let shifted = Transform { translate: [3.0, 0.0, 0.0], ..Transform::IDENTITY };
+        let err2 = crate::brep::face_thicken::offset_to_target(&sbrep, sfid, &idt, &sbrep, sfid, &shifted)
+            .unwrap_err();
+        assert!(err2.contains("concentric") || err2.contains("coaxial"), "coaxial: {err2}");
+    }
+
+    #[test]
+    fn thicken_up_to_face_fills_a_tube_wall() {
+        // A tube (cylinder r=5 minus a coaxial r=3 bore) has two coaxial analytic
+        // cylinder faces in one body. Thickening the bore *up to* the outer wall
+        // grows the wall from r=3 out to r=5 → the offset pair Cyl(5) − Cyl(3).
+        use crate::brep::{naming::TopoRef, FaceId, SurfaceGeometry};
+        let registry = FeatureRegistry::with_builtins();
+        let outer = FeatureCall::new("cylinder", id(1), json!({ "radius": 5.0, "half_height": 4.0 }));
+        let bore = FeatureCall::new(
+            "cylinder",
+            id(2),
+            json!({ "radius": 3.0, "half_height": 5.0, "op": "difference" }),
+        );
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry.regenerate(&mut ctx, &[outer.clone(), bore.clone()], None).unwrap();
+        let brep = weave_first(&mut ctx);
+
+        // The two coaxial cylinder faces, keyed by surface radius.
+        let cyl_face = |target_r: f32| -> String {
+            (0..brep.face_count())
+                .find_map(|i| {
+                    let fid = FaceId(i as u32);
+                    match &brep.face(fid).surface {
+                        SurfaceGeometry::Analytic {
+                            surface: fielddraft_protocol::HalfSpace::InfiniteCylinder { radius },
+                            ..
+                        } if (*radius - target_r).abs() < 0.2 => {
+                            Some(format!("qFace({})", TopoRef::from_face(&brep, fid).id_hash))
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| panic!("no cylinder face at radius {target_r}"))
+        };
+        let bore_q = cyl_face(3.0);
+        let wall_q = cyl_face(5.0);
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    outer,
+                    bore,
+                    FeatureCall::new(
+                        "thicken",
+                        id(3),
+                        json!({ "faces": bore_q, "up_to_face": wall_q }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+        let th = ctx2.features.iter().find(|f| f.id == id(3)).expect("thicken");
+        let (outer_p, inner_p) = thicken_offset_pair(&th.node);
+        match (outer_p, inner_p) {
+            (
+                Primitive::Cylinder { radius: ro, .. },
+                Primitive::Cylinder { radius: ri, .. },
+            ) => {
+                assert!((ro - 5.0).abs() < 0.2, "outer reaches the wall radius: {ro}");
+                assert!((ri - 3.0).abs() < 0.2, "inner stays at the bore radius: {ri}");
+            }
+            other => panic!("expected two cylinders, got {other:?}"),
+        }
+    }
+
     #[test]
     fn thicken_direction_modes_set_outer_and_inner_radii() {
         let registry = FeatureRegistry::with_builtins();
@@ -6577,14 +6833,19 @@ mod tests {
     }
 
     #[test]
-    fn thicken_def_schema_has_five_params() {
+    fn thicken_def_schema_has_six_params() {
         let schema = ThickenDef::schema_json();
         let params = schema["params"].as_array().expect("params array");
-        assert_eq!(params.len(), 5, "faces, thickness, symmetric, thickness_back, operation");
+        assert_eq!(
+            params.len(),
+            6,
+            "faces, thickness, symmetric, thickness_back, up_to_face, operation"
+        );
         let names: Vec<&str> =
             params.iter().filter_map(|p| p["name"].as_str()).collect();
         assert!(names.iter().any(|n| n.contains("Faces")), "{names:?}");
         assert!(names.iter().any(|n| n.contains("Thickness")), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("Up to face")), "{names:?}");
     }
 
     // ─── C2: mate-connector-on-face ────────────────────────────────

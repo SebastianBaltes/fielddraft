@@ -1630,6 +1630,8 @@ impl Kernel {
     /// `faces` is a comma-separated list of `qFace(<id_hash>)` selections;
     /// `thickness_mm` grows the wall outward, `thickness_back_mm` inward (only
     /// when `symmetric` is false), `symmetric` splits the wall about the surface.
+    /// `up_to_face` is an optional `qFace(<id_hash>)` target: when non-empty the
+    /// wall grows up to that coaxial face and the thickness params are ignored.
     #[wasm_bindgen(js_name = addThicken)]
     pub fn add_thicken(
         &mut self,
@@ -1637,12 +1639,14 @@ impl Kernel {
         thickness_mm: f32,
         symmetric: bool,
         thickness_back_mm: f32,
+        up_to_face: String,
     ) -> Result<u32, JsError> {
         self.push_feature_call("thicken", serde_json::json!({
             "faces": faces,
             "thickness": { "value": thickness_mm, "unit": "mm" },
             "symmetric": symmetric,
             "thickness_back": { "value": thickness_back_mm, "unit": "mm" },
+            "up_to_face": up_to_face,
         }))
     }
 
