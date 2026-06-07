@@ -365,6 +365,8 @@ impl<'a> Context<'a> {
             qi: usize,
             feature_id: u32,
             placement: Transform,
+            /// The picked face's edge-loops (body-local) for the M1 lateral trim.
+            loops: crate::brep::face_lateral_trim::FaceLoops,
         }
         let mut walls: Vec<(usize, CsgNode, Transform)> = Vec::new();
         let mut bands: Vec<BandReq> = Vec::new();
@@ -395,6 +397,9 @@ impl<'a> Context<'a> {
                                     qi,
                                     feature_id: face.branch_id.feature_id(),
                                     placement: *placement,
+                                    loops: crate::brep::face_lateral_trim::sample_face_loops(
+                                        brep, fid,
+                                    ),
                                 }),
                             }
                             found = true;
@@ -424,12 +429,31 @@ impl<'a> Context<'a> {
                      non-analytic boolean result is deferred past M0"
                         .to_string()
                 })?;
-            let carrier =
-                crate::brep::face_offset::remap_leaf_ids(carrier, &id.child(format!("{}", req.qi)));
+            // Pre-remap carrier drives the M1 wall-normal field (the sweep
+            // direction); the remapped clone carries the band's fresh ids.
+            let trim_base = id.child(format!("{}", req.qi));
+            let carrier_for_norm = carrier.clone();
+            let carrier = crate::brep::face_offset::remap_leaf_ids(carrier, &trim_base);
             let world = compose_placement(&req.placement, &source.transform);
             let band =
                 crate::brep::face_offset::offset_band(carrier, outer_off, inner_off, world)?;
-            walls.push((req.qi, band.node, band.world));
+            // M1 lateral trim: bound the (possibly whole-carrier) band to exactly
+            // the picked face by intersecting with its swept edge-loop prism. A
+            // closed face / non-extrude carrier returns `None` → plain M0 band.
+            let trim = crate::brep::face_lateral_trim::lateral_trim_node(
+                &carrier_for_norm,
+                &band.world,
+                &req.placement,
+                &req.loops,
+                outer_off,
+                inner_off,
+                &trim_base,
+            );
+            let node = match trim {
+                Some(t) => CsgNode::Intersection(Box::new(band.node), Box::new(t)),
+                None => band.node,
+            };
+            walls.push((req.qi, node, band.world));
         }
 
         if walls.is_empty() {
@@ -7009,6 +7033,134 @@ mod tests {
             let h = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32)).id_hash;
             assert_ne!(h, 0, "each band wall must be selectable (qFace handle)");
         }
+    }
+
+    /// A closed swept (Bézier) extrude whose four curved side walls are BOUNDED
+    /// non-analytic faces (the M1 target — each is a clean 4-edge Kantenzug).
+    fn blob_extrude_feature(n: u32) -> DecodedFeature {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+        let qb = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]| SketchSegment::QuadBezier { p0, p1, p2 };
+        let profile = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                qb([3.0, 0.0], [4.0, 4.0], [0.0, 3.0]),
+                qb([0.0, 3.0], [-4.0, 4.0], [-3.0, 0.0]),
+                qb([-3.0, 0.0], [-4.0, -4.0], [0.0, -3.0]),
+                qb([0.0, -3.0], [4.0, -4.0], [3.0, 0.0]),
+            ],
+            closed: true,
+        });
+        DecodedFeature {
+            id: id(n),
+            name: format!("Extrude {n}"),
+            op: BoolOp::Union,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids: vec![],
+            transform: Transform::IDENTITY,
+            node: CsgNode::Extrude {
+                id: id(n),
+                sketch: Box::new(profile),
+                half_height: 2.0,
+            },
+        }
+    }
+
+    /// XY-plane bounding-box area of a woven band (vertices + Tessellated samples).
+    fn xy_footprint(brep: &crate::brep::BRep) -> f32 {
+        let mut mn = [f64::INFINITY; 2];
+        let mut mx = [f64::NEG_INFINITY; 2];
+        let mut acc = |p: &[f64; 3]| {
+            for k in 0..2 {
+                mn[k] = mn[k].min(p[k]);
+                mx[k] = mx[k].max(p[k]);
+            }
+        };
+        for v in &brep.vertices {
+            acc(&v.position);
+        }
+        for i in 0..brep.face_count() {
+            if let crate::brep::SurfaceGeometry::Tessellated { positions, .. } =
+                &brep.face(crate::brep::FaceId(i as u32)).surface
+            {
+                for p in positions {
+                    acc(p);
+                }
+            }
+        }
+        ((mx[0] - mn[0]).max(0.0) * (mx[1] - mn[1]).max(0.0)) as f32
+    }
+
+    #[test]
+    fn thicken_one_extrude_wall_trims_to_a_bounded_patch() {
+        // M1 end to end: an extrude's curved side wall is a BOUNDED non-analytic
+        // face (a 4-edge Kantenzug). Picking ONE wall + Thicken builds the general
+        // band (a shell of the *whole* blob) AND laterally trims it via the swept
+        // edge-loop prism, so the result is just that one wall's slab — not a shell
+        // wrapping all four walls.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        ctx.features.push(blob_extrude_feature(1));
+
+        // Pick one Bézier wall (the first Tessellated face).
+        let brep = crate::body::weave_all(&ctx.features)[0].0.clone();
+        let hash = tessellated_face_hash(&brep).expect("the blob extrude has Tessellated walls");
+
+        let def = json!({
+            "faces": format!("qFace({hash})"),
+            "thickness": { "value": 1.0, "unit": "mm" },
+            "thickness_back": { "value": 0.5, "unit": "mm" },
+            "symmetric": false,
+        });
+        ThickenFeature.execute(&mut ctx, &id(2), &def).expect("thicken one extrude wall");
+
+        // The wall node trims the band: Intersection(Shell(Offset(..)), prism).
+        let thicken = ctx.features[1].clone();
+        match &thicken.node {
+            CsgNode::Intersection(a, _) => assert!(
+                matches!(a.as_ref(), CsgNode::Shell(inner, _, _)
+                    if matches!(inner.as_ref(), CsgNode::Offset(_, _))),
+                "the trimmed band's first operand must be the M0 Shell(Offset(..))"
+            ),
+            other => panic!("an open wall's band must be laterally trimmed, got {other:?}"),
+        }
+
+        // Weave the trimmed band → watertight, well-formed.
+        let band = crate::body::weave_all(std::slice::from_ref(&thicken));
+        let tb = &band[0].0;
+        assert!(tb.validate().is_ok(), "trimmed band must be well-formed");
+        assert!(
+            tb.shells.iter().any(|s| s.is_closed),
+            "trimmed wall must weave a closed (watertight) shell"
+        );
+
+        // The trim really bounds it: the untrimmed whole-blob band spans all four
+        // quadrants; the one-wall band's XY footprint must be markedly smaller.
+        let trimmed_area = xy_footprint(tb);
+        let carrier = match blob_extrude_feature(1).node {
+            CsgNode::Extrude { sketch, half_height, .. } => CsgNode::Extrude {
+                id: id(9),
+                sketch,
+                half_height,
+            },
+            other => other,
+        };
+        let fb =
+            crate::brep::face_offset::offset_band(carrier, 1.0, 0.5, Transform::IDENTITY).unwrap();
+        let full_feature = DecodedFeature {
+            id: id(3),
+            name: "full".into(),
+            op: BoolOp::Union,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids: vec![],
+            transform: Transform::IDENTITY,
+            node: fb.node,
+        };
+        let full = xy_footprint(&crate::body::weave_all(std::slice::from_ref(&full_feature))[0].0);
+        assert!(
+            trimmed_area < 0.6 * full,
+            "one-wall band footprint {trimmed_area:.1} must be well under the full shell {full:.1}"
+        );
     }
 
     #[test]
