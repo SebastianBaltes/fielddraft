@@ -1111,12 +1111,15 @@ export class Kernel {
     return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm);
   }
 
-  /** Thicken one or more curved analytic faces (sphere / cylinder / torus)
-   *  into a thin solid wall offset along the normal. `faces` is a
-   *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
-   *  grows `thicknessMm` outward (Onshape default). `upToFace` is an optional
-   *  `qFace(<idHash>)` target: when non-empty the wall grows up to that coaxial
-   *  face and the thickness arguments are ignored. */
+  /** Thicken one or more curved faces into a thin solid wall offset along the
+   *  normal. A closed NON-analytic face (a revolved / swept blob) goes through
+   *  the general SDF field-offset band `Shell(Offset(carrier, out), out+in)`; an
+   *  analytic face (sphere / cylinder / torus / cone) folds back to the exact
+   *  concentric surfaces as a fast-path. `faces` is a comma-separated list of
+   *  `qFace(<idHash>)` queries; `symmetric=false` grows `thicknessMm` outward
+   *  (Onshape default). `upToFace` is an optional `qFace(<idHash>)` target: when
+   *  non-empty the wall grows up to that coaxial face and the thickness
+   *  arguments are ignored. */
   addThicken(
     faces: string,
     thicknessMm: number,

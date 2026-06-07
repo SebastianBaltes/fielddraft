@@ -1609,6 +1609,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn thicken_band_is_shell_of_offset_on_a_closed_non_analytic_carrier() {
+        // M0 core claim: a thin wall of a *closed* non-analytic face is
+        // `Shell(Offset(carrier, out), out+in)` — the carrier dilated by `out`
+        // then hollowed inward by `out+in`, so the band lies between
+        // `carrier+out` (outer wall) and `carrier−in` (inner wall). This reuses
+        // the proven Shell thin-wall weave + inner-wall (0x800) classification
+        // and the spike's general Offset, with NO new face machinery and no
+        // dual-offset branch collision.
+        use crate::csg::EvalMode;
+        let (out, inn) = (0.8_f32, 0.6_f32);
+        let carrier_node = blob_extrude_node(1, 2.0);
+        let carrier = BoundedCsg::from_csg(&carrier_node);
+
+        let band_node = CsgNode::Shell(
+            Box::new(CsgNode::Offset(Box::new(carrier_node), out)),
+            out + inn,
+            Vec::new(),
+        );
+        let band = BoundedCsg::from_csg(&band_node);
+
+        // 1. Field identity: outer wall at carrier = +out, inner wall at
+        //    carrier = −in, solid in between, hollow inside the inner wall.
+        let sdf_c = |p: [f32; 3]| carrier.sdf(p, EvalMode::Logical);
+        let sdf_b = |p: [f32; 3]| band.sdf(p, EvalMode::Logical);
+        // March +x (z=0 side wall) to the carrier surface, then probe the band
+        // across the wall thickness along the outward normal.
+        let (mut lo, mut hi) = (0.0_f32, 8.0_f32);
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            if sdf_c([mid, 0.0, 0.0]) < 0.0 { lo = mid } else { hi = mid }
+        }
+        let px = 0.5 * (lo + hi);
+        let n = {
+            let h = 1e-3_f32;
+            let g = [
+                (sdf_c([px + h, 0.0, 0.0]) - sdf_c([px - h, 0.0, 0.0])) / (2.0 * h),
+                (sdf_c([px, h, 0.0]) - sdf_c([px, -h, 0.0])) / (2.0 * h),
+                (sdf_c([px, 0.0, h]) - sdf_c([px, 0.0, -h])) / (2.0 * h),
+            ];
+            let l = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+            [g[0] / l, g[1] / l, g[2] / l]
+        };
+        let at = |t: f32| [px + t * n[0], t * n[1], t * n[2]];
+        assert!(sdf_b(at(out)).abs() < 0.05, "outer wall must sit at carrier+out");
+        assert!(sdf_b(at(-inn)).abs() < 0.05, "inner wall must sit at carrier−in");
+        assert!(sdf_b(at(0.0)) < -0.05, "carrier surface itself is inside the wall");
+        assert!(sdf_b(at(-(inn + 0.4))) > 0.05, "interior past the inner wall is hollow");
+        assert!(sdf_b(at(out + 0.4)) > 0.05, "outside past the outer wall is empty");
+
+        // 2. The band weaves into a watertight B-Rep with selectable walls.
+        let oct = Octree::build(&band, 0.15);
+        let brep = weave(&band, &oct);
+        assert!(brep.validate().is_ok(), "band B-Rep must be well-formed");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "thin-wall band must weave a closed (watertight) shell"
+        );
+        // The non-analytic carrier means both walls are Tessellated; each is a
+        // selectable face (stable id_hash). Closed carrier → two disjoint walls.
+        let tess: Vec<_> = (0..brep.faces.len())
+            .filter(|&i| matches!(brep.faces[i].surface, SurfaceGeometry::Tessellated { .. }))
+            .collect();
+        assert!(
+            tess.len() >= 2,
+            "a closed non-analytic band has an inner AND an outer curved wall, got {}",
+            tess.len()
+        );
+        for &i in &tess {
+            let h = crate::brep::naming::TopoRef::from_face(&brep, crate::brep::FaceId(i as u32))
+                .id_hash;
+            assert_ne!(h, 0, "each woven band wall must carry a qFace handle");
+        }
+    }
+
+    #[test]
+    fn thicken_band_folds_analytic_sphere_walls_when_carrier_is_a_sphere() {
+        // M0 gate evidence "analytisch exakt wo faltbar": the SAME general
+        // `Shell(Offset(carrier, out), out+in)` band, given an analytic Sphere
+        // carrier, folds to the exact concentric analytic faces the per-primitive
+        // path emits — Sphere(r+out) outer, Sphere(r−in) inner — via the
+        // branch-map Offset/Shell arms, with no thicken-specific code.
+        let (r, out, inn) = (5.0_f32, 0.8_f32, 0.6_f32);
+        let sphere = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: r },
+        };
+        let band = BoundedCsg::from_csg(&CsgNode::Shell(
+            Box::new(CsgNode::Offset(Box::new(sphere), out)),
+            out + inn,
+            Vec::new(),
+        ));
+        let radii: Vec<f32> = branch_halfspace_map(&band)
+            .values()
+            .filter_map(|(hs, _)| match hs {
+                HalfSpace::Sphere { radius } => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            radii.iter().any(|&x| (x - (r + out)).abs() < 1e-4),
+            "outer analytic wall must be Sphere(r+out)={}, got {radii:?}",
+            r + out
+        );
+        assert!(
+            radii.iter().any(|&x| (x - (r - inn)).abs() < 1e-4),
+            "inner analytic wall must be Sphere(r−in)={}, got {radii:?}",
+            r - inn
+        );
+    }
+
     fn union_box_sphere(box_half: [f32; 3], sph_center: [f32; 3], sph_r: f32) -> BoundedCsg {
         let boxn = CsgNode::Leaf {
             id: FeatureId::from_u32(1),

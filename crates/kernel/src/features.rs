@@ -348,45 +348,96 @@ impl<'a> Context<'a> {
     /// refuses to thicken (planar / cone / partial cylinder / tessellated).
     pub fn resolve_thicken_faces(
         &mut self,
+        id: &FeatureId,
         queries: &[String],
         outer_off: f32,
         inner_off: f32,
-    ) -> Result<Vec<crate::brep::face_thicken::ThickenSolid>, String> {
+    ) -> Result<Vec<(CsgNode, Transform)>, String> {
         use crate::brep::naming::TopoRef;
-        use crate::brep::FaceId;
+        use crate::brep::{FaceId, SurfaceGeometry};
         use crate::queries::QueryExpr;
 
-        let woven = self.brep_cache.ensure(&self.features);
-        let mut out = Vec::new();
-        for q in queries {
-            let expr = crate::queries::parse_query(q)
-                .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
-            let QueryExpr::Face(hash) = expr else {
-                return Err(format!(
-                    "thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"
-                ));
-            };
-            let mut found = false;
-            'scan: for (brep, placement) in woven.iter() {
-                for i in 0..brep.faces.len() {
-                    let fid = FaceId(i as u32);
-                    if TopoRef::from_face(brep, fid).id_hash == hash {
-                        out.push(crate::brep::face_thicken::thicken_face(
-                            brep, fid, placement, outer_off, inner_off,
-                        )?);
-                        found = true;
-                        break 'scan;
+        // Pass 1 (woven borrowed): resolve analytic walls in place; for a
+        // non-analytic (Tessellated) face record a deferred band request — the
+        // general band needs the source feature node from `self.features`, which
+        // cannot be borrowed while the woven cache is alive.
+        struct BandReq {
+            qi: usize,
+            feature_id: u32,
+            placement: Transform,
+        }
+        let mut walls: Vec<(usize, CsgNode, Transform)> = Vec::new();
+        let mut bands: Vec<BandReq> = Vec::new();
+        {
+            let woven = self.brep_cache.ensure(&self.features);
+            for (qi, q) in queries.iter().enumerate() {
+                let expr = crate::queries::parse_query(q)
+                    .map_err(|e| format!("invalid face query `{q}`: {e:?}"))?;
+                let QueryExpr::Face(hash) = expr else {
+                    return Err(format!(
+                        "thicken faces must be `qFace(<id_hash>)` selections; got `{q}`"
+                    ));
+                };
+                let mut found = false;
+                'scan: for (brep, placement) in woven.iter() {
+                    for i in 0..brep.faces.len() {
+                        let fid = FaceId(i as u32);
+                        if TopoRef::from_face(brep, fid).id_hash == hash {
+                            let face = brep.face(fid);
+                            match &face.surface {
+                                SurfaceGeometry::Analytic { .. } => {
+                                    let s = crate::brep::face_thicken::thicken_face(
+                                        brep, fid, placement, outer_off, inner_off,
+                                    )?;
+                                    walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
+                                }
+                                SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
+                                    qi,
+                                    feature_id: face.branch_id.feature_id(),
+                                    placement: *placement,
+                                }),
+                            }
+                            found = true;
+                            break 'scan;
+                        }
                     }
                 }
-            }
-            if !found {
-                return Err(format!("face {hash} not found in the current model"));
+                if !found {
+                    return Err(format!("face {hash} not found in the current model"));
+                }
             }
         }
-        if out.is_empty() {
+
+        // Pass 2 (woven dropped): build the general field-offset band for each
+        // non-analytic face from its source feature's closed carrier.
+        for req in bands {
+            let source = self
+                .features
+                .iter()
+                .find(|f| crate::csg::BranchId::from_feature(&f.id).feature_id() == req.feature_id)
+                .ok_or_else(|| {
+                    "selected face has no source feature in the spine — cannot thicken".to_string()
+                })?;
+            let carrier = crate::brep::face_offset::single_primitive_carrier(&source.node)
+                .ok_or_else(|| {
+                    "face's carrier is a composite (boolean) body — general thicken of a \
+                     non-analytic boolean result is deferred past M0"
+                        .to_string()
+                })?;
+            let carrier =
+                crate::brep::face_offset::remap_leaf_ids(carrier, &id.child(format!("{}", req.qi)));
+            let world = compose_placement(&req.placement, &source.transform);
+            let band =
+                crate::brep::face_offset::offset_band(carrier, outer_off, inner_off, world)?;
+            walls.push((req.qi, band.node, band.world));
+        }
+
+        if walls.is_empty() {
             return Err("no faces selected to thicken".to_string());
         }
-        Ok(out)
+        // Deterministic order regardless of analytic/band interleaving.
+        walls.sort_by_key(|(qi, _, _)| *qi);
+        Ok(walls.into_iter().map(|(_, node, world)| (node, world)).collect())
     }
 
     /// Thicken each source face **up to** a coaxial `target` face: the wall grows
@@ -402,9 +453,10 @@ impl<'a> Context<'a> {
     /// same-kind surface (a cone / mismatched / non-coaxial target is deferred).
     pub fn resolve_thicken_to_face(
         &mut self,
+        id: &FeatureId,
         face_queries: &[String],
         target_query: &str,
-    ) -> Result<Vec<crate::brep::face_thicken::ThickenSolid>, String> {
+    ) -> Result<Vec<(CsgNode, Transform)>, String> {
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
         use crate::queries::QueryExpr;
@@ -431,16 +483,17 @@ impl<'a> Context<'a> {
 
         let (tgt_bi, tgt_fid) = find_face(target_query)?;
         let mut out = Vec::new();
-        for q in face_queries {
+        for (qi, q) in face_queries.iter().enumerate() {
             let (src_bi, src_fid) = find_face(q)?;
             let (src_brep, src_placement) = &woven[src_bi];
             let (tgt_brep, tgt_placement) = &woven[tgt_bi];
             let (outer_off, inner_off) = crate::brep::face_thicken::offset_to_target(
                 src_brep, src_fid, src_placement, tgt_brep, tgt_fid, tgt_placement,
             )?;
-            out.push(crate::brep::face_thicken::thicken_face(
+            let s = crate::brep::face_thicken::thicken_face(
                 src_brep, src_fid, src_placement, outer_off, inner_off,
-            )?);
+            )?;
+            out.push((thicken_diff_node(id, qi, &s), s.world));
         }
         if out.is_empty() {
             return Err("no faces selected to thicken".to_string());
@@ -2692,6 +2745,27 @@ pub struct ThickenDef {
     pub operation: BoolOp,
 }
 
+/// The analytic wall node for one face: `Difference(outer, inner)` of the two
+/// coaxial offset solids, keyed under the thicken feature `id` (sub `{qi}o` /
+/// `{qi}i`). The general (non-analytic) walls build their own `Shell(Offset(..))`
+/// node in [`crate::brep::face_offset`]; this is only the per-primitive path.
+fn thicken_diff_node(
+    id: &FeatureId,
+    qi: usize,
+    s: &crate::brep::face_thicken::ThickenSolid,
+) -> CsgNode {
+    CsgNode::Difference(
+        Box::new(CsgNode::Leaf {
+            id: id.child(format!("{qi}o")),
+            primitive: s.outer.clone(),
+        }),
+        Box::new(CsgNode::Leaf {
+            id: id.child(format!("{qi}i")),
+            primitive: s.inner.clone(),
+        }),
+    )
+}
+
 pub struct ThickenFeature;
 
 impl FeatureKind for ThickenFeature {
@@ -2723,8 +2797,8 @@ impl FeatureKind for ThickenFeature {
         // and the fixed thickness / direction params are ignored. Otherwise the
         // thickness is split per the direction mode below.
         let target = d.up_to_face.as_str().trim();
-        let shells = if !target.is_empty() {
-            ctx.resolve_thicken_to_face(&face_queries, target)
+        let walls = if !target.is_empty() {
+            ctx.resolve_thicken_to_face(id, &face_queries, target)
                 .map_err(|message| FeatureError::InvalidParameter {
                     feature: ThickenDef::TYPE_NAME,
                     name: "up_to_face",
@@ -2744,7 +2818,7 @@ impl FeatureKind for ThickenFeature {
             let (outer_off, inner_off) =
                 if d.symmetric { (t / 2.0, t / 2.0) } else { (t, back) };
 
-            ctx.resolve_thicken_faces(&face_queries, outer_off, inner_off)
+            ctx.resolve_thicken_faces(id, &face_queries, outer_off, inner_off)
                 .map_err(|message| FeatureError::InvalidParameter {
                     feature: ThickenDef::TYPE_NAME,
                     name: "faces",
@@ -2754,29 +2828,17 @@ impl FeatureKind for ThickenFeature {
 
         let name = optional_display_name(def, || format!("Thicken {id}"));
 
-        // Each face → `Difference(outer, inner)` (the wall). A single face keeps
-        // a separable placement (feature.transform = world surface frame, node =
-        // local difference → DL-56 move-cache). Multiple faces bake each world
-        // transform into the node and union the walls.
-        let diff_node = |i: usize, s: &crate::brep::face_thicken::ThickenSolid| -> CsgNode {
-            CsgNode::Difference(
-                Box::new(CsgNode::Leaf {
-                    id: id.child(format!("{i}o")),
-                    primitive: s.outer.clone(),
-                }),
-                Box::new(CsgNode::Leaf {
-                    id: id.child(format!("{i}i")),
-                    primitive: s.inner.clone(),
-                }),
-            )
-        };
-
-        let (transform, node) = if shells.len() == 1 {
-            (shells[0].world, diff_node(0, &shells[0]))
+        // Each face resolves to a wall node in its own (carrier-/surface-)local
+        // frame plus its local → world placement. A single face keeps a separable
+        // placement (feature.transform = world frame → DL-56 move-cache); multiple
+        // faces bake each world transform into the node and union the walls.
+        let (transform, node) = if walls.len() == 1 {
+            let (node, world) = walls.into_iter().next().unwrap();
+            (world, node)
         } else {
             let mut acc: Option<CsgNode> = None;
-            for (i, s) in shells.iter().enumerate() {
-                let placed = CsgNode::Transform(s.world, Box::new(diff_node(i, s)));
+            for (node, world) in walls {
+                let placed = CsgNode::Transform(world, Box::new(node));
                 acc = Some(match acc {
                     None => placed,
                     Some(a) => CsgNode::Union(Box::new(a), Box::new(placed)),
@@ -6445,7 +6507,7 @@ mod tests {
         let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).unwrap();
 
         let err = ctx
-            .resolve_thicken_faces(&[format!("qFace({top})")], 2.0, 0.0)
+            .resolve_thicken_faces(&id(2), &[format!("qFace({top})")], 2.0, 0.0)
             .unwrap_err();
         assert!(err.contains("planar") || err.contains("Extrude"), "got: {err}");
     }
@@ -6846,6 +6908,135 @@ mod tests {
         assert!(names.iter().any(|n| n.contains("Faces")), "{names:?}");
         assert!(names.iter().any(|n| n.contains("Thickness")), "{names:?}");
         assert!(names.iter().any(|n| n.contains("Up to face")), "{names:?}");
+    }
+
+    /// Revolve a closed, clearly non-circular "blob" profile (at `x > 0`) around
+    /// the Y axis → a closed surface of revolution with NO analytic half-space,
+    /// so its wall weaves as a `Tessellated` face. This is the carrier the
+    /// per-primitive analytic thicken cannot reach.
+    fn blob_revolve_feature(n: u32) -> DecodedFeature {
+        use ::fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+        let qb = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]| SketchSegment::QuadBezier { p0, p1, p2 };
+        let profile = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                qb([5.0, 0.0], [7.0, 2.0], [5.0, 3.0]),
+                qb([5.0, 3.0], [3.0, 2.0], [3.5, 0.0]),
+                qb([3.5, 0.0], [3.0, -2.0], [5.0, -3.0]),
+                qb([5.0, -3.0], [7.0, -2.0], [5.0, 0.0]),
+            ],
+            closed: true,
+        });
+        DecodedFeature {
+            id: id(n),
+            name: format!("Revolve {n}"),
+            op: BoolOp::Union,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids: vec![],
+            transform: Transform::IDENTITY,
+            node: CsgNode::Revolve { id: id(n), sketch: Box::new(profile) },
+        }
+    }
+
+    /// Find a non-analytic (`Tessellated`) face's id_hash.
+    fn tessellated_face_hash(brep: &crate::brep::BRep) -> Option<u64> {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        (0..brep.face_count()).find_map(|i| {
+            let fid = FaceId(i as u32);
+            matches!(brep.face(fid).surface, SurfaceGeometry::Tessellated { .. })
+                .then(|| crate::brep::naming::TopoRef::from_face(brep, fid).id_hash)
+        })
+    }
+
+    #[test]
+    fn thicken_closed_non_analytic_face_weaves_a_watertight_band() {
+        // M0 end to end: a closed NON-analytic face (revolved blob) → pick its
+        // Tessellated wall → Thicken. The general field-offset path builds
+        // `Shell(Offset(carrier, out), out+in)` from the source revolve's carrier
+        // and that band weaves watertight with selectable inner + outer walls —
+        // a face the analytic per-primitive thicken would reject outright.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        ctx.features.push(blob_revolve_feature(1));
+
+        // The blob's wall really is non-analytic.
+        let brep = crate::body::weave_all(&ctx.features)[0].0.clone();
+        let hash = tessellated_face_hash(&brep).expect("the revolved blob has a Tessellated wall");
+
+        // Drive the actual feature (resolve → carrier lookup → band node).
+        let def = json!({
+            "faces": format!("qFace({hash})"),
+            "thickness": { "value": 1.0, "unit": "mm" },
+            "thickness_back": { "value": 0.6, "unit": "mm" },
+            "symmetric": false,
+        });
+        ThickenFeature.execute(&mut ctx, &id(2), &def).expect("thicken a closed non-analytic face");
+        assert_eq!(ctx.features.len(), 2, "thicken appended its wall feature");
+
+        // The wall node is the general band: Shell(Offset(carrier, out), out+in).
+        let thicken = ctx.features[1].clone();
+        match &thicken.node {
+            CsgNode::Shell(inner, _, open) => {
+                assert!(open.is_empty(), "a closed band has no open faces");
+                assert!(matches!(**inner, CsgNode::Offset(_, _)), "Shell wraps an Offset carrier");
+            }
+            other => panic!("expected Shell(Offset(..)) band, got {other:?}"),
+        }
+
+        // Weave the band body on its own → watertight shell, selectable walls.
+        let band = crate::body::weave_all(std::slice::from_ref(&thicken));
+        assert_eq!(band.len(), 1, "the thicken wall is one body");
+        let brep = &band[0].0;
+        assert!(brep.validate().is_ok(), "band B-Rep must be well-formed");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "thickened wall must weave a closed (watertight) shell"
+        );
+        let tess: Vec<_> = (0..brep.face_count())
+            .filter(|&i| {
+                matches!(
+                    brep.face(crate::brep::FaceId(i as u32)).surface,
+                    crate::brep::SurfaceGeometry::Tessellated { .. }
+                )
+            })
+            .collect();
+        assert!(
+            tess.len() >= 2,
+            "a closed non-analytic band has inner AND outer curved walls, got {}",
+            tess.len()
+        );
+        for &i in &tess {
+            let h = crate::brep::naming::TopoRef::from_face(brep, crate::brep::FaceId(i as u32)).id_hash;
+            assert_ne!(h, 0, "each band wall must be selectable (qFace handle)");
+        }
+    }
+
+    #[test]
+    fn thicken_rejects_a_composite_non_analytic_carrier() {
+        // A boolean carrier (union of two revolved blobs) is deferred past M0:
+        // offsetting the whole boolean would thicken every surface, so a pick on
+        // a non-analytic face whose source feature is composite returns a clear
+        // error rather than silently-wrong geometry.
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let mut composite = blob_revolve_feature(1);
+        composite.node = CsgNode::Union(
+            Box::new(composite.node.clone()),
+            Box::new(CsgNode::Transform(
+                Transform { translate: [14.0, 0.0, 0.0], ..Transform::IDENTITY },
+                Box::new(match blob_revolve_feature(1).node {
+                    CsgNode::Revolve { sketch, .. } => CsgNode::Revolve { id: id(1), sketch },
+                    other => other,
+                }),
+            )),
+        );
+        ctx.features.push(composite);
+        let brep = crate::body::weave_all(&ctx.features)[0].0.clone();
+        let hash = tessellated_face_hash(&brep).expect("a Tessellated wall");
+        let def = json!({ "faces": format!("qFace({hash})"), "thickness": { "value": 1.0, "unit": "mm" } });
+        let err = ThickenFeature.execute(&mut ctx, &id(2), &def).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("composite") || msg.contains("deferred"), "got: {msg}");
     }
 
     // ─── C2: mate-connector-on-face ────────────────────────────────

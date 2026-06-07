@@ -1447,11 +1447,13 @@ export class KernelStore {
     return id;
   }
 
-  /** Thicken curved analytic face(s) into a thin wall (sphere/cylinder/torus).
-   *  Outward (Onshape default) by `thicknessMm`; the kernel rejects planar /
-   *  cone / partial faces with a helpful message. Passing `upToFaceQuery`
-   *  (a `qFace(<idHash>)` target) switches to up-to-face mode: the wall grows
-   *  up to that coaxial face and `thicknessMm` is ignored. */
+  /** Thicken curved face(s) into a thin wall. Closed non-analytic faces
+   *  (revolved / swept blobs) use the general SDF field-offset band; analytic
+   *  faces (sphere / cylinder / torus / cone) fold to exact surfaces. Outward
+   *  (Onshape default) by `thicknessMm`; the kernel rejects planar faces and
+   *  composite (boolean) non-analytic carriers with a helpful message. Passing
+   *  `upToFaceQuery` (a `qFace(<idHash>)` target) switches to up-to-face mode:
+   *  the wall grows up to that coaxial face and `thicknessMm` is ignored. */
   addThicken(faceQueries: string[], thicknessMm = 2, upToFaceQuery = ""): number | null {
     if (faceQueries.length === 0) return null;
     let id: number;

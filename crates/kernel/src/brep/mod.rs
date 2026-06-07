@@ -29,6 +29,7 @@ pub mod edge_trace;
 pub mod edge_walker;
 pub mod extraction;
 pub mod face_export;
+pub mod face_offset;
 pub mod face_profile;
 pub mod face_thicken;
 pub mod naming;

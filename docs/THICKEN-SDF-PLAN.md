@@ -1,6 +1,25 @@
 # Plan: Thicken/Offset auf allgemeinem SDF-Feld (Pivot weg vom analytischen Sonderfall)
 
-**Status:** Vorschlag, zur Freigabe. **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv). **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+
+> **Fortschritt**
+> - **Spike (Gate) ✅** — `CsgNode::Offset` end-to-end, nicht-analytischer Träger webt selektierbar (Commit `86f7cd2`).
+> - **M0 ✅ (0.5.36)** — der **Schlüssel-Vereinfacher**: eine Wand ist `Shell(Offset(carrier, out), out+in)`,
+>   d. h. **Komposition zweier bereits bewiesener Operatoren** (Spike-`Offset` + Shell DL-75) statt neuer
+>   Flächen-Maschinerie. Damit fällt der dual-offset-Branch-Konflikt komplett weg (genau ein Träger in genau
+>   einem Shell; Shell liefert die Inner-Wall-0x800-Klassifikation gratis). Neuer Code: `brep/face_offset.rs`
+>   (Träger-Lookup aus dem Spine + Leaf-Id-Remap + Band-Bau). `ThickenFeature` routet **Tessellated** Faces über
+>   das allgemeine Band; **analytische** Faces behalten ihren exakten Pfad (Beweis „analytisch exakt wo faltbar":
+>   `Shell(Offset(Sphere(r),out),out+in)` faltet zu `Sphere(r+out)`/`Sphere(r−in)`).
+> - **Scope-Entscheidung M0 (bewusst, nicht faul):** M0 ist **additiv** — die neue Fähigkeit ist „geschlossene
+>   **nicht-analytische** Fläche verdickbar" (revolved/swept Blob; analytisch unmöglich). Der analytische Pfad
+>   bleibt unverändert als Fast-Path; er wird im **Park-Schritt** nur dort entfernt, wo wirklich redundant.
+>   **Bewusst auf M1 verschoben** (brauchen die laterale Begrenzung, um korrekt zu sein): Zylinder/Kegel über das
+>   *allgemeine* Feld (das Offsetten des begrenzten Zylinder-*Solids* würde fälschlich die Deckel mitverdicken —
+>   die saubere Lösung ist Flächen-Offset + Lateral-Trim = M1) und `up-to-face` als Lens. Das deckt sich mit der
+>   M0/M1-Grenze des Plans (partielle Zylinder/Kegel sind ohnehin M1).
+> - **Komposit-Träger** (Boolean-Ergebnis) → klarer Err, deferred (würde sonst jede Fläche verdicken).
+
 **Auslöser:** Designentscheidung — das analytische, pro-Primitiv `face_thicken.rs` deckt nur die
 4 „Spielzeug"-Grundformen exakt ab. Reale Flächen entstehen aus Sketch→Extrude/Revolve/Twist→Boolean
 und sind ohnehin nicht analytisch. Der allgemeine Feld-Offset ist breiter **und robuster** und
