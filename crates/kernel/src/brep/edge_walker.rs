@@ -490,6 +490,20 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. } => collect_leaf_nodes(inner, out),
+        BoundedCsg::Offset { inner, .. } => {
+            // The face field for an offset is the *offset* surface, so map the
+            // carrier's leaf ids to THIS Offset node — `Field::Leaf` then traces
+            // `inner.sdf − δ`, the woven offset face (the path curved/non-analytic
+            // carriers take when there is no closed-form half-space fold).
+            // NB: two offsets of the *same* carrier (a Difference band) collide on
+            // this feature_id key — the band's inner/outer split needs distinct
+            // branch ids (Shell's inner-wall scheme), an M0 concern, not the spike.
+            let mut sub = HashMap::new();
+            collect_leaf_nodes(inner, &mut sub);
+            for key in sub.into_keys() {
+                out.insert(key, node);
+            }
+        }
         BoundedCsg::Empty => {}
     }
 }
@@ -526,6 +540,7 @@ fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections:
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Shell { inner, .. } => collect_non_lipschitz_features(inner, out),
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => {}
     }
@@ -1216,7 +1231,11 @@ fn body_has_warp(node: &BoundedCsg) -> bool {
         | BoundedCsg::SmoothDifference { left, right, .. }
         | BoundedCsg::MaskedBlend { left, right, .. }
         | BoundedCsg::Morph { left, right, .. } => body_has_warp(left) || body_has_warp(right),
-        BoundedCsg::Shell { inner, .. } => body_has_warp(inner),
+        // An offset shifts the *value*, not the domain — `branch_halfspace_map`
+        // folds `δ` into the half-space so it still matches the real surface, and
+        // the phantom filter stays valid. Recurse so an offset *over* a warp is
+        // still caught by the inner node.
+        BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => body_has_warp(inner),
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }

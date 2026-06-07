@@ -138,6 +138,14 @@ pub enum BoundedCsg {
         open_faces: Vec<OpenSurface>,
         aabb: Aabb,
     },
+    /// General SDF offset `inner.sdf − δ` (see [`CsgNode::Offset`]). Dilates the
+    /// body for `δ > 0`, erodes for `δ < 0`; the surface's branch identity is
+    /// preserved so the offset face stays selectable.
+    Offset {
+        inner: Box<BoundedCsg>,
+        delta: f32,
+        aabb: Aabb,
+    },
     /// BVH-wrapped extrude. The 2D sketch is materialised into a
     /// [`BoundedSketch2d`] at construction time so every 3D query
     /// hits the pruned 2D path. `world_transform` carries the
@@ -216,6 +224,7 @@ impl BoundedCsg {
             | BoundedCsg::Bend { aabb, .. }
             | BoundedCsg::Displace { aabb, .. }
             | BoundedCsg::Shell { aabb, .. }
+            | BoundedCsg::Offset { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. }
             | BoundedCsg::MaskedBlend { aabb, .. }
@@ -254,6 +263,7 @@ impl BoundedCsg {
             BoundedCsg::Twist { inner, .. }
             | BoundedCsg::Bend { inner, .. }
             | BoundedCsg::Displace { inner, .. }
+            | BoundedCsg::Offset { inner, .. }
             | BoundedCsg::Shell { inner, .. } => {
                 inner.collect_leaf_transforms(out);
             }
@@ -388,6 +398,7 @@ impl BoundedCsg {
             BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
                 open_shell_sdf(inner.sdf(p, mode), *thickness, open_faces, p)
             }
+            BoundedCsg::Offset { inner, delta, .. } => inner.sdf(p, mode) - delta,
             BoundedCsg::MaskedBlend {
                 left,
                 right,
@@ -554,6 +565,10 @@ impl BoundedCsg {
                 // band exactly at the opening rim where the two surfaces meet.
                 let e = open_shell_erosion(d, *thickness, open_faces, p);
                 combine_max(d, c, -(d + e), c.mapped_inner(), eps)
+            }
+            BoundedCsg::Offset { inner, delta, .. } => {
+                let (d, c) = inner.evaluate(p, eps, mode);
+                (d - delta, c)
             }
             BoundedCsg::MaskedBlend {
                 left,
@@ -808,6 +823,26 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Offset(inner, delta) => {
+            let child = build(inner, carry);
+            let bb = child.aabb();
+            let aabb = if bb.is_empty() {
+                Aabb::EMPTY
+            } else {
+                // Conservative for either sign: dilation grows by `δ`, erosion
+                // shrinks — expanding by `|δ|` stays a superset.
+                let e = delta.abs();
+                Aabb {
+                    min: [bb.min[0] - e, bb.min[1] - e, bb.min[2] - e],
+                    max: [bb.max[0] + e, bb.max[1] + e, bb.max[2] + e],
+                }
+            };
+            BoundedCsg::Offset {
+                inner: Box::new(child),
+                delta: *delta,
+                aabb,
+            }
+        }
         CsgNode::MaskedBlend {
             a,
             b,
@@ -1019,6 +1054,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
         | BoundedCsg::Bend { .. }
         | BoundedCsg::Displace { .. }
         | BoundedCsg::Shell { .. }
+        | BoundedCsg::Offset { .. }
         | BoundedCsg::Morph { .. } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;

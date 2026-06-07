@@ -245,6 +245,7 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Shell { inner, .. } => bounded_contains_space_filling(inner),
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }
@@ -736,6 +737,11 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             hash_node(a, hasher);
             hash_node(b, hasher);
             t.to_bits().hash(hasher);
+        }
+        CsgNode::Offset(a, delta) => {
+            14u8.hash(hasher);
+            hash_node(a, hasher);
+            delta.to_bits().hash(hasher);
         }
         CsgNode::MaskedBlend {
             a,

@@ -533,6 +533,9 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
                 * (p[2] * freq_d * D3::from(0.7)).sin();
             d - disp
         }
+        BoundedCsg::Offset { inner, delta, .. } => {
+            eval_bounded_d3(inner, p, mode) - D3::from(*delta as f64)
+        }
         BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
             // Mirror `crate::csg::open_shell_sdf` exactly (DL-75): the inward wall
             // `max(d, −(d + e))` with local erosion `e = clamp(d − g, 0, t)`,

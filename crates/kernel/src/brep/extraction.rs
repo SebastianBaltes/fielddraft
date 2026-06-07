@@ -122,6 +122,7 @@ pub(crate) fn body_contains_shell(body: &BoundedCsg) -> bool {
         }
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Displace { inner, .. } => body_contains_shell(inner),
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => false,
     }
@@ -343,7 +344,12 @@ fn body_prefers_wide_seed(body: &BoundedCsg) -> bool {
         | BoundedCsg::Morph { left, right, .. } => {
             body_prefers_wide_seed(left) && body_prefers_wide_seed(right)
         }
-        BoundedCsg::Shell { inner, .. } => body_prefers_wide_seed(inner),
+        // An offset inherits its carrier's field character: offset-of-analytic
+        // stays an exact Euclidean field (wide seed OK), offset-of-sweep/warp
+        // stays tight. Recursing into the carrier picks the right one.
+        BoundedCsg::Shell { inner, .. } | BoundedCsg::Offset { inner, .. } => {
+            body_prefers_wide_seed(inner)
+        }
         BoundedCsg::Twist { .. }
         | BoundedCsg::Bend { .. }
         | BoundedCsg::Displace { .. }

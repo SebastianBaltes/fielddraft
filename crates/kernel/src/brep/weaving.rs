@@ -175,6 +175,22 @@ fn collect_halfspaces(node: &BoundedCsg, out: &mut HashMap<u32, (HalfSpace, Tran
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. } => collect_halfspaces(inner, out),
+        BoundedCsg::Offset { inner, delta, .. } => {
+            // A `δ`-offset shifts each analytic face's surface parameter by `δ`
+            // along its normal, keeping the same family and placement — the same
+            // closed-form fold the Shell inner wall uses, but signed (outward for
+            // δ>0). `offset_halfspace_inward(hs, −δ)` grows the surface by δ.
+            // Faces whose offset leaves the family (Cone/Gyroid) get no entry and
+            // fall back to `Field::Leaf{Offset}` (curved seam tracer), so the
+            // surface is still woven — just not analytically.
+            let mut sub = HashMap::new();
+            collect_halfspaces(inner, &mut sub);
+            for (key, (hs, xf)) in sub {
+                if let Some(off) = crate::csg::offset_halfspace_inward(&hs, -delta) {
+                    out.insert(key, (off, xf));
+                }
+            }
+        }
         BoundedCsg::Shell { inner, thickness, .. } => {
             // The outer faces are geometrically unchanged (the shell preserves
             // `d = 0`), so they keep their entries. Additionally register each
@@ -1443,6 +1459,154 @@ mod tests {
             },
         };
         BoundedCsg::from_csg(&csg)
+    }
+
+    // ─── Offset-node spike (general SDF offset → field-based Thicken) ─────────
+    // Gate before parking the analytic `face_thicken`: prove a `CsgNode::Offset`
+    // (a) is exactly `child − δ` end to end, and (b) when its carrier is a
+    // NON-analytic sketch sweep, the dilated surface still weaves watertight into
+    // a SELECTABLE B-Rep face via the `Field::Leaf` carrier path — i.e. the
+    // general route reaches the curved faces the per-primitive analytic path
+    // (sphere/cylinder/torus/cone only) cannot.
+
+    /// A closed 4-quad-bézier "blob" extrusion. The blob is clearly non-circular,
+    /// so its swept lateral wall has no analytic half-space and is woven through
+    /// the dual-SDF leaf field — exactly the carrier the general offset must reach.
+    fn blob_extrude_node(id: u32, half_height: f32) -> CsgNode {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+        let qb = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]| SketchSegment::QuadBezier { p0, p1, p2 };
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                qb([3.0, 0.0], [4.0, 4.0], [0.0, 3.0]),
+                qb([0.0, 3.0], [-4.0, 4.0], [-3.0, 0.0]),
+                qb([-3.0, 0.0], [-4.0, -4.0], [0.0, -3.0]),
+                qb([0.0, -3.0], [4.0, -4.0], [3.0, 0.0]),
+            ],
+            closed: true,
+        });
+        CsgNode::Extrude {
+            id: FeatureId::from_u32(id),
+            sketch: Box::new(sketch),
+            half_height,
+        }
+    }
+
+    fn has_tessellated_face(brep: &BRep) -> bool {
+        brep.faces
+            .iter()
+            .any(|f| matches!(f.surface, SurfaceGeometry::Tessellated { .. }))
+    }
+
+    #[test]
+    fn offset_node_is_child_minus_delta_end_to_end() {
+        use crate::csg::EvalMode;
+        let node = blob_extrude_node(1, 2.0);
+        let carrier = BoundedCsg::from_csg(&node);
+        let offset = BoundedCsg::from_csg(&CsgNode::Offset(Box::new(node), 1.0));
+        // The general operator: `Offset(child, δ).sdf == child.sdf − δ`, exactly,
+        // through the BVH build and at any point (inside, on the wall, outside).
+        for p in [
+            [0.0, 0.0, 0.0],
+            [2.5, 0.0, 0.0],
+            [0.0, 0.0, 1.5],
+            [5.0, 1.0, 0.5],
+            [-3.5, -2.0, 3.0],
+        ] {
+            let c = carrier.sdf(p, EvalMode::Logical);
+            let o = offset.sdf(p, EvalMode::Logical);
+            assert!(
+                (o - (c - 1.0)).abs() < 1e-5,
+                "offset must be carrier − δ at {p:?}: {o} vs {}",
+                c - 1.0
+            );
+        }
+    }
+
+    #[test]
+    fn offset_of_non_analytic_carrier_weaves_selectable_dilated_face() {
+        use crate::csg::EvalMode;
+        let node = blob_extrude_node(1, 2.0);
+        let carrier = BoundedCsg::from_csg(&node);
+
+        // 1. The carrier really is non-analytic: its curved wall is Tessellated.
+        let c_oct = Octree::build(&carrier, 0.2);
+        let c_brep = weave(&carrier, &c_oct);
+        assert!(
+            has_tessellated_face(&c_brep),
+            "carrier blob must have a non-analytic (Tessellated) wall — else this \
+             would secretly test the analytic path"
+        );
+
+        // 2. Dilate it by δ = 1 mm and weave the offset body.
+        let delta = 1.0_f32;
+        let offset = BoundedCsg::from_csg(&CsgNode::Offset(Box::new(node), delta));
+        let oct = Octree::build(&offset, 0.2);
+        let brep = weave(&offset, &oct);
+
+        // Watertight, well-formed, and the non-analytic wall survived the offset…
+        assert!(brep.validate().is_ok(), "offset body B-Rep must be well-formed");
+        assert!(brep.solid_count() >= 1, "offset body must weave a solid");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "dilated body must weave a closed (watertight) shell"
+        );
+        let tess: Vec<_> = brep
+            .faces
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| matches!(f.surface, SurfaceGeometry::Tessellated { .. }))
+            .collect();
+        assert!(
+            !tess.is_empty(),
+            "the offset of a curved carrier must still weave a curved (Tessellated) wall"
+        );
+        // …and that wall is SELECTABLE — it has a stable topological handle.
+        let (fi, _) = tess[0];
+        let handle =
+            crate::brep::naming::TopoRef::from_face(&brep, crate::brep::FaceId(fi as u32)).id_hash;
+        assert_ne!(handle, 0, "the dilated curved face must carry a qFace handle");
+
+        // 3. The dilation is geometrically exact along the surface normal: find a
+        //    point P on the carrier's +x wall, then the offset surface sits δ mm
+        //    further out along the carrier normal there.
+        let sdf_c = |p: [f32; 3]| carrier.sdf(p, EvalMode::Logical);
+        let sdf_o = |p: [f32; 3]| offset.sdf(p, EvalMode::Logical);
+        // Bisect along +x (z = 0, a side wall not a cap) to the carrier surface.
+        let (mut lo, mut hi) = (0.0_f32, 8.0_f32);
+        assert!(sdf_c([lo, 0.0, 0.0]) < 0.0 && sdf_c([hi, 0.0, 0.0]) > 0.0);
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            if sdf_c([mid, 0.0, 0.0]) < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let px = 0.5 * (lo + hi);
+        let p = [px, 0.0, 0.0];
+        // Outward unit normal = ∇(carrier) via central differences.
+        let h = 1e-3_f32;
+        let g = [
+            (sdf_c([p[0] + h, p[1], p[2]]) - sdf_c([p[0] - h, p[1], p[2]])) / (2.0 * h),
+            (sdf_c([p[0], p[1] + h, p[2]]) - sdf_c([p[0], p[1] - h, p[2]])) / (2.0 * h),
+            (sdf_c([p[0], p[1], p[2] + h]) - sdf_c([p[0], p[1], p[2] - h])) / (2.0 * h),
+        ];
+        let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        let n = [g[0] / gl, g[1] / gl, g[2] / gl];
+        // P sits exactly δ inside the dilated body…
+        assert!(
+            (sdf_o(p) + delta).abs() < 0.05,
+            "carrier-surface point must be δ inside the offset body: {} vs {}",
+            sdf_o(p),
+            -delta
+        );
+        // …and the dilated surface is δ out along the normal.
+        let q = [p[0] + delta * n[0], p[1] + delta * n[1], p[2] + delta * n[2]];
+        assert!(
+            sdf_o(q).abs() < 0.05,
+            "offset surface must sit δ out along the carrier normal: sdf_o(q) = {}",
+            sdf_o(q)
+        );
     }
 
     fn union_box_sphere(box_half: [f32; 3], sph_center: [f32; 3], sph_r: f32) -> BoundedCsg {

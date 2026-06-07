@@ -663,6 +663,16 @@ pub enum CsgNode {
     /// [`OpenSurface`]). With no open faces this is a closed inward shell of
     /// uniform thickness. See [`open_shell_sdf`].
     Shell(Box<CsgNode>, f32, Vec<OpenSurface>),
+    /// General SDF offset: `child.sdf(p) − δ`. A positive `δ` dilates the body
+    /// (grows the surface outward along its normal by `δ`); a negative `δ`
+    /// erodes it. Self-intersection-free by construction (a virtue of the SDF
+    /// over a B-Rep offset). The single general primitive behind the
+    /// field-based Thicken/Offset: a thin wall is `Difference(Offset(c, out),
+    /// Offset(c, −in))`, and unlike the analytic per-primitive path it works on
+    /// *any* carrier field (sweep, revolve, twist, boolean), with the offset
+    /// surface still woven into selectable B-Rep faces (analytic carriers fold
+    /// back into a shifted `HalfSpace`, curved ones fall to `Field::Leaf`).
+    Offset(Box<CsgNode>, f32),
     /// K10.3 / DL-61: spatially-masked blend. Evaluates `a` and `b` at
     /// every point, then checks a polyline-tube mask SDF (defined by
     /// `mask_polyline`, `mask_radius`). Inside the mask:
@@ -908,6 +918,7 @@ impl DecodedFeature {
                 CsgNode::Twist(inner, _)
                 | CsgNode::Bend(inner, _)
                 | CsgNode::Displace(inner, _, _)
+                | CsgNode::Offset(inner, _)
                 | CsgNode::Shell(inner, _, _) => cur = inner,
                 CsgNode::Leaf { primitive, .. } => return Some(primitive.clone()),
                 CsgNode::Extrude {
@@ -1057,6 +1068,9 @@ impl CsgNode {
             CsgNode::Shell(inner, t, open) => {
                 CsgNode::Shell(Box::new(inner.apply_edge_fillets(fillets)), t, open)
             }
+            CsgNode::Offset(inner, delta) => {
+                CsgNode::Offset(Box::new(inner.apply_edge_fillets(fillets)), delta)
+            }
             CsgNode::Displace(inner, d, f) => {
                 CsgNode::Displace(Box::new(inner.apply_edge_fillets(fillets)), d, f)
             }
@@ -1083,6 +1097,7 @@ impl CsgNode {
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_primitives(out),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -1112,6 +1127,7 @@ impl CsgNode {
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.contains_any_target(target_ids),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -1141,6 +1157,7 @@ impl CsgNode {
             | CsgNode::Twist(inner, _)
             | CsgNode::Bend(inner, _)
             | CsgNode::Shell(inner, _, _)
+            | CsgNode::Offset(inner, _)
             | CsgNode::Displace(inner, _, _) => inner.collect_leaf_ids(out),
             CsgNode::Union(a, b)
             | CsgNode::Difference(a, b)
@@ -1218,6 +1235,7 @@ impl CsgNode {
             CsgNode::Shell(inner, thickness, open) => {
                 open_shell_sdf(inner.sdf(p, mode), *thickness, open, p)
             }
+            CsgNode::Offset(inner, delta) => inner.sdf(p, mode) - delta,
             CsgNode::Morph(a, b, t) => {
                 let da = a.sdf(p, mode);
                 let db = b.sdf(p, mode);
@@ -1366,6 +1384,13 @@ impl CsgNode {
                 let (d, c) = inner.evaluate(p, eps, mode);
                 (open_shell_sdf(d, *thickness, open, p), c)
             }
+            CsgNode::Offset(inner, delta) => {
+                // The offset preserves the carrier's contributor identity — the
+                // surface just shifts by `δ` along its normal — so the woven face
+                // keeps the carrier's branch id and stays selectable.
+                let (d, c) = inner.evaluate(p, eps, mode);
+                (d - delta, c)
+            }
             CsgNode::Morph(a, b, t) => {
                 let (da, ca) = a.evaluate(p, eps, mode);
                 let (db, cb) = b.evaluate(p, eps, mode);
@@ -1495,6 +1520,19 @@ impl CsgNode {
             // Inward shell ⊆ the solid (the outer surface is preserved), so
             // the bounds are exactly the child's — no expansion.
             CsgNode::Shell(inner, _thickness, _open) => inner.aabb(),
+            // A `δ`-dilation grows the bounds by `δ`; an erosion shrinks them.
+            // Expanding by `|δ|` is a conservative superset for either sign.
+            CsgNode::Offset(inner, delta) => {
+                let bb = inner.aabb();
+                if bb.is_empty() {
+                    return Aabb::EMPTY;
+                }
+                let e = delta.abs();
+                Aabb {
+                    min: [bb.min[0] - e, bb.min[1] - e, bb.min[2] - e],
+                    max: [bb.max[0] + e, bb.max[1] + e, bb.max[2] + e],
+                }
+            }
             CsgNode::Morph(a, b, _) => Aabb::union(a.aabb(), b.aabb()),
             CsgNode::MaskedBlend { a, b, .. } => {
                 Aabb::union(a.aabb(), b.aabb())

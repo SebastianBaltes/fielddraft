@@ -202,6 +202,14 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(*depth);
             out.push(*freq);
         }
+        BoundedCsg::Offset { inner, delta, .. } => {
+            // `Offset` is `child − δ`. `OP_OFFSET_2D` is dimension-agnostic on the
+            // distance stack (pops 1, pushes `d − δ`), so it serves the 3D node too.
+            emit_node(inner, ctx);
+            let out = &mut ctx.opcodes;
+            out.push(op(OP_OFFSET_2D));
+            out.push(*delta);
+        }
         BoundedCsg::Shell {
             inner,
             thickness,
