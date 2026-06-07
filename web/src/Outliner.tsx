@@ -22,7 +22,8 @@ import {
   buildDefaultDefinition,
   type FeatureSchema,
 } from "./widgets/schema";
-import { countDegreesOfFreedom } from "./solver/dofPreflight";
+import { displayDegreesOfFreedom } from "./solver/dofPreflight";
+import type { SketchDiagnostics } from "./solver/types";
 import {
   buildDraftSketchState,
   idsOfSubCall,
@@ -768,6 +769,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           <ConstraintManagerPanel
             subCalls={sketchSession.subCalls}
             store={store}
+            diagnostics={sketchSession.diagnostics}
           />
         </section>
       ) : null}
@@ -1723,9 +1725,11 @@ function MateCreator({
 function ConstraintManagerPanel({
   subCalls,
   store,
+  diagnostics,
 }: {
   subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>;
   store: KernelStore;
+  diagnostics: SketchDiagnostics;
 }) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -1750,18 +1754,27 @@ function ConstraintManagerPanel({
   let dof = 0;
   try {
     const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
-    dof = countDegreesOfFreedom(skState);
+    dof = displayDegreesOfFreedom(skState, diagnostics);
   } catch {
     // Malformed sub-calls (e.g. after undo) — fall back to 0 DoF.
   }
+  // The authoritative solver DoF is never negative; over-constraint is
+  // reported through conflicting/malformed constraints. The naive
+  // fallback (before the first solve) can still go negative, which we
+  // keep rendering as an "excess" hint.
+  const dofOver =
+    diagnostics.conflicting.length > 0 ||
+    diagnostics.malformed.length > 0 ||
+    dof < 0;
   const dofLabel =
-    dof > 0 ? `Under-constrained (${dof} DoF)` :
-    dof === 0 ? "Fully constrained" :
-    `Over-constrained (${Math.abs(dof)} excess)`;
-  const dofClass =
-    dof > 0 ? "dof-under" :
-    dof === 0 ? "dof-full" :
-    "dof-over";
+    dofOver
+      ? dof < 0
+        ? `Over-constrained (${Math.abs(dof)} excess)`
+        : "Over-constrained (conflict)"
+      : dof > 0
+        ? `Under-constrained (${dof} DoF)`
+        : "Fully constrained";
+  const dofClass = dofOver ? "dof-over" : dof > 0 ? "dof-under" : "dof-full";
 
   const counts: Record<string, number> = {};
   for (const { call } of constraintEntries) {

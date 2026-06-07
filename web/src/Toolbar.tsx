@@ -5,7 +5,7 @@ import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import { buildDraftSketchState } from "./sketchSession";
 import { applicableConstraints } from "./sketchConstraints";
-import { countDegreesOfFreedom } from "./solver/dofPreflight";
+import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { BUNDLED_FONTS, UPLOADED_FONT_PREFIX } from "./sketchTextFont";
 
 /* ------------------------------------------------------------------ */
@@ -340,16 +340,28 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   }, [sketchSession.active, sketchSession.subCalls, sketchSelection]);
 
-  // F5: live degrees-of-freedom tally for the sketch HUD. Rebuilds the
-  // draft SketchState from the session sub-calls and runs the naive DoF
-  // count; null on failure so the readout simply disappears.
+  // F5: degrees-of-freedom readout for the sketch HUD. Shows the
+  // authoritative solver DoF from the last solve once it converged,
+  // falling back to the naive tally over the draft sub-calls before
+  // the first solve lands; null on failure so the readout disappears.
   const dof = useMemo(() => {
     try {
-      return countDegreesOfFreedom(buildDraftSketchState(sketchSession.subCalls));
+      return displayDegreesOfFreedom(
+        buildDraftSketchState(sketchSession.subCalls),
+        sketchSession.diagnostics,
+      );
     } catch {
       return null;
     }
-  }, [sketchSession.subCalls]);
+  }, [sketchSession.subCalls, sketchSession.diagnostics]);
+
+  // Over-constraint is reported by the solver as conflicting/malformed
+  // constraints, not a negative DoF (PlaneGCS' remaining-DoF is never
+  // negative). The naive fallback can still produce a negative `dof`.
+  const dofOver =
+    sketchSession.diagnostics.conflicting.length > 0 ||
+    sketchSession.diagnostics.malformed.length > 0 ||
+    (dof !== null && dof < 0);
 
   const hasSketch = state.features.some((f) => f.kind === "sketch");
   const hasFeatures = state.features.length > 0;
@@ -398,16 +410,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
           {dof !== null && (
             <span
               className={
-                "dof" + (dof === 0 ? " is-ok" : dof < 0 ? " is-over" : "")
+                "dof" + (dofOver ? " is-over" : dof === 0 ? " is-ok" : "")
               }
               data-testid="sketch-dof"
               title="Remaining degrees of freedom"
             >
-              {dof > 0
-                ? `${dof} DoF`
-                : dof === 0
-                  ? "Fully constrained"
-                  : `Over-constrained (${dof})`}
+              {dofOver
+                ? dof < 0
+                  ? `Over-constrained (${dof})`
+                  : "Over-constrained"
+                : dof > 0
+                  ? `${dof} DoF`
+                  : "Fully constrained"}
             </span>
           )}
         </div>

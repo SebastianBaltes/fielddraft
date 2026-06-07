@@ -61,11 +61,46 @@
  *   virtually and undoes it before returning.
  */
 
-import type { Constraint, Entity, SketchState } from "./types";
+import type {
+  Constraint,
+  Entity,
+  SketchDiagnostics,
+  SketchState,
+} from "./types";
+
+/**
+ * Degrees-of-freedom to **display** in the UI.
+ *
+ * Prefers the authoritative post-solve number the solver itself
+ * computed (`diagnostics.dof`, threaded through from
+ * `wrapper.gcs.dof()`) once a solve has converged. Falls back to
+ * the naive [`countDegreesOfFreedom`] tally only for instantaneous
+ * feedback before the first solve lands, or when the last solve
+ * didn't converge — situations where no authoritative number
+ * exists yet.
+ *
+ * PlaneGCS reports the *remaining* DoF, which is never negative;
+ * over-constraint surfaces through `diagnostics.conflicting`, not a
+ * negative count. The naive fallback can still go negative, which
+ * the UI renders as an "excess" hint while no solve has run.
+ */
+export function displayDegreesOfFreedom(
+  state: SketchState,
+  diagnostics: SketchDiagnostics | undefined,
+): number {
+  if (diagnostics?.converged) return diagnostics.dof;
+  return countDegreesOfFreedom(state);
+}
 
 /**
  * Naive DOF tally for a sketch. Positive = under-constrained,
  * zero = fully constrained, negative = over-constrained.
+ *
+ * This is a solve-free estimate used for two things only: the
+ * pre-solve driving/driven what-if in [`preflightDimension`], and
+ * as the pre-first-solve fallback inside [`displayDegreesOfFreedom`].
+ * The number actually shown to the user once a sketch has solved is
+ * the authoritative solver DoF, not this tally.
  */
 export function countDegreesOfFreedom(state: SketchState): number {
   let dof = 0;

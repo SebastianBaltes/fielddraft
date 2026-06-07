@@ -621,11 +621,14 @@ function buildDiagnostics(
     d.partially_redundant,
   );
 
-  // DOF isn't exposed directly by GcsWrapper in the public API,
-  // so we leave it at zero until a later slice threads
-  // `get_dof_count` through. The K5b adapter layer adds its own
-  // Jacobi-based DOF pre-flight anyway, which is the number the
-  // UI actually needs.
+  // Authoritative degrees-of-freedom straight from the solver.
+  // GcsWrapper doesn't surface `dof()` on its own API, but its
+  // `gcs` handle (the live `GcsSystem` bound to WASM) is public,
+  // so we read the real post-solve number rather than relying on
+  // the naive Jacobi tally in `dofPreflight`. PlaneGCS reports
+  // the *remaining* DoF (always >= 0); over-constraint is flagged
+  // separately through the conflicting/redundant arrays above.
+  d.dof = wrapper.gcs.dof();
   return d;
 }
 

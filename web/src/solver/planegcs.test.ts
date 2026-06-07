@@ -54,6 +54,10 @@ describe("solveSketch: trivial sketches", () => {
       expect(p.at.y).toBeCloseTo(7);
     }
     expect(result.diagnostics.converged).toBe(true);
+    // A lone free point carries two unconstrained DoFs — the
+    // authoritative number now comes straight from the solver via
+    // `wrapper.gcs.dof()`, not the naive JS tally.
+    expect(result.diagnostics.dof).toBe(2);
   });
 });
 
@@ -280,6 +284,8 @@ describe("solveSketch: fully constrained rectangle", () => {
     const result = await solveSketch(sketch);
     expect(result.diagnostics.converged).toBe(true);
     expect(result.diagnostics.conflicting).toEqual([]);
+    // Authoritative solver DoF: a fully-pinned rectangle has none.
+    expect(result.diagnostics.dof).toBe(0);
 
     // After solving we should have an axis-aligned rectangle
     // with corner 1 at the origin, corner 2 at (25, 0), corner

@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   DimensionVerdict,
   countDegreesOfFreedom,
+  displayDegreesOfFreedom,
   preflightDimension,
 } from "./dofPreflight";
-import { sketchWithOrigin, type SketchState } from "./types";
+import {
+  emptyDiagnostics,
+  sketchWithOrigin,
+  type SketchState,
+} from "./types";
 
 function rectangleSketch(): SketchState {
   // Four free points + four lines + H/V constraints + two
@@ -124,6 +129,37 @@ describe("countDegreesOfFreedom", () => {
     // (the height). Adding a height dimension brings it to 0.
     const s = rectangleSketch();
     expect(countDegreesOfFreedom(s)).toBe(1);
+  });
+});
+
+describe("displayDegreesOfFreedom", () => {
+  it("uses the authoritative solver DoF when the last solve converged", () => {
+    // The naive tally of this sketch is 1 (one free point), but a
+    // converged solve says the system has 0 remaining DoF. The
+    // display must trust the solver, not the estimate.
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(2);
+    const diag = emptyDiagnostics();
+    diag.converged = true;
+    diag.dof = 0;
+    expect(displayDegreesOfFreedom(s, diag)).toBe(0);
+  });
+
+  it("falls back to the naive tally before the first solve converges", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    const diag = emptyDiagnostics(); // converged: false
+    expect(displayDegreesOfFreedom(s, diag)).toBe(2);
+  });
+
+  it("falls back to the naive tally when no diagnostics are given", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    expect(displayDegreesOfFreedom(s, undefined)).toBe(2);
   });
 });
 

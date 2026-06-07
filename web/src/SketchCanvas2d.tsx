@@ -68,7 +68,7 @@ import {
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
 import { solveAndReplace } from "./solver/replaySolve";
-import { countDegreesOfFreedom } from "./solver/dofPreflight";
+import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import type { SketchState } from "./solver/types";
 
 interface Props {
@@ -2417,8 +2417,11 @@ function drawOverlay(
   const skState = buildDraftSketchState(session.subCalls);
   let committedColor = COLOR_UNDER;
   try {
-    const dof = countDegreesOfFreedom(skState);
-    committedColor = dofColor(dof);
+    const over =
+      session.diagnostics.conflicting.length > 0 ||
+      session.diagnostics.malformed.length > 0;
+    const dof = displayDegreesOfFreedom(skState, session.diagnostics);
+    committedColor = over ? COLOR_OVER : dofColor(dof);
   } catch {
     // Solver not available — fall back to the underconstrained color.
   }
