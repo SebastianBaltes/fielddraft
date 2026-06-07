@@ -1,6 +1,6 @@
 # Plan: Thicken/Offset auf allgemeinem SDF-Feld (Pivot weg vom analytischen Sonderfall)
 
-**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv) + M1 **neu ausgerichtet** auf Kantenzug-Sweep (Nachbar-Halbraum-Ansatz verworfen). **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv) + M1 **neu ausgerichtet** auf Kantenzug-Sweep (Nachbar-Halbraum-Ansatz verworfen) + **M1-Vorbedingung „saubere Kantenzüge" ✅ (DL-77, 0.5.37)**. **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
 
 > **M1-Neuausrichtung (2026-06-07) — Lateral-Trim = Kantenzug-Sweep, nicht Nachbar-Halbräume**
 >
@@ -159,6 +159,23 @@ existieren. Lateral-Trim ist die Verallgemeinerung von Sketch→Extrude.
 
 Das ist die einzige genuin *neue* Geometrie — als härteste Teilaufgabe gesondert verifizieren
 (Loop-Sampling/Weld, konkave Loops, mehrere Loops pro Face, Drift entlang gekrümmter Träger).
+
+**M1-Vorbedingung GELÖST (DL-77, 0.5.37): saubere Kantenzüge aus dem Weave.** Der Schritt-1-Sample
+setzt *konsolidierte* Edge-Loops voraus — die der Weave für nicht-analytische Faces vorher NICHT lieferte:
+eine Blob-Extrude (4 Quad-Bézier-Wände) wob die Rim-Naht (Wand ∩ analytischer Cap) in ~70 Ein-Kanten-
+Müll-Loops je Face statt in *einen* sauberen Bogen (empirisch: 6 Faces, 290 Kanten, 14 Verts, jede Face
+mit 72–143 Innen-Loops). Ursache: die `leaf_involved && same_feature`-Sperre schickte die eigene Rim-Naht
+auf die Sample-Fits (Linie/Kreis), die an einem Bézier-Bogen scheitern → `chain_group`-Zersplitterung;
+zusätzlich lagen die Rim-Ecken ~1 Zelle daneben (`refine_triple_vertex` kann nur analytische Branches).
+Fix in drei Teilen: (a) **`Field::ExtrudeWall`** — das cap-clamp-freie, *vorzeichenbehaftete* Profil-SDF
+über die Closest-Segment-Geometrie (Normale = 90°-gedrehte Kurventangente, sauber auch *auf* der Kurve,
+wo `∇‖p−closest‖` 0/0 ist und das Flatten-Polygon-Vorzeichen inkonsistent wird); die Naht Wand∩Cap traced
+damit als *ein* offener Bogen. (b) **`extrude_rim_corner`** — die Rim-Ecke ist exakt der geteilte
+G1-Gruppen-Segment-Endpunkt, auf die Cap-Ebene gehoben → resolution-unabhängig, fusioniert die
+verdoppelten/spurious Ecken via `merge_refined_by_branch_set`. (c) Sperre verfeinert: nur Wand∩Wand bleibt
+auf dem Fallback. Ergebnis Blob jetzt **8 Verts / 12 Kanten / 6 Faces**, jede Face genau 4 Rand-Kanten,
+0 Innen-Loops, watertight. Sector-Wände (kein Segment-Rand) behalten bewusst den `Leaf`-Pfad (DL-69).
+Damit liefert Schritt 1 jetzt echte Kantenzüge; der Sweep selbst (Schritt 2/3) ist der nächste Schritt.
 
 - **Auflösung:** partiell-revolvierte Zylinder/Kegel-Wände, Extrude-Seitenwände, beliebige Patches —
   alle bisher „vertagt".

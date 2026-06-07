@@ -1044,6 +1044,92 @@ pub(crate) fn bounded_value_grad(
     (result.re, d3_grad_f64(&result))
 }
 
+/// Field value + world gradient of an **extrude lateral wall** — the *signed*
+/// profile SDF swept **infinitely** along the extrude axis (DL-77), i.e. the
+/// extrude leaf **without** its cap clamp `sdf_extrude_generic`. The full leaf
+/// `max(d_profile, |z|−h)` is C0 exactly at the rim (`z = ±h`, on the profile),
+/// where the gradient flips between the horizontal profile normal and the
+/// vertical cap normal — so projecting/marching the rim seam on the leaf is
+/// ill-conditioned and the tracer is disabled there. Dropping the cap clamp
+/// leaves the cap-free swept profile, smooth across the rim (no `z` dependence),
+/// so the rim seam — this wall ∩ the analytic cap plane — traces cleanly.
+///
+/// The field is the **signed** profile distance (`eval_sketch_generic`), so its
+/// gradient on the wall is the well-defined unit surface normal — an *unsigned*
+/// per-segment distance would vanish/kink exactly on its zero set (where the
+/// seed projects), collapsing the edge tangent. The whole profile is one field;
+/// which segment-arc a given seam group recovers is fixed by the per-group
+/// bounding corner vertices, not by the field. Rescaled by the placement's min
+/// uniform scale to stay a true world distance.
+pub(crate) fn extrude_wall_value_grad(
+    sketch: &crate::sketch2d::BoundedSketch2d,
+    world_transform: &Transform,
+    p: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let scale = world_transform.min_scale() as f64;
+    // Exact f64 local profile coordinates (constant duals — no seeded derivative).
+    let pc = [D3::from(p[0]), D3::from(p[1]), D3::from(p[2])];
+    let local = world_to_local_d3(world_transform, pc);
+    let (lx, ly) = (local[0].re, local[1].re);
+
+    // Closest boundary segment + its analytic curve tangent there. The normal is
+    // the tangent rotated 90° — a clean unit surface normal **even on the curve**,
+    // where `∇‖p−closest‖` is 0/0 and the flattened-polygon even-odd sign is
+    // numerically inconsistent with the true Bézier boundary. The signed distance
+    // is the perpendicular component `(p−closest)·n`; because the f32 closest-point
+    // error is tangential (along the curve, ⟂ n), it drops out of the dot product,
+    // keeping the value precise enough for the tracer's 1e-9 Newton projection.
+    let Some((c, t)) = closest_boundary_segment(sketch, [lx as f32, ly as f32]) else {
+        return (f64::INFINITY, [0.0, 0.0, 0.0]);
+    };
+    let n = [-(t[1] as f64), t[0] as f64];
+    let value = ((lx - c[0] as f64) * n[0] + (ly - c[1] as f64) * n[1]) * scale;
+    // d(value)/d(world p): for a rigid + uniform-scale placement the scale cancels
+    // and the local normal (z = 0 — the wall is independent of the extrude axis)
+    // rotates to world.
+    let gw = crate::quat_rotate(world_transform.rotation, [n[0] as f32, n[1] as f32, 0.0]);
+    (value, [gw[0] as f64, gw[1] as f64, gw[2] as f64])
+}
+
+/// The closest boundary segment's closest point and unit curve tangent over a
+/// sketch's [`SketchSegment`] boundary (Path prims). `None` if the sketch holds
+/// no segment boundary (e.g. only analytic prims) — the caller then yields an
+/// infinite field, so the seam falls back to the sample fits. Boolean sketch
+/// nodes are walked transparently; the per-group bounding corners isolate the
+/// relevant arc, so interior boundary pieces of a boolean profile do no harm.
+fn closest_boundary_segment(
+    sketch: &crate::sketch2d::BoundedSketch2d,
+    p: [f32; 2],
+) -> Option<([f32; 2], [f32; 2])> {
+    use crate::sketch2d::BoundedSketch2d as B;
+    fn walk(s: &B, p: [f32; 2], best: &mut Option<(f32, [f32; 2], [f32; 2])>) {
+        match s {
+            B::Prim { primitive, .. } => {
+                if let Sketch2dPrimitive::Path { segments, .. } = primitive {
+                    for seg in segments {
+                        let (c, t) = seg.closest_point_and_tangent(p);
+                        let d = ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2)).sqrt();
+                        if best.is_none_or(|(bd, ..)| d < bd) {
+                            *best = Some((d, c, t));
+                        }
+                    }
+                }
+            }
+            B::Union { left, right, .. }
+            | B::Difference { left, right, .. }
+            | B::Intersection { left, right, .. } => {
+                walk(left, p, best);
+                walk(right, p, best);
+            }
+            B::Offset { inner, .. } => walk(inner, p, best),
+            B::Empty => {}
+        }
+    }
+    let mut best = None;
+    walk(sketch, p, &mut best);
+    best.map(|(_, c, t)| (c, t))
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════

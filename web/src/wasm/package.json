@@ -1,7 +1,7 @@
 {
   "name": "fielddraft-kernel",
   "type": "module",
-  "version": "0.5.36",
+  "version": "0.5.37",
   "license": "AGPL-3.0-or-later",
   "files": [
     "fielddraft_kernel_bg.wasm",

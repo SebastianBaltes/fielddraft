@@ -884,6 +884,34 @@ impl SketchSegment {
         }
     }
 
+    /// Closest point on the curve to `p`, **plus the unit curve tangent there**.
+    /// The tangent is exact (it comes from the curve's analytic derivative at the
+    /// closest parameter), so its 90°-rotation is a clean surface normal even when
+    /// `p` lies exactly on the curve — unlike `∇‖p−closest‖`, which is `0/0` on
+    /// the curve. This is what lets a sketch-sweep wall present a *signed* field
+    /// with a well-defined gradient on its own boundary (DL-77).
+    pub fn closest_point_and_tangent(&self, p: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+        match self {
+            Self::Line { start, end } => {
+                (closest_on_line_seg(p, *start, *end), self.tangent_at_start())
+            }
+            Self::QuadBezier { p0, p1, p2 } => closest_quad_bezier_pt_tangent(p, *p0, *p1, *p2),
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => {
+                let c = closest_on_arc(p, *center, *radius, *start_angle, *sweep_angle);
+                // Tangent = ±perp(radial), oriented by the sweep sign.
+                let sign = if *sweep_angle >= 0.0 { 1.0 } else { -1.0 };
+                let rx = c[0] - center[0];
+                let ry = c[1] - center[1];
+                (c, normalize([-sign * ry, sign * rx]))
+            }
+        }
+    }
+
     /// Conservative bounding box containing the entire curve.
     pub fn aabb(&self) -> Aabb2 {
         match self {
@@ -1216,6 +1244,65 @@ fn closest_on_quad_bezier(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) ->
         }
     }
     best
+}
+
+/// Closest point on a quadratic Bézier **and its unit tangent** there. Mirrors
+/// [`closest_on_quad_bezier`] but tracks the winning parameter `t*` so it can
+/// return the analytic derivative `B'(t*) = L + 2·M·t*` (normalised) — an exact
+/// curve tangent usable even on the curve, where `∇‖p−B‖` degenerates (DL-77).
+fn closest_quad_bezier_pt_tangent(
+    p: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+) -> ([f32; 2], [f32; 2]) {
+    let mx = (a[0] - 2.0 * b[0] + c[0]) as f64;
+    let my = (a[1] - 2.0 * b[1] + c[1]) as f64;
+    let lx = (2.0 * (b[0] - a[0])) as f64;
+    let ly = (2.0 * (b[1] - a[1])) as f64;
+    let wx = (p[0] - a[0]) as f64;
+    let wy = (p[1] - a[1]) as f64;
+
+    let mm = mx * mx + my * my;
+    let lm = lx * mx + ly * my;
+    let ll = lx * lx + ly * ly;
+    let wm = wx * mx + wy * my;
+    let wl = wx * lx + wy * ly;
+    let (roots, count) = solve_cubic_real(2.0 * mm, 3.0 * lm, ll - 2.0 * wm, -wl);
+
+    let eval = |t: f32| -> [f32; 2] {
+        let s = 1.0 - t;
+        [
+            s * s * a[0] + 2.0 * s * t * b[0] + t * t * c[0],
+            s * s * a[1] + 2.0 * s * t * b[1] + t * t * c[1],
+        ]
+    };
+    let dist_sq = |pt: [f32; 2]| -> f32 { (p[0] - pt[0]).powi(2) + (p[1] - pt[1]).powi(2) };
+    // Tangent B'(t) = L + 2·M·t.
+    let tangent = |t: f64| normalize([(lx + 2.0 * mx * t) as f32, (ly + 2.0 * my * t) as f32]);
+
+    let mut best = a;
+    let mut best_t = 0.0_f64;
+    let mut best_d = dist_sq(a);
+    let dc = dist_sq(c);
+    if dc < best_d {
+        best = c;
+        best_t = 1.0;
+        best_d = dc;
+    }
+    for r in roots.iter().take(count) {
+        let t = *r as f32;
+        if t > 1e-6 && t < 1.0 - 1e-6 {
+            let pt = eval(t);
+            let d = dist_sq(pt);
+            if d < best_d {
+                best = pt;
+                best_t = *r;
+                best_d = d;
+            }
+        }
+    }
+    (best, tangent(best_t))
 }
 
 // ── Circular arc (analytic closest point) ───────────────────────────

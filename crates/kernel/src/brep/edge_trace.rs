@@ -27,12 +27,13 @@
 //! This is the edge (1D) analogue of DL-66's [`super::edge_walker`]
 //! `refine_triple_vertex` (a 0D vertex = joint zero-set of *three* fields).
 
+use crate::sketch2d::BoundedSketch2d;
 use fielddraft_protocol::{HalfSpace, Transform};
 
 use super::vec3::{add, cross, dist, dot, norm, normalize, scale, sub};
 use crate::bvh::BoundedCsg;
 use crate::csg::EvalMode;
-use crate::sdf_dual::{bounded_value_grad, halfspace_value_grad};
+use crate::sdf_dual::{bounded_value_grad, extrude_wall_value_grad, halfspace_value_grad};
 
 /// One per-face scalar field whose zero set *is* that face, together with a
 /// usable gradient. The edge tracer is generic over which kind backs a face:
@@ -54,9 +55,21 @@ pub(crate) enum Field<'a> {
     /// half-space — a curved sketch-sweep wall (sector arc, Bézier/arc path).
     /// Restricted there to **cross-feature** seams: a curved wall meeting another
     /// body's face or wall, where the leaf SDF is smooth at the seam. A sweep's
-    /// *own* wall∩cap / wall∩wall seam is exactly the leaf SDF's C0 crease
-    /// (ambiguous gradient), so it is excluded and falls back to the sample fits.
+    /// *own* wall∩wall seam is exactly the leaf SDF's C0 crease (ambiguous
+    /// gradient), so it is excluded and falls back to the sample fits.
     Leaf { node: &'a BoundedCsg },
+    /// An extrude lateral wall as the **cap-clamp-free** swept profile (DL-77):
+    /// the *signed* profile SDF of `sketch`, swept infinitely along the local
+    /// extrude axis, rescaled to world by `min_scale`. Unlike [`Leaf`](Self::Leaf)
+    /// it drops the `|z|−h` cap term, so the field is smooth *across the rim*
+    /// (`z = ±h`) — letting a rim seam (this wall ∩ the analytic cap plane) trace
+    /// cleanly instead of shattering into the fragments the leaf's C0 crease
+    /// forces onto the sample fits. The whole profile is one field; the per-group
+    /// bounding corners decide which segment-arc each seam recovers.
+    ExtrudeWall {
+        sketch: &'a BoundedSketch2d,
+        xf: Transform,
+    },
 }
 
 impl Field<'_> {
@@ -68,6 +81,7 @@ impl Field<'_> {
             // A single leaf has no smooth blend, so Logical == Visual; Logical
             // is the well-defined hard branch the B-Rep pipeline extracts in.
             Field::Leaf { node } => bounded_value_grad(node, p, EvalMode::Logical),
+            Field::ExtrudeWall { sketch, xf } => extrude_wall_value_grad(sketch, xf, p),
         }
     }
 }

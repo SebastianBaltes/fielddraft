@@ -1497,6 +1497,44 @@ mod tests {
             .any(|f| matches!(f.surface, SurfaceGeometry::Tessellated { .. }))
     }
 
+    /// DL-77: a closed swept (Bézier) extrude weaves a **clean** B-Rep — its rim
+    /// (curved wall ∩ analytic cap) consolidates to ONE arc per wall, bounded by
+    /// exact rim corners, instead of shattering into ~70 octree-fragment loops.
+    /// This is the prerequisite for the curved-face edge-loop sweep (Thicken M1):
+    /// every face boundary must be a clean Kantenzug.
+    #[test]
+    fn swept_extrude_rim_consolidates_to_clean_loops() {
+        let body = BoundedCsg::from_csg(&blob_extrude_node(1, 2.0));
+        let octree = Octree::build(&body, 0.2);
+        let brep = weave(&body, &octree);
+
+        assert!(brep.validate().is_ok(), "swept extrude B-Rep must be well-formed");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "swept extrude must weave a closed (watertight) shell"
+        );
+        // 4 Bézier-wall faces + 2 caps; 8 rim corners; 4 vertical wall∩wall seams
+        // + 4 top + 4 bottom rim arcs = 12 edges. No fragments, no doubled corners.
+        assert_eq!(brep.face_count(), 6, "4 walls + 2 caps");
+        assert_eq!(brep.vertex_count(), 8, "8 rim corners, exact (no doubled siblings)");
+        assert_eq!(brep.edge_count(), 12, "4 vertical seams + 8 rim arcs, consolidated");
+        // Every face is bounded by exactly its 4 edges, with NO spurious inner
+        // loops (the pre-DL-77 weave left 70–140 single-edge rings per face).
+        for f in &brep.faces {
+            assert_eq!(f.outer.edges.len(), 4, "each face is a clean 4-edge loop");
+            assert!(f.inner.is_empty(), "no fragmented inner loops");
+        }
+        // Each rim corner sits exactly on the cap plane (z = ±2) — the sketch
+        // endpoint, not an octree-cell-quantised approximation.
+        for v in &brep.vertices {
+            assert!(
+                (v.position[2].abs() - 2.0).abs() < 1e-6,
+                "rim corner must lie exactly on a cap plane, got z = {}",
+                v.position[2]
+            );
+        }
+    }
+
     #[test]
     fn offset_node_is_child_minus_delta_end_to_end() {
         use crate::csg::EvalMode;

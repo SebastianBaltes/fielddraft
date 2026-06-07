@@ -54,6 +54,8 @@ use crate::brep::octree::{CellClass, Octree, OctreeCell};
 use crate::brep::{BRep, Edge, EdgeGeometry, EdgeId, HermiteSample, Vertex, VertexId};
 use crate::bvh::BoundedCsg;
 use crate::csg::{Aabb, BranchId};
+use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
+use fielddraft_protocol::Transform;
 
 /// A nearest-neighbour gap larger than `CHAIN_GAP_FACTOR ×` the median local
 /// spacing of the group ends the current chain and starts a new one. Three is
@@ -453,7 +455,146 @@ fn branch_field<'a>(
         });
     }
     let fid = BranchId(branch).feature_id();
-    leaf_map.get(&fid).map(|&node| Field::Leaf { node })
+    let &node = leaf_map.get(&fid)?;
+    // A curved extrude wall traces its rim seam on the cap-clamp-free swept
+    // profile (DL-77) — smooth across z = ±h — not the leaf's C0 crease.
+    if let Some((sketch, xf)) = extrude_wall_sketch(node, BranchId(branch).sub()) {
+        return Some(Field::ExtrudeWall { sketch, xf });
+    }
+    Some(Field::Leaf { node })
+}
+
+/// The profile sketch + placement of an extrude **lateral wall** branch (DL-77).
+/// `Some` only for a [`BoundedCsg::Extrude`] whose profile carries [`Path`]
+/// segments — the cap-free swept-profile field is built from those. A
+/// Rectangle/Polygon/Circle wall carries an analytic half-space and resolves
+/// through `halfspaces` before reaching here; a [`Sector`] wall has no segment
+/// boundary, so it keeps the full leaf field (the proven DL-69 cross-feature
+/// path) rather than an unusable empty field. Shell inner-wall branches likewise
+/// keep the full leaf field (their offset surface).
+///
+/// [`Path`]: crate::sketch2d::Sketch2dPrimitive::Path
+/// [`Sector`]: crate::sketch2d::Sketch2dPrimitive::Sector
+fn extrude_wall_sketch(node: &BoundedCsg, sub: u32) -> Option<(&BoundedSketch2d, Transform)> {
+    let BoundedCsg::Extrude {
+        sketch,
+        world_transform,
+        ..
+    } = node
+    else {
+        return None;
+    };
+    if sub & BranchId::INNER_WALL_FLAG != 0 || !sketch_has_path(sketch) {
+        return None;
+    }
+    Some((sketch, *world_transform))
+}
+
+/// Does the sketch tree contain a [`Sketch2dPrimitive::Path`] (segment boundary)?
+fn sketch_has_path(sketch: &BoundedSketch2d) -> bool {
+    match sketch {
+        BoundedSketch2d::Prim { primitive, .. } => {
+            matches!(primitive, Sketch2dPrimitive::Path { .. })
+        }
+        BoundedSketch2d::Union { left, right, .. }
+        | BoundedSketch2d::Difference { left, right, .. }
+        | BoundedSketch2d::Intersection { left, right, .. } => {
+            sketch_has_path(left) || sketch_has_path(right)
+        }
+        BoundedSketch2d::Offset { inner, .. } => sketch_has_path(inner),
+        BoundedSketch2d::Empty => false,
+    }
+}
+
+/// Exact world position of a swept-extrude **rim corner** (DL-77), or `None` if
+/// the branch-set is not one. A rim corner's branch-set is `{wall_i, wall_j,
+/// cap}` of one extrude: the two G1 wall groups share a segment endpoint, and
+/// the cap fixes its height (`z = ±half_height`). Lifting that endpoint to the
+/// cap plane and out to world is the corner — a sketch fact, independent of
+/// octree resolution, unlike the cell-quantised position dedup produced.
+fn extrude_rim_corner(
+    leaf_map: &HashMap<u32, &BoundedCsg>,
+    branches: &[BranchId],
+) -> Option<[f64; 3]> {
+    let is_cap =
+        |s: u32| s == BranchId::EXTRUDE_CAP_TOP_SUB || s == BranchId::EXTRUDE_CAP_BOTTOM_SUB;
+    let cap = *branches.iter().find(|b| is_cap(b.sub()))?;
+    let feat = cap.feature_id();
+    let BoundedCsg::Extrude {
+        sketch,
+        half_height,
+        world_transform,
+        ..
+    } = *leaf_map.get(&feat)?
+    else {
+        return None;
+    };
+    // Exactly the two same-feature wall groups (non-cap, non-inner).
+    let walls: Vec<u32> = branches
+        .iter()
+        .filter(|b| {
+            b.feature_id() == feat && !is_cap(b.sub()) && b.sub() & BranchId::INNER_WALL_FLAG == 0
+        })
+        .map(|b| b.sub())
+        .collect();
+    if walls.len() != 2 {
+        return None;
+    }
+    let p2 = shared_group_endpoint(sketch, walls[0], walls[1])?;
+    let z = if cap.sub() == BranchId::EXTRUDE_CAP_TOP_SUB {
+        *half_height
+    } else {
+        -*half_height
+    };
+    // local → world: translate + R·(scale ∘ local).
+    let s = world_transform.scale;
+    let l = [p2[0] * s[0], p2[1] * s[1], z * s[2]];
+    let r = crate::quat_rotate(world_transform.rotation, l);
+    let t = world_transform.translate;
+    Some([
+        (t[0] + r[0]) as f64,
+        (t[1] + r[1]) as f64,
+        (t[2] + r[2]) as f64,
+    ])
+}
+
+/// The 2D sketch point shared by two G1 wall groups `sub_a`, `sub_b` (the corner
+/// between them), or `None` if their boundary endpoints do not coincide.
+fn shared_group_endpoint(sketch: &BoundedSketch2d, sub_a: u32, sub_b: u32) -> Option<[f32; 2]> {
+    let (sa, ea) = group_endpoints(sketch, 0, sub_a)?;
+    let (sb, eb) = group_endpoints(sketch, 0, sub_b)?;
+    let near = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) < 1e-6;
+    for a in [sa, ea] {
+        for b in [sb, eb] {
+            if near(a, b) {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
+/// The (first-segment start, last-segment end) of G1 wall group `sub`, walking
+/// boolean sketch nodes with the same base offsets as `collect_sketch_walls`.
+fn group_endpoints(sketch: &BoundedSketch2d, base: u32, sub: u32) -> Option<([f32; 2], [f32; 2])> {
+    use fielddraft_protocol::sketch2d::{g1_group_segments, PATH_G1_COS_THRESHOLD};
+    match sketch {
+        BoundedSketch2d::Prim { primitive, .. } => {
+            let Sketch2dPrimitive::Path { segments, .. } = primitive else {
+                return None;
+            };
+            let g = sub.checked_sub(base)?;
+            let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+            let lo = groups.iter().position(|&x| x == g)?;
+            let hi = groups.iter().rposition(|&x| x == g).unwrap();
+            Some((segments[lo].start_point(), segments[hi].end_point()))
+        }
+        BoundedSketch2d::Union { left, right, .. }
+        | BoundedSketch2d::Difference { left, right, .. }
+        | BoundedSketch2d::Intersection { left, right, .. } => group_endpoints(left, base, sub)
+            .or_else(|| group_endpoints(right, base + left.edge_count(), sub)),
+        BoundedSketch2d::Empty | BoundedSketch2d::Offset { .. } => None,
+    }
 }
 
 /// Map each leaf feature's id to its [`BoundedCsg`] subtree, the source of a
@@ -1342,8 +1483,19 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     // per-cluster seed (DL-74) lands each of a doubly-crossed edge's two corners
     // in its own root's basin, so Gauss-Newton resolves them to distinct points.
     let vertex_halfspaces = crate::brep::weaving::branch_halfspace_map(body);
+    // Leaf lookup for the non-analytic rim-corner refinement below (DL-77).
+    let corner_leaves = branch_leaf_map(body);
     for dv in &mut dedup {
         if let Some(p) = refine_triple_vertex(&vertex_halfspaces, &dv.branches, dv.position) {
+            dv.position = p;
+        } else if let Some(p) = extrude_rim_corner(&corner_leaves, &dv.branches) {
+            // A swept-wall rim corner has no analytic surface for
+            // `refine_triple_vertex`, so the octree leaves it ~one cell off the
+            // true corner (and sometimes mints a doubled / spurious sibling). Its
+            // exact position is a sketch fact: the shared endpoint of the two G1
+            // wall groups, lifted to the cap plane (DL-77). Snapping there makes
+            // the rim trace terminate within `vertex_reach` and lets
+            // `merge_refined_by_branch_set` fuse the doubled corners.
             dv.position = p;
         }
     }
@@ -1471,18 +1623,26 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
             branch_field(&halfspaces, &leaf_map, sb),
         ) {
             (Some(fa), Some(fb)) => {
-                // A sweep's *own* seams (wall∩cap, wall∩wall) are exactly the C0
-                // creases of its leaf SDF, where the gradient is ambiguous and
-                // project/march are ill-conditioned. Detect them structurally —
-                // a leaf field paired within the SAME feature — and leave them to
-                // the proven sample fits. A leaf paired ACROSS features (a curved
-                // wall meeting another body's face, or another body's wall) is
-                // smooth at the seam and traces cleanly (DL-69). Analytic↔analytic
-                // pairs are unaffected (a box's own plane∩plane edges still trace).
+                // A sweep's *own* seams on its **leaf** field are the C0 creases
+                // of that field (ambiguous gradient, ill-conditioned project /
+                // march), so a same-feature pair involving a [`Field::Leaf`] is
+                // left to the proven sample fits. A leaf paired ACROSS features (a
+                // curved wall meeting another body) is smooth and traces cleanly
+                // (DL-69). Analytic↔analytic pairs always trace (a box's own
+                // plane∩plane edges).
+                //
+                // The own **rim** (wall ∩ cap) is the exception that motivated
+                // DL-77: its wall is an [`Field::ExtrudeWall`] — the cap-clamp-free
+                // swept profile, smooth across `z = ±h` — so wall ∩ analytic cap
+                // now traces into one clean arc instead of shattering. Only a
+                // same-feature wall∩wall (both `ExtrudeWall`) stays on the
+                // fallback, where its straight vertical seam already consolidates.
                 let leaf_involved =
                     matches!(fa, Field::Leaf { .. }) || matches!(fb, Field::Leaf { .. });
+                let both_extrude_wall = matches!(fa, Field::ExtrudeWall { .. })
+                    && matches!(fb, Field::ExtrudeWall { .. });
                 let same_feature = BranchId(sa).feature_id() == BranchId(sb).feature_id();
-                if leaf_involved && same_feature {
+                if same_feature && (leaf_involved || both_extrude_wall) {
                     None
                 } else {
                     trace_seam_chains(&fa, &fb, &pos, &bounding, spacing)

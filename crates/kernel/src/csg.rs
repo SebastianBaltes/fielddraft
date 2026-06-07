@@ -77,6 +77,13 @@ impl BranchId {
         self.0 >> Self::SUB_BITS
     }
 
+    /// The per-feature sub-index (the low [`SUB_BITS`](Self::SUB_BITS) bits,
+    /// inner-wall flag included). For a sketch-sweep wall this is the G1
+    /// boundary-group index; for a cap it is one of the reserved cap sub-ids.
+    pub fn sub(self) -> u32 {
+        self.0 & Self::SUB_MASK
+    }
+
     /// Map this (outer) branch to its shell inner-wall counterpart (DL-75) by
     /// setting [`INNER_WALL_FLAG`](Self::INNER_WALL_FLAG). Idempotent; leaves
     /// `feature_id()` unchanged.
