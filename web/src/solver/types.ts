@@ -42,6 +42,20 @@ export type Entity =
       end: EntityId;
       radius: number;
     }
+  | {
+      // PlaneGCS parameterisation: centre + one focus point + the
+      // semi-minor radius. Semi-major and orientation are implied by
+      // the focus (`a = hypot(radmin, |centre − focus1|)`, major axis
+      // along centre→focus1). `focus1` is an internal construction
+      // point — allocated so the solver can reshape the ellipse, but
+      // excluded from hit-testing / box-select (see sketchHitTest).
+      // Mirrors Rust `Entity::Ellipse` in `crates/solver/src/lib.rs`.
+      kind: "ellipse";
+      id: EntityId;
+      center: EntityId;
+      focus1: EntityId;
+      radmin: number;
+    }
   | { kind: "origin"; id: EntityId };
 
 // ─── constraints ─────────────────────────────────────────────────

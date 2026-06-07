@@ -121,7 +121,7 @@ describe("rebuildSubCallsFromSolved", () => {
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 
-  it("writes back the centre and keeps a following line aligned (ellipse)", () => {
+  it("round-trips an undisturbed ellipse and keeps a following line aligned", () => {
     const original = [
       {
         type: "sketch_ellipse",
@@ -129,13 +129,20 @@ describe("rebuildSubCallsFromSolved", () => {
       },
       { type: "sketch_line", params: { start: [50, 50], end: [60, 60] } },
     ];
-    // ellipse centre = id 1; following line start = id 2.
-    const solved = solvedFrom(original, 1, [2, 3]);
-    const ls = solved.entities.find((x) => x.id === 2);
+    // ellipse: centre = id 1, focus = id 2, ellipse = id 3; the
+    // following line's start is now id 4 (proves nextId advanced past
+    // all three ellipse entities). An undisturbed ellipse must
+    // reconstruct to its original (centre, radius_x, radius_y).
+    const solved = buildDraftSketchState(original);
+    const ls = solved.entities.find((x) => x.id === 4);
     if (ls && ls.kind === "point") ls.at = { x: 51, y: 51 };
 
     const rebuilt = rebuildSubCallsFromSolved(original, solved);
-    expect(rebuilt[0].params).toMatchObject({ center: [2, 3] });
+    expect(rebuilt[0].params).toMatchObject({
+      center: [0, 0],
+      radius_x: 10,
+      radius_y: 5,
+    });
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 

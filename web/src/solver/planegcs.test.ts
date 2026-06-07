@@ -631,6 +631,120 @@ describe("solveSketch: point_on_object constraint", () => {
   });
 });
 
+describe("solveSketch: ellipse constraints", () => {
+  /**
+   * `point_on_ellipse`: a free point pulled onto an ellipse. The
+   * ellipse centre and focus are pinned but the semi-minor radius
+   * (`radmin`) is a free DOF, so we don't assert a fixed shape —
+   * instead we verify the solved point satisfies the ellipse's
+   * focal-sum property (`|P−F1| + |P−F2| = 2a`) using the *solved*
+   * parameters. That holds iff the point genuinely lies on the
+   * ellipse, regardless of where radmin settles.
+   */
+  it("pulls a point onto an ellipse (point_on_ellipse)", async () => {
+    const sketch = emptySketch("poc-ellipse");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } }); // centre
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 8, y: 0 } }); // focus
+    sketch.entities.push({
+      kind: "ellipse",
+      id: 3,
+      center: 1,
+      focus1: 2,
+      radmin: 6,
+    });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 15, y: 3 } }); // free
+    sketch.next_entity_id = 5;
+    // Pin the ellipse centre and focus so it can't drift to the point.
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 3,
+      point: 4,
+      curve: 3,
+    });
+    sketch.next_constraint_id = 4;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const centre = result.state.entities.find((e) => e.id === 1);
+    const focus = result.state.entities.find((e) => e.id === 2);
+    const ell = result.state.entities.find((e) => e.id === 3);
+    const p = result.state.entities.find((e) => e.id === 4);
+    if (
+      centre?.kind === "point" &&
+      focus?.kind === "point" &&
+      ell?.kind === "ellipse" &&
+      p?.kind === "point"
+    ) {
+      const f1 = focus.at;
+      const f2 = { x: 2 * centre.at.x - f1.x, y: 2 * centre.at.y - f1.y };
+      const c = Math.hypot(f1.x - centre.at.x, f1.y - centre.at.y);
+      const a = Math.sqrt(ell.radmin * ell.radmin + c * c);
+      const focalSum =
+        Math.hypot(p.at.x - f1.x, p.at.y - f1.y) +
+        Math.hypot(p.at.x - f2.x, p.at.y - f2.y);
+      expect(focalSum).toBeCloseTo(2 * a, 4);
+    } else {
+      throw new Error("entities missing from solved state");
+    }
+  });
+
+  /**
+   * `tangent_le`: a horizontal line made tangent to a fully-pinned
+   * ellipse. Centre (0,0) + focus (8,0) put the foci on the x-axis;
+   * a fixed rim point at (0,6) plus point_on_ellipse pins the
+   * semi-minor radius to 6 (so the ellipse is a=10, b=6). The
+   * topmost point of that ellipse is (0,6), so a horizontal tangent
+   * from above settles at y = 6.
+   */
+  it("makes a horizontal line tangent to a pinned ellipse (tangent_le)", async () => {
+    const sketch = emptySketch("tangent-ellipse");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } }); // centre
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 8, y: 0 } }); // focus
+    sketch.entities.push({
+      kind: "ellipse",
+      id: 3,
+      center: 1,
+      focus1: 2,
+      radmin: 6,
+    });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 0, y: 6 } }); // rim
+    // Tangent line, starting above the ellipse.
+    sketch.entities.push({ kind: "point", id: 5, at: { x: -20, y: 9 } });
+    sketch.entities.push({ kind: "point", id: 6, at: { x: 20, y: 9 } });
+    sketch.entities.push({ kind: "line", id: 7, start: 5, end: 6 });
+    sketch.next_entity_id = 8;
+    // Pin the ellipse: centre + focus fixed, plus a fixed rim point on
+    // the boundary pins radmin (so the shape is fully determined).
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({ kind: "fix", id: 3, point: 4 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 4,
+      point: 4,
+      curve: 3,
+    });
+    sketch.constraints.push({ kind: "horizontal", id: 5, line: 7 });
+    sketch.constraints.push({ kind: "tangent", id: 6, line: 7, curve: 3 });
+    sketch.next_constraint_id = 7;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const s = result.state.entities.find((e) => e.id === 5);
+    const e2 = result.state.entities.find((e) => e.id === 6);
+    if (s?.kind === "point" && e2?.kind === "point") {
+      // Horizontal line → both ends share a y; tangent to the top of
+      // the b = 6 ellipse → that y is ±6 (nearest touch from y = 9).
+      expect(s.at.y).toBeCloseTo(e2.at.y, 4);
+      expect(Math.abs(s.at.y)).toBeCloseTo(6, 3);
+    } else {
+      throw new Error("line endpoints missing from solved state");
+    }
+  });
+});
+
 describe("solveSketch: conflict diagnostics", () => {
   /**
    * Two Distance constraints between the same two points with

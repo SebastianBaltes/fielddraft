@@ -49,6 +49,42 @@ describe("hitTestSketchEntity", () => {
     expect(hitTestSketchEntity(state, [22, 20], 1)).toBeNull();
   });
 
+  it("picks an ellipse by distance to its outline", () => {
+    // Ellipse: centre point=1 at (20,20), focus=2, ellipse=3.
+    // radius_x=10 (major, x), radius_y=5 (minor) → outline reaches
+    // x=30 on the major axis.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_ellipse",
+        params: { center: [20, 20], radius_x: 10, radius_y: 5 },
+      },
+    ]);
+    // Cursor on the major-axis vertex → on the outline → ellipse.
+    expect(hitTestSketchEntity(state, [30, 20], 1)).toBe(3);
+    // Cursor on the centre → the centre point wins.
+    expect(hitTestSketchEntity(state, [20, 20], 1)).toBe(1);
+  });
+
+  it("never picks the internal ellipse focus point", () => {
+    // The focus sits at (20 + sqrt(75), 20) ≈ (28.66, 20) — inside the
+    // ellipse. Clicking right on it must not select the focus (id 2);
+    // it's internal construction geometry.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_ellipse",
+        params: { center: [20, 20], radius_x: 10, radius_y: 5 },
+      },
+    ]);
+    const focus = state.entities.find((e) => e.id === 2);
+    expect(focus?.kind).toBe("point"); // it IS allocated…
+    if (focus?.kind === "point") {
+      // …but a click on it never returns its id.
+      expect(hitTestSketchEntity(state, [focus.at.x, focus.at.y], 0.5)).not.toBe(
+        2,
+      );
+    }
+  });
+
   it("returns the nearest of two competing lines", () => {
     const state = buildDraftSketchState([
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // line=3

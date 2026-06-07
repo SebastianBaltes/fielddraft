@@ -94,10 +94,11 @@ impl Point2 {
 // ─── entities ───────────────────────────────────────────────────
 
 /// One sketch entity — a geometric primitive the solver can
-/// constrain. Mirrors the PlaneGCS primitive set that K5a commits
-/// to supporting in the MVP; additional types (ellipse, B-spline)
-/// can be added later without breaking the wire shape because the
-/// enum is versioned through [`fielddraft_protocol::SCHEMA_VERSION`].
+/// constrain. Mirrors the PlaneGCS primitive set FieldDraft
+/// supports: `Point`, `Line`, `Circle`, `Arc`, `Ellipse`, and
+/// `Origin`. Further conics (B-spline, hyperbola, parabola) can be
+/// added without breaking the wire shape because the enum is
+/// versioned through [`fielddraft_protocol::SCHEMA_VERSION`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entity {
@@ -130,6 +131,22 @@ pub enum Entity {
         end: EntityId,
         radius: f64,
     },
+    /// A full ellipse, parameterised the way PlaneGCS models it:
+    /// a centre point, one focus point, and the semi-minor radius
+    /// (`radmin`). The semi-major radius and the major-axis
+    /// orientation are *implied* by the focus position —
+    /// `a = hypot(radmin, |centre − focus1|)`, with the major axis
+    /// pointing along centre→focus1. The focus is an internal
+    /// construction point: it's allocated in the sketch so the solver
+    /// can move it (reshaping the ellipse), but the UI never surfaces
+    /// it as a pickable vertex. Constraints (`Tangent`,
+    /// `PointOnObject`) bind to the ellipse entity itself.
+    Ellipse {
+        id: EntityId,
+        center: EntityId,
+        focus1: EntityId,
+        radmin: f64,
+    },
     /// The immovable origin of the sketch. Every sketch has
     /// exactly one origin; it's the anchor that keeps the
     /// constraint graph's DOF count from running away and it's
@@ -146,6 +163,7 @@ impl Entity {
             Entity::Line { .. } => "line",
             Entity::Circle { .. } => "circle",
             Entity::Arc { .. } => "arc",
+            Entity::Ellipse { .. } => "ellipse",
             Entity::Origin { .. } => "origin",
         }
     }
@@ -156,6 +174,7 @@ impl Entity {
             | Entity::Line { id, .. }
             | Entity::Circle { id, .. }
             | Entity::Arc { id, .. }
+            | Entity::Ellipse { id, .. }
             | Entity::Origin { id } => id,
         }
     }
@@ -221,7 +240,8 @@ pub enum Constraint {
         #[serde(default)]
         driven: bool,
     },
-    /// A line is tangent to a circle or arc at the entity's edge.
+    /// A line is tangent to a curve (circle, arc, or ellipse) at the
+    /// entity's edge. Dispatched on the curve kind on the solver side.
     Tangent {
         id: ConstraintId,
         line: EntityId,
@@ -241,10 +261,10 @@ pub enum Constraint {
         id: ConstraintId,
         point: EntityId,
     },
-    /// A point is constrained to lie on a curve — a line, circle, or
-    /// arc. Removes one of the point's DOFs (it keeps one freedom
-    /// sliding along the curve). Dispatched on the curve kind to the
-    /// matching PlaneGCS primitive.
+    /// A point is constrained to lie on a curve — a line, circle,
+    /// arc, or ellipse. Removes one of the point's DOFs (it keeps one
+    /// freedom sliding along the curve). Dispatched on the curve kind
+    /// to the matching PlaneGCS primitive.
     PointOnObject {
         id: ConstraintId,
         point: EntityId,
@@ -474,6 +494,24 @@ impl SketchState {
         id
     }
 
+    /// Push an ellipse referencing its (already-allocated) centre and
+    /// focus points plus its semi-minor radius. Returns the new id.
+    pub fn add_ellipse(
+        &mut self,
+        center: EntityId,
+        focus1: EntityId,
+        radmin: f64,
+    ) -> EntityId {
+        let id = self.allocate_entity_id();
+        self.entities.push(Entity::Ellipse {
+            id,
+            center,
+            focus1,
+            radmin,
+        });
+        id
+    }
+
     /// Add a constraint and return its id. Panics only on id
     /// counter overflow (impossible in practice — `u32::MAX`
     /// constraints per sketch would blow the solver's working
@@ -651,6 +689,28 @@ mod tests {
             }
             other => panic!("expected Arc, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_ellipse_references_centre_and_focus_by_id() {
+        let mut s = SketchState::new();
+        let center = s.add_point(Point2::new(0.0, 0.0));
+        let focus = s.add_point(Point2::new(3.0, 0.0));
+        let ell = s.add_ellipse(center, focus, 4.0);
+        match s.entity(ell).unwrap() {
+            Entity::Ellipse {
+                center: c,
+                focus1,
+                radmin,
+                ..
+            } => {
+                assert_eq!(*c, center);
+                assert_eq!(*focus1, focus);
+                assert_eq!(*radmin, 4.0);
+            }
+            other => panic!("expected Ellipse, got {other:?}"),
+        }
+        assert_eq!(s.entity(ell).unwrap().kind_name(), "ellipse");
     }
 
     #[test]

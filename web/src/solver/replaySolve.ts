@@ -9,7 +9,7 @@
  * solve pipeline.
  */
 
-import { buildDraftSketchState } from "../sketchSession";
+import { buildDraftSketchState, ellipseParamsFromFocus } from "../sketchSession";
 import { solveSketch } from "./planegcs";
 import type { SketchDiagnostics, SketchState } from "./types";
 
@@ -114,10 +114,36 @@ export function rebuildSubCallsFromSolved(
       return { ...call, params: { ...call.params, center } };
     }
     if (call.type === "sketch_ellipse") {
-      // Mirrors buildDraftSketchState: ONE centre point entity.
+      // Mirrors buildDraftSketchState: centre point, focus point, then
+      // the ellipse entity. Read the solved centre + focus + radmin and
+      // recover (radius_x, radius_y, rotation) so the rendered outline
+      // tracks the solver after a constraint reshapes it. Canonical
+      // form puts the semi-major radius on radius_x.
       const center = pointAt(nextId++);
-      if (!center) return call;
-      return { ...call, params: { ...call.params, center } };
+      const focus = pointAt(nextId++);
+      const ellipseId = nextId++;
+      if (!center || !focus) return call;
+      const ell = solved.entities.find((e) => e.id === ellipseId);
+      if (!ell || ell.kind !== "ellipse") {
+        return { ...call, params: { ...call.params, center } };
+      }
+      const { radiusX, radiusY, rotation } = ellipseParamsFromFocus(
+        center[0],
+        center[1],
+        focus[0],
+        focus[1],
+        ell.radmin,
+      );
+      return {
+        ...call,
+        params: {
+          ...call.params,
+          center,
+          radius_x: radiusX,
+          radius_y: radiusY,
+          rotation,
+        },
+      };
     }
     if (call.type === "sketch_slot") {
       // Mirrors buildDraftSketchState: TWO end-cap centres in order.

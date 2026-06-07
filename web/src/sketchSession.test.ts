@@ -4,6 +4,8 @@ import {
   INACTIVE_SKETCH_SESSION,
   applySketchToolDraft,
   buildDraftSketchState,
+  ellipseFocusRadmin,
+  ellipseParamsFromFocus,
   clearSketchSelection,
   enterSketchSession,
   exitSketchSession,
@@ -552,12 +554,47 @@ describe("regularPolygonVertices + sketch_regular_polygon draft", () => {
   });
 });
 
+describe("ellipse focus/radmin conversion", () => {
+  it("round-trips (centre, rx, ry, rotation) → focus/radmin → params", () => {
+    const cases: Array<[number, number, number, number, number]> = [
+      // cx, cy, rx, ry, rotation
+      [0, 0, 10, 5, 0],
+      [3, -4, 8, 8, 0], // near-circular (rx == ry)
+      [2, 7, 4, 9, 0.7], // minor on x, major on y
+      [-5, 1, 12, 3, -1.2],
+    ];
+    for (const [cx, cy, rx, ry, rot] of cases) {
+      const { focus, radmin } = ellipseFocusRadmin(cx, cy, rx, ry, rot);
+      const got = ellipseParamsFromFocus(cx, cy, focus[0], focus[1], radmin);
+      // Canonical form puts the semi-major on radius_x, so compare
+      // against the sorted (major, minor) of the input.
+      const a = Math.max(rx, ry);
+      const b = Math.min(rx, ry);
+      expect(got.radiusX).toBeCloseTo(a, 4);
+      expect(got.radiusY).toBeCloseTo(b, 4);
+      // The reconstructed ellipse must occupy the same footprint: a
+      // point on the major axis lands at distance `a` from the centre.
+      const px = cx + got.radiusX * Math.cos(got.rotation);
+      const py = cy + got.radiusX * Math.sin(got.rotation);
+      expect(Math.hypot(px - cx, py - cy)).toBeCloseTo(a, 4);
+    }
+  });
+
+  it("keeps the focus distinct from the centre for a circle", () => {
+    // rx == ry → c would be 0; the floor keeps the focus off-centre so
+    // PlaneGCS never sees a degenerate ellipse.
+    const { focus } = ellipseFocusRadmin(0, 0, 5, 5, 0);
+    expect(Math.hypot(focus[0], focus[1])).toBeGreaterThan(0);
+  });
+});
+
 describe("sketch_ellipse draft state", () => {
-  it("pushes exactly one centre point with the next id", () => {
+  it("pushes centre, focus, and the ellipse entity in order", () => {
     // Origin is id 0, so next_entity_id starts at 1. The kernel's
-    // SketchEllipseTool::apply registers ONLY the centre point, so the
-    // TS mirror must allocate exactly one entity (id 1) and advance the
-    // counter by exactly 1 — to 2.
+    // SketchEllipseTool::apply allocates centre (1), focus (2), then the
+    // ellipse entity (3); the TS mirror must match exactly and advance
+    // the counter to 4. radius_x > radius_y → major axis on x, focus on
+    // +x at sqrt(5² − 3²) = 4 from the centre.
     const state = buildDraftSketchState([
       {
         type: "sketch_ellipse",
@@ -565,17 +602,31 @@ describe("sketch_ellipse draft state", () => {
       },
     ]);
     const points = state.entities.filter((e) => e.kind === "point");
-    expect(points).toHaveLength(1);
+    expect(points).toHaveLength(2);
     const centre = points[0];
     expect(centre.kind === "point" && centre.at).toEqual({ x: 1, y: 2 });
     expect(centre.id).toBe(1);
-    expect(state.next_entity_id).toBe(2);
+    const focus = points[1];
+    expect(focus.id).toBe(2);
+    if (focus.kind === "point") {
+      expect(focus.at.x).toBeCloseTo(5, 6); // 1 + 4
+      expect(focus.at.y).toBeCloseTo(2, 6);
+    }
+    const ellipse = state.entities.find((e) => e.kind === "ellipse");
+    expect(ellipse?.id).toBe(3);
+    if (ellipse && ellipse.kind === "ellipse") {
+      expect(ellipse.center).toBe(1);
+      expect(ellipse.focus1).toBe(2);
+      expect(ellipse.radmin).toBeCloseTo(3, 6);
+    }
+    expect(state.next_entity_id).toBe(4);
   });
 
   it("keeps entity ids aligned for a following sub-call", () => {
-    // After the ellipse consumes id 1, a following circle must take the
-    // next contiguous ids (centre 2, circle 3) — proving the ellipse
-    // branch advanced the counter by exactly the kernel's one point.
+    // After the ellipse consumes ids 1–3 (centre, focus, ellipse), a
+    // following circle must take the next contiguous ids (centre 4,
+    // circle 5) — proving the ellipse branch advanced the counter by
+    // exactly the kernel's three entities.
     const state = buildDraftSketchState([
       {
         type: "sketch_ellipse",
@@ -587,10 +638,10 @@ describe("sketch_ellipse draft state", () => {
       (e) => e.kind === "point" && e.at.x === 10 && e.at.y === 10,
     );
     const circle = state.entities.find((e) => e.kind === "circle");
-    expect(circleCentre?.id).toBe(2);
-    expect(circle && circle.kind === "circle" && circle.center).toBe(2);
-    expect(circle?.id).toBe(3);
-    expect(state.next_entity_id).toBe(4);
+    expect(circleCentre?.id).toBe(4);
+    expect(circle && circle.kind === "circle" && circle.center).toBe(4);
+    expect(circle?.id).toBe(5);
+    expect(state.next_entity_id).toBe(6);
   });
 
   it("ignores a malformed centre (no entity added)", () => {
@@ -600,7 +651,7 @@ describe("sketch_ellipse draft state", () => {
         params: { center: [1], radius_x: 5, radius_y: 3 },
       },
     ]);
-    expect(state.entities.filter((e) => e.kind === "point")).toHaveLength(0);
+    expect(state.entities).toHaveLength(1); // origin only
     expect(state.next_entity_id).toBe(1);
   });
 });

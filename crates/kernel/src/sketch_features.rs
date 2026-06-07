@@ -628,6 +628,35 @@ pub struct SketchEllipseDef {
     pub segments: f32,
 }
 
+/// Convert FieldDraft's `(centre, radius_x, radius_y, rotation)`
+/// ellipse parameterisation into PlaneGCS' `(focus, semi-minor)` form.
+/// The major axis is whichever of `radius_x` / `radius_y` is larger;
+/// the focus sits at distance `sqrt(a² − b²)` from the centre along it.
+/// A tiny floor keeps the focus distinct from the centre for
+/// near-circular ellipses, so the solver never sees a degenerate
+/// (zero-distance) focus.
+///
+/// MUST stay byte-for-byte in sync with `ellipseFocusRadmin` in
+/// `web/src/sketchSession.ts` — both sides feed the same PlaneGCS
+/// solver and must produce identical focus / radmin values.
+fn ellipse_focus_radmin(
+    cx: f64,
+    cy: f64,
+    radius_x: f64,
+    radius_y: f64,
+    rotation: f64,
+) -> ((f64, f64), f64) {
+    let a = radius_x.max(radius_y);
+    let b = radius_x.min(radius_y);
+    let c = (a * a - b * b).max(0.0).sqrt().max(1e-4);
+    let major_angle = if radius_x >= radius_y {
+        rotation
+    } else {
+        rotation + std::f64::consts::FRAC_PI_2
+    };
+    ((cx + c * major_angle.cos(), cy + c * major_angle.sin()), b)
+}
+
 pub struct SketchEllipseTool;
 
 impl SketchToolKind for SketchEllipseTool {
@@ -644,9 +673,26 @@ impl SketchToolKind for SketchEllipseTool {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = SketchEllipseDef::parse(def)?;
-        // Mirror the circle tool: register the centre point so the
-        // TS entity-id mirror stays aligned.
-        state.add_point(Point2::new(d.center[0] as f64, d.center[1] as f64));
+        // Register the ellipse as a real solver entity so constraints
+        // (tangent, point-on) can bind to it. PlaneGCS parameterises an
+        // ellipse by centre + one focus + semi-minor radius; the
+        // semi-major radius and orientation fall out of the focus
+        // position. We allocate centre, focus, then ellipse — in that
+        // fixed order, mirrored byte-for-byte by the TS
+        // `buildDraftSketchState` so the shared entity-id space stays
+        // aligned.
+        let cx = d.center[0] as f64;
+        let cy = d.center[1] as f64;
+        let (focus, radmin) = ellipse_focus_radmin(
+            cx,
+            cy,
+            d.radius_x as f64,
+            d.radius_y as f64,
+            d.rotation as f64,
+        );
+        let center = state.add_point(Point2::new(cx, cy));
+        let focus1 = state.add_point(Point2::new(focus.0, focus.1));
+        state.add_ellipse(center, focus1, radmin);
         Ok(())
     }
 }
@@ -2781,6 +2827,44 @@ mod tests {
             .unwrap();
         // two points + one line
         assert_eq!(state.entities.len(), 3);
+    }
+
+    #[test]
+    fn sketch_ellipse_tool_allocates_centre_focus_and_ellipse() {
+        let tools = SketchToolRegistry::with_builtins();
+        let mut state = SketchState::new(); // no origin — keep the count easy
+        let call = FeatureCall::new(
+            "sketch_ellipse",
+            id(1),
+            json!({ "center": [0.0, 0.0], "radius_x": 10.0, "radius_y": 4.0 }),
+        );
+        tools
+            .apply_all(&mut state, std::slice::from_ref(&call))
+            .unwrap();
+        // centre point (id 1) + focus point (id 2) + ellipse (id 3).
+        assert_eq!(state.entities.len(), 3);
+        match &state.entities[2] {
+            fielddraft_solver::Entity::Ellipse {
+                center,
+                focus1,
+                radmin,
+                ..
+            } => {
+                assert_eq!(*center, EntityId(1));
+                assert_eq!(*focus1, EntityId(2));
+                // semi-minor radius = min(radius_x, radius_y) = 4.
+                assert!((*radmin - 4.0).abs() < 1e-9);
+            }
+            other => panic!("expected Ellipse at index 2, got {other:?}"),
+        }
+        // Focus sits on the major (x) axis at sqrt(10² − 4²) ≈ 9.165.
+        match &state.entities[1] {
+            fielddraft_solver::Entity::Point { at, .. } => {
+                assert!((at.x - (100.0_f64 - 16.0).sqrt()).abs() < 1e-6);
+                assert!(at.y.abs() < 1e-9);
+            }
+            other => panic!("expected focus Point at index 1, got {other:?}"),
+        }
     }
 
     #[test]

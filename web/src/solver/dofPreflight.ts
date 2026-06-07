@@ -125,6 +125,11 @@ function entityDof(entity: Entity): number {
       return 1;
     case "arc":
       return 1;
+    case "ellipse":
+      // The semi-minor radius is the only scalar DOF carried on the
+      // ellipse entity itself; its centre and focus are separate point
+      // entities already tallied at 2 DOF each (same split as circle).
+      return 1;
   }
 }
 

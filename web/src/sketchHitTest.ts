@@ -26,6 +26,54 @@ function dist(a: [number, number], b: [number, number]): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
 }
 
+/**
+ * Ids of every ellipse focus point. Focus points are internal
+ * construction geometry — the solver moves them to reshape the
+ * ellipse, but the user must never pick or box-select them, so both
+ * hit-test passes skip these ids.
+ */
+function ellipseFocusIds(state: SketchState): Set<number> {
+  const ids = new Set<number>();
+  for (const e of state.entities) {
+    if (e.kind === "ellipse") ids.add(e.focus1);
+  }
+  return ids;
+}
+
+/**
+ * Shortest distance from `cursor` to an ellipse outline, sampled.
+ * The ellipse is reconstructed from its centre, focus, and semi-minor
+ * radius: the major axis points centre→focus with semi-major
+ * `a = hypot(radmin, |centre − focus|)`; the minor axis is `radmin`
+ * perpendicular to it. Sampling 64 points is ample for a pick test.
+ */
+function ellipseOutlineDistance(
+  center: [number, number],
+  focus: [number, number],
+  radmin: number,
+  cursor: [number, number],
+): number {
+  const cdx = focus[0] - center[0];
+  const cdy = focus[1] - center[1];
+  const c = Math.hypot(cdx, cdy);
+  const ux = c > 1e-9 ? cdx / c : 1;
+  const uy = c > 1e-9 ? cdy / c : 0;
+  const a = Math.sqrt(radmin * radmin + c * c);
+  let best = Infinity;
+  const STEPS = 64;
+  for (let i = 0; i < STEPS; i++) {
+    const t = (i / STEPS) * Math.PI * 2;
+    const ca = a * Math.cos(t);
+    const cb = radmin * Math.sin(t);
+    // major axis û, minor axis v̂ = (−uy, ux).
+    const px = center[0] + ca * ux + cb * -uy;
+    const py = center[1] + ca * uy + cb * ux;
+    const d = dist(cursor, [px, py]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 /** Shortest distance from `p` to the segment `a`–`b`. */
 function distToSegment(
   p: [number, number],
@@ -52,11 +100,14 @@ export function hitTestSketchEntity(
   cursor: [number, number],
   tolMm: number,
 ): number | null {
+  const focusIds = ellipseFocusIds(state);
+
   // Pass 1 — points and the origin take priority.
   let bestPointId: number | null = null;
   let bestPointDist = tolMm;
   for (const e of state.entities) {
     if (e.kind !== "point" && e.kind !== "origin") continue;
+    if (focusIds.has(e.id)) continue; // internal ellipse focus
     const at: [number, number] = e.kind === "origin" ? [0, 0] : [e.at.x, e.at.y];
     const d = dist(cursor, at);
     if (d < bestPointDist) {
@@ -197,14 +248,49 @@ export function entitiesInBox(
     return null;
   };
 
+  const focusIds = ellipseFocusIds(state);
+
   const result: number[] = [];
   for (const e of state.entities) {
     // The origin is fixed reference geometry, not user-drawn — a marquee
     // shouldn't sweep it up (you'd rarely mean to constrain it), so unlike
     // `hitTestSketchEntity` (a deliberate click) box-select skips it.
     if (e.kind === "origin") continue;
+    if (focusIds.has(e.id)) continue; // internal ellipse focus
     if (e.kind === "point") {
       if (pointInBox([e.at.x, e.at.y], min, max)) result.push(e.id);
+    } else if (e.kind === "ellipse") {
+      const c = pointAt(e.center);
+      const f = pointAt(e.focus1);
+      if (!c || !f) continue;
+      // Axis-aligned bounding box of the (possibly rotated) ellipse.
+      const cx = f[0] - c[0];
+      const cy = f[1] - c[1];
+      const cc = Math.hypot(cx, cy);
+      const ux = cc > 1e-9 ? cx / cc : 1;
+      const uy = cc > 1e-9 ? cy / cc : 0;
+      const a = Math.sqrt(e.radmin * e.radmin + cc * cc);
+      const hx = Math.hypot(a * ux, e.radmin * uy);
+      const hy = Math.hypot(a * uy, e.radmin * ux);
+      const bbMin: [number, number] = [c[0] - hx, c[1] - hy];
+      const bbMax: [number, number] = [c[0] + hx, c[1] + hy];
+      if (mode === "enclosing") {
+        if (
+          bbMin[0] >= min[0] &&
+          bbMax[0] <= max[0] &&
+          bbMin[1] >= min[1] &&
+          bbMax[1] <= max[1]
+        ) {
+          result.push(e.id);
+        }
+      } else {
+        const overlap =
+          min[0] <= bbMax[0] &&
+          max[0] >= bbMin[0] &&
+          min[1] <= bbMax[1] &&
+          max[1] >= bbMin[1];
+        if (overlap) result.push(e.id);
+      }
     } else if (e.kind === "line") {
       const a = pointAt(e.start);
       const b = pointAt(e.end);
@@ -264,6 +350,12 @@ function curveDistance(
     // Best-effort: distance to the full circle the arc lies on.
     // Angular clamping is refined once arcs become drawable.
     return Math.abs(dist(cursor, c) - e.radius);
+  }
+  if (e.kind === "ellipse") {
+    const c = entityPoint(state, e.center);
+    const f = entityPoint(state, e.focus1);
+    if (!c || !f) return null;
+    return ellipseOutlineDistance(c, f, e.radmin, cursor);
   }
   return null;
 }

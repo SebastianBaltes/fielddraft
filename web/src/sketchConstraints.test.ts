@@ -66,6 +66,66 @@ describe("applicableConstraints", () => {
     ]);
   });
 
+  // A line (id 3) and an ellipse (centre 4, focus 5, ellipse 6).
+  function lineAndEllipse() {
+    return buildDraftSketchState([
+      { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // line 3
+      {
+        type: "sketch_ellipse",
+        params: { center: [20, 20], radius_x: 10, radius_y: 5 },
+      }, // ellipse 6
+    ]);
+  }
+
+  it("offers tangent for a line + an ellipse, order-independent", () => {
+    const state = lineAndEllipse();
+    expect(applicableConstraints(state, [3, 6]).map((o) => o.type)).toEqual([
+      "sketch_constraint_tangent",
+    ]);
+    expect(applicableConstraints(state, [6, 3]).map((o) => o.type)).toEqual([
+      "sketch_constraint_tangent",
+    ]);
+  });
+
+  it("offers on-curve for a point + an ellipse", () => {
+    const state = lineAndEllipse();
+    // line-start point = id 1.
+    expect(applicableConstraints(state, [1, 6]).map((o) => o.type)).toEqual([
+      "sketch_constraint_point_on_object",
+    ]);
+  });
+
+  it("does not offer radius / diameter / concentric for ellipses", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_ellipse",
+        params: { center: [0, 0], radius_x: 10, radius_y: 5 },
+      }, // ellipse 3
+      {
+        type: "sketch_ellipse",
+        params: { center: [40, 0], radius_x: 8, radius_y: 4 },
+      }, // ellipse 6
+    ]);
+    // A single ellipse takes no radius/diameter dimension (PlaneGCS has
+    // no plain ellipse radius in our wiring).
+    expect(applicableConstraints(state, [3])).toEqual([]);
+    // Two ellipses offer no concentric/equal-radii.
+    expect(applicableConstraints(state, [3, 6])).toEqual([]);
+  });
+
+  it("builds a tangent_le call for a line + ellipse selection", () => {
+    const state = lineAndEllipse();
+    const call = buildConstraintCall(
+      "sketch_constraint_tangent",
+      [3, 6],
+      state,
+    );
+    expect(call).toEqual({
+      type: "sketch_constraint_tangent",
+      params: { line: 3, curve: 6 },
+    });
+  });
+
   it("offers midpoint + on-curve for a point + a line, order-independent", () => {
     const state = twoLinesAndCircle();
     // line 3 + point 4 (start of line 2).

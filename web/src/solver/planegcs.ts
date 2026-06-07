@@ -207,6 +207,22 @@ function translateEntity(
         },
       ];
     }
+    case "ellipse":
+      // PlaneGCS models the ellipse as centre + one focus + the
+      // semi-minor radius. Both the centre and focus are separate
+      // FieldDraft point entities (pushed by their own `point` cases
+      // before this ellipse, since they hold lower ids), so we only
+      // reference them by oid here. `push_ellipse` re-pushes them
+      // idempotently.
+      return [
+        {
+          type: "ellipse",
+          id: entityOid(entity.id),
+          c_id: entityOid(entity.center),
+          focus1_id: entityOid(entity.focus1),
+          radmin: entity.radmin,
+        },
+      ];
   }
 }
 
@@ -284,8 +300,16 @@ function translateConstraint(
           a_id: entityOid(constraint.curve),
         };
       }
+      if (curve.kind === "ellipse") {
+        return {
+          type: "point_on_ellipse",
+          id,
+          p_id: entityOid(constraint.point),
+          e_id: entityOid(constraint.curve),
+        };
+      }
       throw new Error(
-        `solver: point_on_object curve must be a line, circle, or arc, got ${curve.kind}`,
+        `solver: point_on_object curve must be a line, circle, arc, or ellipse, got ${curve.kind}`,
       );
     }
     case "coincident":
@@ -367,8 +391,16 @@ function translateConstraint(
           a_id: entityOid(constraint.curve),
         };
       }
+      if (curve.kind === "ellipse") {
+        return {
+          type: "tangent_le",
+          id,
+          l_id: entityOid(constraint.line),
+          e_id: entityOid(constraint.curve),
+        };
+      }
       throw new Error(
-        `solver: tangent curve must be a circle or arc, got ${curve.kind}`,
+        `solver: tangent curve must be a circle, arc, or ellipse, got ${curve.kind}`,
       );
     }
     case "concentric": {
@@ -661,6 +693,14 @@ function readBackState(
       case "arc":
         if (updated.type === "arc") {
           return { ...e, radius: updated.radius };
+        }
+        return { ...e };
+      case "ellipse":
+        // The centre and focus points are separate `point` entities
+        // and get their positions back through their own cases; only
+        // the semi-minor radius lives on the ellipse primitive.
+        if (updated.type === "ellipse") {
+          return { ...e, radmin: updated.radmin };
         }
         return { ...e };
       case "line":

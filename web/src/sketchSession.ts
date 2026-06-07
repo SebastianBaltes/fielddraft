@@ -232,6 +232,58 @@ export const DRAFT_DRAG_START_ID: EntityId = 0x7fff_ffff;
  * [`DRAFT_DRAG_START_ID`] so the inference engine can reference
  * it as the `drawingLineFrom` parameter of its query.
  */
+/**
+ * Convert FieldDraft's `(centre, radius_x, radius_y, rotation)`
+ * ellipse parameterisation into PlaneGCS' `(focus, semi-minor)` form.
+ * The major axis is whichever of `radius_x` / `radius_y` is larger;
+ * the focus sits at distance `sqrt(a² − b²)` from the centre along it.
+ * A tiny floor keeps the focus distinct from the centre for
+ * near-circular ellipses so the solver never sees a degenerate
+ * (zero-distance) focus.
+ *
+ * MUST stay byte-for-byte in sync with `ellipse_focus_radmin` in
+ * `crates/kernel/src/sketch_features.rs` — both sides feed the same
+ * PlaneGCS solver and must produce identical focus / radmin values.
+ */
+export function ellipseFocusRadmin(
+  cx: number,
+  cy: number,
+  radiusX: number,
+  radiusY: number,
+  rotation: number,
+): { focus: [number, number]; radmin: number } {
+  const a = Math.max(radiusX, radiusY);
+  const b = Math.min(radiusX, radiusY);
+  const c = Math.max(Math.sqrt(Math.max(0, a * a - b * b)), 1e-4);
+  const majorAngle = radiusX >= radiusY ? rotation : rotation + Math.PI / 2;
+  return {
+    focus: [cx + c * Math.cos(majorAngle), cy + c * Math.sin(majorAngle)],
+    radmin: b,
+  };
+}
+
+/**
+ * Inverse of [`ellipseFocusRadmin`]: recover the FieldDraft
+ * `(radius_x, radius_y, rotation)` triple from a solved centre, focus,
+ * and semi-minor radius. Canonical form puts the semi-major radius on
+ * `radius_x` (so `rotation` is the major-axis angle) — this is stable
+ * across repeated solve round-trips.
+ */
+export function ellipseParamsFromFocus(
+  cx: number,
+  cy: number,
+  fx: number,
+  fy: number,
+  radmin: number,
+): { radiusX: number; radiusY: number; rotation: number } {
+  const dx = fx - cx;
+  const dy = fy - cy;
+  const c = Math.hypot(dx, dy);
+  const b = radmin;
+  const a = Math.sqrt(b * b + c * c);
+  return { radiusX: a, radiusY: b, rotation: Math.atan2(dy, dx) };
+}
+
 export function buildDraftSketchState(
   subCalls: SketchSessionState["subCalls"],
   drawingLineFrom?: [number, number],
@@ -297,17 +349,41 @@ export function buildDraftSketchState(
         });
       }
     } else if (call.type === "sketch_ellipse") {
-      // Mirrors the kernel `SketchEllipseTool::apply`, which registers
-      // ONLY the centre point. The ellipse outline is rendered as a
-      // dedicated pass from the sub-call params (not as a SketchState
-      // entity), so we must push exactly one point here or entity-id
-      // allocation drifts out of sync with the kernel.
+      // Mirrors the kernel `SketchEllipseTool::apply`, which allocates
+      // centre point, focus point, then the ellipse entity — in that
+      // exact order. PlaneGCS models an ellipse as centre + one focus
+      // + semi-minor radius; the focus is an internal construction
+      // point (allocated so the solver can reshape the ellipse, but
+      // excluded from picking — see sketchHitTest). The outline is
+      // still rendered from the sub-call params, but the entity now
+      // lets tangent / point-on constraints bind to the ellipse.
+      // Allocate exactly three entities here or entity-id allocation
+      // drifts out of sync with the kernel.
       const center = call.params.center;
       if (Array.isArray(center) && center.length === 2) {
+        const cx = Number(center[0]);
+        const cy = Number(center[1]);
+        const { focus, radmin } = ellipseFocusRadmin(
+          cx,
+          cy,
+          Number(call.params.radius_x),
+          Number(call.params.radius_y),
+          Number(call.params.rotation ?? 0),
+        );
+        const centerId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: centerId, at: { x: cx, y: cy } });
+        const focusId = state.next_entity_id++;
         state.entities.push({
           kind: "point",
+          id: focusId,
+          at: { x: focus[0], y: focus[1] },
+        });
+        state.entities.push({
+          kind: "ellipse",
           id: state.next_entity_id++,
-          at: { x: Number(center[0]), y: Number(center[1]) },
+          center: centerId,
+          focus1: focusId,
+          radmin,
         });
       }
     } else if (call.type === "sketch_slot") {
