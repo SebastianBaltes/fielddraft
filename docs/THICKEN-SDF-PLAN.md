@@ -1,6 +1,26 @@
 # Plan: Thicken/Offset auf allgemeinem SDF-Feld (Pivot weg vom analytischen Sonderfall)
 
-**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv). **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv) + M1 Slice-0 ✅ / Slice-1a ⛔ blockiert. **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+
+> **M1-Fortschritt & Blocker (2026-06-07)**
+> - **Slice-0 (Nachbar-Discovery) ✅** — `brep/face_trim.rs::neighbour_gates` liest die berandenden
+>   analytischen Nachbar-Halbräume direkt aus der gewebten BRep (über `edge.signature`), ohne
+>   `BoundedCsg`/`branch_halfspace_map`-Umweg. Plus `materialise_inside` (Halbraum→bounded Primitive)
+>   und `face_boundary_extent`. Unit- + Real-Topologie-Tests grün.
+> - **Slice-1a-Gate ✅ (commit `a8a3ea4`)** — `Intersection(Shell(Offset(oversized carrier)),
+>   Nachbar-Halbräume)` webt im Kleinen wasserdicht + selektierbar; **kein** neuer Knoten nötig, weil
+>   jeder `HalfSpace` ein echtes bounded `Primitive` ist.
+> - **Slice-1a ⛔ BLOCKER (Weave-Extraktion):** Die *Materialisierung eines Halbraums als `Box`* ist
+>   die **falsche Trim-Repräsentation** für den Octree-Weave. Eine Box hat sechs Flächen; ihre
+>   nicht-schneidenden Flächen (tiefer Deckel entlang der Normale, Seitenflächen) queren die
+>   Weave-Domain und setzen **Phantom-Branch-Surfaces** → der Weave extrahiert falsch (SDF korrekt, aber
+>   nur Phantom-Plane + Innenwand, Außenwand & echte Caps fehlen). Das Gate überlebte nur, weil seine
+>   *eine enge* Box knapp außerhalb einer winzigen Domain lag. `trimmed_band` ist gebaut, aber
+>   `#[ignore]` und **nicht** in `resolve_thicken_faces` verdrahtet.
+> - **Design-Fork (Entscheidung nötig):** (a) dedizierter `CsgNode`-Trim-Knoten mit `OpenSurface`-Gates
+>   = reine Halbraum-SDF ohne Phantom-Flächen (die ursprüngliche R1a des Plans, voller Ripple + Weave
+>   muss die Schnitt-Cut-Faces selektierbar machen), oder (b) dem Weave beibringen, die
+>   nicht-schneidenden Flächen eines Trim-Primitivs zu ignorieren. (a) ist sauberer, mehr Arbeit.
 
 > **Fortschritt**
 > - **Spike (Gate) ✅** — `CsgNode::Offset` end-to-end, nicht-analytischer Träger webt selektierbar (Commit `86f7cd2`).

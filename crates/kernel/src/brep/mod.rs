@@ -32,6 +32,7 @@ pub mod face_export;
 pub mod face_offset;
 pub mod face_profile;
 pub mod face_thicken;
+pub mod face_trim;
 pub mod naming;
 pub mod octree;
 pub mod projection;
