@@ -1720,6 +1720,89 @@ mod tests {
         );
     }
 
+    #[test]
+    fn thicken_band_trims_laterally_via_intersection_with_neighbour_halfspaces() {
+        // M1 Slice-1a gate: a wall of an *open / bounded* carrier is trimmed to
+        // just the picked surface by INTERSECTING the closed band with the
+        // bordering neighbour faces' inside-halfspaces. Every `HalfSpace` kind is
+        // a real bounded `Primitive` (Plane→Box, cylinder/sphere/cone/torus→their
+        // primitive), so the trim needs NO new node — the cut faces weave as real
+        // selectable analytic faces. Here: the curved wall of a bounded cylinder,
+        // thickened then trimmed by its two cap planes → a square-ended tube.
+        // `Intersection(Shell(Offset(Cyl, out), out+in), Box(slab |y|≤hh))`.
+        //
+        // The carrier stands in for the picked face's UNBOUNDED surface (an
+        // infinite cylinder of radius r): a bounded cylinder works only if its own
+        // caps sit well OUTSIDE the trim, else the closed shell folds an end-cap
+        // disk over the tube. So the carrier half-height is oversized; the
+        // neighbour cap planes do the real axial trim.
+        use crate::csg::EvalMode;
+        let (r, hh, out, inn) = (3.0_f32, 4.0_f32, 0.6_f32, 0.4_f32);
+        let carrier_hh = hh + (out + inn) + 1.0; // caps far past the trim slab
+        let cyl = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cylinder {
+                center: [0.0, 0.0, 0.0],
+                radius: r,
+                half_height: carrier_hh,
+            },
+        };
+        let closed_band = CsgNode::Shell(
+            Box::new(CsgNode::Offset(Box::new(cyl), out)),
+            out + inn,
+            Vec::new(),
+        );
+        // The neighbour cap planes, materialised as the slab they bound. The box
+        // is radially wide enough (≥ r+out) that ONLY its ±Y faces cut the band.
+        let slab = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [r + out + 0.5, hh, r + out + 0.5],
+            },
+        };
+        let band = BoundedCsg::from_csg(&CsgNode::Intersection(
+            Box::new(closed_band),
+            Box::new(slab),
+        ));
+
+        // 1. Field: at the equator the wall straddles the carrier radius — outer
+        //    at r+out, inner at r−in, hollow core, empty outside. The ends are
+        //    cut SQUARE at |y| = hh (the picked face's axial extent, not the
+        //    dilated/rounded offset rim).
+        let sdf = |p: [f32; 3]| band.sdf(p, EvalMode::Logical);
+        assert!(sdf([r + out, 0.0, 0.0]).abs() < 0.06, "outer wall at r+out");
+        assert!(sdf([r - inn, 0.0, 0.0]).abs() < 0.06, "inner wall at r−in");
+        assert!(sdf([0.0, 0.0, 0.0]) > 0.05, "hollow core (a tube, not a rod)");
+        assert!(sdf([r + out + 0.5, 0.0, 0.0]) > 0.05, "empty outside the outer wall");
+        assert!(sdf([r, hh - 0.2, 0.0]) < -0.02, "wall present just inside the cap");
+        assert!(sdf([r, hh + 0.2, 0.0]) > 0.02, "wall trimmed square just past the cap");
+        // Genuinely OPEN end (no folded-over cap disk): the axis stays hollow all
+        // the way up to the trim plane — the oversized carrier kept its own cap
+        // out of the picked region.
+        assert!(sdf([0.0, hh - 0.2, 0.0]) > 0.05, "open end — core hollow up to the cut");
+
+        // 2. Weaves watertight, with the curved walls AND the flat annular end
+        //    faces (sub-faces of the trim box) all selectable.
+        let oct = Octree::build(&band, 0.12);
+        let brep = weave(&band, &oct);
+        assert!(brep.validate().is_ok(), "trimmed band must be well-formed");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "square-ended tube is a watertight solid shell"
+        );
+        let selectable = (0..brep.faces.len())
+            .filter(|&i| {
+                crate::brep::naming::TopoRef::from_face(&brep, crate::brep::FaceId(i as u32)).id_hash
+                    != 0
+            })
+            .count();
+        assert!(
+            selectable >= 4,
+            "outer + inner curved walls + 2 end rings are selectable (got {selectable})"
+        );
+    }
+
     fn union_box_sphere(box_half: [f32; 3], sph_center: [f32; 3], sph_r: f32) -> BoundedCsg {
         let boxn = CsgNode::Leaf {
             id: FeatureId::from_u32(1),
