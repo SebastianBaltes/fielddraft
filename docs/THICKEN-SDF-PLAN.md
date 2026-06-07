@@ -1,26 +1,37 @@
 # Plan: Thicken/Offset auf allgemeinem SDF-Feld (Pivot weg vom analytischen Sonderfall)
 
-**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv) + M1 Slice-0 ✅ / Slice-1a ⛔ blockiert. **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
+**Status:** Spike ✅ + M0 ✅ (0.5.36, additiv) + M1 **neu ausgerichtet** auf Kantenzug-Sweep (Nachbar-Halbraum-Ansatz verworfen). **Datum:** 2026-06-07. **Branch-Ziel:** `agents/fielddraft-a-dev`.
 
-> **M1-Fortschritt & Blocker (2026-06-07)**
-> - **Slice-0 (Nachbar-Discovery) ✅** — `brep/face_trim.rs::neighbour_gates` liest die berandenden
->   analytischen Nachbar-Halbräume direkt aus der gewebten BRep (über `edge.signature`), ohne
->   `BoundedCsg`/`branch_halfspace_map`-Umweg. Plus `materialise_inside` (Halbraum→bounded Primitive)
->   und `face_boundary_extent`. Unit- + Real-Topologie-Tests grün.
-> - **Slice-1a-Gate ✅ (commit `a8a3ea4`)** — `Intersection(Shell(Offset(oversized carrier)),
->   Nachbar-Halbräume)` webt im Kleinen wasserdicht + selektierbar; **kein** neuer Knoten nötig, weil
->   jeder `HalfSpace` ein echtes bounded `Primitive` ist.
-> - **Slice-1a ⛔ BLOCKER (Weave-Extraktion):** Die *Materialisierung eines Halbraums als `Box`* ist
->   die **falsche Trim-Repräsentation** für den Octree-Weave. Eine Box hat sechs Flächen; ihre
->   nicht-schneidenden Flächen (tiefer Deckel entlang der Normale, Seitenflächen) queren die
->   Weave-Domain und setzen **Phantom-Branch-Surfaces** → der Weave extrahiert falsch (SDF korrekt, aber
->   nur Phantom-Plane + Innenwand, Außenwand & echte Caps fehlen). Das Gate überlebte nur, weil seine
->   *eine enge* Box knapp außerhalb einer winzigen Domain lag. `trimmed_band` ist gebaut, aber
->   `#[ignore]` und **nicht** in `resolve_thicken_faces` verdrahtet.
-> - **Design-Fork (Entscheidung nötig):** (a) dedizierter `CsgNode`-Trim-Knoten mit `OpenSurface`-Gates
->   = reine Halbraum-SDF ohne Phantom-Flächen (die ursprüngliche R1a des Plans, voller Ripple + Weave
->   muss die Schnitt-Cut-Faces selektierbar machen), oder (b) dem Weave beibringen, die
->   nicht-schneidenden Flächen eines Trim-Primitivs zu ignorieren. (a) ist sauberer, mehr Arbeit.
+> **M1-Neuausrichtung (2026-06-07) — Lateral-Trim = Kantenzug-Sweep, nicht Nachbar-Halbräume**
+>
+> **Korrigierte Definition (verbindlich):** Eine B-Rep-Fläche ist **nichts weiter** als ein durch einen
+> **geschlossenen Kantenzug (Edge-Loop)** berandeter Teil der `d=0`-Isofläche — beliebige Form, gekrümmt
+> oder nicht. **Die Nachbarflächen müssen nicht existieren** (koplanare Split-Kante, eingeprägte Kante,
+> freiform-getrimmter Rand → es gibt keinen Nachbar-Halbraum). Lateral-Trim ist damit die **direkte
+> Verallgemeinerung von Sketch→Extrude**: der planare Fall *ist* „2D-Sketch-Region extrudieren", und der
+> Sketch-Rand ist der Kantenzug; für gekrümmte Träger wird der Rand zu einem **3D-Kantenzug auf der
+> Trägerfläche**.
+>
+> **Trim-Mechanik:** den Kantenzug der gepickten Face **entlang der Offset-Richtung sweepen** → eine
+> verallgemeinerte, **offene** Sweep-Wand (keine End-Caps, an beiden Enden übers Band hinaus) → Band damit
+> auf das Loop-Innere intersecten. Offen-gehalten besteht die Sweep-Wand **nur aus den echten
+> Schnitt-Surfaces** (genau die lateralen Begrenzungen des Ergebnisses) → **keine Phantom-Flächen.**
+>
+> **Verworfen (warum):** Der frühere Slice-1a-Ansatz „Band ∩ analytische Nachbar-Halbräume, Halbraum als
+> `Box` materialisiert" war **falsch verallgemeinert** und **blockiert**. Falsch, weil er Surfaces
+> referenziert, die eine Face gar nicht definieren und oft nicht existieren. Blockiert, weil eine `Box`
+> sechs Flächen hat: ihre nicht-schneidenden Flächen queren die Weave-Domain und setzen
+> **Phantom-Branch-Surfaces** (SDF korrekt, B-Rep falsch). Der Würfel-Fall lief nur, weil die 4
+> hochgezogenen Kanten *zufällig* mit den 4 Seitenflächen-Ebenen zusammenfielen. → `brep/face_trim.rs`
+> (neighbour_gates / materialise_inside / trimmed_band) und der Slice-1a-Gate-Test **gelöscht**.
+> Nachbar-Halbräume bleiben höchstens eine spätere opportunistische *Fast-Path*-Optimierung für
+> rein-analytische Loops, **nicht** das Fundament.
+>
+> **Fließender Fall (kein Sonderfall-Bruch):** geschlossene Fläche (Kugel, Volltorus) = **kein** Edge-Loop
+> → nichts zu sweepen → reines `Shell(Offset(..))` = M0. Sobald ein Loop existiert, wird er gesweept; eine
+> Face, der nur ein kleiner Biss fehlt, hat einen kleinen Loop, eine Halbkugel einen großen — der Trim
+> skaliert stetig. Geschlossen ist also der **No-Loop-Grenzfall** derselben *einen* Mechanik. Zylinder-
+> Seitenfläche (zwei Rand-Kreise) → zwei Loops gesweept → axial begrenztes Rohr, ebenfalls dieselbe Mechanik.
 
 > **Fortschritt**
 > - **Spike (Gate) ✅** — `CsgNode::Offset` end-to-end, nicht-analytischer Träger webt selektierbar (Commit `86f7cd2`).
@@ -128,21 +139,32 @@ numerisch erkannt (Gap-Varianz ≈ 0), nicht pro Primitivpaar algebraisch.
 
 ---
 
-## 3. M1 — Laterale Begrenzung (löst das vertagte „partielle Wand")
+## 3. M1 — Laterale Begrenzung über **Kantenzug-Sweep** (löst das vertagte „partielle Wand")
 
 **Ziel:** offene/berandete Flächen — ein Patch, ein nur 90°-revolvierter Zylinder/Kegel, eine
 Extrude-Seitenwand — auf genau die gepickte Face beschränken.
 
-- Eine Face ist von **Edge-Loops** berandet. Lateral-Bound = `Intersection` von Kanten-Gates.
-- **Analytische Nachbarn** (Caps, angrenzende Planes): jede Nachbarfläche liefert ein
-  `OpenSurface`-artiges Euklid-Gate (∇g≈1, wohlkonditioniert) → Band ∩ (innerhalb aller
-  Nachbar-Gates) = nur die Wand der gepickten Face. **Direkte Wiederverwendung** des Shell-Gate-Codes.
-- **Allgemeiner Fallback:** Edge-Loop-Polylinien entlang der Träger-Normale zu einem
-  **Begrenzungs-Prisma** (Loop-Extrude/Kapsel-SDF) sweepen, `Intersection` mit dem Band. Das ist die
-  einzige genuin *neue* Geometrie — als härteste Teilaufgabe gesondert verifizieren (Tracer/Weld,
-  konkave Loops).
+**Definition (verbindlich, siehe Neuausrichtungs-Block oben):** Eine Face = `d=0`-Isofläche, berandet
+durch ihre **Edge-Loops**. Nur der Loop definiert sie; Nachbarflächen sind irrelevant und müssen nicht
+existieren. Lateral-Trim ist die Verallgemeinerung von Sketch→Extrude.
+
+**Mechanik (der eine Pfad):**
+1. **Kantenzug holen:** die Edge-Loops der gepickten Face als 3D-Polylinien auf der Trägerfläche
+   abtasten (`brep/edge_sampling.rs::sample_edge` liefert die Loop-Punkte — Rand-Kreise haben keine
+   Vertices und müssen gesampelt werden).
+2. **Offen sweepen:** den Loop entlang der **Offset-Richtung** (Träger-Normalenfeld, ein-/auswärts über
+   die ganze Banddicke und etwas darüber hinaus) zu einer **offenen Sweep-Wand** ohne End-Caps machen.
+   Offen = nur die lateralen Schnitt-Surfaces, **keine Phantom-Flächen** (das war der ganze Blocker).
+3. **Intersecten:** `Intersection(Band, Sweep-Wand-Innenraum)` = nur die Wand der gepickten Face.
+
+Das ist die einzige genuin *neue* Geometrie — als härteste Teilaufgabe gesondert verifizieren
+(Loop-Sampling/Weld, konkave Loops, mehrere Loops pro Face, Drift entlang gekrümmter Träger).
+
 - **Auflösung:** partiell-revolvierte Zylinder/Kegel-Wände, Extrude-Seitenwände, beliebige Patches —
   alle bisher „vertagt".
+- **Verworfen:** „Band ∩ analytische Nachbar-Halbräume" (Halbraum als `Box`) — falsch verallgemeinert
+  (referenziert nicht-existente Nachbarn) und Weave-blockiert (Box-Phantom-Flächen). Nur als spätere
+  opportunistische Fast-Path-Option für rein-analytische Loops denkbar, nicht als Fundament.
 
 ---
 
