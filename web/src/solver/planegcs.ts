@@ -35,9 +35,11 @@
  *   midpoint + perpendicular. For K5a the translator throws a
  *   descriptive error; a sketch that uses `symmetric` won't
  *   solve through this path.
- * * Temporary (drag) constraints: K5b's `DragController` uses
- *   PlaneGCS' `temporary` flag to stabilise drags without
- *   topology flips. This file doesn't expose the flag yet.
+ * * Live drag: [`DragController`] re-solves the sketch every pointer
+ *   frame, feeding the dragged geometry as the initial guess so the
+ *   solver settles each entity onto the nearest valid manifold
+ *   (continuation). It drives this same `solveSketch` entry point —
+ *   no separate `temporary`-flag API is needed.
  * * Two-WASM packaging / bundle split: the file imports from
  *   `@salusoft89/planegcs` directly so Vite handles the worker
  *   chunk emission. Sub-splitting the PlaneGCS binary into its

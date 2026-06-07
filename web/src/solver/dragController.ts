@@ -1,182 +1,224 @@
 /**
- * Drag controller (K5b adapter layer).
+ * Live grip-drag solver.
  *
- * Wraps the §4.4 "drag without topology kip" story as a
- * stateful controller that the UI drives per mouse gesture.
- * The original SolveSpace-era design inserted a temporary
- * point-to-cursor coincidence and marked it with PlaneGCS'
- * `temporary` flag so the solver would continue toward the
- * nearest valid manifold instead of flipping the sketch's
- * topology — and that's what the §4.4 briefing documents.
+ * Drives PlaneGCS once per pointer frame while the user drags a
+ * grip, so constraints (horizontal, distance, coincident, …) hold
+ * *visually* during the drag instead of only snapping back at drop.
+ * This is the Onshape / SolveSpace continuation behaviour the §4.4
+ * briefing asks for.
  *
- * K5b implements the same user-visible behaviour through a
- * simpler mechanism. Instead of adding a helper point and a
- * soft constraint, the controller **overwrites the dragged
- * point's coordinates directly** in the working copy with each
- * update, then asks PlaneGCS to re-solve starting from that
- * new initial guess. PlaneGCS' numerical-continuation solver
- * does the rest: the hard constraints (horizontal, distance,
- * coincident-to-origin, …) still hold exactly, and the
- * dragged point lands on the closest valid-manifold point to
- * the cursor — which is the Onshape-style continuation
- * behaviour the §4.4 briefing asks for, without needing a
- * helper entity or a secondary wrapper API.
+ * ## Continuation model
+ *
+ * Each frame the controller takes the session's current sub-calls,
+ * moves the dragged grip to the cursor with [`applyGripDrag`], and
+ * feeds the result to [`solveSketch`] as the **initial guess**. The
+ * solver settles every entity onto the nearest valid manifold: the
+ * dragged grip follows the cursor when it's free and sticks to its
+ * constraints when it isn't, while the rest of the sketch reflows.
+ * The *solved* geometry is written straight back to the session —
+ * there is no separate "raw cursor" copy to fight with, so the
+ * dragged grip never jitters between a raw and a solved position.
+ *
+ * ## Coalescing
+ *
+ * Pointer-move events fire faster than the solver runs. The
+ * controller keeps at most one solve in flight plus one *pending*
+ * cursor: while a solve runs, newer moves only overwrite the
+ * pending target, and the loop picks up the latest when the solve
+ * returns. Intermediate cursors are dropped — only the newest
+ * position is ever solved, which keeps the drag responsive on large
+ * sketches instead of building an ever-growing solve backlog.
  *
  * ## Lifecycle
  *
- * 1. [`DragController.start`] — the user clicks a point. The
- *    controller snapshots the current sketch and stashes the
- *    dragged entity id.
- * 2. [`DragController.update`] — on every mouse move the
- *    controller overwrites the dragged point's coordinates in
- *    the working copy, re-runs [`solveSketch`], and keeps the
- *    solved state as the basis for the next update. The
- *    solved state is returned to the caller (usually the UI)
- *    so the viewport can re-render.
- * 3. [`DragController.finish`] — on mouse release the
- *    controller returns the latest solved state. No helper
- *    cleanup is needed because no helpers were inserted.
- * 4. [`DragController.cancel`] — if the user presses Escape
- *    or the drag otherwise aborts, the controller reverts to
- *    the pre-drag snapshot.
+ * 1. [`start`] — snapshot the sub-calls (for [`cancel`]) and stash
+ *    the grip being dragged.
+ * 2. [`update`] — set the pending cursor and kick the solve loop.
+ *    Coalesced; returns a promise that resolves once the loop has
+ *    drained, which tests await to read the settled state.
+ * 3. [`finish`] — run one authoritative solve at the final cursor
+ *    (coalescing may have dropped it) and end the drag.
+ * 4. [`cancel`] — restore the pre-drag snapshot and end the drag.
  *
- * A fresh controller instance per drag is the simplest usage
- * pattern; tests in `dragController.test.ts` cover the normal
- * drag, multi-step drag, and cancel paths.
+ * The controller talks to the app through [`SketchSolveHost`] (the
+ * same structural surface [`solveAndReplace`] uses), so it stays
+ * decoupled from the concrete store and is trivial to stub in tests.
  */
 
+import { applyGripDrag, type Grip } from "../sketchGrips";
+import { buildDraftSketchState } from "../sketchSession";
 import { solveSketch } from "./planegcs";
-import type { EntityId, SketchState, SolveResult } from "./types";
+import {
+  rebuildSubCallsFromSolved,
+  type SketchSolveHost,
+  type SubCall,
+} from "./replaySolve";
 
-interface ActiveDrag {
-  /** The user-visible point the UI is dragging. */
-  draggedEntityId: EntityId;
-  /** Snapshot at the start of the drag, returned by
-   *  [`cancel`] and never mutated in place. */
-  snapshot: SketchState;
-  /** The latest solved state. Overwritten on every [`update`]
-   *  so the next solve starts from the newest initial guess. */
-  working: SketchState;
-}
+type Cursor = [number, number];
 
 export class DragController {
-  private active: ActiveDrag | null = null;
+  private host: SketchSolveHost | null = null;
+  private grip: Grip | null = null;
+  /** Sub-calls at the moment the drag started, for [`cancel`]. */
+  private snapshot: ReadonlyArray<SubCall> | null = null;
+
+  /** Latest cursor not yet consumed by the solve loop. `null` means
+   *  the loop has nothing new to do. */
+  private pending: Cursor | null = null;
+  /** Last cursor seen this drag — [`finish`] re-solves at this value
+   *  because coalescing may have dropped it from [`pending`]. */
+  private lastCursor: Cursor | null = null;
+  /** Is the solve loop currently running? */
+  private running = false;
+  /** Is a drag in progress? Cleared by [`finish`] / [`cancel`] so a
+   *  late solve from a finished drag never writes back. */
+  private active = false;
+  /** Resolvers waiting for the loop to drain (used by [`update`]). */
+  private idleWaiters: Array<() => void> = [];
 
   /** Is a drag currently in progress? */
   isDragging(): boolean {
-    return this.active !== null;
+    return this.active;
   }
 
   /**
-   * Begin a drag. `base` is the sketch at the moment of the
-   * click; `draggedEntityId` is the point the user grabbed.
-   * `initialCursor` is the mouse position in sketch
-   * millimetres — the controller immediately overwrites the
-   * dragged point's coordinates with this value so the
-   * returned state matches what the UI sees on the first
-   * frame, even before the first [`update`] call.
-   *
-   * Returns the working copy of the sketch with the dragged
-   * point already moved to the initial cursor. The UI can
-   * render it directly.
+   * Begin a drag. `grip` is the handle the user grabbed; the
+   * controller reads geometry from — and writes solved geometry back
+   * to — `host` for the rest of the gesture.
    */
-  start(
-    base: SketchState,
-    draggedEntityId: EntityId,
-    initialCursor: { x: number; y: number },
-  ): SketchState {
+  start(host: SketchSolveHost, grip: Grip): void {
     if (this.active) {
       throw new Error(
         "DragController: start() called while a drag is already in progress",
       );
     }
-
-    const snapshot = deepCloneSketch(base);
-    const working = deepCloneSketch(base);
-    movePoint(working, draggedEntityId, initialCursor);
-
-    this.active = {
-      draggedEntityId,
-      snapshot,
-      working,
-    };
-    return working;
+    this.host = host;
+    this.grip = grip;
+    this.snapshot = host.getState().sketchSession.subCalls;
+    this.pending = null;
+    this.lastCursor = null;
+    this.running = false;
+    this.active = true;
   }
 
   /**
-   * Update the drag with a new cursor position. Overwrites the
-   * dragged point in the working copy, asks PlaneGCS to solve
-   * from that initial guess, and keeps the solved state as
-   * the next-update starting point so the drag looks like a
-   * smooth continuation path through configuration space.
+   * Push a new cursor position (sketch millimetres). Coalesced: only
+   * the newest target is ever solved. Returns a promise that
+   * resolves when the solve loop next goes idle, so the resolved
+   * session reflects this cursor or a newer one — handy for tests.
    */
-  async update(
-    cursor: { x: number; y: number },
-  ): Promise<SolveResult> {
-    const state = this.requireActive("update");
-    movePoint(state.working, state.draggedEntityId, cursor);
-    const result = await solveSketch(state.working);
-    state.working = result.state;
-    return result;
+  update(to: Cursor): Promise<void> {
+    if (!this.active) return Promise.resolve();
+    this.pending = to;
+    this.lastCursor = to;
+    const drained = new Promise<void>((resolve) => {
+      this.idleWaiters.push(resolve);
+    });
+    if (!this.running) void this.loop();
+    return drained;
+  }
+
+  private async loop(): Promise<void> {
+    if (!this.host || !this.grip) return;
+    this.running = true;
+    try {
+      while (this.active && this.pending) {
+        const to = this.pending;
+        this.pending = null;
+        await this.solveOnce(to);
+      }
+    } finally {
+      this.running = false;
+      const waiters = this.idleWaiters;
+      this.idleWaiters = [];
+      for (const resolve of waiters) resolve();
+    }
+  }
+
+  /** Solve at one cursor and write the result back, unless the drag
+   *  ended or the session closed meanwhile. */
+  private async solveOnce(to: Cursor): Promise<void> {
+    const host = this.host;
+    const grip = this.grip;
+    if (!host || !grip) return;
+    const session = host.getState().sketchSession;
+    if (!session.active) return;
+    const input = applyGripDrag(session.subCalls, grip, to);
+    try {
+      const result = await solveSketch(buildDraftSketchState(input));
+      // The drag may have ended (finish/cancel) or the session closed
+      // while we awaited — never clobber newer state with a stale solve.
+      if (!this.active) return;
+      const after = host.getState().sketchSession;
+      if (!after.active) return;
+      host.replaceSketchSubCalls(rebuildSubCallsFromSolved(input, result.state));
+      host.setSketchDiagnostics(result.diagnostics);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: live drag solve failed", err);
+    }
   }
 
   /**
-   * Finish the drag. Returns the latest solved state as a
-   * new sketch the caller should store back. No helpers to
-   * clean up — the controller's working copy is already in
-   * final form.
+   * End the drag with one authoritative solve at the final cursor.
+   * Coalescing can drop the very last move, so we re-solve it here
+   * (bypassing the now-inactive loop) to guarantee the committed
+   * geometry matches where the user let go. A no-op final solve when
+   * the drag never moved.
    */
-  finish(): SketchState {
-    const state = this.requireActive("finish");
-    const final = state.working;
-    this.active = null;
-    return final;
-  }
-
-  /**
-   * Abandon the drag. Returns the pre-drag snapshot verbatim —
-   * every mutation the drag introduced is discarded. Use this
-   * from Escape-key handlers.
-   */
-  cancel(): SketchState {
-    const state = this.requireActive("cancel");
-    const snapshot = state.snapshot;
-    this.active = null;
-    return snapshot;
-  }
-
-  private requireActive(operation: string): ActiveDrag {
+  async finish(): Promise<void> {
     if (!this.active) {
-      throw new Error(
-        `DragController: ${operation}() called with no active drag`,
-      );
+      throw new Error("DragController: finish() called with no active drag");
     }
-    return this.active;
-  }
-}
-
-// ─── helpers ────────────────────────────────────────────────────
-
-function deepCloneSketch(state: SketchState): SketchState {
-  // Structured-clone-like deep copy preserving the exact wire
-  // shape. Every field here is JSON-serialisable by
-  // definition (it's the Rust-side wire form), so the
-  // JSON-round-trip is safe and cheap for sketch sizes.
-  return JSON.parse(JSON.stringify(state)) as SketchState;
-}
-
-function movePoint(
-  state: SketchState,
-  id: EntityId,
-  to: { x: number; y: number },
-): void {
-  for (const e of state.entities) {
-    if (e.id === id && e.kind === "point") {
-      e.at = { x: to.x, y: to.y };
-      return;
+    const host = this.host;
+    const grip = this.grip;
+    const to = this.lastCursor;
+    // Deactivate first so any in-flight loop solve discards its write,
+    // then run the final solve as the last writer.
+    this.active = false;
+    this.clear();
+    if (host && grip && to) {
+      const session = host.getState().sketchSession;
+      if (session.active) {
+        const input = applyGripDrag(session.subCalls, grip, to);
+        try {
+          const result = await solveSketch(buildDraftSketchState(input));
+          const after = host.getState().sketchSession;
+          if (after.active) {
+            host.replaceSketchSubCalls(
+              rebuildSubCallsFromSolved(input, result.state),
+            );
+            host.setSketchDiagnostics(result.diagnostics);
+          }
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error("fielddraft: final drag solve failed", err);
+        }
+      }
     }
   }
-  throw new Error(
-    `DragController: cannot move entity id ${id} — not a point or not found`,
-  );
+
+  /**
+   * Abandon the drag and restore the pre-drag sub-calls verbatim —
+   * every mutation the drag introduced is discarded. Use from an
+   * Escape handler.
+   */
+  cancel(): void {
+    if (!this.active) {
+      throw new Error("DragController: cancel() called with no active drag");
+    }
+    const host = this.host;
+    const snapshot = this.snapshot;
+    this.active = false;
+    this.clear();
+    if (host && snapshot) host.replaceSketchSubCalls(snapshot.slice());
+  }
+
+  private clear(): void {
+    this.host = null;
+    this.grip = null;
+    this.snapshot = null;
+    this.pending = null;
+    this.lastCursor = null;
+  }
 }

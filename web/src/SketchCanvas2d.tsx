@@ -47,7 +47,7 @@ import {
   resolveLengthAngle,
 } from "./sketchLiveInput";
 import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
-import { applyGripDrag, gripsForSelection, type Grip } from "./sketchGrips";
+import { gripsForSelection, type Grip } from "./sketchGrips";
 import {
   angleAbout,
   buildArcSubCall,
@@ -68,6 +68,7 @@ import {
   type InferenceCandidate,
 } from "./solver/inferenceEngine";
 import { solveAndReplace } from "./solver/replaySolve";
+import { DragController } from "./solver/dragController";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import type { SketchState } from "./solver/types";
 
@@ -705,6 +706,10 @@ function readCamForCanvas(
 export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<DragState>({ kind: "idle" });
+  // Live grip-drag solver: re-solves the sketch every pointer frame so
+  // constraints hold visually while dragging (continuation model), not
+  // just at drop. One stable instance for the component's lifetime.
+  const dragControllerRef = useRef<DragController>(new DragController());
   const hoverRef = useRef<[number, number] | null>(null);
   const snapRef = useRef<SnapResolution>({
     snapped: [0, 0],
@@ -957,6 +962,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       if (grip) {
         (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
         dragRef.current = { kind: "grip", grip };
+        // Live-solve from here: every move re-solves so constraints stay
+        // satisfied as the grip moves, and drop just settles the last frame.
+        dragControllerRef.current.start(store, grip);
         lastCamVersionRef.current = -1;
         return;
       }
@@ -1487,8 +1495,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
 
     // P0.3: grip drag lives in select mode (no tool active), so it
-    // runs before the drawing-tool guard below. The geometry follows
-    // the cursor live; the solver waits until drop.
+    // runs before the drawing-tool guard below. The controller solves
+    // every frame (continuation model), so constraints stay satisfied
+    // as the grip moves — the geometry the user sees is already solved.
     if (dragRef.current.kind === "grip") {
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       let [u, v] = screenToSketchFromEvent(e, cam);
@@ -1499,14 +1508,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         u = Math.round(u / step) * step;
         v = Math.round(v / step) * step;
       }
-      if (store) {
-        const current = store.getState().sketchSession;
-        if (current.active) {
-          store.replaceSketchSubCalls(
-            applyGripDrag(current.subCalls, dragRef.current.grip, [u, v]),
-          );
-        }
-      }
+      void dragControllerRef.current.update([u, v]);
       lastCamVersionRef.current = -1;
       return;
     }
@@ -1799,9 +1801,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (dragRef.current.kind === "grip") {
       (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId);
       dragRef.current = { kind: "idle" };
-      // Re-solve from the dragged geometry so existing constraints
-      // reassert themselves (the live drag moved coordinates freely).
-      scheduleSolverReplay();
+      // Settle the drag: one authoritative solve at the final cursor
+      // (coalescing may have dropped the last live frame), then commit.
+      void dragControllerRef.current.finish();
       lastCamVersionRef.current = -1;
       return;
     }

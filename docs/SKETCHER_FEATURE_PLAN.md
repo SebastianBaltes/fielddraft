@@ -36,7 +36,7 @@ und werden nicht erneut angefasst, außer ein neues Feature baut darauf auf.
 | Polygon (freie Vertices) | `sketch_polygon` (flaches Vertex-Array), UI-Tool, voll |
 | Bogen (3-Klick: center→start→end) | `sketch_arc`, UI-Tool, voll |
 | Trim (inkl. Composites) | `sketchTrim.ts`, UI-Modus, Unit + E2E; Rechteck/Polygon-Kanten trimmbar |
-| Drag-to-Edit (Grips) | `sketchGrips.ts`: Linienenden, Kreis-/Bogen-Center+Radius+Sweep, Rechteck-Ecken, Polygon-Vertices; re-solved bei Drop |
+| Drag-to-Edit (Grips) | `sketchGrips.ts`: Linienenden, Kreis-/Bogen-Center+Radius+Sweep, Rechteck-Ecken, Polygon-Vertices; **live re-solved pro Frame** (`dragController.ts`, Continuation-Modell) — Constraints halten sichtbar während des Drags, coalesced auf den neuesten Cursor, autoritativer Final-Solve bei Drop |
 | Coincident-Constraint | `sketch_constraint_coincident` |
 | Horizontal / Vertikal | `sketch_constraint_horizontal` / `_vertical` |
 | Parallel / Perpendicular | `sketch_constraint_parallel` / `_perpendicular` |
