@@ -126,6 +126,57 @@ describe("applicableConstraints", () => {
     });
   });
 
+  // control+open N=4: control points 1..=4, legs 5,6, B-spline id 7;
+  // then a standalone line (start 8, end 9, line 10).
+  function splineAndPoint() {
+    return buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 20, 20, 20, 30, 0],
+          closed: false,
+          mode: "control",
+        },
+      },
+      { type: "sketch_line", params: { start: [40, 40], end: [50, 50] } },
+    ]);
+  }
+
+  it("offers on-curve for a point + a B-spline, order-independent", () => {
+    const state = splineAndPoint();
+    expect(applicableConstraints(state, [8, 7]).map((o) => o.type)).toEqual([
+      "sketch_constraint_point_on_object",
+    ]);
+    expect(applicableConstraints(state, [7, 8]).map((o) => o.type)).toEqual([
+      "sketch_constraint_point_on_object",
+    ]);
+  });
+
+  it("does not offer tangent for a line + a B-spline", () => {
+    const state = splineAndPoint();
+    // tangent_at_bspline_knot isn't wired (needs an interior knot index),
+    // so a line + spline offers nothing.
+    expect(applicableConstraints(state, [10, 7])).toEqual([]);
+    expect(applicableConstraints(state, [7, 10])).toEqual([]);
+  });
+
+  it("builds a point_on_object call for a point + B-spline selection", () => {
+    const state = splineAndPoint();
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [8, 7], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 8, curve: 7 },
+    });
+    // order-independent.
+    expect(
+      buildConstraintCall("sketch_constraint_point_on_object", [7, 8], state),
+    ).toEqual({
+      type: "sketch_constraint_point_on_object",
+      params: { point: 8, curve: 7 },
+    });
+  });
+
   it("offers midpoint + on-curve for a point + a line, order-independent", () => {
     const state = twoLinesAndCircle();
     // line 3 + point 4 (start of line 2).
@@ -235,9 +286,9 @@ describe("applicableConstraints", () => {
   // plain `line` entities, so every existing line constraint applies to
   // them with no special-casing.
   it("treats a spline endpoint leg as an ordinary line for constraints", () => {
-    // control+open N=4: control points 1..=4, start leg id 5,
-    // end leg id 6. Then a circle (centre 7, circle 8) and a line
-    // (start 9, end 10, line 11).
+    // control+open N=4: control points 1..=4, start leg id 5, end leg
+    // id 6, B-spline entity id 7. Then a circle (centre 8, circle 9)
+    // and a line (start 10, end 11, line 12).
     const state = buildDraftSketchState([
       {
         type: "sketch_spline",
@@ -252,8 +303,8 @@ describe("applicableConstraints", () => {
     ]);
     const startLeg = 5;
     const endLeg = 6;
-    const circle = 8;
-    const line = 11;
+    const circle = 9;
+    const line = 12;
     // leg alone → horizontal/vertical/length.
     expect(applicableConstraints(state, [startLeg]).map((o) => o.type)).toEqual([
       "sketch_constraint_horizontal",

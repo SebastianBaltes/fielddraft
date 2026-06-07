@@ -570,6 +570,27 @@ export function buildDraftSketchState(
           });
         }
       }
+      // W1: for an OPEN control-polygon spline, allocate a real B-spline
+      // solver entity (poles = the control points) so point-on-spline
+      // constraints bind to the curve itself. MUST match the kernel
+      // (SketchSplineTool::apply) EXACTLY: control mode + open only,
+      // degree = min(3, n-1), allocated LAST (after control points +
+      // legs) so existing ids are unchanged. Interpolate/closed splines
+      // get no B-spline entity (they keep endpoint-leg G1 only).
+      if (
+        call.params.mode === "control" &&
+        call.params.closed !== true &&
+        cpIds.length >= 2
+      ) {
+        const n = cpIds.length;
+        state.entities.push({
+          kind: "bspline",
+          id: state.next_entity_id++,
+          poles: [...cpIds],
+          degree: Math.min(3, n - 1),
+          periodic: false,
+        });
+      }
     } else if (call.type === "sketch_path") {
       // Mirrors the kernel `SketchPathTool::apply` BYTE-FOR-BYTE. The
       // analytic line+quad outline is a Path primitive built kernel-side

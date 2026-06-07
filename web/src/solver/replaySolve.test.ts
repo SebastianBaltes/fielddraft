@@ -82,16 +82,16 @@ describe("rebuildSubCallsFromSolved", () => {
       },
       { type: "sketch_line", params: { start: [50, 50], end: [60, 60] } },
     ];
-    // Spline cp0 = id 1; legs = ids 5,6; following line start = id 7.
-    // Move cp0 → (1,1) and the line start → (51,51).
+    // Spline cp0 = id 1; legs = ids 5,6; B-spline entity = id 7;
+    // following line start = id 8. Move cp0 → (1,1), line start → (51,51).
     const solved = solvedFrom(original, 1, [1, 1]);
-    const ls = solved.entities.find((x) => x.id === 7);
+    const ls = solved.entities.find((x) => x.id === 8);
     if (ls && ls.kind === "point") ls.at = { x: 51, y: 51 };
 
     const rebuilt = rebuildSubCallsFromSolved(original, solved);
     // Control point 0 written back.
     expect((rebuilt[0].params.points as number[]).slice(0, 2)).toEqual([1, 1]);
-    // Following line stays correctly aligned (proves legs were skipped).
+    // Following line stays aligned (proves legs + B-spline were skipped).
     expect(rebuilt[1].params).toMatchObject({ start: [51, 51], end: [60, 60] });
   });
 

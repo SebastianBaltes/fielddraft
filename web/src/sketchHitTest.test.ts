@@ -85,6 +85,44 @@ describe("hitTestSketchEntity", () => {
     }
   });
 
+  it("picks a control-mode B-spline by distance to its drawn curve", () => {
+    // control+open N=4: control points 1..=4, legs 5,6, B-spline id 7.
+    // The clamped cubic over (0,0),(10,20),(20,20),(30,0) passes through
+    // its midpoint (15,15) — clicking there picks the B-spline entity.
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 20, 20, 20, 30, 0],
+          closed: false,
+          mode: "control",
+        },
+      },
+    ]);
+    expect(hitTestSketchEntity(state, [15, 15], 1)).toBe(7);
+    // A control point still wins when clicked directly (pass 1 priority).
+    expect(hitTestSketchEntity(state, [10, 20], 1)).toBe(2);
+    // Well off the curve → nothing.
+    expect(hitTestSketchEntity(state, [15, 25], 1)).toBeNull();
+  });
+
+  it("box-selects a control-mode B-spline when its curve is enclosed", () => {
+    const state = buildDraftSketchState([
+      {
+        type: "sketch_spline",
+        params: {
+          points: [0, 0, 10, 20, 20, 20, 30, 0],
+          closed: false,
+          mode: "control",
+        },
+      },
+    ]);
+    // A box enclosing the whole control polygon contains the B-spline id 7.
+    expect(entitiesInBox(state, [-1, -1], [31, 21], "enclosing")).toContain(7);
+    // A box touching only the curve's middle crosses it.
+    expect(entitiesInBox(state, [14, 14], [16, 16], "crossing")).toContain(7);
+  });
+
   it("returns the nearest of two competing lines", () => {
     const state = buildDraftSketchState([
       { type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }, // line=3

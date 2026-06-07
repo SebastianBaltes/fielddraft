@@ -13,6 +13,23 @@
  */
 
 import type { Entity, SketchState } from "./solver/types";
+import { bsplinePoints } from "./sketchSpline";
+
+/** Sample a B-spline's drawn polyline from its pole entities, or null
+ *  if any pole is missing. Reuses the same sampler the canvas renders
+ *  with, so the pick test matches what the user sees. */
+function bsplinePolyline(
+  state: SketchState,
+  e: Extract<Entity, { kind: "bspline" }>,
+): [number, number][] | null {
+  const poles: [number, number][] = [];
+  for (const id of e.poles) {
+    const p = entityPoint(state, id);
+    if (!p) return null;
+    poles.push(p);
+  }
+  return bsplinePoints(poles, e.degree, e.periodic, 64);
+}
 
 function entityPoint(state: SketchState, id: number): [number, number] | null {
   const e = state.entities.find((x) => x.id === id);
@@ -300,6 +317,40 @@ export function entitiesInBox(
       } else {
         if (segmentIntersectsBox(a, b, min, max)) result.push(e.id);
       }
+    } else if (e.kind === "bspline") {
+      // Box-test against the drawn polyline's bounding box (the curve
+      // lies within the convex hull of its poles, so the sampled bbox
+      // is a faithful, slightly conservative proxy — same approach as
+      // circle/ellipse).
+      const poly = bsplinePolyline(state, e);
+      if (!poly || poly.length === 0) continue;
+      let bbMinX = Infinity;
+      let bbMinY = Infinity;
+      let bbMaxX = -Infinity;
+      let bbMaxY = -Infinity;
+      for (const [px, py] of poly) {
+        if (px < bbMinX) bbMinX = px;
+        if (py < bbMinY) bbMinY = py;
+        if (px > bbMaxX) bbMaxX = px;
+        if (py > bbMaxY) bbMaxY = py;
+      }
+      if (mode === "enclosing") {
+        if (
+          bbMinX >= min[0] &&
+          bbMaxX <= max[0] &&
+          bbMinY >= min[1] &&
+          bbMaxY <= max[1]
+        ) {
+          result.push(e.id);
+        }
+      } else {
+        const overlap =
+          min[0] <= bbMaxX &&
+          max[0] >= bbMinX &&
+          min[1] <= bbMaxY &&
+          max[1] >= bbMinY;
+        if (overlap) result.push(e.id);
+      }
     } else if (e.kind === "circle" || e.kind === "arc") {
       const c = pointAt(e.center);
       if (!c) continue;
@@ -356,6 +407,16 @@ function curveDistance(
     const f = entityPoint(state, e.focus1);
     if (!c || !f) return null;
     return ellipseOutlineDistance(c, f, e.radmin, cursor);
+  }
+  if (e.kind === "bspline") {
+    const poly = bsplinePolyline(state, e);
+    if (!poly || poly.length < 2) return null;
+    let best = Infinity;
+    for (let i = 0; i + 1 < poly.length; i++) {
+      const d = distToSegment(cursor, poly[i], poly[i + 1]);
+      if (d < best) best = d;
+    }
+    return Number.isFinite(best) ? best : null;
   }
   return null;
 }

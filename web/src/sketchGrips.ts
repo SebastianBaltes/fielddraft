@@ -224,6 +224,21 @@ function buildGripIndex(subCalls: ReadonlyArray<SubCall>): Map<number, Grip[]> {
             },
           ]);
         }
+        // Advance past the entities buildDraftSketchState allocates after
+        // the control points but that carry no own grip, so later
+        // sub-calls stay id-aligned: the endpoint leg line(s) (any open
+        // spline) and the B-spline entity (control mode + open only).
+        if (call.params.closed !== true && n >= 2) {
+          id += 1; // start leg
+          if (n >= 3) id += 1; // end leg
+        }
+        if (
+          call.params.mode === "control" &&
+          call.params.closed !== true &&
+          n >= 2
+        ) {
+          id += 1; // B-spline entity
+        }
         break;
       }
       case "sketch_path": {

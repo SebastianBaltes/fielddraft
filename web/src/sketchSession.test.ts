@@ -1016,7 +1016,15 @@ describe("sketch_spline draft state", () => {
       [5, 1, 2], // start leg
       [6, 3, 4], // end leg
     ]);
-    expect(state.next_entity_id).toBe(7);
+    // W1: control-mode open splines also allocate a B-spline entity LAST
+    // (poles = the control points, cubic for N>=4).
+    const splines = state.entities.filter((e) => e.kind === "bspline");
+    expect(
+      splines.map((s) =>
+        s.kind === "bspline" ? [s.id, s.poles, s.degree, s.periodic] : null,
+      ),
+    ).toEqual([[7, [1, 2, 3, 4], 3, false]]);
+    expect(state.next_entity_id).toBe(8);
   });
 
   it("adds exactly one leg for a control-mode OPEN spline with N==2", () => {
@@ -1031,7 +1039,14 @@ describe("sketch_spline draft state", () => {
     expect(
       lines.map((l) => (l.kind === "line" ? [l.id, l.start, l.end] : null)),
     ).toEqual([[3, 1, 2]]);
-    expect(state.next_entity_id).toBe(4);
+    // B-spline entity id 4, degree clamped to 1 (a 2-pole polyline).
+    const splines = state.entities.filter((e) => e.kind === "bspline");
+    expect(
+      splines.map((s) =>
+        s.kind === "bspline" ? [s.id, s.poles, s.degree] : null,
+      ),
+    ).toEqual([[4, [1, 2], 1]]);
+    expect(state.next_entity_id).toBe(5);
   });
 
   it("adds two endpoint tangent legs for an interpolate-mode OPEN spline (N>=3)", () => {
@@ -1103,9 +1118,10 @@ describe("sketch_spline draft state", () => {
     expect(state.next_entity_id).toBe(5);
   });
 
-  it("keeps a following line's entity ids aligned after a control-open spline + its legs", () => {
-    // control+open N=4 consumes ids 1..=4 (points) + 5,6 (legs). The
-    // following sketch_line must take ids 7 (start), 8 (end), 9 (line).
+  it("keeps a following line's entity ids aligned after a control-open spline + its legs + bspline", () => {
+    // control+open N=4 consumes ids 1..=4 (points) + 5,6 (legs) + 7
+    // (B-spline entity). The following sketch_line must take ids 8
+    // (start), 9 (end), 10 (line).
     const state = buildDraftSketchState([
       {
         type: "sketch_spline",
@@ -1120,8 +1136,8 @@ describe("sketch_spline draft state", () => {
     const lineStart = state.entities.find(
       (e) => e.kind === "point" && e.at.x === 50 && e.at.y === 50,
     );
-    expect(lineStart?.id).toBe(7);
-    expect(state.next_entity_id).toBe(10);
+    expect(lineStart?.id).toBe(8);
+    expect(state.next_entity_id).toBe(11);
   });
 });
 

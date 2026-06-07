@@ -95,9 +95,9 @@ impl Point2 {
 
 /// One sketch entity — a geometric primitive the solver can
 /// constrain. Mirrors the PlaneGCS primitive set FieldDraft
-/// supports: `Point`, `Line`, `Circle`, `Arc`, `Ellipse`, and
-/// `Origin`. Further conics (B-spline, hyperbola, parabola) can be
-/// added without breaking the wire shape because the enum is
+/// supports: `Point`, `Line`, `Circle`, `Arc`, `Ellipse`,
+/// `BSpline`, and `Origin`. Further conics (hyperbola, parabola)
+/// can be added without breaking the wire shape because the enum is
 /// versioned through [`fielddraft_protocol::SCHEMA_VERSION`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -147,6 +147,30 @@ pub enum Entity {
         focus1: EntityId,
         radmin: f64,
     },
+    /// A B-spline curve, parameterised the way PlaneGCS models it:
+    /// an ordered list of control points (`poles`) plus the curve
+    /// `degree` and a `periodic` flag. The knot vector is *implied*
+    /// — a clamped-uniform vector for an open (`!periodic`) curve,
+    /// derived from `poles.len()` and `degree` (distinct knots
+    /// `[0,1,…,n−degree]` with end multiplicity `degree+1`). The
+    /// poles are ordinary point entities the solver can move,
+    /// reshaping the curve; the B-spline entity itself carries no
+    /// movable scalar. Weights are implicitly 1 (non-rational).
+    /// Constraints (`PointOnObject` → point-on-spline) bind to the
+    /// B-spline entity; the solver lands the point exactly on the
+    /// curve via a free internal curve parameter.
+    ///
+    /// Only *open* control-polygon splines are modelled here:
+    /// interpolating (Catmull-Rom) splines pass *through* their
+    /// points rather than treating them as poles, and periodic
+    /// (closed) splines use a different knot convention — both keep
+    /// their existing endpoint-leg G1 handling instead.
+    BSpline {
+        id: EntityId,
+        poles: Vec<EntityId>,
+        degree: u32,
+        periodic: bool,
+    },
     /// The immovable origin of the sketch. Every sketch has
     /// exactly one origin; it's the anchor that keeps the
     /// constraint graph's DOF count from running away and it's
@@ -164,6 +188,7 @@ impl Entity {
             Entity::Circle { .. } => "circle",
             Entity::Arc { .. } => "arc",
             Entity::Ellipse { .. } => "ellipse",
+            Entity::BSpline { .. } => "bspline",
             Entity::Origin { .. } => "origin",
         }
     }
@@ -176,6 +201,7 @@ impl Entity {
             | Entity::Arc { id, .. }
             | Entity::Ellipse { id, .. }
             | Entity::Origin { id } => id,
+            Entity::BSpline { id, .. } => id,
         }
     }
 }
@@ -262,9 +288,9 @@ pub enum Constraint {
         point: EntityId,
     },
     /// A point is constrained to lie on a curve — a line, circle,
-    /// arc, or ellipse. Removes one of the point's DOFs (it keeps one
-    /// freedom sliding along the curve). Dispatched on the curve kind
-    /// to the matching PlaneGCS primitive.
+    /// arc, ellipse, or B-spline. Removes one of the point's DOFs (it
+    /// keeps one freedom sliding along the curve). Dispatched on the
+    /// curve kind to the matching PlaneGCS primitive.
     PointOnObject {
         id: ConstraintId,
         point: EntityId,
@@ -512,6 +538,26 @@ impl SketchState {
         id
     }
 
+    /// Push a B-spline referencing its (already-allocated) control
+    /// points (`poles`), with the given `degree` and `periodic` flag.
+    /// Returns the new id. The knot vector is implied by the pole
+    /// count and degree (see [`Entity::BSpline`]).
+    pub fn add_bspline(
+        &mut self,
+        poles: Vec<EntityId>,
+        degree: u32,
+        periodic: bool,
+    ) -> EntityId {
+        let id = self.allocate_entity_id();
+        self.entities.push(Entity::BSpline {
+            id,
+            poles,
+            degree,
+            periodic,
+        });
+        id
+    }
+
     /// Add a constraint and return its id. Panics only on id
     /// counter overflow (impossible in practice — `u32::MAX`
     /// constraints per sketch would blow the solver's working
@@ -711,6 +757,30 @@ mod tests {
             other => panic!("expected Ellipse, got {other:?}"),
         }
         assert_eq!(s.entity(ell).unwrap().kind_name(), "ellipse");
+    }
+
+    #[test]
+    fn add_bspline_references_its_poles_in_order() {
+        let mut s = SketchState::new();
+        let p0 = s.add_point(Point2::new(0.0, 0.0));
+        let p1 = s.add_point(Point2::new(1.0, 2.0));
+        let p2 = s.add_point(Point2::new(2.0, 2.0));
+        let p3 = s.add_point(Point2::new(3.0, 0.0));
+        let bs = s.add_bspline(vec![p0, p1, p2, p3], 3, false);
+        match s.entity(bs).unwrap() {
+            Entity::BSpline {
+                poles,
+                degree,
+                periodic,
+                ..
+            } => {
+                assert_eq!(poles, &vec![p0, p1, p2, p3]);
+                assert_eq!(*degree, 3);
+                assert!(!*periodic);
+            }
+            other => panic!("expected BSpline, got {other:?}"),
+        }
+        assert_eq!(s.entity(bs).unwrap().kind_name(), "bspline");
     }
 
     #[test]

@@ -179,6 +179,16 @@ export function rebuildSubCallsFromSolved(
           nextId += 1; // start leg
           if (numPoints >= 3) nextId += 1; // end leg
         }
+        // B-spline entity: control mode + open only (matches the kernel /
+        // session mirror), allocated LAST. Advance past it so later
+        // sub-calls stay id-aligned.
+        if (
+          call.params.mode === "control" &&
+          call.params.closed !== true &&
+          numPoints >= 2
+        ) {
+          nextId += 1;
+        }
         return { ...call, params: { ...call.params, points: newPoints } };
       }
       return call;

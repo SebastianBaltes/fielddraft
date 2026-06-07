@@ -28,7 +28,14 @@ export interface ConstraintOption {
   title: string;
 }
 
-type Kind = "point" | "line" | "circle" | "arc" | "ellipse" | "origin";
+type Kind =
+  | "point"
+  | "line"
+  | "circle"
+  | "arc"
+  | "ellipse"
+  | "bspline"
+  | "origin";
 
 function kindOf(state: SketchState, id: number): Kind | null {
   const e = state.entities.find((x) => x.id === id);
@@ -45,6 +52,12 @@ const isCurvish = (k: Kind | null): boolean => k === "circle" || k === "arc";
 // point-on-curve constraint — circle, arc, AND ellipse.
 const isConicCurve = (k: Kind | null): boolean =>
   k === "circle" || k === "arc" || k === "ellipse";
+// `isOnCurve` is the set a point can be constrained ONTO: the conics
+// plus B-splines (point-on-spline). B-splines stay out of
+// `isConicCurve` because the line-tangent constraint needs an interior
+// knot index we don't wire yet, so it isn't offered for them.
+const isOnCurve = (k: Kind | null): boolean =>
+  isConicCurve(k) || k === "bspline";
 
 function entityOf(state: SketchState, id: number): Entity | undefined {
   return state.entities.find((x) => x.id === id);
@@ -119,8 +132,10 @@ export function applicableConstraints(
   const lines = kinds.filter((k) => k === "line").length;
   const points = kinds.filter(isPointish).length;
   const curves = kinds.filter(isCurvish).length;
-  // Curves eligible for tangent / point-on (circle, arc, ellipse).
+  // Curves eligible for tangent (circle, arc, ellipse).
   const conicCurves = kinds.filter(isConicCurve).length;
+  // Curves a point can be constrained onto (conics + B-splines).
+  const onCurves = kinds.filter(isOnCurve).length;
   const out: ConstraintOption[] = [];
 
   if (n === 1 && lines === 1) {
@@ -247,12 +262,12 @@ export function applicableConstraints(
   // A point plus a line/circle/arc constrains the point onto that
   // curve. Additive to Midpoint for a point+line; the sole option for
   // a point+circle/arc.
-  if (n === 2 && points === 1 && (lines === 1 || conicCurves === 1)) {
+  if (n === 2 && points === 1 && (lines === 1 || onCurves === 1)) {
     out.push({
       type: "sketch_constraint_point_on_object",
       label: "On Curve",
       glyph: "⊢",
-      title: "Constrain the point onto the line/circle/arc/ellipse",
+      title: "Constrain the point onto the line/circle/arc/ellipse/spline",
     });
   }
 
@@ -382,7 +397,7 @@ export function buildConstraintCall(
       // {line, circle, arc} as the host curve.
       const pointIdx = kinds.findIndex(isPointish);
       const curveIdx = kinds.findIndex(
-        (k) => k === "line" || isConicCurve(k),
+        (k) => k === "line" || isOnCurve(k),
       );
       if (pointIdx === -1 || curveIdx === -1 || pointIdx === curveIdx) {
         return null;

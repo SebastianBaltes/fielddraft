@@ -130,6 +130,10 @@ function entityDof(entity: Entity): number {
       // ellipse entity itself; its centre and focus are separate point
       // entities already tallied at 2 DOF each (same split as circle).
       return 1;
+    case "bspline":
+      // No scalar DOF of its own: the poles are separate point entities
+      // already tallied at 2 each, and weights/knots are fixed.
+      return 0;
   }
 }
 

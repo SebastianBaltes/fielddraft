@@ -45,7 +45,11 @@
  */
 
 // eslint-disable-next-line import/no-unresolved
-import { make_gcs_wrapper, type GcsWrapper } from "@salusoft89/planegcs";
+import {
+  init_planegcs_module,
+  GcsWrapper,
+  type ModuleStatic,
+} from "@salusoft89/planegcs";
 // eslint-disable-next-line import/no-unresolved
 import type { SketchPrimitive } from "@salusoft89/planegcs";
 
@@ -58,6 +62,7 @@ import type {
   SolveResult,
 } from "./types";
 import { emptyDiagnostics } from "./types";
+import { bsplinePoints } from "../sketchSpline";
 
 // ─── module cache ────────────────────────────────────────────────
 
@@ -71,13 +76,28 @@ import { emptyDiagnostics } from "./types";
 let wrapperPromise: Promise<GcsWrapper> | null = null;
 
 /**
+ * The raw WASM module behind the cached wrapper. B-splines are not
+ * part of the declarative `SketchPrimitive` layer, so they're built
+ * directly on `wrapper.gcs` (see [`injectBSplines`]), which needs the
+ * module's `IntVector` constructor — `make_gcs_wrapper` hides it, so
+ * we instantiate the module ourselves and keep a handle.
+ */
+let planegcsModule: ModuleStatic | null = null;
+
+/**
  * Load or reuse the PlaneGCS wrapper. First call in a process
  * instantiates the WASM module; every subsequent call returns
- * the same wrapper after clearing its internal state.
+ * the same wrapper after clearing its internal state. Mirrors the
+ * package's `make_gcs_wrapper`, but retains the module handle for
+ * low-level B-spline construction.
  */
 async function getWrapper(): Promise<GcsWrapper> {
   if (!wrapperPromise) {
-    wrapperPromise = make_gcs_wrapper();
+    wrapperPromise = (async () => {
+      const module = await init_planegcs_module();
+      planegcsModule = module;
+      return new GcsWrapper(new module.GcsSystem());
+    })();
   }
   const wrapper = await wrapperPromise;
   wrapper.clear_data();
@@ -91,6 +111,7 @@ async function getWrapper(): Promise<GcsWrapper> {
  */
 export function resetPlanegcsModuleForTests(): void {
   wrapperPromise = null;
+  planegcsModule = null;
 }
 
 // ─── id namespaces ───────────────────────────────────────────────
@@ -114,8 +135,11 @@ function constraintOid(id: number): string {
  *  internal constraint ids (radius parameters, arc rules) that
  *  weren't authored by the caller, and we don't want those to
  *  show up in the diagnostics arrays. */
-function parseConstraintOid(oid: string): number | null {
-  if (!oid.startsWith("c_")) return null;
+function parseConstraintOid(oid: string | undefined): number | null {
+  // Raw B-spline constraints (see `injectBSplines`) use high integer
+  // tags that aren't in the wrapper's sketch_index, so a flagged one
+  // maps back to `undefined` here — guard rather than throw.
+  if (typeof oid !== "string" || !oid.startsWith("c_")) return null;
   const n = Number(oid.slice(2));
   return Number.isFinite(n) ? n : null;
 }
@@ -223,6 +247,12 @@ function translateEntity(
           radmin: entity.radmin,
         },
       ];
+    case "bspline":
+      // B-splines are not part of the declarative SketchPrimitive
+      // layer — they're built directly on the raw `GcsSystem` after all
+      // declarative primitives are pushed (see `injectBSplines`), since
+      // their poles must already have GCS params. Emit nothing here.
+      return [];
   }
 }
 
@@ -308,8 +338,14 @@ function translateConstraint(
           e_id: entityOid(constraint.curve),
         };
       }
+      if (curve.kind === "bspline") {
+        // No declarative primitive — point_on_bspline is added on the
+        // raw GcsSystem after the B-spline geometry is built (see
+        // `injectBSplines`). Skip it in the declarative stream.
+        return null;
+      }
       throw new Error(
-        `solver: point_on_object curve must be a line, circle, arc, or ellipse, got ${curve.kind}`,
+        `solver: point_on_object curve must be a line, circle, arc, ellipse, or bspline, got ${curve.kind}`,
       );
     }
     case "coincident":
@@ -583,6 +619,148 @@ function translateConstraint(
  */
 let solveQueue: Promise<unknown> = Promise.resolve();
 
+/** Param index of a pushed point entity: `[posX, posY]` (push_point
+ * lays x then y consecutively). Throws if the point wasn't pushed. */
+function pointParamIndex(
+  wrapper: GcsWrapper,
+  id: EntityId,
+  context: string,
+): [number, number] {
+  const px = wrapper.p_param_index.get(entityOid(id));
+  if (px === undefined) {
+    throw new Error(`solver: ${context} point ${id} has no GCS params`);
+  }
+  return [px, px + 1];
+}
+
+/** Seed the curve parameter `u` for a point-on-spline by projecting the
+ * point onto the sampled curve and taking the nearest sample's
+ * parameter. `u` ranges over the clamped knot domain `[0, n − degree]`.
+ * A close seed matters: the DogLeg solver (the wrapper default) can fail
+ * to converge from a poor initial `u`, where a nearby one converges. */
+function nearestCurveU(
+  curve: Extract<Entity, { kind: "bspline" }>,
+  entityIndex: Map<EntityId, Entity>,
+  pointId: EntityId,
+): number {
+  const p = requirePoint(entityIndex, pointId, "point_on_bspline.point");
+  const n = curve.poles.length;
+  if (n < 2) return 0;
+  const poles: [number, number][] = curve.poles.map((id) => {
+    const q = requirePoint(entityIndex, id, "bspline.pole");
+    return [q.x, q.y];
+  });
+  const pts = bsplinePoints(poles, curve.degree, curve.periodic, 64);
+  if (pts.length < 2) return 0;
+  let bestJ = 0;
+  let bestD = Infinity;
+  pts.forEach((q, j) => {
+    const d = (q[0] - p.x) ** 2 + (q[1] - p.y) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      bestJ = j;
+    }
+  });
+  // Samples span the parameter domain uniformly; map sample fraction to
+  // the open clamped domain [0, n − degree] (periodic is always false in
+  // our wiring).
+  return (bestJ / (pts.length - 1)) * (n - curve.degree);
+}
+
+/**
+ * Build every B-spline entity directly on the raw `GcsSystem` and add
+ * any point-on-spline constraints that target them. B-splines aren't
+ * part of the declarative SketchPrimitive layer, so this runs AFTER all
+ * declarative primitives are pushed (the poles already have GCS params)
+ * and BEFORE `solve()` (which doesn't clear data).
+ *
+ * `make_bspline` takes parameter *indices* for the poles/weights/knots
+ * (recovered from the wrapper's `p_param_index`) plus integer knot
+ * multiplicities. We synthesize the clamped-uniform knot vector that
+ * matches the curve the kernel draws (`bspline_quad_beziers`): distinct
+ * knots `[0,1,…,n−degree]`, end multiplicity `degree+1`, interior 1.
+ * Weights are all 1 (non-rational). Every param we push here is fixed,
+ * so the B-spline adds no DOF beyond what its poles already have.
+ */
+function injectBSplines(
+  wrapper: GcsWrapper,
+  module: ModuleStatic,
+  input: SketchState,
+  entityIndex: Map<EntityId, Entity>,
+): void {
+  const splines = input.entities.filter(
+    (e): e is Extract<Entity, { kind: "bspline" }> => e.kind === "bspline",
+  );
+  if (splines.length === 0) return;
+
+  const gcs = wrapper.gcs;
+  const intVec = (arr: number[]): InstanceType<ModuleStatic["IntVector"]> => {
+    const v = new module.IntVector();
+    for (const x of arr) v.push_back(x);
+    return v;
+  };
+
+  const handles = new Map<EntityId, ReturnType<typeof gcs.make_bspline>>();
+
+  for (const e of splines) {
+    const n = e.poles.length;
+    const degree = e.degree;
+    const polesXY: number[] = [];
+    for (const p of e.poles) {
+      const [px, py] = pointParamIndex(wrapper, p, "bspline.pole");
+      polesXY.push(px, py);
+    }
+    // weights all 1 (fixed → no DOF).
+    const weights = e.poles.map(() => gcs.push_p_param(1, true));
+    // clamped-uniform knots: distinct values [0,…,n−degree].
+    const last = n - degree;
+    const knots: number[] = [];
+    const mult: number[] = [];
+    for (let k = 0; k <= last; k++) {
+      knots.push(gcs.push_p_param(k, true));
+      mult.push(k === 0 || k === last ? degree + 1 : 1);
+    }
+    const polesVec = intVec(polesXY);
+    const weightsVec = intVec(weights);
+    const knotsVec = intVec(knots);
+    const multVec = intVec(mult);
+    const bs = gcs.make_bspline(
+      polesXY[0],
+      polesXY[1],
+      polesXY[polesXY.length - 2],
+      polesXY[polesXY.length - 1],
+      polesVec,
+      weightsVec,
+      knotsVec,
+      multVec,
+      degree,
+      e.periodic,
+    );
+    // make_bspline copies the vectors by value; free our handles.
+    polesVec.delete();
+    weightsVec.delete();
+    knotsVec.delete();
+    multVec.delete();
+    handles.set(e.id, bs);
+  }
+
+  // High tag offset keeps these raw constraints from colliding with the
+  // wrapper's small sequential declarative tags; a flagged one maps back
+  // to `undefined` in diagnostics and is filtered (see parseConstraintOid).
+  const RAW_TAG_OFFSET = 1_000_000;
+  for (const c of input.constraints) {
+    if (c.kind !== "point_on_object") continue;
+    const curve = entityIndex.get(c.curve);
+    if (!curve || curve.kind !== "bspline") continue;
+    const bs = handles.get(c.curve);
+    if (!bs) continue;
+    const [px, py] = pointParamIndex(wrapper, c.point, "point_on_bspline");
+    const P = gcs.make_point(px, py);
+    const ui = gcs.push_p_param(nearestCurveU(curve, entityIndex, c.point), false);
+    gcs.add_constraint_point_on_bspline(P, bs, ui, RAW_TAG_OFFSET + c.id, true, 1);
+  }
+}
+
 export function solveSketch(input: SketchState): Promise<SolveResult> {
   const run = solveQueue.then(() => solveSketchInner(input));
   solveQueue = run.catch(() => undefined);
@@ -614,6 +792,14 @@ async function solveSketchInner(input: SketchState): Promise<SolveResult> {
   for (const constraint of input.constraints) {
     const primitive = translateConstraint(constraint, entityIndex);
     if (primitive !== null) wrapper.push_primitive(primitive);
+  }
+
+  // B-splines and their point-on-spline constraints aren't part of the
+  // declarative layer; build them directly on the raw GcsSystem now
+  // that every pole has GCS params, and before solve (which doesn't
+  // clear data). No-op when the sketch has no B-splines.
+  if (planegcsModule) {
+    injectBSplines(wrapper, planegcsModule, input, entityIndex);
   }
 
   const status = wrapper.solve();
@@ -705,6 +891,10 @@ function readBackState(
         return { ...e };
       case "line":
       case "origin":
+      // A B-spline carries no mutable scalar of its own — its poles are
+      // separate `point` entities that read their positions back through
+      // the `point` case (and it's never pushed declaratively anyway).
+      case "bspline":
         return { ...e };
     }
   });

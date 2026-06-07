@@ -23,10 +23,26 @@ import {
   sketchWithOrigin,
   type SketchState,
 } from "./types";
+import { bsplinePoints } from "../sketchSpline";
 
 beforeEach(() => {
   resetPlanegcsModuleForTests();
 });
+
+/** Shortest distance from a point to a segment (test helper). */
+function distToSeg(
+  p: [number, number],
+  a: [number, number],
+  b: [number, number],
+): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-12) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+  let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
 
 describe("solveSketch: trivial sketches", () => {
   it("returns an origin-only sketch unchanged", async () => {
@@ -742,6 +758,96 @@ describe("solveSketch: ellipse constraints", () => {
     } else {
       throw new Error("line endpoints missing from solved state");
     }
+  });
+});
+
+describe("solveSketch: bspline constraints", () => {
+  /**
+   * `point_on_bspline`: a free point pulled onto a clamped cubic
+   * B-spline whose four poles are pinned. With the curve rigid, the
+   * solved point must lie on it. We verify by independently sampling
+   * the same control-mode B-spline (`bsplinePoints`, the renderer's
+   * sampler) and checking the solved point is within tolerance of the
+   * sampled polyline — i.e. genuinely on the curve, wherever along it
+   * the free curve-parameter settles.
+   */
+  it("pulls a point onto a B-spline (point_on_bspline)", async () => {
+    const sketch = emptySketch("poc-bspline");
+    // four poles of a clamped cubic, pinned.
+    const poles: [number, number][] = [
+      [0, 0],
+      [10, 20],
+      [20, 20],
+      [30, 0],
+    ];
+    poles.forEach(([x, y], i) =>
+      sketch.entities.push({ kind: "point", id: i + 1, at: { x, y } }),
+    );
+    sketch.entities.push({
+      kind: "bspline",
+      id: 5,
+      poles: [1, 2, 3, 4],
+      degree: 3,
+      periodic: false,
+    });
+    sketch.entities.push({ kind: "point", id: 6, at: { x: 15, y: 30 } }); // free, off-curve
+    sketch.next_entity_id = 7;
+    poles.forEach((_, i) =>
+      sketch.constraints.push({ kind: "fix", id: i + 1, point: i + 1 }),
+    );
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 5,
+      point: 6,
+      curve: 5,
+    });
+    sketch.next_constraint_id = 6;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const p = result.state.entities.find((e) => e.id === 6);
+    if (p?.kind !== "point") throw new Error("free point missing");
+
+    // The poles stayed pinned; sample the same curve and measure.
+    const curve = bsplinePoints(poles, 3, false, 128);
+    let best = Infinity;
+    for (let i = 0; i + 1 < curve.length; i++) {
+      best = Math.min(best, distToSeg([p.at.x, p.at.y], curve[i], curve[i + 1]));
+    }
+    expect(best).toBeLessThan(0.05);
+  });
+
+  /** A degree-1 B-spline (two poles) is the segment between them, so
+   *  point_on_bspline must land the point on that segment. */
+  it("treats a 2-pole B-spline as a segment (point_on_bspline)", async () => {
+    const sketch = emptySketch("poc-bspline-deg1");
+    sketch.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    sketch.entities.push({ kind: "point", id: 2, at: { x: 10, y: 10 } });
+    sketch.entities.push({
+      kind: "bspline",
+      id: 3,
+      poles: [1, 2],
+      degree: 1,
+      periodic: false,
+    });
+    sketch.entities.push({ kind: "point", id: 4, at: { x: 8, y: 2 } }); // free
+    sketch.next_entity_id = 5;
+    sketch.constraints.push({ kind: "fix", id: 1, point: 1 });
+    sketch.constraints.push({ kind: "fix", id: 2, point: 2 });
+    sketch.constraints.push({
+      kind: "point_on_object",
+      id: 3,
+      point: 4,
+      curve: 3,
+    });
+    sketch.next_constraint_id = 4;
+
+    const result = await solveSketch(sketch);
+    expect(result.diagnostics.converged).toBe(true);
+    const p = result.state.entities.find((e) => e.id === 4);
+    if (p?.kind !== "point") throw new Error("free point missing");
+    // On the line y = x: distance to the segment is ~0.
+    expect(distToSeg([p.at.x, p.at.y], [0, 0], [10, 10])).toBeLessThan(0.01);
   });
 });
 

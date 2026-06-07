@@ -982,6 +982,28 @@ impl SketchToolKind for SketchSplineTool {
                 state.add_line(cp_ids[n - 2], cp_ids[n - 1]);
             }
         }
+
+        // W1: for an OPEN control-polygon spline, allocate a real
+        // B-spline solver entity whose poles ARE the control points, so
+        // point-on-spline constraints can bind to the curve itself (the
+        // endpoint legs above only constrain the tangents). Degree is
+        // clamped exactly like the drawn curve in `bspline_quad_beziers`
+        // (`3.min(n-1)`), and the implied clamped-uniform knot vector
+        // therefore matches the geometry the user sees.
+        //
+        // Scope: control mode only — interpolating (Catmull-Rom) splines
+        // pass THROUGH their points rather than treating them as poles,
+        // and periodic (closed) splines use a different knot convention;
+        // both keep only the endpoint-leg G1 handling above.
+        //
+        // Allocation ORDER (the web mirror in buildDraftSketchState MUST
+        // match): control points, then the leg line(s), then the
+        // B-spline entity LAST so existing entity ids are unchanged.
+        if d.mode == SplineMode::Control && !d.closed {
+            let n = cp_ids.len();
+            let degree = 3u32.min((n - 1) as u32);
+            state.add_bspline(cp_ids.clone(), degree, false);
+        }
         Ok(())
     }
 }
@@ -3896,6 +3918,69 @@ mod tests {
             "mode": "control"
         }));
         assert!(legs(&ents).is_empty(), "closed spline: no endpoint legs");
+    }
+
+    /// Collect (poles, degree) of every BSpline entity.
+    fn bsplines(entities: &[fielddraft_solver::Entity]) -> Vec<(Vec<u32>, u32)> {
+        entities
+            .iter()
+            .filter_map(|e| match e {
+                fielddraft_solver::Entity::BSpline { poles, degree, .. } => {
+                    Some((poles.iter().map(|p| p.0).collect(), *degree))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spline_control_open_n4_allocates_cubic_bspline_after_legs() {
+        // control + open, N=4 → one BSpline (poles = cp ids 1..=4, degree 3),
+        // allocated AFTER the two legs so the leg ids are unchanged.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": false,
+            "mode": "control"
+        }));
+        assert_eq!(legs(&ents), vec![(1, 2), (3, 4)]);
+        assert_eq!(bsplines(&ents), vec![(vec![1, 2, 3, 4], 3)]);
+    }
+
+    #[test]
+    fn spline_control_open_clamps_degree_to_pole_count() {
+        // N=2 → degree 1 (a polyline), N=3 → degree 2 (quadratic), matching
+        // `bspline_quad_beziers`'s `3.min(n-1)` so solver knots == drawn curve.
+        let n2 = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0],
+            "closed": false, "mode": "control"
+        }));
+        assert_eq!(bsplines(&n2), vec![(vec![1, 2], 1)]);
+        let n3 = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, 0.0],
+            "closed": false, "mode": "control"
+        }));
+        assert_eq!(bsplines(&n3), vec![(vec![1, 2, 3], 2)]);
+    }
+
+    #[test]
+    fn spline_interpolate_open_has_no_bspline_entity() {
+        // Catmull-Rom passes THROUGH its points (not poles) → no solver
+        // B-spline entity; endpoint legs remain the only G1 handle.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": false, "mode": "interpolate"
+        }));
+        assert!(bsplines(&ents).is_empty());
+    }
+
+    #[test]
+    fn spline_control_closed_has_no_bspline_entity() {
+        // Periodic knot convention differs → no solver entity for closed yet.
+        let ents = spline_entities(json!({
+            "points": [0.0, 0.0, 10.0, 20.0, 20.0, -20.0, 30.0, 0.0],
+            "closed": true, "mode": "control"
+        }));
+        assert!(bsplines(&ents).is_empty());
     }
 
     #[test]

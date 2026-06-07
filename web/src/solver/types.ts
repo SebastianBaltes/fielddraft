@@ -56,6 +56,19 @@ export type Entity =
       focus1: EntityId;
       radmin: number;
     }
+  | {
+      // A B-spline curve: an ordered list of control points (`poles`)
+      // plus the curve `degree` and a `periodic` flag. The knot vector
+      // is implied (clamped-uniform for `!periodic`). The poles are
+      // ordinary point entities; the B-spline carries no movable scalar.
+      // Only open control-polygon splines are modelled (point-on-spline
+      // binds to this entity). Mirrors Rust `Entity::BSpline`.
+      kind: "bspline";
+      id: EntityId;
+      poles: EntityId[];
+      degree: number;
+      periodic: boolean;
+    }
   | { kind: "origin"; id: EntityId };
 
 // ─── constraints ─────────────────────────────────────────────────
