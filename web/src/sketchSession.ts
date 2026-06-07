@@ -10,7 +10,9 @@
 
 import type { SketchSessionState } from "./store";
 import {
+  emptyDiagnostics,
   sketchWithOrigin,
+  type ConstraintId,
   type EntityId,
   type SketchState,
 } from "./solver/types";
@@ -22,6 +24,8 @@ export const INACTIVE_SKETCH_SESSION: SketchSessionState = {
   toolDraft: {},
   subCalls: [],
   editingFeatureId: null,
+  selection: [],
+  diagnostics: emptyDiagnostics(),
 };
 
 /** Options for the `enterSketchSession` reducer. K6b.3b adds the
@@ -49,6 +53,8 @@ export function enterSketchSession(
     toolDraft: {},
     subCalls: opts.initialSubCalls ?? [],
     editingFeatureId: opts.editingFeatureId ?? null,
+    selection: [],
+    diagnostics: emptyDiagnostics(),
   };
 }
 
@@ -70,11 +76,58 @@ export function selectSketchTool(
 ): SketchSessionState {
   if (!state.active) return state;
   if (state.selectedTool === typeName) return state;
+  // Switching tools leaves select-mode: clear any picked geometry so
+  // a stale selection can't drive the constraint palette while the
+  // user is drawing. EXCEPTION: tools that CONSUME the current selection
+  // must keep it — Mirror reflects it across the axis line clicked next;
+  // Move / Copy (F17) translate it via the next two canvas clicks.
+  const keepSelection =
+    typeName === "sketch_mirror" ||
+    typeName === "sketch_move" ||
+    typeName === "sketch_copy";
   return {
     ...state,
     selectedTool: typeName,
     toolDraft: typeName === null ? {} : initialDraft,
+    selection:
+      keepSelection || state.selection.length === 0 ? state.selection : [],
   };
+}
+
+// ─── selection (select mode — no drawing tool active) ───────────
+
+/** Toggle one committed-entity id in the selection set. Adding an
+ *  id appends it; clicking an already-selected id removes it. */
+export function toggleSketchSelection(
+  state: SketchSessionState,
+  entityId: number,
+): SketchSessionState {
+  if (!state.active) return state;
+  const has = state.selection.includes(entityId);
+  return {
+    ...state,
+    selection: has
+      ? state.selection.filter((id) => id !== entityId)
+      : [...state.selection, entityId],
+  };
+}
+
+/** Replace the selection wholesale (e.g. a marquee or programmatic
+ *  pick). Order is preserved as supplied. */
+export function setSketchSelection(
+  state: SketchSessionState,
+  ids: ReadonlyArray<number>,
+): SketchSessionState {
+  if (!state.active) return state;
+  return { ...state, selection: [...ids] };
+}
+
+/** Drop the entire selection. No-op (identity) when already empty. */
+export function clearSketchSelection(
+  state: SketchSessionState,
+): SketchSessionState {
+  if (!state.active || state.selection.length === 0) return state;
+  return { ...state, selection: [] };
 }
 
 /** Update the FeatureDialog working copy for the active tool. */
@@ -93,6 +146,66 @@ export function applySketchToolDraft(
   if (!state.active || state.selectedTool === null) return state;
   const entry = { type: state.selectedTool, params: state.toolDraft };
   return { ...state, subCalls: [...state.subCalls, entry] };
+}
+
+/**
+ * For each `sketch_constraint_*` sub-call type, the param keys that
+ * hold sketch-local entity ids. Used by both the draft-state
+ * rebuild (to translate sub-calls into solver constraints) and the
+ * delete path (to rewrite / drop dangling references). Keeping a
+ * single table here means a new constraint type is wired in exactly
+ * one place. Param names mirror the Rust kernel tool defs in
+ * `crates/kernel/src/sketch_features.rs` one-to-one.
+ */
+export const CONSTRAINT_ENTITY_PARAMS: Record<string, readonly string[]> = {
+  sketch_constraint_horizontal: ["line"],
+  sketch_constraint_vertical: ["line"],
+  sketch_constraint_coincident: ["a", "b"],
+  sketch_constraint_distance: ["entity_a", "entity_b"],
+  sketch_constraint_angle: ["line_a", "line_b"],
+  sketch_constraint_equal: ["entity_a", "entity_b"],
+  sketch_constraint_concentric: ["a", "b"],
+  sketch_constraint_fix: ["point"],
+  sketch_constraint_point_on_object: ["point", "curve"],
+  sketch_constraint_parallel: ["line_a", "line_b"],
+  sketch_constraint_perpendicular: ["line_a", "line_b"],
+  sketch_constraint_tangent: ["line", "curve"],
+  sketch_constraint_midpoint: ["point", "line"],
+  sketch_constraint_symmetric: ["entity_a", "entity_b", "axis"],
+  sketch_constraint_radius: ["entity"],
+  sketch_constraint_diameter: ["entity"],
+};
+
+/**
+ * Compute the vertices of a regular N-gon. MUST stay byte-for-byte
+ * identical to the kernel's `regular_polygon_vertices` (Rust) — same
+ * vertex order, same first-vertex angle — or constraint refs drift.
+ *
+ * Convention: n = max(3, round(sides)); effectiveRadius = inscribed
+ * ? radius : radius / cos(π/n); vertex k angle = π/2 + 2π·k/n (start
+ * at the top, CCW). Returns `[]` when degenerate (n < 3 already
+ * clamped, or |radius| < 1e-6).
+ */
+export function regularPolygonVertices(
+  center: [number, number],
+  radius: number,
+  sides: number,
+  inscribed: boolean,
+): Array<[number, number]> {
+  const n = Math.max(3, Math.round(sides));
+  if (!(Math.abs(radius) >= 1e-6) || !Number.isFinite(radius)) {
+    return [];
+  }
+  const eff = inscribed ? radius : radius / Math.cos(Math.PI / n);
+  const out: Array<[number, number]> = [];
+  for (let k = 0; k < n; k++) {
+    const angle = Math.PI / 2 + (2 * Math.PI * k) / n;
+    out.push([
+      center[0] + eff * Math.cos(angle),
+      center[1] + eff * Math.sin(angle),
+    ]);
+  }
+  return out;
 }
 
 // ─── K6b.3c: draft sketch-state rebuild for live inference ──────
@@ -119,6 +232,58 @@ export const DRAFT_DRAG_START_ID: EntityId = 0x7fff_ffff;
  * [`DRAFT_DRAG_START_ID`] so the inference engine can reference
  * it as the `drawingLineFrom` parameter of its query.
  */
+/**
+ * Convert FieldDraft's `(centre, radius_x, radius_y, rotation)`
+ * ellipse parameterisation into PlaneGCS' `(focus, semi-minor)` form.
+ * The major axis is whichever of `radius_x` / `radius_y` is larger;
+ * the focus sits at distance `sqrt(a² − b²)` from the centre along it.
+ * A tiny floor keeps the focus distinct from the centre for
+ * near-circular ellipses so the solver never sees a degenerate
+ * (zero-distance) focus.
+ *
+ * MUST stay byte-for-byte in sync with `ellipse_focus_radmin` in
+ * `crates/kernel/src/sketch_features.rs` — both sides feed the same
+ * PlaneGCS solver and must produce identical focus / radmin values.
+ */
+export function ellipseFocusRadmin(
+  cx: number,
+  cy: number,
+  radiusX: number,
+  radiusY: number,
+  rotation: number,
+): { focus: [number, number]; radmin: number } {
+  const a = Math.max(radiusX, radiusY);
+  const b = Math.min(radiusX, radiusY);
+  const c = Math.max(Math.sqrt(Math.max(0, a * a - b * b)), 1e-4);
+  const majorAngle = radiusX >= radiusY ? rotation : rotation + Math.PI / 2;
+  return {
+    focus: [cx + c * Math.cos(majorAngle), cy + c * Math.sin(majorAngle)],
+    radmin: b,
+  };
+}
+
+/**
+ * Inverse of [`ellipseFocusRadmin`]: recover the FieldDraft
+ * `(radius_x, radius_y, rotation)` triple from a solved centre, focus,
+ * and semi-minor radius. Canonical form puts the semi-major radius on
+ * `radius_x` (so `rotation` is the major-axis angle) — this is stable
+ * across repeated solve round-trips.
+ */
+export function ellipseParamsFromFocus(
+  cx: number,
+  cy: number,
+  fx: number,
+  fy: number,
+  radmin: number,
+): { radiusX: number; radiusY: number; rotation: number } {
+  const dx = fx - cx;
+  const dy = fy - cy;
+  const c = Math.hypot(dx, dy);
+  const b = radmin;
+  const a = Math.sqrt(b * b + c * c);
+  return { radiusX: a, radiusY: b, rotation: Math.atan2(dy, dx) };
+}
+
 export function buildDraftSketchState(
   subCalls: SketchSessionState["subCalls"],
   drawingLineFrom?: [number, number],
@@ -183,6 +348,70 @@ export function buildDraftSketchState(
           radius,
         });
       }
+    } else if (call.type === "sketch_ellipse") {
+      // Mirrors the kernel `SketchEllipseTool::apply`, which allocates
+      // centre point, focus point, then the ellipse entity — in that
+      // exact order. PlaneGCS models an ellipse as centre + one focus
+      // + semi-minor radius; the focus is an internal construction
+      // point (allocated so the solver can reshape the ellipse, but
+      // excluded from picking — see sketchHitTest). The outline is
+      // still rendered from the sub-call params, but the entity now
+      // lets tangent / point-on constraints bind to the ellipse.
+      // Allocate exactly three entities here or entity-id allocation
+      // drifts out of sync with the kernel.
+      const center = call.params.center;
+      if (Array.isArray(center) && center.length === 2) {
+        const cx = Number(center[0]);
+        const cy = Number(center[1]);
+        const { focus, radmin } = ellipseFocusRadmin(
+          cx,
+          cy,
+          Number(call.params.radius_x),
+          Number(call.params.radius_y),
+          Number(call.params.rotation ?? 0),
+        );
+        const centerId = state.next_entity_id++;
+        state.entities.push({ kind: "point", id: centerId, at: { x: cx, y: cy } });
+        const focusId = state.next_entity_id++;
+        state.entities.push({
+          kind: "point",
+          id: focusId,
+          at: { x: focus[0], y: focus[1] },
+        });
+        state.entities.push({
+          kind: "ellipse",
+          id: state.next_entity_id++,
+          center: centerId,
+          focus1: focusId,
+          radmin,
+        });
+      }
+    } else if (call.type === "sketch_slot") {
+      // Mirrors the kernel `SketchSlotTool::apply`, which registers the
+      // two end-cap centres in order (center_a then center_b). The slot
+      // outline is rendered as a dedicated pass from the sub-call params
+      // (not as SketchState entities), so we push exactly two points
+      // here — same count and order — or entity-id allocation drifts out
+      // of sync with the kernel.
+      const ca = call.params.center_a;
+      const cb = call.params.center_b;
+      if (
+        Array.isArray(ca) &&
+        ca.length === 2 &&
+        Array.isArray(cb) &&
+        cb.length === 2
+      ) {
+        state.entities.push({
+          kind: "point",
+          id: state.next_entity_id++,
+          at: { x: Number(ca[0]), y: Number(ca[1]) },
+        });
+        state.entities.push({
+          kind: "point",
+          id: state.next_entity_id++,
+          at: { x: Number(cb[0]), y: Number(cb[1]) },
+        });
+      }
     } else if (call.type === "sketch_rectangle") {
       // Mirror the kernel `SketchRectangleTool` allocation
       // order: bl, br, tr, tl, bottom, right, top, left,
@@ -206,21 +435,57 @@ export function buildDraftSketchState(
         const maxX = Math.max(ax, bx);
         const maxY = Math.max(ay, by);
         const blId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: blId, at: { x: minX, y: minY } });
+        state.entities.push({
+          kind: "point",
+          id: blId,
+          at: { x: minX, y: minY },
+        });
         const brId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: brId, at: { x: maxX, y: minY } });
+        state.entities.push({
+          kind: "point",
+          id: brId,
+          at: { x: maxX, y: minY },
+        });
         const trId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: trId, at: { x: maxX, y: maxY } });
+        state.entities.push({
+          kind: "point",
+          id: trId,
+          at: { x: maxX, y: maxY },
+        });
         const tlId = state.next_entity_id++;
-        state.entities.push({ kind: "point", id: tlId, at: { x: minX, y: maxY } });
+        state.entities.push({
+          kind: "point",
+          id: tlId,
+          at: { x: minX, y: maxY },
+        });
         const bottomId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: bottomId, start: blId, end: brId });
+        state.entities.push({
+          kind: "line",
+          id: bottomId,
+          start: blId,
+          end: brId,
+        });
         const rightId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: rightId, start: brId, end: trId });
+        state.entities.push({
+          kind: "line",
+          id: rightId,
+          start: brId,
+          end: trId,
+        });
         const topId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: topId, start: trId, end: tlId });
+        state.entities.push({
+          kind: "line",
+          id: topId,
+          start: trId,
+          end: tlId,
+        });
         const leftId = state.next_entity_id++;
-        state.entities.push({ kind: "line", id: leftId, start: tlId, end: blId });
+        state.entities.push({
+          kind: "line",
+          id: leftId,
+          start: tlId,
+          end: blId,
+        });
         state.constraints.push({
           kind: "horizontal",
           id: state.next_constraint_id++,
@@ -250,6 +515,156 @@ export function buildDraftSketchState(
             kind: "point",
             id: state.next_entity_id++,
             at: { x: Number(verts[i]), y: Number(verts[i + 1]) },
+          });
+        }
+      }
+    } else if (call.type === "sketch_spline") {
+      // Mirrors the kernel `SketchSplineTool::apply`, which registers
+      // one point entity per control point (like `sketch_polygon`).
+      // The smooth curve is a Path primitive built kernel-side, not a
+      // SketchState entity, so we push exactly N points here — same
+      // count and order — or entity-id allocation drifts.
+      const points = call.params.points;
+      const cpIds: number[] = [];
+      if (Array.isArray(points)) {
+        for (let i = 0; i + 1 < points.length; i += 2) {
+          const cpId = state.next_entity_id++;
+          state.entities.push({
+            kind: "point",
+            id: cpId,
+            at: { x: Number(points[i]), y: Number(points[i + 1]) },
+          });
+          cpIds.push(cpId);
+        }
+      }
+      // F23 endpoint tangent ("G1"): for an OPEN spline the curve's
+      // endpoint tangent runs PARALLEL to the first/last control-polygon
+      // edge in BOTH modes — clamped cubic B-spline (mode "control")
+      // runs exactly along the edge, Catmull-Rom (mode "interpolate")
+      // has P'(0)=0.5·(p1−p0) / P'(1)=0.5·(p[n-1]−p[n-2]), parallel to
+      // the same edge (direction-only G1, so the leg is exact). Expose
+      // those endpoint "legs" as ordinary `line` entities so all
+      // existing line constraints apply for free.
+      //
+      // Scope MUST match the kernel (SketchSplineTool::apply) EXACTLY:
+      // legs whenever closed !== true (ANY mode). Order: control points
+      // first (above), THEN start leg, THEN (N>=3) end leg. Legs
+      // reference existing points → no new DOF, and they do not affect
+      // the lowered extrude profile.
+      if (call.params.closed !== true && cpIds.length >= 2) {
+        const n = cpIds.length;
+        // START leg = Line(cp[0], cp[1]).
+        state.entities.push({
+          kind: "line",
+          id: state.next_entity_id++,
+          start: cpIds[0],
+          end: cpIds[1],
+        });
+        // END leg = Line(cp[N-2], cp[N-1]) — only distinct when N>=3.
+        if (n >= 3) {
+          state.entities.push({
+            kind: "line",
+            id: state.next_entity_id++,
+            start: cpIds[n - 2],
+            end: cpIds[n - 1],
+          });
+        }
+      }
+      // W1: for an OPEN control-polygon spline, allocate a real B-spline
+      // solver entity (poles = the control points) so point-on-spline
+      // constraints bind to the curve itself. MUST match the kernel
+      // (SketchSplineTool::apply) EXACTLY: control mode + open only,
+      // degree = min(3, n-1), allocated LAST (after control points +
+      // legs) so existing ids are unchanged. Interpolate/closed splines
+      // get no B-spline entity (they keep endpoint-leg G1 only).
+      if (
+        call.params.mode === "control" &&
+        call.params.closed !== true &&
+        cpIds.length >= 2
+      ) {
+        const n = cpIds.length;
+        state.entities.push({
+          kind: "bspline",
+          id: state.next_entity_id++,
+          poles: [...cpIds],
+          degree: Math.min(3, n - 1),
+          periodic: false,
+        });
+      }
+    } else if (call.type === "sketch_path") {
+      // Mirrors the kernel `SketchPathTool::apply` BYTE-FOR-BYTE. The
+      // analytic line+quad outline is a Path primitive built kernel-side
+      // (not from these entities), but each on-/off-curve vertex IS a
+      // point entity so it is hit-testable & grip-draggable.
+      //
+      // CANONICAL allocation ORDER (must match the kernel and
+      // rebuildSubCallsFromSolved exactly, or later sub-calls' entity-id
+      // refs corrupt). For each contour, in contour order:
+      //   1. the contour `start` point
+      //   2. then for each segment in order:
+      //        - Quad → `ctrl`, THEN `to`
+      //        - Line → `to`
+      // The implicit closing edge of a closed contour adds NO entity.
+      const contours = call.params.contours;
+      if (Array.isArray(contours)) {
+        for (const c of contours) {
+          const cc = c as {
+            start?: unknown;
+            segments?: unknown;
+          };
+          const start = cc?.start;
+          if (Array.isArray(start) && start.length === 2) {
+            state.entities.push({
+              kind: "point",
+              id: state.next_entity_id++,
+              at: { x: Number(start[0]), y: Number(start[1]) },
+            });
+          }
+          const segments = cc?.segments;
+          if (Array.isArray(segments)) {
+            for (const seg of segments) {
+              const s = seg as {
+                kind?: unknown;
+                ctrl?: unknown;
+                to?: unknown;
+              };
+              if (s?.kind === "quad" && Array.isArray(s.ctrl)) {
+                state.entities.push({
+                  kind: "point",
+                  id: state.next_entity_id++,
+                  at: { x: Number(s.ctrl[0]), y: Number(s.ctrl[1]) },
+                });
+              }
+              if (Array.isArray(s?.to)) {
+                state.entities.push({
+                  kind: "point",
+                  id: state.next_entity_id++,
+                  at: { x: Number(s.to[0]), y: Number(s.to[1]) },
+                });
+              }
+            }
+          }
+        }
+      }
+    } else if (call.type === "sketch_regular_polygon") {
+      // Mirrors the kernel `SketchRegularPolygonTool`: compute the
+      // N vertices from centre/radius/sides/inscribed and push one
+      // point per vertex. The formula MUST stay byte-for-byte
+      // identical to `regular_polygon_vertices` in Rust.
+      const center = call.params.center;
+      const radius = Number(call.params.radius);
+      if (Array.isArray(center) && center.length === 2) {
+        const verts = regularPolygonVertices(
+          [Number(center[0]), Number(center[1])],
+          radius,
+          Number(call.params.sides),
+          call.params.inscribed !== false,
+        );
+        for (const v of verts) {
+          state.entities.push({
+            kind: "point",
+            id: state.next_entity_id++,
+            at: { x: v[0], y: v[1] },
           });
         }
       }
@@ -291,6 +706,165 @@ export function buildDraftSketchState(
           b,
         });
       }
+    } else if (call.type === "sketch_constraint_concentric") {
+      const a = Number(call.params.a);
+      const b = Number(call.params.b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "concentric",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_fix") {
+      const point = Number(call.params.point);
+      if (Number.isFinite(point)) {
+        state.constraints.push({
+          kind: "fix",
+          id: state.next_constraint_id++,
+          point,
+        });
+      }
+    } else if (call.type === "sketch_constraint_point_on_object") {
+      const point = Number(call.params.point);
+      const curve = Number(call.params.curve);
+      if (Number.isFinite(point) && Number.isFinite(curve)) {
+        state.constraints.push({
+          kind: "point_on_object",
+          id: state.next_constraint_id++,
+          point,
+          curve,
+        });
+      }
+    } else if (call.type === "sketch_constraint_parallel") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "parallel",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_perpendicular") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "perpendicular",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_equal") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        state.constraints.push({
+          kind: "equal",
+          id: state.next_constraint_id++,
+          a,
+          b,
+        });
+      }
+    } else if (call.type === "sketch_constraint_tangent") {
+      const line = Number(call.params.line);
+      const curve = Number(call.params.curve);
+      if (Number.isFinite(line) && Number.isFinite(curve)) {
+        state.constraints.push({
+          kind: "tangent",
+          id: state.next_constraint_id++,
+          line,
+          curve,
+        });
+      }
+    } else if (call.type === "sketch_constraint_midpoint") {
+      const point = Number(call.params.point);
+      const line = Number(call.params.line);
+      if (Number.isFinite(point) && Number.isFinite(line)) {
+        state.constraints.push({
+          kind: "midpoint",
+          id: state.next_constraint_id++,
+          point,
+          line,
+        });
+      }
+    } else if (call.type === "sketch_constraint_distance") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      const value_mm = Number(call.params.value_mm);
+      if (
+        Number.isFinite(a) &&
+        Number.isFinite(b) &&
+        Number.isFinite(value_mm)
+      ) {
+        state.constraints.push({
+          kind: "distance",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          value_mm,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_angle") {
+      const a = Number(call.params.line_a);
+      const b = Number(call.params.line_b);
+      const value_deg = Number(call.params.value_deg);
+      if (
+        Number.isFinite(a) &&
+        Number.isFinite(b) &&
+        Number.isFinite(value_deg)
+      ) {
+        state.constraints.push({
+          kind: "angle",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          value_deg,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_symmetric") {
+      const a = Number(call.params.entity_a);
+      const b = Number(call.params.entity_b);
+      const axis = Number(call.params.axis);
+      if (Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(axis)) {
+        state.constraints.push({
+          kind: "symmetric",
+          id: state.next_constraint_id++,
+          a,
+          b,
+          axis,
+        });
+      }
+    } else if (call.type === "sketch_constraint_radius") {
+      const entity = Number(call.params.entity);
+      const value_mm = Number(call.params.value_mm);
+      if (Number.isFinite(entity) && Number.isFinite(value_mm)) {
+        state.constraints.push({
+          kind: "radius",
+          id: state.next_constraint_id++,
+          entity,
+          value_mm,
+          driven: Boolean(call.params.driven),
+        });
+      }
+    } else if (call.type === "sketch_constraint_diameter") {
+      const entity = Number(call.params.entity);
+      const value_mm = Number(call.params.value_mm);
+      if (Number.isFinite(entity) && Number.isFinite(value_mm)) {
+        state.constraints.push({
+          kind: "diameter",
+          id: state.next_constraint_id++,
+          entity,
+          value_mm,
+          driven: Boolean(call.params.driven),
+        });
+      }
     }
   }
   if (drawingLineFrom) {
@@ -304,24 +878,189 @@ export function buildDraftSketchState(
 }
 
 /**
- * K6b.3g: remove one sub-call at `index` and rewrite downstream
- * constraint calls so their entity-id references stay valid.
+ * F14 (mirror): map every committed entity id to the index of the
+ * sub-call that allocated it. [`buildDraftSketchState`] allocates ids
+ * monotonically per sub-call in spine order, so re-running it one
+ * sub-call at a time and bracketing the id range each call consumes tells
+ * us which sub-call owns any given id.
  *
- * Removing a geometric call (sketch_point, sketch_line,
- * sketch_rectangle, sketch_circle) frees a range of entity ids
- * that every subsequent sketch_tool would have been allocated.
- * Any constraint call that references an id inside the removed
- * range is dropped; any constraint call that references an id
- * *above* the removed range has its reference shifted down by
- * the range size so it still points at the same entity after
- * re-allocation.
- *
- * This keeps the sub-spine internally consistent without
- * forcing the user to manually clean up dangling constraints.
+ * Used to turn an entity-id selection (what the canvas stores) back into
+ * the set of source sub-calls to mirror: "mirror every simple geometry
+ * sub-call (line / circle / arc) that owns at least one selected entity".
  */
-export function removeSketchSubCallAt(
+export function entityOwnerSubCalls(
+  subCalls: SketchSessionState["subCalls"],
+): Map<number, number> {
+  const owner = new Map<number, number>();
+  let lo = sketchWithOrigin().next_entity_id;
+  for (let i = 0; i < subCalls.length; i++) {
+    const hi = buildDraftSketchState(subCalls.slice(0, i + 1)).next_entity_id;
+    for (let id = lo; id < hi; id++) owner.set(id, i);
+    lo = hi;
+  }
+  return owner;
+}
+
+/**
+ * F19 (elements panel): the entity ids a single GEOMETRY sub-call allocated,
+ * the inverse of [`entityOwnerSubCalls`] for one index. Re-runs the spine up
+ * to and including `index` and returns the id range that this call alone
+ * consumed (e.g. a line yields its [start, end, line] ids, a circle its
+ * [centre, circle] ids, a rectangle all its corner-point + edge-line ids).
+ *
+ * Constraint sub-calls allocate no entities, so this returns `[]` for them —
+ * use [`constraintRefIds`] to get the entities a constraint references.
+ */
+export function idsOfSubCall(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): number[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const lo = buildDraftSketchState(subCalls.slice(0, index)).next_entity_id;
+  const hi = buildDraftSketchState(subCalls.slice(0, index + 1)).next_entity_id;
+  const ids: number[] = [];
+  for (let id = lo; id < hi; id++) ids.push(id);
+  return ids;
+}
+
+/**
+ * F20 (diagnostics): the ConstraintId(s) a single CONSTRAINT sub-call
+ * allocated, the constraint-id analogue of [`idsOfSubCall`]. Re-runs the spine
+ * up to and including `index` and returns the `next_constraint_id` range this
+ * call alone consumed against [`buildDraftSketchState`] — the SAME id
+ * allocation the solve input uses, so diagnostics' constraint ids map straight
+ * onto sub-call rows.
+ *
+ * Most `sketch_constraint_*` calls allocate exactly one constraint, but the
+ * range form also covers any future multi-constraint call. Returns `[]` for a
+ * geometry sub-call (it allocates no constraints — note that composite geometry
+ * like `sketch_rectangle` DOES allocate constraints, which this correctly
+ * attributes to that geometry row, not to any constraint row).
+ */
+export function constraintIdsOfSubCall(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): ConstraintId[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const lo = buildDraftSketchState(subCalls.slice(0, index)).next_constraint_id;
+  const hi = buildDraftSketchState(
+    subCalls.slice(0, index + 1),
+  ).next_constraint_id;
+  const ids: ConstraintId[] = [];
+  for (let id = lo; id < hi; id++) ids.push(id);
+  return ids;
+}
+
+/**
+ * F20 (diagnostics): minimal shape consumed by [`summarizeDiagnostics`] — the
+ * three constraint-id buckets the solver fills. A subset of
+ * `SketchDiagnostics`.
+ */
+export interface DiagnosticsBuckets {
+  conflicting: ReadonlyArray<ConstraintId>;
+  redundant: ReadonlyArray<ConstraintId>;
+  partially_redundant: ReadonlyArray<ConstraintId>;
+}
+
+/**
+ * F20 (diagnostics): one flag per constraint sub-call index. `conflicts` and
+ * `redundants` map a sub-call index → true when any ConstraintId that index
+ * allocated falls in the corresponding diagnostics bucket. `conflict` wins over
+ * `redundant` when an id appears in both. `partially_redundant` counts as
+ * redundant. Both counts ignore geometry rows (they allocate no constraints, or
+ * — for composites — constraints the user can't individually delete).
+ */
+export function summarizeDiagnostics(
+  subCalls: SketchSessionState["subCalls"],
+  diagnostics: DiagnosticsBuckets,
+): {
+  conflicts: Set<number>;
+  redundants: Set<number>;
+  conflictCount: number;
+  redundantCount: number;
+} {
+  const conflicting = new Set(diagnostics.conflicting);
+  const redundant = new Set([
+    ...diagnostics.redundant,
+    ...diagnostics.partially_redundant,
+  ]);
+  const conflicts = new Set<number>();
+  const redundants = new Set<number>();
+  for (let i = 0; i < subCalls.length; i++) {
+    if (!subCalls[i].type.startsWith("sketch_constraint")) continue;
+    const ids = constraintIdsOfSubCall(subCalls, i);
+    if (ids.some((id) => conflicting.has(id))) conflicts.add(i);
+    else if (ids.some((id) => redundant.has(id))) redundants.add(i);
+  }
+  return {
+    conflicts,
+    redundants,
+    conflictCount: conflicts.size,
+    redundantCount: redundants.size,
+  };
+}
+
+/**
+ * F19 (elements panel): the entity ids a CONSTRAINT sub-call references, read
+ * from [`CONSTRAINT_ENTITY_PARAMS`]. Clicking a constraint row "selects" these
+ * referents so the user sees what the constraint affects. Returns `[]` for a
+ * geometry sub-call (no entity-ref params) or unknown/invalid references.
+ */
+export function constraintRefIds(
+  subCalls: SketchSessionState["subCalls"],
+  index: number,
+): number[] {
+  if (index < 0 || index >= subCalls.length) return [];
+  const call = subCalls[index];
+  const params = CONSTRAINT_ENTITY_PARAMS[call.type];
+  if (!params) return [];
+  const ids: number[] = [];
+  for (const key of params) {
+    const n = Number(call.params[key]);
+    if (Number.isFinite(n)) ids.push(n);
+  }
+  return ids;
+}
+
+/**
+ * F14 (mirror): the set of sub-call indices that own at least one of the
+ * `selection` entity ids. Order ascending. Empty when nothing maps.
+ */
+export function subCallsForSelection(
+  subCalls: SketchSessionState["subCalls"],
+  selection: ReadonlyArray<number>,
+): number[] {
+  const owner = entityOwnerSubCalls(subCalls);
+  const indices = new Set<number>();
+  for (const id of selection) {
+    const idx = owner.get(id);
+    if (idx !== undefined) indices.add(idx);
+  }
+  return [...indices].sort((a, b) => a - b);
+}
+
+/**
+ * K6b.3g / trim: replace one sub-call at `index` with zero or more new
+ * sub-calls and rewrite downstream constraint calls so their entity-id
+ * references stay valid.
+ *
+ * The replaced call freed a range of entity ids that every subsequent
+ * sketch_tool would have been allocated; the replacement calls allocate
+ * a (possibly different) number in its place. Any constraint that
+ * references an id inside the old range is dropped (its target is gone
+ * or was reshaped); any constraint above the old range has its
+ * references shifted by the size delta so they still point at the same
+ * entity after re-allocation.
+ *
+ * Passing an empty `newCalls` is a plain delete; trimming passes the
+ * 0–2 line/arc pieces that survive the cut. This keeps the sub-spine
+ * internally consistent without forcing the user to clean up dangling
+ * constraints by hand.
+ */
+export function replaceSketchSubCallAt(
   state: SketchSessionState,
   index: number,
+  newCalls: ReadonlyArray<SketchSessionState["subCalls"][number]>,
 ): SketchSessionState {
   if (!state.active) return state;
   if (index < 0 || index >= state.subCalls.length) return state;
@@ -329,46 +1068,57 @@ export function removeSketchSubCallAt(
   const removed = state.subCalls[index];
   const tail = state.subCalls.slice(index + 1);
 
-  // Delta = entities allocated by the removed call.
-  const preState = buildDraftSketchState(before);
-  const preId = preState.next_entity_id;
-  const postState = buildDraftSketchState([...before, removed]);
-  const postId = postState.next_entity_id;
+  // Entity-id range the removed call occupied, and the size delta the
+  // replacement introduces (replacement count − removed count).
+  const preId = buildDraftSketchState(before).next_entity_id;
+  const removedHi = buildDraftSketchState([...before, removed]).next_entity_id;
+  const newHi = buildDraftSketchState([...before, ...newCalls]).next_entity_id;
   const rangeLo = preId;
-  const rangeHi = postId - 1;
-  const delta = postId - preId;
+  const rangeHi = removedHi - 1;
+  const shiftDelta = newHi - removedHi;
 
-  const shift = (n: number): number => (n > rangeHi ? n - delta : n);
+  const shift = (n: number): number => (n > rangeHi ? n + shiftDelta : n);
   const inRange = (n: number): boolean => n >= rangeLo && n <= rangeHi;
 
   const rewritten: SketchSessionState["subCalls"][number][] = [];
   for (const call of tail) {
-    if (
-      call.type === "sketch_constraint_horizontal" ||
-      call.type === "sketch_constraint_vertical"
-    ) {
-      const line = Number(call.params.line);
-      if (!Number.isFinite(line) || inRange(line)) continue;
-      rewritten.push({
-        ...call,
-        params: { ...call.params, line: shift(line) },
-      });
-    } else if (call.type === "sketch_constraint_coincident") {
-      const a = Number(call.params.a);
-      const b = Number(call.params.b);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-      if (inRange(a) || inRange(b)) continue;
-      rewritten.push({
-        ...call,
-        params: { ...call.params, a: shift(a), b: shift(b) },
-      });
-    } else {
+    const entityParams = CONSTRAINT_ENTITY_PARAMS[call.type];
+    if (!entityParams) {
       // Geometric calls allocate fresh ids — no shift needed.
       rewritten.push(call);
+      continue;
     }
+    // Read every entity-id reference this constraint carries. Drop
+    // the whole constraint if any reference points into the removed
+    // range (the referenced entity is gone); otherwise shift each
+    // reference above the range so it still targets the same entity.
+    const refs = entityParams.map((key) => Number(call.params[key]));
+    if (refs.some((n) => !Number.isFinite(n) || inRange(n))) continue;
+    const nextParams = { ...call.params };
+    entityParams.forEach((key, i) => {
+      nextParams[key] = shift(refs[i]);
+    });
+    rewritten.push({ ...call, params: nextParams });
   }
 
-  return { ...state, subCalls: [...before, ...rewritten] };
+  // Entity ids shift when the spine changes, so any prior selection
+  // would now point at the wrong geometry — drop it.
+  return {
+    ...state,
+    subCalls: [...before, ...newCalls, ...rewritten],
+    selection: [],
+  };
+}
+
+/**
+ * K6b.3g: drop a single sub-spine entry by index — the empty-
+ * replacement case of [`replaceSketchSubCallAt`].
+ */
+export function removeSketchSubCallAt(
+  state: SketchSessionState,
+  index: number,
+): SketchSessionState {
+  return replaceSketchSubCallAt(state, index, []);
 }
 
 /**
@@ -382,9 +1132,11 @@ export function removeSketchSubCallAt(
  * for actually appending the line + any constraints that
  * reference these IDs in the same commit.
  */
-export function predictNextLineIds(
-  subCalls: SketchSessionState["subCalls"],
-): { start: number; end: number; line: number } {
+export function predictNextLineIds(subCalls: SketchSessionState["subCalls"]): {
+  start: number;
+  end: number;
+  line: number;
+} {
   const state = buildDraftSketchState(subCalls);
   const startId = state.next_entity_id;
   const endId = startId + 1;

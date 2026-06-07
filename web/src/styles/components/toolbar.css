@@ -120,6 +120,23 @@
     margin-right: var(--space-1);
   }
 
+  /* F5: live degrees-of-freedom readout in sketch mode. Neutral by
+   * default (under-constrained), green when fully constrained, red
+   * when over-constrained. */
+  & .dof {
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+
+    &.is-ok {
+      color: var(--color-success-text);
+    }
+    &.is-over {
+      color: var(--color-error-text);
+    }
+  }
+
   & .tool {
     display: inline-flex;
     align-items: center;
@@ -189,7 +206,95 @@
     gap: var(--space-2);
   }
 
+  /* F10/F11: numeric input for the two-click corner ops (Fillet radius,
+   * Chamfer distance), sat next to their buttons in the sketch tool row. */
+  & .corner-op-input {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 1rem;
+    color: var(--color-text-muted);
+
+    & input {
+      width: 4rem;
+      font-size: 1rem;
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-elevated);
+      color: var(--color-text);
+    }
+
+    /* F24: the Text tool's string field needs room for a few words. */
+    & input[type="text"] {
+      width: 9rem;
+    }
+
+    /* F24-full: font dropdown + upload picker in the Text tool row. */
+    & select {
+      font-size: 1rem;
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-elevated);
+      color: var(--color-text);
+    }
+
+    & input[type="file"] {
+      width: auto;
+      font-size: 1rem;
+      max-width: 11rem;
+    }
+  }
+
+  /* F23-full: spline-mode toggle (interpolate vs control-point
+   * B-spline), shown only while the spline tool is active. Two
+   * `.tool` buttons grouped as a segmented control. */
+  & .spline-mode {
+    display: inline-flex;
+    gap: var(--space-1);
+    align-items: center;
+  }
+
+  /* P0.1: context-sensitive constraint palette, shown in select
+   * mode and gated by the current selection. */
+  & .sketch-constraint-row {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    border-left: 1px solid var(--color-border);
+    padding-left: var(--space-3);
+
+    & .tool {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+
+      & .glyph {
+        font-size: 1.1rem;
+        line-height: 1;
+      }
+    }
+
+    & .hint {
+      align-self: center;
+      color: var(--color-text-muted);
+      font-size: 1rem;
+    }
+  }
+
   & .tool.is-stub {
     opacity: 0.55;
+  }
+}
+
+/* ── Mobile: comfortable touch targets ───────────────────────────────
+ * Below the mobile breakpoint (shared 768px literal, see useMediaQuery.ts)
+ * the desktop `max-height` cap (~40px) is lifted and each button gets a
+ * --touch-target (≈44px) min-height so it's finger-friendly. The toolbar
+ * already wraps, so taller buttons simply grow the bar. */
+@media (max-width: 768px) {
+  .fd-toolbar .tool {
+    min-height: var(--touch-target);
+    max-height: none;
   }
 }

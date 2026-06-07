@@ -180,5 +180,12 @@ export function entitiesReferencedBy(
       return [constraint.point, constraint.line];
     case "symmetric":
       return [constraint.a, constraint.b, constraint.axis];
+    case "radius":
+    case "diameter":
+      return [constraint.entity];
+    case "fix":
+      return [constraint.point];
+    case "point_on_object":
+      return [constraint.point, constraint.curve];
   }
 }

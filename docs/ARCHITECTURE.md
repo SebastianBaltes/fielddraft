@@ -456,14 +456,26 @@ graph TD
 2. **Snap inference** (`inferenceEngine.ts`): Checks proximity to endpoints, midpoints, origin; detects horizontal/vertical/parallel alignment. Priority-sorted candidates.
 3. **Sub-calls accumulated** in `sketchSession.subCalls` (geometry + constraints as `FeatureCall[]`)
 4. **Solver replay** (`planegcs.ts`): Translates entities/constraints to PlaneGCS format, runs DogLeg solver, reads back solved positions + diagnostics
-5. **Drag controller**: Snapshots sketch, overwrites dragged point each frame, re-solves. PlaneGCS' numerical continuation keeps hard constraints satisfied.
+5. **Drag controller** (`dragController.ts`): On each pointer frame it moves the grabbed grip to the cursor and re-solves, feeding the dragged geometry as the solver's initial guess. PlaneGCS' numerical continuation keeps hard constraints satisfied *during* the drag (not just at drop). Solves are coalesced — only the latest cursor is solved — so the gesture stays responsive on large sketches; drop runs one authoritative final solve.
 6. **Diagnostics pipeline**: Maps solver output to per-entity visual states (blue = underconstrained, black = fully constrained, red = overconstrained)
 7. **Commit**: `kernel.addSketch(planeQuery, subCalls)` stores solved state in `Context::sketches`
 8. **Extrude/Revolve** features reference sketch via query, evaluate 2D SDF profile from `Sketch2d`
 
+**Select-mode editing (P0.1–P0.3):** With a sketch open and no drawing tool active, the overlay is in *select mode*. Left-clicks hit-test committed geometry (`sketchHitTest.ts`) and toggle it in `sketchSession.selection`. The toolbar palette offers the constraints/dimensions applicable to the current pick (`sketchConstraints.ts`): geometric constraints (P0.1) and dimensions seeded from the current measurement (P0.2, editable in the constraint manager). Supported geometric picks include horizontal/vertical (one line), parallel/perpendicular (two lines), coincident (two points), equal (two curves), tangent (line + curve), **midpoint** (a point + a line — pins the point at the line's centre) and **symmetric** (two points + an axis line — mirrors them across it). Midpoint and symmetric have no single PlaneGCS primitive matching FieldDraft's entity shapes, so `planegcs.ts` maps them onto `p2p_symmetric_ppp` (line endpoints symmetric about the point ⇒ point is their midpoint) and `p2p_symmetric_ppl` respectively. A single circle or arc also takes a **radius** or **diameter** dimension (seeded from the current measurement, editable like distance/angle); these map to PlaneGCS' `circle_radius`/`arc_radius` and `circle_diameter`/`arc_diameter`, dispatched by entity kind. Diameter stores the diameter value so the annotation round-trips while the solver pins `2·radius`. Selected entities expose draggable grip handles (`sketchGrips.ts`, P0.3): line endpoints, free points, a circle's centre + radius rim, rectangle corners (axis-aligned resize against the fixed diagonal corner), polygon vertices and an arc's centre + radius. Dragging a grip re-solves the sketch *every pointer frame* (`dragController.ts`, continuation model), so constraints stay satisfied visually throughout the drag rather than snapping back only at drop; the geometry the user sees is already solved. Solves are coalesced to the latest cursor and drop runs one authoritative final solve. All edits route through the same solve-and-replace pipeline as drawing.
+
+**Camera gestures under the overlay:** The 2D overlay sits on top of the WebGPU canvas with `pointer-events: auto`, so it would otherwise swallow every camera gesture. Mouse zoom (wheel) and pan (right/middle drag) are *forwarded*: the overlay re-dispatches the event onto the WebGPU `<canvas>` so OrbitControls keeps driving the orthographic camera underneath (the camera state is published back to the overlay via `sketchCameraBridge.ts`). Touch is handled the same way for the two-finger pinch: `SketchCanvas2d` tracks live touch pointers and, once a second finger lands, aborts any in-progress single-finger draft and holds a lockout until every finger lifts, synthesising wheel events at the pinch midpoint to reuse that same dolly path. Single-finger touch (select/draw/grip-drag) and the entire mouse path are untouched — the pinch branches are gated on `pointerType === "touch"` plus two active fingers. Two-finger pan is a deliberate follow-up.
+
 **Entity types:** Point, Line, Circle, Arc, Origin (fixed at 0,0).
 
-**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`, `sketch_trim` (stub — no-op in V0), `sketch_mirror`, `sketch_offset`.
+**Drawing tools:** `sketch_point`, `sketch_line`, `sketch_rectangle`, `sketch_circle`, `sketch_polygon`, `sketch_arc`.
+
+**Profile-operation tools:** `sketch_mirror` and `sketch_offset` act on the whole accumulated profile rather than drawing a new entity. They are applied through the tool dialog (axis for mirror, distance for offset) plus an Apply button, or by clicking the canvas while the tool is active — the click appends the operation sub-call with the dialog's current parameters. The actual geometry transform happens at commit time in `build_sketch2d_from_sub_calls` (`sketch_features.rs`): mirror unions the accumulated `Sketch2d` tree with a reflected copy (`mirror_sketch2d`); offset wraps the tree in a `Sketch2d::Offset` node whose `distance` inflates (positive) or insets (negative) the SDF in evaluation and SDF compilation. Because these ops carry no solver entity, they do not appear in the live 2D overlay — only the committed 3D body reflects them.
+
+**Trim:** unlike the others, trim is *not* a kernel tool. It is an interactive editing mode: with the Trim button active, a canvas click cuts the curve under the cursor at its nearest intersections with the rest of the sketch and drops the picked piece — a line clicked on an overhang shortens to the crossing, a line clicked between two crossings splits into two, a full circle becomes the complementary arc, an arc shortens or splits like a line. The geometry is a pure, DOM-free module, `sketchTrim.ts`: `edgesOfSubCall` (the trimmable edges a sub-call contributes — one for a line/circle/arc, four for a rectangle, N for a polygon), `intersectCurves` (line/circle/arc pairwise), `nearestTrimTarget` (which sub-call was clicked) and `trimCurveAt` (the param-space cut), composed by `computeTrim`. It reads solved coordinates straight from the sub-call params and emits ordinary `sketch_line` / `sketch_arc` sub-calls — the kernel needs no trim primitive. `store.trimSketchAt` splices the replacement pieces in via `replaceSketchSubCallAt` (the general form of the delete reducer, which rewrites or drops downstream constraint refs around the changed entity-id range) and re-solves. Constraints that referenced the trimmed entity are dropped, since the curve they pinned no longer exists. Composite primitives (rectangle, polygon) are trimmable too: every edge acts as a cutter, and trimming one edge *decomposes the whole composite into individual `sketch_line` sub-calls* — the clicked edge cut, the siblings carried over verbatim — because a rectangle stops being a closed region the moment one edge is cut.
+
+**Arc gesture:** `sketch_arc` is a three-click *centre → start → end* gesture. The first click sets the centre, the second fixes radius and start angle, the third sweeps the arc; a live preview tracks the cursor between clicks. The pure geometry lives in `sketchArc.ts` (`buildArcSubCall`, `unwrapSweep`, `sampleArc`) so it is unit-testable in isolation. All angles are sketch-space (CCW from +x, Y-up) to match `sketchGrips.ts` and the kernel `SketchArcDef`; `unwrapSweep` keeps the sweep continuous across the ±180° seam so the gesture can wind toward a full turn. Rendering samples the arc into a polyline via `sampleArc` rather than `ctx.arc`, which would mirror the arc on the Y-down canvas.
+
+**Construction geometry:** Any drawing sub-call may carry a `construction: true` param (toggled per element from its sub-spine row). Construction geometry is reference-only: `buildDraftSketchState` still builds a full solver entity for it (so constraints can reference it), but the kernel's `build_sketch2d_from_sub_calls` skips any construction-flagged call up front, so it never contributes to the extrudable region. The 2D overlay renders it muted and dashed (`COLOR_CONSTRUCTION` / `--color-construction`). The flag is a plain param — it round-trips through the solve writeback untouched and costs nothing in the tool schemas.
 
 **Critical invariant:** Entity ID allocation order in TypeScript must exactly match kernel allocation. `buildDraftSketchState()` replicates this deterministically. Any mismatch silently corrupts constraint references.
 
@@ -523,6 +535,27 @@ styles/
 - Custom properties from `tokens.css` used extensively
 - Light mode only
 - Minimum font size: 1rem
+
+**Responsive layout.** Below the 768px phone breakpoint the docked Outliner
+becomes an off-canvas drawer (absolutely positioned in `.main`, parked at
+`translateX(100%)`), slid in by a 44px hamburger in the topbar and dismissed
+via a scrim; the viewport then owns the full width. The `useMediaQuery` hook
+(`useMediaQuery.ts`, kept in sync with the `768px` CSS literal via the
+`MOBILE_QUERY` constant) lets `Outliner` drop its splitter-driven inline width
+on mobile so the CSS drawer width wins. Two gotchas, both load-bearing: a
+`box-shadow: var(--x, <fallback with commas>)` declaration placed before
+nested rules makes lightningcss silently swallow those nested rules, so the
+drawer states use explicit selectors and a plain shadow; and a CSS `transform`
+*transition* freezes off-canvas under the always-mounted WebGPU render loop's
+per-frame style recalc, so the drawer toggles instantly with no transition.
+
+The same 768px breakpoint also up-sizes interactive controls to a comfortable
+touch target. The `--touch-target` token (≈44px) raises the toolbar `.tool`
+buttons (lifting their desktop `max-height` cap) and the bottom-tab strip's
+add button, tabs, labels and carets — all otherwise ~32–40px. These rules live
+in plain `@media (max-width: 768px)` blocks at the foot of `toolbar.css` and
+`bottom-tabs.css` and stay scoped to mobile (a desktop E2E guards that the
+toolbar keeps its compact height).
 
 ---
 

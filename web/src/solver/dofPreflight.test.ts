@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   DimensionVerdict,
   countDegreesOfFreedom,
+  displayDegreesOfFreedom,
   preflightDimension,
 } from "./dofPreflight";
-import { sketchWithOrigin, type SketchState } from "./types";
+import {
+  emptyDiagnostics,
+  sketchWithOrigin,
+  type SketchState,
+} from "./types";
 
 function rectangleSketch(): SketchState {
   // Four free points + four lines + H/V constraints + two
@@ -81,6 +86,42 @@ describe("countDegreesOfFreedom", () => {
     expect(countDegreesOfFreedom(s)).toBe(2);
   });
 
+  it("subtracts 2 for a fix constraint (pins both DOFs of a point)", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    // 2 DOFs - 2 fix = 0 DOFs (the point is fully pinned).
+    s.constraints.push({ kind: "fix", id: 1, point: 1 });
+    s.next_constraint_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(0);
+  });
+
+  it("subtracts 1 for a point_on_object constraint (point slides along the curve)", () => {
+    const s = sketchWithOrigin();
+    // A circle (centre point 1 + circle 2) and a free point 3.
+    s.entities.push({ kind: "point", id: 1, at: { x: 0, y: 0 } });
+    s.entities.push({ kind: "circle", id: 2, center: 1, radius: 5 });
+    s.entities.push({ kind: "point", id: 3, at: { x: 9, y: 0 } });
+    s.next_entity_id = 4;
+    // 2 (centre) + 1 (circle) + 2 (free point) = 5 DOF.
+    // point_on_object removes 1 → 4.
+    s.constraints.push({ kind: "point_on_object", id: 1, point: 3, curve: 2 });
+    s.next_constraint_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(4);
+  });
+
+  it("goes negative when over-constrained", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    // 2 DOF for the point, then pin it twice (fix removes 2 each) →
+    // 2 - 2 - 2 = -2: redundantly over-constrained.
+    s.constraints.push({ kind: "fix", id: 1, point: 1 });
+    s.constraints.push({ kind: "fix", id: 2, point: 1 });
+    s.next_constraint_id = 3;
+    expect(countDegreesOfFreedom(s)).toBe(-2);
+  });
+
   it("counts the canonical rectangle with width constraint at DOF = 1", () => {
     // The rectangleSketch helper has four points (8 DOF), four
     // lines (0), four H/V constraints (-4), one coincident
@@ -88,6 +129,37 @@ describe("countDegreesOfFreedom", () => {
     // (the height). Adding a height dimension brings it to 0.
     const s = rectangleSketch();
     expect(countDegreesOfFreedom(s)).toBe(1);
+  });
+});
+
+describe("displayDegreesOfFreedom", () => {
+  it("uses the authoritative solver DoF when the last solve converged", () => {
+    // The naive tally of this sketch is 1 (one free point), but a
+    // converged solve says the system has 0 remaining DoF. The
+    // display must trust the solver, not the estimate.
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    expect(countDegreesOfFreedom(s)).toBe(2);
+    const diag = emptyDiagnostics();
+    diag.converged = true;
+    diag.dof = 0;
+    expect(displayDegreesOfFreedom(s, diag)).toBe(0);
+  });
+
+  it("falls back to the naive tally before the first solve converges", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    const diag = emptyDiagnostics(); // converged: false
+    expect(displayDegreesOfFreedom(s, diag)).toBe(2);
+  });
+
+  it("falls back to the naive tally when no diagnostics are given", () => {
+    const s = sketchWithOrigin();
+    s.entities.push({ kind: "point", id: 1, at: { x: 5, y: 5 } });
+    s.next_entity_id = 2;
+    expect(displayDegreesOfFreedom(s, undefined)).toBe(2);
   });
 });
 

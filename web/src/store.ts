@@ -33,7 +33,44 @@ import {
   selectSketchTool as reduceSelect,
   setSketchToolDraft as reduceSetDraft,
   removeSketchSubCallAt as reduceRemoveAt,
+  replaceSketchSubCallAt as reduceReplaceAt,
+  toggleSketchSelection as reduceToggleSelection,
+  setSketchSelection as reduceSetSelection,
+  clearSketchSelection as reduceClearSelection,
+  buildDraftSketchState,
+  subCallsForSelection,
 } from "./sketchSession";
+import { buildConstraintCall } from "./sketchConstraints";
+import {
+  computeTrim,
+  curveOfSubCall,
+  edgesOfSubCall,
+  subCallOfCurve,
+} from "./sketchTrim";
+import type { Vec2 } from "./sketchTrim";
+import { mirrorCurve } from "./sketchMirror";
+import { offsetCurve, offsetChain, buildChain } from "./sketchOffset";
+import {
+  patternLinear,
+  patternCircular,
+  translateCurve,
+  rotateCurve,
+} from "./sketchPattern";
+import { filletLines } from "./sketchFillet";
+import { chamferLines } from "./sketchChamfer";
+import { extendLine } from "./sketchExtend";
+import { splitCurveAt } from "./sketchSplit";
+import { importVectorToSubCalls } from "./importVector";
+import { textToSubCalls } from "./sketchText";
+import {
+  DEFAULT_FONT_ID,
+  cachedFont,
+  loadBundledFont,
+  parseFontBuffer,
+  registerUploadedFont,
+} from "./sketchTextFont";
+import { solveAndReplace } from "./solver/replaySolve";
+import type { SketchDiagnostics } from "./solver/types";
 import {
   INACTIVE_ASSEMBLY,
   allocateAssemblyId,
@@ -129,6 +166,21 @@ export interface SketchSessionState {
    *  through `replaceSketch` instead of `addSketch` so the
    *  outliner row keeps its id. */
   editingFeatureId: number | null;
+  /** Solver-entity ids of the committed geometry currently
+   *  selected in the canvas (select mode — no drawing tool
+   *  active). Drives the context-sensitive constraint palette
+   *  and, later, drag-edit. Ids are resolved against
+   *  `buildDraftSketchState(subCalls)`. Empty when nothing is
+   *  picked. */
+  selection: ReadonlyArray<number>;
+  /** F20: latest solve diagnostics for the session geometry —
+   *  which committed constraints the solver flagged as conflicting
+   *  or (partially) redundant. Written by the centralized solve
+   *  pass (`solveAndReplace`) after every successful solve; reset
+   *  to empty on session enter. Constraint ids live in the same id
+   *  space as `buildDraftSketchState(subCalls)`, so the Outliner can
+   *  map them back to constraint sub-call rows. */
+  diagnostics: SketchDiagnostics;
 }
 
 export interface StoreState {
@@ -177,6 +229,41 @@ export interface StoreState {
   measureMode: boolean;
   /** K10.6: fillet mode — clicks on edges create fillet_edge features. */
   filletMode: boolean;
+  /** F10: sketch-fillet radius (mm) used by the two-click `sketch_fillet`
+   *  tool to round the corner between two picked lines. */
+  sketchFilletRadius: number;
+  /** F11: sketch-chamfer setback distance (mm) used by the two-click
+   *  `sketch_chamfer` tool to bevel the corner between two picked lines. */
+  sketchChamferDistance: number;
+  /** F15: sketch-offset distance (mm) used by the single-click
+   *  `sketch_offset` tool to place a parallel copy of the picked curve. */
+  sketchOffsetDistance: number;
+  /** F16: number of instances (original + copies) for a sketch pattern. */
+  sketchPatternCount: number;
+  /** F16: per-step spacing (mm) for a linear sketch pattern. */
+  sketchPatternSpacing: number;
+  /** F16: total span (degrees) for a circular sketch pattern. */
+  sketchPatternAngle: number;
+  /** F17: rotation angle (degrees) used by the `rotateSketchSelection`
+   *  transform (rotates the selection about the sketch origin). */
+  sketchRotateAngle: number;
+  /** F23-full: which spline family the `sketch_spline` tool draws —
+   *  `"interpolate"` (Catmull-Rom through the points) or `"control"`
+   *  (real cubic B-spline with the points as control polygon). */
+  sketchSplineMode: "interpolate" | "control";
+  /** F24: the string the single-click `sketch_text` tool emits as
+   *  filled glyph geometry. */
+  sketchTextValue: string;
+  /** F24: cap/em height (mm) for the `sketch_text` tool. */
+  sketchTextHeight: number;
+  /** F24-full: id of the font the `sketch_text` tool renders with —
+   *  a bundled-font id (see sketchTextFont.BUNDLED_FONTS) or a synthetic
+   *  `uploaded:…` id for a user-supplied .ttf/.otf. */
+  sketchTextFontId: string;
+  /** F24-full: true once the currently-selected text font has finished
+   *  loading + parsing (drives the UI's "loading font…" hint and gates
+   *  placement). */
+  sketchTextFontReady: boolean;
   /** M12: sync state machine for server-backed projects.
    *  "clean" = in sync with server, "dirty" = local changes
    *  pending, "syncing" = upload in flight, "error" = last
@@ -457,6 +544,18 @@ export class KernelStore {
       meshedBodies: [],
       measureMode: false,
       filletMode: false,
+      sketchFilletRadius: 5,
+      sketchChamferDistance: 5,
+      sketchOffsetDistance: 5,
+      sketchPatternCount: 3,
+      sketchPatternSpacing: 20,
+      sketchPatternAngle: 360,
+      sketchRotateAngle: 90,
+      sketchSplineMode: "interpolate",
+      sketchTextValue: "Text",
+      sketchTextHeight: 10,
+      sketchTextFontId: DEFAULT_FONT_ID,
+      sketchTextFontReady: cachedFont(DEFAULT_FONT_ID) !== undefined,
       syncState: "offline",
       projectId: null,
       sketchSession: INACTIVE_SKETCH_SESSION,
@@ -545,6 +644,18 @@ export class KernelStore {
       meshedBodies: this.state.meshedBodies,
       measureMode: this.state.measureMode,
       filletMode: this.state.filletMode,
+      sketchFilletRadius: this.state.sketchFilletRadius,
+      sketchChamferDistance: this.state.sketchChamferDistance,
+      sketchOffsetDistance: this.state.sketchOffsetDistance,
+      sketchPatternCount: this.state.sketchPatternCount,
+      sketchPatternSpacing: this.state.sketchPatternSpacing,
+      sketchPatternAngle: this.state.sketchPatternAngle,
+      sketchRotateAngle: this.state.sketchRotateAngle,
+      sketchSplineMode: this.state.sketchSplineMode,
+      sketchTextValue: this.state.sketchTextValue,
+      sketchTextHeight: this.state.sketchTextHeight,
+      sketchTextFontId: this.state.sketchTextFontId,
+      sketchTextFontReady: this.state.sketchTextFontReady,
       syncState: this.state.projectId ? "dirty" : "offline",
       projectId: this.state.projectId,
       sketchSession: this.state.sketchSession,
@@ -1939,6 +2050,11 @@ export class KernelStore {
     this.updateSketch(
       reduceSelect(this.state.sketchSession, typeName, initialDraft),
     );
+    // F24-full: preload the text font on Text-tool activation so the first
+    // placement click has a parsed font ready (load is async).
+    if (typeName === "sketch_text") {
+      void this.ensureTextFontLoaded();
+    }
   }
 
   /** Update the active sketch tool's FeatureDialog working copy. */
@@ -1978,6 +2094,28 @@ export class KernelStore {
   }
 
   /**
+   * F22: parse an SVG / DXF file's text into sketch sub-calls and append
+   * them to the active session, then re-solve. Returns the number of
+   * sub-calls imported (0 when nothing parsed or no session is active),
+   * so the caller can surface a hint on an empty result. SVG coordinates
+   * are y-flipped (y-down → y-up); DXF passes through unflipped. Curves
+   * are tessellated into `sketch_line` chains.
+   */
+  importVectorSubCalls(text: string, filename: string): number {
+    if (!this.state.sketchSession.active) return 0;
+    let calls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>;
+    try {
+      calls = importVectorToSubCalls(text, filename);
+    } catch {
+      return 0;
+    }
+    if (calls.length === 0) return 0;
+    this.pushSketchSubCalls(calls);
+    void solveAndReplace(this);
+    return calls.length;
+  }
+
+  /**
    * K6b.3d: wholesale replace the session's sub-spine. After a
    * commit-time solver pass rewrites the coordinates of every
    * call, the canvas overlay calls this to swap the old
@@ -1999,6 +2137,25 @@ export class KernelStore {
   }
 
   /**
+   * F20: stash the latest solve diagnostics on the active session so
+   * the Outliner constraints panel can flag conflicting / redundant
+   * constraint rows. No-op when no session is active. Called by
+   * `solveAndReplace` after a successful solve; the snapshot-identity
+   * guard there ensures a stale solve can't write outdated flags.
+   */
+  setSketchDiagnostics(diagnostics: SketchDiagnostics): void {
+    if (!this.state.sketchSession.active) return;
+    this.state = {
+      ...this.state,
+      sketchSession: {
+        ...this.state.sketchSession,
+        diagnostics,
+      },
+    };
+    this.notify();
+  }
+
+  /**
    * K6b.3g: drop a single sub-spine entry by index. Downstream
    * constraint calls whose references would dangle after the
    * removal are rewritten by the
@@ -2009,6 +2166,768 @@ export class KernelStore {
    */
   removeSketchSubCall(index: number): void {
     this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
+  }
+
+  /**
+   * Trim: cut the curve under `click` at its nearest intersections with
+   * the other sketch geometry and drop the picked piece. The clicked
+   * line/arc is replaced in place by the 0–2 surviving pieces (an
+   * intersection-free curve is deleted outright); downstream constraint
+   * refs are rewritten by [`replaceSketchSubCallAt`] and the sketch is
+   * re-solved. `tolMm` is the pick radius in sketch millimetres. No-op
+   * when nothing trimmable is under the cursor.
+   */
+  trimSketchAt(click: [number, number], tolMm: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const result = computeTrim(session.subCalls, click, tolMm);
+    if (!result) return;
+    this.updateSketch(
+      reduceReplaceAt(session, result.index, result.newCalls),
+    );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F13: Split — the keep-both sibling of Trim. The curve at
+   * `targetIndex` is cut at `click` into two sub-curves that meet at the
+   * click point; nothing is deleted. The clicked line/arc is replaced in
+   * place by its two pieces (each carrying the target's construction
+   * flag); downstream constraint refs are rewritten by
+   * [`replaceSketchSubCallAt`] and the sketch is re-solved. No-op when
+   * the target isn't a simple line/arc, or the click is at an endpoint /
+   * on a full circle (see sketchSplit.ts). `click` is in sketch mm.
+   */
+  splitSketchAt(
+    targetIndex: number,
+    click: [number, number],
+    _tolMm: number,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const cv = curveOfSubCall(target);
+    if (!cv) return; // composites / unsupported kinds: keep v1 simple
+
+    const pieces = splitCurveAt(cv, click);
+    if (!pieces) return;
+
+    const carry: Record<string, unknown> =
+      target.params.construction !== undefined
+        ? { construction: target.params.construction }
+        : {};
+    this.updateSketch(
+      reduceReplaceAt(session, targetIndex, [
+        subCallOfCurve(pieces[0], carry),
+        subCallOfCurve(pieces[1], carry),
+      ]),
+    );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F12: Extend (complement of Trim). Lengthen the line sub-call at
+   * `targetIndex` along its own direction until it meets the nearest other
+   * sketch curve. The endpoint nearer `click` is the grabbed end that
+   * moves outward; the far endpoint is preserved. The lengthened line
+   * replaces the target in place (carrying its construction flag);
+   * downstream constraint refs are rewritten by [`replaceSketchSubCallAt`]
+   * and the sketch is re-solved. No-op when the target isn't a line or
+   * nothing lies in the forward extension. `click` is in sketch mm.
+   */
+  extendSketchAt(
+    targetIndex: number,
+    click: [number, number],
+    _tolMm: number,
+  ): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const line = curveOfSubCall(target);
+    if (!line || line.kind !== "line") return;
+
+    // Every edge of every OTHER sub-call is a curve to extend into.
+    const others = session.subCalls.flatMap((call, i) =>
+      i === targetIndex ? [] : edgesOfSubCall(call),
+    );
+
+    const extended = extendLine(line, click, others);
+    if (!extended) return;
+
+    const carry: Record<string, unknown> =
+      target.params.construction !== undefined
+        ? { construction: target.params.construction }
+        : {};
+    this.updateSketch(
+      reduceReplaceAt(session, targetIndex, [subCallOfCurve(extended, carry)]),
+    );
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F14: interactive Mirror. Reflect the currently-selected source
+   * geometry across the axis line at sub-call index `axisLineIndex` and
+   * append the mirrored copies as ordinary `sketch_line` /
+   * `sketch_circle` / `sketch_arc` sub-calls (so they stay editable —
+   * this is a UI-side rewrite, no kernel mirror tool).
+   *
+   * Selection → sub-call rule: mirror every SIMPLE geometry sub-call
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null) that owns at
+   * least one selected entity, EXCLUDING the axis line itself. The axis
+   * line's two solved endpoints (read from `buildDraftSketchState`)
+   * define the infinite reflection axis. Each mirrored copy carries the
+   * source's construction flag. After appending, the sketch is re-solved
+   * and the selection is cleared.
+   *
+   * No-op when the axis isn't a line, the selection is empty, or nothing
+   * mirrorable remains after excluding the axis.
+   */
+  mirrorSketchSelection(axisLineIndex: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const axisCall = session.subCalls[axisLineIndex];
+    if (!axisCall) return;
+    const axisCurve = curveOfSubCall(axisCall);
+    if (!axisCurve || axisCurve.kind !== "line") return;
+    const axisA = axisCurve.a;
+    const axisB = axisCurve.b;
+
+    // Map the entity-id selection back to the simple-geometry sub-calls
+    // that produced it, dropping the axis line and any non-simple kinds.
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => {
+      if (i === axisLineIndex) return false;
+      return curveOfSubCall(session.subCalls[i]) !== null;
+    });
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const mirrored: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      mirrored.push(subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)));
+    }
+    if (mirrored.length === 0) return;
+
+    this.pushSketchSubCalls(mirrored);
+    this.updateSketch(reduceClearSelection(this.state.sketchSession));
+    void solveAndReplace(this);
+  }
+
+  /** F10: set the radius (mm) the two-click `sketch_fillet` tool uses to
+   *  round the next corner. No-op for a non-finite / non-positive value. */
+  setSketchFilletRadius(radius: number): void {
+    if (!Number.isFinite(radius) || radius <= 0) return;
+    this.patch({ sketchFilletRadius: radius });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F10: round the corner between the two line sub-calls at
+   * `firstIndex` and `secondIndex` with a tangent arc of `radius` mm.
+   * Reads both lines' solved geometry, computes the fillet via
+   * [`filletLines`], then rewrites the spine: the first line is replaced
+   * by its trimmed remainder in place, the second line is replaced by
+   * its trimmed remainder in place, and the rounding arc is appended.
+   * Downstream constraint refs are rewritten by [`replaceSketchSubCallAt`]
+   * and the sketch is re-solved. No-op when either pick isn't a line,
+   * they're the same call, or no fillet is geometrically possible
+   * (parallel, radius too large, no shared corner).
+   */
+  filletSketchAt(firstIndex: number, secondIndex: number, radius: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (firstIndex === secondIndex) return;
+    const c1 = session.subCalls[firstIndex];
+    const c2 = session.subCalls[secondIndex];
+    if (!c1 || !c2) return;
+    const cv1 = curveOfSubCall(c1);
+    const cv2 = curveOfSubCall(c2);
+    if (!cv1 || !cv2 || cv1.kind !== "line" || cv2.kind !== "line") return;
+
+    const fillet = filletLines(cv1, cv2, radius);
+    if (!fillet) return;
+
+    // Carry each line's construction flag onto its trimmed remainder; the
+    // arc inherits the first line's flag (a fillet of two construction
+    // lines stays construction).
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    // Replace the two lines in place (each a single trimmed line), then
+    // append the arc. Apply the higher index first so the lower index
+    // stays valid across the first rewrite.
+    const lo = Math.min(firstIndex, secondIndex);
+    const hi = Math.max(firstIndex, secondIndex);
+    const loCurve = lo === firstIndex ? fillet.trimmed1 : fillet.trimmed2;
+    const hiCurve = hi === firstIndex ? fillet.trimmed1 : fillet.trimmed2;
+    const loParams = lo === firstIndex ? c1.params : c2.params;
+    const hiParams = hi === firstIndex ? c1.params : c2.params;
+
+    let next = reduceReplaceAt(session, hi, [
+      subCallOfCurve(hiCurve, carry(hiParams)),
+    ]);
+    next = reduceReplaceAt(next, lo, [
+      subCallOfCurve(loCurve, carry(loParams)),
+    ]);
+    this.updateSketch(next);
+    this.pushSketchSubCalls([subCallOfCurve(fillet.arc, carry(c1.params))]);
+    void solveAndReplace(this);
+  }
+
+  /** F11: set the setback distance (mm) the two-click `sketch_chamfer`
+   *  tool uses to bevel the next corner. No-op for a non-finite /
+   *  non-positive value. */
+  setSketchChamferDistance(dist: number): void {
+    if (!Number.isFinite(dist) || dist <= 0) return;
+    this.patch({ sketchChamferDistance: dist });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F11: bevel the corner between the two line sub-calls at
+   * `firstIndex` and `secondIndex` with a straight chamfer at setback
+   * `dist` mm. Reads both lines' solved geometry, computes the chamfer
+   * via [`chamferLines`], then rewrites the spine: the first line is
+   * replaced by its trimmed remainder in place, the second line is
+   * replaced by its trimmed remainder in place, and the connecting bevel
+   * line is appended. Downstream constraint refs are rewritten by
+   * [`replaceSketchSubCallAt`] and the sketch is re-solved. No-op when
+   * either pick isn't a line, they're the same call, or no chamfer is
+   * geometrically possible (parallel, setback too large, no shared
+   * corner).
+   */
+  chamferSketchAt(firstIndex: number, secondIndex: number, dist: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (firstIndex === secondIndex) return;
+    const c1 = session.subCalls[firstIndex];
+    const c2 = session.subCalls[secondIndex];
+    if (!c1 || !c2) return;
+    const cv1 = curveOfSubCall(c1);
+    const cv2 = curveOfSubCall(c2);
+    if (!cv1 || !cv2 || cv1.kind !== "line" || cv2.kind !== "line") return;
+
+    const chamfer = chamferLines(cv1, cv2, dist);
+    if (!chamfer) return;
+
+    // Carry each line's construction flag onto its trimmed remainder; the
+    // bevel inherits the first line's flag (a chamfer of two construction
+    // lines stays construction).
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    // Replace the two lines in place (each a single trimmed line), then
+    // append the bevel. Apply the higher index first so the lower index
+    // stays valid across the first rewrite.
+    const lo = Math.min(firstIndex, secondIndex);
+    const hi = Math.max(firstIndex, secondIndex);
+    const loCurve = lo === firstIndex ? chamfer.trimmed1 : chamfer.trimmed2;
+    const hiCurve = hi === firstIndex ? chamfer.trimmed1 : chamfer.trimmed2;
+    const loParams = lo === firstIndex ? c1.params : c2.params;
+    const hiParams = hi === firstIndex ? c1.params : c2.params;
+
+    let next = reduceReplaceAt(session, hi, [
+      subCallOfCurve(hiCurve, carry(hiParams)),
+    ]);
+    next = reduceReplaceAt(next, lo, [
+      subCallOfCurve(loCurve, carry(loParams)),
+    ]);
+    this.updateSketch(next);
+    this.pushSketchSubCalls([subCallOfCurve(chamfer.line, carry(c1.params))]);
+    void solveAndReplace(this);
+  }
+
+  /** F15: set the distance (mm) the single-click `sketch_offset` tool
+   *  uses to place a parallel copy. No-op for a non-finite / non-positive
+   *  value. */
+  setSketchOffsetDistance(dist: number): void {
+    if (!Number.isFinite(dist) || dist <= 0) return;
+    this.patch({ sketchOffsetDistance: dist });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F15 / F15-full: offset the whole connected CHAIN the clicked curve
+   * belongs to, toward the side the click `clickPoint` lies on.
+   *
+   * From `targetIndex` the connected component of line/arc curves whose
+   * endpoints coincide is walked ([`buildChain`]); every segment is
+   * offset on a globally consistent side and the joints are reconciled —
+   * concave corners trim to the support intersection, convex corners get
+   * a rounding fillet arc of radius = distance, a closed loop also closes
+   * the wrap-around joint ([`offsetChain`]). The result is appended as
+   * ordinary `sketch_line` / `sketch_arc` sub-calls (the originals stay
+   * put), each carrying its source's construction flag, then the sketch
+   * is re-solved.
+   *
+   * A full circle (no endpoints) is never part of a chain and falls
+   * through to the concentric single-curve [`offsetCurve`]; a lone
+   * line/arc with no coincident neighbour is the degenerate length-1
+   * chain. No-op when the target isn't a simple curve or no valid offset
+   * exists (collapsed offset, degenerate geometry, bad distance).
+   */
+  offsetSketchAt(targetIndex: number, clickPoint: Vec2, distance: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const target = session.subCalls[targetIndex];
+    if (!target) return;
+    const cv = curveOfSubCall(target);
+    if (!cv) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined ? { construction: params.construction } : {};
+
+    // A full circle has no endpoints — offset it concentrically.
+    if (cv.kind === "circle") {
+      const offset = offsetCurve(cv, distance, clickPoint);
+      if (!offset) return;
+      this.pushSketchSubCalls([subCallOfCurve(offset, carry(target.params))]);
+      void solveAndReplace(this);
+      return;
+    }
+
+    // Build the connected chain of line/arc curves from the sub-spine,
+    // keeping each sub-call's curve at its own index so the seed maps in.
+    const curves = session.subCalls.map((c) => curveOfSubCall(c));
+    const chain = buildChain(curves, targetIndex);
+    if (!chain) return;
+    const clickedPos = chain.indices.indexOf(targetIndex);
+    if (clickedPos < 0) return;
+
+    const offsets = offsetChain(chain, clickedPos, distance, clickPoint);
+    if (!offsets || offsets.length === 0) return;
+
+    // The offset copies inherit the clicked source's construction flag.
+    const flags = carry(target.params);
+    this.pushSketchSubCalls(offsets.map((o) => subCallOfCurve(o, flags)));
+    void solveAndReplace(this);
+  }
+
+  /** F23-full: choose the spline family the `sketch_spline` tool draws. */
+  setSketchSplineMode(mode: "interpolate" | "control"): void {
+    this.patch({ sketchSplineMode: mode });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F24: set the string the `sketch_text` tool emits. */
+  setSketchTextValue(value: string): void {
+    this.patch({ sketchTextValue: value });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F24: set the cap height (mm) for the `sketch_text` tool. No-op for a
+   *  non-finite / non-positive value. */
+  setSketchTextHeight(height: number): void {
+    if (!Number.isFinite(height) || height <= 0) return;
+    this.patch({ sketchTextHeight: height });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F24-full: select the font the `sketch_text` tool renders with and
+   *  kick off its async load (no-op when already the current font). */
+  setSketchTextFontId(id: string): void {
+    if (this.state.sketchTextFontId === id) return;
+    this.patch({
+      sketchTextFontId: id,
+      sketchTextFontReady: cachedFont(id) !== undefined,
+    });
+    for (const listener of this.listeners) listener();
+    void this.ensureTextFontLoaded(id);
+  }
+
+  /**
+   * F24-full: ensure the currently-selected (or given) text font is
+   * fetched + parsed into the cache. Idempotent and safe to call on tool
+   * activation / font change. Flips `sketchTextFontReady` when the load
+   * settles. Uploaded fonts are already cached, so this returns fast.
+   */
+  async ensureTextFontLoaded(id = this.state.sketchTextFontId): Promise<void> {
+    if (cachedFont(id) !== undefined) {
+      if (this.state.sketchTextFontId === id && !this.state.sketchTextFontReady) {
+        this.patch({ sketchTextFontReady: true });
+        for (const listener of this.listeners) listener();
+      }
+      return;
+    }
+    try {
+      await loadBundledFont(id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: text font load failed", err);
+      return;
+    }
+    // Only flip ready if the user hasn't switched fonts meanwhile.
+    if (this.state.sketchTextFontId === id) {
+      this.patch({ sketchTextFontReady: true });
+      for (const listener of this.listeners) listener();
+    }
+  }
+
+  /**
+   * F24-full: parse an uploaded .ttf/.otf ArrayBuffer, register it under a
+   * synthetic id and make it the active text font. Returns the new id, or
+   * `null` when the buffer isn't a parseable font.
+   */
+  loadUploadedTextFont(name: string, buffer: ArrayBuffer): string | null {
+    let id: string;
+    try {
+      const font = parseFontBuffer(buffer);
+      id = registerUploadedFont(name, font);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: uploaded font parse failed", err);
+      return null;
+    }
+    this.patch({ sketchTextFontId: id, sketchTextFontReady: true });
+    for (const listener of this.listeners) listener();
+    return id;
+  }
+
+  /**
+   * F24-full: place the current text value as FILLED glyph sketch geometry
+   * with its baseline-left at `origin`, using the selected font. Each glyph
+   * becomes one `sketch_path` sub-call carrying its outer ring + holes (the
+   * kernel fills with even-odd holes), then the sketch is re-solved. No-op
+   * when no session is active, the font isn't loaded yet, or the text
+   * produces no geometry (e.g. an empty / all-space value).
+   */
+  placeSketchText(origin: [number, number]): void {
+    if (!this.state.sketchSession.active) return;
+    const font = cachedFont(this.state.sketchTextFontId);
+    if (!font) {
+      // Font not ready — kick a load so a follow-up click works.
+      void this.ensureTextFontLoaded();
+      return;
+    }
+    const calls = textToSubCalls(font, this.state.sketchTextValue, {
+      origin,
+      height: this.state.sketchTextHeight,
+    });
+    if (calls.length === 0) return;
+    this.pushSketchSubCalls(calls);
+    void solveAndReplace(this);
+  }
+
+  /** F16: set the number of pattern instances (original + copies). Must be
+   *  an integer ≥ 1; no-op for anything else. A value < 2 makes the
+   *  pattern actions no-ops (no copies). */
+  setSketchPatternCount(count: number): void {
+    if (!Number.isFinite(count) || count < 1) return;
+    this.patch({ sketchPatternCount: Math.round(count) });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F16: set the per-step spacing (mm) for a linear pattern. May be
+   *  negative (steps the opposite way); no-op for non-finite values. */
+  setSketchPatternSpacing(spacing: number): void {
+    if (!Number.isFinite(spacing)) return;
+    this.patch({ sketchPatternSpacing: spacing });
+    for (const listener of this.listeners) listener();
+  }
+
+  /** F16: set the total span (degrees) for a circular pattern. No-op for
+   *  non-finite values. */
+  setSketchPatternAngle(angleDeg: number): void {
+    if (!Number.isFinite(angleDeg)) return;
+    this.patch({ sketchPatternAngle: angleDeg });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F16: linear pattern of the current selection along `axis`.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null), produces the
+   * `count − 1` translated copies of each via [`patternLinear`] (per-step
+   * spacing `(spacing, 0)` for X, `(0, spacing)` for Y), and appends them
+   * as ordinary `sketch_line` / `sketch_circle` / `sketch_arc` sub-calls.
+   * Each copy carries its source's construction flag. The originals stay
+   * in place; the sketch is re-solved and the selection is kept.
+   *
+   * No-op when the selection is empty, nothing simple maps, or
+   * `count < 2`.
+   */
+  linearPatternSketch(axis: "x" | "y"): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const count = this.state.sketchPatternCount;
+    const spacing = this.state.sketchPatternSpacing;
+    const dx = axis === "x" ? spacing : 0;
+    const dy = axis === "x" ? 0 : spacing;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      for (const out of patternLinear([cv], count, dx, dy)) {
+        copies.push(subCallOfCurve(out, carry(call.params)));
+      }
+    }
+    if (copies.length === 0) return;
+
+    this.pushSketchSubCalls(copies);
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F16: circular pattern of the current selection about the sketch
+   * origin `[0, 0]`, spanning `sketchPatternAngle` degrees.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls and
+   * produces the `count − 1` rotated copies of each via
+   * [`patternCircular`] — see that helper for the full-vs-partial step
+   * rule (full revolution → 2π/count so copies don't overlap the
+   * original; partial → totalAngle/(count−1), inclusive span). Each copy
+   * is appended as an ordinary `sketch_line` / `sketch_circle` /
+   * `sketch_arc` carrying its source's construction flag. The originals
+   * stay in place; the sketch is re-solved and the selection is kept.
+   *
+   * No-op when the selection is empty, nothing simple maps, or
+   * `count < 2`.
+   */
+  circularPatternSketch(): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const count = this.state.sketchPatternCount;
+    const angleRad = (this.state.sketchPatternAngle * Math.PI) / 180;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+    for (const i of sources) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      for (const out of patternCircular([cv], count, [0, 0], angleRad)) {
+        copies.push(subCallOfCurve(out, carry(call.params)));
+      }
+    }
+    if (copies.length === 0) return;
+
+    this.pushSketchSubCalls(copies);
+    void solveAndReplace(this);
+  }
+
+  /** F17: set the rotation angle (degrees) the `rotateSketchSelection`
+   *  transform applies. No-op for non-finite values. */
+  setSketchRotateAngle(angleDeg: number): void {
+    if (!Number.isFinite(angleDeg)) return;
+    this.patch({ sketchRotateAngle: angleDeg });
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * F17: translate the current selection by `(dx, dy)`.
+   *
+   * Maps the entity-id selection back to its simple-geometry sub-calls
+   * (line / circle / arc, i.e. `curveOfSubCall` non-null) and translates
+   * each via [`translateCurve`].
+   *
+   *  - `copy === false` (Move): each selected geometry sub-call is replaced
+   *    IN PLACE by its translated version. A translation never changes a
+   *    sub-call's entity COUNT (a line stays a line, a circle a circle), so
+   *    the replacement allocates exactly as many ids as it freed — all
+   *    downstream entity ids stay put and no constraint refs shift. The
+   *    target indices are SNAPSHOTTED first and the replacements applied
+   *    highest-index-first so each index stays valid across the loop. The
+   *    selection is preserved (the same entity ids still own the moved
+   *    geometry).
+   *  - `copy === true` (Copy): the originals stay; one translated copy of
+   *    each selected geometry sub-call is appended as an ordinary
+   *    `sketch_line` / `sketch_circle` / `sketch_arc` carrying its source's
+   *    construction flag. The selection is preserved (still points at the
+   *    originals).
+   *
+   * Re-solves afterwards. No-op when the session is inactive, the
+   * selection is empty, or nothing simple maps.
+   */
+  moveSketchSelection(dx: number, dy: number, copy: boolean): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    if (copy) {
+      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      for (const i of sources) {
+        const call = session.subCalls[i];
+        const cv = curveOfSubCall(call);
+        if (!cv) continue;
+        copies.push(subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)));
+      }
+      if (copies.length === 0) return;
+      this.pushSketchSubCalls(copies);
+      void solveAndReplace(this);
+      return;
+    }
+
+    // In-place Move: replace each selected geometry sub-call with its
+    // translated self. Same entity count → ids stay stable, so we can
+    // apply against the SNAPSHOT of indices. Highest index first keeps the
+    // lower indices valid across each rewrite (replaceSketchSubCallAt
+    // clears the selection, but we restore it below).
+    let next = session;
+    for (const i of [...sources].sort((a, b) => b - a)) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      next = reduceReplaceAt(next, i, [
+        subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)),
+      ]);
+    }
+    // Entity ids are unchanged by an equal-count replace, so the original
+    // selection still points at the moved geometry — restore it.
+    this.updateSketch(reduceSetSelection(next, session.selection));
+    void solveAndReplace(this);
+  }
+
+  /**
+   * F17: rotate the current selection about the sketch origin `[0, 0]` by
+   * `angleDeg` degrees (CCW). Same selection → simple-geometry mapping and
+   * id-stability reasoning as [`moveSketchSelection`]: a rotation preserves
+   * each sub-call's entity count, so an in-place replace leaves all
+   * downstream ids and constraint refs intact.
+   *
+   *  - `copy === false`: replace each selected geometry sub-call in place
+   *    by its rotated version (selection preserved).
+   *  - `copy === true`: append one rotated copy of each (originals kept).
+   *
+   * Re-solves afterwards. No-op when the session is inactive, the
+   * selection is empty, or nothing simple maps.
+   */
+  rotateSketchSelection(angleDeg: number, copy: boolean): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selection.length === 0) return;
+
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const sources = subCallsForSelection(
+      session.subCalls,
+      session.selection,
+    ).filter((i) => curveOfSubCall(session.subCalls[i]) !== null);
+    if (sources.length === 0) return;
+
+    const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
+
+    if (copy) {
+      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      for (const i of sources) {
+        const call = session.subCalls[i];
+        const cv = curveOfSubCall(call);
+        if (!cv) continue;
+        copies.push(
+          subCallOfCurve(rotateCurve(cv, [0, 0], angleRad), carry(call.params)),
+        );
+      }
+      if (copies.length === 0) return;
+      this.pushSketchSubCalls(copies);
+      void solveAndReplace(this);
+      return;
+    }
+
+    let next = session;
+    for (const i of [...sources].sort((a, b) => b - a)) {
+      const call = session.subCalls[i];
+      const cv = curveOfSubCall(call);
+      if (!cv) continue;
+      next = reduceReplaceAt(next, i, [
+        subCallOfCurve(rotateCurve(cv, [0, 0], angleRad), carry(call.params)),
+      ]);
+    }
+    this.updateSketch(reduceSetSelection(next, session.selection));
+    void solveAndReplace(this);
+  }
+
+  /** Select mode: toggle a committed-entity id in the sketch
+   *  selection set. Ids are resolved against
+   *  `buildDraftSketchState(subCalls)` by the canvas. */
+  toggleSketchSelection(entityId: number): void {
+    this.updateSketch(reduceToggleSelection(this.state.sketchSession, entityId));
+  }
+
+  /** Replace the sketch selection wholesale. */
+  setSketchSelection(ids: ReadonlyArray<number>): void {
+    this.updateSketch(reduceSetSelection(this.state.sketchSession, ids));
+  }
+
+  /** Clear the sketch selection. */
+  clearSketchSelection(): void {
+    this.updateSketch(reduceClearSelection(this.state.sketchSession));
+  }
+
+  /**
+   * P0.1: apply an explicit geometric constraint to the current
+   * sketch selection. Maps the selected entity ids onto the
+   * constraint's kernel param names, appends the `sketch_constraint_*`
+   * sub-call, clears the selection and re-solves so the geometry
+   * snaps to satisfy the new relation. No-op when the selection
+   * doesn't match the constraint (the palette only offers matching
+   * ones, but the guard keeps the call safe).
+   */
+  applySketchConstraint(type: string): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const state = buildDraftSketchState(session.subCalls);
+    const call = buildConstraintCall(type, session.selection, state);
+    if (!call) return;
+    this.pushSketchSubCalls([call]);
+    this.clearSketchSelection();
+    void solveAndReplace(this);
   }
 
   toggleConstraintDriven(index: number): void {
@@ -2025,6 +2944,57 @@ export class KernelStore {
       params: { ...call.params, driven: !call.params.driven },
     };
     this.updateSketch({ ...session, subCalls: next });
+  }
+
+  /**
+   * P0.2: change the numeric value of a dimensional constraint
+   * (distance/angle) sub-call, then re-solve so the geometry snaps
+   * to the new measurement. The param key depends on the kind:
+   * `value_mm` for distance, `value_deg` for angle. No-op for
+   * non-dimensional calls or a non-finite value.
+   */
+  setSketchConstraintValue(index: number, value: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const call = session.subCalls[index];
+    if (!call || !Number.isFinite(value)) return;
+    const key =
+      call.type === "sketch_constraint_distance" ||
+      call.type === "sketch_constraint_radius" ||
+      call.type === "sketch_constraint_diameter"
+        ? "value_mm"
+        : call.type === "sketch_constraint_angle"
+          ? "value_deg"
+          : null;
+    if (key === null) return;
+    if (call.params[key] === value) return;
+    const next = [...session.subCalls];
+    next[index] = { ...call, params: { ...call.params, [key]: value } };
+    this.updateSketch({ ...session, subCalls: next });
+    void solveAndReplace(this);
+  }
+
+  /**
+   * Toggle the construction flag on a drawing sub-call. Construction
+   * geometry still solves and can be referenced by constraints but is
+   * dropped from the extrudable region (kernel `build_sketch2d`) and
+   * drawn dashed. Constraint sub-calls have no construction state, so
+   * the toggle is a no-op on them. Re-solves because the region — and
+   * thus the DoF colour — changes.
+   */
+  toggleSketchConstructionAt(index: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const call = session.subCalls[index];
+    if (!call || call.type.startsWith("sketch_constraint")) return;
+    const wasConstruction = Boolean(call.params.construction);
+    const next = [...session.subCalls];
+    next[index] = {
+      ...call,
+      params: { ...call.params, construction: !wasConstruction },
+    };
+    this.updateSketch({ ...session, subCalls: next });
+    void solveAndReplace(this);
   }
 
   /**

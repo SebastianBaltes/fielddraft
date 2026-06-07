@@ -16,13 +16,20 @@ import {
 import { type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
+import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
 import { FeatureDialog, FEATURE_TYPE_LABELS, FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import {
   buildDefaultDefinition,
   type FeatureSchema,
 } from "./widgets/schema";
-import { countDegreesOfFreedom } from "./solver/dofPreflight";
-import { buildDraftSketchState } from "./sketchSession";
+import { displayDegreesOfFreedom } from "./solver/dofPreflight";
+import type { SketchDiagnostics } from "./solver/types";
+import {
+  buildDraftSketchState,
+  idsOfSubCall,
+  constraintRefIds,
+  summarizeDiagnostics,
+} from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { formatQueryDisplay } from "./queryLabels";
 import { ElementInfo } from "./ElementInfo";
@@ -85,11 +92,16 @@ const SKETCH_SUB_LABEL: Record<string, string> = {
   sketch_constraint_tangent: "Tangent",
   sketch_constraint_midpoint: "Midpoint",
   sketch_constraint_symmetric: "Symmetric",
+  sketch_constraint_radius: "Radius",
+  sketch_constraint_diameter: "Diameter",
 };
 
 interface OutlinerProps {
   store: KernelStore;
   state: StoreState;
+  /** Mobile drawer: whether the off-canvas panel is slid in. Ignored on
+   *  desktop, where the outliner is always docked. */
+  mobileNavOpen?: boolean;
 }
 
 /** Outliner-splitter drag constraints. Width is clamped to these
@@ -121,7 +133,10 @@ function loadOutlinerWidth(defaultRem: number): number {
   return clampOutlinerWidth(defaultRem * rootFontSize);
 }
 
-export function Outliner({ store, state }: OutlinerProps) {
+export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps) {
+  // Below the phone breakpoint the outliner is an off-canvas drawer whose
+  // width comes from CSS, so the splitter-driven inline width is dropped.
+  const isMobile = useMediaQuery(MOBILE_QUERY);
   // K6a: memoised Outer API façade over the store's kernel. The
   // `createFdApi` return value is a tiny object of method refs,
   // so re-creating it per render is cheap — but memoising keeps
@@ -540,9 +555,9 @@ export function Outliner({ store, state }: OutlinerProps) {
 
   return (
     <aside
-      className="fd-outliner"
+      className={"fd-outliner" + (mobileNavOpen ? " is-open" : "")}
       data-testid="fielddraft-outliner"
-      style={{ width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
+      style={isMobile ? undefined : { width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
     >
       <div
         className="splitter"
@@ -605,33 +620,156 @@ export function Outliner({ store, state }: OutlinerProps) {
               Pick a sketch tool in the toolbar.
             </div>
           )}
-          {sketchSession.subCalls.length > 0 ? (
-            <ul className="sub-spine" data-testid="sketch-sub-spine">
-              {sketchSession.subCalls.map((call, i) => {
-                const isConstraint = call.type.startsWith("sketch_constraint");
-                return (
-                  <li key={i} className={"row" + (isConstraint ? " is-constraint" : "")}>
-                    <span className="kind">
-                      {kindGlyph(call.type)}{" "}
-                      {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
-                    </span>
-                    <button
-                      type="button"
-                      className="row-delete"
-                      title="Delete"
-                      data-testid={`sketch-sub-row-delete-${i}`}
-                      onClick={() => store.removeSketchSubCall(i)}
-                    >
-                      ×
-                    </button>
-                  </li>
+          {sketchSession.subCalls.length > 0
+            ? (() => {
+                const selection = new Set(sketchSession.selection);
+                const geometry: number[] = [];
+                const constraints: number[] = [];
+                sketchSession.subCalls.forEach((call, i) => {
+                  if (call.type.startsWith("sketch_constraint")) constraints.push(i);
+                  else geometry.push(i);
+                });
+
+                // F20: which constraint rows the last solve flagged.
+                const diag = summarizeDiagnostics(
+                  sketchSession.subCalls,
+                  sketchSession.diagnostics,
                 );
-              })}
-            </ul>
-          ) : null}
+
+                const renderRow = (i: number) => {
+                  const call = sketchSession.subCalls[i];
+                  const isConstraint = call.type.startsWith("sketch_constraint");
+                  const isConstruction = Boolean(call.params.construction);
+                  const refIds = isConstraint
+                    ? constraintRefIds(sketchSession.subCalls, i)
+                    : idsOfSubCall(sketchSession.subCalls, i);
+                  const isActive =
+                    refIds.length > 0 && refIds.every((id) => selection.has(id));
+                  const selectRow = () =>
+                    store.setSketchSelection(refIds);
+                  return (
+                    <li
+                      key={i}
+                      className={
+                        "row" +
+                        (isConstraint ? " is-constraint" : "") +
+                        (isConstruction ? " is-construction" : "") +
+                        (isActive ? " is-active" : "")
+                      }
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isActive}
+                      data-testid={`sketch-element-row-${i}`}
+                      onClick={selectRow}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          selectRow();
+                        }
+                      }}
+                    >
+                      <span className="kind">
+                        {kindGlyph(call.type)}{" "}
+                        {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
+                      </span>
+                      {isConstraint && diag.conflicts.has(i) ? (
+                        <span
+                          className="badge is-conflict"
+                          title="This constraint conflicts with the others — delete one of them to resolve the over-constrained sketch."
+                          data-testid={`sketch-constraint-conflict-${i}`}
+                        >
+                          conflict
+                        </span>
+                      ) : isConstraint && diag.redundants.has(i) ? (
+                        <span
+                          className="badge is-redundant"
+                          title="This constraint is redundant — it is already implied by the others and can be removed."
+                          data-testid={`sketch-constraint-redundant-${i}`}
+                        >
+                          redundant
+                        </span>
+                      ) : null}
+                      {!isConstraint ? (
+                        <button
+                          type="button"
+                          className={"row-construction" + (isConstruction ? " is-active" : "")}
+                          title={
+                            isConstruction
+                              ? "Construction geometry (reference only) — click to make it solid"
+                              : "Make this construction geometry (reference only, not extruded)"
+                          }
+                          aria-pressed={isConstruction}
+                          data-testid={`sketch-sub-row-construction-${i}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            store.toggleSketchConstructionAt(i);
+                          }}
+                        >
+                          ⊘
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="row-delete"
+                        title="Delete"
+                        data-testid={`sketch-sub-row-delete-${i}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          store.removeSketchSubCall(i);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  );
+                };
+
+                // Single list so the `.row` count contract stays
+                // geometry + constraints; section headers are
+                // non-`.row` list items that split the two groups.
+                return (
+                  <ul
+                    className="sub-spine elements"
+                    data-testid="sketch-sub-spine"
+                  >
+                    {geometry.length > 0 ? (
+                      <li
+                        className="elements-header"
+                        data-testid="sketch-elements-geometry"
+                      >
+                        Geometry ({geometry.length})
+                      </li>
+                    ) : null}
+                    {geometry.map(renderRow)}
+                    {constraints.length > 0 ? (
+                      <li
+                        className="elements-header"
+                        data-testid="sketch-elements-constraints"
+                      >
+                        Constraints ({constraints.length})
+                      </li>
+                    ) : null}
+                    {diag.conflictCount > 0 || diag.redundantCount > 0 ? (
+                      <li
+                        className={
+                          "diagnostics-summary" +
+                          (diag.conflictCount > 0 ? " has-conflict" : "")
+                        }
+                        data-testid="sketch-diagnostics-summary"
+                      >
+                        ⚠ {diag.conflictCount} conflicting, {diag.redundantCount}{" "}
+                        redundant
+                      </li>
+                    ) : null}
+                    {constraints.map(renderRow)}
+                  </ul>
+                );
+              })()
+            : null}
           <ConstraintManagerPanel
             subCalls={sketchSession.subCalls}
             store={store}
+            diagnostics={sketchSession.diagnostics}
           />
         </section>
       ) : null}
@@ -1587,9 +1725,11 @@ function MateCreator({
 function ConstraintManagerPanel({
   subCalls,
   store,
+  diagnostics,
 }: {
   subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>;
   store: KernelStore;
+  diagnostics: SketchDiagnostics;
 }) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -1614,18 +1754,27 @@ function ConstraintManagerPanel({
   let dof = 0;
   try {
     const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
-    dof = countDegreesOfFreedom(skState);
+    dof = displayDegreesOfFreedom(skState, diagnostics);
   } catch {
     // Malformed sub-calls (e.g. after undo) — fall back to 0 DoF.
   }
+  // The authoritative solver DoF is never negative; over-constraint is
+  // reported through conflicting/malformed constraints. The naive
+  // fallback (before the first solve) can still go negative, which we
+  // keep rendering as an "excess" hint.
+  const dofOver =
+    diagnostics.conflicting.length > 0 ||
+    diagnostics.malformed.length > 0 ||
+    dof < 0;
   const dofLabel =
-    dof > 0 ? `Under-constrained (${dof} DoF)` :
-    dof === 0 ? "Fully constrained" :
-    `Over-constrained (${Math.abs(dof)} excess)`;
-  const dofClass =
-    dof > 0 ? "dof-under" :
-    dof === 0 ? "dof-full" :
-    "dof-over";
+    dofOver
+      ? dof < 0
+        ? `Over-constrained (${Math.abs(dof)} excess)`
+        : "Over-constrained (conflict)"
+      : dof > 0
+        ? `Under-constrained (${dof} DoF)`
+        : "Fully constrained";
+  const dofClass = dofOver ? "dof-over" : dof > 0 ? "dof-under" : "dof-full";
 
   const counts: Record<string, number> = {};
   for (const { call } of constraintEntries) {
@@ -1652,15 +1801,18 @@ function ConstraintManagerPanel({
 
       <ul className="constraint-list" data-testid="constraint-list">
         {constraintEntries.map(({ call, index }) => {
-          const isDimensional =
+          // Distance, radius and diameter carry a millimetre value;
+          // angle carries a degree value. The rest are non-dimensional.
+          const isMmDim =
             call.type === "sketch_constraint_distance" ||
-            call.type === "sketch_constraint_angle";
+            call.type === "sketch_constraint_radius" ||
+            call.type === "sketch_constraint_diameter";
+          const isDimensional = isMmDim || call.type === "sketch_constraint_angle";
           const isDriven = isDimensional && Boolean(call.params.driven);
-          const value = isDimensional
-            ? call.type === "sketch_constraint_distance"
-              ? `${call.params.value_mm ?? "?"} mm`
-              : `${call.params.value_deg ?? "?"}°`
-            : null;
+          const dimUnit = isMmDim ? "mm" : "°";
+          const dimValue = isDimensional
+            ? Number(isMmDim ? call.params.value_mm : call.params.value_deg)
+            : NaN;
 
           return (
             <li
@@ -1688,8 +1840,37 @@ function ConstraintManagerPanel({
               <span className="name">
                 {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_constraint_", "")}
               </span>
-              {value && (
-                <span className="value">{value}</span>
+              {isDimensional && (
+                <span className="value">
+                  <input
+                    key={dimValue}
+                    className="dim-input"
+                    type="number"
+                    inputMode="decimal"
+                    aria-label={`Dimension value (${dimUnit})`}
+                    data-testid={`constraint-value-${index}`}
+                    defaultValue={Number.isFinite(dimValue) ? dimValue : ""}
+                    disabled={isDriven}
+                    title={
+                      isDriven
+                        ? "Driven dimension (read-only)"
+                        : "Edit to drive the geometry"
+                    }
+                    onBlur={(e) => {
+                      const n = Number(e.currentTarget.value);
+                      if (Number.isFinite(n)) {
+                        store.setSketchConstraintValue(index, n);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                  <span className="unit">{dimUnit}</span>
+                </span>
               )}
               {isDimensional && (
                 <span

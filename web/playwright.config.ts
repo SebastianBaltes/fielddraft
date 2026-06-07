@@ -45,7 +45,11 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [["list"]],
-  timeout: 30_000,
+  // Real-GPU runs average ~33 s/test (WebGPU shader compile + first-paint),
+  // so a 30 s cap sat right on the edge — under load, tests randomly crossed
+  // it and failed with `mouse.move: Test timeout` (page unresponsive, not a
+  // logic bug). 60 s gives the compile headroom; the suite is still serial.
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   use: {
     baseURL,

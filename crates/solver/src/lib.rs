@@ -94,10 +94,11 @@ impl Point2 {
 // ─── entities ───────────────────────────────────────────────────
 
 /// One sketch entity — a geometric primitive the solver can
-/// constrain. Mirrors the PlaneGCS primitive set that K5a commits
-/// to supporting in the MVP; additional types (ellipse, B-spline)
-/// can be added later without breaking the wire shape because the
-/// enum is versioned through [`fielddraft_protocol::SCHEMA_VERSION`].
+/// constrain. Mirrors the PlaneGCS primitive set FieldDraft
+/// supports: `Point`, `Line`, `Circle`, `Arc`, `Ellipse`,
+/// `BSpline`, and `Origin`. Further conics (hyperbola, parabola)
+/// can be added without breaking the wire shape because the enum is
+/// versioned through [`fielddraft_protocol::SCHEMA_VERSION`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entity {
@@ -130,6 +131,46 @@ pub enum Entity {
         end: EntityId,
         radius: f64,
     },
+    /// A full ellipse, parameterised the way PlaneGCS models it:
+    /// a centre point, one focus point, and the semi-minor radius
+    /// (`radmin`). The semi-major radius and the major-axis
+    /// orientation are *implied* by the focus position —
+    /// `a = hypot(radmin, |centre − focus1|)`, with the major axis
+    /// pointing along centre→focus1. The focus is an internal
+    /// construction point: it's allocated in the sketch so the solver
+    /// can move it (reshaping the ellipse), but the UI never surfaces
+    /// it as a pickable vertex. Constraints (`Tangent`,
+    /// `PointOnObject`) bind to the ellipse entity itself.
+    Ellipse {
+        id: EntityId,
+        center: EntityId,
+        focus1: EntityId,
+        radmin: f64,
+    },
+    /// A B-spline curve, parameterised the way PlaneGCS models it:
+    /// an ordered list of control points (`poles`) plus the curve
+    /// `degree` and a `periodic` flag. The knot vector is *implied*
+    /// — a clamped-uniform vector for an open (`!periodic`) curve,
+    /// derived from `poles.len()` and `degree` (distinct knots
+    /// `[0,1,…,n−degree]` with end multiplicity `degree+1`). The
+    /// poles are ordinary point entities the solver can move,
+    /// reshaping the curve; the B-spline entity itself carries no
+    /// movable scalar. Weights are implicitly 1 (non-rational).
+    /// Constraints (`PointOnObject` → point-on-spline) bind to the
+    /// B-spline entity; the solver lands the point exactly on the
+    /// curve via a free internal curve parameter.
+    ///
+    /// Only *open* control-polygon splines are modelled here:
+    /// interpolating (Catmull-Rom) splines pass *through* their
+    /// points rather than treating them as poles, and periodic
+    /// (closed) splines use a different knot convention — both keep
+    /// their existing endpoint-leg G1 handling instead.
+    BSpline {
+        id: EntityId,
+        poles: Vec<EntityId>,
+        degree: u32,
+        periodic: bool,
+    },
     /// The immovable origin of the sketch. Every sketch has
     /// exactly one origin; it's the anchor that keeps the
     /// constraint graph's DOF count from running away and it's
@@ -146,6 +187,8 @@ impl Entity {
             Entity::Line { .. } => "line",
             Entity::Circle { .. } => "circle",
             Entity::Arc { .. } => "arc",
+            Entity::Ellipse { .. } => "ellipse",
+            Entity::BSpline { .. } => "bspline",
             Entity::Origin { .. } => "origin",
         }
     }
@@ -156,7 +199,9 @@ impl Entity {
             | Entity::Line { id, .. }
             | Entity::Circle { id, .. }
             | Entity::Arc { id, .. }
+            | Entity::Ellipse { id, .. }
             | Entity::Origin { id } => id,
+            Entity::BSpline { id, .. } => id,
         }
     }
 }
@@ -221,7 +266,8 @@ pub enum Constraint {
         #[serde(default)]
         driven: bool,
     },
-    /// A line is tangent to a circle or arc at the entity's edge.
+    /// A line is tangent to a curve (circle, arc, or ellipse) at the
+    /// entity's edge. Dispatched on the curve kind on the solver side.
     Tangent {
         id: ConstraintId,
         line: EntityId,
@@ -232,6 +278,23 @@ pub enum Constraint {
         id: ConstraintId,
         a: EntityId,
         b: EntityId,
+    },
+    /// Pin a point at its current position — removes both of the
+    /// point's DOFs. Realised on the PlaneGCS side via the entity's
+    /// `fixed: true` flag (the same mechanism the origin uses), not
+    /// a dedicated solver primitive.
+    Fix {
+        id: ConstraintId,
+        point: EntityId,
+    },
+    /// A point is constrained to lie on a curve — a line, circle,
+    /// arc, ellipse, or B-spline. Removes one of the point's DOFs (it
+    /// keeps one freedom sliding along the curve). Dispatched on the
+    /// curve kind to the matching PlaneGCS primitive.
+    PointOnObject {
+        id: ConstraintId,
+        point: EntityId,
+        curve: EntityId,
     },
     /// Two equivalent entities have the same primary scalar —
     /// same length for lines, same radius for circles/arcs.
@@ -253,6 +316,25 @@ pub enum Constraint {
         b: EntityId,
         axis: EntityId,
     },
+    /// A circle or arc has a fixed radius (mm). Dimensional, with the
+    /// same `driven` semantics as [`Constraint::Distance`].
+    Radius {
+        id: ConstraintId,
+        entity: EntityId,
+        value_mm: f64,
+        #[serde(default)]
+        driven: bool,
+    },
+    /// A circle or arc has a fixed diameter (mm). Stored as the
+    /// diameter so the UI annotation round-trips; the solver pins
+    /// `2·radius`. Dimensional, same `driven` semantics.
+    Diameter {
+        id: ConstraintId,
+        entity: EntityId,
+        value_mm: f64,
+        #[serde(default)]
+        driven: bool,
+    },
 }
 
 impl Constraint {
@@ -267,9 +349,13 @@ impl Constraint {
             | Constraint::Angle { id, .. }
             | Constraint::Tangent { id, .. }
             | Constraint::Concentric { id, .. }
+            | Constraint::Fix { id, .. }
+            | Constraint::PointOnObject { id, .. }
             | Constraint::Equal { id, .. }
             | Constraint::Midpoint { id, .. }
-            | Constraint::Symmetric { id, .. } => id,
+            | Constraint::Symmetric { id, .. }
+            | Constraint::Radius { id, .. }
+            | Constraint::Diameter { id, .. } => id,
         }
     }
 
@@ -284,9 +370,13 @@ impl Constraint {
             Constraint::Angle { .. } => "angle",
             Constraint::Tangent { .. } => "tangent",
             Constraint::Concentric { .. } => "concentric",
+            Constraint::Fix { .. } => "fix",
+            Constraint::PointOnObject { .. } => "point_on_object",
             Constraint::Equal { .. } => "equal",
             Constraint::Midpoint { .. } => "midpoint",
             Constraint::Symmetric { .. } => "symmetric",
+            Constraint::Radius { .. } => "radius",
+            Constraint::Diameter { .. } => "diameter",
         }
     }
 
@@ -298,7 +388,10 @@ impl Constraint {
     pub fn is_dimensional(&self) -> bool {
         matches!(
             self,
-            Constraint::Distance { .. } | Constraint::Angle { .. }
+            Constraint::Distance { .. }
+                | Constraint::Angle { .. }
+                | Constraint::Radius { .. }
+                | Constraint::Diameter { .. }
         )
     }
 }
@@ -423,6 +516,44 @@ impl SketchState {
             start,
             end,
             radius,
+        });
+        id
+    }
+
+    /// Push an ellipse referencing its (already-allocated) centre and
+    /// focus points plus its semi-minor radius. Returns the new id.
+    pub fn add_ellipse(
+        &mut self,
+        center: EntityId,
+        focus1: EntityId,
+        radmin: f64,
+    ) -> EntityId {
+        let id = self.allocate_entity_id();
+        self.entities.push(Entity::Ellipse {
+            id,
+            center,
+            focus1,
+            radmin,
+        });
+        id
+    }
+
+    /// Push a B-spline referencing its (already-allocated) control
+    /// points (`poles`), with the given `degree` and `periodic` flag.
+    /// Returns the new id. The knot vector is implied by the pole
+    /// count and degree (see [`Entity::BSpline`]).
+    pub fn add_bspline(
+        &mut self,
+        poles: Vec<EntityId>,
+        degree: u32,
+        periodic: bool,
+    ) -> EntityId {
+        let id = self.allocate_entity_id();
+        self.entities.push(Entity::BSpline {
+            id,
+            poles,
+            degree,
+            periodic,
         });
         id
     }
@@ -604,6 +735,52 @@ mod tests {
             }
             other => panic!("expected Arc, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_ellipse_references_centre_and_focus_by_id() {
+        let mut s = SketchState::new();
+        let center = s.add_point(Point2::new(0.0, 0.0));
+        let focus = s.add_point(Point2::new(3.0, 0.0));
+        let ell = s.add_ellipse(center, focus, 4.0);
+        match s.entity(ell).unwrap() {
+            Entity::Ellipse {
+                center: c,
+                focus1,
+                radmin,
+                ..
+            } => {
+                assert_eq!(*c, center);
+                assert_eq!(*focus1, focus);
+                assert_eq!(*radmin, 4.0);
+            }
+            other => panic!("expected Ellipse, got {other:?}"),
+        }
+        assert_eq!(s.entity(ell).unwrap().kind_name(), "ellipse");
+    }
+
+    #[test]
+    fn add_bspline_references_its_poles_in_order() {
+        let mut s = SketchState::new();
+        let p0 = s.add_point(Point2::new(0.0, 0.0));
+        let p1 = s.add_point(Point2::new(1.0, 2.0));
+        let p2 = s.add_point(Point2::new(2.0, 2.0));
+        let p3 = s.add_point(Point2::new(3.0, 0.0));
+        let bs = s.add_bspline(vec![p0, p1, p2, p3], 3, false);
+        match s.entity(bs).unwrap() {
+            Entity::BSpline {
+                poles,
+                degree,
+                periodic,
+                ..
+            } => {
+                assert_eq!(poles, &vec![p0, p1, p2, p3]);
+                assert_eq!(*degree, 3);
+                assert!(!*periodic);
+            }
+            other => panic!("expected BSpline, got {other:?}"),
+        }
+        assert_eq!(s.entity(bs).unwrap().kind_name(), "bspline");
     }
 
     #[test]

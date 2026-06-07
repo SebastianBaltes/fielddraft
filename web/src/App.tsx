@@ -13,6 +13,10 @@ import type { SettingsState } from "./SettingsMenu";
 export function App() {
   const { store, state, error } = useKernelStore();
   const [showHelp, setShowHelp] = useState(false);
+  // Mobile-only: the outliner is an off-canvas drawer toggled from the
+  // topbar. On desktop the toggle/scrim are hidden by CSS and this stays
+  // a no-op.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsState>(() => loadSettings());
 
   const compact = settings.compact;
@@ -117,6 +121,12 @@ export function App() {
               store.enterSketch("qCreatedBy(origin_plane_xy)");
             } else if (cur.mateMode) {
               store.toggleMateMode();
+            } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
+              // P0.1: in a sketch session, Esc drops the active drawing
+              // tool and returns to select mode so geometry can be picked.
+              store.selectSketchTool(null);
+            } else if (cur.sketchSession.active && cur.sketchSession.selection.length > 0) {
+              store.clearSketchSelection();
             } else {
               store.clearSelection();
             }
@@ -202,6 +212,16 @@ export function App() {
     <WorkspaceUnitsContext.Provider value={settings.units}>
     <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
       <header className="topbar">
+        <button
+          type="button"
+          className="nav-toggle"
+          data-testid="mobile-nav-toggle"
+          aria-label={mobileNavOpen ? "Close panel" : "Open panel"}
+          aria-expanded={mobileNavOpen}
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          ☰
+        </button>
         <div className="title">
           FieldDraft <span className="version">v{__APP_VERSION__}</span>
           <SettingsMenu
@@ -256,7 +276,16 @@ export function App() {
         {store && state ? <Toolbar store={store} state={state} /> : null}
         <main className="main">
           <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} />
-          {store && state ? <Outliner store={store} state={state} /> : null}
+          {mobileNavOpen ? (
+            <div
+              className="fd-nav-scrim"
+              data-testid="mobile-nav-scrim"
+              onClick={() => setMobileNavOpen(false)}
+            />
+          ) : null}
+          {store && state ? (
+            <Outliner store={store} state={state} mobileNavOpen={mobileNavOpen} />
+          ) : null}
         </main>
       </div>
       <div className="fd-workspace fd-script-workspace" hidden={activeProjectTab?.kind !== "script"}>

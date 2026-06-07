@@ -42,6 +42,33 @@ export type Entity =
       end: EntityId;
       radius: number;
     }
+  | {
+      // PlaneGCS parameterisation: centre + one focus point + the
+      // semi-minor radius. Semi-major and orientation are implied by
+      // the focus (`a = hypot(radmin, |centre − focus1|)`, major axis
+      // along centre→focus1). `focus1` is an internal construction
+      // point — allocated so the solver can reshape the ellipse, but
+      // excluded from hit-testing / box-select (see sketchHitTest).
+      // Mirrors Rust `Entity::Ellipse` in `crates/solver/src/lib.rs`.
+      kind: "ellipse";
+      id: EntityId;
+      center: EntityId;
+      focus1: EntityId;
+      radmin: number;
+    }
+  | {
+      // A B-spline curve: an ordered list of control points (`poles`)
+      // plus the curve `degree` and a `periodic` flag. The knot vector
+      // is implied (clamped-uniform for `!periodic`). The poles are
+      // ordinary point entities; the B-spline carries no movable scalar.
+      // Only open control-polygon splines are modelled (point-on-spline
+      // binds to this entity). Mirrors Rust `Entity::BSpline`.
+      kind: "bspline";
+      id: EntityId;
+      poles: EntityId[];
+      degree: number;
+      periodic: boolean;
+    }
   | { kind: "origin"; id: EntityId };
 
 // ─── constraints ─────────────────────────────────────────────────
@@ -77,6 +104,13 @@ export type Constraint =
     }
   | { kind: "tangent"; id: ConstraintId; line: EntityId; curve: EntityId }
   | { kind: "concentric"; id: ConstraintId; a: EntityId; b: EntityId }
+  | { kind: "fix"; id: ConstraintId; point: EntityId }
+  | {
+      kind: "point_on_object";
+      id: ConstraintId;
+      point: EntityId;
+      curve: EntityId;
+    }
   | { kind: "equal"; id: ConstraintId; a: EntityId; b: EntityId }
   | { kind: "midpoint"; id: ConstraintId; point: EntityId; line: EntityId }
   | {
@@ -85,11 +119,30 @@ export type Constraint =
       a: EntityId;
       b: EntityId;
       axis: EntityId;
+    }
+  | {
+      kind: "radius";
+      id: ConstraintId;
+      entity: EntityId;
+      value_mm: number;
+      driven?: boolean;
+    }
+  | {
+      kind: "diameter";
+      id: ConstraintId;
+      entity: EntityId;
+      value_mm: number;
+      driven?: boolean;
     };
 
 /** Does this constraint carry an editable numeric value? */
 export function isDimensional(c: Constraint): boolean {
-  return c.kind === "distance" || c.kind === "angle";
+  return (
+    c.kind === "distance" ||
+    c.kind === "angle" ||
+    c.kind === "radius" ||
+    c.kind === "diameter"
+  );
 }
 
 // ─── sketch state ────────────────────────────────────────────────
