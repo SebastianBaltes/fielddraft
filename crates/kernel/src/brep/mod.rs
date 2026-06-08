@@ -24,6 +24,7 @@
 //! ([`VertexId`], [`EdgeId`], …). This is the borrow-checker-friendly idiom —
 //! no `Rc`/`RefCell`, cheap to clone, and trivially serialisable.
 
+pub mod diff;
 pub mod edge_sampling;
 pub mod edge_trace;
 pub mod edge_walker;
