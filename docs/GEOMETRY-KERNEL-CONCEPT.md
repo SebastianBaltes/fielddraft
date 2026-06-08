@@ -36,6 +36,15 @@ FieldDraft ist ein hybrider CAD-Kernel, der die Robustheit von Signed Distance F
 
 ## Halbraum-Architektur (Half-Space CSG)
 
+> ⚠️ **ÜBERHOLT (DL-46, siehe Banner am Dokumentanfang).** Der folgende Abschnitt
+> beschreibt die *verworfene* Half-Space-only-Leaf-Node-Architektur. Im realen Code
+> sind die Leaf Nodes geschlossene `Primitive` (Box, Sphere, …), **nicht** in
+> Halbräume expandierte Bäume. Halbräume existieren nur noch als
+> *Flächenbeschreibung* pro Branch (`branch_halfspace_map`, `csg.rs::primitive_halfspaces`),
+> nicht als SDF-Auswertungsbasis. Gültig bleiben nur Branch-Tracking und das
+> „Kanten = Branch-Kollision"-Prinzip. Zum Verständnis des Ist-Stands besser
+> `docs/ARCHITECTURE.md` §5 lesen.
+
 Das System kennt keine geschlossenen 3D-Körper (wie Würfel oder Zylinder) mit intrinsischen Kanten. Die Basisbausteine (Leaf Nodes) des Systems sind ausschließlich **unendliche, weiche, C∞-stetige Flächen**. Alle scharfen Kanten entstehen erst durch Boolesche Operationen zwischen diesen Flächen.
 
 ### Leaf-Node-Kategorien
