@@ -1466,20 +1466,21 @@ mod tests {
     use fielddraft_protocol::{FeatureId, Primitive};
     use std::collections::HashSet;
 
-    /// DL-79: a curved union partner that inflates the body AABB makes the octree
-    /// coarser and grid-shifted, so a clean box edge ends up sampled by cells that
-    /// straddle only ONE of its two faces — the other face is an eps-runner-up
-    /// sitting just outside the cell. Its in-cell Newton projection then slides
-    /// onto the present face, the two tangent normals coincide, and
-    /// `solve_edge_point` returns `None` (degenerate cross product), dropping the
-    /// whole edge group. This is the uploaded-project bug: the box's −y∩+z edge
-    /// (signature `(4099, 4100)`) vanished entirely while both its endpoint
-    /// corners survived. The outward-seed rescue must recover it WITHOUT any
-    /// analytic half-space projection. Geometry is the body-local frame of the
-    /// real `.fdraft`: a unit box at the origin and a sphere placed so its top
-    /// grazes just under the +z face (the worst case for the +z-edge bleed).
+    /// DL-81: a sphere that pokes out of the box's −x face but whose intersection
+    /// circle stays in the face *interior* — closest approach ~0.44 mm shy of the
+    /// −x∩−z and −x∩+y box edges, never crossing them. At the web's resolution the
+    /// sphere-inflated AABB makes octree cells ~5 mm, so cells along those edges
+    /// see all three branches {−x, −z, sphere} and mint a `Vertex` cell. The
+    /// three surfaces have NO common zero (the sphere never reaches the edge line),
+    /// so the LSQ vertex is a phantom sitting ~0.1 mm inside the edge. Keeping it
+    /// bisected the straight box edge into two kinked fragments dragged toward the
+    /// sphere (the uploaded-project bug). `refine_triple_vertex` now reports such
+    /// an analytically-disproven junction as `Spurious` and the wireframe drops it,
+    /// so every box edge stays a single straight unsplit segment.
+    ///
+    /// Geometry is the body-local frame of the real `.fdraft`.
     #[test]
-    fn box_union_grazing_sphere_keeps_all_box_edges() {
+    fn box_union_interior_sphere_keeps_box_edges_straight() {
         let csg = CsgNode::Union(
             Box::new(CsgNode::Leaf {
                 id: FeatureId::from_u32(1),
@@ -1509,18 +1510,21 @@ mod tests {
             brep.validate()
         );
 
-        // All 12 adjacent box-face pairs must appear as edges. Box feature id 1
-        // expands to half-space branches 4096..=4101 (+x −x +y −y +z −z); the 12
-        // edges are every pair of NON-opposite faces.
+        // Box feature id 1 expands to half-space branches 4096..=4101
+        // (+x −x +y −y +z −z); the 12 edges are every pair of NON-opposite faces.
         let opposite = |a: u32, b: u32| (a.min(b), a.max(b)) == (4096, 4097)
             || (a.min(b), a.max(b)) == (4098, 4099)
             || (a.min(b), a.max(b)) == (4100, 4101);
+        let is_box = |a: u32, b: u32| (4096..=4101).contains(&a) && (4096..=4101).contains(&b);
+
+        // Each of the 12 adjacent box-face pairs must appear EXACTLY ONCE: a
+        // duplicate signature means a phantom vertex split a straight edge in two.
         let box_edge_sigs: Vec<(u32, u32)> = brep
             .edges
             .iter()
             .filter_map(|e| {
                 let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
-                ((4096..=4101).contains(&a) && (4096..=4101).contains(&b)).then_some((a, b))
+                is_box(a, b).then_some((a, b))
             })
             .collect();
         for a in 4096..=4101u32 {
@@ -1528,12 +1532,50 @@ mod tests {
                 if opposite(a, b) {
                     continue;
                 }
-                assert!(
-                    box_edge_sigs.contains(&(a, b)),
-                    "box edge ({a},{b}) missing; got box edges {box_edge_sigs:?}"
+                let n = box_edge_sigs.iter().filter(|&&s| s == (a, b)).count();
+                assert_eq!(
+                    n, 1,
+                    "box edge ({a},{b}) should be a single segment, found {n} (split by a phantom vertex?); box edges {box_edge_sigs:?}"
                 );
             }
         }
+
+        // Every box edge must be geometrically straight: its sampled polyline may
+        // not bow off the chord between its endpoints (the phantom kink reached
+        // ~0.1 mm; a clean plane∩plane edge is exact to float noise).
+        for e in &brep.edges {
+            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            if !is_box(a, b) {
+                continue;
+            }
+            let pts = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            let (p0, pn) = (*pts.first().unwrap(), *pts.last().unwrap());
+            let chord = sub(pn, p0);
+            let cl = norm(chord);
+            assert!(cl > 1.0, "degenerate box edge ({a},{b})");
+            let u = [chord[0] / cl, chord[1] / cl, chord[2] / cl];
+            let max_dev = pts
+                .iter()
+                .map(|&p| {
+                    let d = sub(p, p0);
+                    let t = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+                    norm(sub(p, [p0[0] + u[0] * t, p0[1] + u[1] * t, p0[2] + u[2] * t]))
+                })
+                .fold(0.0f64, f64::max);
+            assert!(
+                max_dev < 1e-3,
+                "box edge ({a},{b}) bows {max_dev:.4} mm off its chord — phantom-vertex kink"
+            );
+        }
+
+        // The only vertices are the 8 box corners: the sphere's interior circle is
+        // a closed loop with no corner, and no box edge is touched, so no genuine
+        // triple junction exists. Any extra vertex is a surviving phantom.
+        assert_eq!(
+            brep.vertices.len(),
+            8,
+            "only the 8 box corners should remain; phantom triple junctions must be dropped"
+        );
     }
 
     fn box_body(half: [f32; 3]) -> BoundedCsg {

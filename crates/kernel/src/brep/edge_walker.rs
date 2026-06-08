@@ -1049,19 +1049,40 @@ const VERTEX_REFINE_TOL: f32 = 1e-3;
 /// the box edge, not between the surface normals — so we solve the corner
 /// directly: minimise `Σ sdf_i(p)²` over the analytic branch surfaces by
 /// Gauss-Newton. Resolution-independent and outlier-proof: the scattered samples
-/// only seed it. Returns `None` (keep the centroid) when any branch has no
-/// analytic surface (a tessellated sweep / domain-warp face), the normals are
-/// rank-deficient (no isolated corner), or the solve does not converge.
+/// only seed it.
+///
+/// The three-way result lets the caller tell a *spurious* junction from one it
+/// merely cannot judge (DL-81): when every branch is analytic and full-rank but
+/// the surfaces have **no common zero** (the sphere passes the box edge without
+/// touching it — `residual` floors well above the tolerance), the candidate is
+/// not a real vertex at all and must be dropped, not kept at its centroid. A
+/// dropped phantom unsplits the straight box edge it was bisecting.
+enum TripleRefine {
+    /// Converged onto the true common corner.
+    Refined([f64; 3]),
+    /// All branches analytic and full-rank, but no point drives every surface to
+    /// zero — the three surfaces provably do not concur. Drop the vertex.
+    Spurious,
+    /// Cannot judge analytically: a branch lacks an analytic surface (tessellated
+    /// sweep / domain warp) or the normals are rank-deficient. Keep the centroid.
+    Indeterminate,
+}
+
 fn refine_triple_vertex(
     halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
     branches: &[BranchId],
     seed: [f64; 3],
-) -> Option<[f64; 3]> {
+) -> TripleRefine {
     // Every branch must carry an analytic surface, else we cannot solve.
-    let surfs: Vec<&(fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)> =
-        branches.iter().map(|b| halfspaces.get(&b.as_u32())).collect::<Option<_>>()?;
+    let Some(surfs) = branches
+        .iter()
+        .map(|b| halfspaces.get(&b.as_u32()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return TripleRefine::Indeterminate;
+    };
     if surfs.len() < 3 {
-        return None;
+        return TripleRefine::Indeterminate;
     }
 
     // Signed distance of world point `p` to one branch surface.
@@ -1072,11 +1093,18 @@ fn refine_triple_vertex(
 
     let mut p = [seed[0] as f32, seed[1] as f32, seed[2] as f32];
     let h = 1e-3f32; // central-difference step (planes are exact; only the
-    // curved surfaces incur a step error, which Gauss-Newton absorbs).
+    // curved surfaces incur a step error, which Levenberg-Marquardt absorbs).
+    // Damping makes `JᵀJ` invertible even when the three normals share a tangent
+    // direction (a sphere grazing *parallel* to a box edge: all three gradients
+    // lie in the cross-plane, so the along-edge axis is unconstrained). The
+    // residual is flat along that null axis, so suppressing the step there costs
+    // nothing — and lets the final residual report the true intersection floor
+    // instead of bailing to `Indeterminate` and keeping a phantom corner (DL-81).
+    const LM_DAMP: f32 = 1e-4;
 
     for _ in 0..VERTEX_REFINE_MAX_ITER {
         if residual(p) < VERTEX_REFINE_TOL {
-            return Some([p[0] as f64, p[1] as f64, p[2] as f64]);
+            return TripleRefine::Refined([p[0] as f64, p[1] as f64, p[2] as f64]);
         }
         let mut jtj = Matrix3::<f32>::zeros();
         let mut jtf = Vector3::<f32>::zeros();
@@ -1093,20 +1121,22 @@ fn refine_triple_vertex(
             jtj += gv * gv.transpose();
             jtf += gv * f;
         }
-        // Reject a rank-deficient normal matrix (parallel normals → no isolated
-        // corner): the smallest eigenvalue of `JᵀJ` collapses there.
-        let min_ev = SymmetricEigen::new(jtj)
-            .eigenvalues
-            .iter()
-            .copied()
-            .fold(f32::INFINITY, f32::min);
-        if min_ev < 1e-6 {
-            return None;
-        }
-        let delta = jtj.try_inverse()? * jtf;
+        let damped = jtj + Matrix3::identity() * LM_DAMP;
+        let Some(inv) = damped.try_inverse() else {
+            return TripleRefine::Indeterminate;
+        };
+        let delta = inv * jtf;
         p = [p[0] - delta[0], p[1] - delta[1], p[2] - delta[2]];
     }
-    (residual(p) < VERTEX_REFINE_TOL).then_some([p[0] as f64, p[1] as f64, p[2] as f64])
+    // Converged as far as the surfaces allow. If every branch is driven to zero
+    // this is the true common corner; otherwise the analytic surfaces have no
+    // common zero here — the phantom triple junction (sphere passing near a box
+    // edge it never meets) — and the caller drops it (DL-81).
+    if residual(p) < VERTEX_REFINE_TOL {
+        TripleRefine::Refined([p[0] as f64, p[1] as f64, p[2] as f64])
+    } else {
+        TripleRefine::Spurious
+    }
 }
 
 // ─── chaining ─────────────────────────────────────────────────────────────
@@ -1485,20 +1515,35 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     let vertex_halfspaces = crate::brep::weaving::branch_halfspace_map(body);
     // Leaf lookup for the non-analytic rim-corner refinement below (DL-77).
     let corner_leaves = branch_leaf_map(body);
-    for dv in &mut dedup {
-        if let Some(p) = refine_triple_vertex(&vertex_halfspaces, &dv.branches, dv.position) {
-            dv.position = p;
-        } else if let Some(p) = extrude_rim_corner(&corner_leaves, &dv.branches) {
-            // A swept-wall rim corner has no analytic surface for
-            // `refine_triple_vertex`, so the octree leaves it ~one cell off the
-            // true corner (and sometimes mints a doubled / spurious sibling). Its
-            // exact position is a sketch fact: the shared endpoint of the two G1
-            // wall groups, lifted to the cap plane (DL-77). Snapping there makes
-            // the rim trace terminate within `vertex_reach` and lets
-            // `merge_refined_by_branch_set` fuse the doubled corners.
-            dv.position = p;
+    dedup.retain_mut(|dv| {
+        match refine_triple_vertex(&vertex_halfspaces, &dv.branches, dv.position) {
+            TripleRefine::Refined(p) => {
+                dv.position = p;
+                true
+            }
+            // All branches analytic and full-rank but with no common zero: this
+            // is a phantom triple junction where the sphere passes near a box
+            // edge without touching it. Keeping it (at its scattered centroid)
+            // bisects the straight box edge into two kinked fragments and drags
+            // them toward the sphere (DL-81). Drop it; the box edge then chains
+            // straight across the one-cell gap the phantom left behind.
+            TripleRefine::Spurious => false,
+            TripleRefine::Indeterminate => {
+                if let Some(p) = extrude_rim_corner(&corner_leaves, &dv.branches) {
+                    // A swept-wall rim corner has no analytic surface for
+                    // `refine_triple_vertex`, so the octree leaves it ~one cell off
+                    // the true corner (and sometimes mints a doubled / spurious
+                    // sibling). Its exact position is a sketch fact: the shared
+                    // endpoint of the two G1 wall groups, lifted to the cap plane
+                    // (DL-77). Snapping there makes the rim trace terminate within
+                    // `vertex_reach` and lets `merge_refined_by_branch_set` fuse
+                    // the doubled corners.
+                    dv.position = p;
+                }
+                true
+            }
         }
-    }
+    });
 
     // Re-merge per branch-set on the *refined* positions (DL-74). A wide
     // near-tangential band (DL-66) can over-split into several clusters that all
