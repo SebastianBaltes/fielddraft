@@ -2878,7 +2878,11 @@ impl Kernel {
     /// Per-body analytic B-Rep edges, sampled to **world-space** polylines for
     /// viewport rendering and hover. Returns a JSON array; each edge is
     /// `{"a":<branch u32>,"b":<branch u32>,"idHash":<decimal string>,
-    /// "points":[x,y,z, x,y,z, …]}`, where `a`/`b` are the canonical
+    /// "points":[x,y,z, …],"controlPoints":[x,y,z, …],"degree":<usize>}`,
+    /// where `points` is the dense tessellation (for the wireframe) and
+    /// `controlPoints`/`degree` are the sparse structural points for the debug
+    /// points overlay (on-curve nodes sit at every `degree`-th control point).
+    /// `a`/`b` are the canonical
     /// colliding-branch signature. Those two ids are
     /// the same `as_u32()` branch values that [`Kernel::pick`] reports in its
     /// `contributors` array, so the frontend can match a hovered edge to its
@@ -2898,23 +2902,35 @@ impl Kernel {
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let s = placement.scale[0];
         let mut edges = Vec::with_capacity(brep.edges.len());
-        for (k, edge) in brep.edges.iter().enumerate() {
-            let id_hash = TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash;
-            let local = crate::brep::edge_sampling::sample_edge(&edge.geometry);
-            let mut points: Vec<f32> = Vec::with_capacity(local.len() * 3);
-            for p in &local {
-                // world = R·(s·p) + t  (rigid + uniform scale placement).
+        // Fold a body-local point chain to world: world = R·(s·p) + t
+        // (rigid + uniform-scale placement), flattened to `[x,y,z, …]`.
+        let to_world = |pts: &[[f64; 3]]| -> Vec<f32> {
+            let mut out = Vec::with_capacity(pts.len() * 3);
+            for p in pts {
                 let scaled = [p[0] as f32 * s, p[1] as f32 * s, p[2] as f32 * s];
                 let r = quat_rotate(placement.rotation, scaled);
-                points.push(r[0] + placement.translate[0]);
-                points.push(r[1] + placement.translate[1]);
-                points.push(r[2] + placement.translate[2]);
+                out.push(r[0] + placement.translate[0]);
+                out.push(r[1] + placement.translate[1]);
+                out.push(r[2] + placement.translate[2]);
             }
+            out
+        };
+        for (k, edge) in brep.edges.iter().enumerate() {
+            let id_hash = TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash;
+            let points = to_world(&crate::brep::edge_sampling::sample_edge(&edge.geometry));
+            // Structural points for the debug overlay: the few control points
+            // that define the curve, plus its degree (on-curve nodes sit at
+            // every `degree`-th control point). Far sparser than `points`.
+            let (cps_local, degree) =
+                crate::brep::edge_sampling::edge_control_structure(&edge.geometry);
+            let control_points = to_world(&cps_local);
             edges.push(serde_json::json!({
                 "a": edge.signature.0.as_u32(),
                 "b": edge.signature.1.as_u32(),
                 "idHash": id_hash.to_string(),
                 "points": points,
+                "controlPoints": control_points,
+                "degree": degree,
             }));
         }
         serde_json::Value::Array(edges).to_string()

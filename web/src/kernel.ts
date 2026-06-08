@@ -72,7 +72,18 @@ export interface Placement {
 export interface BRepEdge {
   a: number;
   b: number;
+  /** Dense tessellation polyline (world space, flat `[x,y,z, …]`) — the
+   *  wireframe geometry. */
   points: number[];
+  /** Sparse **structural** control points (world space, flat `[x,y,z, …]`) for
+   *  the debug points overlay: the few points that define the curve. On-curve
+   *  nodes sit at every {@link degree}-th control point; the rest are off-curve
+   *  Bézier handles. */
+  controlPoints: number[];
+  /** Curve degree. Clamped-Bézier-chain NURBS report 2 (rational quadratic,
+   *  e.g. exact circles) or 3 (generic cubic); polyline/Hermite edges report
+   *  1 (every control point is an on-curve node). */
+  degree: number;
   idHash: string;
 }
 

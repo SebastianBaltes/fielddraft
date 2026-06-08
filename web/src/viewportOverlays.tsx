@@ -651,33 +651,57 @@ function useBodyFingerprint(): string {
 }
 
 /**
- * Debug overlay: renders every B-Rep edge's individual tessellation **sample
- * points** as fixed-size screen markers. A NURBS edge sampled into many points
- * shows up as a dense bead chain; a coarse or near-straight edge as a sparse
- * one — so it's obvious at a glance how an edge is discretised. Reads the same
- * cached analytic B-Rep (world-space points) as {@link BRepEdgeOverlay},
- * independent of mesh resolution and render mode. Toggle via
- * Settings → "Edge sample points".
+ * Debug overlay: renders every B-Rep edge's **structural** points — the few
+ * control points that actually define the curve, NOT the dense tessellation.
+ * Three layers per edge:
+ *   - **on-curve nodes** (red, large): the span joins that lie *on* the curve,
+ *     at every `degree`-th control point. Count them to see how few points a
+ *     NURBS edge is built from (e.g. an exact circle = a 4-span rational
+ *     quadratic → 5 nodes).
+ *   - **off-curve handles** (amber, small): the interior Bézier control points
+ *     that bend each span; absent on straight/polyline edges.
+ *   - **control polygon** (faint grey lines): connects consecutive control
+ *     points, making the per-span quadratic/cubic structure visible.
+ *
+ * Reads the same cached analytic B-Rep (`controlPoints`/`degree`, world space)
+ * as {@link BRepEdgeOverlay}, independent of mesh resolution and render mode.
+ * Toggle via Settings → "Edge sample points".
  */
+const EDGE_NODE_COLOR = 0xdc2626;
+const EDGE_HANDLE_COLOR = 0xf59e0b;
+const EDGE_POLYGON_COLOR = 0x94a3b8;
+
 export function BRepEdgePointsOverlay() {
   const { store } = useKernelStore();
   const fingerprint = useBodyFingerprint();
-  const geometryRef = useRef(new THREE.BufferGeometry());
-  const materialRef = useRef(
+  const nodeGeomRef = useRef(new THREE.BufferGeometry());
+  const handleGeomRef = useRef(new THREE.BufferGeometry());
+  const polygonGeomRef = useRef(new THREE.BufferGeometry());
+  const nodeMatRef = useRef(
     new THREE.PointsMaterial({
-      color: 0xdc2626,
-      size: 7,
-      sizeAttenuation: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
+      color: EDGE_NODE_COLOR, size: 9, sizeAttenuation: false,
+      depthTest: false, depthWrite: false, transparent: true,
+    }),
+  );
+  const handleMatRef = useRef(
+    new THREE.PointsMaterial({
+      color: EDGE_HANDLE_COLOR, size: 6, sizeAttenuation: false,
+      depthTest: false, depthWrite: false, transparent: true,
+    }),
+  );
+  const polygonMatRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: EDGE_POLYGON_COLOR, depthTest: false, depthWrite: false,
+      transparent: true, opacity: 0.6,
     }),
   );
 
-  const positions = useMemo<Float32Array>(() => {
-    if (!store) return new Float32Array(0);
+  const buffers = useMemo(() => {
+    if (!store) return null;
     const count = store.kernel.bodyCount();
-    const all: number[] = [];
+    const nodes: number[] = [];
+    const handles: number[] = [];
+    const polygon: number[] = [];
     for (let i = 0; i < count; i++) {
       let bodyEdges: BRepEdge[];
       try {
@@ -686,39 +710,83 @@ export function BRepEdgePointsOverlay() {
         continue;
       }
       for (const e of bodyEdges) {
-        for (let p = 0; p < e.points.length; p++) all.push(e.points[p]);
+        const cps = e.controlPoints;
+        const d = Math.max(1, e.degree);
+        const nCps = Math.floor(cps.length / 3);
+        for (let p = 0; p < nCps; p++) {
+          const x = cps[p * 3], y = cps[p * 3 + 1], z = cps[p * 3 + 2];
+          // On-curve nodes sit at every `degree`-th control point; the rest
+          // are off-curve Bézier handles.
+          if (p % d === 0) nodes.push(x, y, z);
+          else handles.push(x, y, z);
+          // Control polygon: a segment from this control point to the next.
+          if (p + 1 < nCps) {
+            polygon.push(x, y, z, cps[(p + 1) * 3], cps[(p + 1) * 3 + 1], cps[(p + 1) * 3 + 2]);
+          }
+        }
       }
     }
-    return new Float32Array(all);
+    return {
+      nodes: new Float32Array(nodes),
+      handles: new Float32Array(handles),
+      polygon: new Float32Array(polygon),
+    };
   }, [store, fingerprint]);
 
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    if (positions.length === 0) {
+    if (!buffers || buffers.nodes.length === 0) {
       setReady(false);
       return;
     }
-    geometryRef.current.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometryRef.current.computeBoundingSphere();
+    nodeGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.nodes, 3));
+    nodeGeomRef.current.computeBoundingSphere();
+    handleGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.handles, 3));
+    handleGeomRef.current.computeBoundingSphere();
+    polygonGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.polygon, 3));
+    polygonGeomRef.current.computeBoundingSphere();
     setReady(true);
-  }, [positions]);
+  }, [buffers]);
 
   useEffect(() => {
     return () => {
-      geometryRef.current.dispose();
-      materialRef.current.dispose();
+      nodeGeomRef.current.dispose();
+      handleGeomRef.current.dispose();
+      polygonGeomRef.current.dispose();
+      nodeMatRef.current.dispose();
+      handleMatRef.current.dispose();
+      polygonMatRef.current.dispose();
     };
   }, []);
 
-  if (!ready) return null;
+  if (!ready || !buffers) return null;
+  const enableOverlay = (obj: THREE.Object3D | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); };
   return (
-    <points
-      ref={(obj: THREE.Points | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-      geometry={geometryRef.current}
-      material={materialRef.current}
-      frustumCulled={false}
-      renderOrder={1000}
-    />
+    <>
+      <lineSegments
+        ref={enableOverlay}
+        geometry={polygonGeomRef.current}
+        material={polygonMatRef.current}
+        frustumCulled={false}
+        renderOrder={999}
+      />
+      {buffers.handles.length > 0 && (
+        <points
+          ref={enableOverlay}
+          geometry={handleGeomRef.current}
+          material={handleMatRef.current}
+          frustumCulled={false}
+          renderOrder={1000}
+        />
+      )}
+      <points
+        ref={enableOverlay}
+        geometry={nodeGeomRef.current}
+        material={nodeMatRef.current}
+        frustumCulled={false}
+        renderOrder={1001}
+      />
+    </>
   );
 }
 
@@ -760,11 +828,12 @@ function pushBoxWireframe(
 /**
  * Debug overlay: draws the topology **octree's leaf cells** as a wireframe
  * grid, colour-coded by class (blue = face, amber = edge, red = vertex). The
- * octree is the adaptive structure the B-Rep weave classifies into sharp
- * features; this overlay shows the resolution it actually reached around each
- * body (≈ largest-extent / 32, refined near edges/corners). Cells arrive in
- * the body-local frame plus the body placement, which is applied as a group
- * matrix. Toggle via Settings → "Octree cells".
+ * octree prunes empty space but is NOT resolution-adaptive: every surface cell
+ * is subdivided uniformly down to `min_cell_size` (≈ largest-extent / 32),
+ * with no curvature/flatness early-out — so flat faces carry the same fine
+ * grid as curved regions (visible as the dense uniform mesh on a cube face).
+ * Cells arrive in the body-local frame plus the body placement, which is
+ * applied as a group matrix. Toggle via Settings → "Octree cells".
  */
 export function OctreeCellOverlay() {
   const { store } = useKernelStore();

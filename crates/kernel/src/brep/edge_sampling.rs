@@ -15,6 +15,26 @@ use crate::brep::{EdgeGeometry, NurbsCurve};
 /// points either way, so the cost is bounded.
 const SAMPLES_PER_SPAN: usize = 16;
 
+/// The **structural** points of an edge for the debug overlay, in the
+/// body-local frame: the raw control points plus the curve degree. Unlike
+/// [`sample_edge`] (a dense tessellation of ~16 points per span) this exposes
+/// the *few* points that actually define the curve — so a NURBS edge built
+/// from a handful of control points reads as a handful of markers instead of a
+/// solid bead chain.
+///
+/// Returns `(control_points, degree)`. For a clamped Bézier-chain NURBS the
+/// on-curve span joins sit at every `degree`-th control point (indices
+/// `0, degree, 2·degree, …`); the points in between are the off-curve Bézier
+/// handles. Polyline / Hermite edges have no separate handles, so every point
+/// is a node and `degree` is reported as `1`.
+pub fn edge_control_structure(geometry: &EdgeGeometry) -> (Vec<[f64; 3]>, usize) {
+    match geometry {
+        EdgeGeometry::Polyline(pts) => (pts.clone(), 1),
+        EdgeGeometry::Hermite(samples) => (samples.iter().map(|s| s.point).collect(), 1),
+        EdgeGeometry::Nurbs(curve) => (curve.control_points.clone(), curve.degree.max(1)),
+    }
+}
+
 /// Sample `geometry` into a body-local polyline (≥ 2 points for any non-empty
 /// edge). Returns the raw point chain; consecutive duplicate join points
 /// between Bézier spans are dropped.
