@@ -34,9 +34,14 @@ fn safe_sqrt<T: DualNum<f64> + Copy>(x: T) -> T {
 /// Mirrors `crate::sdf_primitive` but works with any `T: DualNum<f64>`.
 ///
 /// Extrude, Revolve, and ImportedMesh return a zero-derivative fallback
-/// (`T::from(f32_result as f64)`) because they rely on sketch or mesh
-/// internals that are not yet dual-number aware. These are handled
-/// properly at the tree level (Layer B) via finite-difference fallbacks.
+/// (`T::from(f32_result as f64)`) **only on this bare-primitive path**, which
+/// real bodies never take: an extrude/revolve always reaches the kernel as a
+/// `BoundedCsg::{Extrude,Revolve}` carrying its `BoundedSketch2d`, and that is
+/// evaluated at the tree level (Layer B, `eval_bounded_d3`) with an EXACT dual
+/// gradient — the sketch SDF is fully `DualNum`-generic (Layer A.5/A.6), with
+/// the closest-point parameter and the inside/outside sign frozen on the real
+/// parts (exact a.e. by the envelope theorem). Only `ImportedMesh` truly has no
+/// analytic gradient and falls back to finite differences (`fd_fallback_3d`).
 fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
     prim: &Primitive,
     p: [T; 3],
