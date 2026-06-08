@@ -1,5 +1,11 @@
 # RFTA Full Port — Implementierungsplan
 
+> ✅ **ABGESCHLOSSEN (archiviert 2026-06-08).** Der Port ist vollständig in
+> `crates/kernel/src/rfta/` umgesetzt (rasterize / feasibility / finetune /
+> sphere_tree / closest_point / poisson). Der „Status Quo"-Abschnitt unten
+> beschreibt den *früheren* Zustand vor der Umsetzung. Dieses Dokument bleibt als
+> historische Referenz erhalten, wird aber nicht mehr aktiv gepflegt.
+
 Sellán, Ren, Batty, Stein. "Reach for the Arcs: Reconstructing Surfaces from SDFs via Tangent Points." SIGGRAPH 2024.
 
 Paper: `docs/Literatur/reach-for-the-arcs.pdf`

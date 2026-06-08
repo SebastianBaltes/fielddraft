@@ -1,5 +1,10 @@
 # Sketcher-Feature-Plan
 
+> ✅ **ABGESCHLOSSEN (archiviert 2026-06-08).** Alle 24 Breite-Features (v0.5.42–0.5.65)
+> und 6 Vollausbauten (v0.5.66–0.5.78) sind geliefert und verifiziert. Dieses
+> Dokument bleibt als Referenz für Umsetzungsreihenfolge, Konventionen und die
+> Definition-of-Done erhalten, wird aber nicht mehr aktiv gepflegt.
+
 Stand: 2026-06-06. Vergleich des FieldDraft-Sketchers gegen Onshape und FreeCAD,
 mit exakter Beschreibung jedes Features, seinem aktuellen Umsetzungsstand und einem
 Umsetzungsplan. Dieses Dokument ist die Single Source of Truth für den Ausbau des

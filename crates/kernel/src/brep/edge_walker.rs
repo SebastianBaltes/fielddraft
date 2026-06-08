@@ -2060,6 +2060,113 @@ mod tests {
         BoundedCsg::from_csg(&csg)
     }
 
+    /// Weave a 1 m cube with a 5 mm-wide *through*-groove across its top, at the
+    /// given octree min-cell size. The groove's two mouth rims sit at x = ±2.5
+    /// (5 mm apart) on the top plane y = 500; the slot runs the full z-span so the
+    /// mouth is open at both end faces (z = ±500).
+    fn weave_top_groove(min_cell: f32) -> BRep {
+        let cube = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box {
+                center: [0.0, 0.0, 0.0],
+                half_extents: [500.0, 500.0, 500.0], // 1 m cube
+            },
+        };
+        let slot = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box {
+                center: [0.0, 500.0, 0.0],
+                half_extents: [2.5, 50.0, 600.0], // 5 mm wide, cuts through top in z
+            },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(Box::new(cube), Box::new(slot)));
+        let octree = Octree::build(&body, min_cell);
+        build_wireframe(&body, &octree)
+    }
+
+    /// Is there a mouth-rim edge lying entirely on the top plane (y ≈ 500) at the
+    /// constant column x ≈ `x`? (The rim runs along z; the wall/floor edges leave
+    /// the top plane or sit at the other column, so only the rim matches.)
+    fn mouth_rim_at(brep: &BRep, x: f64) -> bool {
+        brep.edges.iter().any(|e| {
+            let s = edge_polyline(brep, e);
+            !s.is_empty()
+                && s.iter()
+                    .all(|p| (p[0] - x).abs() < 0.5 && (p[1] - 500.0).abs() < 0.5)
+        })
+    }
+
+    /// Count edges that bridge the *open* groove mouth: an edge lying on the top
+    /// plane (y ≈ 500) whose x-range straddles the mouth center (x_min < -1 and
+    /// x_max > 1). The real rims sit at constant x = ±2.5 and the real top-face
+    /// segments stop at ±2.5, so only a spurious cross-mouth chord matches — there
+    /// must be none, because the through-slot leaves the mouth open.
+    fn ghost_bridge_count(brep: &BRep) -> usize {
+        brep.edges
+            .iter()
+            .filter(|e| {
+                let s = edge_polyline(brep, e);
+                if s.is_empty() || !s.iter().all(|p| (p[1] - 500.0).abs() < 1.0) {
+                    return false;
+                }
+                let xmin = s.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+                let xmax = s.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+                xmin < -1.0 && xmax > 1.0
+            })
+            .count()
+    }
+
+    /// DL-82 regression: the two groove-mouth rims are 5 mm apart — closer than the
+    /// production octree's clamped 10 mm cell (`topology_min_cell_size` floors a 1 m
+    /// body at `CEIL = 10 mm`). At that production resolution the weave must still
+    /// resolve BOTH rims, keep the topology valid, and — since the slot is a through
+    /// cut — must NOT bridge the open mouth with any edge.
+    #[test]
+    fn groove_close_edges_resolved_at_production_octree() {
+        let brep = weave_top_groove(10.0); // production-clamped resolution
+        assert!(
+            brep.validate().is_ok(),
+            "topology invalid: {:?}",
+            brep.validate()
+        );
+        // Both 5 mm-apart rims resolved despite sub-cell spacing — the original
+        // DL-82 worry (close edges lost at coarse resolution) does not happen.
+        assert!(mouth_rim_at(&brep, 2.5), "missing +x groove-mouth rim");
+        assert!(mouth_rim_at(&brep, -2.5), "missing -x groove-mouth rim");
+        // The mouth is open: no edge may bridge it.
+        assert_eq!(
+            ghost_bridge_count(&brep),
+            0,
+            "ghost edge bridges the open groove mouth at production resolution"
+        );
+    }
+
+    /// KNOWN DEFECT (DL-82, follow-up pending — see `docs/Backlog.md`): at
+    /// artificially fine octree resolution the weave invents short spurious edges
+    /// that bridge the *open* groove mouth (x ∈ [-2.5, 2.5] at y = 500, z = ±500).
+    /// That is geometrically wrong — a through-slot is open there — yet `validate()`
+    /// does not flag it. The production-clamped path (10 mm) is correct, so this is
+    /// not user-visible today; we keep this test asserting the *correct* invariant
+    /// so it stays red until the fine path is fixed, then can be un-ignored.
+    #[test]
+    #[ignore = "DL-82: fine-octree ghost mouth bridge not yet fixed"]
+    fn ghost_mouth_bridge_at_fine_octree_is_a_defect() {
+        let brep = weave_top_groove(2.0);
+        assert_eq!(
+            ghost_bridge_count(&brep),
+            0,
+            "fine octree bridges the open groove mouth with ghost edges"
+        );
+    }
+
+    fn edge_polyline(_brep: &BRep, e: &Edge) -> Vec<[f64; 3]> {
+        match &e.geometry {
+            EdgeGeometry::Hermite(s) => s.iter().map(|h| h.point).collect(),
+            EdgeGeometry::Polyline(p) => p.clone(),
+            EdgeGeometry::Nurbs(c) => c.control_points.clone(),
+        }
+    }
+
     /// Index of the single varying axis of an edge chain (the axis whose span
     /// across the samples is the largest), plus the sign of the walk.
     fn varying_axis(samples: &[HermiteSample]) -> usize {
