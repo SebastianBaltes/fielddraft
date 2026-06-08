@@ -679,15 +679,36 @@ pub fn extract_edge_point(
     let ba = cell.branches[0];
     let bb = cell.branches[1];
 
+    let c = cell.center();
+    let diag = cell_diag(cell);
+
     // Initial per-branch tangent planes from clean cell-corner seeds.
     let mut pa = project_branch(body, cell, ba, halfspaces)?;
     let mut pb = project_branch(body, cell, bb, halfspaces)?;
 
-    let c = cell.center();
-    let diag = cell_diag(cell);
-
-    // Initial one-shot solve, anchored at the cell centre (DL-38).
-    let (mut p_edge, mut t) = solve_edge_point(&pa, &pb, c)?;
+    // Initial one-shot solve, anchored at the cell centre (DL-38). A `None` here
+    // is the bleed-cell collapse (DL-79, sibling of the DL-78 vertex bug): the
+    // cell straddles only ONE branch's surface and the other branch is merely an
+    // eps-runner-up whose face sits just *outside* the cell, so its in-cell Newton
+    // projection slid onto the present face — the two tangent normals coincide and
+    // their cross product (the edge tangent) degenerates. This happens when a
+    // curved union partner inflates the body AABB (coarser, grid-shifted octree),
+    // leaving a clean box edge sampled by cells that only graze one of its faces.
+    // Re-seed both branches from an outward sole-contributor probe (generic, no
+    // analytic half-spaces) and re-solve; the residual/phantom/both-active gates
+    // below then validate the rescued point exactly as for a normal cell.
+    let (mut p_edge, mut t) = match solve_edge_point(&pa, &pb, c) {
+        Some(s) => s,
+        None => {
+            let rescued = reproject_branches_outward(body, cell, diag);
+            let pa_r = rescued.iter().find(|(b, _)| *b == ba).map(|(_, p)| *p)?;
+            let pb_r = rescued.iter().find(|(b, _)| *b == bb).map(|(_, p)| *p)?;
+            let s = solve_edge_point(&pa_r, &pb_r, c)?;
+            pa = pa_r;
+            pb = pb_r;
+            s
+        }
+    };
 
     // Outer refinement for warped (curved) faces: re-anchor each branch's
     // tangent plane near the current estimate and re-solve, anchoring the

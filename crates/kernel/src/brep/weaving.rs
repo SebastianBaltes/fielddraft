@@ -1057,6 +1057,22 @@ fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
             if let Some(VertexId(i)) = edge.end {
                 samples.last_mut().unwrap().point = vertex_pos[i as usize];
             }
+            // Closed-loop edge (no bounding vertices — e.g. a sphere ∩ box-face
+            // circle): the tracer stores `p0..pN-1` and leaves the wrap implicit
+            // in the `closed` flag, so `hermite_to_nurbs` would build an OPEN
+            // curve missing the `pN-1 → p0` segment — the visible gap in the ring
+            // (DL-80). Repeat the first sample to add that closing Bézier. Guard
+            // on the ends actually differing so an already-wrapped chain is left
+            // alone.
+            let is_loop = edge.start.is_none() && edge.end.is_none();
+            if is_loop {
+                let first = samples.first().unwrap().clone();
+                let last = samples.last().unwrap();
+                let gap = sub(first.point, last.point);
+                if norm(gap) > 1e-9 {
+                    samples.push(first);
+                }
+            }
             edge.geometry = EdgeGeometry::Nurbs(hermite_to_nurbs(&samples));
         }
     }
@@ -1449,6 +1465,76 @@ mod tests {
     use crate::csg::CsgNode;
     use fielddraft_protocol::{FeatureId, Primitive};
     use std::collections::HashSet;
+
+    /// DL-79: a curved union partner that inflates the body AABB makes the octree
+    /// coarser and grid-shifted, so a clean box edge ends up sampled by cells that
+    /// straddle only ONE of its two faces — the other face is an eps-runner-up
+    /// sitting just outside the cell. Its in-cell Newton projection then slides
+    /// onto the present face, the two tangent normals coincide, and
+    /// `solve_edge_point` returns `None` (degenerate cross product), dropping the
+    /// whole edge group. This is the uploaded-project bug: the box's −y∩+z edge
+    /// (signature `(4099, 4100)`) vanished entirely while both its endpoint
+    /// corners survived. The outward-seed rescue must recover it WITHOUT any
+    /// analytic half-space projection. Geometry is the body-local frame of the
+    /// real `.fdraft`: a unit box at the origin and a sphere placed so its top
+    /// grazes just under the +z face (the worst case for the +z-edge bleed).
+    #[test]
+    fn box_union_grazing_sphere_keeps_all_box_edges() {
+        let csg = CsgNode::Union(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [50.0, 50.0, 50.0],
+                },
+            }),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere {
+                    center: [-63.109, 0.598, -1.291],
+                    radius: 50.0,
+                },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        // Body-relative resolution exactly as the web path derives it: the
+        // sphere-inflated AABB (~163 mm) over the DIVISOR of 32.
+        let min_cell = 163.109 / 32.0;
+        let octree = Octree::build(&body, min_cell);
+        let brep = weave(&body, &octree);
+
+        assert!(
+            brep.validate().is_ok(),
+            "B-Rep must be well-formed: {:?}",
+            brep.validate()
+        );
+
+        // All 12 adjacent box-face pairs must appear as edges. Box feature id 1
+        // expands to half-space branches 4096..=4101 (+x −x +y −y +z −z); the 12
+        // edges are every pair of NON-opposite faces.
+        let opposite = |a: u32, b: u32| (a.min(b), a.max(b)) == (4096, 4097)
+            || (a.min(b), a.max(b)) == (4098, 4099)
+            || (a.min(b), a.max(b)) == (4100, 4101);
+        let box_edge_sigs: Vec<(u32, u32)> = brep
+            .edges
+            .iter()
+            .filter_map(|e| {
+                let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+                ((4096..=4101).contains(&a) && (4096..=4101).contains(&b)).then_some((a, b))
+            })
+            .collect();
+        for a in 4096..=4101u32 {
+            for b in (a + 1)..=4101u32 {
+                if opposite(a, b) {
+                    continue;
+                }
+                assert!(
+                    box_edge_sigs.contains(&(a, b)),
+                    "box edge ({a},{b}) missing; got box edges {box_edge_sigs:?}"
+                );
+            }
+        }
+    }
 
     fn box_body(half: [f32; 3]) -> BoundedCsg {
         let csg = CsgNode::Leaf {
@@ -2974,11 +3060,16 @@ mod tests {
             brep.face_count()
         );
         assert_watertight_solid(&brep);
-        // The notched box is an L-prism cross-section extruded in z: 8 side
-        // walls + 2 caps = 10 faces; 16 straight edges. All edges consolidate
-        // to one per signature (DL-51), no over-segmentation.
+        // The notched box is an L-prism: its 6-corner cross-section extrudes to
+        // 6 side walls + 2 caps = 8 faces, and 6 vertical + 6 top + 6 bottom =
+        // 18 straight edges. All edges consolidate to one per signature (DL-51),
+        // no over-segmentation. (DL-79: the two convex corner edges where the cut
+        // walls meet the box's outer +x / +y faces — signatures (4096,8195) and
+        // (4098,8193) at L-corners (1,0) and (0,1) — used to vanish because every
+        // octree cell along them only grazed one of the two faces; the outward-
+        // seed edge rescue now recovers them, completing the cross-section.)
         assert_eq!(brep.face_count(), 8, "notched box faces");
-        assert_eq!(brep.edge_count(), 16, "notched box edges (one per signature)");
+        assert_eq!(brep.edge_count(), 18, "notched box edges (one per signature)");
         // A planar Difference has no *closed-loop* edges: every edge is a
         // straight segment between two corners (some endpoints may stay
         // unsnapped where Phase-3 misses a vertex cell, but no edge is a full
