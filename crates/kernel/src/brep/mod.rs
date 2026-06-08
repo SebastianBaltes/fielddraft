@@ -533,6 +533,92 @@ impl BRep {
             Err(problems)
         }
     }
+
+    /// Check the **orientable-manifold / watertight invariant** (DL-24).
+    ///
+    /// Iterates over every loop-use of every face (each face's `outer` loop
+    /// plus all its `inner` loops) and tallies, per [`EdgeId`], how often the
+    /// edge is referenced and with which `reversed` flag. A closed orientable
+    /// manifold requires that **every edge is referenced by exactly two
+    /// loop-uses — once `reversed = false` and once `reversed = true`**.
+    ///
+    /// Returns the list of violations as human-readable strings (empty when
+    /// the B-Rep is a watertight orientable manifold). Reported cases:
+    ///
+    /// - edges with a use-count `!= 2` (count 1 = open boundary / phantom,
+    ///   count > 2 = non-manifold),
+    /// - edges referenced exactly twice but with matching orientation (both
+    ///   `reversed` equal) → orientation/consistency error,
+    /// - edges present in the arena but used by no loop at all (count 0,
+    ///   dangling edge).
+    ///
+    /// An empty B-Rep (no faces) is vacuously watertight and yields an empty
+    /// `Vec`. Unlike [`BRep::validate`] this is a *geometric/topological*
+    /// invariant, kept separate so the referential-integrity stub's semantics
+    /// (and test output) stay stable.
+    pub fn manifold_violations(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.faces.is_empty() {
+            return problems;
+        }
+
+        // Per edge: (count of reversed=false uses, count of reversed=true uses).
+        let mut uses = vec![(0u32, 0u32); self.edges.len()];
+
+        let mut tally = |uses: &mut Vec<(u32, u32)>, lp: &Loop| {
+            for &(EdgeId(idx), reversed) in &lp.edges {
+                if let Some(slot) = uses.get_mut(idx as usize) {
+                    if reversed {
+                        slot.1 += 1;
+                    } else {
+                        slot.0 += 1;
+                    }
+                }
+                // out-of-range EdgeIds are a referential-integrity problem and
+                // are reported by `validate()`; we silently skip them here.
+            }
+        };
+
+        for face in &self.faces {
+            tally(&mut uses, &face.outer);
+            for lp in &face.inner {
+                tally(&mut uses, lp);
+            }
+        }
+
+        for (i, &(fwd, rev)) in uses.iter().enumerate() {
+            let total = fwd + rev;
+            match total {
+                2 if fwd == 1 && rev == 1 => { /* watertight & consistent */ }
+                2 => problems.push(format!(
+                    "edge {i}: used twice but with matching orientation \
+                     ({fwd} forward, {rev} reversed) — orientation error"
+                )),
+                0 => problems.push(format!(
+                    "edge {i}: used by no loop (count 0) — dangling edge"
+                )),
+                1 => problems.push(format!(
+                    "edge {i}: used once (count 1) — open boundary / phantom edge"
+                )),
+                n => problems.push(format!(
+                    "edge {i}: used {n} times (count > 2) — non-manifold edge"
+                )),
+            }
+        }
+
+        problems
+    }
+
+    /// The Euler characteristic `V − E + F` of this B-Rep.
+    ///
+    /// For a single closed genus-0 solid this equals `2`; for genus `g` it is
+    /// `2 − 2g`. Because the value depends on topology (and on how a model is
+    /// split across multiple shells), there is **no** fixed absolute assert in
+    /// [`BRep::validate`] — this is exposed purely as a metric for curated
+    /// tests and diagnostics.
+    pub fn euler_characteristic(&self) -> i64 {
+        self.vertices.len() as i64 - self.edges.len() as i64 + self.faces.len() as i64
+    }
 }
 
 #[cfg(test)]
@@ -620,43 +706,53 @@ mod tests {
             })
         };
 
-        // 6 faces, each an outer loop of 4 edges (orientation flags are
-        // illustrative — C.6 computes the correct winding).
+        // 6 faces, each an outer loop of 4 edges. The `reversed` flags give
+        // every face a CCW winding when viewed from outside, so that each of
+        // the 12 edges is traversed exactly once forward and once reversed —
+        // i.e. the shell is an orientable, watertight manifold (see
+        // [`BRep::manifold_violations`]). Each directed cycle is noted above
+        // its ring as the vertex walk it realises.
+        // f_bz0 (z=-1, normal -Z): v000→v010→v110→v100→v000
         let f_bz0 = face(
             &mut brep,
             bz0,
             plane([0.0, 0.0, -1.0], 1.0),
-            [(e_b_x0, false), (e_b_y1, false), (e_b_x1, true), (e_b_y0, true)],
+            [(e_b_y0, false), (e_b_x1, false), (e_b_y1, true), (e_b_x0, true)],
         );
+        // f_bz1 (z=+1, normal +Z): v001→v101→v111→v011→v001
         let f_bz1 = face(
             &mut brep,
             bz1,
             plane([0.0, 0.0, 1.0], 1.0),
             [(e_t_x0, false), (e_t_y1, false), (e_t_x1, true), (e_t_y0, true)],
         );
+        // f_bx0 (x=-1, normal -X): v000→v001→v011→v010→v000
         let f_bx0 = face(
             &mut brep,
             bx0,
             plane([-1.0, 0.0, 0.0], 1.0),
-            [(e_b_y0, false), (e_v01, false), (e_t_y0, true), (e_v00, true)],
+            [(e_v00, false), (e_t_y0, false), (e_v01, true), (e_b_y0, true)],
         );
+        // f_bx1 (x=+1, normal +X): v100→v110→v111→v101→v100
         let f_bx1 = face(
             &mut brep,
             bx1,
             plane([1.0, 0.0, 0.0], 1.0),
             [(e_b_y1, false), (e_v11, false), (e_t_y1, true), (e_v10, true)],
         );
+        // f_by0 (y=-1, normal -Y): v000→v100→v101→v001→v000
         let f_by0 = face(
             &mut brep,
             by0,
             plane([0.0, -1.0, 0.0], 1.0),
             [(e_b_x0, false), (e_v10, false), (e_t_x0, true), (e_v00, true)],
         );
+        // f_by1 (y=+1, normal +Y): v010→v011→v111→v110→v010
         let f_by1 = face(
             &mut brep,
             by1,
             plane([0.0, 1.0, 0.0], 1.0),
-            [(e_b_x1, false), (e_v11, false), (e_t_x1, true), (e_v01, true)],
+            [(e_v01, false), (e_t_x1, false), (e_v11, true), (e_b_x1, true)],
         );
 
         // One closed shell of all 6 faces, one solid with no voids.
@@ -737,6 +833,46 @@ mod tests {
         ));
         let err = brep.validate().expect_err("dangling vertex should fail");
         assert!(err.iter().any(|p| p.contains("out of range")), "{err:?}");
+    }
+
+    #[test]
+    fn manifold_accepts_well_formed_cube() {
+        let brep = build_cube();
+        assert_eq!(
+            brep.manifold_violations(),
+            Vec::<String>::new(),
+            "the well-formed cube must be a watertight orientable manifold"
+        );
+        assert_eq!(
+            brep.euler_characteristic(),
+            2,
+            "a closed genus-0 solid has Euler characteristic V−E+F = 2"
+        );
+    }
+
+    #[test]
+    fn manifold_rejects_dropped_edge_use() {
+        let mut brep = build_cube();
+        // Drop one edge reference from one face's outer loop. That edge now
+        // has only a single loop-use (count 1, open boundary), and the face it
+        // was removed from no longer closes — so the shell is not watertight.
+        let dropped = brep.faces[0].outer.edges.remove(0).0;
+        let violations = brep.manifold_violations();
+        assert!(
+            !violations.is_empty(),
+            "removing an edge use must break the manifold invariant"
+        );
+        assert!(
+            violations.iter().any(|p| p.contains(&format!("edge {}", dropped.0))),
+            "violations must name the affected edge {}: {violations:?}",
+            dropped.0
+        );
+    }
+
+    #[test]
+    fn manifold_empty_brep_is_vacuously_watertight() {
+        let brep = BRep::new();
+        assert_eq!(brep.manifold_violations(), Vec::<String>::new());
     }
 
     #[test]
