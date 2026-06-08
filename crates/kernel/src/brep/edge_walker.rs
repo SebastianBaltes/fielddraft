@@ -417,9 +417,10 @@ fn fit_circle(points: &[EdgePoint], tol: f64) -> Option<Vec<HermiteSample>> {
 /// [`chain_on_both_surfaces`] (DL-52).
 const SEAM_SEED_DRIFT_FACTOR: f64 = 4.0;
 
-/// A traced component consumes every remaining sample within this multiple of
-/// spacing of its polyline; the rest seed the next disjoint component (one
-/// signature can carry several, e.g. the two circles of a sphere ∩ cylinder).
+/// A traced component consumes every remaining sample whose projection lands
+/// within this multiple of spacing of its polyline; the rest seed the next
+/// disjoint component (one signature can carry several, e.g. the two circles of
+/// a sphere ∩ cylinder).
 const SEAM_NEAR_FACTOR: f64 = 1.5;
 
 /// Safety cap on disjoint components traced from one signature group — far above
@@ -431,6 +432,27 @@ const SEAM_MAX_COMPONENTS: usize = 16;
 /// diameter, a line ≤ its span, so 4× clears any real single seam while a
 /// runaway on an unbounded edge stalls quickly into the sample-fit fallback.
 const SEAM_MAX_ARC_FACTOR: f64 = 4.0;
+
+// ─── curvature-adaptive trace tolerances (DL-81) ─────────────────────────────
+// All three are fractions of the **model AABB diagonal**, so edge fidelity is an
+// absolute geometric budget tied to the object's overall size — NOT to the local
+// octree sampling. A coarse octree need only DETECT each seam (one seed + its
+// bounding vertices); the SSI march then places points by curvature down to this
+// absolute tolerance, decoupling sub-mm edge detail from octree depth.
+
+/// Arc-to-chord (sagitta) budget per traced segment: 1e-4 of the model diagonal
+/// → ~0.1 mm on a 1 m object, independent of octree resolution.
+const ADAPT_TOL_FRACTION: f64 = 1.0e-4;
+
+/// Straight-run stride cap: on a near-flat seam the step grows to this fraction
+/// of the diagonal (also capped at half the edge's own span, so every edge keeps
+/// an interior sample). Kept modest so the widened `vertex_reach`/`close_tol`
+/// stay well below an edge's length and never short-circuit its topology.
+const ADAPT_MAX_FRACTION: f64 = 0.1;
+
+/// High-curvature stride floor: bounds the work at a near-crease (a true crease
+/// is a vertex, handled by topology) while still allowing sub-mm sampling.
+const ADAPT_MIN_FRACTION: f64 = 1.0e-4;
 
 /// The scalar [`Field`] backing a branch. Every primitive face — box plane,
 /// sphere, (infinite) cylinder, cone, torus, and the analytic extrude/revolve
@@ -690,7 +712,38 @@ fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections:
 /// Is `q` within `tol` of any vertex of the polyline?
 fn near_polyline(q: [f64; 3], poly: &[[f64; 3]], tol: f64) -> bool {
     let t2 = tol * tol;
-    poly.iter().any(|&p| dist2(p, q) <= t2)
+    // Distance to the polyline as a curve (point-to-*segment*), not merely to its
+    // vertices. With curvature-adaptive stepping (DL-81) a straight run carries
+    // only its two endpoints, so a sample sitting mid-segment is far from every
+    // vertex yet still on the edge; a vertex-only test would leave it behind to
+    // re-seed a duplicate of the same component. Segment distance is density-
+    // independent — identical to the old test when the polyline is dense.
+    if poly.len() == 1 {
+        return dist2(poly[0], q) <= t2;
+    }
+    poly.windows(2).any(|seg| point_seg_dist2(q, seg[0], seg[1]) <= t2)
+}
+
+/// Is `q` within `tol` of the traced polyline treated as a curve? When `closed`,
+/// the implicit closing segment (last→first vertex) is included, so a sample in
+/// that gap — up to one adaptive stride long — is not mistaken for off-curve.
+fn near_traced(q: [f64; 3], poly: &[[f64; 3]], closed: bool, tol: f64) -> bool {
+    if near_polyline(q, poly, tol) {
+        return true;
+    }
+    closed && poly.len() >= 2 && point_seg_dist2(q, poly[poly.len() - 1], poly[0]) <= tol * tol
+}
+
+/// Squared distance from `q` to the segment `[a, b]`.
+fn point_seg_dist2(q: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let ab = sub(b, a);
+    let denom = dot(ab, ab);
+    let t = if denom > 0.0 {
+        (dot(sub(q, a), ab) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    dist2(q, add3(a, scale3(ab, t)))
 }
 
 /// Does a candidate vertex genuinely bound a seam — i.e. is it a *real* junction
@@ -766,18 +819,29 @@ fn trace_seam_chains(
     pts: &[[f64; 3]],
     bounding: &[[f64; 3]],
     spacing: f64,
+    diag: f64,
 ) -> Option<Vec<Chain>> {
     if pts.len() < 3 {
         return None;
     }
-    let mut params = TraceParams::from_step(spacing);
+    let span = group_span(pts);
+    // Curvature-adaptive stepping (DL-81): the nominal predictor starts at the
+    // octree spacing but the sagitta controller then sizes every step from the
+    // local curvature against an ABSOLUTE tolerance (fraction of the model
+    // diagonal), so the polyline density is decoupled from octree resolution —
+    // straight runs collapse to a few long chords, curved seams refine to sub-mm.
+    let tol = ADAPT_TOL_FRACTION * diag;
+    let min_step = ADAPT_MIN_FRACTION * diag;
+    // Cap the straight-run stride at half the edge's own span so even a short
+    // edge keeps an interior sample; never let it fall below `min_step`.
+    let max_step = (ADAPT_MAX_FRACTION * diag).min(0.5 * span).max(min_step);
+    let mut params = TraceParams::from_step(spacing).with_adaptive(tol, min_step, max_step);
     // Arc budget: a real seam component cannot be longer than a small multiple
     // of the group's spatial extent. Beyond that the march is on an unbounded
     // edge (a stalled, non-clean end) and we hand the whole group to the proven
     // sample fits rather than emit a runaway chain.
-    params.max_arc = SEAM_MAX_ARC_FACTOR * group_span(pts);
+    params.max_arc = SEAM_MAX_ARC_FACTOR * span;
     let drift2 = (SEAM_SEED_DRIFT_FACTOR * spacing).powi(2);
-    let near_tol = SEAM_NEAR_FACTOR * spacing;
     let mut remaining: Vec<[f64; 3]> = pts.to_vec();
     let mut chains: Vec<Chain> = Vec::new();
 
@@ -821,21 +885,23 @@ fn trace_seam_chains(
             return None;
         }
 
-        // Consume the seed and every sample belonging to this component; the
-        // rest seed the next disjoint component. Membership is by **projection**,
-        // not raw proximity: an octree sample can sit up to a cell off the true
-        // seam, far more than the dense polyline's point spacing, yet it still
-        // *projects onto* this curve. Testing the projection (which lands exactly
-        // on the traced component, or elsewhere for a genuinely disjoint one)
-        // removes the off-curve stragglers that would otherwise re-seed a
-        // duplicate of the same loop. Removing the seed by value guarantees
-        // progress even if its own projection somehow misses the polyline.
+        // Consume the seed and every sample belonging to this component; the rest
+        // seed the next disjoint component. Membership is by **projection**: an
+        // octree sample can sit several cells off the true seam yet still project
+        // onto this curve, so testing the projection `pq` against the traced
+        // polyline (as a curve — segment distance, density-independent) cleanly
+        // separates this component from a genuinely disjoint one (a concentric /
+        // stacked circle, whose samples project elsewhere). For a **closed** ring
+        // the closing segment (last→first) must be included, else stragglers in
+        // that gap — up to one stride long under adaptive stepping — survive and
+        // re-seed a duplicate of the whole loop (DL-81).
+        let near_tol = SEAM_NEAR_FACTOR * spacing;
         remaining.retain(|&q| {
             if q == seed {
                 return false;
             }
             match project_to_edge(fa, fb, q) {
-                Some(pq) => !near_polyline(pq, &traced.points, near_tol),
+                Some(pq) => !near_traced(pq, &traced.points, traced.closed, near_tol),
                 None => true,
             }
         });
@@ -1500,6 +1566,19 @@ fn chain_on_body_boundary(body: &BoundedCsg, samples: &[HermiteSample], tol: f64
 /// Faces / shells / solids are left empty (C.6).
 pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
     let (edge_points, raw_vertices) = extract_features(body, octree);
+    // Absolute length scale for curvature-adaptive edge tracing (DL-81): the
+    // model AABB diagonal. Edge fidelity is budgeted as a fraction of this, so a
+    // 1 m object gets sub-mm edges regardless of octree depth. Empty/degenerate
+    // bodies fall back to 1.0 (the seam tracer is never reached for them anyway).
+    let model_diag = {
+        let bb = body.aabb();
+        if bb.is_empty() {
+            1.0
+        } else {
+            let s = bb.size();
+            ((s[0] as f64).powi(2) + (s[1] as f64).powi(2) + (s[2] as f64).powi(2)).sqrt()
+        }
+    };
     // Cluster gap for vertex dedup: a few times the local vertex-cell size, so a
     // single corner's band of cells fuses while two distinct corners that share a
     // branch-set (a sphere crossing a box edge twice — DL-74) stay separate.
@@ -1690,7 +1769,7 @@ pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
                 if same_feature && (leaf_involved || both_extrude_wall) {
                     None
                 } else {
-                    trace_seam_chains(&fa, &fb, &pos, &bounding, spacing)
+                    trace_seam_chains(&fa, &fb, &pos, &bounding, spacing, model_diag)
                 }
             }
             _ => None,

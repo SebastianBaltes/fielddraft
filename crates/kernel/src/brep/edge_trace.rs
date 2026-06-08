@@ -233,13 +233,14 @@ impl TraceParams {
     }
 
     /// Enable curvature-adaptive stepping (DL-81). `tol` is the chord-deviation
-    /// budget; the nominal `step` becomes the *initial* and `max_step` becomes
-    /// the straight-run cap. `vertex_reach`/`close_tol` are widened to the max
-    /// step so a grown stride never overshoots a vertex or a loop closure.
+    /// budget; the nominal `step` stays the *initial* predictor and `max_step`
+    /// becomes the straight-run cap. Neither `vertex_reach` nor `close_tol` is
+    /// widened here: the march derives both per-step from the *local* stride
+    /// (`1.5 × step`). A `max_step`-sized reach/closure radius would shortcut a
+    /// curved arc to a chord between its endpoints, or fire a false loop closure
+    /// a few small steps from the seed.
     pub(crate) fn with_adaptive(mut self, tol: f64, min_step: f64, max_step: f64) -> Self {
         self.adapt = Some(Adapt { tol, min_step, max_step });
-        self.vertex_reach = self.vertex_reach.max(1.5 * max_step);
-        self.close_tol = self.close_tol.max(max_step);
         self
     }
 }
@@ -355,10 +356,25 @@ fn march(
     // Adaptive marches carry a *mutable* predictor length; fixed marches leave
     // it at `p.step` for every step, so the historical path is byte-identical.
     let mut step = p.step;
+    // Loop-closure radius. Fixed: the constant `p.close_tol`. Adaptive: tracks the
+    // *current* stride (set from the segment just taken) — a fixed `close_tol`
+    // tied to `max_step` would dwarf the small strides on a finely-sampled curved
+    // loop and fire a false closure a few steps in, shattering the ring (DL-81).
+    let mut close_tol = p.close_tol;
     for step_i in 0..p.max_steps {
         // A bounding vertex ahead within reach ends the arc exactly: append the
-        // vertex itself (not a projected approximation) and stop.
-        if let Some(vi) = vertex_ahead(cur, t_prev, vertices, p.vertex_reach) {
+        // vertex itself (not a projected approximation) and stop. The reach
+        // follows the *current* stride in adaptive mode (`1.5 × step`): on a
+        // curved arc the stride is small, so a distant bounding vertex is NOT
+        // grabbed early — a `max_step`-sized reach would shortcut a whole arc to
+        // a near-straight chord between its endpoints (DL-81). The fixed path
+        // keeps its constant `vertex_reach`, so it is byte-identical.
+        let reach = if p.adapt.is_some() {
+            1.5 * step
+        } else {
+            p.vertex_reach
+        };
+        if let Some(vi) = vertex_ahead(cur, t_prev, vertices, reach) {
             pts.push(vertices[vi]);
             return (pts, MarchEnd::Vertex(vi));
         }
@@ -376,6 +392,10 @@ fn march(
         // `p.adapt` is `None`, `step` never changes, and this block is skipped.
         if let Some(a) = &p.adapt {
             let chord = dist(np, cur);
+            // Closure radius follows the local stride: ~1.5× the segment just
+            // taken catches the seed on the genuine return without matching it
+            // mid-march, where `dist(np, seed)` is many strides large.
+            close_tol = 1.5 * chord;
             // Turn angle across the step just taken (both tangents are unit).
             let theta = dot(t_prev, t).clamp(-1.0, 1.0).acos();
             // Arc-to-chord deviation of a circular step: s = ½·L·tan(θ/4).
@@ -398,7 +418,7 @@ fn march(
         }
 
         // Loop closure: back near the seed after genuinely leaving it.
-        if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < p.close_tol {
+        if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < close_tol {
             return (pts, MarchEnd::Loop);
         }
 

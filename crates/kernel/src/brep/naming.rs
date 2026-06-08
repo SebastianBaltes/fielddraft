@@ -217,16 +217,27 @@ fn edge_centroid_length(pts: &[[f64; 3]]) -> ([f64; 3], f64) {
     if pts.is_empty() {
         return ([0.0; 3], 0.0);
     }
-    let mut c = [0.0; 3];
-    for p in pts {
-        c = add(c, *p);
+    if pts.len() == 1 {
+        return (pts[0], 0.0);
     }
-    c = scale(c, 1.0 / pts.len() as f64);
+    // Length-weighted centroid ∫ p ds / ∫ ds over the polyline — invariant to how
+    // densely or evenly the curve is sampled. The plain point mean drifts toward
+    // the denser end once edges are curvature-adaptively traced (DL-81), where a
+    // straight run carries a few unevenly spaced points instead of an even step;
+    // that drift then biased the face centroid off true (mate-connector origin).
+    let mut c = [0.0; 3];
     let mut len = 0.0;
     for w in pts.windows(2) {
-        len += norm(sub(w[1], w[0]));
+        let seg = norm(sub(w[1], w[0]));
+        let mid = scale(add(w[0], w[1]), 0.5);
+        c = add(c, scale(mid, seg));
+        len += seg;
     }
-    (c, len)
+    if len > 0.0 {
+        (scale(c, 1.0 / len), len)
+    } else {
+        (pts[0], 0.0)
+    }
 }
 
 /// Unit tangent at the midpoint of an edge's point chain (direction of the
