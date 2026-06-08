@@ -11,6 +11,8 @@ const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
 const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
+const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
+const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -197,6 +199,14 @@ export interface SettingsState {
    * (currently the Box), skipping the octree. Falls back to the octree weave
    * for anything not yet handled, so it is safe to leave on. */
   parametricWeave: boolean;
+  /** Debug overlay: render each B-Rep edge's individual sample points as
+   * markers, so a NURBS edge's tessellation density (many points vs. few) is
+   * visible at a glance. */
+  showEdgePoints: boolean;
+  /** Debug overlay: render the topology octree's leaf cells as a wireframe
+   * grid, colour-coded by class (face / edge / vertex), to inspect the
+   * adaptive resolution the B-Rep weave actually used. */
+  showOctreeCells: boolean;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -248,6 +258,8 @@ export function loadSettings(): SettingsState {
   let brepEdgeMode: BRepEdgeMode = "xray";
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = false;
+  let showEdgePoints = false;
+  let showOctreeCells = false;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -268,10 +280,12 @@ export function loadSettings(): SettingsState {
     if (rawFrameLoop === "always" || rawFrameLoop === "demand")
       frameLoop = rawFrameLoop;
     parametricWeave = localStorage.getItem(LS_PARAMETRIC_WEAVE) === "true";
+    showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
+    showOctreeCells = localStorage.getItem(LS_SHOW_OCTREE_CELLS) === "true";
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -842,6 +856,18 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleShowEdgePoints = () => {
+    const next = { ...settings, showEdgePoints: !settings.showEdgePoints };
+    saveSetting(LS_SHOW_EDGE_POINTS, String(next.showEdgePoints));
+    onSettingsChange(next);
+  };
+
+  const toggleShowOctreeCells = () => {
+    const next = { ...settings, showOctreeCells: !settings.showOctreeCells };
+    saveSetting(LS_SHOW_OCTREE_CELLS, String(next.showOctreeCells));
+    onSettingsChange(next);
+  };
+
   const TABS: { key: SettingsTab; label: string }[] = [
     { key: "ui", label: "UI" },
     { key: "units", label: "Workspace Units" },
@@ -1025,6 +1051,38 @@ function SettingsDialog({
                   onClick={toggleParametricWeave}
                 >
                   {settings.parametricWeave ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-edge-points">
+                <span className="setting-label" title="Highlight each B-Rep edge's individual sample points — reveals whether a NURBS edge is tessellated into many points or few.">
+                  Edge sample points
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.showEdgePoints ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.showEdgePoints}
+                  data-testid="setting-edge-points-toggle"
+                  onClick={toggleShowEdgePoints}
+                >
+                  {settings.showEdgePoints ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-octree-cells">
+                <span className="setting-label" title="Draw the topology octree's leaf cells as a wireframe grid, colour-coded by class (face / edge / vertex) — inspect the adaptive resolution the B-Rep weave used.">
+                  Octree cells
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.showOctreeCells ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.showOctreeCells}
+                  data-testid="setting-octree-cells-toggle"
+                  onClick={toggleShowOctreeCells}
+                >
+                  {settings.showOctreeCells ? "On" : "Off"}
                 </button>
               </div>
             </>

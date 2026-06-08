@@ -2920,6 +2920,37 @@ impl Kernel {
         serde_json::Value::Array(edges).to_string()
     }
 
+    /// **Debug only.** Per-body topology-octree leaf cells for the viewport's
+    /// octree-cell overlay. Returns a JSON object
+    /// `{"translate":[x,y,z],"rotation":[x,y,z,w],"scale":s,
+    /// "cells":[{"min":[x,y,z],"max":[x,y,z],"class":<0|1|2>}, …]}`, where the
+    /// cells are in the body-LOCAL frame and `translate`/`rotation`/`scale`
+    /// are the body's rigid+uniform-scale placement (apply them as a single
+    /// world transform on the frontend — a group matrix — to fold the cells to
+    /// world, exactly like the analytic faces are local + placement).
+    /// `class` is `0`=Face, `1`=Edge, `2`=Vertex. The octree is rebuilt on
+    /// every call (not cached); this is a diagnostic path, not the hot path.
+    #[wasm_bindgen(js_name = bodyOctreeCells)]
+    pub fn body_octree_cells(&mut self, i: usize) -> String {
+        // Refresh placement off the (cached) weave, then rebuild the octree.
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        let placement = self.bodies[i].placement;
+        let cells = self.bodies[i].debug_octree_cells(&self.decoded);
+        let cells_json: Vec<serde_json::Value> = cells
+            .iter()
+            .map(|(min, max, class)| {
+                serde_json::json!({ "min": min, "max": max, "class": class })
+            })
+            .collect();
+        serde_json::json!({
+            "translate": placement.translate,
+            "rotation": placement.rotation,
+            "scale": placement.scale[0],
+            "cells": cells_json,
+        })
+        .to_string()
+    }
+
     /// Per-body feature-based B-Rep **faces**, in the body-LOCAL frame, as a
     /// JSON array — one entry per `brep.faces[k]` (Brocken A1). Each entry:
     /// `{"faceIndex","idHash","kind":"face","branchId","featureId",

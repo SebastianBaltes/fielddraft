@@ -206,6 +206,43 @@ impl Body {
     pub fn brep_cached(&self) -> Option<&BRep> {
         self.brep.as_ref().map(|(_, b)| b)
     }
+
+    /// **Debug only.** Rebuild this body's topology octree and return its
+    /// surviving leaf cells in the **body-LOCAL** frame as
+    /// `(min, max, class)` triples, where `class` is `0`=Face, `1`=Edge,
+    /// `2`=Vertex. Mirrors the octree path in [`Body::ensure_brep`] (same
+    /// body-local bounded build, same body-relative `min_cell`), but is
+    /// never cached — it re-runs the build on each call, so it is meant for
+    /// the viewport's octree-cell debug overlay, not the hot path. The octree
+    /// is built unconditionally here (ignoring parametric weaving) so the
+    /// overlay can show the cell grid even for a grundform that the analytic
+    /// weave would otherwise skip. A space-filling body yields no cells, just
+    /// like the real weave (DL-71).
+    pub fn debug_octree_cells(
+        &self,
+        features: &[DecodedFeature],
+    ) -> Vec<([f32; 3], [f32; 3], u8)> {
+        use crate::brep::octree::CellClass;
+        let placement = compute_body_placement(features, &self.feature_indices);
+        let bounded = build_bounded_for_body_local(features, &self.feature_indices, &placement);
+        if bounded_contains_space_filling(&bounded) {
+            return Vec::new();
+        }
+        let min_cell = topology_min_cell_size(&self.aabb);
+        let octree = Octree::build(&bounded, min_cell);
+        octree
+            .leaves()
+            .iter()
+            .map(|c| {
+                let class = match c.class {
+                    CellClass::Face => 0u8,
+                    CellClass::Edge => 1,
+                    CellClass::Vertex => 2,
+                };
+                (c.aabb.min, c.aabb.max, class)
+            })
+            .collect()
+    }
 }
 
 /// Octree `min_cell_size` for a body's B-Rep weave, derived from its

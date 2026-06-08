@@ -45,6 +45,8 @@ function setup() {
     brepEdgeMode: "xray",
     frameLoop: "demand",
     parametricWeave: false,
+    showEdgePoints: false,
+    showOctreeCells: false,
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -334,6 +336,8 @@ describe("loadSettings", () => {
       brepEdgeMode: "xray",
       frameLoop: "demand",
       parametricWeave: false,
+      showEdgePoints: false,
+      showOctreeCells: false,
     });
   });
 
@@ -362,6 +366,8 @@ describe("loadSettings", () => {
       brepEdgeMode: "xray",
       frameLoop: "demand",
       parametricWeave: false,
+      showEdgePoints: false,
+      showOctreeCells: false,
     });
   });
 

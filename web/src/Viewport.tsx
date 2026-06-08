@@ -33,6 +33,8 @@ import {
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
+  BRepEdgePointsOverlay,
+  OctreeCellOverlay,
   BRepSelectionOverlay,
   BRepSelectedOverlay,
   MeshPreview,
@@ -298,7 +300,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode }) {
+export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -478,6 +480,8 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop }: { r
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
               <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+              {showEdgePoints && <BRepEdgePointsOverlay />}
+              {showOctreeCells && <OctreeCellOverlay />}
               <BRepSelectionOverlay ndc={ndc} />
               <BRepSelectedOverlay />
               <MateConnectorOverlay />

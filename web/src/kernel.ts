@@ -76,6 +76,24 @@ export interface BRepEdge {
   idHash: string;
 }
 
+/** One topology-octree leaf cell (debug overlay). `min`/`max` are the cell's
+ *  axis-aligned bounds in the **body-local** frame; `class` is 0=Face, 1=Edge,
+ *  2=Vertex. Fold to world via the parent {@link OctreeCells} placement. */
+export interface OctreeCell {
+  min: [number, number, number];
+  max: [number, number, number];
+  class: number;
+}
+
+/** Debug octree dump for one body: its local-frame leaf {@link OctreeCell}s
+ *  plus the rigid+uniform-scale placement that folds them to world. */
+export interface OctreeCells {
+  translate: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: number;
+  cells: OctreeCell[];
+}
+
 /** One selectable B-Rep face of a body, in the body-LOCAL frame. `faceIndex`
  *  indexes the same ordering as the per-triangle face tags
  *  ({@link KernelHandle.bodyFaceIndexView}). `idHash` is the
@@ -467,6 +485,17 @@ export class Kernel {
    */
   bodyBrepEdges(i: number): BRepEdge[] {
     return JSON.parse(this.inner.bodyBrepEdges(i)) as BRepEdge[];
+  }
+
+  /**
+   * **Debug only.** Topology-octree leaf cells of body `i` for the octree-cell
+   * overlay — the adaptive grid the B-Rep weave classifies into face/edge/
+   * vertex cells. Cells come in the body-LOCAL frame plus the placement that
+   * folds them to world. The octree is rebuilt on every call (not cached), so
+   * read it only when the overlay is actually on.
+   */
+  bodyOctreeCells(i: number): OctreeCells {
+    return JSON.parse(this.inner.bodyOctreeCells(i)) as OctreeCells;
   }
 
   // ── Per-body selectable B-Rep faces / vertices (Brocken A) ────────

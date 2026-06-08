@@ -7,6 +7,7 @@ import {
   FACE_INDEX_SENTINEL,
   localToWorld,
   type BRepEdge,
+  type OctreeCells,
   type BRepFace,
   type BRepVertex,
   type FeatureSummary,
@@ -630,6 +631,215 @@ export function BRepEdgeOverlay({
           renderOrder={999}
         />
       )}
+    </>
+  );
+}
+
+/** Fingerprint that bumps on any body geometry edit or placement move — count
+ *  plus per-body `id.version`. Shared by the two debug overlays below so their
+ *  kernel reads re-run exactly when (and only when) the bodies change. Mirrors
+ *  {@link BRepEdgeOverlay}'s own `bodyFingerprint`. */
+function useBodyFingerprint(): string {
+  const { store, state } = useKernelStore();
+  return useMemo(() => {
+    if (!store) return "";
+    const n = store.kernel.bodyCount();
+    let fp = String(n);
+    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    return fp;
+  }, [store, state]);
+}
+
+/**
+ * Debug overlay: renders every B-Rep edge's individual tessellation **sample
+ * points** as fixed-size screen markers. A NURBS edge sampled into many points
+ * shows up as a dense bead chain; a coarse or near-straight edge as a sparse
+ * one — so it's obvious at a glance how an edge is discretised. Reads the same
+ * cached analytic B-Rep (world-space points) as {@link BRepEdgeOverlay},
+ * independent of mesh resolution and render mode. Toggle via
+ * Settings → "Edge sample points".
+ */
+export function BRepEdgePointsOverlay() {
+  const { store } = useKernelStore();
+  const fingerprint = useBodyFingerprint();
+  const geometryRef = useRef(new THREE.BufferGeometry());
+  const materialRef = useRef(
+    new THREE.PointsMaterial({
+      color: 0xdc2626,
+      size: 7,
+      sizeAttenuation: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+
+  const positions = useMemo<Float32Array>(() => {
+    if (!store) return new Float32Array(0);
+    const count = store.kernel.bodyCount();
+    const all: number[] = [];
+    for (let i = 0; i < count; i++) {
+      let bodyEdges: BRepEdge[];
+      try {
+        bodyEdges = store.kernel.bodyBrepEdges(i);
+      } catch {
+        continue;
+      }
+      for (const e of bodyEdges) {
+        for (let p = 0; p < e.points.length; p++) all.push(e.points[p]);
+      }
+    }
+    return new Float32Array(all);
+  }, [store, fingerprint]);
+
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (positions.length === 0) {
+      setReady(false);
+      return;
+    }
+    geometryRef.current.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometryRef.current.computeBoundingSphere();
+    setReady(true);
+  }, [positions]);
+
+  useEffect(() => {
+    return () => {
+      geometryRef.current.dispose();
+      materialRef.current.dispose();
+    };
+  }, []);
+
+  if (!ready) return null;
+  return (
+    <points
+      ref={(obj: THREE.Points | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+      geometry={geometryRef.current}
+      material={materialRef.current}
+      frustumCulled={false}
+      renderOrder={1000}
+    />
+  );
+}
+
+/** Per-class wireframe colour for the octree-cell overlay, indexed by the
+ *  kernel's `class` byte: 0=Face (blue), 1=Edge (amber), 2=Vertex (red).
+ *  RGB in 0..1 for a vertex-colour `LineBasicMaterial`. */
+const OCTREE_CLASS_COLORS: [number, number, number][] = [
+  [0.23, 0.51, 0.96],
+  [0.96, 0.62, 0.04],
+  [0.86, 0.15, 0.15],
+];
+
+/** Push the 12 wireframe edges of the axis-aligned box `[min,max]` into the
+ *  `pos`/`col` arrays (24 vertices, each carrying `rgb`). */
+function pushBoxWireframe(
+  pos: number[],
+  col: number[],
+  min: [number, number, number],
+  max: [number, number, number],
+  rgb: [number, number, number],
+) {
+  const c: [number, number, number][] = [
+    [min[0], min[1], min[2]], [max[0], min[1], min[2]],
+    [max[0], max[1], min[2]], [min[0], max[1], min[2]],
+    [min[0], min[1], max[2]], [max[0], min[1], max[2]],
+    [max[0], max[1], max[2]], [min[0], max[1], max[2]],
+  ];
+  const edges: [number, number][] = [
+    [0, 1], [1, 2], [2, 3], [3, 0], // bottom face
+    [4, 5], [5, 6], [6, 7], [7, 4], // top face
+    [0, 4], [1, 5], [2, 6], [3, 7], // verticals
+  ];
+  for (const [a, b] of edges) {
+    pos.push(c[a][0], c[a][1], c[a][2], c[b][0], c[b][1], c[b][2]);
+    col.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]);
+  }
+}
+
+/**
+ * Debug overlay: draws the topology **octree's leaf cells** as a wireframe
+ * grid, colour-coded by class (blue = face, amber = edge, red = vertex). The
+ * octree is the adaptive structure the B-Rep weave classifies into sharp
+ * features; this overlay shows the resolution it actually reached around each
+ * body (≈ largest-extent / 32, refined near edges/corners). Cells arrive in
+ * the body-local frame plus the body placement, which is applied as a group
+ * matrix. Toggle via Settings → "Octree cells".
+ */
+export function OctreeCellOverlay() {
+  const { store } = useKernelStore();
+  const fingerprint = useBodyFingerprint();
+  const materialRef = useRef(
+    new THREE.LineBasicMaterial({
+      vertexColors: true,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.5,
+    }),
+  );
+
+  const bodies = useMemo(() => {
+    if (!store) return [];
+    const count = store.kernel.bodyCount();
+    const out: { id: string; geometry: THREE.BufferGeometry; placement: OctreeCells }[] = [];
+    for (let i = 0; i < count; i++) {
+      let dump: OctreeCells;
+      try {
+        dump = store.kernel.bodyOctreeCells(i);
+      } catch {
+        continue;
+      }
+      if (dump.cells.length === 0) continue;
+      const pos: number[] = [];
+      const col: number[] = [];
+      for (const cell of dump.cells) {
+        const rgb = OCTREE_CLASS_COLORS[cell.class] ?? OCTREE_CLASS_COLORS[0];
+        pushBoxWireframe(pos, col, cell.min, cell.max, rgb);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+      out.push({ id: `${store.kernel.bodyId(i)}`, geometry, placement: dump });
+    }
+    return out;
+  }, [store, fingerprint]);
+
+  // Dispose the previous frame's geometries when `bodies` is rebuilt.
+  useEffect(() => {
+    return () => {
+      for (const b of bodies) b.geometry.dispose();
+    };
+  }, [bodies]);
+
+  useEffect(() => {
+    return () => materialRef.current.dispose();
+  }, []);
+
+  if (bodies.length === 0) return null;
+  return (
+    <>
+      {bodies.map((b) => (
+        <group
+          key={b.id}
+          position={[b.placement.translate[0], b.placement.translate[1], b.placement.translate[2]]}
+          quaternion={[
+            b.placement.rotation[0],
+            b.placement.rotation[1],
+            b.placement.rotation[2],
+            b.placement.rotation[3],
+          ]}
+          scale={b.placement.scale}
+        >
+          <lineSegments
+            ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+            geometry={b.geometry}
+            material={materialRef.current}
+            frustumCulled={false}
+            renderOrder={997}
+          />
+        </group>
+      ))}
     </>
   );
 }
