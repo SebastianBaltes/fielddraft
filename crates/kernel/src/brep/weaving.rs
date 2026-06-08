@@ -1535,6 +1535,67 @@ mod tests {
         }
     }
 
+    /// Regression (original bug, DL-78): a box unioned with a curved partner
+    /// drops the corner vertices on the side FAR from the partner. Root cause is
+    /// the seed search in `project_branch`: at such a convex corner every in-cell
+    /// probe sits on the multi-branch fault, so a side branch's Newton projection
+    /// slides onto an adjacent face — two tangent planes collapse (rank-deficient
+    /// vertex solve) and the corner vertex + its incident edges are dropped. The
+    /// far corners MUST survive the generic octree weave WITHOUT any analytic
+    /// half-space projection (that was the rejected DL-75-broadening fix).
+    #[test]
+    fn box_union_sphere_keeps_far_corners() {
+        let csg = CsgNode::Union(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [1.0, 1.0, 1.0],
+                },
+            }),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                // Pokes a bump out of the +x face centre; leaves the -x corners
+                // (and most of the box) untouched.
+                primitive: Primitive::Sphere {
+                    center: [1.4, 0.0, 0.0],
+                    radius: 0.9,
+                },
+            }),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.1);
+        let brep = weave(&body, &octree);
+
+        assert!(
+            brep.validate().is_ok(),
+            "B-Rep must be well-formed: {:?}",
+            brep.validate()
+        );
+
+        // The four box corners at x = -1 are pure box-plane triple points, far
+        // from the sphere bump on the +x face. Every one must be a B-Rep vertex.
+        let far_corners = [
+            [-1.0, -1.0, -1.0],
+            [-1.0, -1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+            [-1.0, 1.0, 1.0],
+        ];
+        for c in far_corners {
+            let found = brep.vertices.iter().any(|v| {
+                let d2 = (v.position[0] - c[0]).powi(2)
+                    + (v.position[1] - c[1]).powi(2)
+                    + (v.position[2] - c[2]).powi(2);
+                d2 < 0.04 // 0.2 mm
+            });
+            assert!(
+                found,
+                "far box corner {c:?} missing from weave; got vertices {:?}",
+                brep.vertices.iter().map(|v| v.position).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn offset_node_is_child_minus_delta_end_to_end() {
         use crate::csg::EvalMode;

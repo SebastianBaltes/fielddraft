@@ -312,6 +312,30 @@ fn project_branch(
     None
 }
 
+/// Re-seed every branch of a `Vertex` cell from an outward sole-contributor
+/// probe and project it. Used only as the convex-corner rescue (DL-78) when the
+/// in-cell projections collapse two faces onto one plane (rank-deficient vertex
+/// solve — the original Box ∪ curved-partner bug). Returns the projected planes
+/// that landed cleanly on their own branch (validated), which the caller re-solves.
+fn reproject_branches_outward(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    diag: f32,
+) -> Vec<(BranchId, ProjectedPoint)> {
+    let validate_eps = diag * SEED_EPS_FACTOR;
+    let mut planes = Vec::with_capacity(cell.branches.len());
+    for &branch in &cell.branches {
+        if let Some(seed) = find_outward_seed(body, cell, branch, diag) {
+            if let Some(proj) = project_to_surface(body, seed, PROJECT_EPS, PROJECT_MAX_ITER) {
+                if branch_active_at(body, proj.position, branch, validate_eps) {
+                    planes.push((branch, proj));
+                }
+            }
+        }
+    }
+    planes
+}
+
 /// Is `body` a clean hard-CSG combination of analytic primitives? Only those
 /// get the original *wide* seed band in [`project_branch`]: their half-space
 /// faces have clean sole-contributor Voronoi regions and the seam extraction is
@@ -393,6 +417,67 @@ fn find_seed(
         }
     }
     best.map(|(p, sole, _)| (p, sole))
+}
+
+/// True iff `branch` is among the (tight-eps) active contributors at `p` — i.e.
+/// the Newton projection actually landed on `branch`'s own surface rather than
+/// sliding onto a neighbouring face at a convex corner.
+fn branch_active_at(body: &BoundedCsg, p: [f32; 3], branch: BranchId, eps: f32) -> bool {
+    let (_, c) = body.evaluate(p, eps, EvalMode::Logical);
+    c.as_slice().contains(&branch)
+}
+
+/// Convex-corner rescue seed (DL-78, generic — no analytic half-spaces).
+///
+/// At a `Vertex` cell every in-cell probe sits on the multi-branch fault, so a
+/// Newton projection for a *side* branch slides onto an adjacent face and two
+/// tangent planes collapse (rank-deficient vertex solve — the original
+/// Box ∪ curved-partner bug). We fan outward from the cell centre along the 26
+/// cube directions at geometrically growing radii and return the closest point
+/// where `branch` is the **sole** active contributor — a clean point on
+/// `branch`'s own surface, away from the fault. A planar face's sole region is
+/// reached at ≈1 cell diagonal along a face-diagonal direction; growing radii
+/// cover thin slivers and curved faces whose sole region sits further out.
+fn find_outward_seed(
+    body: &BoundedCsg,
+    cell: &OctreeCell,
+    branch: BranchId,
+    diag: f32,
+) -> Option<[f32; 3]> {
+    let c = cell.center();
+    let eps = (diag * SEED_EPS_FACTOR).max(1e-5);
+    for &k in &[1.0f32, 2.0, 4.0, 8.0] {
+        let r = diag * k;
+        // Among the sole-`branch` hits at this radius, keep the one whose
+        // direction is least diagonal (smallest ‖dir‖) — it stays nearest the
+        // face, giving the best-anchored tangent plane.
+        let mut best: Option<([f32; 3], f32)> = None;
+        for dx in [-1.0f32, 0.0, 1.0] {
+            for dy in [-1.0f32, 0.0, 1.0] {
+                for dz in [-1.0f32, 0.0, 1.0] {
+                    if dx == 0.0 && dy == 0.0 && dz == 0.0 {
+                        continue;
+                    }
+                    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                    let p = [
+                        c[0] + dx / len * r,
+                        c[1] + dy / len * r,
+                        c[2] + dz / len * r,
+                    ];
+                    let (_, contributors) = body.evaluate(p, eps, EvalMode::Logical);
+                    let slice = contributors.as_slice();
+                    if slice.len() == 1 && slice[0] == branch && best.map_or(true, |(_, bl)| len < bl)
+                    {
+                        best = Some((p, len));
+                    }
+                }
+            }
+        }
+        if let Some((p, _)) = best {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// Re-project `branch` from a seed *near* `p`, nudged into `branch`'s Voronoi
@@ -738,14 +823,43 @@ pub fn extract_vertex(
         return None;
     }
 
-    // Initial one-shot LSQ solve.
-    let mut p_vert = solve_vertex_point(&planes)?;
+    let diag = cell_diag(cell);
+
+    // Initial one-shot LSQ solve. A `None` here is the convex-corner collapse
+    // (DL-78, the original Box ∪ curved-partner bug): the in-cell probes all sit
+    // on the multi-branch fault, so a *side* branch's Newton projection slid onto
+    // an adjacent face — two tangent planes coincide and the normal-equation
+    // matrix is rank-deficient. Re-seed every branch from an outward
+    // sole-contributor probe (generic, no analytic half-spaces) and re-solve.
+    let mut p_vert = match solve_vertex_point(&planes) {
+        Some(p) => p,
+        None => {
+            let rescued = reproject_branches_outward(body, cell, diag);
+            if rescued.len() < 3 {
+                return None;
+            }
+            let p = solve_vertex_point(&rescued)?;
+            // Vertex analog of the DL-63 both-branches gate: a *rescued* solve
+            // must have EVERY colliding branch actually pass through the solved
+            // point. The phantom filter below only checks the union surface
+            // `|f(p)|`, which a spurious corner on a box edge still satisfies —
+            // e.g. where a far cylinder wall was merely an eps-runner-up in the
+            // cell's branch set (box ∖ drill). Requiring all branches live at
+            // `p` rejects those without touching the genuine convex corners.
+            let (_, c) = body.evaluate(p, diag * BOTH_ACTIVE_EPS_FACTOR, EvalMode::Logical);
+            let active = c.as_slice();
+            if !cell.branches.iter().all(|b| active.contains(b)) {
+                return None;
+            }
+            planes = rescued;
+            p
+        }
+    };
 
     // Outer refinement for warped (curved) faces (see DL-38): re-anchor each
     // branch's tangent plane near the current vertex estimate and re-solve.
     // Planar faces are detected as already-converged on the first residual
     // check and skip the loop.
-    let diag = cell_diag(cell);
     let delta = diag * 0.25;
     for _ in 0..REFINE_MAX_ITER {
         if edge_residual(body, p_vert) < REFINE_EPS {
