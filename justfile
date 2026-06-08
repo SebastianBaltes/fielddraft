@@ -10,13 +10,21 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # See .env.example.
 set dotenv-load := true
 
+# Activate the Node version pinned in web/.nvmrc (via nvm) before any npm/vite
+# call. `just` runs recipes in non-interactive bash where nvm is NOT sourced, so
+# the system Node (v18 on this box) would be used — too old for Vite 8 / Vitest
+# 3, which then die with cryptic cjs/loader errors. Sources nvm if present and
+# `nvm use` reads .nvmrc; falls back to whatever node is on PATH otherwise. Use
+# as `cd web && {{nvm_use}} && npm …`.
+nvm_use := '. "$HOME/.nvm/nvm.sh" 2>/dev/null && nvm use 2>/dev/null || true'
+
 # Default: print the available recipes.
 default:
     @just --list
 
 # Install web dependencies.
 install:
-    cd web && npm install
+    cd web && {{nvm_use}} && npm install
 
 # Build the Rust kernel to WASM and drop the output into web/src/wasm.
 # Stamp the binary with the web app version (single source of truth =
@@ -35,11 +43,11 @@ build-wasm:
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
 dev: build-wasm
     @echo "▶ ${FIELDDRAFT_INSTANCE:-fielddraft} dev server on port ${FIELDDRAFT_WEB_PORT:-5173}"
-    cd web && npm run dev
+    cd web && {{nvm_use}} && npm run dev
 
 # Build the full web bundle (WASM + Vite).
 build: build-wasm
-    cd web && npm run build
+    cd web && {{nvm_use}} && npm run build
 
 # Run the fast local test suite: Rust unit tests + Vitest.
 # Playwright smoke tests are intentionally *not* included here —
@@ -52,7 +60,7 @@ test-rust:
     cargo test --workspace
 
 test-web: build-wasm
-    cd web && npm run test
+    cd web && {{nvm_use}} && npm run test
 
 # E2E (Playwright, headed Chromium + real WebGPU). Catches
 # integration-level regressions that Vitest can't — material /
@@ -60,10 +68,10 @@ test-web: build-wasm
 # routing through the canvas, etc. Requires `just install-e2e`
 # once to fetch the Chromium binary.
 test-e2e: build-wasm
-    cd web && npm run e2e
+    cd web && {{nvm_use}} && npm run e2e
 
 install-e2e:
-    cd web && npm run e2e:install
+    cd web && {{nvm_use}} && npm run e2e:install
 
 # Format everything.
 fmt:
