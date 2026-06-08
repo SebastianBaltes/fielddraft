@@ -33,14 +33,36 @@
 //! | **Face**    | sign change ∧ `branches ≤ 1`                           |
 //! | **Uncertain** | signs+branches equal ∧ `f_min ≤ diag` → refine more  |
 //!
-//! `Empty` cells are discarded (never stored, never recursed). `Edge`,
-//! `Vertex`, `Face` and `Uncertain` cells are subdivided until the cell
-//! size drops to `min_cell_size` (or `max_depth` is hit), at which point
-//! they are stored as classified leaves. `Uncertain` is purely an
-//! internal "keep refining" state; it is never a *stored* leaf class —
-//! an `Uncertain` cell that bottoms out at the resolution limit without
-//! resolving a feature is simply dropped (no corner ever saw a surface,
-//! so there is nothing to seed).
+//! `Empty` cells are discarded (never stored, never recursed). `Uncertain`
+//! is purely an internal "keep refining" state; it is never a *stored* leaf
+//! class — an `Uncertain` cell that bottoms out at the resolution limit
+//! without resolving a feature is simply dropped (no corner ever saw a
+//! surface, so there is nothing to seed).
+//!
+//! ## Feature-adaptive refinement (two thresholds)
+//!
+//! Refinement is **adaptive on topology, not on geometry**: the octree's
+//! only job is to *localise edges and vertices*, so that is the only thing
+//! worth refining for. How a face curves on the inside is irrelevant here —
+//! the face geometry is resolved analytically downstream, never from this
+//! grid (only `edge_cells()`/`vertex_cells()` feed [`crate::brep::extraction::extract_features`];
+//! `Face` cells feed nothing but the debug overlay). So:
+//!
+//! - `Edge`, `Vertex` and `Uncertain` cells refine to the fine
+//!   `min_cell_size` — they must pin the feature precisely for the weave.
+//! - `Face` cells stop at the coarser `face_cell_size`: a single-branch
+//!   patch carries no topology to seed, so subdividing it further only
+//!   spends a uniform fine grid on a flat (or smoothly curved) face — the
+//!   non-adaptivity visible in the octree-cell overlay.
+//!
+//! This is safe because the wide contributor `eps` (`= cell_diag · eps_factor`,
+//! 0.5) makes each sample register *every* branch within ~half a cell of the
+//! fault: a cell anywhere near an edge already collects 2 branches and
+//! classifies as `Edge`, the more so the coarser (hence larger-`eps`) it is.
+//! A `Face` cell surviving at `face_cell_size` therefore has no second branch
+//! within half its (large) diagonal — it is genuinely deep inside one face,
+//! far from any edge/vertex. The only thing lost is the uniform fine grid on
+//! face interiors, which no consumer reads.
 
 use std::collections::HashSet;
 
@@ -101,8 +123,14 @@ impl OctreeCell {
 /// hanging (a 256³ effective grid).
 #[derive(Debug, Clone, Copy)]
 pub struct OctreeConfig {
-    /// Resolution limit: cells are not subdivided below this edge size.
+    /// Resolution limit for **feature** cells (`Edge`/`Vertex`/`Uncertain`):
+    /// they are not subdivided below this edge size.
     pub min_cell_size: f32,
+    /// Resolution limit for **`Face`** cells, which localise no topology and
+    /// feed no weave consumer. Coarser than `min_cell_size` (see
+    /// [`FACE_CELL_FACTOR`]) so face interiors are not paved with a uniform
+    /// fine grid. Must be `>= min_cell_size`.
+    pub face_cell_size: f32,
     /// Hard depth cap so a degenerate field can never hang the build.
     pub max_depth: u32,
     /// `eps` passed to [`BoundedCsg::evaluate`] is `cell_diag *
@@ -114,12 +142,19 @@ pub struct OctreeConfig {
     pub root_margin_factor: f32,
 }
 
+/// How much coarser a `Face` cell may be than a feature cell. Faces carry no
+/// topology to seed, so this trades a uniform fine face grid for `FACTOR`× the
+/// linear cell size (≈ `FACTOR³`× fewer face cells) while leaving every
+/// `Edge`/`Vertex` cell — and thus the woven B-Rep — untouched.
+pub const FACE_CELL_FACTOR: f32 = 4.0;
+
 impl OctreeConfig {
     /// Build a config from just `min_cell_size`, with sane defaults for
-    /// the rest.
+    /// the rest. `face_cell_size` is derived as `min_cell_size · FACE_CELL_FACTOR`.
     pub fn with_min_cell_size(min_cell_size: f32) -> Self {
         Self {
             min_cell_size,
+            face_cell_size: min_cell_size * FACE_CELL_FACTOR,
             ..Self::default()
         }
     }
@@ -129,6 +164,7 @@ impl Default for OctreeConfig {
     fn default() -> Self {
         Self {
             min_cell_size: 0.1,
+            face_cell_size: 0.1 * FACE_CELL_FACTOR,
             max_depth: 8,
             eps_factor: 0.5,
             root_margin_factor: 0.01,
@@ -243,14 +279,21 @@ fn recurse(
 
     let size = cell.size();
     let largest_edge = size[0].max(size[1]).max(size[2]);
-    let at_resolution = largest_edge <= cfg.min_cell_size || depth >= cfg.max_depth;
+    let depth_capped = depth >= cfg.max_depth;
 
     match class {
         Classification::Empty => {
             // Guaranteed feature-free → prune.
         }
         Classification::Leaf(class, branches) => {
-            if at_resolution {
+            // `Face` cells localise no topology, so they bottom out at the
+            // coarse `face_cell_size`; `Edge`/`Vertex` cells must reach the
+            // fine `min_cell_size` to pin the feature for the weave.
+            let target = match class {
+                CellClass::Face => cfg.face_cell_size,
+                CellClass::Edge | CellClass::Vertex => cfg.min_cell_size,
+            };
+            if largest_edge <= target || depth_capped {
                 out.push(OctreeCell {
                     aabb: cell,
                     class,
@@ -261,7 +304,9 @@ fn recurse(
             }
         }
         Classification::Uncertain => {
-            if at_resolution {
+            // An undecided cell is still hunting a feature → refine to the
+            // fine limit before giving up.
+            if largest_edge <= cfg.min_cell_size || depth_capped {
                 // Bottomed out without resolving a feature: no corner
                 // ever bracketed a surface, so there is nothing to seed.
                 // Drop it (do not store an `Uncertain` leaf).
@@ -518,6 +563,47 @@ mod tests {
             octree.face_cells().count() > 0,
             "the sphere surface should produce Face cells"
         );
+    }
+
+    #[test]
+    fn face_cells_are_coarser_than_feature_cells() {
+        // Adaptivity: `Face` cells bottom out at the coarse `face_cell_size`,
+        // `Edge`/`Vertex` cells at the fine `min_cell_size`. A cube's flat
+        // faces must therefore carry distinctly larger cells than its edges,
+        // while its topology (12 edges, 8 corners) is unchanged — Face cells
+        // feed no weave consumer, so coarsening them is invisible downstream.
+        let body = box_body([1.0, 1.0, 1.0]);
+        let min_cell = 0.125;
+        let octree = Octree::build(&body, min_cell);
+
+        let cell_edge = |c: &OctreeCell| {
+            let s = c.aabb.size();
+            s[0].max(s[1]).max(s[2])
+        };
+        let max_face = octree.face_cells().map(cell_edge).fold(0.0_f32, f32::max);
+        let max_feature = octree
+            .edge_cells()
+            .chain(octree.vertex_cells())
+            .map(cell_edge)
+            .fold(0.0_f32, f32::max);
+
+        // Feature cells reach the fine limit; faces stop ~FACE_CELL_FACTOR coarser.
+        assert!(
+            max_feature <= min_cell * 1.5,
+            "edge/vertex cells must reach min_cell_size, got {max_feature}"
+        );
+        assert!(
+            max_face > max_feature,
+            "face cells must be coarser than feature cells: face {max_face} vs feature {max_feature}"
+        );
+        assert!(
+            max_face <= min_cell * FACE_CELL_FACTOR * 1.5,
+            "face cells must respect face_cell_size, got {max_face}"
+        );
+
+        // Topology is byte-identical to the uniform build.
+        assert_eq!(octree.distinct_edge_signatures().len(), 12);
+        assert_eq!(octree.distinct_vertex_branch_sets().len(), 8);
     }
 
     #[test]

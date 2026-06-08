@@ -828,12 +828,14 @@ function pushBoxWireframe(
 /**
  * Debug overlay: draws the topology **octree's leaf cells** as a wireframe
  * grid, colour-coded by class (blue = face, amber = edge, red = vertex). The
- * octree prunes empty space but is NOT resolution-adaptive: every surface cell
- * is subdivided uniformly down to `min_cell_size` (≈ largest-extent / 32),
- * with no curvature/flatness early-out — so flat faces carry the same fine
- * grid as curved regions (visible as the dense uniform mesh on a cube face).
- * Cells arrive in the body-local frame plus the body placement, which is
- * applied as a group matrix. Toggle via Settings → "Octree cells".
+ * octree is **feature-adaptive on topology**: `edge`/`vertex` cells refine to
+ * the fine `min_cell_size` (≈ largest-extent / 32) to pin the feature, while
+ * `face` cells stop at the coarser `face_cell_size` (FACE_CELL_FACTOR× larger)
+ * because a single-branch patch carries no topology to seed and feeds no weave
+ * consumer. So flat/curved face interiors show large blue cells and the grid
+ * tightens only along the amber edges and red corners. Cells arrive in the
+ * body-local frame plus the body placement, which is applied as a group
+ * matrix. Toggle via Settings → "Octree cells".
  */
 export function OctreeCellOverlay() {
   const { store } = useKernelStore();
