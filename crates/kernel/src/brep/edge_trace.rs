@@ -191,6 +191,31 @@ pub(crate) struct TraceParams {
     /// a plane parallel to an infinite cylinder) marching off to infinity. The
     /// caller sets it from the seam's spatial extent; [`f64::INFINITY`] disables.
     pub max_arc: f64,
+    /// Optional **curvature-adaptive** stepping (DL-81, experimental). When
+    /// `None` the march uses the fixed nominal `step` for every predictor —
+    /// even spacing, byte-identical to the historical tracer. When `Some` the
+    /// step size is driven by a *geometric chord-deviation tolerance* instead:
+    /// long strides on straight runs, short ones through tight bends, so the
+    /// point count tracks the edge's *curvature* — not the seed/octree spacing
+    /// and not the object's size. A 1 m straight edge collapses to a single
+    /// span; a tight fillet gets just enough points for the tolerance.
+    pub adapt: Option<Adapt>,
+}
+
+/// Curvature-adaptive step control for [`trace_edge`] (DL-81). Keeps the arc's
+/// deviation from its chord under `tol` by sizing each predictor from the
+/// locally measured curvature (sagitta relation `s ≈ ½·L·tan(θ/4)`, target
+/// `L = √(8·tol/κ)`), clamped to `[min_step, max_step]`. All lengths in world
+/// units, independent of the body's overall scale.
+#[derive(Clone, Copy)]
+pub(crate) struct Adapt {
+    /// Max allowed arc-to-chord deviation (sagitta) of any emitted segment.
+    pub tol: f64,
+    /// Shortest predictor the march will shrink to (sharp-corner floor — a
+    /// tighter turn is left to vertex snapping rather than crawled across).
+    pub min_step: f64,
+    /// Longest predictor the march will grow to on a straight run.
+    pub max_step: f64,
 }
 
 impl TraceParams {
@@ -203,7 +228,19 @@ impl TraceParams {
             vertex_reach: 1.5 * step,
             close_tol: step,
             max_arc: f64::INFINITY,
+            adapt: None,
         }
+    }
+
+    /// Enable curvature-adaptive stepping (DL-81). `tol` is the chord-deviation
+    /// budget; the nominal `step` becomes the *initial* and `max_step` becomes
+    /// the straight-run cap. `vertex_reach`/`close_tol` are widened to the max
+    /// step so a grown stride never overshoots a vertex or a loop closure.
+    pub(crate) fn with_adaptive(mut self, tol: f64, min_step: f64, max_step: f64) -> Self {
+        self.adapt = Some(Adapt { tol, min_step, max_step });
+        self.vertex_reach = self.vertex_reach.max(1.5 * max_step);
+        self.close_tol = self.close_tol.max(max_step);
+        self
     }
 }
 
@@ -315,6 +352,9 @@ fn march(
     let mut cur = start;
     let mut t_prev = t0;
     let mut arc = 0.0;
+    // Adaptive marches carry a *mutable* predictor length; fixed marches leave
+    // it at `p.step` for every step, so the historical path is byte-identical.
+    let mut step = p.step;
     for step_i in 0..p.max_steps {
         // A bounding vertex ahead within reach ends the arc exactly: append the
         // vertex itself (not a projected approximation) and stop.
@@ -328,9 +368,34 @@ fn march(
         // seam that already traced is byte-for-byte unchanged; only a stalled
         // nominal step refines toward the edge (decoupling the march from the
         // seed spacing) instead of abandoning the whole group to the sample fits.
-        let Some((np, t)) = advance(fa, fb, cur, t_prev, p.step) else {
+        let Some((np, t)) = advance(fa, fb, cur, t_prev, step) else {
             return (pts, MarchEnd::Stalled);
         };
+
+        // Curvature-adaptive accept / resize (DL-81). On the fixed path
+        // `p.adapt` is `None`, `step` never changes, and this block is skipped.
+        if let Some(a) = &p.adapt {
+            let chord = dist(np, cur);
+            // Turn angle across the step just taken (both tangents are unit).
+            let theta = dot(t_prev, t).clamp(-1.0, 1.0).acos();
+            // Arc-to-chord deviation of a circular step: s = ½·L·tan(θ/4).
+            let sagitta = 0.5 * chord * (0.25 * theta).tan();
+            // Over budget here and still room to shrink → drop this step and
+            // retry shorter from the same point (never below `min_step`).
+            if sagitta > a.tol && step > a.min_step * (1.0 + 1e-9) {
+                step = (step * 0.5).max(a.min_step);
+                continue;
+            }
+            // Accept; size the *next* predictor from the local curvature
+            // κ ≈ θ/L so the following segment lands right at the tolerance.
+            let kappa = if chord > 1e-12 { theta / chord } else { 0.0 };
+            step = if kappa > 1e-12 {
+                (8.0 * a.tol / kappa).sqrt()
+            } else {
+                a.max_step
+            }
+            .clamp(a.min_step, a.max_step);
+        }
 
         // Loop closure: back near the seed after genuinely leaving it.
         if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < p.close_tol {
@@ -805,6 +870,125 @@ mod tests {
             assert!((norm(p) - 1.0).abs() < 1e-7, "|p|={}", norm(p));
             assert!((p[2] - 0.3).abs() < 1e-7, "z={}", p[2]);
         }
+    }
+
+    // ─── DL-81: curvature-adaptive stepping ──────────────────────────────────
+
+    /// Worst arc-to-chord deviation of a polyline known to lie on a circle of
+    /// radius `r`: per segment `s = r − √(r² − (d/2)²)` for chord length `d`.
+    fn max_circle_sagitta(points: &[[f64; 3]], r: f64) -> f64 {
+        let mut worst = 0.0_f64;
+        for w in points.windows(2) {
+            let half = 0.5 * dist(w[0], w[1]);
+            let s = r - (r * r - half * half).max(0.0).sqrt();
+            worst = worst.max(s);
+        }
+        worst
+    }
+
+    #[test]
+    fn adaptive_straight_edge_collapses_independent_of_length() {
+        // Two planes meeting along the x-axis (y=0 ∩ z=0), clipped to a HUGE
+        // length L=1000 by two vertices. A straight edge has zero curvature, so
+        // the adaptive march grows to `max_step` and spans the whole edge in a
+        // handful of points — regardless of L. The fixed even-step path needs
+        // ≈ L/step points for the same edge: the size-dependence the octree
+        // would otherwise impose.
+        let p1 = plane([0.0, 1.0, 0.0], 0.0);
+        let p2 = plane([0.0, 0.0, 1.0], 0.0);
+        let big = 1000.0;
+        let verts = [[-big, 0.0, 0.0], [big, 0.0, 0.0]];
+
+        let even = trace_edge(&p1, &p2, [0.0, 0.02, -0.03], &verts, &TraceParams::from_step(1.0))
+            .expect("even trace");
+        let adaptive = trace_edge(
+            &p1,
+            &p2,
+            [0.0, 0.02, -0.03],
+            &verts,
+            &TraceParams::from_step(1.0).with_adaptive(1e-3, 1e-2, 2.0 * big),
+        )
+        .expect("adaptive trace");
+
+        assert!(even.points.len() > 1000, "even path dense: {}", even.points.len());
+        assert!(
+            adaptive.points.len() <= 5,
+            "straight edge should collapse, got {}",
+            adaptive.points.len()
+        );
+        // Every adaptive point lies exactly on the x-axis (zero deviation).
+        for &q in &adaptive.points {
+            assert!(q[1].abs() < 1e-6 && q[2].abs() < 1e-6, "off-axis: {q:?}");
+        }
+        // Ends pinned to the two clipping vertices.
+        assert_eq!(adaptive.ends.0.is_some() && adaptive.ends.1.is_some(), true);
+    }
+
+    #[test]
+    fn adaptive_decouples_point_count_from_seed_spacing() {
+        // Sphere ∩ plane ring. A *fine* nominal step (proxy for a finely
+        // refined octree) forces ≈ circumference/step points on the even path.
+        // The adaptive path is driven by a geometric tolerance instead, so the
+        // same fine initial step grows to the curvature need: far fewer points,
+        // while the arc-to-chord deviation stays under tolerance.
+        let s = sphere([0.0, 0.0, 0.0], 1.0);
+        let pl = plane([0.0, 0.0, 1.0], 0.3);
+        let r = (1.0 - 0.09_f64).sqrt();
+        let fine = 0.02; // a deliberately dense seed spacing
+        let tol = 1e-3;
+
+        let even = trace_edge(&s, &pl, [r + 0.05, -0.03, 0.32], &[], &TraceParams::from_step(fine))
+            .expect("even trace");
+        let adaptive = trace_edge(
+            &s,
+            &pl,
+            [r + 0.05, -0.03, 0.32],
+            &[],
+            &TraceParams::from_step(fine).with_adaptive(tol, 1e-3, 1.0),
+        )
+        .expect("adaptive trace");
+
+        assert!(even.closed && adaptive.closed, "both are closed rings");
+        // The fine even path is dense; the adaptive path is far sparser.
+        assert!(even.points.len() > 250, "even should be dense: {}", even.points.len());
+        assert!(
+            adaptive.points.len() * 3 < even.points.len(),
+            "adaptive {} should be ≪ even {}",
+            adaptive.points.len(),
+            even.points.len()
+        );
+        // …yet still honours the deviation budget (small slack for the f32
+        // half-space floor and the discrete curvature estimate).
+        let sag = max_circle_sagitta(&adaptive.points, r);
+        assert!(sag <= tol * 1.5, "adaptive sagitta {sag} exceeds tol {tol}");
+        // All points exactly on both surfaces.
+        assert_on_sphere_plane(&adaptive.points, 0.3, 1e-6);
+    }
+
+    #[test]
+    fn adaptive_point_count_tracks_curvature_not_scale() {
+        // The SAME ring geometry at two absolute scales (r and 100·r), traced
+        // with a tolerance scaled the same way, yields the same point count:
+        // the cost follows the *shape's* curvature, not the object's size.
+        let tol_rel = 1e-3;
+        let count_at = |scale: f64| {
+            let s = sphere([0.0, 0.0, 0.0], scale);
+            let pl = plane([0.0, 0.0, 1.0], 0.3 * scale);
+            let r = scale * (1.0 - 0.09_f64).sqrt();
+            let seed = [r + 0.05 * scale, -0.03 * scale, 0.32 * scale];
+            let params = TraceParams::from_step(0.1 * scale).with_adaptive(
+                tol_rel * scale,
+                1e-4 * scale,
+                scale,
+            );
+            trace_edge(&s, &pl, seed, &[], &params).expect("trace").points.len()
+        };
+        let small = count_at(1.0);
+        let large = count_at(100.0);
+        assert!(
+            (small as i64 - large as i64).abs() <= 4,
+            "scale-invariance broken: small={small} large={large}"
+        );
     }
 }
 
