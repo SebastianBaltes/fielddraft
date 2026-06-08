@@ -17,3 +17,4 @@ declare module "*?raw" {
 }
 
 declare const __APP_VERSION__: string;
+declare const __KERNEL_EXPECTED__: string;

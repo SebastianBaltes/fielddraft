@@ -281,19 +281,20 @@ export class Kernel {
     inner.setMeshResolution(64);
     inner.setContextMeshResolution(32);
 
-    // Stale-WASM guard: the binary is stamped with the web app version
-    // at build time (see build.rs / `just build-wasm`). If the loaded
-    // kernel doesn't match the freshly-served JS bundle, the tab is
-    // running an outdated module — typically a long-open tab whose
-    // worker booted before the last `just build-wasm`. Warn loudly so
-    // the mismatch is never silent (e.g. MDC and RFTA returning the
-    // same triangle count because the new mesher code never loaded).
+    // Stale-WASM guard: the binary is stamped at build time (see build.rs /
+    // `just build-wasm`), which also mirrors the stamp into the
+    // `.kernel-version` sidecar that `__KERNEL_EXPECTED__` is defined from.
+    // Comparing the loaded module's stamp against the on-disk artifact (NOT
+    // the live package.json) means a cosmetic version bump without a rebuild
+    // never trips this — only a genuinely stale module does, i.e. a long-open
+    // tab whose worker booted before the last `just build-wasm`. Warn loudly
+    // so it's never silent (e.g. MDC and RFTA returning the same triangle
+    // count because the new mesher code never loaded).
     const wasmV = wasmVersion();
-    if (wasmV !== __APP_VERSION__) {
+    if (wasmV !== __KERNEL_EXPECTED__) {
       console.warn(
-        `[fielddraft] WASM/app version mismatch: kernel is v${wasmV}, app is v${__APP_VERSION__}. ` +
-          `The loaded WASM is stale — reload the page (Ctrl+Shift+R). ` +
-          `If it persists, rebuild with \`just build-wasm\`.`,
+        `[fielddraft] stale kernel module: loaded v${wasmV}, on-disk kernel is v${__KERNEL_EXPECTED__}. ` +
+          `Reload the page (Ctrl+Shift+R). If it persists, rebuild with \`just build-wasm\`.`,
       );
     } else {
       console.info(`[fielddraft] kernel v${wasmV}`);

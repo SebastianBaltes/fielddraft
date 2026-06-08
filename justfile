@@ -20,9 +20,17 @@ install:
 
 # Build the Rust kernel to WASM and drop the output into web/src/wasm.
 # Stamp the binary with the web app version (single source of truth =
-# web/package.json) so the app can detect a stale kernel module on boot.
+# web/package.json) and mirror that stamp into a `.kernel-version` sidecar.
+# The boot-time staleness guard compares the loaded module's stamp against
+# this sidecar — i.e. against the kernel artifact actually on disk — NOT
+# against the live package.json. That way a cosmetic version bump without a
+# rebuild never trips the guard, while a genuinely stale worker still does.
 build-wasm:
-    cd crates/kernel && FIELDDRAFT_VERSION="$(node -p "require('../../web/package.json').version")" wasm-pack build --target web --out-dir ../../web/src/wasm --out-name fielddraft_kernel
+    #!/usr/bin/env bash
+    set -euo pipefail
+    V="$(node -p "require('./web/package.json').version")"
+    cd crates/kernel && FIELDDRAFT_VERSION="$V" wasm-pack build --target web --out-dir ../../web/src/wasm --out-name fielddraft_kernel
+    printf '%s' "$V" > ../../web/src/wasm/.kernel-version
 
 # Start the Vite dev server (WebGPU-capable Chromium recommended).
 dev: build-wasm

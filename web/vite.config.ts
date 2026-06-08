@@ -35,6 +35,50 @@ function liveVersion(): Plugin {
   };
 }
 
+// Boot-time staleness guard source. `build-wasm` writes the WASM stamp into
+// this sidecar; the guard in kernel.ts compares the loaded module's self-
+// reported stamp against `__KERNEL_EXPECTED__` (defined from this file). Both
+// values come from the same `build-wasm` run, so a cosmetic package.json bump
+// never trips the guard — only a genuinely stale loaded module does.
+const KERNEL_STAMP = join("src", "wasm", ".kernel-version");
+
+function readKernelStamp(): string {
+  try {
+    return readFileSync(KERNEL_STAMP, "utf-8").trim() || "dev";
+  } catch {
+    return "dev";
+  }
+}
+
+function kernelStamp(): Plugin {
+  const stampModules = new Set<string>();
+  return {
+    name: "kernel-stamp",
+    config(_, { command }) {
+      if (command === "build") {
+        return { define: { __KERNEL_EXPECTED__: JSON.stringify(readKernelStamp()) } };
+      }
+    },
+    configureServer(server) {
+      server.watcher.add(KERNEL_STAMP);
+      server.watcher.on("change", (file) => {
+        if (!file.endsWith(".kernel-version")) return;
+        for (const id of stampModules) {
+          const mod = server.moduleGraph.getModuleById(id);
+          if (mod) server.moduleGraph.invalidateModule(mod);
+        }
+        server.hot.send({ type: "full-reload" });
+      });
+    },
+    transform(code, id) {
+      if (!id.includes("node_modules") && code.includes("__KERNEL_EXPECTED__")) {
+        stampModules.add(id);
+        return code.replaceAll("__KERNEL_EXPECTED__", JSON.stringify(readKernelStamp()));
+      }
+    },
+  };
+}
+
 const certDir = join(homedir(), ".local/share/tailscale-certs");
 const certFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.crt");
 const keyFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.key");
@@ -54,7 +98,7 @@ function webPort(mode: string): number {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), liveVersion()],
+  plugins: [react(), liveVersion(), kernelStamp()],
   server: {
     port: webPort(mode),
     strictPort: true,

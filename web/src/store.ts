@@ -4016,9 +4016,9 @@ export async function getStore(): Promise<KernelStore> {
     // warning on a version mismatch; also surface it as a toast so it's
     // not missed. A stale kernel means new mesher code (e.g. RFTA) never
     // loaded, so the viewport silently shows old output.
-    if (kernel.version() !== __APP_VERSION__) {
+    if (kernel.version() !== __KERNEL_EXPECTED__) {
       store.showTransientError(
-        `Stale WASM (kernel v${kernel.version()} ≠ app v${__APP_VERSION__}) — reload (Ctrl+Shift+R)`,
+        `Stale WASM (loaded kernel v${kernel.version()} ≠ on-disk v${__KERNEL_EXPECTED__}) — reload (Ctrl+Shift+R)`,
       );
     }
 
