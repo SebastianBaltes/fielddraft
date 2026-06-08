@@ -565,7 +565,7 @@ impl BRep {
         // Per edge: (count of reversed=false uses, count of reversed=true uses).
         let mut uses = vec![(0u32, 0u32); self.edges.len()];
 
-        let mut tally = |uses: &mut Vec<(u32, u32)>, lp: &Loop| {
+        let tally = |uses: &mut Vec<(u32, u32)>, lp: &Loop| {
             for &(EdgeId(idx), reversed) in &lp.edges {
                 if let Some(slot) = uses.get_mut(idx as usize) {
                     if reversed {

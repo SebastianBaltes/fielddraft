@@ -49,7 +49,7 @@ use std::collections::HashMap;
 
 use nalgebra::{Matrix3, SymmetricEigen, Vector3};
 
-use crate::brep::extraction::{extract_features, extract_vertex, EdgePoint};
+use crate::brep::extraction::{extract_features_with, extract_vertex, EdgePoint};
 use crate::brep::octree::{CellClass, Octree, OctreeCell};
 use crate::brep::{BRep, Edge, EdgeGeometry, EdgeId, HermiteSample, Vertex, VertexId};
 use crate::bvh::BoundedCsg;
@@ -1565,7 +1565,16 @@ fn chain_on_body_boundary(body: &BoundedCsg, samples: &[HermiteSample], tol: f64
 /// vertices, and emits one [`EdgeGeometry::Hermite`] [`Edge`] per chain.
 /// Faces / shells / solids are left empty (C.6).
 pub fn build_wireframe(body: &BoundedCsg, octree: &Octree) -> BRep {
-    let (edge_points, raw_vertices) = extract_features(body, octree);
+    build_wireframe_with(body, octree, false)
+}
+
+/// Like [`build_wireframe`], but with an explicit `pure_octree` toggle that is
+/// threaded straight into [`extract_features_with`]. When `pure_octree == true`
+/// the analytic DL-75 fast-path is disabled (empty `HalfspaceMap`), giving a
+/// purely numeric wireframe for the differential oracle. Everything downstream
+/// of feature extraction is identical to the normal path.
+pub fn build_wireframe_with(body: &BoundedCsg, octree: &Octree, pure_octree: bool) -> BRep {
+    let (edge_points, raw_vertices) = extract_features_with(body, octree, pure_octree);
     // Absolute length scale for curvature-adaptive edge tracing (DL-81): the
     // model AABB diagonal. Edge fidelity is budgeted as a fraction of this, so a
     // 1 m object gets sub-mm edges regardless of octree depth. Empty/degenerate

@@ -31,7 +31,7 @@
 
 use std::collections::HashMap;
 
-use crate::brep::edge_walker::build_wireframe;
+use crate::brep::edge_walker::{build_wireframe, build_wireframe_with};
 use crate::brep::octree::Octree;
 use crate::brep::{
     BRep, Edge, EdgeGeometry, EdgeId, Face, HermiteSample, Loop, NurbsCurve, Shell, Solid,
@@ -1021,6 +1021,24 @@ fn flip_orientations(ring: &mut [(EdgeId, bool)]) {
 /// branch, and assemble a single watertight shell + solid.
 pub fn weave(body: &BoundedCsg, octree: &Octree) -> BRep {
     finish_weave(build_wireframe(body, octree), body)
+}
+
+/// Like [`weave`], but a **purely numeric** octree path: the analytic DL-75
+/// branch-projection fast-path is disabled, so the `HalfspaceMap` stays empty
+/// and edge/vertex features come solely from the octree numerics.
+///
+/// This is the reference path for the differential oracle (Phase 0b of the
+/// parametric-weaving rebuild). A valid oracle must compare numeric-vs-analytic
+/// inside shelled regions; the normal [`weave`] takes the analytic fast-path
+/// there, so it would be comparing analytic-vs-analytic and miss exactly the
+/// analytic bugs we're hunting.
+///
+/// NOTE: with the empty map, shelled bodies also lose the cross-sheet guard
+/// that the analytic projection provides. That is intentional — this path is
+/// deliberately "naively numeric" and may produce a non-manifold result on
+/// shelled bodies. Do not use it as the production weave.
+pub fn weave_pure_octree(body: &BoundedCsg, octree: &Octree) -> BRep {
+    finish_weave(build_wireframe_with(body, octree, true), body)
 }
 
 /// Finish a wireframe [`BRep`] — deduplicated vertices plus signed edges — into
@@ -3123,6 +3141,101 @@ mod tests {
                 "planar Difference edge must touch at least one corner, not be a loop"
             );
         }
+    }
+
+    #[test]
+    fn pure_octree_matches_normal_weave_on_plain_box() {
+        // Phase 0b: for a non-shelled body the `HalfspaceMap` is empty on BOTH
+        // paths (normal: `body_contains_shell` is false; pure: forced empty), so
+        // `weave_pure_octree` must be structurally identical to `weave`.
+        let csg = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+        };
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.25);
+        let normal = weave(&body, &octree);
+        let pure = weave_pure_octree(&body, &octree);
+
+        assert_eq!(pure.vertex_count(), normal.vertex_count(), "same vertex count");
+        assert_eq!(pure.edge_count(), normal.edge_count(), "same edge count");
+        assert_eq!(pure.face_count(), normal.face_count(), "same face count");
+        assert!(normal.manifold_violations().is_empty(), "normal box manifold");
+        assert!(pure.manifold_violations().is_empty(), "pure box manifold");
+        assert_eq!(
+            pure.euler_characteristic(),
+            normal.euler_characteristic(),
+            "same Euler characteristic"
+        );
+    }
+
+    #[test]
+    fn pure_octree_matches_normal_weave_on_difference() {
+        // Same invariant on a non-shelled Difference (box minus corner notch):
+        // empty map on both paths ⇒ pure == normal structurally.
+        let outer = CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Box { center: [0.0, 0.0, 0.0], half_extents: [1.0, 1.0, 1.0] },
+        };
+        let notch = CsgNode::Leaf {
+            id: FeatureId::from_u32(2),
+            primitive: Primitive::Box { center: [0.6, 0.6, 0.0], half_extents: [0.6, 0.6, 2.0] },
+        };
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(Box::new(outer), Box::new(notch)));
+        let octree = Octree::build(&body, 0.25);
+        let normal = weave(&body, &octree);
+        let pure = weave_pure_octree(&body, &octree);
+
+        assert_eq!(pure.vertex_count(), normal.vertex_count(), "same vertex count");
+        assert_eq!(pure.edge_count(), normal.edge_count(), "same edge count");
+        assert_eq!(pure.face_count(), normal.face_count(), "same face count");
+        // Structural identity: the two paths produce the SAME manifold-violation
+        // set (the notched box's normal weave leaves a couple of open boundary
+        // edges where Phase-3 misses a vertex cell; the pure path, with the same
+        // empty map, reproduces them exactly).
+        assert_eq!(
+            pure.manifold_violations(),
+            normal.manifold_violations(),
+            "same manifold violations"
+        );
+        assert_eq!(
+            pure.euler_characteristic(),
+            normal.euler_characteristic(),
+            "same Euler characteristic"
+        );
+    }
+
+    #[test]
+    fn pure_octree_weaves_shelled_box_without_panic() {
+        // Phase 0b smoke test: on a shelled body the pure path deliberately
+        // disables the DL-75 analytic fast-path (empty map), so it may diverge
+        // from `weave` and need not be manifold — but it must run without panic
+        // and still produce a non-empty B-Rep. We only assert liveness here and
+        // REPORT whether the output is manifold (a finding, not a requirement).
+        let half = 2.0_f32;
+        let thickness = 0.5_f32;
+        let csg = CsgNode::Shell(
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(1),
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [half, half, half],
+                },
+            }),
+            thickness,
+            Vec::new(),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let octree = Octree::build(&body, 0.1);
+        let pure = weave_pure_octree(&body, &octree);
+        assert!(pure.edge_count() > 0, "pure shelled weave must produce edges");
+        println!(
+            "pure shelled: V={} E={} F={} manifold_violations={}",
+            pure.vertex_count(),
+            pure.edge_count(),
+            pure.face_count(),
+            pure.manifold_violations().len()
+        );
     }
 
     #[test]

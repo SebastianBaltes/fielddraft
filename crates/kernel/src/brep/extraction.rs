@@ -933,10 +933,27 @@ pub fn extract_vertex(
 /// surviving `(edge points, vertices)`. Non-extractable cells (no clean start
 /// point, degenerate geometry, failed phantom test) are silently skipped.
 pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, Vec<Vertex>) {
+    extract_features_with(body, octree, false)
+}
+
+/// Like [`extract_features`], but with an explicit `pure_octree` toggle.
+///
+/// When `pure_octree == true` the analytic DL-75 [`HalfspaceMap`] is forced
+/// **empty**, disabling the analytic branch-projection fast-path even for
+/// shelled bodies. Everything else is identical. This yields a purely numeric
+/// octree extraction, needed as a clean reference for the differential oracle
+/// (Phase 0b of the parametric-weaving rebuild): comparing analytic-vs-analytic
+/// inside shelled regions would mask exactly the analytic bugs we want to catch.
+pub fn extract_features_with(
+    body: &BoundedCsg,
+    octree: &Octree,
+    pure_octree: bool,
+) -> (Vec<EdgePoint>, Vec<Vertex>) {
     // Analytic branch-projection table — only for shelled bodies, whose twin
     // parallel surfaces defeat the generic body-SDF projection (DL-75). Empty
     // otherwise, so every non-shell weave keeps its exact previous numerics.
-    let halfspaces = if body_contains_shell(body) {
+    // Forced empty in pure-octree mode (no analytic fast-path at all).
+    let halfspaces = if !pure_octree && body_contains_shell(body) {
         crate::brep::weaving::branch_halfspace_map(body)
     } else {
         HalfspaceMap::new()
