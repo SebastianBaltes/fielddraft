@@ -72,13 +72,21 @@ Gründen:
   **Branch-Paar-Aufzählung** (Phase 1) per closed-form-SSI-Komponentenzählung
   bzw. 2D-Param-Scan aufgelöst.
 - **(B) Trimming-Multiplizität** — a∩b ist eine Kurve, aber ein dritter Branch
-  schneidet ihre Mitte heraus → zwei kollineare Segmente, getrennt durch eine
-  Vertex-Lücke. Dominiert bei realen Teilen. Löst sich gratis über den
+  schneidet ihre Mitte heraus → zwei (oder mehr) Segmente, getrennt durch eine
+  Vertex-Lücke. Dominiert bei realen Teilen. Löst sich über den
   **Aktiv-Intervall-Marsch** (Phase 2): `both_branches_active` entlang der
   bekannten Kurve ablesen; zwei aktive Intervalle = zwei Segmente, die
   Lückengrenzen sind die ≥3-Branch-Vertices. Die Vollständigkeit ist hier nur
   durch einen 1D-Nyquist begrenzt (Schrittweite entlang einer Kurve), nicht
   durch den 3D-Nyquist des Narrow-Bands.
+  **Korrektur (v0.6.6):** „gratis" gilt NUR mit **mehreren Seeds pro Komponente**,
+  verteilt entlang der Kurve. Ein einziger Seed pro Komponente (urspr. Plan, s.u.)
+  trägt nur das aktive Intervall, in dem er zufällig liegt — alle anderen Bögen
+  fehlen ersatzlos (Symptom: ein Kreis Sphäre∩Box-Fläche, der über die
+  Flächenkante hinausragt und in 2–4 Bögen zerfällt, wurde nur als 1 Bogen
+  gewebt). SSI verteilt jetzt Seeds dicht über jede Komponente; die
+  Co-Component-Dedup des Weavers (`near_traced`) kollabiert die redundanten
+  Same-Arc-Seeds. „Never miss a real edge" → Über-Seeden ist die sichere Richtung.
 
 Die affine Arithmetik (3D, volumetrisch) ist damit **optional, nicht Pflicht**:
 Sie kommt erst mit der freien-NURBS-Spine-Erweiterung, wo keine saubere
@@ -130,8 +138,11 @@ also kein einzelnes Oracle, sondern drei Stufen:
   Knoten).
 - **Intrinsische Multiplizität (A)** auflösen: closed-form-SSI-Komponenten-
   zählung pro Flächentyp-Paar (Ebene/Sphäre/Zylinder/Kegel); für Sweep/Helix
-  der 2D-Param-Rechteck-Scan über `g(S(u,s)) = 0`. Ein Seed pro Komponente
-  (Überlappungsbox-Zentroid).
+  der 2D-Param-Rechteck-Scan über `g(S(u,s)) = 0`. ~~Ein Seed pro Komponente~~ →
+  **mehrere Seeds pro Komponente, gleichverteilt entlang der Kurve** (v0.6.6,
+  `SEEDS_PER_CURVE` in `ssi.rs`): nötig für Trimming-Multiplizität (B), s.o.
+  `SsiResult::Components` ist jetzt `Vec<Vec<seed>>` — äußere Länge = Komponenten-
+  zahl (Topologie-Signal), innere = die Seeds dieser Komponente.
 
 ### Phase 2 — Aktiv-Intervall-Marsch in `trace_edge`
 

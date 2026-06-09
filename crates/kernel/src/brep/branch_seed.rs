@@ -67,15 +67,21 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
         };
 
         match ssi_seeds(ha, ta, hb, tb, &pair.overlap) {
-            SsiResult::Components(pts) => {
-                for point in pts {
-                    result.seeds.push(EdgeSeed {
-                        a: pair.a,
-                        b: pair.b,
-                        point,
-                    });
+            SsiResult::Components(comps) => {
+                // Flatten every component's seeds into the flat seed stream. A
+                // component carries several seeds (one per active arc after a
+                // third surface trims it); the weaver re-groups them spatially,
+                // so the flat list is all it needs.
+                for comp in comps {
+                    for point in comp {
+                        result.seeds.push(EdgeSeed {
+                            a: pair.a,
+                            b: pair.b,
+                            point,
+                        });
+                    }
                 }
-                // Empty `pts` = a valid candidate SSI correctly rejected (no
+                // Empty `comps` = a valid candidate SSI correctly rejected (no
                 // real intersection in the box, e.g. parallel faces). Emit
                 // nothing; this is NOT unresolved.
             }
@@ -114,16 +120,33 @@ mod tests {
         (a[0] - b[0]).abs() <= tol && (a[1] - b[1]).abs() <= tol && (a[2] - b[2]).abs() <= tol
     }
 
+    /// Canonical branch-pair signatures present in a seed set (each pair is one
+    /// candidate edge; a pair now carries several seeds spread along the edge).
+    fn pair_set(seeds: &[EdgeSeed]) -> std::collections::HashSet<(u32, u32)> {
+        seeds
+            .iter()
+            .map(|s| {
+                let (a, b) = (s.a.as_u32(), s.b.as_u32());
+                (a.min(b), a.max(b))
+            })
+            .collect()
+    }
+
     #[test]
     fn centered_box_yields_twelve_edge_seeds() {
         // The headline test: a box has C(6,2)=15 intrinsic candidate pairs; the
         // 3 opposite-face (parallel) pairs yield 0 components and drop out,
-        // leaving exactly the 12 real cube edges. Every branch is analytic, so
-        // nothing is unresolved.
+        // leaving exactly the 12 real cube edges. Each surviving pair now seeds
+        // densely along its edge, so we count distinct pairs, not raw seeds.
+        // Every branch is analytic, so nothing is unresolved.
         let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
         let res = seed_branch_pairs(&body);
 
-        assert_eq!(res.seeds.len(), 12, "12 cube edges (15 pairs − 3 parallel)");
+        assert_eq!(
+            pair_set(&res.seeds).len(),
+            12,
+            "12 cube edges (15 pairs − 3 parallel)"
+        );
         assert!(
             res.unresolved.is_empty(),
             "a plain box is fully analytic: {:?}",
@@ -165,20 +188,25 @@ mod tests {
         }
         assert_eq!(expected.len(), 12);
 
-        // Every seed matches a distinct expected midpoint, and vice versa.
-        let tol = 1e-3;
-        for seed in &res.seeds {
-            assert!(
-                expected.iter().any(|&e| near(seed.point, e, tol)),
-                "seed {:?} is not at any known cube-edge midpoint",
-                seed.point
-            );
-        }
+        // Seeds now spread along each edge, so we no longer expect every seed to
+        // sit at a midpoint. Instead: (a) every edge is covered by a seed near
+        // its midpoint, and (b) every seed lies on some cube edge (free axis = 0,
+        // other two at ±10). Both hold per axis-aligned cube geometry.
+        let cover_tol = 1.0; // 64 seeds over a length-20 edge ⇒ < 0.4 spacing.
         for &e in &expected {
             assert!(
-                res.seeds.iter().any(|s| near(s.point, e, tol)),
-                "expected edge midpoint {e:?} has no seed"
+                res.seeds.iter().any(|s| near(s.point, e, cover_tol)),
+                "expected edge midpoint {e:?} has no nearby seed"
             );
+        }
+        let on_tol = 1e-2;
+        for seed in &res.seeds {
+            let p = seed.point;
+            let at_face = |c: f32| (c.abs() - 10.0).abs() < on_tol;
+            let on_some_edge = (at_face(p[0]) && at_face(p[1]))
+                || (at_face(p[1]) && at_face(p[2]))
+                || (at_face(p[0]) && at_face(p[2]));
+            assert!(on_some_edge, "seed {p:?} does not lie on any cube edge");
         }
     }
 
@@ -206,7 +234,11 @@ mod tests {
         let res = seed_branch_pairs(&body);
 
         assert!(res.unresolved.is_empty(), "fully analytic body");
-        assert_eq!(res.seeds.len(), 16, "12 box edges + 2 hole rims + 2 cap rims");
+        assert_eq!(
+            pair_set(&res.seeds).len(),
+            16,
+            "12 box edges + 2 hole rims + 2 cap rims (distinct pairs)"
+        );
 
         // EVERY seed must lie on both of its branch surfaces — now that the SSI
         // plane∩plane line is properly box-clipped, there are no off-surface
@@ -223,13 +255,17 @@ mod tests {
             );
         }
 
-        // The 12 intrinsic box edges are all present.
-        let box_edges = res
+        // The 12 intrinsic box edges are all present (distinct intra-box pairs).
+        let box_edges: std::collections::HashSet<(u32, u32)> = res
             .seeds
             .iter()
             .filter(|s| s.a.feature_id() == 1 && s.b.feature_id() == 1)
-            .count();
-        assert_eq!(box_edges, 12, "the 12 box-internal edges");
+            .map(|s| {
+                let (a, b) = (s.a.as_u32(), s.b.as_u32());
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        assert_eq!(box_edges.len(), 12, "the 12 box-internal edges");
 
         // Both hole rims (cross f1×f2, on the cylinder wall x²+z²≈25, at y=±10)
         // are present — the boundary-coincident edges the padded scan mask now

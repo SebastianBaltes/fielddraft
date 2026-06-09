@@ -580,6 +580,30 @@ mod tests {
     }
 
     #[test]
+    fn seed_box_union_big_sphere_trimmed_arcs_matches_octree() {
+        // Regression for the "missing edges" bug: a sphere large enough that its
+        // intersection circle with a box face pokes BEYOND that face's edges, so
+        // a third surface (the adjacent box faces) trims the single circle
+        // component into several disjoint active arcs. With one seed per
+        // component only one arc was traced and the rest vanished (the reported
+        // screenshot). SSI now seeds densely along each component, so every arc
+        // is traced — the seam must close and match the octree exactly.
+        //
+        // Box half [10,25,10]; sphere r=12 centred on the +x face plane (10,0,0):
+        // the great circle r=12 in plane x=10 leaves the face through z=±10
+        // (|12·sinθ|≤10 ⇒ two arcs) while staying within |y|≤25, and the sphere
+        // also bulges out the z=±10 faces — a closed 4-arc neck seam.
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 25.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere { center: [10.0, 0.0, 0.0], radius: 12.0 },
+            }),
+        ));
+        assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
     fn seed_extrude_rectangle_matches_octree() {
         let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
             center: [0.0, 0.0],

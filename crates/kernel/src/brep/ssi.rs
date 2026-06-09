@@ -30,6 +30,8 @@
 //! - **Unsupported** (torus / gyroid as either operand): caller falls back to
 //!   the octree route.
 
+use std::collections::HashMap;
+
 use fielddraft_protocol::{HalfSpace, Transform};
 
 use crate::csg::{sdf_halfspace, Aabb};
@@ -38,10 +40,15 @@ use crate::{quat_rotate, world_to_local};
 /// Result of an SSI query within an overlap box.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SsiResult {
-    /// One representative seed point (world space) per connected component of
-    /// the intersection curve inside the box. Empty ⇒ the surfaces do not meet
-    /// inside the box.
-    Components(Vec<[f32; 3]>),
+    /// One entry per connected component of the intersection curve inside the
+    /// box; each entry holds **several** world-space seeds spread along that
+    /// component. The outer length is the component count (the topology signal);
+    /// the inner seeds exist so a component later trimmed by a *third* surface
+    /// into multiple disjoint active arcs still has a seed on each arc — the
+    /// downstream active-interval march and the weaver's co-component dedup
+    /// collapse the redundant ones (the plan's "never miss a real edge"
+    /// contract). Empty outer ⇒ the surfaces do not meet inside the box.
+    Components(Vec<Vec<[f32; 3]>>),
     /// Torus / Gyroid operand, or a configuration the scan cannot parametrise
     /// — the caller should fall back to the octree route.
     Unsupported,
@@ -68,6 +75,13 @@ const PARALLEL_EPS: f32 = 1e-6;
 /// Absolute slack on AABB membership / line-box clipping, so a seed landing
 /// exactly on a box wall is not rejected by float rounding.
 const BOX_SLACK: f32 = 1e-4;
+
+/// How many seeds the closed-form paths spread along a single component (a line
+/// segment or a circle). A component can be trimmed by a third surface into
+/// several active arcs, so one seed is not enough — we sample uniformly so every
+/// arc down to ≈ `curve_length / SEEDS_PER_CURVE` carries a seed. Redundant
+/// same-arc seeds are collapsed downstream, so over-sampling is free correctness.
+const SEEDS_PER_CURVE: usize = 64;
 
 // ─── public entry point ──────────────────────────────────────────────────────
 
@@ -159,14 +173,6 @@ fn vnorm(a: [f32; 3]) -> [f32; 3] {
     }
 }
 
-fn aabb_center(b: &Aabb) -> [f32; 3] {
-    [
-        0.5 * (b.min[0] + b.max[0]),
-        0.5 * (b.min[1] + b.max[1]),
-        0.5 * (b.min[2] + b.max[2]),
-    ]
-}
-
 /// `true` if world point `p` lies within the AABB (with a small slack so a seed
 /// landing exactly on the box wall is not rejected by rounding).
 fn in_box(b: &Aabb, p: [f32; 3]) -> bool {
@@ -247,8 +253,20 @@ fn plane_plane(
         // The line misses the box.
         return SsiResult::Components(Vec::new());
     }
-    let tm = 0.5 * (t_lo + t_hi);
-    SsiResult::Components(vec![vadd(base, vscale(dir, tm))])
+    // The intersection of two planes is a single connected line; seed it densely
+    // along the in-box segment so a line later trimmed into several active
+    // intervals (e.g. a slot cut across an edge) keeps a seed on each.
+    let mut comp = Vec::with_capacity(SEEDS_PER_CURVE);
+    for k in 0..SEEDS_PER_CURVE {
+        let f = if SEEDS_PER_CURVE == 1 {
+            0.5
+        } else {
+            k as f32 / (SEEDS_PER_CURVE as f32 - 1.0)
+        };
+        let t = t_lo + (t_hi - t_lo) * f;
+        comp.push(vadd(base, vscale(dir, t)));
+    }
+    SsiResult::Components(vec![comp])
 }
 
 /// One point on the line `{x : n1·x = c1, n2·x = c2}` with unit direction `dir`.
@@ -318,27 +336,25 @@ fn sphere_like(
 }
 
 /// A circle of radius `cr` centred at `cc` lying in the plane with normal `n`.
-/// Return one seed on it inside the box (sampling around the circle), or no
-/// component if none of the sampled points fall inside.
+/// The circle is one connected component; return **all** uniformly-sampled
+/// points of it that fall inside the box (so a circle later trimmed into several
+/// active arcs keeps a seed on each), or no component if none fall inside.
 fn seed_from_circle(cc: [f32; 3], n: [f32; 3], cr: f32, overlap: &Aabb) -> SsiResult {
     // Two in-plane basis vectors.
     let (u, v) = ortho_basis(n);
-    // First try the point closest to the box centre (project, snap to circle).
-    let centre = aabb_center(overlap);
-    let rel = vsub(centre, cc);
-    let pu = vdot(rel, u);
-    let pv = vdot(rel, v);
-    let ang0 = pv.atan2(pu);
-    let candidates = std::iter::once(ang0).chain((0..SCAN_RES).map(|i| {
-        std::f32::consts::TAU * (i as f32) / (SCAN_RES as f32)
-    }));
-    for ang in candidates {
+    let mut comp = Vec::new();
+    for i in 0..SEEDS_PER_CURVE {
+        let ang = std::f32::consts::TAU * (i as f32) / (SEEDS_PER_CURVE as f32);
         let p = vadd(cc, vadd(vscale(u, cr * ang.cos()), vscale(v, cr * ang.sin())));
         if in_box(overlap, p) {
-            return SsiResult::Components(vec![p]);
+            comp.push(p);
         }
     }
-    SsiResult::Components(Vec::new())
+    if comp.is_empty() {
+        SsiResult::Components(Vec::new())
+    } else {
+        SsiResult::Components(vec![comp])
+    }
 }
 
 /// Two orthonormal vectors spanning the plane with unit normal `n`.
@@ -686,20 +702,22 @@ fn scan_components(
         }
     }
 
-    // One seed per component (per crossing-node root). Refine the crossing on
-    // its grid edge with bisection so it lands on the curve.
-    let mut roots: Vec<usize> = Vec::new();
-    let mut seeds: Vec<[f32; 3]> = Vec::new();
-    let emit = |edge_node: usize,
-                    uf: &mut UnionFind,
-                    roots: &mut Vec<usize>,
-                    seeds: &mut Vec<[f32; 3]>,
-                    seed: [f32; 3]| {
-        let r = uf.find(edge_node);
-        if !roots.contains(&r) {
-            roots.push(r);
-            seeds.push(seed);
+    // Every grid-edge crossing yields a seed (refined onto the curve), bucketed
+    // by its union-find root so each connected component carries ALL its seeds —
+    // not just one. A component trimmed by a third surface into several active
+    // arcs then keeps a seed on each arc; the weaver's co-component dedup
+    // collapses the redundant same-arc seeds. Insertion order is deterministic
+    // (the fixed grid traversal), so the seed stream is stable across runs.
+    let mut root_idx: HashMap<usize, usize> = HashMap::new();
+    let mut comps: Vec<Vec<[f32; 3]>> = Vec::new();
+    let mut bucket = |uf: &mut UnionFind, node: usize, seed: [f32; 3]| {
+        let r = uf.find(node);
+        let next = comps.len();
+        let idx = *root_idx.entry(r).or_insert(next);
+        if idx == next {
+            comps.push(Vec::new());
         }
+        comps[idx].push(seed);
     };
 
     // Horizontal-edge crossings.
@@ -711,10 +729,8 @@ fn scan_components(
             let ua = u0 + du * i as f32;
             let ub = u0 + du * (i + 1) as f32;
             let vv = v0 + dv * j as f32;
-            if let Some(seed) =
-                refine_edge(&param, other, ot, &mbox, ua, vv, ub, vv)
-            {
-                emit(h_id(i, j), &mut uf, &mut roots, &mut seeds, seed);
+            if let Some(seed) = refine_edge(&param, other, ot, &mbox, ua, vv, ub, vv) {
+                bucket(&mut uf, h_id(i, j), seed);
             }
         }
     }
@@ -727,15 +743,13 @@ fn scan_components(
             let uu = u0 + du * i as f32;
             let va = v0 + dv * j as f32;
             let vb = v0 + dv * (j + 1) as f32;
-            if let Some(seed) =
-                refine_edge(&param, other, ot, &mbox, uu, va, uu, vb)
-            {
-                emit(w_id(i, j), &mut uf, &mut roots, &mut seeds, seed);
+            if let Some(seed) = refine_edge(&param, other, ot, &mbox, uu, va, uu, vb) {
+                bucket(&mut uf, w_id(i, j), seed);
             }
         }
     }
 
-    SsiResult::Components(seeds)
+    SsiResult::Components(comps)
 }
 
 /// Bisect `g = implicit_other(A(u,v))` along the grid edge from `(ua,va)` to
@@ -818,22 +832,26 @@ mod tests {
         Aabb { min, max }
     }
 
-    /// Assert every seed lies on BOTH surfaces to the on-surface tolerance.
+    /// Assert every seed of every component lies on BOTH surfaces to tolerance.
     fn assert_seeds_on_both(
-        seeds: &[[f32; 3]],
+        comps: &[Vec<[f32; 3]>],
         a: &HalfSpace,
         ta: &Transform,
         b: &HalfSpace,
         tb: &Transform,
     ) {
-        for &s in seeds {
-            let da = implicit_world(a, ta, s).abs();
-            let db = implicit_world(b, tb, s).abs();
-            assert!(da < ON_SURF, "seed {s:?} not on A: |implicit_A|={da}");
-            assert!(db < ON_SURF, "seed {s:?} not on B: |implicit_B|={db}");
+        for comp in comps {
+            assert!(!comp.is_empty(), "a component must carry at least one seed");
+            for &s in comp {
+                let da = implicit_world(a, ta, s).abs();
+                let db = implicit_world(b, tb, s).abs();
+                assert!(da < ON_SURF, "seed {s:?} not on A: |implicit_A|={da}");
+                assert!(db < ON_SURF, "seed {s:?} not on B: |implicit_B|={db}");
+            }
         }
     }
 
+    /// Number of connected components (the outer length).
     fn count(r: &SsiResult) -> usize {
         match r {
             SsiResult::Components(v) => v.len(),
