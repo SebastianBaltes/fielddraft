@@ -1,7 +1,7 @@
 {
   "name": "fielddraft-web",
   "private": true,
-  "version": "0.6.8",
+  "version": "0.6.9",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -21,6 +21,7 @@
     "@react-three/fiber": "^9.5.0",
     "@salusoft89/planegcs": "^1.1.7",
     "fflate": "^0.8.3",
+    "html-to-image": "^1.11.13",
     "monaco-editor": "^0.55.1",
     "occt-import-js": "^0.0.23",
     "opencascade.js": "^2.0.0-beta.b5ff984",

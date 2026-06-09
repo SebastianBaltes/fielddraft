@@ -2,25 +2,29 @@
  * In-app bug / feature-request ticket plumbing.
  *
  * The "Report Issue" dialog (ReportDialog.tsx) collects a user title +
- * description, grabs a screenshot of the 3D viewport and the live project
- * JSON, and POSTs everything to `/api/tickets`. In local dev that endpoint
- * is served by the `ticketWriter` Vite plugin (vite.config.ts), which drops
- * the ticket into `<repo>/tickets/open/<id>/` so the agent can pick it up;
- * in production the Go backend handles the same route.
+ * description, grabs a screenshot of the whole app window and the live
+ * project JSON, and POSTs everything to `/api/tickets`. In local dev that
+ * endpoint is served by the `ticketWriter` Vite plugin (vite.config.ts),
+ * which drops the ticket into `<repo>/tickets/open/<id>/` so the agent can
+ * pick it up; in production the Go backend handles the same route.
  *
- * The WebGPU canvas is captured directly via `toDataURL` — verified to
- * return real pixels on three.js' WebGPURenderer canvas, so no readback or
- * server-side rendering is needed.
+ * The screenshot covers the full window — toolbar, panels and the 3D
+ * viewport — via html-to-image, which serializes the live DOM and inlines
+ * each <canvas> through `toDataURL` (verified to return real pixels on
+ * three.js' WebGPURenderer canvas), so the rendered scene is composited in
+ * place with the surrounding UI. No server-side rendering needed.
  */
+
+import { toPng } from "html-to-image";
 
 export interface TicketPayload {
   title: string;
   description: string;
   /** Serialized .fdraft project JSON (may be empty if unavailable). */
   projectJson: string;
-  /** PNG data URL of the viewport, or null if capture failed. */
+  /** PNG data URL of the window, or null if capture failed. */
   screenshot: string | null;
-  /** App version, e.g. "0.6.8". */
+  /** App version, e.g. "0.6.9". */
   version: string;
   /** ISO-8601 client timestamp. */
   timestamp: string;
@@ -31,18 +35,25 @@ export interface TicketPayload {
 }
 
 /**
- * Capture the current 3D viewport as a PNG data URL. Returns null if no
- * canvas is present or the browser refuses the readback.
+ * Capture the entire app window — toolbar, side panels and the 3D viewport —
+ * as a PNG data URL. The 3D canvas is composited in place (html-to-image
+ * inlines it via toDataURL). The report dialog's own overlay is filtered out
+ * so the shot shows the window the user is reporting about, not the modal.
+ * Returns null if capture is unavailable (e.g. no DOM) or fails.
  */
-export function captureViewport(): string | null {
-  if (typeof document === "undefined") return null;
-  const renderer = (window as unknown as { __threeRenderer?: { domElement?: HTMLCanvasElement } })
-    .__threeRenderer;
-  const canvas: HTMLCanvasElement | null =
-    renderer?.domElement ?? document.querySelector("canvas");
-  if (!canvas) return null;
+export async function captureWindow(): Promise<string | null> {
+  if (typeof document === "undefined" || !document.body) return null;
   try {
-    return canvas.toDataURL("image/png");
+    return await toPng(document.body, {
+      // Drop the report modal (overlay + backdrop) from the snapshot.
+      filter: (node) =>
+        !(
+          node instanceof HTMLElement &&
+          node.classList?.contains("fd-report-overlay")
+        ),
+      pixelRatio: window.devicePixelRatio || 1,
+      cacheBust: true,
+    });
   } catch {
     return null;
   }

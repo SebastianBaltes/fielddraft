@@ -4,6 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { ReportDialog } from "./ReportDialog";
 import type { KernelStore } from "./store";
 
+// captureWindow relies on html-to-image rasterizing real DOM, which jsdom
+// can't do — stub it so the dialog mounts cleanly. submitTicket stays real
+// (it just calls the stubbed fetch).
+vi.mock("./reportTicket", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reportTicket")>()),
+  captureWindow: vi.fn(async () => null),
+}));
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
 

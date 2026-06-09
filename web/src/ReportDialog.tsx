@@ -1,16 +1,17 @@
 /**
  * In-app bug / feature-request dialog.
  *
- * Opened from the application menu. On mount it snapshots the 3D viewport;
- * the user adds a title + description and submits. The ticket bundles the
- * screenshot, the live project JSON, the app version and a timestamp, and is
- * written to the repo's `tickets/open/` directory (see reportTicket.ts).
+ * Opened from the application menu. On mount it snapshots the whole app
+ * window (toolbar, panels and the 3D viewport); the user adds a title +
+ * description and submits. The ticket bundles the screenshot, the live
+ * project JSON, the app version and a timestamp, and is written to the
+ * repo's `tickets/open/` directory (see reportTicket.ts).
  */
 
 import { useEffect, useState } from "react";
 import type { KernelStore } from "./store";
 import {
-  captureViewport,
+  captureWindow,
   submitTicket,
   type TicketPayload,
 } from "./reportTicket";
@@ -31,17 +32,24 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [errorMsg, setErrorMsg] = useState("");
   const [ticketId, setTicketId] = useState<string | undefined>(undefined);
 
-  // Snapshot the viewport once, when the dialog opens. Capturing here
-  // (rather than on submit) freezes the view the user is reporting about.
-  // The WebGPU canvas only yields pixels via toDataURL right after a paint,
-  // so we wait two animation frames before reading it — that lets R3F flush
-  // the current frame and avoids grabbing a stale/blank buffer.
+  // Snapshot the window once, when the dialog opens. Capturing here (rather
+  // than on submit) freezes the view the user is reporting about. The WebGPU
+  // canvas only yields pixels via toDataURL right after a paint, so we wait
+  // two animation frames before reading it — that lets R3F flush the current
+  // frame and avoids grabbing a stale/blank buffer. captureWindow is async
+  // (it serializes the DOM), so guard against setState after unmount.
   useEffect(() => {
+    let cancelled = false;
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setScreenshot(captureViewport()));
+      raf2 = requestAnimationFrame(() => {
+        captureWindow().then((shot) => {
+          if (!cancelled) setScreenshot(shot);
+        });
+      });
     });
     return () => {
+      cancelled = true;
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
     };
@@ -161,7 +169,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
               <img
                 className="preview"
                 src={screenshot}
-                alt="Viewport screenshot preview"
+                alt="Window screenshot preview"
               />
             ) : null}
 

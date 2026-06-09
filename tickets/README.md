@@ -4,7 +4,7 @@ In-App gemeldete Fehler und Feature-Wünsche. Erzeugt über den **Report Issue�
 
 ## Ablauf
 
-1. User klickt *Report Issue…*, tippt Titel + Beschreibung. Beim Öffnen wird ein Screenshot des 3D-Viewports erfasst.
+1. User klickt *Report Issue…*, tippt Titel + Beschreibung. Beim Öffnen wird ein Screenshot des gesamten App-Fensters (Toolbar, Panels und 3D-Viewport) erfasst.
 2. Der Dialog schickt ein POST an `/api/tickets`.
    - **Dev (`just dev`):** Das Vite-Plugin `ticketWriter` (`web/vite.config.ts`) legt das Ticket lokal unter `tickets/open/<id>/` ab.
    - **Prod:** Der Go-Server (`server/main.go`) bedient dieselbe Route.
@@ -18,7 +18,7 @@ In-App gemeldete Fehler und Feature-Wünsche. Erzeugt über den **Report Issue�
           ticket.json        # strukturierte Metadaten (Titel, Version, Zeit, UA, URL, status)
           ticket.md          # menschenlesbare Spiegelung
           project.fdraft     # exaktes Projekt-JSON zum Reproduzieren
-          screenshot.png     # Viewport zum Zeitpunkt der Meldung
+          screenshot.png     # gesamtes App-Fenster zum Zeitpunkt der Meldung
       done/                  # abgeschlossene Tickets (gitignored)
 
 `<id>` ist `YYYYMMDD-HHMMSS-<rand>`, also chronologisch sortierbar.
