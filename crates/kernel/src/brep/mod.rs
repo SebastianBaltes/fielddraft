@@ -25,6 +25,7 @@
 //! no `Rc`/`RefCell`, cheap to clone, and trivially serialisable.
 
 pub mod branch_pairs;
+pub mod branch_seed;
 pub mod diff;
 pub mod edge_sampling;
 pub mod edge_trace;

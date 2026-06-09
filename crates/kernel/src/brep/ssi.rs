@@ -65,6 +65,10 @@ const BISECT_STEPS: usize = 16;
 /// degenerate-direction tests.
 const PARALLEL_EPS: f32 = 1e-6;
 
+/// Absolute slack on AABB membership / line-box clipping, so a seed landing
+/// exactly on a box wall is not rejected by float rounding.
+const BOX_SLACK: f32 = 1e-4;
+
 // ─── public entry point ──────────────────────────────────────────────────────
 
 /// Count SSI components of two analytic surfaces within `overlap` (world space)
@@ -166,17 +170,7 @@ fn aabb_center(b: &Aabb) -> [f32; 3] {
 /// `true` if world point `p` lies within the AABB (with a small slack so a seed
 /// landing exactly on the box wall is not rejected by rounding).
 fn in_box(b: &Aabb, p: [f32; 3]) -> bool {
-    let slack = 1e-4;
-    (0..3).all(|i| p[i] >= b.min[i] - slack && p[i] <= b.max[i] + slack)
-}
-
-/// Clamp a world point into the box.
-fn clamp_box(b: &Aabb, p: [f32; 3]) -> [f32; 3] {
-    [
-        p[0].clamp(b.min[0], b.max[0]),
-        p[1].clamp(b.min[1], b.max[1]),
-        p[2].clamp(b.min[2], b.max[2]),
-    ]
+    (0..3).all(|i| p[i] >= b.min[i] - BOX_SLACK && p[i] <= b.max[i] + BOX_SLACK)
 }
 
 /// World-space normal of a plane half-space (rotates the local normal out).
@@ -222,19 +216,39 @@ fn plane_plane(
     // direction `dir`, `line_point` gives one point on the intersection line.
     let c1 = vdot(n1, p1);
     let c2 = vdot(n2, p2);
-
-    // Seed: point on the line nearest the box centre, clamped into the box.
-    let centre = aabb_center(overlap);
-    // Foot of centre onto the line through `base` with direction `dir`.
     let base = line_point(n1, c1, n2, c2, dir);
-    let t = vdot(vsub(centre, base), dir);
-    let seed = clamp_box(overlap, vadd(base, vscale(dir, t)));
 
-    if in_box(overlap, seed) {
-        SsiResult::Components(vec![seed])
-    } else {
-        SsiResult::Components(Vec::new())
+    // Clip the infinite intersection line `base + t·dir` against the overlap box
+    // (slab method) and seed at the midpoint of the in-box segment. A single
+    // clamped point would be pulled OFF the line whenever the line misses the
+    // box, emitting an off-surface seed for perpendicular planes whose true line
+    // lies outside the box; proper clipping returns 0 components in that case.
+    let mut t_lo = f32::NEG_INFINITY;
+    let mut t_hi = f32::INFINITY;
+    for i in 0..3 {
+        if dir[i].abs() < PARALLEL_EPS {
+            // Line is constant on this axis: if `base` sits outside the slab the
+            // line never enters the box.
+            if base[i] < overlap.min[i] - BOX_SLACK || base[i] > overlap.max[i] + BOX_SLACK {
+                return SsiResult::Components(Vec::new());
+            }
+        } else {
+            let inv = 1.0 / dir[i];
+            let mut ta = (overlap.min[i] - base[i]) * inv;
+            let mut tb = (overlap.max[i] - base[i]) * inv;
+            if ta > tb {
+                std::mem::swap(&mut ta, &mut tb);
+            }
+            t_lo = t_lo.max(ta);
+            t_hi = t_hi.min(tb);
+        }
     }
+    if t_lo > t_hi {
+        // The line misses the box.
+        return SsiResult::Components(Vec::new());
+    }
+    let tm = 0.5 * (t_lo + t_hi);
+    SsiResult::Components(vec![vadd(base, vscale(dir, tm))])
 }
 
 /// One point on the line `{x : n1·x = c1, n2·x = c2}` with unit direction `dir`.
@@ -499,6 +513,20 @@ fn pad(lo: f32, hi: f32) -> (f32, f32) {
     (lo - p, hi + p)
 }
 
+/// Expand an AABB by 5 % of each axis extent (with a small absolute floor) for
+/// the scan in-box mask, so a curve lying exactly on the overlap-box boundary is
+/// still captured. See the call site in [`scan_components`] for why.
+fn pad_aabb(b: &Aabb) -> Aabb {
+    let mut min = b.min;
+    let mut max = b.max;
+    for i in 0..3 {
+        let p = (b.max[i] - b.min[i]).abs().max(1e-3) * 0.05;
+        min[i] -= p;
+        max[i] += p;
+    }
+    Aabb { min, max }
+}
+
 fn box_corners(b: &Aabb) -> [[f32; 3]; 8] {
     [
         [b.min[0], b.min[1], b.min[2]],
@@ -531,6 +559,17 @@ fn scan_components(
     let du = (u1 - u0) / (n as f32 - 1.0);
     let dv = (v1 - v0) / (n as f32 - 1.0);
 
+    // The in-box mask uses a slightly PADDED overlap box. A real edge can lie
+    // exactly on the overlap-box boundary (e.g. a cylinder wall meeting a box
+    // top face where that face plane is the box's own AABB wall): the curve sits
+    // on the box face, and the cell straddling it has its outer row out-of-box,
+    // so a strict mask drops the only cell that carries the sign change and the
+    // edge is missed. Padding the mask captures boundary-coincident curves. This
+    // can only ADD candidate seeds (never miss one) — Phase 2's active-interval
+    // march rejects any that aren't real body edges — which is the safe
+    // direction per the plan's "never miss a real edge" contract.
+    let mbox = pad_aabb(overlap);
+
     // Sample grid: world point, in-box mask, and signed value g.
     let mut g = vec![0.0f32; n * n];
     let mut inbox = vec![false; n * n];
@@ -539,7 +578,7 @@ fn scan_components(
             let u = u0 + du * i as f32;
             let v = v0 + dv * j as f32;
             let p = param.point(u, v);
-            inbox[j * n + i] = in_box(overlap, p);
+            inbox[j * n + i] = in_box(&mbox, p);
             g[j * n + i] = implicit_world(other, ot, p);
         }
     }
@@ -673,7 +712,7 @@ fn scan_components(
             let ub = u0 + du * (i + 1) as f32;
             let vv = v0 + dv * j as f32;
             if let Some(seed) =
-                refine_edge(&param, other, ot, overlap, ua, vv, ub, vv)
+                refine_edge(&param, other, ot, &mbox, ua, vv, ub, vv)
             {
                 emit(h_id(i, j), &mut uf, &mut roots, &mut seeds, seed);
             }
@@ -689,7 +728,7 @@ fn scan_components(
             let va = v0 + dv * j as f32;
             let vb = v0 + dv * (j + 1) as f32;
             if let Some(seed) =
-                refine_edge(&param, other, ot, overlap, uu, va, uu, vb)
+                refine_edge(&param, other, ot, &mbox, uu, va, uu, vb)
             {
                 emit(w_id(i, j), &mut uf, &mut roots, &mut seeds, seed);
             }
