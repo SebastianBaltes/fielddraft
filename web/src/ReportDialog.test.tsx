@@ -75,8 +75,8 @@ describe("ReportDialog", () => {
     expect(submit.disabled).toBe(false);
   });
 
-  it("POSTs a ticket and shows confirmation on submit", async () => {
-    render();
+  it("POSTs a ticket and closes without a confirmation step", async () => {
+    const onClose = render();
     typeInto('[data-testid="report-title"]', "Edges missing");
     typeInto('[data-testid="report-description"]', "Repro steps here");
 
@@ -97,7 +97,8 @@ describe("ReportDialog", () => {
     expect(typeof body.version).toBe("string");
     expect(typeof body.timestamp).toBe("string");
 
-    expect(container.textContent).toContain("Ticket saved");
+    // No "Ticket saved" panel — the dialog closes straight away.
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a server error without closing", async () => {

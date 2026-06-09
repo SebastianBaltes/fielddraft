@@ -21,7 +21,7 @@ interface ReportDialogProps {
   onClose: () => void;
 }
 
-type Phase = "edit" | "sending" | "done" | "error";
+type Phase = "edit" | "sending" | "error";
 
 export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [title, setTitle] = useState("");
@@ -30,7 +30,6 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("edit");
   const [errorMsg, setErrorMsg] = useState("");
-  const [ticketId, setTicketId] = useState<string | undefined>(undefined);
 
   // Snapshot the window once, when the dialog opens. Capturing here (rather
   // than on submit) freezes the view the user is reporting about. The WebGPU
@@ -85,8 +84,8 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     };
     const result = await submitTicket(payload);
     if (result.ok) {
-      setTicketId(result.ticketId);
-      setPhase("done");
+      // No confirmation step — the report is filed, just close the dialog.
+      onClose();
     } else {
       setErrorMsg(result.error ?? "unknown error");
       setPhase("error");
@@ -110,20 +109,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
           <span className="version-tag">v{__APP_VERSION__}</span>
         </div>
 
-        {phase === "done" ? (
-          <div className="body">
-            <p className="success">
-              Thanks! Ticket saved{ticketId ? ` (${ticketId})` : ""}. It will be
-              picked up automatically.
-            </p>
-            <div className="actions">
-              <button type="button" className="primary" onClick={onClose}>
-                Close
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="body">
+        <div className="body">
             <label className="field">
               <span className="label">
                 Title<span className="required">*</span>
@@ -203,8 +189,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
                 {phase === "sending" ? "Sending…" : "Send report"}
               </button>
             </div>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
