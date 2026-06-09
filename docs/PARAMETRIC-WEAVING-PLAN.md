@@ -158,10 +158,21 @@ also kein einzelnes Oracle, sondern drei Stufen:
     All-or-nothing-Gates (`unresolved`/`Open`/`Spurious` → `None`). Box → 8 exakte
     Ecken + 12 Kanten + 6 Faces (watertight); Zylinder → 2 geschlossene Rim-Ringe.
     (Plan-2b-ii und -2b-iii zusammengelegt — eng gekoppelt über eps/gap-Tuning.)
-  - **2b-iii (offen)**: `weave_parametric` auf `weave_branch_seeds` umstellen, die
-    vier Sonderfälle löschen; bestehende `parametric_*`-Handle-Identitäts-Tests
-    (vs. Octree) als Verifikations-Gate. Danach Boolean/Extrude-Abdeckung
-    (box−cylinder-Loch, extrude+boolean).
+  - **2b-iii ✅ (v0.6.5)**: Seed-Pfad als Fallback-Layer in `weave_parametric`
+    nach den exakten Grundform-Sonderfällen verdrahtet (`seed_wireframe`).
+    **Entscheidung (evidenzbasiert): die vier Sonderfälle BLEIBEN** — sie liefern
+    exakte Geometrie (rational-quadratische Kreis-Rims beim Zylinder, f64-exakte
+    Box-Ecken), die der generische Trace+Hermite-Fit-Pfad nicht reproduziert und
+    die bestehende `parametric_*`-Tests erzwingen. Kein Compat-Shim, sondern
+    geschichtete Spezialisierung: Grundformen exakt, der Rest generisch.
+    Verifiziert: box−cylinder, box∪sphere, extrude, frustum-cone weben über den
+    Seed-Pfad watertight UND handle-identisch zum Octree (`seed_*`-Tests +
+    umgeschriebener `parametric_weave_*`-Test). Echte Fallbacks jetzt nur noch
+    Warp/non-Lipschitz. 737 passed.
+
+Damit ist die Phase-2-Pipeline end-to-end: Branch-Paar-Seeding ersetzt für
+analytische Booleans/Sweeps/Cone den Octree, gleicher `finish_weave`-Ausgang,
+gleiche `id_hash`-Handles.
 - Headroom: auf analytischen Segmenten nicht dicht auswerten, sondern auf
   Übergänge bisektieren; geometrischen Korrektor auf rein-analytischen
   Segmenten droppen.

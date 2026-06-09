@@ -42,11 +42,21 @@ use crate::bvh::BoundedCsg;
 /// stalled march, or a spurious corner — see `build_seed_wireframe`). The
 /// caller treats `None` as "use the octree".
 pub fn weave_branch_seeds(body: &BoundedCsg) -> Option<BRep> {
+    Some(finish_weave(seed_wireframe(body)?, body))
+}
+
+/// The scope-gated *raw* seed wireframe (deduplicated corner vertices + signed
+/// traced edges), before [`finish_weave`]. Returns `None` for out-of-scope or
+/// unresolvable bodies (→ octree). This is the form [`weave_parametric`] chains
+/// after its exact grundform fast-paths; [`weave_branch_seeds`] is the
+/// standalone entry that also runs `finish_weave`.
+///
+/// [`weave_parametric`]: crate::brep::weaving::weave_parametric
+pub(crate) fn seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
     if !scope_supported(body) {
         return None;
     }
-    let wireframe = build_seed_wireframe(body)?;
-    Some(finish_weave(wireframe, body))
+    build_seed_wireframe(body)
 }
 
 /// Static structural scope gate. Returns `false` (→ octree) for bodies the
@@ -501,6 +511,98 @@ mod tests {
         let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
         let brep = weave_branch_seeds(&body).expect("box weaves via seeds");
         assert_eq!(brep.faces.len(), 6, "a box has six faces");
+    }
+
+    /// Sorted multiset of stable element handles — what `qFace`/`qEdge`/`qVertex`
+    /// address. Mirrors `topo_handles` in `weaving.rs` tests.
+    fn handles(brep: &BRep) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::{EdgeId, FaceId, VertexId};
+        let mut f: Vec<u64> = (0..brep.faces.len())
+            .map(|k| TopoRef::from_face(brep, FaceId(k as u32)).id_hash)
+            .collect();
+        let mut e: Vec<u64> = (0..brep.edges.len())
+            .map(|k| TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash)
+            .collect();
+        let mut v: Vec<u64> = (0..brep.vertices.len())
+            .map(|k| TopoRef::from_vertex(brep, VertexId(k as u32)).id_hash)
+            .collect();
+        f.sort_unstable();
+        e.sort_unstable();
+        v.sort_unstable();
+        (f, e, v)
+    }
+
+    /// Assert the seed weave of `body` is watertight and byte-identical in element
+    /// handles to the octree weave — the Phase-2b contract for the bodies the
+    /// branch-seed path newly covers (booleans, sweeps, the cone).
+    fn assert_seed_matches_octree(body: &BoundedCsg, cell: f32) {
+        use crate::brep::octree::Octree;
+        use crate::brep::weaving::weave;
+        let octree = Octree::build(body, cell);
+        let sdf = weave(body, &octree);
+        let seed = weave_branch_seeds(body).expect("body must be seed-weavable");
+        assert!(seed.shells[0].is_closed, "seed weave must be watertight");
+        assert_eq!(
+            (seed.faces.len(), seed.edges.len(), seed.vertices.len()),
+            (sdf.faces.len(), sdf.edges.len(), sdf.vertices.len()),
+            "seed and octree topology counts must agree"
+        );
+        assert_eq!(
+            handles(&seed),
+            handles(&sdf),
+            "seed and octree weave must yield identical element handles"
+        );
+    }
+
+    #[test]
+    fn seed_box_minus_cylinder_matches_octree() {
+        // The headline boolean: a through-hole. 12 box edges + 2 hole rims = 14
+        // edges, 7 faces (6 box + cylinder wall), 8 corners. The cylinder's own
+        // cap rims are trimmed away by the difference.
+        let body = BoundedCsg::from_csg(&CsgNode::Difference(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(cylinder_leaf(2, [0.0, 0.0, 0.0], 5.0, 12.0)),
+        ));
+        assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn seed_box_union_sphere_matches_octree() {
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere { center: [10.0, 0.0, 0.0], radius: 8.0 },
+            }),
+        ));
+        assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn seed_extrude_rectangle_matches_octree() {
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [0.0, 0.0],
+            half_extents: [5.0, 3.0],
+        });
+        let body = BoundedCsg::from_csg(&CsgNode::Extrude {
+            id: FeatureId::from_u32(7),
+            sketch: Box::new(sketch),
+            half_height: 2.0,
+        });
+        assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn seed_frustum_cone_matches_octree() {
+        // A lone cone is NOT a grundform special case (DL-76 apex convention left
+        // it to the octree in M1); the seed path now weaves it analytically into
+        // the same watertight 3-face frustum, handle-identical.
+        let body = BoundedCsg::from_csg(&CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone { r_bottom: 1.5, r_top: 0.8, half_height: 0.6 },
+        });
+        assert_seed_matches_octree(&body, 0.1);
     }
 
     #[test]

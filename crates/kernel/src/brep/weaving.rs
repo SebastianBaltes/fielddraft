@@ -1218,31 +1218,40 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     brep
 }
 
-// ─── parametric weave (M1: pure grundforms, analytic wireframe) ──────────────
+// ─── parametric weave (analytic wireframe: grundforms + branch-seed general) ──
 
-/// Analytic ("parametric") B-Rep weave — milestone 1 of the parametric-weaving
-/// roadmap (`docs/GEOMETRY-KERNEL-CONCEPT.md`, roadmap point E).
+/// Analytic ("parametric") B-Rep weave — no octree, no sampling.
 ///
-/// Builds the *exact* wireframe of a pure grundform directly from its
-/// parameters — no octree, no sampling — then finishes it through the same
-/// [`finish_weave`] the octree path uses. Because the corners and edges are
-/// solved in closed form, they are resolution-independent and land exactly on
-/// their face planes; and because the branch signatures are identical to the
-/// octree decomposition, the resulting `id_hash` element handles are
-/// byte-identical to the SDF route (so a UI selection survives toggling the
-/// feature on/off).
+/// Two layers, tried in order:
+/// 1. **Exact grundform fast-paths** (`build_box`/`cylinder`/`edgeless_wireframe`):
+///    closed-form wireframes for a lone Box / Cylinder / Sphere|Torus. These
+///    carry precision the general path cannot — exact rational-quadratic circle
+///    rims, corners exact to f64 — so they stay even though the seed path below
+///    would also handle them (it would only fit, not solve, those circles).
+/// 2. **Branch-seed general weave** ([`crate::brep::seed_weaver::seed_wireframe`],
+///    Phase 2b): seeds edges from CSG branch adjacency, traces them with the
+///    active-interval tracer, and dedups trim boundaries into corners. This
+///    covers Booleans, analytic Extrude/Revolve sweeps, and the cone — every
+///    body the fast-paths reject but that is still fully analytic.
 ///
-/// Returns `None` for anything not yet handled analytically — every boolean,
-/// warp, and (so far) every primitive except an axis-aligned Box — and the
-/// caller transparently falls back to the octree [`weave`]. Each primitive we
-/// add support for simply removes one `None` return; the merge of a parametric
-/// grundform with an SDF-derived boolean result is milestone 2.
+/// All layers finish through the same [`finish_weave`], and every layer's branch
+/// signatures match the octree decomposition, so the resulting `id_hash` element
+/// handles are byte-identical to the SDF route (a UI selection survives toggling
+/// the feature on/off — asserted across the `parametric_*`/`seed_*` tests).
+///
+/// Returns `None` only for bodies outside the analytic scope — domain warps
+/// (Twist/Bend/Displace), non-Lipschitz features (Thread/Gyroid), and any seam
+/// the seed path cannot resolve cleanly — and the caller falls back to the
+/// octree [`weave`].
 pub fn weave_parametric(body: &BoundedCsg) -> Option<BRep> {
-    // Each handled grundform contributes one `build_*_wireframe`; the first that
-    // recognises `body` wins, anything else falls through to `None` (→ octree).
+    // The first layer that recognises `body` wins; the exact grundform paths take
+    // precedence over the general seed path so a lone Box/Cylinder/Sphere keeps
+    // its closed-form precision. Anything none of them lift falls through to the
+    // octree via `None`.
     let wireframe = build_box_wireframe(body)
         .or_else(|| build_cylinder_wireframe(body))
-        .or_else(|| build_edgeless_wireframe(body))?;
+        .or_else(|| build_edgeless_wireframe(body))
+        .or_else(|| crate::brep::seed_weaver::seed_wireframe(body))?;
     Some(finish_weave(wireframe, body))
 }
 
@@ -2199,26 +2208,61 @@ mod tests {
     }
 
     #[test]
-    fn parametric_weave_falls_back_for_non_grundform() {
-        // A boolean union is milestone 2, not yet analytic → None, so the
-        // caller transparently uses the octree weave.
+    fn parametric_weave_handles_boolean_and_cone_via_seed_path() {
+        // Phase 2b: a boolean union is no longer a fall-back — the branch-seed
+        // layer of `weave_parametric` weaves it analytically, watertight and
+        // handle-identical to the octree route.
         let union = union_box_sphere([1.0, 1.0, 1.0], [1.0, 0.0, 0.0], 0.8);
-        assert!(weave_parametric(&union).is_none(), "union is not yet parametric");
+        let oct = Octree::build(&union, 0.0625);
+        let sdf = weave(&union, &oct);
+        let par = weave_parametric(&union).expect("union now weaves via the seed path");
+        assert!(par.shells[0].is_closed, "seed-woven union is watertight");
+        assert_eq!(
+            topo_handles(&par),
+            topo_handles(&sdf),
+            "union: parametric (seed) and octree handles must match"
+        );
 
-        // The Cone (frustum) is deliberately not in the *parametric* route: it
-        // weaves correctly via the octree route (DL-76 corrects the analytic cone
-        // apex so both rims are watertight — see
-        // `frustum_octree_weaves_watertight_with_apex_corrected_cone_wall`). A
-        // parametric cone would only be added to keep handle-identity, which the
-        // octree route already provides. See the NOTE above `build_edgeless_wireframe`.
-        let frustum = {
-            let csg = CsgNode::Leaf {
+        // The Cone (frustum) — left to the octree in M1 (DL-76 apex convention) —
+        // is also picked up by the seed path now, into the same watertight 3-face
+        // frustum with identical handles.
+        let frustum = BoundedCsg::from_csg(&CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Cone { r_bottom: 1.5, r_top: 0.8, half_height: 0.6 },
+        });
+        let oct = Octree::build(&frustum, 0.1);
+        let sdf = weave(&frustum, &oct);
+        let par = weave_parametric(&frustum).expect("cone now weaves via the seed path");
+        assert!(par.shells[0].is_closed, "seed-woven frustum is watertight");
+        assert_eq!(
+            topo_handles(&par),
+            topo_handles(&sdf),
+            "frustum: parametric (seed) and octree handles must match"
+        );
+    }
+
+    #[test]
+    fn parametric_weave_falls_back_for_out_of_scope() {
+        // The genuine fall-backs are bodies outside the analytic scope: domain
+        // warps (the half-space map describes the un-warped primitive) and
+        // non-Lipschitz lattices (no clean Euclidean distance). Both → None.
+        let warp = BoundedCsg::from_csg(&CsgNode::Twist(
+            Box::new(CsgNode::Leaf {
                 id: FeatureId::from_u32(1),
-                primitive: Primitive::Cone { r_bottom: 1.5, r_top: 0.8, half_height: 0.6 },
-            };
-            BoundedCsg::from_csg(&csg)
-        };
-        assert!(weave_parametric(&frustum).is_none(), "a cone falls back in M1 (apex convention)");
+                primitive: Primitive::Box {
+                    center: [0.0, 0.0, 0.0],
+                    half_extents: [1.0, 1.0, 1.0],
+                },
+            }),
+            0.5,
+        ));
+        assert!(weave_parametric(&warp).is_none(), "a domain warp falls back to octree");
+
+        let gyroid = BoundedCsg::from_csg(&CsgNode::Leaf {
+            id: FeatureId::from_u32(1),
+            primitive: Primitive::Gyroid { cell_size: 4.0, thickness: 1.0 },
+        });
+        assert!(weave_parametric(&gyroid).is_none(), "a non-Lipschitz lattice falls back");
     }
 
     fn cone_body(r_bottom: f32, r_top: f32, half_height: f32) -> BoundedCsg {
