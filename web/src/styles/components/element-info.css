@@ -48,6 +48,11 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
+    /* Readout values (e.g. "Kante Länge 100.00 mm") must be copyable. The
+     * Outliner's clickable feature rows set `user-select: none`, and that rule
+     * leaks in here because ElementInfo renders inside `.fd-outliner` — reassert
+     * selectable text for our own readout. */
+    user-select: text;
 
     & dt {
       flex: 0 0 5.5rem;
