@@ -19,9 +19,19 @@
 //! and the dynamic gates in `build_seed_wireframe`), so the `id_hash` toggle-
 //! invariance contract is preserved.
 
-use crate::brep::edge_walker::{body_has_warp, collect_non_lipschitz_features};
-use crate::brep::weaving::finish_weave;
-use crate::brep::BRep;
+use std::collections::HashMap;
+
+use crate::brep::branch_seed::{seed_branch_pairs, SeedResult};
+use crate::brep::edge_trace::{trace_edge, EdgeEnd, TraceParams};
+use crate::brep::edge_walker::{
+    body_has_warp, branch_field, branch_leaf_map, cluster_positions,
+    collect_non_lipschitz_features, extrude_rim_corner, near_traced, refine_triple_vertex,
+    traced_to_hermite, TripleRefine,
+};
+use crate::brep::extraction::both_branches_active;
+use crate::brep::weaving::{branch_halfspace_map, finish_weave};
+use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
+use crate::csg::BranchId;
 use crate::bvh::BoundedCsg;
 
 /// Weave `body` analytically from branch-pair seeds, or return `None` to fall
@@ -68,13 +78,287 @@ fn scope_supported(body: &BoundedCsg) -> bool {
     true
 }
 
+/// Curvature-adaptive trace fractions, mirroring the octree route's private
+/// constants (`edge_walker.rs` `ADAPT_*_FRACTION`). Kept local because they are
+/// private there; the values are deliberately identical so a seed-woven edge and
+/// an octree-woven one of the same geometry sample to the same chord fidelity.
+const ADAPT_TOL_FRACTION: f64 = 1.0e-4;
+const ADAPT_MIN_FRACTION: f64 = 1.0e-4;
+const ADAPT_MAX_FRACTION: f64 = 0.1;
+
+/// One traced seam edge, captured *after* its Hermite conversion so we no longer
+/// hold the borrowing `Field`s (which borrow `leaf_map`). Open edges carry their
+/// `(start, end)` trim termini in `ends`; a `closed` ring carries none.
+struct EdgeRecord {
+    a: BranchId,
+    b: BranchId,
+    samples: Vec<HermiteSample>,
+    closed: bool,
+    /// `ends.0` is the BACKWARD terminus (`points.first()`), `ends.1` the
+    /// FORWARD one (`points.last()`) — see [`trace_edge`]. Preserved here so the
+    /// trim→vertex mapping assigns start/end on the matching sides.
+    ends: (EdgeEnd, EdgeEnd),
+}
+
 /// Build the wireframe `BRep` (deduplicated corner vertices + signed traced
 /// edges) for an in-scope `body`, or `None` if the analytic pipeline cannot
 /// fully resolve it (handed off to the octree).
 ///
-/// Phase 2b-i stub: the seed→trace→topology pipeline lands in 2b-ii/2b-iii.
-fn build_seed_wireframe(_body: &BoundedCsg) -> Option<BRep> {
-    None
+/// Pipeline (Phase 2b): seed every branch pair, trace each seed with the
+/// active-interval tracer, fuse co-incident trim termini into corner vertices
+/// (re-solved analytically by `refine_triple_vertex`), and emit signed edges.
+/// Any condition the analytic path cannot lift cleanly returns `None` so the
+/// caller falls back to the whole-body octree weave.
+fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
+    // 1. Seed every candidate branch pair. An unresolved pair is one whose field
+    //    we cannot lift analytically (missing half-space / SSI `Unsupported`) —
+    //    the analytic route cannot trace it, so the WHOLE body goes to octree
+    //    (the all-or-nothing contract that keeps `id_hash` toggle-invariant).
+    let SeedResult { seeds, unresolved } = seed_branch_pairs(body);
+    if !unresolved.is_empty() {
+        return None;
+    }
+
+    // 2. The per-branch field ingredients, built once and shared across seeds.
+    let halfspaces = branch_halfspace_map(body);
+    let leaf_map = branch_leaf_map(body);
+
+    // Absolute length scale for curvature-adaptive tracing and dedup tolerances:
+    // the model AABB diagonal (mirrors `build_wireframe`, edge_walker.rs:1585).
+    // A degenerate/empty body falls back to 1.0 (it has no seams to trace).
+    let diag = {
+        let bb = body.aabb();
+        if bb.is_empty() {
+            1.0
+        } else {
+            let s = bb.size();
+            ((s[0] as f64).powi(2) + (s[1] as f64).powi(2) + (s[2] as f64).powi(2)).sqrt()
+        }
+    };
+
+    // Trace parameters, mirroring the octree route's adaptive stepping. The one
+    // divergence: the octree route bounds `max_arc` by the seam group's octree
+    // `span`; we have no octree here, so the model diagonal is the natural
+    // spatial bound — an edge longer than a few diagonals is an unbounded seam
+    // (e.g. a plane parallel to an infinite cylinder) that must stall → `Open`.
+    let tol = ADAPT_TOL_FRACTION * diag;
+    let min_step = ADAPT_MIN_FRACTION * diag;
+    let max_step = (ADAPT_MAX_FRACTION * diag).max(min_step);
+    // Deviation from the spec's `from_step(max_step)`: the *initial* predictor
+    // (and hence `close_tol`) must be small. The octree route seeds this from its
+    // small octree `spacing`; with no octree we seed it from `min_step`. Starting
+    // at `max_step` on a tight ring (e.g. a cylinder rim) forces a long shrink-to-
+    // tolerance run whose retries burn `step_i` without emitting points, after
+    // which the now-tiny adaptive `close_tol` fires a FALSE loop closure one step
+    // from the seed (a 1-point "ring"). A small initial step is accepted within
+    // tolerance immediately, and curvature then grows the stride up to `max_step`
+    // on straight runs — so straight box edges still take single spans.
+    let mut params = TraceParams::from_step(min_step).with_adaptive(tol, min_step, max_step);
+    params.max_arc = 4.0 * diag;
+
+    // Active-predicate band. `both_branches_active` reports both branches active
+    // within `eps` (surface distance) of each surface, so a march OVERSHOOTS the
+    // true corner by ~`eps` before `np` goes inactive and the bisection stops it.
+    // That overshoot is harmless: the trim point is only used to (a) cluster
+    // co-incident corners and (b) SEED `refine_triple_vertex`, which re-solves the
+    // EXACT analytic corner from the half-spaces — so it need only be *close*. We
+    // keep `eps = 1e-3·diag`: large enough that the active→inactive transition is
+    // crisp (the band must comfortably exceed the tracer's project tolerance) yet
+    // an order of magnitude below the cluster `gap`, so all of one corner's
+    // ~`eps`-overshot termini still cluster together. The box-corner test confirms
+    // the *refined* vertices are exact regardless of the raw overshoot.
+    let eps = (1e-3 * diag) as f32;
+
+    // Co-component seed dedup radius and corner-cluster gap, both scaled to the
+    // model. `near_tol = max_step`: any second seed lying within a step of an
+    // already-traced polyline is the SAME component (SSI can emit several seeds
+    // per curve) and is dropped; a seed on a genuinely disjoint component lies
+    // far off the polyline and survives to trace its own edge.
+    let near_tol = max_step;
+    // `gap = 0.1·diag`: the termini of the edges meeting at one corner are each
+    // ~`eps`-overshot along their own free axis, so they sit up to ≈√2·eps ≈
+    // 1.4e-3·diag apart — this gap fuses them with ~70× headroom, while two
+    // distinct corners that share a branch-set stay separate as long as they are
+    // ≳0.1·diag apart (true at any sane feature scale; a box edge is ~0.58·diag).
+    let gap = 0.1 * diag;
+
+    // 3. Group seeds by canonical (min, max) branch signature, then process each
+    //    group, collapsing co-component seeds into a single traced edge.
+    let mut groups: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (i, seed) in seeds.iter().enumerate() {
+        let (a32, b32) = (seed.a.as_u32(), seed.b.as_u32());
+        let key = (a32.min(b32), a32.max(b32));
+        groups.entry(key).or_default().push(i);
+    }
+
+    let mut records: Vec<EdgeRecord> = Vec::new();
+    for (_key, members) in groups {
+        // `covered` marks group seeds already absorbed by an emitted polyline.
+        let mut covered = vec![false; members.len()];
+        for idx in 0..members.len() {
+            if covered[idx] {
+                continue;
+            }
+            let seed = &seeds[members[idx]];
+            let (a, b) = (seed.a, seed.b);
+
+            // Build the two fields. With `unresolved` empty both lookups must
+            // succeed; a `None` here would be an internal inconsistency, so we
+            // bail to octree defensively rather than panic.
+            let (Some(fa), Some(fb)) = (
+                branch_field(&halfspaces, &leaf_map, a.as_u32()),
+                branch_field(&halfspaces, &leaf_map, b.as_u32()),
+            ) else {
+                return None;
+            };
+
+            let active = |p: [f64; 3]| {
+                both_branches_active(body, [p[0] as f32, p[1] as f32, p[2] as f32], a, b, eps)
+            };
+            let seed_pt = [
+                seed.point[0] as f64,
+                seed.point[1] as f64,
+                seed.point[2] as f64,
+            ];
+
+            // No caller vertices: only `Trim`/`Open` ends can occur.
+            let Some(traced) = trace_edge(
+                &fa,
+                &fb,
+                seed_pt,
+                &[],
+                &params,
+                Some(&active as &dyn Fn([f64; 3]) -> bool),
+            ) else {
+                // The seed sat in a trimmed-away (inactive) region — this branch
+                // pair does meet, but not on the real model boundary here. Not a
+                // failure: skip the seed (proven safe by
+                // `trace_edge_rejects_inactive_seed`).
+                continue;
+            };
+
+            // A closed ring carries `(Open, Open)` ends by construction (it has no
+            // termini) — only an OPEN arc's `Open` end signals a stalled march. On
+            // the seed path there is no sample-fit backstop for a stall, so an open
+            // arc that failed to reach a clean end is an unbounded/unresolved seam
+            // → octree fallback.
+            if !traced.closed
+                && (matches!(traced.ends.0, EdgeEnd::Open) || matches!(traced.ends.1, EdgeEnd::Open))
+            {
+                return None;
+            }
+
+            // Convert to Hermite NOW, while the borrowing fields are alive, so
+            // the stored record is self-contained.
+            let samples = traced_to_hermite(&fa, &fb, &traced);
+            if samples.len() < 2 {
+                continue; // degenerate — too short to be a real edge.
+            }
+
+            // Co-component dedup: every other not-yet-traced seed in this group
+            // that lands on this polyline is the SAME component (SSI can emit
+            // multiple seeds per curve) — mark it covered so it is not re-traced.
+            // A seed on a genuinely disjoint component lies off the polyline and
+            // survives to trace its own edge.
+            covered[idx] = true;
+            for other in 0..members.len() {
+                if covered[other] {
+                    continue;
+                }
+                let p = &seeds[members[other]].point;
+                let q = [p[0] as f64, p[1] as f64, p[2] as f64];
+                if near_traced(q, &traced.points, traced.closed, near_tol) {
+                    covered[other] = true;
+                }
+            }
+
+            records.push(EdgeRecord {
+                a,
+                b,
+                samples,
+                closed: traced.closed,
+                ends: traced.ends,
+            });
+        }
+    }
+
+    // 4. Trim-vertex clustering. Gather every open record's `Trim` termini as
+    //    `(record_idx, side, position)` (side 0 = start/backward, 1 = end/
+    //    forward), cluster co-incident ones into corners, and re-solve each
+    //    corner analytically.
+    let mut trim_refs: Vec<(usize, usize)> = Vec::new(); // (record_idx, side)
+    let mut trim_pos: Vec<[f64; 3]> = Vec::new();
+    for (ri, rec) in records.iter().enumerate() {
+        if rec.closed {
+            continue;
+        }
+        if let EdgeEnd::Trim(p) = rec.ends.0 {
+            trim_refs.push((ri, 0));
+            trim_pos.push(p);
+        }
+        if let EdgeEnd::Trim(p) = rec.ends.1 {
+            trim_refs.push((ri, 1));
+            trim_pos.push(p);
+        }
+    }
+
+    let mut brep = BRep::new();
+    // Per (record, side) → the corner vertex it terminates at.
+    let mut side_vertex: HashMap<(usize, usize), VertexId> = HashMap::new();
+
+    for cluster in cluster_positions(&trim_pos, gap) {
+        // Branch-set: the union of the incident records' two branches. The
+        // corner is where these surfaces concur; `Vertex::new` canonicalises.
+        let mut branches: Vec<BranchId> = Vec::new();
+        let mut centroid = [0.0f64; 3];
+        for &m in &cluster {
+            let (ri, _side) = trim_refs[m];
+            branches.push(records[ri].a);
+            branches.push(records[ri].b);
+            let p = trim_pos[m];
+            centroid[0] += p[0];
+            centroid[1] += p[1];
+            centroid[2] += p[2];
+        }
+        let n = cluster.len() as f64;
+        centroid = [centroid[0] / n, centroid[1] / n, centroid[2] / n];
+
+        // Re-solve the EXACT corner from the analytic surfaces. The raw centroid
+        // only seeds it, so the trim band's imprecision washes out.
+        let pos = match refine_triple_vertex(&halfspaces, &branches, centroid) {
+            TripleRefine::Refined(p) => p,
+            // Cannot judge analytically (non-analytic branch / rank-deficient):
+            // try the exact swept-extrude rim corner; failing that, keep the
+            // centroid (the octree route also leaves such a corner at centroid).
+            TripleRefine::Indeterminate => {
+                extrude_rim_corner(&leaf_map, &branches).unwrap_or(centroid)
+            }
+            // A phantom corner the analytic surfaces provably do not share — the
+            // analytic route cannot place it, so hand the body to the octree.
+            TripleRefine::Spurious => return None,
+        };
+
+        let vid = brep.add_vertex(Vertex::new(pos, branches));
+        for &m in &cluster {
+            side_vertex.insert(trim_refs[m], vid);
+        }
+    }
+
+    // 5. Emit edges. Vertices are added first (above) so every `VertexId` an
+    //    edge references already exists — mirrors `build_box_wireframe` ordering.
+    for (ri, rec) in records.iter().enumerate() {
+        let geom = EdgeGeometry::Hermite(rec.samples.clone());
+        if rec.closed {
+            // A closed ring (e.g. a cap∩wall rim) carries no bounding vertices.
+            brep.add_edge(Edge::new(geom, rec.a, rec.b, None, None));
+        } else {
+            let start = side_vertex.get(&(ri, 0)).copied();
+            let end = side_vertex.get(&(ri, 1)).copied();
+            brep.add_edge(Edge::new(geom, rec.a, rec.b, start, end));
+        }
+    }
+
+    Some(brep)
 }
 
 #[cfg(test)]
@@ -152,10 +436,83 @@ mod tests {
     }
 
     #[test]
-    fn stub_weave_returns_none() {
-        // 2b-i: the pipeline is not wired yet, so even an in-scope body yields
-        // None (→ octree). Replaced by real coverage in 2b-iv.
+    fn cylinder_yields_two_closed_rim_rings() {
+        // A plain cylinder weaves into a wall plus two caps, joined at exactly
+        // two rim circles — closed-loop edges with NO bounding vertices (the two
+        // cap∩wall seams never reach a third surface, so no trim occurs).
+        let body = BoundedCsg::from_csg(&cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 8.0));
+        let wf = build_seed_wireframe(&body).expect("cylinder is seed-weavable");
+        assert_eq!(wf.edges.len(), 2, "two rims");
+        assert_eq!(wf.vertices.len(), 0, "no corner vertices on a plain cylinder");
+        for e in &wf.edges {
+            assert!(e.start.is_none() && e.end.is_none(), "rims are closed loops");
+        }
+    }
+
+    #[test]
+    fn box_yields_eight_corners_and_twelve_edges() {
+        // Acceptance test for the eps/refine path: the raw trim points are only
+        // approximate, but `refine_triple_vertex` re-solves each corner exactly,
+        // so all 8 vertices must land precisely on the box corners (±10).
+        let h = 10.0f32;
+        let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [h, h, h]));
+        let wf = build_seed_wireframe(&body).expect("box is seed-weavable");
+        assert_eq!(wf.vertices.len(), 8, "eight box corners");
+        assert_eq!(wf.edges.len(), 12, "twelve box edges");
+
+        // Every coordinate is ±10 within 1e-3, and all 8 sign combinations occur.
+        let mut signs = std::collections::HashSet::new();
+        for v in &wf.vertices {
+            let mut bits = [false; 3];
+            for (axis, &c) in v.position.iter().enumerate() {
+                assert!(
+                    (c.abs() - h as f64).abs() < 1e-3,
+                    "corner coord {c} not ±{h} (axis {axis})"
+                );
+                bits[axis] = c > 0.0;
+            }
+            signs.insert(bits);
+        }
+        assert_eq!(signs.len(), 8, "all eight sign combinations present");
+
+        // Every box edge is open with both endpoints resolved to corners.
+        for e in &wf.edges {
+            assert!(
+                e.start.is_some() && e.end.is_some(),
+                "box edges are vertex-bounded"
+            );
+        }
+    }
+
+    #[test]
+    fn box_corner_branch_sets_are_triples() {
+        let body = BoundedCsg::from_csg(&box_leaf(3, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
+        let wf = build_seed_wireframe(&body).expect("box is seed-weavable");
+        for v in &wf.vertices {
+            assert_eq!(v.branches.len(), 3, "a box corner joins exactly three faces");
+            for b in &v.branches {
+                assert_eq!(b.feature_id(), 3, "all three faces are this box's");
+            }
+        }
+    }
+
+    #[test]
+    fn weave_branch_seeds_box_is_watertight() {
         let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
+        let brep = weave_branch_seeds(&body).expect("box weaves via seeds");
+        assert_eq!(brep.faces.len(), 6, "a box has six faces");
+    }
+
+    #[test]
+    fn weave_branch_seeds_returns_none_for_unresolvable() {
+        // A domain warp is out of analytic scope: the half-space map describes the
+        // un-warped box, so seeding is invalid. `scope_supported` gates it before
+        // the dynamic pipeline ever runs, yielding None (→ octree).
+        let csg = CsgNode::Twist(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            0.01,
+        );
+        let body = BoundedCsg::from_csg(&csg);
         assert!(weave_branch_seeds(&body).is_none());
     }
 }
