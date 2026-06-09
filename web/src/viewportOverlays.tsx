@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+import { Line2NodeMaterial } from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -1248,15 +1251,31 @@ export function BRepSelectedOverlay() {
       side: THREE.DoubleSide,
     }),
   );
-  const edgeGeomRef = useRef(new THREE.BufferGeometry());
+  // Selected edges use a *fat* line (LineSegments2 + Line2NodeMaterial). A
+  // plain LineBasicMaterial silently ignores `linewidth` on WebGPU/WebGL — it
+  // always rasterises 1px — so the 2px the ticket asked for only materialises
+  // through the instanced screen-space line shader. The WebGPU variant derives
+  // its pixel scale from the built-in viewport/DPR nodes, so unlike the WebGL
+  // LineMaterial there is no `resolution` uniform to keep in sync.
+  const edgeGeomRef = useRef(new LineSegmentsGeometry());
   const edgeMatRef = useRef(
-    new THREE.LineBasicMaterial({
+    new Line2NodeMaterial({
       color: ELEMENT_SELECTION_COLOR,
       linewidth: 2,
+      worldUnits: false,
       depthTest: false,
       depthWrite: false,
+      transparent: true,
     }),
   );
+  const edgeObjRef = useRef<LineSegments2 | null>(null);
+  if (edgeObjRef.current === null) {
+    const obj = new LineSegments2(edgeGeomRef.current, edgeMatRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 1002;
+    obj.layers.enable(OVERLAY_LAYER);
+    edgeObjRef.current = obj;
+  }
 
   useEffect(() => {
     const fg = faceGeomRef.current;
@@ -1359,11 +1378,9 @@ export function BRepSelectedOverlay() {
         // hover overlay (BRepEdgeOverlay) consumes the same points raw.
         const segs = polylineToSegments(edge.points);
         if (segs.length === 0) continue;
-        edgeGeomRef.current.setAttribute(
-          "position",
-          new THREE.BufferAttribute(segs, 3),
-        );
-        edgeGeomRef.current.computeBoundingSphere();
+        // LineSegmentsGeometry wants the flat 6-per-segment layout that
+        // polylineToSegments already produces (start xyz, end xyz, …).
+        edgeGeomRef.current.setPositions(segs);
         return { kind: "edge" };
       }
       return null;
@@ -1401,15 +1418,7 @@ export function BRepSelectedOverlay() {
     );
   }
   if (resolved.kind === "edge") {
-    return (
-      <lineSegments
-        ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-        geometry={edgeGeomRef.current}
-        material={edgeMatRef.current}
-        frustumCulled={false}
-        renderOrder={1002}
-      />
-    );
+    return <primitive object={edgeObjRef.current} />;
   }
   return (
     <mesh
