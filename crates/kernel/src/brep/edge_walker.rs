@@ -467,7 +467,7 @@ const ADAPT_MIN_FRACTION: f64 = 1.0e-4;
 /// real face). The Leaf field is smooth — and the tracer well-conditioned —
 /// only *away* from the leaf SDF's own C0 creases; the same-feature guard in
 /// [`build_wireframe`] keeps a sweep's own wall∩cap seam off this path.
-fn branch_field<'a>(
+pub(crate) fn branch_field<'a>(
     halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
     leaf_map: &HashMap<u32, &'a BoundedCsg>,
     branch: u32,
@@ -536,7 +536,7 @@ fn sketch_has_path(sketch: &BoundedSketch2d) -> bool {
 /// the cap fixes its height (`z = ±half_height`). Lifting that endpoint to the
 /// cap plane and out to world is the corner — a sketch fact, independent of
 /// octree resolution, unlike the cell-quantised position dedup produced.
-fn extrude_rim_corner(
+pub(crate) fn extrude_rim_corner(
     leaf_map: &HashMap<u32, &BoundedCsg>,
     branches: &[BranchId],
 ) -> Option<[f64; 3]> {
@@ -628,7 +628,7 @@ fn group_endpoints(sketch: &BoundedSketch2d, base: u32, sub: u32) -> Option<([f3
 /// with the sub-index stripped — the whole leaf SDF backs every one of its
 /// faces. Mapping *all* leaves (box, cylinder, …) is harmless: their branches
 /// resolve through `halfspaces` first and never consult this map.
-fn branch_leaf_map(body: &BoundedCsg) -> HashMap<u32, &BoundedCsg> {
+pub(crate) fn branch_leaf_map(body: &BoundedCsg) -> HashMap<u32, &BoundedCsg> {
     let mut out = HashMap::new();
     collect_leaf_nodes(body, &mut out);
     out
@@ -685,7 +685,7 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
 /// group also skips the O(n²) walker over a space-filling gyroid's huge seam
 /// groups. Neighbour seams (a box's own plane∩plane edges) are untouched. See
 /// DL-71.
-fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections::HashSet<u32>) {
+pub(crate) fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections::HashSet<u32>) {
     match node {
         BoundedCsg::Leaf { id, primitive, .. } => {
             if primitive.is_non_lipschitz() {
@@ -712,7 +712,7 @@ fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::collections:
 }
 
 /// Is `q` within `tol` of any vertex of the polyline?
-fn near_polyline(q: [f64; 3], poly: &[[f64; 3]], tol: f64) -> bool {
+pub(crate) fn near_polyline(q: [f64; 3], poly: &[[f64; 3]], tol: f64) -> bool {
     let t2 = tol * tol;
     // Distance to the polyline as a curve (point-to-*segment*), not merely to its
     // vertices. With curvature-adaptive stepping (DL-81) a straight run carries
@@ -729,7 +729,7 @@ fn near_polyline(q: [f64; 3], poly: &[[f64; 3]], tol: f64) -> bool {
 /// Is `q` within `tol` of the traced polyline treated as a curve? When `closed`,
 /// the implicit closing segment (last→first vertex) is included, so a sample in
 /// that gap — up to one adaptive stride long — is not mistaken for off-curve.
-fn near_traced(q: [f64; 3], poly: &[[f64; 3]], closed: bool, tol: f64) -> bool {
+pub(crate) fn near_traced(q: [f64; 3], poly: &[[f64; 3]], closed: bool, tol: f64) -> bool {
     if near_polyline(q, poly, tol) {
         return true;
     }
@@ -780,7 +780,7 @@ fn vertex_bounds_seam(
 /// Convert a [`TracedEdge`] into oriented Hermite samples: each tangent is the
 /// exact edge tangent `∇f_a × ∇f_b` at that point (falling back to the chord
 /// only at a degeneracy), flipped to run forward along the polyline.
-fn traced_to_hermite(fa: &Field, fb: &Field, traced: &TracedEdge) -> Vec<HermiteSample> {
+pub(crate) fn traced_to_hermite(fa: &Field, fb: &Field, traced: &TracedEdge) -> Vec<HermiteSample> {
     let pts = &traced.points;
     let n = pts.len();
     let mut out = Vec::with_capacity(n);
@@ -994,7 +994,7 @@ fn dedup_vertices(raw: &[Vertex], cluster_gap: f64) -> Vec<DedupVertex> {
 /// when a chain of pairwise gaps each `<= gap` connects them. With `gap <= 0`
 /// everything collapses into one cluster (the legacy branch-set-only behaviour).
 /// Clusters come out in ascending min-index order for deterministic emission.
-fn cluster_positions(positions: &[[f64; 3]], gap: f64) -> Vec<Vec<usize>> {
+pub(crate) fn cluster_positions(positions: &[[f64; 3]], gap: f64) -> Vec<Vec<usize>> {
     let n = positions.len();
     if n == 0 {
         return Vec::new();
@@ -1126,7 +1126,7 @@ const VERTEX_REFINE_TOL: f32 = 1e-3;
 /// touching it — `residual` floors well above the tolerance), the candidate is
 /// not a real vertex at all and must be dropped, not kept at its centroid. A
 /// dropped phantom unsplits the straight box edge it was bisecting.
-enum TripleRefine {
+pub(crate) enum TripleRefine {
     /// Converged onto the true common corner.
     Refined([f64; 3]),
     /// All branches analytic and full-rank, but no point drives every surface to
@@ -1137,7 +1137,7 @@ enum TripleRefine {
     Indeterminate,
 }
 
-fn refine_triple_vertex(
+pub(crate) fn refine_triple_vertex(
     halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
     branches: &[BranchId],
     seed: [f64; 3],
@@ -1461,7 +1461,7 @@ fn orient_chain(points: &[EdgePoint], idx_chain: &[usize]) -> Vec<HermiteSample>
 /// the analytic branch→half-space map describes the *un-warped* primitive, so
 /// it does not match the real (warped) surface and must NOT be used to validate
 /// edges — the phantom filter is disabled for such bodies. See DL-52.
-fn body_has_warp(node: &BoundedCsg) -> bool {
+pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
     match node {
         BoundedCsg::Twist { .. } | BoundedCsg::Bend { .. } | BoundedCsg::Displace { .. } => true,
         BoundedCsg::Union { left, right, .. }

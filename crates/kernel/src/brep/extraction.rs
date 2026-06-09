@@ -589,7 +589,7 @@ fn passes_phantom_filter(body: &BoundedCsg, p: [f32; 3], eps_phantom: f32) -> bo
 /// ([`crate::csg::extrude_contributors`]), and warps inherit their inner leaf's
 /// half-space band, so both report both branches at a true edge just like
 /// analytic CSG. The special-case is gone.
-fn both_branches_active(
+pub(crate) fn both_branches_active(
     body: &BoundedCsg,
     p: [f32; 3],
     ba: BranchId,

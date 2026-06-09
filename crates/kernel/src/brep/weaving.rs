@@ -1050,7 +1050,7 @@ pub fn weave_pure_octree(body: &BoundedCsg, octree: &Octree) -> BRep {
 /// wireframe was produced; everything downstream — face grouping, loop
 /// ordering, watertightness, the stable `id_hash` naming — is byte-identical,
 /// so toggling parametric weaving never changes a body's element handles.
-fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
+pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     // (1) Upgrade every Hermite edge to NURBS. The edge-walk samples stop
     // roughly one octree cell short of each bounding corner (the corner is a
     // Vertex cell, not an Edge cell), so we anchor the chain's first/last
