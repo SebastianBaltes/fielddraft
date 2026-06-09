@@ -702,6 +702,43 @@ mod tests {
     }
 
     #[test]
+    fn seed_box_union_sphere_grazing_top_edge_watertight() {
+        // Ticket 20260609-193134-el1x: the SAME .fdraft as the grazing-face-corner
+        // test, but after the user dragged the sphere up (`translate` id 12, z) so
+        // it now grazes the box's TOP edge near the -x/+y corner. The sphere centre
+        // sits at z=103.04 — only its underside (z down to 53.04) dips below the box
+        // top (z=55.55), poking through the -x face AND the +z face in a sliver.
+        // The reported render showed the -x-face intersection arc overshooting the
+        // box top edge into a self-crossing closed lens (z up to ~56.1, above the
+        // box) instead of being trimmed at the top edge. The seed weave must close
+        // watertight with the 7-face count, no overshoot past the box bounds.
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [-23.490438, 1.4090451, 5.554038], [50.0, 50.0, 50.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere {
+                    center: [-86.59913, 4.6575217, 103.036758],
+                    radius: 50.0,
+                },
+            }),
+        ));
+        // The octree route (the default `parametric_weave = false` path) CANNOT
+        // resolve this: the grazing lens is ~1.3 mm tall but the body-relative
+        // octree cell here is ~6 mm, so the feature falls between samples and the
+        // octree weaves a degenerate shell (4 faces, missing the sphere cap — the
+        // reported "Union falsch"). The seed/parametric path resolves it from the
+        // analytic branch adjacency, independent of any cell size — that is exactly
+        // the failure class the parametric-weaving rebuild replaces the octree for.
+        let seed = weave_branch_seeds(&body)
+            .expect("grazing-top-edge sphere must weave analytically, not fall back to octree");
+        assert!(
+            seed.shells[0].is_closed,
+            "seed weave of the grazing-top-edge union must be watertight"
+        );
+        assert_eq!(seed.faces.len(), 7, "6 box faces + 1 sphere face");
+    }
+
+    #[test]
     fn seed_extrude_rectangle_matches_octree() {
         let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
             center: [0.0, 0.0],
