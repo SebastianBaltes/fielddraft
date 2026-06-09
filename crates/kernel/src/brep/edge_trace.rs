@@ -245,19 +245,37 @@ impl TraceParams {
     }
 }
 
-/// A traced edge polyline. `closed` rings carry no `ends`; open arcs carry the
-/// indices (into the caller's vertex slice) of the bounding vertices each end
-/// reached, or `None` for an end that stalled before reaching one.
+/// A traced edge polyline. `closed` rings carry no meaningful `ends` (both set
+/// to [`EdgeEnd::Open`]); open arcs carry how each end terminated — a caller
+/// bounding vertex, a trimming boundary, or an unresolved stall.
 pub(crate) struct TracedEdge {
     pub points: Vec<[f64; 3]>,
     pub closed: bool,
-    pub ends: (Option<usize>, Option<usize>),
+    pub ends: (EdgeEnd, EdgeEnd),
+}
+
+/// How one end of a traced open arc terminated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum EdgeEnd {
+    /// Reached one of the caller's bounding vertices (index into its slice).
+    Vertex(usize),
+    /// Hit a trimming boundary (a third branch became active) at this world
+    /// point — a newly discovered vertex, not in the caller's slice. This is the
+    /// "trimming multiplicity": the intersection curve continues geometrically
+    /// but leaves the real model boundary here, so the edge must stop exactly at
+    /// the active→inactive transition rather than at any pre-known vertex.
+    Trim([f64; 3]),
+    /// Marched to a stall / max_steps without a clean end.
+    Open,
 }
 
 /// How a one-directional march terminated.
 enum MarchEnd {
     /// Reached `vertices[idx]` — the natural end of an open arc.
     Vertex(usize),
+    /// Hit the active→inactive boundary at this world point — the edge leaves
+    /// the real surface here (a third branch became active). See [`EdgeEnd::Trim`].
+    Trimmed([f64; 3]),
     /// Returned to the seed neighbourhood — the edge is a closed ring.
     Loop,
     /// Projection failed, the tangent collapsed, or `max_steps` was hit. The
@@ -337,9 +355,43 @@ fn advance(
     None
 }
 
+/// Bisection passes for [`bisect_active`]. 30 midpoint halvings shrink a step-
+/// sized segment by 2^-30 (≈ 1e-9 of `step`), far below the on-surface scale.
+const BISECT_ACTIVE_STEPS: usize = 30;
+/// Segment-length floor at which [`bisect_active`] stops early — once the active
+/// and inactive endpoints are this close, the boundary is pinned to world-ε.
+const BISECT_ACTIVE_TOL: f64 = 1e-7;
+
+/// Locate the active→inactive transition on the segment `[a_active, b_inactive]`
+/// by midpoint bisection, returning the last *active* midpoint (the boundary,
+/// which lies on-surface because both endpoints came from the on-edge march).
+/// `a` is invariant-active and `b` invariant-inactive; each step replaces
+/// whichever endpoint the midpoint matches, so `a` always stays the active side.
+fn bisect_active(
+    f: &dyn Fn([f64; 3]) -> bool,
+    a_active: [f64; 3],
+    b_inactive: [f64; 3],
+) -> [f64; 3] {
+    let mut a = a_active;
+    let mut b = b_inactive;
+    for _ in 0..BISECT_ACTIVE_STEPS {
+        if dist(a, b) < BISECT_ACTIVE_TOL {
+            break;
+        }
+        let mid = scale(add(a, b), 0.5);
+        if f(mid) {
+            a = mid;
+        } else {
+            b = mid;
+        }
+    }
+    a
+}
+
 /// March one direction from `start` (already on the edge) with initial unit
 /// tangent `t0`, collecting reprojected points until a bounding vertex, a loop
-/// back to `seed`, or a stall. Does not include `start` in the returned points.
+/// back to `seed`, a trimming boundary, or a stall. Does not include `start` in
+/// the returned points.
 fn march(
     fa: &Field,
     fb: &Field,
@@ -348,6 +400,7 @@ fn march(
     seed: [f64; 3],
     vertices: &[[f64; 3]],
     p: &TraceParams,
+    active: Option<&dyn Fn([f64; 3]) -> bool>,
 ) -> (Vec<[f64; 3]>, MarchEnd) {
     let mut pts = Vec::new();
     let mut cur = start;
@@ -417,6 +470,25 @@ fn march(
             .clamp(a.min_step, a.max_step);
         }
 
+        // Active-interval termination (Phase 2a). The invariant is that `cur` is
+        // always active (the seed is guaranteed active by `trace_edge`, and only
+        // active `np` ever becomes the next `cur`). So a freshly accepted `np`
+        // that is *inactive* means the edge crossed the real model boundary
+        // somewhere inside this final segment — a third branch became active and
+        // trims the edge here. Bisect `[cur(active), np(inactive)]` to the exact
+        // on-surface boundary point, emit it as the arc's terminus, and stop.
+        // Checked AFTER the adaptive accept (so `np` is final) but BEFORE the
+        // loop-closure / arc-budget checks, so trimming takes priority over a
+        // spurious closure or a budget stall straddling the boundary. `np` itself
+        // is never pushed — it lies in the trimmed-away region.
+        if let Some(f) = active {
+            if !f(np) {
+                let boundary = bisect_active(f, cur, np);
+                pts.push(boundary);
+                return (pts, MarchEnd::Trimmed(boundary));
+            }
+        }
+
         // Loop closure: back near the seed after genuinely leaving it.
         if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < close_tol {
             return (pts, MarchEnd::Loop);
@@ -476,11 +548,21 @@ pub(crate) fn trace_edge(
     seed_pt: [f64; 3],
     vertices: &[[f64; 3]],
     p: &TraceParams,
+    active: Option<&dyn Fn([f64; 3]) -> bool>,
 ) -> Option<TracedEdge> {
     let seed = project_to_edge(fa, fb, seed_pt)?;
     let t0 = edge_tangent(fa, fb, seed)?;
 
-    let (fwd, fend) = march(fa, fb, seed, t0, seed, vertices, p);
+    // The seed anchors the march invariant "`cur` is always active". A seed in a
+    // trimmed-away region is not a real edge point — both marches would start
+    // inactive and the invariant would be violated — so reject it outright.
+    if let Some(f) = active {
+        if !f(seed) {
+            return None;
+        }
+    }
+
+    let (fwd, fend) = march(fa, fb, seed, t0, seed, vertices, p, active);
     if matches!(fend, MarchEnd::Loop) {
         let mut points = Vec::with_capacity(fwd.len() + 1);
         points.push(seed);
@@ -488,24 +570,25 @@ pub(crate) fn trace_edge(
         return Some(TracedEdge {
             points,
             closed: true,
-            ends: (None, None),
+            ends: (EdgeEnd::Open, EdgeEnd::Open),
         });
     }
 
-    let (bwd, bend) = march(fa, fb, seed, scale(t0, -1.0), seed, vertices, p);
+    let (bwd, bend) = march(fa, fb, seed, scale(t0, -1.0), seed, vertices, p, active);
     let mut points = Vec::with_capacity(bwd.len() + 1 + fwd.len());
     points.extend(bwd.iter().rev().copied());
     points.push(seed);
     points.extend(fwd.iter().copied());
 
-    let end_idx = |e: &MarchEnd| match e {
-        MarchEnd::Vertex(i) => Some(*i),
-        _ => None,
+    let to_edge_end = |e: &MarchEnd| match e {
+        MarchEnd::Vertex(i) => EdgeEnd::Vertex(*i),
+        MarchEnd::Trimmed(pt) => EdgeEnd::Trim(*pt),
+        MarchEnd::Loop | MarchEnd::Stalled => EdgeEnd::Open,
     };
     Some(TracedEdge {
         points,
         closed: false,
-        ends: (end_idx(&bend), end_idx(&fend)),
+        ends: (to_edge_end(&bend), to_edge_end(&fend)),
     })
 }
 
@@ -691,10 +774,10 @@ mod tests {
         let step = 0.1;
         let params = TraceParams::from_step(step);
         // Seed nudged off the +x point of the circle.
-        let traced = trace_edge(&s, &pl, [r + 0.07, -0.05, 0.34], &[], &params)
+        let traced = trace_edge(&s, &pl, [r + 0.07, -0.05, 0.34], &[], &params, None)
             .expect("must trace");
         assert!(traced.closed, "no vertices → closed ring");
-        assert_eq!(traced.ends, (None, None));
+        assert_eq!(traced.ends, (EdgeEnd::Open, EdgeEnd::Open));
         // ≈ circumference / step points.
         let circ = std::f64::consts::TAU * r;
         let expected = (circ / step) as usize;
@@ -724,12 +807,13 @@ mod tests {
         let verts = [v_pos, v_neg];
         let step = 0.1;
         let params = TraceParams::from_step(step);
-        let traced = trace_edge(&s, &pl, [r + 0.05, 0.0, 0.31], &verts, &params)
+        let traced = trace_edge(&s, &pl, [r + 0.05, 0.0, 0.31], &verts, &params, None)
             .expect("must trace");
 
         assert!(!traced.closed, "clipped arc is open");
         let (b, f) = traced.ends;
-        let (b, f) = (b.expect("back end at vertex"), f.expect("fwd end at vertex"));
+        let EdgeEnd::Vertex(b) = b else { panic!("back end at vertex, got {b:?}") };
+        let EdgeEnd::Vertex(f) = f else { panic!("fwd end at vertex, got {f:?}") };
         assert_ne!(b, f, "the two ends are distinct vertices");
         // Endpoints are the exact vertices, in end order.
         assert_eq!(*traced.points.first().unwrap(), verts[b]);
@@ -749,7 +833,7 @@ mod tests {
         let pl = plane([0.0, 1.0, 0.0], 1.5);
         let step = 0.15;
         let params = TraceParams::from_step(step);
-        let traced = trace_edge(&c, &pl, [2.1, 1.55, 0.05], &[], &params).expect("trace");
+        let traced = trace_edge(&c, &pl, [2.1, 1.55, 0.05], &[], &params, None).expect("trace");
         assert!(traced.closed);
         for &q in &traced.points {
             assert!((q[1] - 1.5).abs() < 1e-6, "y={} off plane", q[1]);
@@ -783,7 +867,7 @@ mod tests {
         let r = (1.0 - 0.09_f64).sqrt();
         let step = 0.12;
         let params = TraceParams::from_step(step);
-        let traced = trace_edge(&s, &pl, [r + 0.06, 0.04, 0.33], &[], &params).expect("trace");
+        let traced = trace_edge(&s, &pl, [r + 0.06, 0.04, 0.33], &[], &params, None).expect("trace");
         assert!(traced.closed, "leaf ring should close");
         // Dual leaf SDF carries the f32 mesh floor → looser but still tight.
         assert_on_sphere_plane(&traced.points, 0.3, 1e-6);
@@ -848,7 +932,7 @@ mod tests {
         // Seam point near (1, 0, 0.3): on_a = √(x²+y²) = 1, on_b = √(y²+z²) = 0.3.
         let step = 0.04;
         let params = TraceParams::from_step(step);
-        let traced = trace_edge(&fa, &fb, [1.02, 0.03, 0.31], &[], &params)
+        let traced = trace_edge(&fa, &fb, [1.02, 0.03, 0.31], &[], &params, None)
             .expect("two leaf fields must trace");
         assert!(traced.closed, "transversal drill seam is a closed ring");
         for &q in &traced.points {
@@ -919,7 +1003,7 @@ mod tests {
         let big = 1000.0;
         let verts = [[-big, 0.0, 0.0], [big, 0.0, 0.0]];
 
-        let even = trace_edge(&p1, &p2, [0.0, 0.02, -0.03], &verts, &TraceParams::from_step(1.0))
+        let even = trace_edge(&p1, &p2, [0.0, 0.02, -0.03], &verts, &TraceParams::from_step(1.0), None)
             .expect("even trace");
         let adaptive = trace_edge(
             &p1,
@@ -927,6 +1011,7 @@ mod tests {
             [0.0, 0.02, -0.03],
             &verts,
             &TraceParams::from_step(1.0).with_adaptive(1e-3, 1e-2, 2.0 * big),
+            None,
         )
         .expect("adaptive trace");
 
@@ -941,7 +1026,7 @@ mod tests {
             assert!(q[1].abs() < 1e-6 && q[2].abs() < 1e-6, "off-axis: {q:?}");
         }
         // Ends pinned to the two clipping vertices.
-        assert_eq!(adaptive.ends.0.is_some() && adaptive.ends.1.is_some(), true);
+        assert!(!matches!(adaptive.ends.0, EdgeEnd::Open) && !matches!(adaptive.ends.1, EdgeEnd::Open));
     }
 
     #[test]
@@ -957,7 +1042,7 @@ mod tests {
         let fine = 0.02; // a deliberately dense seed spacing
         let tol = 1e-3;
 
-        let even = trace_edge(&s, &pl, [r + 0.05, -0.03, 0.32], &[], &TraceParams::from_step(fine))
+        let even = trace_edge(&s, &pl, [r + 0.05, -0.03, 0.32], &[], &TraceParams::from_step(fine), None)
             .expect("even trace");
         let adaptive = trace_edge(
             &s,
@@ -965,6 +1050,7 @@ mod tests {
             [r + 0.05, -0.03, 0.32],
             &[],
             &TraceParams::from_step(fine).with_adaptive(tol, 1e-3, 1.0),
+            None,
         )
         .expect("adaptive trace");
 
@@ -1001,13 +1087,62 @@ mod tests {
                 1e-4 * scale,
                 scale,
             );
-            trace_edge(&s, &pl, seed, &[], &params).expect("trace").points.len()
+            trace_edge(&s, &pl, seed, &[], &params, None).expect("trace").points.len()
         };
         let small = count_at(1.0);
         let large = count_at(100.0);
         assert!(
             (small as i64 - large as i64).abs() <= 4,
             "scale-invariance broken: small={small} large={large}"
+        );
+    }
+
+    // ─── Phase 2a: active-interval termination (trimming) ────────────────────
+
+    #[test]
+    fn march_trims_at_active_boundary() {
+        // Two orthogonal planes (y=0 ∩ x=0) intersect along the world Z axis — an
+        // infinite, otherwise-open edge. An active predicate restricts the edge to
+        // |z| ≤ 1, modelling a third branch trimming the seam. Both march
+        // directions must stop at the active→inactive boundary (z = ±1), on BOTH
+        // planes, with NO closure.
+        let py = plane([0.0, 1.0, 0.0], 0.0); // y = 0
+        let px = plane([1.0, 0.0, 0.0], 0.0); // x = 0
+        let active = |p: [f64; 3]| p[2].abs() <= 1.0;
+        let mut params = TraceParams::from_step(0.1);
+        params.max_arc = 100.0; // finite, so an untrimmed run would stall not loop
+        let traced = trace_edge(&px, &py, [0.001, -0.001, 0.0], &[], &params, Some(&active))
+            .expect("must trace the trimmed Z-axis edge");
+
+        assert!(!traced.closed, "trimmed edge is an open arc, not a ring");
+        // Both ends are trim boundaries near z = ±1, lying on both planes.
+        let ends = [traced.ends.0, traced.ends.1];
+        let mut z_signs = (false, false);
+        for e in ends {
+            let EdgeEnd::Trim(p) = e else { panic!("end must be Trim, got {e:?}") };
+            assert!(p[0].abs() < 1e-3, "trim x off plane x=0: {}", p[0]);
+            assert!(p[1].abs() < 1e-3, "trim y off plane y=0: {}", p[1]);
+            assert!((p[2].abs() - 1.0).abs() < 0.01, "trim z not near ±1: {}", p[2]);
+            if p[2] > 0.0 { z_signs.0 = true } else { z_signs.1 = true }
+        }
+        assert!(z_signs.0 && z_signs.1, "ends should bracket z=+1 and z=-1");
+        // The polyline endpoints are exactly the trim boundaries.
+        for &q in &[*traced.points.first().unwrap(), *traced.points.last().unwrap()] {
+            assert!((q[2].abs() - 1.0).abs() < 0.01, "endpoint z not near ±1: {}", q[2]);
+        }
+    }
+
+    #[test]
+    fn trace_edge_rejects_inactive_seed() {
+        // A never-active predicate means the seed lies in a trimmed-away region —
+        // not a real edge point — so the whole trace is rejected.
+        let py = plane([0.0, 1.0, 0.0], 0.0);
+        let px = plane([1.0, 0.0, 0.0], 0.0);
+        let active = |_: [f64; 3]| false;
+        let params = TraceParams::from_step(0.1);
+        assert!(
+            trace_edge(&px, &py, [0.001, -0.001, 0.0], &[], &params, Some(&active)).is_none(),
+            "inactive seed must yield None"
         );
     }
 }

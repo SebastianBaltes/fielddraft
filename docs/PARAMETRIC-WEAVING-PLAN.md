@@ -135,10 +135,18 @@ also kein einzelnes Oracle, sondern drei Stufen:
 
 ### Phase 2 — Aktiv-Intervall-Marsch in `trace_edge`
 
-- `(body, ba, bb)` in `march` reichen, `both_branches_active` pro Schritt
-  auswerten (+1 Eval/Schritt). Verlagert den Aktiv-Test aus der Octree-
-  Extraktion in den Trace-Loop. **Trimming-Multiplizität (B)** fällt gratis;
-  Lückengrenzen = dritter Branch erscheint = Vertices.
+- **2a — Aktiv-Prädikat im Tracer ✅ (v0.6.2)**: `march`/`trace_edge` nehmen ein
+  optionales `active: Option<&dyn Fn([f64;3]) -> bool>`. Pro akzeptiertem Schritt
+  wird `active(np)` ausgewertet; beim Aktiv→Inaktiv-Übergang bisektiert der Marsch
+  `[cur, np]` auf die On-Surface-Grenze und endet mit `MarchEnd::Trimmed` →
+  `EdgeEnd::Trim([f64;3])`. **Trimming-Multiplizität (B)** fällt damit gratis:
+  Lückengrenzen = dritter Branch erscheint = neue Vertices. Inaktiver Seed →
+  `None`. `edge_trace` bleibt geometrie-only (Prädikat ist opakes Closure); der
+  Octree-Pfad reicht `None` durch (verhaltensidentisch). `TracedEdge.ends` ist
+  jetzt `(EdgeEnd, EdgeEnd)` statt `(Option<usize>, Option<usize>)`.
+- **2b — Branch-Seed-Weaver (offen)**: `EdgeSeed`s → Fields aus der
+  Half-Space-Map → `trace_edge` mit `active = both_branches_active(body, ba, bb)`
+  → `finish_weave`. Ersetzt die vier `weave_parametric`-Sonderfälle.
 - Headroom: auf analytischen Segmenten nicht dicht auswerten, sondern auf
   Übergänge bisektieren; geometrischen Korrektor auf rein-analytischen
   Segmenten droppen.

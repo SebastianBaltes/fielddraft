@@ -136,7 +136,9 @@ const SURFACE_MEMBERSHIP_FRACTION: f64 = 0.85;
 const CIRCLE_RADIAL_FRACTION: f64 = 0.9;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
-use super::edge_trace::{edge_tangent, project_to_edge, trace_edge, Field, TraceParams, TracedEdge};
+use super::edge_trace::{
+    edge_tangent, project_to_edge, trace_edge, EdgeEnd, Field, TraceParams, TracedEdge,
+};
 use super::vec3::{
     add as add3, dist, dist2, dot, norm as norm3, normalize, scale as scale3, sub,
 };
@@ -869,7 +871,7 @@ fn trace_seam_chains(
             remaining.swap_remove(si);
             continue;
         }
-        let Some(traced) = trace_edge(fa, fb, seed, bounding, &params) else {
+        let Some(traced) = trace_edge(fa, fb, seed, bounding, &params, None) else {
             remaining.swap_remove(si);
             continue;
         };
@@ -880,7 +882,8 @@ fn trace_seam_chains(
         // means this pair is not cleanly traceable here — abandon the tracer for
         // the whole group and fall back to the sample fits, which are robust to
         // exactly these ill-conditioned signatures.
-        let clean = traced.closed || (traced.ends.0.is_some() && traced.ends.1.is_some());
+        let clean = traced.closed
+            || (!matches!(traced.ends.0, EdgeEnd::Open) && !matches!(traced.ends.1, EdgeEnd::Open));
         if !clean {
             return None;
         }
