@@ -110,6 +110,23 @@ struct EdgeRecord {
     ends: (EdgeEnd, EdgeEnd),
 }
 
+/// Largest axis-aligned extent of the positions named by `members` (indices
+/// into `all`) — an O(n) upper bound on the cluster's true pairwise diameter,
+/// used to decide whether a still-`Spurious` cluster can be split any further.
+fn group_diameter(all: &[[f64; 3]], members: &[usize]) -> f64 {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for &m in members {
+        let p = all[m];
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
 /// Build the wireframe `BRep` (deduplicated corner vertices + signed traced
 /// edges) for an in-scope `body`, or `None` if the analytic pipeline cannot
 /// fully resolve it (handed off to the octree).
@@ -185,12 +202,19 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
     // per curve) and is dropped; a seed on a genuinely disjoint component lies
     // far off the polyline and survives to trace its own edge.
     let near_tol = max_step;
-    // `gap = 0.1·diag`: the termini of the edges meeting at one corner are each
-    // ~`eps`-overshot along their own free axis, so they sit up to ≈√2·eps ≈
-    // 1.4e-3·diag apart — this gap fuses them with ~70× headroom, while two
-    // distinct corners that share a branch-set stay separate as long as they are
-    // ≳0.1·diag apart (true at any sane feature scale; a box edge is ~0.58·diag).
+    // `gap = 0.1·diag` is the *gather* scale: large enough to collect all of one
+    // corner's edge termini — each ~`eps`-overshot along its free axis, and at a
+    // grazing crossing overshot by `eps/sinθ` (which can reach a few ·1e-2·diag)
+    // — into a single cluster so its full branch-set is known before refining.
+    // It MAY also lump two genuinely distinct corners together when a large
+    // primitive inflates the model diagonal (e.g. a big sphere grazing a box
+    // edge places two triple-points only ≈0.1·diag apart); the split-on-spurious
+    // loop below separates those, so the gather gap need not also resolve them.
     let gap = 0.1 * diag;
+    // Floor for the split-on-spurious recursion: at/below the active band the
+    // termini of one corner are indistinguishable, so a still-spurious cluster
+    // this tight is a genuine phantom (DL-81) → octree.
+    let min_gap = (eps as f64).max(1e-9);
 
     // 3. Group seeds by canonical (min, max) branch signature, then process each
     //    group, collapsing co-component seeds into a single traced edge.
@@ -316,41 +340,65 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
     // Per (record, side) → the corner vertex it terminates at.
     let mut side_vertex: HashMap<(usize, usize), VertexId> = HashMap::new();
 
-    for cluster in cluster_positions(&trim_pos, gap) {
-        // Branch-set: the union of the incident records' two branches. The
-        // corner is where these surfaces concur; `Vertex::new` canonicalises.
-        let mut branches: Vec<BranchId> = Vec::new();
-        let mut centroid = [0.0f64; 3];
-        for &m in &cluster {
-            let (ri, _side) = trim_refs[m];
-            branches.push(records[ri].a);
-            branches.push(records[ri].b);
-            let p = trim_pos[m];
-            centroid[0] += p[0];
-            centroid[1] += p[1];
-            centroid[2] += p[2];
-        }
-        let n = cluster.len() as f64;
-        centroid = [centroid[0] / n, centroid[1] / n, centroid[2] / n];
+    // Resolve corners with split-on-spurious. Each work item is a set of trim
+    // termini (indices into `trim_*`) to cluster at gap `g`. A cluster that
+    // refines cleanly becomes a vertex; a `Spurious` cluster has lumped ≥2
+    // distinct corners, so we re-queue it at a halved gap. Splitting is
+    // top-down, so each real corner's full branch-set stays together (it refines
+    // before it can be split) while distinct corners peel apart — down to the
+    // active-band floor, past which a still-spurious cluster is a genuine phantom
+    // and the whole body goes to octree.
+    let mut work: Vec<(Vec<usize>, f64)> = vec![((0..trim_pos.len()).collect(), gap)];
+    while let Some((members, g)) = work.pop() {
+        let sub_pos: Vec<[f64; 3]> = members.iter().map(|&m| trim_pos[m]).collect();
+        for cl in cluster_positions(&sub_pos, g) {
+            let group: Vec<usize> = cl.iter().map(|&i| members[i]).collect();
 
-        // Re-solve the EXACT corner from the analytic surfaces. The raw centroid
-        // only seeds it, so the trim band's imprecision washes out.
-        let pos = match refine_triple_vertex(&halfspaces, &branches, centroid) {
-            TripleRefine::Refined(p) => p,
-            // Cannot judge analytically (non-analytic branch / rank-deficient):
-            // try the exact swept-extrude rim corner; failing that, keep the
-            // centroid (the octree route also leaves such a corner at centroid).
-            TripleRefine::Indeterminate => {
-                extrude_rim_corner(&leaf_map, &branches).unwrap_or(centroid)
+            // Branch-set: the union of the incident records' two branches. The
+            // corner is where these surfaces concur; `Vertex::new` canonicalises.
+            let mut branches: Vec<BranchId> = Vec::new();
+            let mut centroid = [0.0f64; 3];
+            for &m in &group {
+                let (ri, _side) = trim_refs[m];
+                branches.push(records[ri].a);
+                branches.push(records[ri].b);
+                let p = trim_pos[m];
+                centroid[0] += p[0];
+                centroid[1] += p[1];
+                centroid[2] += p[2];
             }
-            // A phantom corner the analytic surfaces provably do not share — the
-            // analytic route cannot place it, so hand the body to the octree.
-            TripleRefine::Spurious => return None,
-        };
+            let n = group.len() as f64;
+            centroid = [centroid[0] / n, centroid[1] / n, centroid[2] / n];
 
-        let vid = brep.add_vertex(Vertex::new(pos, branches));
-        for &m in &cluster {
-            side_vertex.insert(trim_refs[m], vid);
+            // Re-solve the EXACT corner from the analytic surfaces. The raw
+            // centroid only seeds it, so the trim band's imprecision washes out.
+            let pos = match refine_triple_vertex(&halfspaces, &branches, centroid) {
+                TripleRefine::Refined(p) => p,
+                // Cannot judge analytically (non-analytic branch / rank-
+                // deficient): try the exact swept-extrude rim corner; failing
+                // that, keep the centroid (octree also leaves such a corner at
+                // centroid).
+                TripleRefine::Indeterminate => {
+                    extrude_rim_corner(&leaf_map, &branches).unwrap_or(centroid)
+                }
+                // The surfaces provably do not concur at one point. Either this
+                // cluster merged distinct corners — re-cluster tighter — or, once
+                // the gap reaches the active-band floor without splitting, it is a
+                // genuine phantom the analytic route cannot place → octree.
+                TripleRefine::Spurious => {
+                    let tighter = g * 0.5;
+                    if group.len() > 1 && tighter >= min_gap && group_diameter(&trim_pos, &group) > tighter {
+                        work.push((group, tighter));
+                        continue;
+                    }
+                    return None;
+                }
+            };
+
+            let vid = brep.add_vertex(Vertex::new(pos, branches));
+            for &m in &group {
+                side_vertex.insert(trim_refs[m], vid);
+            }
         }
     }
 
@@ -601,6 +649,56 @@ mod tests {
             }),
         ));
         assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn seed_box_union_corner_sphere_three_faces_matches_octree() {
+        // The reported screenshot: box half 50, sphere r=50 offset toward a
+        // corner so it pokes out of THREE faces at once. Each face's
+        // intersection circle is trimmed by the two adjacent faces into arcs,
+        // and the arcs on the three faces stitch into one closed corner seam.
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [50.0, 50.0, 50.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere { center: [30.0, 30.0, 30.0], radius: 50.0 },
+            }),
+        ));
+        assert_seed_matches_octree(&body, 2.0);
+    }
+
+    #[test]
+    fn seed_box_union_sphere_grazing_face_corner_watertight() {
+        // EXACT geometry from the reported .fdraft (project (3).fdraft): a big
+        // sphere grazes the box's -x face near the +y/-z corner so its
+        // intersection circle pokes past that face's boundary edges, crossing
+        // each box edge it meets at TWO points. Those two triple-points sit only
+        // ≈0.1·diag apart (the sphere inflates the model diagonal), so the corner
+        // gather cluster lumped them into one impossible vertex → `Spurious` →
+        // whole body to octree, which itself wove degenerate/missing arcs (the
+        // reported screenshot). The split-on-spurious resolver must now separate
+        // the two corners and weave a watertight B-Rep analytically — WITHOUT
+        // the octree fallback (octree is wrong here, so we assert the seed path
+        // succeeds on its own rather than matching it).
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [-23.490438, 1.4090451, 5.554038], [50.0, 50.0, 50.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere {
+                    center: [-86.59913, 4.6575217, 0.0],
+                    radius: 50.0,
+                },
+            }),
+        ));
+        let seed = weave_branch_seeds(&body)
+            .expect("grazing sphere must weave analytically, not fall back to octree");
+        assert!(
+            seed.shells[0].is_closed,
+            "seed weave of the grazing-sphere union must be watertight"
+        );
+        // 7 faces (6 box + sphere). Every Euler/topology slot must be consistent;
+        // a watertight closed shell with this face count is the correctness gate.
+        assert_eq!(seed.faces.len(), 7, "6 box faces + 1 sphere face");
     }
 
     #[test]

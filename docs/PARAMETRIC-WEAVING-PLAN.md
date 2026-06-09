@@ -87,6 +87,18 @@ Gründen:
   gewebt). SSI verteilt jetzt Seeds dicht über jede Komponente; die
   Co-Component-Dedup des Weavers (`near_traced`) kollabiert die redundanten
   Same-Arc-Seeds. „Never miss a real edge" → Über-Seeden ist die sichere Richtung.
+  **Korrektur (v0.6.7):** Das Vertex-Clustering darf zwei *verschiedene* Ecken
+  desselben Branch-Tripels nicht verschmelzen. Eine große Grundform (z.B. Sphäre
+  r≈Box) bläht die Modell-Diagonale auf, sodass der Gather-Gap `0.1·diag` größer
+  werden kann als der echte Abstand zweier Tripel-Punkte (Sphäre durchstößt eine
+  Box-Kante an *zwei* Stellen, Abstand ≈0.1·diag). Verschmolzen → `refine_triple_vertex`
+  liefert `Spurious` → ganzer Körper fiel auf Octree zurück (der diese Konfig
+  ebenfalls falsch webt: „degenerate topology"-Warnungen, fehlende Bögen — das
+  zweite User-Bild). Fix: **Split-on-Spurious** (`build_seed_wireframe`): ein
+  `Spurious`-Cluster wird mit halbiertem Gap re-geclustert statt sofort zu
+  bailen; Top-down trennt distinkte Ecken, während jede echte Ecke (refint
+  *vor* dem Split) zusammenbleibt — bis zum Aktiv-Band-Floor (`eps`), darunter
+  ist ein Rest-`Spurious` ein echtes Phantom (DL-81) → Octree.
 
 Die affine Arithmetik (3D, volumetrisch) ist damit **optional, nicht Pflicht**:
 Sie kommt erst mit der freien-NURBS-Spine-Erweiterung, wo keine saubere
