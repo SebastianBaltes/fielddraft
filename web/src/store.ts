@@ -878,6 +878,13 @@ export class KernelStore {
     return serializeProjectJson({ ...this.state.project, tabs });
   }
 
+  /** Public accessor for the live project JSON (.fdraft contents).
+   *  Used by the in-app bug-report flow to attach the exact document
+   *  state to a ticket. */
+  exportProjectJson(): string {
+    return this.serializeProject();
+  }
+
   /**
    * K3 part 4 LOD hook: push the selection anchor's body to the
    * kernel as the active body, or clear the active body when the

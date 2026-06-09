@@ -15,3 +15,9 @@ Wir sind in einer frühen Dev-Phase. Schnelles Entwickeln und sauberer Code habe
 
 Volle Deployment-Anleitung in `DEPLOY.md`.
 
+## Tickets abarbeiten (wenn nichts anderes ansteht)
+
+User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (Menü oben links). Jedes Ticket landet unter `tickets/open/<id>/` (Screenshot, `project.fdraft`, `ticket.md`). Format und Ablauf: `tickets/README.md`.
+
+Wenn keine andere Aufgabe ansteht: offene Tickets in `tickets/open/` abarbeiten (ältestes zuerst) — `ticket.md` lesen, Screenshot ansehen, `project.fdraft` zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen, dann den Ordner nach `tickets/done/<id>/` verschieben und eine `resolution.md` (Commit-Hash + Kurzfassung) ergänzen.
+

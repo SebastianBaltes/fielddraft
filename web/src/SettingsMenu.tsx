@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
+import { ReportDialog } from "./ReportDialog";
 
 /* ── localStorage keys ──────────────────────────────────────── */
 const LS_COMPACT = "fielddraft.compact";
@@ -335,6 +336,7 @@ export function SettingsMenu({
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -533,6 +535,18 @@ export function SettingsMenu({
           >
             Settings…
           </button>
+
+          <div className="menu-separator" role="separator" />
+
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            data-testid="menu-report"
+            onClick={() => menuAction(() => setReportDialogOpen(true))}
+          >
+            Report Issue…
+          </button>
         </div>
       )}
 
@@ -588,6 +602,13 @@ export function SettingsMenu({
           settings={settings}
           onSettingsChange={onSettingsChange}
           onClose={() => setSettingsDialogOpen(false)}
+        />
+      )}
+
+      {reportDialogOpen && (
+        <ReportDialog
+          store={store}
+          onClose={() => setReportDialogOpen(false)}
         />
       )}
     </div>

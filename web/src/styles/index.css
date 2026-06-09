@@ -16,6 +16,7 @@
 @import "./components/viewport.css";
 @import "./components/feature-dialog.css";
 @import "./components/settings-menu.css";
+@import "./components/report-dialog.css";
 @import "./components/perf-hud.css";
 @import "./components/loading-overlay.css";
 @import "./components/fieldskript-editor.css";

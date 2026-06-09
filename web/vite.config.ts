@@ -1,6 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -79,6 +79,110 @@ function kernelStamp(): Plugin {
   };
 }
 
+// Dev-only ticket sink. The in-app "Report Issue" dialog POSTs to
+// `/api/tickets`; this middleware drops each ticket into
+// `<repo>/tickets/open/<id>/` (sibling of web/) so the agent can pick it up
+// during local development. In production the Go backend serves the same
+// route. No-op outside `vite` dev (the build has no server).
+function ticketWriter(): Plugin {
+  const ticketsRoot = join(process.cwd(), "..", "tickets", "open");
+
+  function pad(n: number): string {
+    return String(n).padStart(2, "0");
+  }
+
+  function ticketId(): string {
+    const d = new Date();
+    const stamp =
+      `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+      `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const rand = Math.random().toString(36).slice(2, 6);
+    return `${stamp}-${rand}`;
+  }
+
+  return {
+    name: "ticket-writer",
+    configureServer(server) {
+      server.middlewares.use("/api/tickets", (req, res) => {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.end();
+          return;
+        }
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+          // Hard cap to avoid an unbounded buffer (screenshots are ~1 MB).
+          if (raw.length > 25 * 1024 * 1024) req.destroy();
+        });
+        req.on("end", () => {
+          try {
+            const t = JSON.parse(raw) as {
+              title?: string;
+              description?: string;
+              projectJson?: string;
+              screenshot?: string | null;
+              version?: string;
+              timestamp?: string;
+              userAgent?: string;
+              url?: string;
+            };
+            const id = ticketId();
+            const dir = join(ticketsRoot, id);
+            mkdirSync(dir, { recursive: true });
+
+            const meta = {
+              id,
+              title: t.title ?? "",
+              description: t.description ?? "",
+              version: t.version ?? "",
+              timestamp: t.timestamp ?? new Date().toISOString(),
+              userAgent: t.userAgent ?? "",
+              url: t.url ?? "",
+              status: "open",
+            };
+            writeFileSync(
+              join(dir, "ticket.json"),
+              JSON.stringify(meta, null, 2),
+            );
+
+            // Human-readable mirror so the ticket reads well in a diff.
+            writeFileSync(
+              join(dir, "ticket.md"),
+              `# ${meta.title}\n\n` +
+                `- **ID:** ${id}\n` +
+                `- **Version:** ${meta.version}\n` +
+                `- **Time:** ${meta.timestamp}\n` +
+                `- **URL:** ${meta.url}\n` +
+                `- **UA:** ${meta.userAgent}\n\n` +
+                `## Description\n\n${meta.description || "_(none)_"}\n`,
+            );
+
+            if (t.projectJson) {
+              writeFileSync(join(dir, "project.fdraft"), t.projectJson);
+            }
+
+            if (typeof t.screenshot === "string" && t.screenshot.startsWith("data:image/")) {
+              const b64 = t.screenshot.slice(t.screenshot.indexOf(",") + 1);
+              writeFileSync(join(dir, "screenshot.png"), Buffer.from(b64, "base64"));
+            }
+
+            server.config.logger.info(`ticket saved: tickets/open/${id} — ${meta.title}`);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ticket_id: id }));
+          } catch (err) {
+            server.config.logger.error(`ticket write failed: ${err}`);
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "invalid ticket" }));
+          }
+        });
+      });
+    },
+  };
+}
+
 const certDir = join(homedir(), ".local/share/tailscale-certs");
 const certFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.crt");
 const keyFile = join(certDir, "sorokan-xps-8960.tailnet.example.ts.net.key");
@@ -98,7 +202,7 @@ function webPort(mode: string): number {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), liveVersion(), kernelStamp()],
+  plugins: [react(), liveVersion(), kernelStamp(), ticketWriter()],
   server: {
     port: webPort(mode),
     strictPort: true,

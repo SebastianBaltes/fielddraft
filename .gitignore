@@ -32,6 +32,12 @@ dist-ssr/
 !.vscode/extensions.json
 .idea/
 
+# In-app issue tickets — runtime artifacts (screenshots + project JSON)
+# filed via the "Report Issue" dialog. Processed by the agent locally;
+# the format is documented in tickets/README.md (tracked).
+/tickets/open/
+/tickets/done/
+
 # Test artifacts
 /web/coverage/
 /web/playwright-report/

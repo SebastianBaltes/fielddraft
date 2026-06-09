@@ -9,11 +9,16 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -376,6 +381,7 @@ func NewServer(store *Store) *Server {
 	s.mux.HandleFunc("PUT /api/projects/{id}/thumbnail", s.handlePutThumbnail)
 	s.mux.HandleFunc("POST /api/projects/{id}/publish", s.handlePublish)
 	s.mux.HandleFunc("GET /api/v/{id}", s.handleViewSnapshot)
+	s.mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
 	return s
 }
 
@@ -660,6 +666,93 @@ func newID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ─── tickets ────────────────────────────────────────────────────
+
+// ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
+type ticketRequest struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ProjectJSON string `json:"projectJson"`
+	Screenshot  string `json:"screenshot"` // PNG data URL, or empty
+	Version     string `json:"version"`
+	Timestamp   string `json:"timestamp"`
+	UserAgent   string `json:"userAgent"`
+	URL         string `json:"url"`
+}
+
+// ticketsDir is where filed tickets are written. Override with TICKETS_DIR;
+// defaults to "tickets" relative to the server's working directory.
+func ticketsDir() string {
+	if d := os.Getenv("TICKETS_DIR"); d != "" {
+		return d
+	}
+	return "tickets"
+}
+
+// handleCreateTicket persists a bug / feature-request ticket to
+// <ticketsDir>/open/<id>/ — the same layout the dev Vite plugin writes, so a
+// human or the agent processes both identically. Anonymous but rate-limited
+// (60/min per IP via ServeHTTP).
+func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
+	var req ticketRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 25<<20)).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		http.Error(w, `{"error":"title required"}`, http.StatusBadRequest)
+		return
+	}
+
+	id := time.Now().UTC().Format("20060102-150405") + "-" + newID()[:4]
+	dir := filepath.Join(ticketsDir(), "open", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, `{"error":"could not create ticket"}`, http.StatusInternalServerError)
+		return
+	}
+
+	ts := req.Timestamp
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
+	meta := map[string]string{
+		"id":        id,
+		"title":     req.Title,
+		"version":   req.Version,
+		"timestamp": ts,
+		"userAgent": req.UserAgent,
+		"url":       req.URL,
+		"status":    "open",
+	}
+	if blob, err := json.MarshalIndent(meta, "", "  "); err == nil {
+		os.WriteFile(filepath.Join(dir, "ticket.json"), blob, 0o644)
+	}
+
+	desc := req.Description
+	if desc == "" {
+		desc = "_(none)_"
+	}
+	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
+		req.Title, id, req.Version, ts, req.URL, req.UserAgent, desc)
+	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
+
+	if req.ProjectJSON != "" {
+		os.WriteFile(filepath.Join(dir, "project.fdraft"), []byte(req.ProjectJSON), 0o644)
+	}
+
+	if strings.HasPrefix(req.Screenshot, "data:image/") {
+		if i := strings.IndexByte(req.Screenshot, ','); i >= 0 {
+			if png, err := base64.StdEncoding.DecodeString(req.Screenshot[i+1:]); err == nil {
+				os.WriteFile(filepath.Join(dir, "screenshot.png"), png, 0o644)
+			}
+		}
+	}
+
+	log.Printf("ticket saved: %s — %s", id, req.Title)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"ticket_id": id})
 }
 
 // ─── M13: password reset ────────────────────────────────────────
