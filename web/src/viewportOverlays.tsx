@@ -1262,7 +1262,6 @@ export function BRepSelectedOverlay() {
   // through the instanced screen-space line shader. The WebGPU variant derives
   // its pixel scale from the built-in viewport/DPR nodes, so unlike the WebGL
   // LineMaterial there is no `resolution` uniform to keep in sync.
-  const edgeGeomRef = useRef(new LineSegmentsGeometry());
   const edgeMatRef = useRef(
     new Line2NodeMaterial({
       color: ELEMENT_SELECTION_COLOR,
@@ -1273,24 +1272,24 @@ export function BRepSelectedOverlay() {
       transparent: true,
     }),
   );
+  // The selected edge gets a BRAND-NEW LineSegments2 + geometry per selection,
+  // built in the edge branch of `resolved` below — never an in-place mutation
+  // of one persistent geometry. The WebGPU renderer caches a
+  // LineSegmentsGeometry's instanced GPU buffers and does NOT re-upload them
+  // after `setPositions` overwrites them, so reusing one geometry froze the
+  // highlight on the first edge ever selected (ticket twxw: "immer dieselbe
+  // Kante"). Handing the renderer a fresh object forces fresh buffers. The ref
+  // only tracks the current object so the resolver can dispose the previous.
   const edgeObjRef = useRef<LineSegments2 | null>(null);
-  if (edgeObjRef.current === null) {
-    const obj = new LineSegments2(edgeGeomRef.current, edgeMatRef.current);
-    obj.frustumCulled = false;
-    obj.renderOrder = 1002;
-    obj.layers.enable(OVERLAY_LAYER);
-    edgeObjRef.current = obj;
-  }
 
   useEffect(() => {
     const fg = faceGeomRef.current;
     const fm = faceMatRef.current;
-    const eg = edgeGeomRef.current;
     const em = edgeMatRef.current;
     return () => {
       fg.dispose();
       fm.dispose();
-      eg.dispose();
+      edgeObjRef.current?.geometry.dispose();
       em.dispose();
     };
   }, []);
@@ -1384,8 +1383,18 @@ export function BRepSelectedOverlay() {
         const segs = polylineToSegments(edge.points);
         if (segs.length === 0) continue;
         // LineSegmentsGeometry wants the flat 6-per-segment layout that
-        // polylineToSegments already produces (start xyz, end xyz, …).
-        edgeGeomRef.current.setPositions(segs);
+        // polylineToSegments already produces (start xyz, end xyz, …). Build a
+        // fresh geometry + object every time (see the ref comment above):
+        // mutating one persistent geometry in place doesn't re-upload on the
+        // WebGPU backend, which froze the highlight on the first edge (twxw).
+        const geom = new LineSegmentsGeometry();
+        geom.setPositions(segs);
+        const obj = new LineSegments2(geom, edgeMatRef.current);
+        obj.frustumCulled = false;
+        obj.renderOrder = 1002;
+        obj.layers.enable(OVERLAY_LAYER);
+        edgeObjRef.current?.geometry.dispose();
+        edgeObjRef.current = obj;
         return { kind: "edge" };
       }
       return null;
@@ -1423,7 +1432,12 @@ export function BRepSelectedOverlay() {
     );
   }
   if (resolved.kind === "edge") {
-    return <primitive object={edgeObjRef.current} />;
+    // `dispose={null}`: the object identity changes per selection, so R3F
+    // remounts this primitive each time. Without it R3F would auto-dispose the
+    // outgoing object on unmount — including the *shared* material — breaking
+    // every later highlight. We dispose the previous geometry ourselves above.
+    // The memo always sets `edgeObjRef.current` before returning kind "edge".
+    return <primitive object={edgeObjRef.current!} dispose={null} />;
   }
   return (
     <mesh
