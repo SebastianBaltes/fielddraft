@@ -64,6 +64,44 @@ pub struct Branch {
     pub aabb: Aabb,
 }
 
+/// Whether a [`BranchPair`] joins two sub-faces of the **same** leaf operand
+/// (`Intrinsic` — the operand's own edges) or two sub-faces across a Boolean
+/// (`Cross` — edges carved by the boolean op). The distinction matters in Phase
+/// 1b: intrinsic pairs need intrinsic-multiplicity SSI (a box's parallel faces
+/// never meet), cross pairs are genuine carve intersections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairOrigin {
+    Intrinsic,
+    Cross,
+}
+
+/// A candidate pair of branches whose surfaces *might* meet in an edge, with the
+/// per-axis AABB intersection of the two branches as the seed search box for
+/// Phase 1b. The pair is canonicalised so `a.as_u32() <= b.as_u32()`.
+///
+/// This is a **candidate**: pair enumeration deliberately over-generates (a box
+/// yields all C(6,2)=15 intrinsic pairs including the 3 parallel-opposite-face
+/// pairs that never intersect). Phase 1b's closed-form SSI component count is
+/// what drops pairs with no real intersection. Soundness here means "never miss
+/// a real edge", not "only emit real edges".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BranchPair {
+    pub a: BranchId,
+    pub b: BranchId,
+    pub kind_a: SurfaceKind,
+    pub kind_b: SurfaceKind,
+    pub overlap: Aabb,
+    pub origin: PairOrigin,
+}
+
+/// Absolute slack for the AABB overlap test. Real edges live exactly where two
+/// AABBs *touch* — adjacent solids sharing a face, a cutting cylinder tangent to
+/// a box wall — so a strict `min < max` test would wrongly prune them. With this
+/// epsilon a touching/coincident pair counts as overlapping. 1e-4 is well below
+/// any modelling-relevant feature size yet comfortably above float noise from
+/// transform-composed leaf AABBs.
+const OVERLAP_EPS: f32 = 1e-4;
+
 /// Statically enumerate **every** branch in the CSG tree, each carrying its
 /// owning leaf's world AABB. Out-of-scope carriers (Twist/Bend/Displace and
 /// non-half-space primitives) contribute no branches of their own but are still
@@ -71,6 +109,19 @@ pub struct Branch {
 pub fn enumerate_branches(body: &BoundedCsg) -> Vec<Branch> {
     let mut out = Vec::new();
     walk(body, &mut out);
+    out
+}
+
+/// Enumerate candidate branch pairs whose surfaces *might* meet in an edge,
+/// pruned by world-AABB overlap. See [`BranchPair`] for the candidate/soundness
+/// contract: this over-generates and Phase 1b prunes.
+///
+/// One pass, no subtree re-walking: [`collect_pairs`] returns each subtree's
+/// branch list *and* appends its pairs, so a Boolean node pairs its two operands'
+/// already-collected branch lists rather than re-enumerating them.
+pub fn enumerate_branch_pairs(body: &BoundedCsg) -> Vec<BranchPair> {
+    let mut out = Vec::new();
+    collect_pairs(body, &mut out);
     out
 }
 
@@ -108,10 +159,13 @@ fn push_sketch_walls(
     }
 }
 
-fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
+/// Build the branches of a single in-scope leaf node (Leaf / Extrude / Revolve),
+/// the one place the per-leaf decomposition lives so both [`walk`] and
+/// [`collect_pairs`] share it verbatim. Returns an empty vec for any other node
+/// kind (Booleans, carriers, Empty) — those are structural, not leaves.
+fn leaf_branches(node: &BoundedCsg) -> Vec<Branch> {
+    let mut out = Vec::new();
     match node {
-        BoundedCsg::Empty => {}
-
         BoundedCsg::Leaf { id, primitive, aabb, .. } => {
             // Analytic primitives decompose via the shared half-space source of
             // truth. Primitives with no closed-form split (Sphere/Torus return
@@ -137,7 +191,7 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
                 sketch.edge_count(),
                 SurfaceKind::ExtrudeWall,
                 *aabb,
-                out,
+                &mut out,
             );
             // … plus the two reserved caps (DL-50).
             for cap_sub in [
@@ -159,8 +213,21 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
                 sketch.edge_count(),
                 SurfaceKind::RevolveWall,
                 *aabb,
-                out,
+                &mut out,
             );
+        }
+
+        _ => {}
+    }
+    out
+}
+
+fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
+    match node {
+        BoundedCsg::Empty => {}
+
+        BoundedCsg::Leaf { .. } | BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
+            out.extend(leaf_branches(node));
         }
 
         // Boolean / blend nodes: recurse both operands.
@@ -185,6 +252,104 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Shell { inner, .. }
         | BoundedCsg::Offset { inner, .. } => walk(inner, out),
+    }
+}
+
+/// Per-axis AABB intersection with the inclusive [`OVERLAP_EPS`] touch test.
+/// Returns `None` if the boxes are farther than `OVERLAP_EPS` apart on any axis.
+/// The returned box is always valid (`min <= max`): on a touching axis where the
+/// raw intersection inverts, both bounds collapse to the axis midpoint so the
+/// result stays usable as a (possibly flat) seed search region.
+fn aabb_overlap(a: &Aabb, b: &Aabb) -> Option<Aabb> {
+    let mut min = [0.0f32; 3];
+    let mut max = [0.0f32; 3];
+    for i in 0..3 {
+        // Real edges live where the boxes touch, so the test is inclusive of
+        // coincident faces (`<=` with a small absolute slack), never strict.
+        if a.min[i] > b.max[i] + OVERLAP_EPS || b.min[i] > a.max[i] + OVERLAP_EPS {
+            return None;
+        }
+        let lo = a.min[i].max(b.min[i]);
+        let hi = a.max[i].min(b.max[i]);
+        if lo <= hi {
+            min[i] = lo;
+            max[i] = hi;
+        } else {
+            // Touching/coincident-within-eps: collapse to the midpoint so the
+            // seed box is flat but valid rather than inverted.
+            let mid = 0.5 * (lo + hi);
+            min[i] = mid;
+            max[i] = mid;
+        }
+    }
+    Some(Aabb { min, max })
+}
+
+/// Build a canonicalised [`BranchPair`] (`a.as_u32() <= b.as_u32()`) from two
+/// branches and a pre-computed overlap box, so pairs are deterministic and
+/// `(a,b)` is never emitted alongside `(b,a)`.
+fn make_pair(x: &Branch, y: &Branch, overlap: Aabb, origin: PairOrigin) -> BranchPair {
+    let (a, b) = if x.id.as_u32() <= y.id.as_u32() { (x, y) } else { (y, x) };
+    BranchPair {
+        a: a.id,
+        b: b.id,
+        kind_a: a.kind,
+        kind_b: b.kind,
+        overlap,
+        origin,
+    }
+}
+
+/// Recursively collect candidate pairs and return the subtree's branch list in a
+/// single pass. Leaves emit all intrinsic C(n,2) pairs over their own branches;
+/// Boolean nodes emit AABB-overlapping cross pairs between their two already-
+/// collected operand branch lists; carriers pass through.
+fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
+    match node {
+        BoundedCsg::Empty => Vec::new(),
+
+        BoundedCsg::Leaf { .. } | BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
+            let bs = leaf_branches(node);
+            // Intrinsic pairs: the operand's own candidate edges. All branches of
+            // a leaf share its AABB, so the overlap box is simply that AABB.
+            for i in 0..bs.len() {
+                for j in (i + 1)..bs.len() {
+                    out.push(make_pair(&bs[i], &bs[j], bs[i].aabb, PairOrigin::Intrinsic));
+                }
+            }
+            bs
+        }
+
+        // Boolean / blend nodes: pair every left branch with every right branch
+        // that overlaps it. Cross pairs are the carve intersections.
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            let lb = collect_pairs(left, out);
+            let rb = collect_pairs(right, out);
+            for a in &lb {
+                for b in &rb {
+                    if let Some(overlap) = aabb_overlap(&a.aabb, &b.aabb) {
+                        out.push(make_pair(a, b, overlap, PairOrigin::Cross));
+                    }
+                }
+            }
+            let mut all = lb;
+            all.extend(rb);
+            all
+        }
+
+        // Single-child carriers: pass through the inner branch list, no pair at
+        // this node (the warp surface is non-analytic / shell handled downstream).
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => collect_pairs(inner, out),
     }
 }
 
@@ -353,5 +518,152 @@ mod tests {
         let branches = enumerate_branches(&body);
         assert_eq!(branches.len(), 6, "inner box branches survive the warp");
         assert!(branches.iter().all(|b| b.kind == SurfaceKind::Plane));
+    }
+
+    // ---- candidate branch-pair enumeration ----------------------------------
+
+    fn assert_no_dup_pairs(pairs: &[BranchPair]) {
+        let mut keys: Vec<(u32, u32)> =
+            pairs.iter().map(|p| (p.a.as_u32(), p.b.as_u32())).collect();
+        let n = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), n, "duplicate (a,b) pairs present");
+    }
+
+    fn assert_canonical(pairs: &[BranchPair]) {
+        for p in pairs {
+            assert!(
+                p.a.as_u32() <= p.b.as_u32(),
+                "pair not canonicalised: {} > {}",
+                p.a.as_u32(),
+                p.b.as_u32()
+            );
+        }
+    }
+
+    fn assert_all_overlaps_valid(pairs: &[BranchPair]) {
+        for p in pairs {
+            assert!(
+                aabb_non_degenerate(&p.overlap),
+                "pair ({},{}) has an inverted overlap box {:?}",
+                p.a.as_u32(),
+                p.b.as_u32(),
+                p.overlap
+            );
+        }
+    }
+
+    fn count_by_origin(pairs: &[BranchPair], origin: PairOrigin) -> usize {
+        pairs.iter().filter(|p| p.origin == origin).count()
+    }
+
+    #[test]
+    fn lone_box_yields_fifteen_intrinsic_pairs() {
+        let body = BoundedCsg::from_csg(&box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]));
+        let pairs = enumerate_branch_pairs(&body);
+        assert_eq!(pairs.len(), 15, "C(6,2) = 15 candidate pairs");
+        assert_eq!(count_by_origin(&pairs, PairOrigin::Intrinsic), 15);
+        assert_eq!(count_by_origin(&pairs, PairOrigin::Cross), 0);
+        assert!(
+            pairs.iter().all(|p| p.origin == PairOrigin::Intrinsic),
+            "a lone leaf has only intrinsic pairs"
+        );
+        assert_no_dup_pairs(&pairs);
+        assert_canonical(&pairs);
+        assert_all_overlaps_valid(&pairs);
+    }
+
+    #[test]
+    fn box_minus_concentric_cylinder_counts() {
+        // Cylinder AABB ⊂ box AABB → every box×cylinder branch pair overlaps.
+        let csg = CsgNode::Difference(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(cylinder_leaf(2, [0.0, 0.0, 0.0], 5.0, 12.0)),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let pairs = enumerate_branch_pairs(&body);
+
+        // Cross = 6 box faces × 3 cylinder branches (wall + 2 caps) = 18.
+        let cross = count_by_origin(&pairs, PairOrigin::Cross);
+        assert_eq!(cross, 18, "6×3 overlapping cross pairs");
+        // Intrinsic = box C(6,2)=15 + cylinder C(3,2)=3 = 18.
+        let intrinsic = count_by_origin(&pairs, PairOrigin::Intrinsic);
+        assert_eq!(intrinsic, 15 + 3, "box(15) + cylinder(3) intrinsic pairs");
+        assert_eq!(pairs.len(), 36, "18 cross + 18 intrinsic");
+
+        // Cross pairs always join two *different* feature ids.
+        for p in pairs.iter().filter(|p| p.origin == PairOrigin::Cross) {
+            assert_ne!(
+                p.a.feature_id(),
+                p.b.feature_id(),
+                "cross pair must span the two operands"
+            );
+        }
+        assert_no_dup_pairs(&pairs);
+        assert_canonical(&pairs);
+        assert_all_overlaps_valid(&pairs);
+    }
+
+    #[test]
+    fn far_apart_union_prunes_all_cross_pairs() {
+        // Two boxes whose AABBs are disjoint → the AABB prune fires.
+        let csg = CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(box_leaf(2, [100.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let pairs = enumerate_branch_pairs(&body);
+
+        assert_eq!(count_by_origin(&pairs, PairOrigin::Cross), 0, "prune fires");
+        assert_eq!(count_by_origin(&pairs, PairOrigin::Intrinsic), 15 + 15);
+        assert_eq!(pairs.len(), 30);
+        assert_no_dup_pairs(&pairs);
+        assert_all_overlaps_valid(&pairs);
+    }
+
+    #[test]
+    fn face_touching_union_keeps_cross_pairs() {
+        // Centers 20 apart on x, half-extent 10 each → the boxes share exactly
+        // one face at x = 10. Inclusive overlap must keep cross pairs.
+        let csg = CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(box_leaf(2, [20.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let pairs = enumerate_branch_pairs(&body);
+
+        assert!(
+            count_by_origin(&pairs, PairOrigin::Cross) > 0,
+            "touching faces must yield cross pairs (inclusive overlap)"
+        );
+        assert_all_overlaps_valid(&pairs);
+        assert_canonical(&pairs);
+    }
+
+    #[test]
+    fn cross_pair_kinds_are_populated() {
+        // Box − cylinder: pick a cross pair and verify its kinds match the
+        // underlying branches' kinds (box face = Plane; cylinder = Cylinder/Plane).
+        let csg = CsgNode::Difference(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            Box::new(cylinder_leaf(2, [0.0, 0.0, 0.0], 5.0, 12.0)),
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        let pairs = enumerate_branch_pairs(&body);
+
+        // The box-wall × cylinder-wall cross pair: one side Plane, one Cylinder.
+        let has_plane_cyl = pairs.iter().any(|p| {
+            p.origin == PairOrigin::Cross
+                && ((p.kind_a == SurfaceKind::Plane && p.kind_b == SurfaceKind::Cylinder)
+                    || (p.kind_a == SurfaceKind::Cylinder && p.kind_b == SurfaceKind::Plane))
+        });
+        assert!(has_plane_cyl, "expected a Plane×Cylinder cross pair: {pairs:?}");
+
+        // Every cross pair's kinds are non-Tessellated for this analytic body.
+        for p in pairs.iter().filter(|p| p.origin == PairOrigin::Cross) {
+            assert_ne!(p.kind_a, SurfaceKind::Tessellated);
+            assert_ne!(p.kind_b, SurfaceKind::Tessellated);
+        }
     }
 }
