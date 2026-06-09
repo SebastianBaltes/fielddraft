@@ -106,20 +106,18 @@ function resolveElement(store: KernelStore, el: PickedElement): Resolved {
   if (el.kind === "edge") {
     for (let i = 0; i < count; i++) {
       let edges: BRepEdge[];
-      let placement: Placement;
       try {
         edges = k.bodyBrepEdges(i);
-        placement = k.bodyPlacement(i);
       } catch {
         continue;
       }
       const edge = edges.find((e) => e.idHash === el.idHash);
       if (!edge) continue;
+      // edge.points are already world-space (kernel.ts), so consume them raw —
+      // folding through the placement again would double-transform.
       const pts: [number, number, number][] = [];
       for (let p = 0; p + 2 < edge.points.length; p += 3) {
-        pts.push(
-          localToWorld([edge.points[p], edge.points[p + 1], edge.points[p + 2]], placement),
-        );
+        pts.push([edge.points[p], edge.points[p + 1], edge.points[p + 2]]);
       }
       if (pts.length < 2) continue;
       let length = 0;

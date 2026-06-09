@@ -926,10 +926,10 @@ export function OctreeCellOverlay() {
 const FACE_HOVER_COLOR = 0x2f5fa8;
 const VERTEX_COLOR = 0xb07820;
 const VERTEX_HOVER_COLOR = 0x3d72be;
-/** Persistent element-selection colour (chunk 3a). Mirrors
- *  `--color-element-selection` (#0d8a8a) — a teal distinct from the orange
- *  hover and the blue picker-highlight. */
-const ELEMENT_SELECTION_COLOR = 0x0d8a8a;
+/** Persistent element-selection colour: a saturated gold-orange (Onshape-like
+ *  selection highlight), distinct from the lighter amber edge-hover (#f59e0b)
+ *  and the blue picker-highlight. */
+const ELEMENT_SELECTION_COLOR = 0xff7a00;
 const VERTEX_MARKER_RADIUS = 2.2;
 /** Screen-space radius (in NDC units) within which a vertex marker counts as
  *  hovered. ~3.5% of the viewport half-extent. */
@@ -1252,6 +1252,7 @@ export function BRepSelectedOverlay() {
   const edgeMatRef = useRef(
     new THREE.LineBasicMaterial({
       color: ELEMENT_SELECTION_COLOR,
+      linewidth: 2,
       depthTest: false,
       depthWrite: false,
     }),
@@ -1345,24 +1346,18 @@ export function BRepSelectedOverlay() {
     if (selected.kind === "edge") {
       for (let i = 0; i < count; i++) {
         let edges: BRepEdge[];
-        let placement: Placement;
         try {
           edges = k.bodyBrepEdges(i);
-          placement = k.bodyPlacement(i);
         } catch {
           continue;
         }
         const edge = edges.find((e) => e.idHash === selected.idHash);
         if (!edge) continue;
-        const world: number[] = [];
-        for (let p = 0; p + 2 < edge.points.length; p += 3) {
-          const w = localToWorld(
-            [edge.points[p], edge.points[p + 1], edge.points[p + 2]],
-            placement,
-          );
-          world.push(w[0], w[1], w[2]);
-        }
-        const segs = polylineToSegments(world);
+        // BRepEdge.points are already in world space (kernel.ts) — unlike faces
+        // and vertices, which are body-local. Folding them through the body
+        // placement again would double-transform and offset the highlight; the
+        // hover overlay (BRepEdgeOverlay) consumes the same points raw.
+        const segs = polylineToSegments(edge.points);
         if (segs.length === 0) continue;
         edgeGeomRef.current.setAttribute(
           "position",
