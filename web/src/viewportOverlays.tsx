@@ -456,9 +456,14 @@ export function BRepEdgeOverlay({
       transparent: true,
     }),
   );
+  // Edge hover paints in the element-selection colour (gold-orange), 1px wide:
+  // a `LineBasicMaterial` always rasterises 1px on WebGPU/WebGL (`linewidth` is
+  // a no-op there), which is exactly the width the ticket asked for. The bolder
+  // 2px fat line stays reserved for the *selected* edge so hover and selection
+  // read the same hue but differ in weight.
   const hoverMaterialRef = useRef(
     new THREE.LineBasicMaterial({
-      color: 0xf59e0b,
+      color: ELEMENT_SELECTION_COLOR,
       depthTest: false,
       depthWrite: false,
     }),
