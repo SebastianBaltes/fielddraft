@@ -38,6 +38,7 @@ pub mod face_thicken;
 pub mod naming;
 pub mod octree;
 pub mod projection;
+pub mod ssi;
 pub mod step_export;
 mod vec3;
 pub mod weaving;
