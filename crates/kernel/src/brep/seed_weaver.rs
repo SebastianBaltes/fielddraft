@@ -722,7 +722,7 @@ mod tests {
                 },
             }),
         ));
-        // The octree route (the default `parametric_weave = false` path) CANNOT
+        // The octree route (the legacy `parametric_weave = false` path) CANNOT
         // resolve this: the grazing lens is ~1.3 mm tall but the body-relative
         // octree cell here is ~6 mm, so the feature falls between samples and the
         // octree weaves a degenerate shell (4 faces, missing the sphere cap — the

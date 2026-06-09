@@ -197,8 +197,10 @@ export interface SettingsState {
   brepEdgeMode: BRepEdgeMode;
   frameLoop: FrameLoopMode;
   /** Milestone-1 parametric weaving: exact analytic B-Rep for pure grundforms
-   * (currently the Box), skipping the octree. Falls back to the octree weave
-   * for anything not yet handled, so it is safe to leave on. */
+   * via CSG branch-pair seeds, skipping the octree. On by default — resolves
+   * sub-cell features the octree misses (grazing near-tangent intersections)
+   * and falls back to the octree weave per-body for anything not yet handled,
+   * so the result is never worse. */
   parametricWeave: boolean;
   /** Debug overlay: render each B-Rep edge's individual sample points as
    * markers, so a NURBS edge's tessellation density (many points vs. few) is
@@ -258,7 +260,7 @@ export function loadSettings(): SettingsState {
   let showEdges = true;
   let brepEdgeMode: BRepEdgeMode = "xray";
   let frameLoop: FrameLoopMode = "demand";
-  let parametricWeave = false;
+  let parametricWeave = true;
   let showEdgePoints = false;
   let showOctreeCells = false;
   try {
@@ -280,7 +282,8 @@ export function loadSettings(): SettingsState {
     const rawFrameLoop = localStorage.getItem(LS_FRAME_LOOP);
     if (rawFrameLoop === "always" || rawFrameLoop === "demand")
       frameLoop = rawFrameLoop;
-    parametricWeave = localStorage.getItem(LS_PARAMETRIC_WEAVE) === "true";
+    const rawParametric = localStorage.getItem(LS_PARAMETRIC_WEAVE);
+    if (rawParametric !== null) parametricWeave = rawParametric === "true";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
     showOctreeCells = localStorage.getItem(LS_SHOW_OCTREE_CELLS) === "true";
   } catch {

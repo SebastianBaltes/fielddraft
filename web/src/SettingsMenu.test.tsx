@@ -335,7 +335,7 @@ describe("loadSettings", () => {
       showEdges: true,
       brepEdgeMode: "xray",
       frameLoop: "demand",
-      parametricWeave: false,
+      parametricWeave: true,
       showEdgePoints: false,
       showOctreeCells: false,
     });
@@ -365,7 +365,7 @@ describe("loadSettings", () => {
       showEdges: true,
       brepEdgeMode: "xray",
       frameLoop: "demand",
-      parametricWeave: false,
+      parametricWeave: true,
       showEdgePoints: false,
       showOctreeCells: false,
     });

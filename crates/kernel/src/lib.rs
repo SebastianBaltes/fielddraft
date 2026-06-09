@@ -449,11 +449,12 @@ pub struct Kernel {
     sync_meshing: bool,
     /// Mesh algorithm selection: 0 = MDC (default), 1 = RFTA.
     mesh_algorithm: u8,
-    /// Milestone-1 parametric weaving: when on, pure grundforms (currently
-    /// the Box) get an exact analytic B-Rep instead of an octree-sampled one.
-    /// Default `false` — opt-in via `setParametricWeave`. Anything not yet
-    /// handled analytically falls back to the octree weave, so this never
-    /// changes the result for unsupported shapes.
+    /// Milestone-1 parametric weaving: when on, pure grundforms get an exact
+    /// analytic B-Rep (CSG branch-pair seeds) instead of an octree-sampled one.
+    /// Default `true` — the seed weave resolves sub-cell features (e.g. grazing
+    /// near-tangent intersections) the octree cannot, and any body it cannot
+    /// resolve analytically falls back to the octree weave per-body, so the
+    /// result is never worse than the octree route. Toggle via `setParametricWeave`.
     parametric_weave: bool,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
@@ -952,7 +953,7 @@ impl Kernel {
             active_body_id: None,
             sync_meshing: true,
             mesh_algorithm: 0,
-            parametric_weave: false,
+            parametric_weave: true,
             mesh_version: 0,
             edge_fillets: Vec::new(),
             mate_connectors: Vec::new(),
