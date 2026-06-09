@@ -2,8 +2,8 @@
  *
  * Root: .fd-sketch-live-input — a small floating overlay positioned at
  * the line midpoint (left/top set inline as dynamic values). Holds a
- * LENGTH and an ANGLE field; the user types an exact value and presses
- * Enter to commit a precise, parametric line. */
+ * single LENGTH field; the user types an exact value and presses Enter to
+ * commit a precise, parametric line (the angle follows the cursor). */
 
 .fd-sketch-live-input {
   position: absolute;

@@ -753,19 +753,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // F18: live-numeric-input HUD shown while a click-started line is
   // rubber-banding (kind: "pending_line"). `hud` is null when no pending
   // line is in flight. `left`/`top` position it at the line midpoint in
-  // client pixels; `length`/`angle` are the editable field strings,
-  // refreshed from the live measurement on every move UNLESS the user has
-  // typed into that field (tracked by `lengthDirty`/`angleDirty`).
+  // client pixels; `length` is the editable field string, refreshed from
+  // the live measurement on every move UNLESS the user has typed into it
+  // (tracked by `lengthDirty`). The line's angle follows the cursor — only
+  // the length is typeable (the on-canvas label already shows the length).
   const [hud, setHud] = useState<{
     left: number;
     top: number;
     length: string;
-    angle: string;
   } | null>(null);
-  // The user's typed-override flags, kept in refs so the imperative
-  // pointermove handler can read them without a re-render dependency.
+  // The user's typed-override flag, kept in a ref so the imperative
+  // pointermove handler can read it without a re-render dependency.
   const lengthDirtyRef = useRef(false);
-  const angleDirtyRef = useRef(false);
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
 
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
@@ -850,7 +849,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     if (k === "pending_line") {
       dragRef.current = { kind: "idle" };
       lengthDirtyRef.current = false;
-      angleDirtyRef.current = false;
       setHud(null);
       lastCamVersionRef.current = -1;
     }
@@ -1687,7 +1685,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     ];
     const [mx, my] = sketchToScreen(mid[0], mid[1], cam);
     const len = measuredLength(start, current);
-    const ang = measuredAngleDeg(start, current);
     setHud((prev) => ({
       left: mx,
       top: my,
@@ -1696,11 +1693,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         : len > 1e-6
           ? len.toFixed(2)
           : "",
-      angle: angleDirtyRef.current
-        ? (prev?.angle ?? "")
-        : len > 1e-6
-          ? ang.toFixed(1)
-          : "",
     }));
   };
 
@@ -1708,32 +1700,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const cancelPendingLine = () => {
     dragRef.current = { kind: "idle" };
     lengthDirtyRef.current = false;
-    angleDirtyRef.current = false;
     setHud(null);
     lastCamVersionRef.current = -1;
   };
 
   // F18: commit the in-flight pending line. When the HUD carries a typed
-  // length/angle override we emit the line + a DRIVEN distance bundle so
-  // the line stays parametric; a plain commit (no typed value) emits a
-  // free line, identical to the drag path. Returns true when something
-  // was committed. `fields` is the latest HUD text (Enter passes its own
-  // closure-fresh copy; the second-click path reads current `hud`).
+  // length override we emit the line + a DRIVEN distance bundle so the line
+  // stays parametric (the angle follows the cursor); a plain commit (no
+  // typed value) emits a free line, identical to the drag path. Returns
+  // true when something was committed. `fields` is the latest HUD text
+  // (Enter passes its own closure-fresh copy; the second-click path reads
+  // current `hud`).
   const commitPendingLine = (
     drag: Extract<DragState, { kind: "pending_line" }>,
-    fields: { length: string; angle: string } | null,
+    fields: { length: string } | null,
   ): boolean => {
     if (!store) return false;
     const { start, current, startAnchorId } = drag;
     const liveLen = measuredLength(start, current);
     const liveAng = measuredAngleDeg(start, current);
-    const typed =
-      fields !== null && (lengthDirtyRef.current || angleDirtyRef.current);
+    const typed = fields !== null && lengthDirtyRef.current;
 
     if (typed) {
       const resolved = resolveLengthAngle(
         fields.length,
-        fields.angle,
+        "",
         liveLen,
         liveAng,
       );
@@ -2082,7 +2073,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         startAnchorId,
       };
       lengthDirtyRef.current = false;
-      angleDirtyRef.current = false;
       updateHudFromPending(start, start);
       // Focus the length field so the user can type immediately.
       requestAnimationFrame(() => lengthInputRef.current?.focus());
@@ -2234,10 +2224,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // stale).
   const commitFromHud = () => {
     if (dragRef.current.kind !== "pending_line" || hud === null) return;
-    commitPendingLine(dragRef.current, {
-      length: hud.length,
-      angle: hud.angle,
-    });
+    commitPendingLine(dragRef.current, { length: hud.length });
   };
 
   return (
@@ -2286,31 +2273,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
               }}
             />
             <span className="unit">mm</span>
-          </label>
-          <label className="field">
-            <span className="cap">∠</span>
-            <input
-              data-testid="sketch-live-angle"
-              type="text"
-              inputMode="decimal"
-              value={hud.angle}
-              onChange={(e) => {
-                angleDirtyRef.current = true;
-                setHud((prev) =>
-                  prev === null ? prev : { ...prev, angle: e.target.value },
-                );
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitFromHud();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelPendingLine();
-                }
-              }}
-            />
-            <span className="unit">°</span>
           </label>
         </div>
       )}
