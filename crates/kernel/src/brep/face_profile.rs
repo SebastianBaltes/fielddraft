@@ -44,16 +44,27 @@ pub fn face_region_2d(
     }
 
     let face = brep.face(face_id);
-    let outer = loop_segments(brep, &face.outer, frame, placement);
-    // One segment is legitimate (a full circular rim → a single Arc); only a
-    // genuinely empty loop has no extrudable area.
+    // The outer loop may be a weave fallback (unordered, unoriented, holes
+    // folded in — ticket oa9h), so it can assemble into SEVERAL rings: the
+    // largest by |area| is the profile, every other ring subtracts as a hole.
+    let mut rings = loop_rings(brep, &face.outer, frame, placement);
+    for hole in &face.inner {
+        // Declared hole loops join the ring pool after the first (outer) ring.
+        rings.extend(loop_rings(brep, hole, frame, placement));
+    }
+    if rings.is_empty() {
+        return None;
+    }
+    rings.sort_by(|a, b| ring_area(b).abs().total_cmp(&ring_area(a).abs()));
+
+    let mut it = rings.into_iter();
+    let outer = ring_to_segments(&it.next()?);
     if outer.is_empty() {
         return None;
     }
     let mut region = Sketch2d::Prim(Sketch2dPrimitive::Path { segments: outer, closed: true });
-
-    for hole in &face.inner {
-        let hseg = loop_segments(brep, hole, frame, placement);
+    for ring in it {
+        let hseg = ring_to_segments(&ring);
         if !hseg.is_empty() {
             region = Sketch2d::Difference(
                 Box::new(region),
@@ -64,16 +75,24 @@ pub fn face_region_2d(
     Some(region)
 }
 
-/// Walk one boundary loop into a chain of analytic 2D segments. Each B-Rep edge
-/// is sampled (body-local), lifted to world by `placement`, projected to the
-/// frame's `(u, v)`, then classified into `Line` / `Arc` / polyline.
-fn loop_segments(
+/// One assembled boundary ring: the ordered, consistently-oriented projected
+/// point chains of its edges.
+type Ring = Vec<Vec<[f32; 2]>>;
+
+/// Project one boundary loop's edges into the frame and assemble them into
+/// closed rings by ENDPOINT PROXIMITY. The weave's loop order/orientation is
+/// not trusted: a degenerate face (e.g. the coplanar seams a stacked face
+/// extrude produces, ticket oa9h) falls back to an unordered loop, and chaining
+/// it as-is would build a self-intersecting "bowtie" profile. An already
+/// well-ordered loop assembles into the identical ring (every nearest-endpoint
+/// distance is 0), so the ordered path loses nothing.
+fn loop_rings(
     brep: &BRep,
     lp: &Loop,
     frame: &SketchFrame,
     placement: &Transform,
-) -> Vec<SketchSegment> {
-    let mut segs: Vec<SketchSegment> = Vec::new();
+) -> Vec<Ring> {
+    let mut chains: Vec<Vec<[f32; 2]>> = Vec::new();
     for &(edge_id, reversed) in &lp.edges {
         let mut pts = crate::brep::edge_sampling::sample_edge(&brep.edge(edge_id).geometry);
         if reversed {
@@ -83,7 +102,84 @@ fn loop_segments(
             .iter()
             .map(|p| project(place_point(placement, *p), frame))
             .collect();
-        segs.extend(edge_to_segments(&uv));
+        // Drop chains that project to a single point (an edge perpendicular
+        // to the frame contributes no boundary and would stall the assembly).
+        let degenerate = uv.len() < 2 || uv.iter().all(|p| dist2(*p, uv[0]) <= 1e-12);
+        if !degenerate {
+            chains.push(uv);
+        }
+    }
+    assemble_rings(chains)
+}
+
+/// Greedy nearest-endpoint ring assembly. Starting from any unused chain, keep
+/// appending the unused chain whose nearer endpoint is closest to the current
+/// ring end (reversing it when its far end matches), until CLOSING the ring
+/// (gap back to the ring start) is at least as good as continuing — then start
+/// the next ring. A self-closed chain (full circular rim) closes immediately.
+fn assemble_rings(chains: Vec<Vec<[f32; 2]>>) -> Vec<Ring> {
+    let n = chains.len();
+    let mut used = vec![false; n];
+    let mut rings: Vec<Ring> = Vec::new();
+    for seed in 0..n {
+        if used[seed] {
+            continue;
+        }
+        used[seed] = true;
+        let mut ring: Ring = vec![chains[seed].clone()];
+        loop {
+            let end = *ring.last().unwrap().last().unwrap();
+            let start = ring[0][0];
+            let close_d = dist2(end, start).sqrt();
+            let mut best: Option<(usize, bool, f32)> = None;
+            for (i, c) in chains.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let df = dist2(end, c[0]).sqrt();
+                let dl = dist2(end, *c.last().unwrap()).sqrt();
+                let (rev, d) = if dl < df { (true, dl) } else { (false, df) };
+                if best.is_none_or(|(_, _, bd)| d < bd) {
+                    best = Some((i, rev, d));
+                }
+            }
+            match best {
+                Some((i, rev, d)) if d < close_d => {
+                    used[i] = true;
+                    let mut c = chains[i].clone();
+                    if rev {
+                        c.reverse();
+                    }
+                    ring.push(c);
+                }
+                _ => break,
+            }
+        }
+        rings.push(ring);
+    }
+    rings
+}
+
+/// Shoelace area of a ring's concatenated sample points (sign carries the
+/// winding; callers rank by |area| to pick the outer profile).
+fn ring_area(ring: &Ring) -> f32 {
+    let mut pts: Vec<[f32; 2]> = Vec::new();
+    for c in ring {
+        pts.extend_from_slice(c);
+    }
+    let mut area = 0.0;
+    for i in 0..pts.len() {
+        let j = (i + 1) % pts.len();
+        area += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+    }
+    area * 0.5
+}
+
+/// Classify each chain of an assembled ring into analytic 2D segments.
+fn ring_to_segments(ring: &Ring) -> Vec<SketchSegment> {
+    let mut segs: Vec<SketchSegment> = Vec::new();
+    for uv in ring {
+        segs.extend(edge_to_segments(uv));
     }
     segs
 }

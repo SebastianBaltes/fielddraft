@@ -6252,6 +6252,130 @@ mod tests {
         assert!(err.contains("coplanar"), "got: {err}");
     }
 
+    /// Endpoints of an analytic profile segment (for ring-connectivity checks).
+    fn seg_endpoints(seg: &::fielddraft_protocol::SketchSegment) -> ([f32; 2], [f32; 2]) {
+        use ::fielddraft_protocol::SketchSegment as Seg;
+        match seg {
+            Seg::Line { start, end } => (*start, *end),
+            Seg::QuadBezier { p0, p2, .. } => (*p0, *p2),
+            Seg::Arc { center, radius, start_angle, sweep_angle } => {
+                let e = start_angle + sweep_angle;
+                (
+                    [center[0] + radius * start_angle.cos(), center[1] + radius * start_angle.sin()],
+                    [center[0] + radius * e.cos(), center[1] + radius * e.sin()],
+                )
+            }
+        }
+    }
+
+    /// Assert every `Path` leaf of the region is a CONNECTED closed ring:
+    /// each segment starts where the previous one ended, and the last ends
+    /// at the first's start. A shuffled loop produces a self-intersecting
+    /// "bowtie" profile (ticket oa9h).
+    fn assert_paths_connected(s: &::fielddraft_protocol::Sketch2d) {
+        use ::fielddraft_protocol::{Sketch2d as S, Sketch2dPrimitive as P};
+        match s {
+            S::Prim(P::Path { segments, closed }) => {
+                assert!(*closed, "face profile paths must be closed");
+                assert!(!segments.is_empty());
+                let tol = 1e-2_f32;
+                let (first_start, mut prev_end) = seg_endpoints(&segments[0]);
+                for seg in &segments[1..] {
+                    let (start, end) = seg_endpoints(seg);
+                    let d = ((start[0] - prev_end[0]).powi(2) + (start[1] - prev_end[1]).powi(2)).sqrt();
+                    assert!(d < tol, "segment chain broken: jump of {d} at {start:?} (prev end {prev_end:?})");
+                    prev_end = end;
+                }
+                let d = ((first_start[0] - prev_end[0]).powi(2) + (first_start[1] - prev_end[1]).powi(2)).sqrt();
+                assert!(d < tol, "ring not closed: gap of {d}");
+            }
+            S::Prim(_) | S::Empty => {}
+            S::Union(a, b) | S::Difference(a, b) | S::Intersection(a, b) => {
+                assert_paths_connected(a);
+                assert_paths_connected(b);
+            }
+            S::Offset { inner, .. } => assert_paths_connected(inner),
+        }
+    }
+
+    /// Find the planar face with world normal `want` OWNED by feature `owner`.
+    fn planar_face_hash_of(
+        brep: &crate::brep::BRep,
+        want: [f32; 3],
+        owner: u32,
+    ) -> Option<u64> {
+        use crate::brep::{FaceId, SurfaceGeometry};
+        use fielddraft_protocol::HalfSpace;
+        for i in 0..brep.face_count() {
+            let fid = FaceId(i as u32);
+            if brep.face(fid).branch_id.feature_id() != owner {
+                continue;
+            }
+            if let SurfaceGeometry::Analytic {
+                surface: HalfSpace::Plane { normal, .. },
+                transform,
+            } = &brep.face(fid).surface
+            {
+                let n = crate::quat_rotate(transform.rotation, *normal);
+                if n[0] * want[0] + n[1] * want[1] + n[2] * want[2] > 0.99 {
+                    return Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn extrude_box_side_face_after_top_extrude_keeps_connected_profile() {
+        // Ticket oa9h: box, extrude the TOP face, then extrude a SIDE face of
+        // the original box. The side face's boundary must project to a
+        // connected 20×20 ring — a shuffled loop extrudes a twisted bowtie.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry
+            .regenerate(&mut ctx, std::slice::from_ref(&box_call(1, 10.0)), None)
+            .unwrap();
+        let brep = weave_first(&mut ctx);
+        let top = planar_face_hash(&brep, [0.0, 0.0, 1.0]).expect("a +Z face");
+
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry
+            .regenerate(
+                &mut ctx2,
+                &[
+                    box_call(1, 10.0),
+                    FeatureCall::new(
+                        "extrude",
+                        id(2),
+                        json!({
+                            "profiles": "",
+                            "faces": format!("qFace({top})"),
+                            "depth": { "value": 5.0, "unit": "mm" },
+                            "symmetric": false,
+                        }),
+                    ),
+                ],
+                None,
+            )
+            .unwrap();
+
+        let brep2 = weave_first(&mut ctx2);
+        let side =
+            planar_face_hash_of(&brep2, [1.0, 0.0, 0.0], 1).expect("the box's +X side face");
+
+        let (region, _frame) =
+            ctx2.resolve_extrude_faces(&[format!("qFace({side})")]).expect("resolvable side face");
+        assert_paths_connected(&region);
+        let bb = region.aabb();
+        let (w, h) = (bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
+        assert!((w - 20.0).abs() < 0.2, "side profile width {w} (aabb {bb:?})");
+        assert!((h - 20.0).abs() < 0.2, "side profile height {h} (aabb {bb:?})");
+        let c = [(bb.min[0] + bb.max[0]) * 0.5, (bb.min[1] + bb.max[1]) * 0.5];
+        assert!(region.sdf(c) < 0.0, "profile centre must be inside");
+    }
+
     #[test]
     fn extrude_faces_rejects_curved_face() {
         let registry = FeatureRegistry::with_builtins();
