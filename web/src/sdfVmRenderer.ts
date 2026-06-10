@@ -231,7 +231,9 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     // rasterizer's own depth is meaningless). Misses already discarded above,
     // so they never touch depth. Harmless in X-Ray/Hidden modes — there
     // renderOverlayLayer clears depth before drawing the edges.
-    const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z;
+    // 0.1% depth bias behind the true surface so on-surface B-Rep edges
+    // win the depth test instead of z-fighting the face (ticket b9xz).
+    const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z.mul(1.001);
     depth.assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU)).toStack();
 
     // Shade the hit (normal → PBR → edges → wireframe) via the shared SDF

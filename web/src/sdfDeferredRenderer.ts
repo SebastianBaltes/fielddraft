@@ -469,7 +469,11 @@ function createShadeMaterial(
     // plane so empty pixels never occlude. Harmless in X-Ray/Hidden modes —
     // there renderOverlayLayer clears depth before drawing the edges.
     If(hasHit.greaterThan(int(0)), () => {
-      const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z;
+      // Push the written depth a hair (0.1% of viewZ) behind the true
+      // surface: the B-Rep edges lie EXACTLY on the surface, so without the
+      // bias they z-fight the face and render ragged/washed-out in
+      // "visible" mode (ticket b9xz).
+      const viewZ = viewMatU.mul(vec4(shadePos, 1.0)).z.mul(1.001);
       depth.assign(viewZToPerspectiveDepth(viewZ, nearU, farU)).toStack();
     }).Else(() => {
       depth.assign(float(1.0)).toStack();
