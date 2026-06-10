@@ -456,14 +456,14 @@ export function BRepEdgeOverlay({
       transparent: true,
     }),
   );
-  // Edge hover paints in the element-selection colour (gold-orange), 1px wide:
-  // a `LineBasicMaterial` always rasterises 1px on WebGPU/WebGL (`linewidth` is
-  // a no-op there), which is exactly the width the ticket asked for. The bolder
-  // 2px fat line stays reserved for the *selected* edge so hover and selection
-  // read the same hue but differ in weight.
+  // Edge hover paints in a LIGHTER tint of the element-selection colour
+  // (ticket m0yw: same hue as the selected edge, just brighter), 1px wide: a
+  // `LineBasicMaterial` always rasterises 1px on WebGPU/WebGL (`linewidth` is
+  // a no-op there). The bolder 2px fat line stays reserved for the *selected*
+  // edge so hover and selection read the same hue but differ in weight too.
   const hoverMaterialRef = useRef(
     new THREE.LineBasicMaterial({
-      color: ELEMENT_SELECTION_COLOR,
+      color: ELEMENT_HOVER_COLOR,
       depthTest: false,
       depthWrite: false,
     }),
@@ -935,9 +935,12 @@ const FACE_HOVER_COLOR = 0x2f5fa8;
 const VERTEX_COLOR = 0xb07820;
 const VERTEX_HOVER_COLOR = 0x3d72be;
 /** Persistent element-selection colour: a saturated gold-orange (Onshape-like
- *  selection highlight), distinct from the lighter amber edge-hover (#f59e0b)
- *  and the blue picker-highlight. */
+ *  selection highlight), distinct from the blue picker-highlight. */
 const ELEMENT_SELECTION_COLOR = 0xff7a00;
+/** Hover colour for B-Rep elements: the SAME gold-orange hue as
+ *  {@link ELEMENT_SELECTION_COLOR}, lightened (ticket m0yw) — hover previews
+ *  the selection it would make, selection then deepens the tone. */
+const ELEMENT_HOVER_COLOR = 0xffb066;
 const VERTEX_MARKER_RADIUS = 2.2;
 /** Screen-space radius (in NDC units) within which a vertex marker counts as
  *  hovered. ~3.5% of the viewport half-extent. */
