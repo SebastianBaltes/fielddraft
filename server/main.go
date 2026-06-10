@@ -672,14 +672,51 @@ func newID() string {
 
 // ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
 type ticketRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ProjectJSON string `json:"projectJson"`
-	Screenshot  string `json:"screenshot"` // PNG data URL, or empty
-	Version     string `json:"version"`
-	Timestamp   string `json:"timestamp"`
-	UserAgent   string `json:"userAgent"`
-	URL         string `json:"url"`
+	Title       string             `json:"title"`
+	Description string             `json:"description"`
+	ProjectJSON string             `json:"projectJson"`
+	Screenshot  string             `json:"screenshot"` // PNG data URL, or empty
+	Attachments []ticketAttachment `json:"attachments"`
+	Version     string             `json:"version"`
+	Timestamp   string             `json:"timestamp"`
+	UserAgent   string             `json:"userAgent"`
+	URL         string             `json:"url"`
+}
+
+// ticketAttachment is one user-attached file (picked or pasted, ticket 8onw),
+// transported as a data URL inside the ticket JSON.
+type ticketAttachment struct {
+	Name    string `json:"name"`
+	Mime    string `json:"mime"`
+	DataURL string `json:"dataUrl"`
+}
+
+// attachmentFilename sanitizes a user-supplied attachment name into a safe
+// on-disk filename: basename only, conservative character set, indexed so
+// attachments never collide with each other or the ticket files.
+func attachmentFilename(index int, name string) string {
+	base := name
+	if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
+		base = base[i+1:]
+	}
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_', r == ' ':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	safe := b.String()
+	if len(safe) > 80 {
+		safe = safe[len(safe)-80:]
+	}
+	if safe == "" {
+		safe = "file"
+	}
+	return fmt.Sprintf("attachment-%02d-%s", index+1, safe)
 }
 
 // ticketsDir is where filed tickets are written. Override with TICKETS_DIR;
@@ -730,12 +767,36 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		os.WriteFile(filepath.Join(dir, "ticket.json"), blob, 0o644)
 	}
 
+	// User attachments (ticket 8onw): each data URL becomes a file next to
+	// the screenshot, listed in ticket.md for whoever picks the ticket up.
+	var attachmentNames []string
+	for i, a := range req.Attachments {
+		ci := strings.IndexByte(a.DataURL, ',')
+		if !strings.HasPrefix(a.DataURL, "data:") || ci < 0 {
+			continue
+		}
+		blob, err := base64.StdEncoding.DecodeString(a.DataURL[ci+1:])
+		if err != nil {
+			continue
+		}
+		fname := attachmentFilename(i, a.Name)
+		if os.WriteFile(filepath.Join(dir, fname), blob, 0o644) == nil {
+			attachmentNames = append(attachmentNames, fname)
+		}
+	}
+
 	desc := req.Description
 	if desc == "" {
 		desc = "_(none)_"
 	}
 	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
 		req.Title, id, req.Version, ts, req.URL, req.UserAgent, desc)
+	if len(attachmentNames) > 0 {
+		md += "\n## Attachments\n\n"
+		for _, n := range attachmentNames {
+			md += "- " + n + "\n"
+		}
+	}
 	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
 
 	if req.ProjectJSON != "" {

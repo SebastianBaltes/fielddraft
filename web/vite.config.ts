@@ -100,6 +100,15 @@ function ticketWriter(): Plugin {
     return `${stamp}-${rand}`;
   }
 
+  // User-supplied attachment names end up as filenames on disk — keep only
+  // the basename and a safe character set, and namespace with an index so
+  // two attachments can never collide or overwrite ticket files.
+  function attachmentFilename(index: number, name: string): string {
+    const base = name.split(/[\\/]/).pop() ?? "";
+    const safe = base.replace(/[^\w.\- ]+/g, "_").slice(-80) || "file";
+    return `attachment-${String(index + 1).padStart(2, "0")}-${safe}`;
+  }
+
   return {
     name: "ticket-writer",
     configureServer(server) {
@@ -122,6 +131,7 @@ function ticketWriter(): Plugin {
               description?: string;
               projectJson?: string;
               screenshot?: string | null;
+              attachments?: { name?: string; mime?: string; dataUrl?: string }[];
               version?: string;
               timestamp?: string;
               userAgent?: string;
@@ -146,6 +156,17 @@ function ticketWriter(): Plugin {
               JSON.stringify(meta, null, 2),
             );
 
+            // User attachments (ticket 8onw): each data URL becomes a file
+            // next to the screenshot, listed in ticket.md for the agent.
+            const attachmentNames: string[] = [];
+            (t.attachments ?? []).forEach((a, i) => {
+              if (typeof a?.dataUrl !== "string" || !a.dataUrl.startsWith("data:")) return;
+              const fname = attachmentFilename(i, a.name ?? "");
+              const b64 = a.dataUrl.slice(a.dataUrl.indexOf(",") + 1);
+              writeFileSync(join(dir, fname), Buffer.from(b64, "base64"));
+              attachmentNames.push(fname);
+            });
+
             // Human-readable mirror so the ticket reads well in a diff.
             writeFileSync(
               join(dir, "ticket.md"),
@@ -155,7 +176,10 @@ function ticketWriter(): Plugin {
                 `- **Time:** ${meta.timestamp}\n` +
                 `- **URL:** ${meta.url}\n` +
                 `- **UA:** ${meta.userAgent}\n\n` +
-                `## Description\n\n${meta.description || "_(none)_"}\n`,
+                `## Description\n\n${meta.description || "_(none)_"}\n` +
+                (attachmentNames.length > 0
+                  ? `\n## Attachments\n\n${attachmentNames.map((n) => `- ${n}`).join("\n")}\n`
+                  : ""),
             );
 
             if (t.projectJson) {

@@ -17,6 +17,49 @@
 
 import { toPng } from "html-to-image";
 
+/** A user-supplied file riding along with the ticket (ticket 8onw): picked
+ *  via the file chooser or pasted with Ctrl+V. Transported as a data URL so
+ *  the whole ticket stays one JSON POST. */
+export interface TicketAttachment {
+  /** Original filename ("pasted-1.png" for clipboard images). */
+  name: string;
+  /** MIME type, e.g. "image/png"; used to pick thumbnail vs. file chip. */
+  mime: string;
+  /** Base64 data URL with the file contents. */
+  dataUrl: string;
+}
+
+/** Per-file cap. Base64 inflates ~4/3 and the ticket endpoints cap the whole
+ *  JSON body at 25 MB (alongside the ~1 MB window screenshot), so 8 MB per
+ *  file keeps even a couple of attachments comfortably under the limit. */
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+/** Read a File into a {@link TicketAttachment}. Rejects (returns an error
+ *  string) when the file exceeds {@link MAX_ATTACHMENT_BYTES}. */
+export function fileToAttachment(
+  file: File,
+  fallbackName: string,
+): Promise<TicketAttachment | { error: string }> {
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    const mb = Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024);
+    return Promise.resolve({
+      error: `"${file.name || fallbackName}" is larger than ${mb} MB`,
+    });
+  }
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      resolve({
+        name: file.name || fallbackName,
+        mime: file.type || "application/octet-stream",
+        dataUrl: String(reader.result),
+      });
+    reader.onerror = () =>
+      resolve({ error: `could not read "${file.name || fallbackName}"` });
+    reader.readAsDataURL(file);
+  });
+}
+
 export interface TicketPayload {
   title: string;
   description: string;
@@ -24,6 +67,8 @@ export interface TicketPayload {
   projectJson: string;
   /** PNG data URL of the window, or null if capture failed. */
   screenshot: string | null;
+  /** Extra user-attached files/images (ticket 8onw). */
+  attachments: TicketAttachment[];
   /** App version, e.g. "0.6.9". */
   version: string;
   /** ISO-8601 client timestamp. */

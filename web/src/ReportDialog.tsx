@@ -3,16 +3,19 @@
  *
  * Opened from the application menu. On mount it snapshots the whole app
  * window (toolbar, panels and the 3D viewport); the user adds a title +
- * description and submits. The ticket bundles the screenshot, the live
- * project JSON, the app version and a timestamp, and is written to the
- * repo's `tickets/open/` directory (see reportTicket.ts).
+ * description — plus optional file/image attachments via the file picker or
+ * Ctrl+V (ticket 8onw) — and submits. The ticket bundles the screenshot, the
+ * attachments, the live project JSON, the app version and a timestamp, and
+ * is written to the repo's `tickets/open/` directory (see reportTicket.ts).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KernelStore } from "./store";
 import {
   captureWindow,
+  fileToAttachment,
   submitTicket,
+  type TicketAttachment,
   type TicketPayload,
 } from "./reportTicket";
 
@@ -28,8 +31,12 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [description, setDescription] = useState("");
   const [includeShot, setIncludeShot] = useState(true);
   const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
+  const [attachError, setAttachError] = useState("");
   const [phase, setPhase] = useState<Phase>("edit");
   const [errorMsg, setErrorMsg] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pasteCounter = useRef(0);
 
   // Snapshot the window once, when the dialog opens. Capturing here (rather
   // than on submit) freezes the view the user is reporting about. The WebGPU
@@ -66,6 +73,45 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, phase]);
 
+  // Append files (picker or clipboard) to the attachment list. Oversized or
+  // unreadable files surface inline via `attachError` instead of vanishing.
+  const addFiles = async (files: Iterable<File>) => {
+    const errors: string[] = [];
+    const added: TicketAttachment[] = [];
+    for (const file of files) {
+      pasteCounter.current += 1;
+      const ext = file.type === "image/png" ? ".png" : "";
+      const result = await fileToAttachment(
+        file,
+        `pasted-${pasteCounter.current}${ext}`,
+      );
+      if ("error" in result) errors.push(result.error);
+      else added.push(result);
+    }
+    if (added.length > 0) setAttachments((prev) => [...prev, ...added]);
+    setAttachError(errors.join("; "));
+  };
+
+  // Ctrl+V while the dialog is open attaches clipboard files (ticket 8onw).
+  // Text pastes into the focused input keep their default behaviour — only
+  // pastes that actually carry files are intercepted.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (phase === "sending") return;
+      const files = e.clipboardData?.files;
+      if (!files || files.length === 0) return;
+      e.preventDefault();
+      void addFiles(files);
+    };
+    window.addEventListener("paste", onPaste, true);
+    return () => window.removeEventListener("paste", onPaste, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const canSubmit =
     title.trim().length > 0 && (phase === "edit" || phase === "error");
 
@@ -77,6 +123,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
       description: description.trim(),
       projectJson: store?.exportProjectJson() ?? "",
       screenshot: includeShot ? screenshot : null,
+      attachments,
       version: __APP_VERSION__,
       timestamp: new Date().toISOString(),
       userAgent: navigator.userAgent,
@@ -158,6 +205,64 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
                 alt="Window screenshot preview"
               />
             ) : null}
+
+            <div className="field">
+              <div className="attach-row">
+                <span className="label">Attachments</span>
+                <button
+                  type="button"
+                  className="secondary attach-button"
+                  data-testid="report-attach"
+                  disabled={phase === "sending"}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  Add files…
+                </button>
+                <span className="hint">or paste with Ctrl+V</span>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                data-testid="report-file-input"
+                onChange={(e) => {
+                  if (e.target.files) void addFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              {attachments.length > 0 ? (
+                <div className="attachments" data-testid="report-attachments">
+                  {attachments.map((a, i) => (
+                    <div className="thumb" key={`${a.name}-${i}`} title={a.name}>
+                      {a.mime.startsWith("image/") ? (
+                        <img src={a.dataUrl} alt={a.name} />
+                      ) : (
+                        <span className="file-chip">
+                          {a.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                        </span>
+                      )}
+                      <span className="thumb-name">{a.name}</span>
+                      <button
+                        type="button"
+                        className="thumb-x"
+                        aria-label={`Remove ${a.name}`}
+                        data-testid={`report-attachment-remove-${i}`}
+                        disabled={phase === "sending"}
+                        onClick={() => removeAttachment(i)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {attachError ? (
+                <p className="error" role="alert">
+                  {attachError}
+                </p>
+              ) : null}
+            </div>
 
             <p className="hint">
               The current project JSON and app version are attached

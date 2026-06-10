@@ -46,6 +46,14 @@ function typeInto(selector: string, value: string) {
   });
 }
 
+// FileReader (jsdom) delivers results on the macrotask queue — flush it so
+// the async addFiles pipeline lands before asserting.
+async function flushTasks() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
 beforeEach(() => {
   // __APP_VERSION__ is a build-time define; provide it for the test runtime.
   vi.stubGlobal("__APP_VERSION__", "0.0.0-test");
@@ -99,6 +107,86 @@ describe("ReportDialog", () => {
 
     // No "Ticket saved" panel — the dialog closes straight away.
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches picked files, shows thumbs and removes via the X", async () => {
+    render();
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-testid="report-file-input"]',
+    )!;
+    Object.defineProperty(input, "files", { value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushTasks();
+
+    const thumbs = container.querySelector('[data-testid="report-attachments"]')!;
+    expect(thumbs.textContent).toContain("notes.txt");
+    // Non-image files render as an extension chip, not an <img>.
+    expect(thumbs.querySelector("img")).toBeNull();
+    expect(thumbs.textContent).toContain("TXT");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="report-attachment-remove-0"]')!
+        .click();
+    });
+    expect(container.querySelector('[data-testid="report-attachments"]')).toBeNull();
+  });
+
+  it("attaches pasted images via Ctrl+V and submits them in the payload", async () => {
+    render();
+    typeInto('[data-testid="report-title"]', "With paste");
+
+    const img = new File([new Uint8Array([137, 80, 78, 71])], "", {
+      type: "image/png",
+    });
+    const pasteEvent = new Event("paste", { bubbles: true }) as ClipboardEvent;
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { files: [img] },
+    });
+    await act(async () => {
+      window.dispatchEvent(pasteEvent);
+    });
+    await flushTasks();
+
+    const thumbs = container.querySelector('[data-testid="report-attachments"]')!;
+    // Clipboard images get a synthetic name and an <img> preview.
+    expect(thumbs.textContent).toContain("pasted-1.png");
+    expect(thumbs.querySelector("img")).not.toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="report-submit"]')!
+        .click();
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(body.attachments).toHaveLength(1);
+    expect(body.attachments[0].name).toBe("pasted-1.png");
+    expect(body.attachments[0].mime).toBe("image/png");
+    expect(body.attachments[0].dataUrl).toMatch(/^data:/);
+  });
+
+  it("rejects oversized attachments with an inline error", async () => {
+    render();
+    const big = new File([""], "huge.bin", { type: "application/octet-stream" });
+    Object.defineProperty(big, "size", { value: 9 * 1024 * 1024 });
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-testid="report-file-input"]',
+    )!;
+    Object.defineProperty(input, "files", { value: [big] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushTasks();
+
+    expect(container.querySelector('[data-testid="report-attachments"]')).toBeNull();
+    expect(container.textContent).toContain("huge.bin");
+    expect(container.textContent).toContain("larger than 8 MB");
   });
 
   it("surfaces a server error without closing", async () => {
