@@ -23,13 +23,9 @@ import {
   type FeatureSchema,
 } from "./widgets/schema";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
-import type { SketchDiagnostics } from "./solver/types";
-import {
-  buildDraftSketchState,
-  idsOfSubCall,
-  constraintRefIds,
-  summarizeDiagnostics,
-} from "./sketchSession";
+import { emptyDiagnostics, type SketchDiagnostics } from "./solver/types";
+import { buildDraftSketchState } from "./sketchSession";
+import { SketchSubCalls, SKETCH_SUB_LABEL } from "./SketchSubCalls";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
 import { QueryWidget } from "./widgets/widgets";
@@ -67,31 +63,6 @@ export function prettifyFeatureName(
   if (suffix) return prettyKind + suffix;
   return name;
 }
-
-const SKETCH_SUB_LABEL: Record<string, string> = {
-  sketch_point: "Point",
-  sketch_line: "Line",
-  sketch_rectangle: "Rect",
-  sketch_circle: "Circle",
-  sketch_polygon: "Polygon",
-  sketch_arc: "Arc",
-  sketch_mirror: "Mirror",
-  sketch_trim: "Trim",
-  sketch_offset: "Offset",
-  sketch_constraint_horizontal: "Horizontal",
-  sketch_constraint_vertical: "Vertical",
-  sketch_constraint_coincident: "Coincident",
-  sketch_constraint_distance: "Distance",
-  sketch_constraint_angle: "Angle",
-  sketch_constraint_equal: "Equal",
-  sketch_constraint_parallel: "Parallel",
-  sketch_constraint_perpendicular: "Perpendicular",
-  sketch_constraint_tangent: "Tangent",
-  sketch_constraint_midpoint: "Midpoint",
-  sketch_constraint_symmetric: "Symmetric",
-  sketch_constraint_radius: "Radius",
-  sketch_constraint_diameter: "Diameter",
-};
 
 interface OutlinerProps {
   store: KernelStore;
@@ -235,6 +206,23 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       return null;
     }
   }, [fd, selectedFeature]);
+
+  // Ticket yx6a: committed sub-calls of the selected sketch, for the
+  // read-only element list in its detail view. `state.features` is in
+  // the dep list because a session commit replaces the feature array.
+  const selectedSketchSubCalls = useMemo<
+    ReadonlyArray<{ type: string; params: Record<string, unknown> }>
+  >(() => {
+    if (selectedFeature?.kind !== "sketch") return [];
+    try {
+      return store.kernel
+        .getSketchSubCalls(selectedFeature.id)
+        .map((c) => ({ type: c.type, params: c.params }));
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, selectedFeature, state.features]);
 
   // Reload the draft from the kernel whenever the selected
   // feature id changes. The `draftKey` is the feature id plus
@@ -655,152 +643,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               Pick a sketch tool in the toolbar.
             </div>
           )}
-          {sketchSession.subCalls.length > 0
-            ? (() => {
-                const selection = new Set(sketchSession.selection);
-                const geometry: number[] = [];
-                const constraints: number[] = [];
-                sketchSession.subCalls.forEach((call, i) => {
-                  if (call.type.startsWith("sketch_constraint")) constraints.push(i);
-                  else geometry.push(i);
-                });
-
-                // F20: which constraint rows the last solve flagged.
-                const diag = summarizeDiagnostics(
-                  sketchSession.subCalls,
-                  sketchSession.diagnostics,
-                );
-
-                const renderRow = (i: number) => {
-                  const call = sketchSession.subCalls[i];
-                  const isConstraint = call.type.startsWith("sketch_constraint");
-                  const isConstruction = Boolean(call.params.construction);
-                  const refIds = isConstraint
-                    ? constraintRefIds(sketchSession.subCalls, i)
-                    : idsOfSubCall(sketchSession.subCalls, i);
-                  const isActive =
-                    refIds.length > 0 && refIds.every((id) => selection.has(id));
-                  const selectRow = () =>
-                    store.setSketchSelection(refIds);
-                  return (
-                    <li
-                      key={i}
-                      className={
-                        "row" +
-                        (isConstraint ? " is-constraint" : "") +
-                        (isConstruction ? " is-construction" : "") +
-                        (isActive ? " is-active" : "")
-                      }
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={isActive}
-                      data-testid={`sketch-element-row-${i}`}
-                      onClick={selectRow}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          selectRow();
-                        }
-                      }}
-                    >
-                      <span className="kind">
-                        {kindGlyph(call.type)}{" "}
-                        {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_", "")}
-                      </span>
-                      {isConstraint && diag.conflicts.has(i) ? (
-                        <span
-                          className="badge is-conflict"
-                          title="This constraint conflicts with the others — delete one of them to resolve the over-constrained sketch."
-                          data-testid={`sketch-constraint-conflict-${i}`}
-                        >
-                          conflict
-                        </span>
-                      ) : isConstraint && diag.redundants.has(i) ? (
-                        <span
-                          className="badge is-redundant"
-                          title="This constraint is redundant — it is already implied by the others and can be removed."
-                          data-testid={`sketch-constraint-redundant-${i}`}
-                        >
-                          redundant
-                        </span>
-                      ) : null}
-                      {!isConstraint ? (
-                        <button
-                          type="button"
-                          className={"row-construction" + (isConstruction ? " is-active" : "")}
-                          title={
-                            isConstruction
-                              ? "Construction geometry (reference only) — click to make it solid"
-                              : "Make this construction geometry (reference only, not extruded)"
-                          }
-                          aria-pressed={isConstruction}
-                          data-testid={`sketch-sub-row-construction-${i}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            store.toggleSketchConstructionAt(i);
-                          }}
-                        >
-                          ⊘
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="row-delete"
-                        title="Delete"
-                        data-testid={`sketch-sub-row-delete-${i}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          store.removeSketchSubCall(i);
-                        }}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  );
-                };
-
-                // Single list so the `.row` count contract stays
-                // geometry + constraints; section headers are
-                // non-`.row` list items that split the two groups.
-                return (
-                  <ul
-                    className="sub-spine elements"
-                    data-testid="sketch-sub-spine"
-                  >
-                    {geometry.length > 0 ? (
-                      <li
-                        className="elements-header"
-                        data-testid="sketch-elements-geometry"
-                      >
-                        Geometry ({geometry.length})
-                      </li>
-                    ) : null}
-                    {geometry.map(renderRow)}
-                    {constraints.length > 0 ? (
-                      <li
-                        className="elements-header"
-                        data-testid="sketch-elements-constraints"
-                      >
-                        Constraints ({constraints.length})
-                      </li>
-                    ) : null}
-                    {diag.conflictCount > 0 || diag.redundantCount > 0 ? (
-                      <li
-                        className={
-                          "diagnostics-summary" +
-                          (diag.conflictCount > 0 ? " has-conflict" : "")
-                        }
-                        data-testid="sketch-diagnostics-summary"
-                      >
-                        ⚠ {diag.conflictCount} conflicting, {diag.redundantCount}{" "}
-                        redundant
-                      </li>
-                    ) : null}
-                    {constraints.map(renderRow)}
-                  </ul>
-                );
-              })()
-            : null}
+          <SketchSubCalls
+            subCalls={sketchSession.subCalls}
+            diagnostics={sketchSession.diagnostics}
+            selection={sketchSession.selection}
+            onSelect={(refIds) => store.setSketchSelection(refIds)}
+            onToggleConstruction={(i) => store.toggleSketchConstructionAt(i)}
+            onDelete={(i) => store.removeSketchSubCall(i)}
+          />
           <ConstraintManagerPanel
             subCalls={sketchSession.subCalls}
             store={store}
@@ -1287,11 +1137,35 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
             )}
           </div>
           {!collapsed.has("detail") && (selectedSchema ? (
-            <FeatureDialog
-              schema={selectedSchema}
-              definition={dialogDraft}
-              onChange={handleDialogChange}
-            />
+            <>
+              <FeatureDialog
+                schema={selectedSchema}
+                definition={dialogDraft}
+                onChange={handleDialogChange}
+              />
+              {/* Ticket yx6a: a committed sketch's detail view embeds
+                  its element list (read-only) plus the edit entry —
+                  the sketch tools are a sub-component of the sketch
+                  feature, not a separate mode. */}
+              {selectedFeature?.kind === "sketch" ? (
+                <>
+                  <SketchSubCalls
+                    subCalls={selectedSketchSubCalls}
+                    diagnostics={emptyDiagnostics()}
+                  />
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="apply"
+                      data-testid="sketch-detail-edit"
+                      onClick={() => store.editSketch(selectedFeature.id)}
+                    >
+                      Edit sketch
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </>
           ) : (
             <div className="empty">No feature selected.</div>
           ))}
