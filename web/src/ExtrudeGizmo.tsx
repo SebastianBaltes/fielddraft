@@ -89,19 +89,9 @@ export function ExtrudeDepthGizmo() {
   const headRef = useRef<THREE.Mesh>(null);
   const shaftRef = useRef<THREE.Mesh>(null);
 
-  // Resolve the anchor against the live B-Rep. `state` in the deps
-  // re-resolves after the pointerup commit.
-  const anchor = useMemo<ExtrudeAnchor | null>(() => {
-    if (!store || extrudeId === null) return null;
-    try {
-      return resolveExtrudeAnchor(store.kernel, extrudeId);
-    } catch {
-      return null;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, extrudeId, state]);
-
-  // Current depth (mm) straight from the feature params.
+  // Current depth (mm) straight from the feature params. `depthMm` is
+  // the prism's axial extent (depth, or depth+depth_back for one-sided),
+  // which doubles as the tip-cap-vs-wall discriminator below.
   const depthInfo = useMemo<{ depthMm: number; symmetric: boolean } | null>(() => {
     if (!store || extrudeId === null) return null;
     try {
@@ -116,6 +106,20 @@ export function ExtrudeDepthGizmo() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, extrudeId, state]);
+
+  // Resolve the anchor against the live B-Rep. `state` in the deps
+  // re-resolves after the pointerup commit. The axial extent picks the
+  // tip cap unambiguously even when the prism keeps both caps (ticket
+  // zzl1) — see pickTipFace.
+  const anchor = useMemo<ExtrudeAnchor | null>(() => {
+    if (!store || extrudeId === null) return null;
+    try {
+      return resolveExtrudeAnchor(store.kernel, extrudeId, depthInfo?.depthMm);
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, extrudeId, state, depthInfo]);
 
   // Translucent preview bands: at rest, the whole extruded prism in
   // light blue; during a drag, the would-be prism plus delta bands

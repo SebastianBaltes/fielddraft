@@ -54,6 +54,27 @@ describe("pickTipFace", () => {
     expect(pickTipFace([])).toBeNull();
     expect(pickTipFace([cand([0, 0, 1], [0, 0, 5], 7)])?.index).toBe(7);
   });
+
+  it("picks the depth-matched cap of an off-origin closed prism (zzl1)", () => {
+    // A standalone "Add" prism that kept BOTH caps: 6 axis-aligned faces,
+    // so the perpendicular-sibling count is a 6-way tie. The prism sits
+    // high in +Y (centroids offset like the ticket's stacked box), so the
+    // +Y wall is the world-outermost face and the old tie-break wrongly
+    // chose it. Extrude axis is +X, depth 16; the tip cap is at +X.
+    const off = 76; // world-space offset along Y, like the ticket
+    const tipCap = cand([1, 0, 0], [66, off, 0], 0); // +X cap, sep 16 to base
+    const baseCap = cand([-1, 0, 0], [50, off, 0], 1); // -X cap
+    const wallUp = cand([0, 1, 0], [58, off + 27, 0], 2); // +Y wall, outermost
+    const wallDown = cand([0, -1, 0], [57, off - 26, 0], 3);
+    const wallFront = cand([0, 0, 1], [57, off, 50], 4);
+    const wallBack = cand([0, 0, -1], [58, off, -50], 5);
+    const all = [tipCap, baseCap, wallUp, wallDown, wallFront, wallBack];
+    // Without the depth signal the old heuristic picks the +Y wall.
+    expect(pickTipFace(all)?.index).toBe(2);
+    // With it, the +X cap (grown side of the depth-16 pair) wins.
+    expect(pickTipFace(all, 16)?.index).toBe(0);
+    expect(baseCap.index).toBe(1); // (silence unused-var lint paranoia)
+  });
 });
 
 describe("axisDepthParam", () => {

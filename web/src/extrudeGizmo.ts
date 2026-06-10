@@ -47,17 +47,60 @@ export interface TipFaceCandidate {
 }
 
 /**
- * Pick the tip face among the planar faces an extrude feature owns:
- * the candidate with the most perpendicular siblings (a quad prism cap
- * sees 4 side walls; each side wall only sees 3). Ties (cap vs. base of
- * an unmerged "New" prism) break toward the larger `centroid·normal` —
- * the outward-most cap. Returns `null` for an empty list.
+ * Pick the tip face among the planar faces an extrude feature owns.
+ *
+ * Preferred signal — `extrudeLenMm`, the prism's axial extent (depth, or
+ * depth+depth_back for one-sided): the two caps are the antiparallel face
+ * pair separated by exactly that length along their shared normal, while
+ * every wall pair is separated by a profile dimension. This is purely
+ * relative geometry, so it holds wherever the prism sits in world space.
+ * When a body keeps BOTH caps (an "Add" that produced a standalone solid,
+ * not a boolean that consumed the base), the perpendicular-sibling count
+ * is a 6-way tie and the old `centroid·normal` tie-break silently picks
+ * the world-outermost face — the wrong axis for any off-origin prism
+ * (ticket zzl1). The tip is the cap on the grown side: the larger
+ * `centroid·normal` of the matched pair.
+ *
+ * Fallback (no length, or no pair matches it — e.g. the base was consumed
+ * so only one cap survives): the candidate with the most perpendicular
+ * siblings (a quad prism cap sees 4 side walls; each side wall only 3),
+ * ties broken toward the outward-most `centroid·normal`.
+ *
+ * Returns `null` for an empty list.
  */
 export function pickTipFace(
   candidates: ReadonlyArray<TipFaceCandidate>,
+  extrudeLenMm?: number,
 ): TipFaceCandidate | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
+
+  // Cap-pair-by-depth: find the antiparallel pair whose plane separation
+  // best matches the extrude length, then take its grown-side cap.
+  if (extrudeLenMm !== undefined && extrudeLenMm > 0) {
+    const tol = Math.max(0.05 * extrudeLenMm, 0.01);
+    let capTip: TipFaceCandidate | null = null;
+    let bestErr = tol;
+    for (let i = 0; i < candidates.length; i++) {
+      for (let j = i + 1; j < candidates.length; j++) {
+        const a = candidates[i];
+        const b = candidates[j];
+        if (dot(a.normal, b.normal) > -0.99) continue; // not antiparallel
+        const sep = Math.abs(
+          (a.centroid[0] - b.centroid[0]) * a.normal[0] +
+            (a.centroid[1] - b.centroid[1]) * a.normal[1] +
+            (a.centroid[2] - b.centroid[2]) * a.normal[2],
+        );
+        const err = Math.abs(sep - extrudeLenMm);
+        if (err < bestErr) {
+          bestErr = err;
+          capTip = dot(a.centroid, a.normal) >= dot(b.centroid, b.normal) ? a : b;
+        }
+      }
+    }
+    if (capTip) return capTip;
+  }
+
   let best: TipFaceCandidate | null = null;
   let bestPerp = -1;
   let bestOut = -Infinity;
@@ -237,6 +280,7 @@ export interface ExtrudeAnchor {
 export function resolveExtrudeAnchor(
   kernel: ExtrudeAnchorKernel,
   featureId: number,
+  extrudeLenMm?: number,
 ): ExtrudeAnchor | null {
   const count = kernel.bodyCount();
   for (let i = 0; i < count; i++) {
@@ -261,7 +305,7 @@ export function resolveExtrudeAnchor(
         index: idx,
       };
     });
-    const tip = pickTipFace(candidates);
+    const tip = pickTipFace(candidates, extrudeLenMm);
     if (!tip) continue;
     const tipFace = owned[tip.index];
     let edges: BRepEdge[] = [];
