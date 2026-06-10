@@ -81,7 +81,8 @@ if (typeof window !== "undefined" && import.meta.env?.DEV) {
  * XZ plane (top-down orthographic view), so sketch-U maps to
  * world-X and sketch-V maps to world-Z. The camera's up vector
  * is `(0, 0, -1)`, so screen-up corresponds to `-V` in sketch
- * space, hence the V-flip below.
+ * space: +V draws downward, matching the 3D layer underneath
+ * (ticket fsmf).
  *
  * K8.0 reliability note: `cam.width / cam.height` here are
  * authoritative — callers that know their own container
@@ -103,7 +104,11 @@ export function sketchToScreen(
   const du = u - cam.centerU;
   const dv = v - cam.centerV;
   const px = cam.width / 2 + du * cam.zoom;
-  const py = cam.height / 2 - dv * cam.zoom;
+  // Screen-up is world −Z (camera up `(0,0,-1)`), so +V draws DOWNWARD —
+  // the same orientation the 3D viewport rasterises underneath. A −dv here
+  // mirrored the whole 2D overlay vertically against the 3D layer, so the
+  // two layers panned in OPPOSITE directions (ticket fsmf).
+  const py = cam.height / 2 + dv * cam.zoom;
   return [px, py];
 }
 
@@ -114,6 +119,6 @@ export function screenToSketch(
   cam: Readonly<SketchCameraState>,
 ): [number, number] {
   const du = (px - cam.width / 2) / cam.zoom;
-  const dv = -(py - cam.height / 2) / cam.zoom;
+  const dv = (py - cam.height / 2) / cam.zoom;
   return [cam.centerU + du, cam.centerV + dv];
 }
