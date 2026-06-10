@@ -595,7 +595,7 @@ mod tests {
         DecodedFeature::from_parts(
             id(n),
             format!("Box {n}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [1.0, 1.0, 1.0],

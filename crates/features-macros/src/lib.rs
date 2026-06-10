@@ -52,7 +52,7 @@
 //!     Rust expression as the fallback when the definition JSON
 //!     is missing the key or sends `null`. The expression is
 //!     quoted verbatim, so anything that's a valid Rust rvalue
-//!     works: `0.0`, `[0.0, 0.0, 0.0]`, `BoolOp::Union`, etc.
+//!     works: `0.0`, `[0.0, 0.0, 0.0]`, `BoolOp::New`, etc.
 //!   * `ui_hint = "horizontal_enum" | "opposite_direction" |
 //!     "slider"` — rendering hint forwarded verbatim into the
 //!     schema JSON. The TS FeatureDialog (K6a.1) dispatches
@@ -255,9 +255,10 @@ impl ParamType {
         match self {
             ParamType::BoolOp => Some(quote! {
                 ::serde_json::json!([
-                    { "key": "union",      "label": "Union" },
-                    { "key": "difference", "label": "Difference" },
-                    { "key": "intersect",  "label": "Intersect" },
+                    { "key": "add",       "label": "Add" },
+                    { "key": "new",       "label": "New" },
+                    { "key": "remove",    "label": "Remove" },
+                    { "key": "intersect", "label": "Intersect" },
                 ])
             }),
             _ => None,
@@ -394,12 +395,22 @@ impl ParamInfo {
             None => quote! {},
         };
 
+        // BoolOp defaults differ per feature (primitives seed a New
+        // body, extrude-likes Add into the touching one), so the wire
+        // key is emitted into the schema; BoolOp is Serialize, json!
+        // interpolation lowers the expression to its snake_case name.
+        let default_entry = match (&self.ty, &self.default) {
+            (ParamType::BoolOp, Some(expr)) => quote! { "default": #expr, },
+            _ => quote! {},
+        };
+
         quote! {
             ::serde_json::json!({
                 "key": #key,
                 "name": #name,
                 "type": #type_name,
                 "required": #required,
+                #default_entry
                 #hint_entry
                 #variants_entry
                 #unit_entry
@@ -570,13 +581,14 @@ impl ParamType {
                         feature: Self::TYPE_NAME,
                         name: #key,
                         message:
-                            "expected \"union\", \"difference\", or \"intersect\""
+                            "expected \"add\", \"new\", \"remove\", or \"intersect\""
                                 .to_string(),
                     }
                 })?;
                 match s {
-                    "union" => ::fielddraft_protocol::BoolOp::Union,
-                    "difference" => ::fielddraft_protocol::BoolOp::Difference,
+                    "add" => ::fielddraft_protocol::BoolOp::Add,
+                    "new" => ::fielddraft_protocol::BoolOp::New,
+                    "remove" => ::fielddraft_protocol::BoolOp::Remove,
                     "intersect" => ::fielddraft_protocol::BoolOp::Intersect,
                     other => {
                         return ::core::result::Result::Err(

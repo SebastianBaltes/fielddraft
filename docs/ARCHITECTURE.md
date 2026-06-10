@@ -127,7 +127,7 @@ Document
 | `Thread` | Metric helix |
 | `ImportedMesh` | CSG-participating triangle mesh (passthrough storage) |
 
-**Typed parameters** (K4.5.4f): `Length` (mm/cm/m/in → mm), `Angle` (deg/rad), `Query`, `MultiQuery`, `BoolOp`.
+**Typed parameters** (K4.5.4f): `Length` (mm/cm/m/in → mm), `Angle` (deg/rad), `Query`, `MultiQuery`, `BoolOp` (`add`/`new`/`remove`/`intersect`, Onshape result-body vocabulary).
 
 **Additional types:** `Sketch2d`, `Sketch2dPrimitive`, `MeshSdf`, `BakedVolume`, `Transform` (translate + quaternion + per-axis scale).
 
@@ -228,11 +228,22 @@ Leaf primitives encode: opcode tag + transform (3 translate + 4 quaternion + 3 s
 
 #### Multi-Body Partitioning (`body.rs`)
 
-Features are grouped into independent solid bodies by AABB overlap analysis:
+Features carry an Onshape-style result-body op (`BoolOp`: `add` / `new` /
+`remove` / `intersect`, protocol crate) that drives the partition:
 
-- **Union:** Overlapping AABBs coalesce into one body (merge if multi-hit)
-- **Difference/Intersect:** Attach to first overlapping body; drop if none
+- **New:** always seeds a fresh body — spatial overlap alone never merges
+- **Add:** geometric union that merges into every body it touches (AABB
+  overlap), bridging several into one Part; explicit `target_ids` narrow
+  the candidates. A contact-free Add falls back to seeding its own body
+- **Remove/Intersect:** attach via `target_ids` (preferred) or first AABB
+  overlap; dropped if nothing matches
 - Feature order within a body always matches document order (deterministic)
+
+Defaults: primitives (box, sphere, …) and imported meshes seed `new`
+bodies; extrude/revolve/sweep/thicken default to `add` so e.g. a face
+extrude grows its source body instead of stacking a second Part onto it.
+Known limitation: a flush `add` (coplanar faces) weaves watertight but
+keeps duplicate coplanar faces — coplanar branch merging is an open item.
 
 Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse.
 

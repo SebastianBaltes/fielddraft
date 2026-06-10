@@ -1312,7 +1312,7 @@ mod tests {
             make_feature(
                 1,
                 "Box",
-                BoolOp::Union,
+                BoolOp::New,
                 Primitive::Box {
                     center: [0.0, 0.0, 0.0],
                     half_extents: [10.0, 10.0, 10.0],
@@ -1321,7 +1321,7 @@ mod tests {
             make_feature(
                 2,
                 "Sphere",
-                BoolOp::Difference,
+                BoolOp::Remove,
                 Primitive::Sphere {
                     center: [10.0, 0.0, 0.0],
                     radius: 5.0,
@@ -1380,7 +1380,7 @@ mod tests {
         let features = vec![make_feature(
             1,
             "Cyl",
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Cylinder {
                 center: [0.0, 0.0, 0.0],
                 radius: 5.0,
@@ -1627,7 +1627,7 @@ mod tests {
             let feature = DecodedFeature::from_parts(
                 FeatureId::from_u32(1),
                 "Extrude".into(),
-                BoolOp::Union,
+                BoolOp::New,
                 Primitive::Extrude {
                     sketch,
                     half_depth_z: half_height,
@@ -1710,7 +1710,7 @@ mod tests {
             let feature = DecodedFeature::from_parts(
                 FeatureId::from_u32(1),
                 "Revolve".into(),
-                BoolOp::Union,
+                BoolOp::New,
                 Primitive::Revolve {
                     sketch: profile,
                     center: [0.0, 0.0, 0.0],

@@ -630,7 +630,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             String::new(),
-            BoolOp::Union,
+            BoolOp::New,
             prim,
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,

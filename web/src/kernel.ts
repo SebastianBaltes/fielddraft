@@ -176,15 +176,18 @@ export const PrimitiveKind = {
 } as const;
 export type PrimitiveKindTag = (typeof PrimitiveKind)[keyof typeof PrimitiveKind];
 
-/** Numeric tags for boolean ops. Mirror `BoolOp::TAG_*` in protocol. */
+/** Numeric tags for boolean ops (Onshape result-body vocabulary).
+ *  Mirror `BoolOp::TAG_*` in protocol: Add merges into the touching
+ *  body, New always seeds its own, Remove subtracts, Intersect clips. */
 export const BoolOpTag = {
-  Union: 0,
-  Difference: 1,
-  Intersect: 2,
+  Add: 0,
+  New: 1,
+  Remove: 2,
+  Intersect: 3,
 } as const;
 export type BoolOpTagValue = (typeof BoolOpTag)[keyof typeof BoolOpTag];
 
-export type BoolOpName = "union" | "difference" | "intersect";
+export type BoolOpName = "add" | "new" | "remove" | "intersect";
 export type PrimitiveKindName = "box" | "sphere" | "cylinder" | "torus" | "thread" | "cone" | "capsule" | "hex_prism" | "ellipsoid" | "hole" | "linear_pattern" | "circular_pattern";
 /** K6b.3a: the kernel's `listFeatures` can now return entries
  *  whose kind is a non-primitive feature type like "sketch" or

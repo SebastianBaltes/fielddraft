@@ -420,32 +420,46 @@ impl Primitive {
     }
 }
 
-/// Boolean operation that combines a feature with the running result.
+/// Boolean operation that combines a feature with the running result,
+/// following the Onshape result-body vocabulary.
+///
+/// `Add` and `New` are both geometric unions; they differ only in body
+/// membership (`body::partition`): `Add` merges into the body/bodies the
+/// feature touches (or its explicit `targets`), `New` always seeds a
+/// fresh body. `Remove` subtracts, `Intersect` intersects — both attach
+/// to a touching (or targeted) body.
 ///
 /// Evaluation order is the feature list itself: each feature folds into
-/// the accumulator using its op. The very first `Union` feature seeds the
-/// accumulator from `+∞` (empty space), so a list of `[Union(box)]`
-/// renders that single box.
+/// the accumulator using its op. The very first feature of a body seeds
+/// the accumulator from `+∞` (empty space).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoolOp {
-    Union,
-    Difference,
+    Add,
+    New,
+    Remove,
     Intersect,
 }
 
 impl BoolOp {
-    /// Numeric tag for the packed buffer / shader contract.
-    pub const TAG_UNION: u32 = 0;
-    pub const TAG_DIFFERENCE: u32 = 1;
-    pub const TAG_INTERSECT: u32 = 2;
+    /// Numeric tag for the wasm-boundary / packed-buffer contract.
+    pub const TAG_ADD: u32 = 0;
+    pub const TAG_NEW: u32 = 1;
+    pub const TAG_REMOVE: u32 = 2;
+    pub const TAG_INTERSECT: u32 = 3;
 
     pub fn tag(self) -> u32 {
         match self {
-            BoolOp::Union => Self::TAG_UNION,
-            BoolOp::Difference => Self::TAG_DIFFERENCE,
+            BoolOp::Add => Self::TAG_ADD,
+            BoolOp::New => Self::TAG_NEW,
+            BoolOp::Remove => Self::TAG_REMOVE,
             BoolOp::Intersect => Self::TAG_INTERSECT,
         }
+    }
+
+    /// Is this op a geometric union (`Add`/`New`)?
+    pub fn is_union(self) -> bool {
+        matches!(self, BoolOp::Add | BoolOp::New)
     }
 }
 
@@ -1033,7 +1047,7 @@ mod tests {
             serde_json::json!({
                 "radius": 4.0,
                 "half_height": 10.0,
-                "op": "difference"
+                "op": "remove"
             }),
         );
         let wire = serde_json::to_string(&call).unwrap();
@@ -1080,17 +1094,25 @@ mod tests {
 
     #[test]
     fn bool_op_serializes_snake_case() {
-        let json = serde_json::to_string(&BoolOp::Difference).unwrap();
-        assert_eq!(json, "\"difference\"");
+        let json = serde_json::to_string(&BoolOp::Remove).unwrap();
+        assert_eq!(json, "\"remove\"");
         let parsed: BoolOp = serde_json::from_str("\"intersect\"").unwrap();
         assert_eq!(parsed, BoolOp::Intersect);
+        let parsed: BoolOp = serde_json::from_str("\"add\"").unwrap();
+        assert_eq!(parsed, BoolOp::Add);
+        let parsed: BoolOp = serde_json::from_str("\"new\"").unwrap();
+        assert_eq!(parsed, BoolOp::New);
     }
 
     #[test]
     fn bool_op_tags_match_constants() {
-        assert_eq!(BoolOp::Union.tag(), BoolOp::TAG_UNION);
-        assert_eq!(BoolOp::Difference.tag(), BoolOp::TAG_DIFFERENCE);
+        assert_eq!(BoolOp::Add.tag(), BoolOp::TAG_ADD);
+        assert_eq!(BoolOp::New.tag(), BoolOp::TAG_NEW);
+        assert_eq!(BoolOp::Remove.tag(), BoolOp::TAG_REMOVE);
         assert_eq!(BoolOp::Intersect.tag(), BoolOp::TAG_INTERSECT);
+        assert!(BoolOp::Add.is_union());
+        assert!(BoolOp::New.is_union());
+        assert!(!BoolOp::Remove.is_union());
     }
 
     // ─── K4.5.4f: Length / Angle / Query runtime types ────────

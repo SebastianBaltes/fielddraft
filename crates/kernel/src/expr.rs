@@ -522,7 +522,7 @@ mod tests {
         let vars = BTreeMap::new();
         let mut v = serde_json::json!({
             "half_extents": [50.0, 50.0, 50.0],
-            "op": "union",
+            "op": "new",
             "name": "Box 1",
         });
         let before = v.clone();

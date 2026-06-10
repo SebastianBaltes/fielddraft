@@ -1224,7 +1224,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("TBox {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: half,
@@ -1243,7 +1243,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Sphere {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center, radius },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -1286,8 +1286,8 @@ mod tests {
     #[test]
     fn aabb_is_union_of_children_for_union_nodes() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(2, BoolOp::New, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let bb = bvh.aabb();
@@ -1302,15 +1302,15 @@ mod tests {
     #[test]
     fn bvh_sdf_matches_csg_sdf_on_mixed_scene() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             {
                 let mut f = sphere_feature(2, [10.0, 10.0, 10.0], 8.0);
-                f.op = BoolOp::Difference;
+                f.op = BoolOp::Remove;
                 f
             },
             box_feature(
                 3,
-                BoolOp::Union,
+                BoolOp::New,
                 [-30.0, 0.0, 0.0],
                 [5.0, 5.0, 5.0],
             ),
@@ -1340,10 +1340,10 @@ mod tests {
     #[test]
     fn bvh_evaluate_matches_csg_evaluate_contributors() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             {
                 let mut f = sphere_feature(2, [10.0, 10.0, 10.0], 8.0);
-                f.op = BoolOp::Difference;
+                f.op = BoolOp::Remove;
                 f
             },
         ];
@@ -1368,8 +1368,8 @@ mod tests {
         // Union prune, but the returned value must still equal the
         // naive answer to within f32 roundoff.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(2, BoolOp::Union, [500.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(2, BoolOp::New, [500.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
         ];
         let csg = CsgNode::from_decoded(&features);
         let bvh = BoundedCsg::from_csg(&csg);

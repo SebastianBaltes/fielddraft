@@ -867,7 +867,7 @@ mod tests {
         let sphere_feat = DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "S".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -969,7 +969,7 @@ mod tests {
         let sphere_feat = DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "S".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,

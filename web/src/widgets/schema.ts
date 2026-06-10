@@ -16,12 +16,14 @@
  *       "name": "Op",
  *       "type": "enum",
  *       "variants": [
- *         { "key": "union",      "label": "Union" },
- *         { "key": "difference", "label": "Difference" },
- *         { "key": "intersect",  "label": "Intersect" }
+ *         { "key": "add",       "label": "Add" },
+ *         { "key": "new",       "label": "New" },
+ *         { "key": "remove",    "label": "Remove" },
+ *         { "key": "intersect", "label": "Intersect" }
  *       ],
  *       "ui_hint": "horizontal_enum",
- *       "required": false
+ *       "required": false,
+ *       "default": "add"
  *     },
  *     { "key": "depth", "name": "Depth", "type": "length", "required": true },
  *     { "key": "flip_depth", "name": "Flip depth", "type": "bool",

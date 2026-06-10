@@ -1238,7 +1238,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Sphere {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center, radius },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -1282,7 +1282,7 @@ mod tests {
     fn single_box_at_origin() {
         let features = vec![box_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
@@ -1303,7 +1303,7 @@ mod tests {
     fn box_with_offset_center() {
         let features = vec![box_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             [5.0, -3.0, 7.0],
             [4.0, 4.0, 4.0],
         )];
@@ -1323,7 +1323,7 @@ mod tests {
     fn sphere_translated() {
         let features = vec![translated_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere {
                 center: [0.0, 0.0, 0.0],
                 radius: 8.0,
@@ -1344,8 +1344,8 @@ mod tests {
     #[test]
     fn union_of_two_boxes() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(2, BoolOp::New, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
@@ -1363,10 +1363,10 @@ mod tests {
     #[test]
     fn difference_box_minus_sphere() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             {
                 let mut f = sphere_feature(2, [10.0, 10.0, 10.0], 8.0);
-                f.op = BoolOp::Difference;
+                f.op = BoolOp::Remove;
                 f
             },
         ];
@@ -1387,7 +1387,7 @@ mod tests {
         let features = vec![
             translated_feature(
                 1,
-                BoolOp::Union,
+                BoolOp::New,
                 Primitive::Cylinder {
                     center: [0.0, 0.0, 0.0],
                     radius: 5.0,
@@ -1397,7 +1397,7 @@ mod tests {
             ),
             translated_feature(
                 2,
-                BoolOp::Union,
+                BoolOp::New,
                 Primitive::Torus {
                     center: [0.0, 0.0, 0.0],
                     major_radius: 10.0,
@@ -1504,13 +1504,13 @@ mod tests {
     #[test]
     fn mixed_scene_matches_bvh() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             {
                 let mut f = sphere_feature(2, [10.0, 10.0, 10.0], 8.0);
-                f.op = BoolOp::Difference;
+                f.op = BoolOp::Remove;
                 f
             },
-            box_feature(3, BoolOp::Union, [-30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(3, BoolOp::New, [-30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
         let compiled = compile_body(&bvh);
@@ -1532,7 +1532,7 @@ mod tests {
         let f = DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "Box 1".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center: [0.0, 0.0, 0.0],
                 half_extents: [5.0, 20.0, 5.0],
@@ -1559,7 +1559,7 @@ mod tests {
         let f = DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "Sphere 1".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere {
                 center: [0.0, 0.0, 0.0],
                 radius: 10.0,
@@ -1589,7 +1589,7 @@ mod tests {
         let sphere = CsgNode::from_decoded(&[DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "Sphere 1".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center: [0.0, 0.0, 0.0], radius: 10.0 },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -1626,7 +1626,7 @@ mod tests {
     #[test]
     fn compiled_opcode_count_is_reasonable() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             sphere_feature(2, [0.0, 0.0, 0.0], 5.0),
         ];
         let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));

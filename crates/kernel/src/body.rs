@@ -291,44 +291,51 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
 /// Walk the feature spine once and return one [`BodyPartition`] per
 /// resulting body.
 ///
-/// Rules:
-/// * **Union** — always starts a new body. No AABB-based merging;
-///   bodies stay separate unless an explicit Boolean connects them.
-/// * **Difference / Intersection** — attached to bodies via
-///   `target_ids` (preferred) or AABB overlap (fallback for
-///   features without explicit targets).
+/// Rules (Onshape result-body vocabulary):
+/// * **New** — always starts a fresh body. No AABB-based merging;
+///   spatial overlap alone never folds two `New` bodies together.
+/// * **Add** — a geometric union that merges into every body it
+///   touches (AABB overlap), bridging several into one Part when it
+///   spans them. Explicit `target_ids` narrow the candidates to the
+///   targeted bodies (contact still decides). An `Add` that touches
+///   nothing falls back to seeding its own body, so geometry never
+///   vanishes.
+/// * **Remove / Intersect** — attached to bodies via `target_ids`
+///   (preferred) or AABB overlap (fallback for features without
+///   explicit targets).
 pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
     let mut groups: Vec<BodyPartition> = Vec::new();
     for (i, feature) in features.iter().enumerate() {
         let feat_aabb = feature_world_aabb(feature);
 
         match feature.op {
-            BoolOp::Union => {
-                // A union carrying explicit `target_ids` docks into every
-                // body that already holds one of its targets — but only
-                // those it actually touches (AABB overlap). A union can
-                // bridge *several* bodies at once: the sphere that unions a
+            BoolOp::New => {
+                groups.push(BodyPartition {
+                    feature_indices: vec![i],
+                    aabb: feat_aabb,
+                });
+            }
+            BoolOp::Add => {
+                // An untagged Add docks into every body it touches (AABB
+                // overlap); one carrying explicit `target_ids` only into the
+                // touching bodies that hold one of its targets. An Add can
+                // bridge *several* bodies at once: the sphere that joins a
                 // left and a right solid fuses all three into a single Part,
-                // because union is transitive. An explicit Boolean union of
-                // two *disjoint* solids stays two Parts; the link expresses
-                // intent, contact decides the merge. Untagged unions, and
-                // tagged-but-separated ones, connect to nothing and seed a
-                // fresh body. Spatial overlap alone never merges.
-                let connected: Vec<usize> = if feature.target_ids.is_empty() {
-                    Vec::new()
-                } else {
-                    (0..groups.len())
-                        .filter(|&idx| {
-                            let targeted = groups[idx].feature_indices.iter().any(|&fi| {
+                // because union is transitive. The link expresses intent,
+                // contact decides the merge — a targeted Add of two
+                // *disjoint* solids stays two Parts.
+                let connected: Vec<usize> = (0..groups.len())
+                    .filter(|&idx| {
+                        let targeted = feature.target_ids.is_empty()
+                            || groups[idx].feature_indices.iter().any(|&fi| {
                                 let root = features[fi].id.root_ancestor();
                                 feature.target_ids.iter().any(|tid| root == tid)
                             });
-                            targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
-                        })
-                        .collect()
-                };
+                        targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
+                    })
+                    .collect();
                 match connected.split_first() {
-                    // No bridged body: this union seeds its own Part.
+                    // Nothing touched: this Add seeds its own Part.
                     None => groups.push(BodyPartition {
                         feature_indices: vec![i],
                         aabb: feat_aabb,
@@ -353,7 +360,7 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
                     }
                 }
             }
-            BoolOp::Difference | BoolOp::Intersect => {
+            BoolOp::Remove | BoolOp::Intersect => {
                 if !feature.target_ids.is_empty() {
                     // indexed element is both read and mutated; iter_mut rewrite is risky
                     #[allow(clippy::needless_range_loop)]
@@ -1153,7 +1160,7 @@ mod tests {
         // weave a wireframe of non-Lipschitz seams we discard anyway. A plain
         // box, by contrast, still weaves its 12 edges.
         let gyroid_body = weave_all(&[
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),
             gyroid_feat(2, BoolOp::Intersect, 1, 0.5, 0.15),
         ]);
         assert_eq!(gyroid_body.len(), 1);
@@ -1163,13 +1170,13 @@ mod tests {
             "a space-filling body must weave an empty B-Rep"
         );
 
-        let plain_box = weave_all(&[box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]);
+        let plain_box = weave_all(&[box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])]);
         assert_eq!(plain_box[0].0.edge_count(), 12, "a plain box keeps its edges");
     }
 
     #[test]
     fn single_union_feature_produces_one_body() {
-        let features = vec![box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
+        let features = vec![box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].feature_indices, vec![0]);
@@ -1179,8 +1186,8 @@ mod tests {
     #[test]
     fn two_disjoint_unions_produce_two_bodies() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 2);
@@ -1191,8 +1198,8 @@ mod tests {
     #[test]
     fn overlapping_unions_stay_separate() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [7.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 2, "overlapping unions must stay separate");
@@ -1201,10 +1208,48 @@ mod tests {
     }
 
     #[test]
+    fn untagged_add_merges_into_touching_body() {
+        // Onshape semantics: an Add without explicit targets docks into
+        // the body it touches — extruding a box face yields ONE part.
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::Add, [7.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1, "an overlapping Add merges into the body");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+    }
+
+    #[test]
+    fn untagged_add_bridges_all_touching_bodies() {
+        // Union is transitive: an Add spanning two separate bodies fuses
+        // all three into a single Part.
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(3, BoolOp::Add, [15.0, 0.0, 0.0], [12.0, 2.0, 2.0]),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1, "a spanning Add fuses every touched body");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn untagged_add_without_contact_seeds_its_own_body() {
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::Add, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 2, "a contact-free Add falls back to seeding");
+    }
+
+    #[test]
     fn difference_attaches_to_overlapping_body() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            sphere_feat(2, BoolOp::Difference, [0.0, 0.0, 0.0], 3.0),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            sphere_feat(2, BoolOp::Remove, [0.0, 0.0, 0.0], 3.0),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
@@ -1214,8 +1259,8 @@ mod tests {
     #[test]
     fn orphan_difference_is_dropped() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            sphere_feat(2, BoolOp::Difference, [100.0, 0.0, 0.0], 3.0),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            sphere_feat(2, BoolOp::Remove, [100.0, 0.0, 0.0], 3.0),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
@@ -1229,9 +1274,9 @@ mod tests {
     #[test]
     fn each_union_is_its_own_body() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(3, BoolOp::Union, [15.0, 0.0, 0.0], [20.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(3, BoolOp::New, [15.0, 0.0, 0.0], [20.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 3, "each union must be its own body");
@@ -1247,11 +1292,11 @@ mod tests {
         // unorderable (the "left box's edges are incomplete" report). The fix
         // keeps the two corners distinct and trims the buried edge stretch, so
         // every face orders into a connected ring and the solid stays watertight.
-        let mut bridge = sphere_feat(3, BoolOp::Union, [0.0, 0.0, 10.0], 8.0);
+        let mut bridge = sphere_feat(3, BoolOp::Add, [0.0, 0.0, 10.0], 8.0);
         bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [-12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feat(2, BoolOp::Union, [12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feat(1, BoolOp::New, [-12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feat(2, BoolOp::New, [12.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             bridge,
         ];
         let breps = weave_all(&features);
@@ -1316,11 +1361,11 @@ mod tests {
         // must fuse all three into a single Part — union is transitive,
         // so it cannot dock into only the first body and orphan the
         // second (the "2 Parts that should be 1" bug).
-        let mut bridge = sphere_feat(3, BoolOp::Union, [15.0, 0.0, 0.0], 16.0);
+        let mut bridge = sphere_feat(3, BoolOp::Add, [15.0, 0.0, 0.0], 16.0);
         bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             bridge,
         ];
         let bodies = partition(&features);
@@ -1338,11 +1383,11 @@ mod tests {
         // A bridge that overlaps only one of its two targets fuses just
         // that one; the untouched target stays a separate Part (contact
         // still decides each merge).
-        let mut bridge = sphere_feat(3, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        let mut bridge = sphere_feat(3, BoolOp::Add, [7.0, 0.0, 0.0], 5.0);
         bridge.target_ids = vec![FeatureId::from_u32(1), FeatureId::from_u32(2)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [100.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             bridge,
         ];
         let bodies = partition(&features);
@@ -1356,10 +1401,10 @@ mod tests {
         // An explicit Boolean union tags the second tool with the first
         // tool's id; the two must collapse into one body even though a
         // plain pair of unions would stay separate.
-        let mut sphere = sphere_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        let mut sphere = sphere_feat(2, BoolOp::Add, [7.0, 0.0, 0.0], 5.0);
         sphere.target_ids = vec![FeatureId::from_u32(1)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             sphere,
         ];
         let bodies = partition(&features);
@@ -1373,10 +1418,10 @@ mod tests {
         // An explicit union of two solids that do NOT touch must stay
         // two bodies — the target link expresses intent, but contact
         // decides the merge.
-        let mut sphere = sphere_feat(2, BoolOp::Union, [100.0, 0.0, 0.0], 5.0);
+        let mut sphere = sphere_feat(2, BoolOp::Add, [100.0, 0.0, 0.0], 5.0);
         sphere.target_ids = vec![FeatureId::from_u32(1)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             sphere,
         ];
         let bodies = partition(&features);
@@ -1387,10 +1432,10 @@ mod tests {
     fn orphan_targeted_union_seeds_its_own_body() {
         // A tagged union whose target is absent must not vanish — it
         // falls back to seeding a fresh body rather than being dropped.
-        let mut sphere = sphere_feat(2, BoolOp::Union, [7.0, 0.0, 0.0], 5.0);
+        let mut sphere = sphere_feat(2, BoolOp::Add, [7.0, 0.0, 0.0], 5.0);
         sphere.target_ids = vec![FeatureId::from_u32(99)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             sphere,
         ];
         let bodies = partition(&features);
@@ -1402,8 +1447,8 @@ mod tests {
         let mut gyroid = sphere_feat(3, BoolOp::Intersect, [0.0; 3], 1.0);
         gyroid.target_ids = vec![FeatureId::from_u32(1)];
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feat(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feat(2, BoolOp::New, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             gyroid,
         ];
         let bodies = partition(&features);
@@ -1415,8 +1460,8 @@ mod tests {
     #[test]
     fn hash_is_stable_across_equivalent_feature_sets() {
         let features = vec![
-            box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            sphere_feat(2, BoolOp::Difference, [0.0, 0.0, 0.0], 2.0),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            sphere_feat(2, BoolOp::Remove, [0.0, 0.0, 0.0], 2.0),
         ];
         let a = hash_body_payload(&features, &[0, 1]);
         let b = hash_body_payload(&features, &[0, 1]);
@@ -1426,16 +1471,16 @@ mod tests {
     #[test]
     fn hash_changes_when_any_field_changes() {
         let baseline =
-            vec![box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
+            vec![box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
         let h0 = hash_body_payload(&baseline, &[0]);
 
-        let translated = vec![box_feat(1, BoolOp::Union, [0.5, 0.0, 0.0], [5.0, 5.0, 5.0])];
+        let translated = vec![box_feat(1, BoolOp::New, [0.5, 0.0, 0.0], [5.0, 5.0, 5.0])];
         assert_ne!(h0, hash_body_payload(&translated, &[0]));
 
-        let bigger = vec![box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [6.0, 5.0, 5.0])];
+        let bigger = vec![box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [6.0, 5.0, 5.0])];
         assert_ne!(h0, hash_body_payload(&bigger, &[0]));
 
-        let diff = vec![box_feat(1, BoolOp::Difference, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
+        let diff = vec![box_feat(1, BoolOp::Remove, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
         assert_ne!(h0, hash_body_payload(&diff, &[0]));
     }
 
@@ -1445,7 +1490,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Box {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center: [0.0; 3],
                 half_extents: [5.0; 3],
@@ -1458,7 +1503,7 @@ mod tests {
 
     #[test]
     fn hash_split_geometry_vs_transform() {
-        let base = vec![box_feat(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
+        let base = vec![box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0])];
         let (g0, t0) = hash_body_payload_split(&base, &[0]);
 
         let mut translated = base.clone();

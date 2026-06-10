@@ -540,7 +540,7 @@ export class KernelStore {
       undoDepth: kernel.undoDepth(),
       canRedo: kernel.canRedo(),
       redoDepth: kernel.redoDepth(),
-      nextOp: BoolOpTag.Union,
+      nextOp: BoolOpTag.Add,
       meshedBodies: [],
       measureMode: false,
       filletMode: false,
@@ -1036,7 +1036,7 @@ export class KernelStore {
       id = this.kernel.addImportedMesh(
         ref_.positions,
         ref_.indices,
-        BoolOpTag.Union,
+        BoolOpTag.New,
       );
     } catch (err) {
       console.error("fielddraft: convertReferenceToSolid failed", err);
@@ -1063,7 +1063,7 @@ export class KernelStore {
     console.log(`fielddraft: importing mesh as SDF feature — ${triCount} triangles, building BVH…`);
     let id: number;
     try {
-      id = this.kernel.addImportedMesh(positions, indices, BoolOpTag.Union);
+      id = this.kernel.addImportedMesh(positions, indices, BoolOpTag.New);
     } catch (err) {
       console.error("fielddraft: importMeshAsFeature failed", err);
       return null;
@@ -1122,7 +1122,7 @@ export class KernelStore {
     ];
     let id: number;
     try {
-      id = this.kernel.addThread(this.state.nextOp, offset, radius, pitch, depth);
+      id = this.kernel.addThread(BoolOpTag.New, offset, radius, pitch, depth);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addThreadPreset failed", err);
@@ -1212,7 +1212,7 @@ export class KernelStore {
 
   addPrimitive(
     kind: PrimitiveKindName,
-    op: BoolOpTagValue = this.state.nextOp,
+    op: BoolOpTagValue = BoolOpTag.New,
     translate?: [number, number, number],
   ): number {
     const offset: [number, number, number] = translate ?? [0, 0, 0];
@@ -3497,7 +3497,7 @@ export class KernelStore {
         const id = this.kernel.addImportedMesh(
           mesh.positions,
           mesh.indices,
-          BoolOpTag.Union,
+          BoolOpTag.New,
         );
         ids.push(id);
       }
@@ -3623,7 +3623,7 @@ export class KernelStore {
       const id = this.kernel.addImportedMesh(
         posF32,
         idxU32,
-        BoolOpTag.Union,
+        BoolOpTag.New,
       );
       this.setLoading(null);
       this.commit(new Set([id]), id);

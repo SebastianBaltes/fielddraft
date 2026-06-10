@@ -47,7 +47,7 @@ function fakeKernel(): Kernel {
     {
       id: 1,
       name: "Box 1",
-      op: "union",
+      op: "new",
       kind: "box",
       translate: [0, 0, 0],
       rotation: [0, 0, 0, 1],

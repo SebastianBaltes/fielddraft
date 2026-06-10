@@ -142,7 +142,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Box {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center,
                 half_extents: half,
@@ -157,7 +157,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Cyl {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Cylinder {
                 center,
                 radius,
@@ -186,7 +186,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Sphere {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center, radius },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,

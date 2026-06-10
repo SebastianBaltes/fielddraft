@@ -180,9 +180,10 @@ fn transform_command(handle: &str, source: &str, t: &Transform) -> Value {
 }
 
 fn bool_command(handle: &str, op: &BoolOp, a: &str, b: &str) -> Value {
+    // OCCT-side commands stay geometric: Add and New are both fuses.
     let op_name = match op {
-        BoolOp::Union => "union",
-        BoolOp::Difference => "difference",
+        BoolOp::Add | BoolOp::New => "union",
+        BoolOp::Remove => "difference",
         BoolOp::Intersect => "intersect",
     };
     json!({
@@ -314,7 +315,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             name.into(),
-            BoolOp::Union,
+            BoolOp::New,
             prim,
             Transform::IDENTITY,
             mods,
@@ -389,7 +390,7 @@ mod tests {
             radius: 3.0,
             half_height: 15.0,
         });
-        f2.op = BoolOp::Difference;
+        f2.op = BoolOp::Remove;
         let cmds = build_step_commands(&[f1, f2]);
         let arr = cmds.as_array().unwrap();
         assert_eq!(arr.len(), 3);
@@ -587,13 +588,13 @@ mod tests {
             radius: 3.0,
             half_height: 15.0,
         });
-        f2.op = BoolOp::Difference;
+        f2.op = BoolOp::Remove;
         let mut f3 = make_feature("Cyl2", Primitive::Cylinder {
             center: [5.0, 0.0, 0.0],
             radius: 2.0,
             half_height: 15.0,
         });
-        f3.op = BoolOp::Difference;
+        f3.op = BoolOp::Remove;
 
         let cmds = build_step_commands(&[f1, f2, f3]);
         let arr = cmds.as_array().unwrap();

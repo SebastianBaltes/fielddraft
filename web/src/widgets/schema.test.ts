@@ -31,8 +31,9 @@ const extrudeRaw = {
       required: false,
       ui_hint: "horizontal_enum",
       variants: [
-        { key: "union", label: "Union" },
-        { key: "difference", label: "Difference" },
+        { key: "add", label: "Add" },
+        { key: "new", label: "New" },
+        { key: "remove", label: "Remove" },
         { key: "intersect", label: "Intersect" },
       ],
     },
@@ -59,8 +60,9 @@ describe("parseFeatureSchema", () => {
     expect(schema.params[4].widget).toBe("enum");
     expect(schema.params[4].uiHint).toBe("horizontal_enum");
     expect(schema.params[4].variants).toEqual([
-      { key: "union", label: "Union" },
-      { key: "difference", label: "Difference" },
+      { key: "add", label: "Add" },
+      { key: "new", label: "New" },
+      { key: "remove", label: "Remove" },
       { key: "intersect", label: "Intersect" },
     ]);
     expect(schema.params[5].widget).toBe("vec3");
@@ -206,7 +208,7 @@ describe("buildDefaultDefinition", () => {
     expect(def.profile_half_x).toBe(0);
     expect(def.profile_half_y).toBe(0);
     // Enum default is the first variant.
-    expect(def.operation).toBe("union");
+    expect(def.operation).toBe("add");
     expect(def.center).toEqual([0, 0, 0]);
   });
 
@@ -466,17 +468,17 @@ describe("validateParamValue", () => {
   it("accepts variant keys for enum widgets", () => {
     const param = paramOf("enum", {
       variants: [
-        { key: "union", label: "Union" },
-        { key: "difference", label: "Difference" },
+        { key: "add", label: "Add" },
+        { key: "remove", label: "Remove" },
       ],
     });
-    expect(validateParamValue(param, "union")).toBeNull();
-    expect(validateParamValue(param, "difference")).toBeNull();
+    expect(validateParamValue(param, "add")).toBeNull();
+    expect(validateParamValue(param, "remove")).toBeNull();
   });
 
   it("rejects unknown variant keys", () => {
     const param = paramOf("enum", {
-      variants: [{ key: "union", label: "Union" }],
+      variants: [{ key: "add", label: "Add" }],
     });
     expect(validateParamValue(param, "subtract")).not.toBeNull();
   });

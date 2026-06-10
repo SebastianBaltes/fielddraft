@@ -1102,7 +1102,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Sphere {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center, radius },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn single_box_vertices_hug_surface_and_bound_aabb() {
         let half = [25.0, 25.0, 25.0];
-        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], half)], 16);
+        let mesh = mesh_for(&[box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], half)], 16);
         assert!(mesh.vertex_count() > 0);
         assert!(mesh.triangle_count() > 0);
 
@@ -1297,7 +1297,7 @@ mod tests {
         // invariant the zero-copy views on the JS side can't stride
         // correctly.
         let mesh = mesh_for(
-            &[box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [25.0, 25.0, 25.0])],
+            &[box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [25.0, 25.0, 25.0])],
             16,
         );
         assert_eq!(mesh.classifications.len(), mesh.vertex_count());
@@ -1328,8 +1328,8 @@ mod tests {
         // circle should be classified as an Edge (two contributors:
         // box + cylinder).
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
-            cylinder_feature(2, BoolOp::Union, [0.0, 0.0, 0.0], 10.0, 50.0),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            cylinder_feature(2, BoolOp::New, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
         let mesh = mesh_for(&features, 48);
         let mut edge_count = 0usize;
@@ -1365,8 +1365,8 @@ mod tests {
     #[test]
     fn k35a_box_face_vertices_lie_on_surface() {
         let half = [25.0, 25.0, 25.0];
-        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 16);
-        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let mesh = mesh_for(&[box_feature(1, BoolOp::New, [0.0; 3], half)], 16);
+        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::New, [0.0; 3], half)]);
         let mut max_err = 0.0_f32;
         let mut face_count = 0usize;
         for v in 0..mesh.vertex_count() {
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn k35a_cylinder_face_vertices_lie_on_surface() {
         let features = vec![
-            cylinder_feature(1, BoolOp::Union, [0.0; 3], 15.0, 40.0),
+            cylinder_feature(1, BoolOp::New, [0.0; 3], 15.0, 40.0),
         ];
         let mesh = mesh_for(&features, 24);
         let tree = crate::csg::CsgNode::from_decoded(&features);
@@ -1443,8 +1443,8 @@ mod tests {
     #[test]
     fn k35a_hausdorff_distance_box() {
         let half = [30.0, 20.0, 15.0];
-        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 24);
-        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::Union, [0.0; 3], half)]);
+        let mesh = mesh_for(&[box_feature(1, BoolOp::New, [0.0; 3], half)], 24);
+        let tree = crate::csg::CsgNode::from_decoded(&[box_feature(1, BoolOp::New, [0.0; 3], half)]);
         let mut hausdorff = 0.0_f32;
         for v in 0..mesh.vertex_count() {
             let p = [
@@ -1494,7 +1494,7 @@ mod tests {
     fn k35b_box_triangle_count_reduced() {
         let half = [25.0, 25.0, 25.0];
         let mesh = mesh_for(
-            &[box_feature(1, BoolOp::Union, [0.0; 3], half)],
+            &[box_feature(1, BoolOp::New, [0.0; 3], half)],
             16,
         );
         // A 50mm cube at resolution 16 produces ~2700 triangles raw.
@@ -1523,7 +1523,7 @@ mod tests {
     fn k35b_simplified_mesh_stays_manifold_like() {
         let half = [25.0, 25.0, 25.0];
         let mesh = mesh_for(
-            &[box_feature(1, BoolOp::Union, [0.0; 3], half)],
+            &[box_feature(1, BoolOp::New, [0.0; 3], half)],
             16,
         );
         assert!(mesh.triangle_count() > 0);
@@ -1588,8 +1588,8 @@ mod tests {
         // intersections create Edge-classified vertices that define
         // natural face boundaries.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0; 3], [30.0, 20.0, 30.0]),
-            cylinder_feature(2, BoolOp::Difference, [0.0, 0.0, 0.0], 10.0, 30.0),
+            box_feature(1, BoolOp::New, [0.0; 3], [30.0, 20.0, 30.0]),
+            cylinder_feature(2, BoolOp::Remove, [0.0, 0.0, 0.0], 10.0, 30.0),
         ];
         let mesh_without = mesh_for(&features, 32);
         let mesh_with = mesh_for_with_primitives(&features, 32);
@@ -1616,7 +1616,7 @@ mod tests {
     #[test]
     fn k35c_standalone_cylinder_stays_valid() {
         let features = vec![
-            cylinder_feature(1, BoolOp::Union, [0.0; 3], 15.0, 40.0),
+            cylinder_feature(1, BoolOp::New, [0.0; 3], 15.0, 40.0),
         ];
         let mesh = mesh_for_with_primitives(&features, 24);
         let vc = mesh.vertex_count();
@@ -1645,12 +1645,12 @@ mod tests {
         let offset = [500.0_f32, 0.0, 0.0];
         let r = 2.0_f32;
         let center_version = vec![
-            box_feature(1, BoolOp::Union, offset, [30.0, 20.0, 30.0]),
-            cylinder_feature(2, BoolOp::Difference, offset, r, 30.0),
+            box_feature(1, BoolOp::New, offset, [30.0, 20.0, 30.0]),
+            cylinder_feature(2, BoolOp::Remove, offset, r, 30.0),
         ];
         let mut translate_version = vec![
-            box_feature(1, BoolOp::Union, offset, [30.0, 20.0, 30.0]),
-            cylinder_feature(2, BoolOp::Difference, [0.0, 0.0, 0.0], r, 30.0),
+            box_feature(1, BoolOp::New, offset, [30.0, 20.0, 30.0]),
+            cylinder_feature(2, BoolOp::Remove, [0.0, 0.0, 0.0], r, 30.0),
         ];
         translate_version[1].transform.translate = offset;
 
@@ -1684,9 +1684,9 @@ mod tests {
     #[test]
     fn goldfile_box_with_two_holes() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [60.0, 30.0, 60.0]),
-            cylinder_feature(2, BoolOp::Difference, [-25.0, 0.0, 0.0], 10.0, 40.0),
-            cylinder_feature(3, BoolOp::Difference, [25.0, 0.0, 0.0], 10.0, 40.0),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [60.0, 30.0, 60.0]),
+            cylinder_feature(2, BoolOp::Remove, [-25.0, 0.0, 0.0], 10.0, 40.0),
+            cylinder_feature(3, BoolOp::Remove, [25.0, 0.0, 0.0], 10.0, 40.0),
         ];
         let mesh = mesh_for(&features, 32);
 
@@ -1770,7 +1770,7 @@ mod tests {
     #[test]
     fn sparse_box_planar_simplification_works() {
         let half = [25.0, 25.0, 25.0];
-        let mesh = mesh_for(&[box_feature(1, BoolOp::Union, [0.0; 3], half)], 128);
+        let mesh = mesh_for(&[box_feature(1, BoolOp::New, [0.0; 3], half)], 128);
         assert!(mesh.vertex_count() > 0);
         assert_eq!(mesh.indices.len() % 3, 0);
         for &idx in &mesh.indices {

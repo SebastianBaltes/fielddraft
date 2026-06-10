@@ -1008,15 +1008,15 @@ impl CsgNode {
             } else {
                 match (acc, f.op) {
                     (Self::Empty, _) => leaf,
-                    (a, BoolOp::Union) if blend_r > 0.0 => {
+                    (a, op) if op.is_union() && blend_r > 0.0 => {
                         Self::SmoothUnion(Box::new(a), Box::new(leaf), blend_r, blend_mode)
                     }
-                    (a, BoolOp::Union) => Self::Union(Box::new(a), Box::new(leaf)),
-                    (a, BoolOp::Difference) if blend_r > 0.0 => {
+                    (a, op) if op.is_union() => Self::Union(Box::new(a), Box::new(leaf)),
+                    (a, BoolOp::Remove) if blend_r > 0.0 => {
                         Self::SmoothDifference(Box::new(a), Box::new(leaf), blend_r, blend_mode)
                     }
-                    (a, BoolOp::Difference) => Self::Difference(Box::new(a), Box::new(leaf)),
-                    (a, BoolOp::Intersect) => Self::Intersection(Box::new(a), Box::new(leaf)),
+                    (a, BoolOp::Remove) => Self::Difference(Box::new(a), Box::new(leaf)),
+                    (a, _) => Self::Intersection(Box::new(a), Box::new(leaf)),
                 }
             };
         }
@@ -1789,15 +1789,15 @@ fn apply_op(
     blend_mode: BlendMode,
 ) -> CsgNode {
     match op {
-        BoolOp::Union if blend_r > 0.0 => {
+        op if op.is_union() && blend_r > 0.0 => {
             CsgNode::SmoothUnion(Box::new(tree), Box::new(operand), blend_r, blend_mode)
         }
-        BoolOp::Union => CsgNode::Union(Box::new(tree), Box::new(operand)),
-        BoolOp::Difference if blend_r > 0.0 => {
+        op if op.is_union() => CsgNode::Union(Box::new(tree), Box::new(operand)),
+        BoolOp::Remove if blend_r > 0.0 => {
             CsgNode::SmoothDifference(Box::new(tree), Box::new(operand), blend_r, blend_mode)
         }
-        BoolOp::Difference => CsgNode::Difference(Box::new(tree), Box::new(operand)),
-        BoolOp::Intersect => CsgNode::Intersection(Box::new(tree), Box::new(operand)),
+        BoolOp::Remove => CsgNode::Difference(Box::new(tree), Box::new(operand)),
+        _ => CsgNode::Intersection(Box::new(tree), Box::new(operand)),
     }
 }
 
@@ -2308,7 +2308,7 @@ mod tests {
         let features = vec![DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "extrude".to_string(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Extrude {
                 sketch: circle_sketch,
                 half_depth_z: 3.0,
@@ -2356,7 +2356,7 @@ mod tests {
         DecodedFeature {
             id: FeatureId::from_u32(id),
             name: "Shell".to_string(),
-            op: BoolOp::Difference,
+            op: BoolOp::Remove,
             blend_radius: 0.0,
             blend_mode: BlendMode::Fillet,
             target_ids: vec![FeatureId::from_u32(target)],
@@ -2381,7 +2381,7 @@ mod tests {
     fn open_shell_breaks_through_the_open_face_only() {
         // 20³ box centred at origin, top (+Z) face removed, 2 mm wall.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             shell_feature(
                 2,
                 1,
@@ -2542,7 +2542,7 @@ mod tests {
     fn single_box_tree_matches_primitive_sdf() {
         let features = vec![box_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
@@ -2563,11 +2563,11 @@ mod tests {
     #[test]
     fn tree_sdf_matches_linear_fold_for_difference() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             DecodedFeature::from_parts(
                 FeatureId::from_u32(2),
                 "hole".into(),
-                BoolOp::Difference,
+                BoolOp::Remove,
                 Primitive::Sphere {
                     center: [0.0, 0.0, 0.0],
                     radius: 3.0,
@@ -2600,7 +2600,7 @@ mod tests {
     fn aabb_of_box_matches_half_extents() {
         let tree = CsgNode::from_decoded(&[box_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             [0.0, 0.0, 0.0],
             [5.0, 7.0, 9.0],
         )]);
@@ -2612,8 +2612,8 @@ mod tests {
     #[test]
     fn union_aabb_covers_both_children() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            box_feature(2, BoolOp::New, [20.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bb = CsgNode::from_decoded(&features).aabb();
         assert_eq!(bb.min, [-5.0, -5.0, -5.0]);
@@ -2626,7 +2626,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Cyl {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Cylinder {
                 center,
                 radius,
@@ -2642,7 +2642,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(id),
             format!("Sphere {id}"),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center, radius },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -2668,7 +2668,7 @@ mod tests {
         // top of the box. Point on the box top, but outside the
         // cylinder footprint → only the box contributes.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
         let tree = CsgNode::from_decoded(&features);
@@ -2686,7 +2686,7 @@ mod tests {
         // (10, 20, 0) both leaves' individual SDFs are zero → the
         // point is an Edge in the B-Rep proxy.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]),
             cyl_feature(2, [0.0, 0.0, 0.0], 10.0, 50.0),
         ];
         let tree = CsgNode::from_decoded(&features);
@@ -2706,9 +2706,9 @@ mod tests {
         // surfaces pass through the same point → contributors = 3 →
         // classification = Vertex.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(2, BoolOp::Union, [20.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
-            box_feature(3, BoolOp::Union, [10.0, 20.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(2, BoolOp::New, [20.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(3, BoolOp::New, [10.0, 20.0, 0.0], [10.0, 10.0, 10.0]),
         ];
         let tree = CsgNode::from_decoded(&features);
         // All three boxes meet at (10, 10, 10).
@@ -2733,10 +2733,10 @@ mod tests {
         // lateral surface → the difference SDF is zero via the tie
         // `max(box_sdf, -sphere_sdf)`.
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             {
                 let mut f = sphere_feature(2, [10.0, 0.0, 0.0], 4.0);
-                f.op = BoolOp::Difference;
+                f.op = BoolOp::Remove;
                 f
             },
         ];
@@ -2789,7 +2789,7 @@ mod tests {
         // where all six faces are equidistant.
         let features = vec![box_feature(
             1,
-            BoolOp::Union,
+            BoolOp::New,
             [0.0, 0.0, 0.0],
             [10.0, 10.0, 10.0],
         )];
@@ -3054,11 +3054,11 @@ mod tests {
     #[test]
     fn difference_aabb_stays_with_left_operand() {
         let features = vec![
-            box_feature(1, BoolOp::Union, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             DecodedFeature::from_parts(
                 FeatureId::from_u32(2),
                 "hole".into(),
-                BoolOp::Difference,
+                BoolOp::Remove,
                 Primitive::Sphere {
                     center: [0.0, 0.0, 0.0],
                     radius: 3.0,
@@ -3359,7 +3359,7 @@ mod tests {
         let sphere = DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             "Sphere".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Sphere { center: [0.0; 3], radius: 10.0 },
             Transform::IDENTITY,
             PrimitiveModifiers::NONE,
@@ -3368,7 +3368,7 @@ mod tests {
         let cube = DecodedFeature::from_parts(
             FeatureId::from_u32(2),
             "Box".into(),
-            BoolOp::Union,
+            BoolOp::New,
             Primitive::Box {
                 center: [15.0, 0.0, 0.0],
                 half_extents: [5.0; 3],

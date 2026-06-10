@@ -238,7 +238,7 @@ mod tests {
         DecodedFeature::from_parts(
             FeatureId::from_u32(1),
             name.into(),
-            BoolOp::Union,
+            BoolOp::New,
             prim,
             Transform::IDENTITY,
             mods,

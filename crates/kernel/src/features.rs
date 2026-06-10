@@ -898,7 +898,7 @@ pub struct BoxDef {
     pub center: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(name = "Op", default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(name = "Op", default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -958,7 +958,7 @@ pub struct SphereDef {
     pub center: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1021,7 +1021,7 @@ pub struct CylinderDef {
     pub center: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1087,7 +1087,7 @@ pub struct ConeDef {
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1156,7 +1156,7 @@ pub struct ThreadDef {
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1219,7 +1219,7 @@ pub struct TorusDef {
     pub center: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1285,7 +1285,7 @@ pub struct CapsuleDef {
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1349,7 +1349,7 @@ pub struct EllipsoidDef {
     pub radii: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1415,7 +1415,7 @@ pub struct HexPrismDef {
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
     #[param(name = "Blend radius", default = 0.0)]
     pub blend_radius: f32,
@@ -1482,7 +1482,7 @@ pub struct SweepDef {
     pub profiles: ::fielddraft_protocol::Query,
     pub direction: [f32; 3],
     pub length: ::fielddraft_protocol::Length,
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
@@ -2052,7 +2052,7 @@ impl FeatureKind for ShellFeature {
             // `Difference` is purely a partition hint (dock into the target
             // body); `from_decoded` intercepts the sentinel node before any
             // boolean fold.
-            op: BoolOp::Difference,
+            op: BoolOp::Remove,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
             target_ids,
@@ -2086,7 +2086,7 @@ pub struct ImportedMeshDef {
     pub uniform_scale: f32,
     #[param(name = "Z-up", default = false)]
     pub swap_yz: bool,
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    #[param(default = ::fielddraft_protocol::BoolOp::New)]
     pub op: BoolOp,
 }
 
@@ -2236,8 +2236,12 @@ impl FeatureKind for GyroidFeature {
                     if let Some(variants) =
                         param.get_mut("variants").and_then(|v| v.as_array_mut())
                     {
-                        variants
-                            .retain(|v| v.get("key").and_then(|k| k.as_str()) != Some("union"));
+                        variants.retain(|v| {
+                            !matches!(
+                                v.get("key").and_then(|k| k.as_str()),
+                                Some("add") | Some("new")
+                            )
+                        });
                     }
                 }
             }
@@ -2258,7 +2262,7 @@ impl FeatureKind for GyroidFeature {
         positive_f32(thick_mm, GyroidDef::TYPE_NAME, "thickness")?;
 
         let op = match d.op {
-            BoolOp::Union => BoolOp::Intersect,
+            op if op.is_union() => BoolOp::Intersect,
             other => other,
         };
 
@@ -2370,7 +2374,7 @@ impl FeatureKind for HoleFeature {
         ctx.features.push(DecodedFeature::from_parts(
             id.child("0"),
             name,
-            BoolOp::Difference,
+            BoolOp::Remove,
             Primitive::Cylinder {
                 center: [0.0, 0.0, 0.0],
                 radius: diameter_mm / 2.0,
@@ -2482,10 +2486,11 @@ pub struct ExtrudeDef {
     pub profile_half_y: f32,
 
     /// Boolean op used to fold the extruded body into the
-    /// running feature spine. Defaults to [`BoolOp::Union`],
-    /// matching the §4.6 convention that a freshly extruded
-    /// body adds material unless the author says otherwise.
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    /// running feature spine. Defaults to [`BoolOp::Add`]
+    /// (Onshape-style): the extrusion merges into the body it
+    /// touches, so e.g. extruding a box face grows that box
+    /// instead of stacking a second body onto it.
+    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 
     /// Override for the extruded box origin in world space.
@@ -2764,8 +2769,9 @@ pub struct ThickenDef {
     pub up_to_face: ::fielddraft_protocol::Query,
 
     /// Boolean op used to fold the thickened wall into the running spine.
-    /// Defaults to [`BoolOp::Union`].
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    /// Defaults to [`BoolOp::Add`] so the wall merges into the body
+    /// whose face it grew from.
+    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 }
 
@@ -2906,8 +2912,8 @@ pub struct RevolveDef {
     pub profiles: ::fielddraft_protocol::Query,
 
     /// Boolean op used to fold the revolved body into the running
-    /// feature spine. Defaults to [`BoolOp::Union`].
-    #[param(default = ::fielddraft_protocol::BoolOp::Union)]
+    /// feature spine. Defaults to [`BoolOp::Add`] (Onshape-style).
+    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 
     /// Override for the revolve centre in world space.
@@ -3596,9 +3602,9 @@ impl FeatureKind for BooleanFeature {
         let d = BooleanDef::parse(def)?;
 
         let op = match d.operation.as_str() {
-            "Subtract" => BoolOp::Difference,
+            "Subtract" => BoolOp::Remove,
             "Intersect" => BoolOp::Intersect,
-            _ => BoolOp::Union,
+            _ => BoolOp::Add,
         };
 
         let resolve_ids = |mq: &MultiQuery| -> Vec<FeatureId> {
@@ -3632,13 +3638,15 @@ impl FeatureKind for BooleanFeature {
                 continue;
             }
             match op {
-                BoolOp::Union => {
-                    feature.op = BoolOp::Union;
+                op if op.is_union() => {
                     // Seed the body with the first tool; route every other
                     // tool into that same body via an explicit link so the
                     // partition pass merges them into one Part instead of
-                    // spawning a body per tool. Two rules keep union
-                    // transitive across operations:
+                    // spawning a body per tool. Non-seed tools become `Add`
+                    // (the op that follows `target_ids`); the seed stays
+                    // `New` unless it already carries links — then it must
+                    // be `Add` so the partition pass still follows them.
+                    // Two rules keep union transitive across operations:
                     //
                     // * Non-seed tools *accumulate* their links (push, don't
                     //   overwrite): a part shared by two unions (a sphere
@@ -3655,22 +3663,31 @@ impl FeatureKind for BooleanFeature {
                     //   would drop the earlier link and split the part (the
                     //   "2 Parts that should be 1" bug).
                     if Some(idx) != first_tool_pos {
+                        feature.op = BoolOp::Add;
                         if let Some(seed) = &first_tool_id {
                             if !feature.target_ids.contains(seed) {
                                 feature.target_ids.push(seed.clone());
                             }
                         }
+                    } else if feature.target_ids.is_empty() {
+                        feature.op = BoolOp::New;
+                    } else {
+                        feature.op = BoolOp::Add;
                     }
                 }
                 BoolOp::Intersect => {
                     if tool_ids.len() > 1 && Some(idx) == first_tool_pos {
-                        feature.op = BoolOp::Union;
+                        feature.op = if feature.target_ids.is_empty() {
+                            BoolOp::New
+                        } else {
+                            BoolOp::Add
+                        };
                     } else {
                         feature.op = BoolOp::Intersect;
                     }
                 }
-                BoolOp::Difference => {
-                    feature.op = BoolOp::Difference;
+                _ => {
+                    feature.op = BoolOp::Remove;
                 }
             }
         }
@@ -3901,7 +3918,7 @@ mod tests {
             json!({
                 "half_extents": [10.0, 20.0, 30.0],
                 "translate": [100.0, 0.0, 0.0],
-                "op": "union"
+                "op": "new"
             }),
         );
         registry.regenerate(&mut ctx, &[call], None).unwrap();
@@ -3909,7 +3926,7 @@ mod tests {
         assert_eq!(ctx.features.len(), 1);
         let f = &ctx.features[0];
         assert_eq!(f.id, id(1));
-        assert_eq!(f.op, BoolOp::Union);
+        assert_eq!(f.op, BoolOp::New);
         assert_eq!(f.transform.translate, [100.0, 0.0, 0.0]);
         match &f.export_primitive().expect("box primitive") {
             Primitive::Box {
@@ -3937,7 +3954,7 @@ mod tests {
                 json!({
                     "radius": 2.0,
                     "half_height": 10.0,
-                    "op": "difference"
+                    "op": "remove"
                 }),
             ),
         ];
@@ -3956,7 +3973,7 @@ mod tests {
                 ..
             }) if radius == 2.0 && half_height == 10.0
         ));
-        assert_eq!(ctx.features[1].op, BoolOp::Difference);
+        assert_eq!(ctx.features[1].op, BoolOp::Remove);
     }
 
     #[test]
@@ -4266,7 +4283,7 @@ mod tests {
         depth: f32,
         #[param(default = [1.0, 2.0, 3.0])]
         origin: [f32; 3],
-        #[param(default = ::fielddraft_protocol::BoolOp::Difference)]
+        #[param(default = ::fielddraft_protocol::BoolOp::Remove)]
         op: BoolOp,
     }
 
@@ -4301,7 +4318,7 @@ mod tests {
             ParamFixture {
                 depth: 5.0,
                 origin: [1.0, 2.0, 3.0],
-                op: BoolOp::Difference,
+                op: BoolOp::Remove,
             }
         );
     }
@@ -4347,10 +4364,11 @@ mod tests {
     }
 
     #[test]
-    fn param_boolop_accepts_all_three_operator_strings() {
+    fn param_boolop_accepts_all_four_operator_strings() {
         for (input, expected) in [
-            ("union", BoolOp::Union),
-            ("difference", BoolOp::Difference),
+            ("add", BoolOp::Add),
+            ("new", BoolOp::New),
+            ("remove", BoolOp::Remove),
             ("intersect", BoolOp::Intersect),
         ] {
             let def = json!({ "op": input });
@@ -4429,10 +4447,10 @@ mod tests {
         let mut legacy_doc = Document::default();
         let mut legacy: Vec<DecodedFeature> = Vec::new();
         for (kind, params) in [
-            ("box", ([10.0, 10.0, 10.0], [0.0, 0.0, 0.0], BoolOp::Union)),
+            ("box", ([10.0, 10.0, 10.0], [0.0, 0.0, 0.0], BoolOp::New)),
             (
                 "box",
-                ([5.0, 5.0, 5.0], [80.0, 0.0, 0.0], BoolOp::Difference),
+                ([5.0, 5.0, 5.0], [80.0, 0.0, 0.0], BoolOp::Remove),
             ),
         ] {
             let id = legacy_doc.allocate_id();
@@ -4467,7 +4485,7 @@ mod tests {
                 json!({
                     "half_extents": [10.0, 10.0, 10.0],
                     "translate": [0.0, 0.0, 0.0],
-                    "op": "union"
+                    "op": "new"
                 }),
             ),
             FeatureCall::new(
@@ -4476,7 +4494,7 @@ mod tests {
                 json!({
                     "half_extents": [5.0, 5.0, 5.0],
                     "translate": [80.0, 0.0, 0.0],
-                    "op": "difference"
+                    "op": "remove"
                 }),
             ),
         ];
@@ -4706,7 +4724,7 @@ mod tests {
             .iter()
             .map(|v| v["key"].as_str().unwrap())
             .collect();
-        assert_eq!(variant_keys, vec!["union", "difference", "intersect"]);
+        assert_eq!(variant_keys, vec!["add", "new", "remove", "intersect"]);
         assert_eq!(map["center"]["type"], json!("vec3"));
         assert_eq!(map["center"]["required"], json!(false));
         // #9: optional shell thickness hollows the extruded body.
@@ -4775,7 +4793,7 @@ mod tests {
         assert_eq!(ctx.features.len(), 1);
         let f = &ctx.features[0];
         assert_eq!(f.id, id(1));
-        assert_eq!(f.op, BoolOp::Union);
+        assert_eq!(f.op, BoolOp::Add);
         match &f.export_primitive().expect("primitive") {
             Primitive::Box { center, half_extents } => {
                 assert_eq!(*center, [0.0, 0.0, 0.0]);
@@ -4821,12 +4839,12 @@ mod tests {
             "depth": { "value": 10.0, "unit": "mm" },
             "profile_half_x": 2.0,
             "profile_half_y": 3.0,
-            "operation": "difference",
+            "operation": "remove",
             "center": [100.0, 50.0, 0.0],
         });
         feature.execute(&mut ctx, &id(7), &def).unwrap();
         let f = &ctx.features[0];
-        assert_eq!(f.op, BoolOp::Difference);
+        assert_eq!(f.op, BoolOp::Remove);
         match &f.export_primitive().expect("primitive") {
             Primitive::Box { center, half_extents } => {
                 assert_eq!(*center, [100.0, 50.0, 0.0]);
@@ -4930,7 +4948,7 @@ mod tests {
                         "profile_half_x": 5.0,
                         "profile_half_y": 5.0,
                         "center": [(i as f32) * SPACING_MM, 0.0, 0.0],
-                        "operation": "union",
+                        "operation": "new",
                     }),
                 )
             })
@@ -4994,7 +5012,7 @@ mod tests {
                 "half_extents": [5.0, 5.0, 5.0],
                 "center": [0.0, 0.0, 0.0],
                 "translate": [0.0, 0.0, 0.0],
-                "op": "union"
+                "op": "new"
             }),
         );
         let pattern_call = FeatureCall::new(
@@ -5060,7 +5078,7 @@ mod tests {
                         id(1),
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5095,7 +5113,7 @@ mod tests {
                         id(1),
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5171,7 +5189,7 @@ mod tests {
             json!({
                 "half_extents": [1.0, 1.0, 1.0],
                 "translate": [10.0, 0.0, 0.0],
-                "op": "union"
+                "op": "new"
             }),
         );
         let pattern_call = FeatureCall::new(
@@ -5231,7 +5249,7 @@ mod tests {
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
                             "translate": [5.0, 0.0, 0.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5269,7 +5287,7 @@ mod tests {
                         json!({
                             "radius": 1.0,
                             "translate": [10.0, 0.0, 2.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5310,7 +5328,7 @@ mod tests {
                     FeatureCall::new(
                         "box",
                         id(1),
-                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "new" }),
                     ),
                     FeatureCall::new(
                         "circular_pattern",
@@ -5412,7 +5430,7 @@ mod tests {
         // sync_feature_calls skips it.
         assert_eq!(f.id, id(1).child("0"));
         assert!(f.id.parent().is_some());
-        assert_eq!(f.op, BoolOp::Difference);
+        assert_eq!(f.op, BoolOp::Remove);
         assert_eq!(f.transform.translate, [10.0, 0.0, 0.0]);
         match &f.export_primitive().expect("primitive") {
             Primitive::Cylinder {
@@ -5467,12 +5485,12 @@ mod tests {
         let mut box_call = FeatureCall::new(
             "box",
             id(1),
-            json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+            json!({ "half_extents": [1.0, 1.0, 1.0], "op": "new" }),
         );
         let sphere_call = FeatureCall::new(
             "sphere",
             id(2),
-            json!({ "radius": 2.0, "op": "union" }),
+            json!({ "radius": 2.0, "op": "new" }),
         );
         box_call.suppressed = true;
         registry
@@ -5500,7 +5518,7 @@ mod tests {
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
                             "translate": [10.0, 5.0, -3.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5537,7 +5555,7 @@ mod tests {
         let plane_box = FeatureCall::new(
             "box",
             id(1),
-            json!({ "half_extents": [5.0, 5.0, 5.0], "op": "union" }),
+            json!({ "half_extents": [5.0, 5.0, 5.0], "op": "new" }),
         );
         registry
             .regenerate(&mut ctx, std::slice::from_ref(&plane_box), None)
@@ -5567,7 +5585,7 @@ mod tests {
                         json!({
                             "half_extents": [1.0, 1.0, 1.0],
                             "translate": [20.0, 0.0, 0.0],
-                            "op": "union"
+                            "op": "new"
                         }),
                     ),
                     FeatureCall::new(
@@ -5608,7 +5626,7 @@ mod tests {
                     FeatureCall::new(
                         "box",
                         id(1),
-                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "union" }),
+                        json!({ "half_extents": [1.0, 1.0, 1.0], "op": "new" }),
                     ),
                     FeatureCall::new(
                         "mirror",
@@ -6802,7 +6820,7 @@ mod tests {
         let bore = FeatureCall::new(
             "cylinder",
             id(2),
-            json!({ "radius": 3.0, "half_height": 5.0, "op": "difference" }),
+            json!({ "radius": 3.0, "half_height": 5.0, "op": "remove" }),
         );
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -6953,7 +6971,7 @@ mod tests {
         DecodedFeature {
             id: id(n),
             name: format!("Revolve {n}"),
-            op: BoolOp::Union,
+            op: BoolOp::New,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
             target_ids: vec![],
@@ -7052,7 +7070,7 @@ mod tests {
         DecodedFeature {
             id: id(n),
             name: format!("Extrude {n}"),
-            op: BoolOp::Union,
+            op: BoolOp::New,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
             target_ids: vec![],
@@ -7149,7 +7167,7 @@ mod tests {
         let full_feature = DecodedFeature {
             id: id(3),
             name: "full".into(),
-            op: BoolOp::Union,
+            op: BoolOp::New,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
             target_ids: vec![],
@@ -7305,7 +7323,7 @@ mod tests {
                             "half_extents": [5.0, 5.0, 5.0],
                             "center": [0.0, 0.0, 10.0],
                             "translate": anchor_translate,
-                            "op": "difference",
+                            "op": "remove",
                         }),
                     ),
                 ],
