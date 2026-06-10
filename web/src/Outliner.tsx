@@ -222,7 +222,15 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   const selectedSchema = useMemo<FeatureSchema | null>(() => {
     if (!selectedFeature) return null;
     try {
-      return fd.schemaForType(selectedFeature.kind);
+      const schema = fd.schemaForType(selectedFeature.kind);
+      // A committed sketch edits its PLANE from the detail panel (ticket
+      // yx6a, Onshape's "Sketch plane" property); the sub_calls blob is
+      // owned by the sketch session and would render as a giant JSON
+      // textarea, so it is filtered out of the dialog.
+      if (selectedFeature.kind === "sketch") {
+        return { ...schema, params: schema.params.filter((p) => p.key === "plane") };
+      }
+      return schema;
     } catch {
       // The kernel may report a kind name the schema lookup
       // doesn't know about (future feature types, stale caches).
@@ -278,11 +286,22 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   const handleDialogChange = (next: Record<string, unknown>) => {
     setDialogDraft(next);
     if (!selectedFeature) return;
-    // Sketches have their own reentry session, so the generic
-    // edit path is skipped for them. Every other feature kind
-    // (primitives, extrude, linear/circular/mirror patterns)
-    // round-trips through replaceFeatureCallParams.
-    if (selectedFeature.kind === "sketch") return;
+    // A sketch's GEOMETRY is owned by the reentry session, but its PLANE
+    // is an ordinary query param (ticket yx6a): write plane changes
+    // through, preserving everything else (notably sub_calls, which the
+    // filtered dialog never carries).
+    if (selectedFeature.kind === "sketch") {
+      let current: Record<string, unknown>;
+      try {
+        current = store.getFeatureParams(selectedFeature.id);
+      } catch {
+        return;
+      }
+      if (typeof next.plane === "string" && next.plane !== current.plane) {
+        store.updateFeatureParams(selectedFeature.id, { ...current, plane: next.plane });
+      }
+      return;
+    }
     // K8.12: skip the kernel round-trip while a formula field
     // is still being typed (just the `=` sigil with no body).
     // The dialog keeps the draft locally; commit fires on the

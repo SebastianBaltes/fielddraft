@@ -32,5 +32,10 @@ export function formatQueryDisplay(
     }
     return inner.replace(/_/g, " ");
   }
+  // A picked face plane (ticket yx6a). The hash is meaningless to a human —
+  // shorten it; resolving "Face of <feature>" needs a brep lookup the label
+  // layer doesn't have.
+  const face = raw.match(/^qFace\((\d+)\)$/);
+  if (face) return `Face (${face[1].slice(0, 6)}…)`;
   return raw;
 }
