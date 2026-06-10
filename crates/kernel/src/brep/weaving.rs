@@ -41,6 +41,7 @@ use crate::bvh::BoundedCsg;
 use crate::compose_transforms;
 use crate::csg::{offset_halfspace_inward, primitive_halfspaces, BranchId};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive};
+use fielddraft_protocol::sketch2d::{g1_group_segments, SketchSegment, PATH_G1_COS_THRESHOLD};
 use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
@@ -314,14 +315,100 @@ fn collect_prim_walls(prim: &Sketch2dPrimitive, base: u32, out: &mut Vec<(u32, S
                 out.push((base + e as u32, SketchWall::Line { normal: [nx, ny], offset }));
             }
         }
-        // Sector and Path (lines, quad-béziers, arcs) are not enumerated
-        // here: Sector mixes radial lines + an arc into a single group 0,
-        // and Path groups can be curved. They fall back to tessellated
-        // faces (DL-50). A Path made purely of straight, per-segment lines
-        // could in principle be lifted, but its G1 grouping can merge
-        // collinear segments, so we conservatively skip it.
-        Sketch2dPrimitive::Sector { .. } | Sketch2dPrimitive::Path { .. } => {}
+        // A closed Path's straight / circular G1 groups lift exactly like
+        // Polygon edges / Circle rims (ticket 9zlq: a face-extrude profile is
+        // always a Path, and skipping it sent the whole prism to the octree,
+        // whose sample fits bowed every edge). G1 grouping can merge
+        // *near*-collinear segments (cos > 0.999 ≈ 2.5° per joint), so a Line
+        // group is lifted only when every endpoint sits on the group chord
+        // within a tight tolerance; an Arc group only when all arcs share one
+        // circle. Curved (Bézier / mixed) groups are skipped and keep their
+        // tessellated faces (DL-50).
+        Sketch2dPrimitive::Path { segments, closed } => {
+            if !*closed || segments.is_empty() {
+                return;
+            }
+            let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+            let ccw = path_chord_signed_area(segments) > 0.0;
+            let n_groups = groups.iter().copied().max().unwrap_or(0) + 1;
+            for g in 0..n_groups {
+                let segs: Vec<&SketchSegment> = segments
+                    .iter()
+                    .zip(&groups)
+                    .filter(|&(_, &gi)| gi == g)
+                    .map(|(s, _)| s)
+                    .collect();
+                if let Some(wall) = lift_path_group(&segs, ccw) {
+                    out.push((base + g, wall));
+                }
+            }
+        }
+        // Sector mixes radial lines + an arc into a single boundary group 0,
+        // which no single analytic surface matches → tessellated (DL-50).
+        Sketch2dPrimitive::Sector { .. } => {}
     }
+}
+
+/// Lift one G1 path group to an analytic wall: an all-`Line` group that is
+/// genuinely straight becomes a plane wall, an all-`Arc` group on one common
+/// circle becomes a cylinder wall. Anything else returns `None` (tessellated).
+fn lift_path_group(segs: &[&SketchSegment], ccw: bool) -> Option<SketchWall> {
+    if segs.iter().all(|s| matches!(s, SketchSegment::Line { .. })) {
+        let a = segs.first()?.start_point();
+        let b = segs.last()?.end_point();
+        let ex = b[0] - a[0];
+        let ey = b[1] - a[1];
+        let len = (ex * ex + ey * ey).sqrt();
+        if len < 1e-9 {
+            return None;
+        }
+        // Reject a G1 chain that merely *bends slowly*: every interior joint
+        // must lie on the chord a→b.
+        let tol = (len * 1e-5).max(1e-6);
+        for s in segs {
+            for p in [s.start_point(), s.end_point()] {
+                let d = ((p[0] - a[0]) * ey - (p[1] - a[1]) * ex).abs() / len;
+                if d > tol {
+                    return None;
+                }
+            }
+        }
+        let (nx, ny) = if ccw { (ey / len, -ex / len) } else { (-ey / len, ex / len) };
+        let offset = nx * a[0] + ny * a[1];
+        return Some(SketchWall::Line { normal: [nx, ny], offset });
+    }
+    if segs.iter().all(|s| matches!(s, SketchSegment::Arc { .. })) {
+        let SketchSegment::Arc { center, radius, .. } = segs[0] else {
+            unreachable!("all-Arc group");
+        };
+        let tol = (radius * 1e-5).max(1e-6);
+        for s in segs {
+            let SketchSegment::Arc { center: c, radius: r, .. } = s else {
+                unreachable!("all-Arc group");
+            };
+            if (c[0] - center[0]).abs() > tol
+                || (c[1] - center[1]).abs() > tol
+                || (r - radius).abs() > tol
+            {
+                return None;
+            }
+        }
+        return Some(SketchWall::Circle { center: *center, radius: *radius });
+    }
+    None
+}
+
+/// Winding sign of a closed path via the shoelace area of its segment-endpoint
+/// chords. Arc bulges shift the area but not its sign for any sane (simple,
+/// non-self-intersecting) profile, which is all the outward-normal choice needs.
+fn path_chord_signed_area(segments: &[SketchSegment]) -> f32 {
+    let mut area = 0.0f32;
+    for s in segments {
+        let a = s.start_point();
+        let b = s.end_point();
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    area * 0.5
 }
 
 fn polygon_signed_area(v: &[[f32; 2]]) -> f32 {
@@ -3104,8 +3191,9 @@ mod tests {
 
     #[test]
     fn curved_path_extrude_falls_back_to_tessellated() {
-        // A closed path with a quad-bézier group stays tessellated for
-        // its curved wall (DL-50 documented limit). Caps remain analytic.
+        // A closed path with a quad-bézier group stays tessellated for that
+        // curved wall (DL-50 documented limit). The straight Line groups and
+        // the caps lift analytically (ticket 9zlq).
         let path = ProtoSketch2d::Prim(ProtoSketch2dPrim::Path {
             segments: vec![
                 SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
@@ -3117,10 +3205,79 @@ mod tests {
         });
         let body = extrude_body(path, 1.0);
         let map = branch_halfspace_map(&body);
-        // Only the 2 caps are analytic; the path walls are not enumerated.
-        assert_eq!(map.len(), 2, "only caps analytic for a curved path");
+        // 2 caps + 3 straight walls; the bézier group (G1 group 1) is absent.
+        assert_eq!(map.len(), 5, "caps + straight walls analytic, bézier wall not");
         let top = BranchId::from_feature_sub(&FeatureId::from_u32(1), BranchId::EXTRUDE_CAP_TOP_SUB);
         assert!(map.contains_key(&top.as_u32()));
+        let bezier = BranchId::from_feature_sub(&FeatureId::from_u32(1), 1);
+        assert!(!map.contains_key(&bezier.as_u32()), "bézier wall must stay tessellated");
+    }
+
+    #[test]
+    fn straight_path_extrude_lifts_all_walls_as_planes() {
+        // Ticket 9zlq: a face-extrude profile is a Path of straight Lines.
+        // Every G1 line group must lift to an analytic plane wall with an
+        // OUTWARD normal, so the prism weaves on the seed path instead of
+        // bowing through the octree fallback.
+        let path = ProtoSketch2d::Prim(ProtoSketch2dPrim::Path {
+            segments: vec![
+                SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
+                SketchSegment::Line { start: [1.0, -1.0], end: [1.0, 1.0] },
+                SketchSegment::Line { start: [1.0, 1.0], end: [-1.0, 1.0] },
+                SketchSegment::Line { start: [-1.0, 1.0], end: [-1.0, -1.0] },
+            ],
+            closed: true,
+        });
+        let body = extrude_body(path, 1.0);
+        let map = branch_halfspace_map(&body);
+        assert_eq!(map.len(), 6, "4 line walls + 2 caps");
+        // Group g is segment g here (every corner breaks G1). Expected
+        // outward normals for the CCW square: −y, +x, +y, −x; offset 1.
+        let expect = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]];
+        for (g, want) in expect.iter().enumerate() {
+            let b = BranchId::from_feature_sub(&FeatureId::from_u32(1), g as u32);
+            let (hs, _) = map.get(&b.as_u32()).expect("line wall lifted");
+            let HalfSpace::Plane { normal, offset } = hs else {
+                panic!("line wall must lift to a plane, got {hs:?}");
+            };
+            assert!(
+                (normal[0] - want[0]).abs() < 1e-6
+                    && (normal[1] - want[1]).abs() < 1e-6
+                    && normal[2].abs() < 1e-6,
+                "group {g}: outward normal {normal:?}, want {want:?}"
+            );
+            assert!((offset - 1.0).abs() < 1e-6, "group {g}: offset {offset}");
+        }
+    }
+
+    #[test]
+    fn bent_g1_line_chain_is_not_lifted() {
+        // Two lines bending by ~1.4° share a G1 group (cos > 0.999) but are
+        // NOT one plane — the straightness gate must reject the lift. This is
+        // the exact hazard the old blanket Path skip guarded against.
+        let bend = 0.025f32; // radians ≈ 1.43°, cos ≈ 0.99969 > 0.999
+        let mid = [1.0, 0.0];
+        let end = [1.0 + bend.cos(), bend.sin()];
+        let path = ProtoSketch2d::Prim(ProtoSketch2dPrim::Path {
+            segments: vec![
+                SketchSegment::Line { start: [0.0, 0.0], end: mid },
+                SketchSegment::Line { start: mid, end },
+                SketchSegment::Line { start: end, end: [1.0, 1.0] },
+                SketchSegment::Line { start: [1.0, 1.0], end: [0.0, 1.0] },
+                SketchSegment::Line { start: [0.0, 1.0], end: [0.0, 0.0] },
+            ],
+            closed: true,
+        });
+        let body = extrude_body(path, 1.0);
+        let map = branch_halfspace_map(&body);
+        // The bent chain is one G1 group and must be skipped; the remaining
+        // 3 straight walls + 2 caps lift.
+        let bent = BranchId::from_feature_sub(&FeatureId::from_u32(1), 0);
+        assert!(
+            !map.contains_key(&bent.as_u32()),
+            "a bent G1 chain must not lift to a single plane"
+        );
+        assert_eq!(map.len(), 5, "3 straight walls + 2 caps");
     }
 
     // ── DL-52: within-body booleans (Difference / Intersect) ─────────────

@@ -6273,6 +6273,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ticket_9zlq_face_extrude_prism_weaves_straight_edges() {
+        // Ticket 20260610-104820-9zlq: the user's exact .fdraft — the box's +y
+        // face extruded 20 mm. The face-extrude profile is a Path (4 straight
+        // Lines), which the analytic wall lifting used to skip entirely, so
+        // the prism fell to the octree route whose sample fits bowed every
+        // edge ("Kanten falsch, scheinen geschwungen an den Ecken", up to
+        // 16.8 mm chord deviation). With Path G1 groups lifted to planes the
+        // prism weaves analytically: watertight, 12 straight edges.
+        let mut k = Kernel::new();
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Part",
+            "feature_calls": [
+                {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"union","translate":[0,0,0]}},
+                {"type":"boolean","id":10,"params":{"keep_tools":false,"operation":"Union","targets":"","tools":"qCreatedBy(2),qCreatedBy(1)"}},
+                {"type":"translate","id":11,"params":{"target_id":1,"translate":[-23.49043846130371,1.4090451002120972,5.554038047790527]}},
+                {"type":"extrude","id":15,"params":{"depth":{"unit":"mm","value":20},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"qEdge(923402582954313589)","symmetric":false}}
+            ],
+            "next_feature_id": 17
+        }"#;
+        k.load_json(json).unwrap();
+        assert_eq!(k.body_count(), 2, "box body + face-extrude prism body");
+        for body in 0..2 {
+            let counts: serde_json::Value =
+                serde_json::from_str(&k.body_brep_counts(body)).unwrap();
+            assert_eq!(
+                counts["watertight"],
+                serde_json::json!(true),
+                "body {body} must weave watertight, got {counts}"
+            );
+            assert_eq!(counts["faces"], serde_json::json!(6), "body {body}: {counts}");
+            assert_eq!(counts["edges"], serde_json::json!(12), "body {body}: {counts}");
+            assert_eq!(counts["vertices"], serde_json::json!(8), "body {body}: {counts}");
+
+            // Every edge of both cuboids is a straight line: no rendered
+            // polyline point may deviate from its own chord by more than
+            // 10 µm (the octree-fallback regression bowed them by ~17 mm).
+            let edges: serde_json::Value =
+                serde_json::from_str(&k.body_brep_edges(body)).unwrap();
+            for e in edges.as_array().unwrap() {
+                let pts: Vec<f64> = e["points"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect();
+                let n = pts.len() / 3;
+                let p0 = [pts[0], pts[1], pts[2]];
+                let p1 = [pts[(n - 1) * 3], pts[(n - 1) * 3 + 1], pts[(n - 1) * 3 + 2]];
+                let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                assert!(len > 1.0, "degenerate edge chord (closed-loop scribble?)");
+                let u = [d[0] / len, d[1] / len, d[2] / len];
+                for c in pts.chunks(3) {
+                    let v = [c[0] - p0[0], c[1] - p0[1], c[2] - p0[2]];
+                    let t = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+                    let perp = [v[0] - t * u[0], v[1] - t * u[1], v[2] - t * u[2]];
+                    let dev =
+                        (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
+                    assert!(
+                        dev < 0.01,
+                        "body {body} edge {}–{} bows {dev:.4} mm off its chord at {c:?}",
+                        e["a"], e["b"]
+                    );
+                }
+            }
+        }
+    }
+
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.
     fn step_cartesian_points(step: &str) -> Vec<[f64; 3]> {
         let mut out = Vec::new();
