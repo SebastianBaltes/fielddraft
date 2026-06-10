@@ -28,6 +28,7 @@ import {
   ViewCube,
   ClearColorSync,
 } from "./viewportCamera";
+import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import {
   SketchOverlay3D,
   SelectionTransformGizmo,
@@ -109,6 +110,7 @@ function Scene({ ndc, onPick, renderMode, showEdges, brepEdgeMode }: SceneProps)
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <SelectionTransformGizmo />
+      <ExtrudeDepthGizmo />
       <SketchOverlay3D />
       <DatumOverlay />
       <Invalidator ndc={ndc} />

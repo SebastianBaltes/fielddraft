@@ -919,8 +919,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
           kind="extrude"
           title={
             selectedFaceQueries.length > 0
-              ? "Extrude selected face(s) (10 mm)"
-              : "Extrude latest sketch (20 mm)"
+              ? "Extrude selected face(s) (25 mm)"
+              : "Extrude latest sketch (25 mm)"
           }
           testId="extrude-latest-sketch"
           disabled={!hasSketch && selectedFaceQueries.length === 0}
@@ -929,7 +929,7 @@ export function Toolbar({ store, state }: ToolbarProps) {
               store.addExtrudeFaces(selectedFaceQueries);
               store.clearElementSelection();
             } else {
-              store.addExtrudeFromLatestSketch(20);
+              store.addExtrudeFromLatestSketch(25);
             }
           }}
         />

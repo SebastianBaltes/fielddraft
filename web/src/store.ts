@@ -1557,10 +1557,10 @@ export class KernelStore {
   /** Extrude one or more coplanar planar faces (P1). `faceQueries` are
    *  `qFace(<idHash>)` strings (one per selected face); they are joined into a
    *  single multi-query and swept `depthMm` blind (outward from the face, the
-   *  Onshape default). Depth/mode stay editable afterwards via the feature
-   *  dialog. Returns the new feature id, or `null` on a kernel error (e.g. the
-   *  faces are not coplanar). */
-  addExtrudeFaces(faceQueries: string[], depthMm = 10): number | null {
+   *  Onshape default; 25 mm per ticket jn3t). Depth/mode stay editable
+   *  afterwards via the feature dialog. Returns the new feature id, or `null`
+   *  on a kernel error (e.g. the faces are not coplanar). */
+  addExtrudeFaces(faceQueries: string[], depthMm = 25): number | null {
     if (faceQueries.length === 0) return null;
     let id: number;
     try {
