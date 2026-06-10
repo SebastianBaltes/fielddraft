@@ -2,6 +2,22 @@
 
 SSOT für den Umbau des Sketch-Workflows. Stand: 2026-06-10, ab v0.6.40.
 
+## STATUS: UMGESETZT (v0.6.49, Commits cd3bde7…93565a3)
+
+Beide Tickets sind erledigt; Browser-verifiziert (Sketch auf Box-Face
+zeichnen, Plane mid-session per ⊕-Pick auf andere Face wechseln,
+Finish, Extrude entlang Face-Normale). Die Umsetzung weicht in EINEM
+Punkt bewusst vom Phasenplan ab: Statt die ~3400 Zeilen
+SketchCanvas2d-Tools auf einen neuen 3D-Layer zu portieren (Phase 2/3
+unten), wurde `sketchCameraBridge` zur Projektionsschicht umgebaut —
+`sketchToScreen` projiziert (u,v) durchs aufgelöste Plane-Frame mit
+der ECHTEN Kamera, `screenToSketch` mappt per Kamera-Ray ∩ Ebene
+zurück. Alle Tools/Snapping/Grips laufen unverändert; nur Grid und
+Kreis/Ellipse-Zeichnung wurden auf Sketch-Space-Sampling umgestellt.
+Der CameraRig-sketchActive-Zweig ist entfernt; ein eigener
+`SketchSessionOverlay3D` (Phase 2.2) wurde dadurch unnötig.
+Doku: ARCHITECTURE.md → „Sketch in 3D".
+
 ## Ziel (aus den Tickets)
 
 - **yx6a:** Sketch ist ein Feature wie jedes andere, mit Property **Sketch
