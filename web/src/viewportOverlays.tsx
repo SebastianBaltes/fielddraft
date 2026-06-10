@@ -1535,14 +1535,15 @@ export function BRepSelectedOverlay() {
   );
   // Selected edges use a *fat* line (LineSegments2 + Line2NodeMaterial). A
   // plain LineBasicMaterial silently ignores `linewidth` on WebGPU/WebGL — it
-  // always rasterises 1px — so the 2px the ticket asked for only materialises
-  // through the instanced screen-space line shader. The WebGPU variant derives
-  // its pixel scale from the built-in viewport/DPR nodes, so unlike the WebGL
+  // always rasterises 1px — so a visible stroke only materialises through the
+  // instanced screen-space line shader. The WebGPU variant derives its pixel
+  // scale from the built-in viewport/DPR nodes, so unlike the WebGL
   // LineMaterial there is no `resolution` uniform to keep in sync.
+  // 4 px matches Onshape's chunky selected-edge stroke (ticket 6btt).
   const edgeMatRef = useRef(
     new Line2NodeMaterial({
       color: ELEMENT_SELECTION_COLOR,
-      linewidth: 2,
+      linewidth: 4,
       worldUnits: false,
       depthTest: false,
       depthWrite: false,
