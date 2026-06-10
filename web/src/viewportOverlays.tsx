@@ -403,25 +403,6 @@ function polylineToSegments(points: number[]): Float32Array {
  *  tighter than the vertex radius so a corner still wins over its edges. */
 const EDGE_PICK_NDC_RADIUS = 0.022;
 
-/** Shortest distance, in NDC, from point `p` to the segment `a`–`b`. All three
- *  are 2-component {x,y}. Used to snap the cursor to the nearest B-Rep edge. */
-function ndcPointSegmentDistance(
-  px: number,
-  py: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
-  if (t < 0) t = 0;
-  else if (t > 1) t = 1;
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-}
-
 /**
  * Draws the analytic B-Rep edges (from the woven, cached kernel B-Rep — *not*
  * the mesh) as a dark wireframe overlay, and highlights the edge the cursor is
@@ -447,7 +428,6 @@ export function BRepEdgeOverlay({
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
   const baseGeometryRef = useRef(new THREE.BufferGeometry());
-  const hoverGeometryRef = useRef(new THREE.BufferGeometry());
   const baseMaterialRef = useRef(
     new THREE.LineBasicMaterial({
       color: 0x1e293b,
@@ -457,15 +437,21 @@ export function BRepEdgeOverlay({
     }),
   );
   // Edge hover paints in a LIGHTER tint of the element-selection colour
-  // (ticket m0yw: same hue as the selected edge, just brighter), 1px wide: a
-  // `LineBasicMaterial` always rasterises 1px on WebGPU/WebGL (`linewidth` is
-  // a no-op there). The bolder 2px fat line stays reserved for the *selected*
-  // edge so hover and selection read the same hue but differ in weight too.
+  // (ticket m0yw: same hue as the selected edge, just brighter). It renders
+  // through the same fat-line path as the *selected* edge (LineSegments2 +
+  // Line2NodeMaterial) because that is the one line path proven to composite
+  // over the SDF passes on the WebGPU backend — a plain LineSegments hover
+  // overlay never showed up there. 1px wide; the bolder 2px stays reserved
+  // for the selection, so hover and selection share the hue but differ in
+  // brightness and weight.
   const hoverMaterialRef = useRef(
-    new THREE.LineBasicMaterial({
+    new Line2NodeMaterial({
       color: ELEMENT_HOVER_COLOR,
+      linewidth: 1,
+      worldUnits: false,
       depthTest: false,
       depthWrite: false,
+      transparent: true,
     }),
   );
 
@@ -547,6 +533,26 @@ export function BRepEdgeOverlay({
   const [hoveredIdx, setHoveredIdx] = useState(-1);
   const projA = useRef(new THREE.Vector3());
   const projB = useRef(new THREE.Vector3());
+
+  // Occlusion probe (ticket twvd): a point is hidden when the kernel's
+  // analytic raycast from the camera hits a surface clearly in FRONT of it.
+  // The slack absorbs sphere-trace tolerance on the faces meeting AT the
+  // probed edge — only a genuinely nearer surface rejects a candidate.
+  const isOccludedPoint = (w: [number, number, number]): boolean => {
+    if (!store) return false;
+    const o = camera.position;
+    const dx = w[0] - o.x;
+    const dy = w[1] - o.y;
+    const dz = w[2] - o.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 1e-6) return false;
+    const hit = store.kernel.pick(
+      [o.x, o.y, o.z],
+      [dx / dist, dy / dist, dz / dist],
+    );
+    return hit.hit && hit.t < dist - Math.max(1.0, dist * 0.02);
+  };
+
   useFrame(() => {
     if (!ndc.active || edges.length === 0) {
       if (hoveredIdx !== -1) {
@@ -557,24 +563,65 @@ export function BRepEdgeOverlay({
     }
     const a = projA.current;
     const b = projB.current;
-    let best = -1;
-    let bestDist = EDGE_PICK_NDC_RADIUS;
-    let bestDepth = Infinity;
+    // Collect the best segment per edge within the pick band; the winner is
+    // resolved afterwards so non-x-ray modes can skip occluded candidates.
+    const candidates: {
+      ei: number;
+      d: number;
+      depth: number;
+      world: [number, number, number];
+    }[] = [];
     for (let ei = 0; ei < edges.length; ei++) {
       const pos = edges[ei].positions;
+      let bestD = EDGE_PICK_NDC_RADIUS;
+      let bestDepth = Infinity;
+      let bestWorld: [number, number, number] | null = null;
       for (let i = 0; i + 5 < pos.length; i += 6) {
         a.set(pos[i], pos[i + 1], pos[i + 2]).project(camera);
         b.set(pos[i + 3], pos[i + 4], pos[i + 5]).project(camera);
         // Skip segments that cross or sit behind the near plane — projecting
         // those wraps the NDC coords and yields bogus distances.
         if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
-        const d = ndcPointSegmentDistance(ndc.x, ndc.y, a.x, a.y, b.x, b.y);
+        // Closest point on the segment in NDC; `t` doubles as the lerp
+        // parameter for the world-space occlusion probe point below (the
+        // perspective error over one short tessellation segment is nil).
+        const sx = b.x - a.x;
+        const sy = b.y - a.y;
+        const len2 = sx * sx + sy * sy;
+        let t = len2 > 0 ? ((ndc.x - a.x) * sx + (ndc.y - a.y) * sy) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(ndc.x - (a.x + t * sx), ndc.y - (a.y + t * sy));
         if (d > EDGE_PICK_NDC_RADIUS) continue;
         const depth = Math.min(a.z, b.z);
-        if (d < bestDist - 1e-4 || (d <= bestDist + 1e-4 && depth < bestDepth)) {
-          best = ei;
-          bestDist = d;
+        if (d < bestD - 1e-4 || (d <= bestD + 1e-4 && depth < bestDepth)) {
+          bestD = d;
           bestDepth = depth;
+          bestWorld = [
+            pos[i] + t * (pos[i + 3] - pos[i]),
+            pos[i + 1] + t * (pos[i + 4] - pos[i + 1]),
+            pos[i + 2] + t * (pos[i + 5] - pos[i + 2]),
+          ];
+        }
+      }
+      if (bestWorld) candidates.push({ ei, d: bestD, depth: bestDepth, world: bestWorld });
+    }
+    // Nearest cursor distance wins; near-ties resolve to the front-most edge.
+    candidates.sort((p, q) =>
+      Math.abs(p.d - q.d) > 1e-4 ? p.d - q.d : p.depth - q.depth,
+    );
+    let best = -1;
+    if (mode === "xray") {
+      best = candidates.length > 0 ? candidates[0].ei : -1;
+    } else {
+      // Outside x-ray mode, edges hidden behind geometry are neither hovered
+      // nor selectable (ticket twvd): probe candidates front-to-back until one
+      // is actually visible. Capped — rarely more than a couple under the
+      // cursor — so the per-frame raycast cost stays bounded.
+      const limit = Math.min(candidates.length, 8);
+      for (let c = 0; c < limit; c++) {
+        if (!isOccludedPoint(candidates[c].world)) {
+          best = candidates[c].ei;
+          break;
         }
       }
     }
@@ -596,24 +643,29 @@ export function BRepEdgeOverlay({
     return undefined;
   }, [hoveredIdx, edges]);
 
-  const [hoverReady, setHoverReady] = useState(false);
+  // The hovered edge gets a BRAND-NEW LineSegments2 + geometry per change —
+  // the WebGPU renderer does not re-upload a line geometry mutated in place
+  // (same caveat as the selected-edge fat line, ticket twxw), so reusing one
+  // object would freeze the highlight on whatever edge it was first built for.
+  const [hoverObj, setHoverObj] = useState<LineSegments2 | null>(null);
   useEffect(() => {
     if (hoveredIdx < 0 || hoveredIdx >= edges.length) {
-      setHoverReady(false);
+      setHoverObj(null);
       return;
     }
-    hoverGeometryRef.current.setAttribute(
-      "position",
-      new THREE.BufferAttribute(edges[hoveredIdx].positions, 3),
-    );
-    hoverGeometryRef.current.computeBoundingSphere();
-    setHoverReady(true);
+    const geom = new LineSegmentsGeometry();
+    geom.setPositions(edges[hoveredIdx].positions);
+    const obj = new LineSegments2(geom, hoverMaterialRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 999;
+    obj.layers.enable(OVERLAY_LAYER);
+    setHoverObj(obj);
+    return () => geom.dispose();
   }, [hoveredIdx, edges]);
 
   useEffect(() => {
     return () => {
       baseGeometryRef.current.dispose();
-      hoverGeometryRef.current.dispose();
       baseMaterialRef.current.dispose();
       hoverMaterialRef.current.dispose();
     };
@@ -630,15 +682,7 @@ export function BRepEdgeOverlay({
         frustumCulled={false}
         renderOrder={998}
       />
-      {hoverReady && (
-        <lineSegments
-          ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-          geometry={hoverGeometryRef.current}
-          material={hoverMaterialRef.current}
-          frustumCulled={false}
-          renderOrder={999}
-        />
-      )}
+      {hoverObj && <primitive object={hoverObj} dispose={null} />}
     </>
   );
 }
@@ -927,13 +971,10 @@ export function OctreeCellOverlay() {
 //
 // Token-driven highlight colours. THREE material colours can't live in CSS
 // (they feed the WebGPU pipeline), so — like BRepEdgeOverlay's inline hex —
-// they're module constants here. They mirror tokens.css:
-//   FACE_HOVER  ← --color-accent        (#2f5fa8)
-//   VERTEX      ← --color-warning        (#b07820)
-//   VERTEX_HOVER← --color-accent-hover   (#3d72be)
+// they're module constants here. FACE_HOVER mirrors tokens.css
+// --color-accent (#2f5fa8); VERTEX mirrors --color-warning (#b07820).
 const FACE_HOVER_COLOR = 0x2f5fa8;
 const VERTEX_COLOR = 0xb07820;
-const VERTEX_HOVER_COLOR = 0x3d72be;
 /** Persistent element-selection colour: a saturated gold-orange (Onshape-like
  *  selection highlight), distinct from the blue picker-highlight. */
 const ELEMENT_SELECTION_COLOR = 0xff7a00;
@@ -941,10 +982,68 @@ const ELEMENT_SELECTION_COLOR = 0xff7a00;
  *  {@link ELEMENT_SELECTION_COLOR}, lightened (ticket m0yw) — hover previews
  *  the selection it would make, selection then deepens the tone. */
 const ELEMENT_HOVER_COLOR = 0xffb066;
-const VERTEX_MARKER_RADIUS = 2.2;
+/** Vertex markers size in SCREEN pixels (ticket 7zs8): diameter ≈ 2× the
+ *  matching edge stroke — the selected edge draws as a 2px fat line, the
+ *  hovered edge as a 1px LineBasicMaterial (hover rounds up for HiDPI
+ *  visibility). World-space spheres looked huge at modelling zoom levels. */
+const VERTEX_SELECT_DIAMETER_PX = 4;
+const VERTEX_HOVER_DIAMETER_PX = 3;
 /** Screen-space radius (in NDC units) within which a vertex marker counts as
  *  hovered. ~3.5% of the viewport half-extent. */
 const VERTEX_PICK_NDC_RADIUS = 0.035;
+
+/**
+ * A point marker with a CONSTANT screen-space diameter (ticket 7zs8): a unit
+ * sphere rescaled every frame to `px` pixels at its current depth, so the dot
+ * neither balloons when zooming in nor vanishes when zooming out.
+ */
+function ScreenSpacePoint({
+  position,
+  color,
+  px,
+  renderOrder = 1000,
+  opacity = 1,
+}: {
+  position: [number, number, number];
+  color: number;
+  px: number;
+  renderOrder?: number;
+  opacity?: number;
+}) {
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const meshRef = useRef<THREE.Mesh>(null);
+  useFrame(() => {
+    const m = meshRef.current;
+    if (!m) return;
+    // World units per CSS pixel at the marker's depth.
+    let wpp: number;
+    if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+      const cam = camera as THREE.PerspectiveCamera;
+      const dist = m.getWorldPosition(scratchVec3).distanceTo(cam.position);
+      wpp = (2 * dist * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / size.height;
+    } else {
+      const cam = camera as THREE.OrthographicCamera;
+      wpp = (cam.top - cam.bottom) / cam.zoom / size.height;
+    }
+    m.scale.setScalar(Math.max((px * wpp) / 2, 1e-9));
+  });
+  return (
+    <mesh
+      position={position}
+      ref={(obj: THREE.Mesh | null) => {
+        meshRef.current = obj;
+        if (obj) obj.layers.enable(OVERLAY_LAYER);
+      }}
+      renderOrder={renderOrder}
+    >
+      <sphereGeometry args={[1, 12, 12]} />
+      <meshBasicMaterial color={color} depthTest={false} transparent opacity={opacity} />
+    </mesh>
+  );
+}
+
+const scratchVec3 = new THREE.Vector3();
 
 /** One body's selectable B-Rep data, resolved to world space for picking. */
 interface BodyPickData {
@@ -1320,14 +1419,11 @@ export function BRepSelectionOverlay({
         />
       )}
       {hoveredVertexWorld && (
-        <mesh
+        <ScreenSpacePoint
           position={hoveredVertexWorld}
-          ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-          renderOrder={1000}
-        >
-          <sphereGeometry args={[VERTEX_MARKER_RADIUS * 1.6, 12, 12]} />
-          <meshBasicMaterial color={VERTEX_HOVER_COLOR} depthTest={false} transparent opacity={1} />
-        </mesh>
+          color={ELEMENT_HOVER_COLOR}
+          px={VERTEX_HOVER_DIAMETER_PX}
+        />
       )}
       {showVertexMarkers &&
         bodies.map((b, bi) =>
@@ -1335,20 +1431,13 @@ export function BRepSelectionOverlay({
             const hovered =
               vertexHoverIdx !== null && vertexHoverIdx[0] === bi && vertexHoverIdx[1] === vi;
             return (
-              <mesh
+              <ScreenSpacePoint
                 key={`v-${bi}-${vi}`}
                 position={v.world}
-                ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-                renderOrder={1000}
-              >
-                <sphereGeometry args={[hovered ? VERTEX_MARKER_RADIUS * 1.6 : VERTEX_MARKER_RADIUS, 12, 12]} />
-                <meshBasicMaterial
-                  color={hovered ? VERTEX_HOVER_COLOR : VERTEX_COLOR}
-                  depthTest={false}
-                  transparent
-                  opacity={hovered ? 1 : 0.85}
-                />
-              </mesh>
+                color={hovered ? ELEMENT_HOVER_COLOR : VERTEX_COLOR}
+                px={VERTEX_HOVER_DIAMETER_PX}
+                opacity={hovered ? 1 : 0.85}
+              />
             );
           }),
         )}
@@ -1613,14 +1702,12 @@ export function BRepSelectedOverlay() {
     return <primitive object={edgeObjRef.current!} dispose={null} />;
   }
   return (
-    <mesh
+    <ScreenSpacePoint
       position={resolved.world}
-      ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+      color={ELEMENT_SELECTION_COLOR}
+      px={VERTEX_SELECT_DIAMETER_PX}
       renderOrder={1003}
-    >
-      <sphereGeometry args={[VERTEX_MARKER_RADIUS * 1.7, 16, 16]} />
-      <meshBasicMaterial color={ELEMENT_SELECTION_COLOR} depthTest={false} />
-    </mesh>
+    />
   );
 }
 
