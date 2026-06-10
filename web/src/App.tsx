@@ -134,6 +134,13 @@ export function App() {
             e.preventDefault();
             return;
           }
+          case " ":
+            // Onshape idiom (preset-gated): Space clears the selection.
+            if (CONTROLS_PRESETS[settings.controlsPreset].selection.spaceClears) {
+              store.clearSelection();
+              e.preventDefault();
+            }
+            return;
           case "b":
             store.addPrimitive("box");
             e.preventDefault();

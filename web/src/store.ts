@@ -1963,6 +1963,49 @@ export class KernelStore {
     this.notify();
   }
 
+  /** Replace (or, additive, extend) the element multi-select set with a
+   *  whole batch at once — the box-select path (rectangle drag). Dedupes by
+   *  kind+idHash; the last element becomes the primary. An empty batch with
+   *  additive=false clears the element selection. */
+  applyBoxSelection(els: PickedElement[], additive: boolean): void {
+    const base = additive ? [...this.state.selectedElements] : [];
+    const seen = new Set(base.map((e) => `${e.kind}:${e.idHash}`));
+    for (const el of els) {
+      const key = `${el.kind}:${el.idHash}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      base.push(el);
+    }
+    this.state = {
+      ...this.state,
+      selection: new Set(),
+      selectionAnchor: null,
+      selectedElement: base.length > 0 ? base[base.length - 1] : null,
+      selectedElements: base,
+      selectedDatum: null,
+    };
+    this.syncActiveBody();
+    this.notify();
+  }
+
+  /** Replace (or extend) the feature-level selection with a set of ids —
+   *  the object-mode box-select path (whole bodies → their seed features). */
+  selectFeatureSet(ids: number[], additive: boolean): void {
+    const next = additive ? new Set(this.state.selection) : new Set<number>();
+    for (const id of ids) next.add(id);
+    this.state = {
+      ...this.state,
+      selection: next,
+      selectionAnchor: null,
+      selectedElement: null,
+      selectedElements: [],
+      selectedDatum: null,
+    };
+    this.syncActiveBody();
+    this.refreshMeshCache();
+    this.notify();
+  }
+
   /** Clear the persistent element selection. No-op when nothing is selected. */
   clearElementSelection(): void {
     if (

@@ -1526,162 +1526,140 @@ export function BRepSelectedOverlay() {
     return fp;
   }, [store, state]);
 
-  // Resolve the selected element to renderable data. Returns the kind plus the
-  // payload the JSX below needs (face/edge geometry are written into the shared
-  // refs; vertex resolves to a world position).
+  // Resolve the WHOLE multi-select set to renderable data (box select can
+  // put many faces, edges and vertices in it at once): face triangles go
+  // into the shared face geometry, face outlines + selected edges into one
+  // fresh fat-line object, vertices into world positions for the dot
+  // markers.
   const resolved = useMemo<
-    | { kind: "face" }
-    | { kind: "edge" }
-    | { kind: "vertex"; world: [number, number, number] }
+    | { hasFace: boolean; hasLines: boolean; vertices: [number, number, number][] }
     | null
   >(() => {
-    if (!store || !selected) return null;
+    if (!store || selectedList.length === 0) return null;
     const k = store.kernel;
     const count = k.bodyCount();
 
-    if (selected.kind === "face") {
-      // Highlight EVERY selected face (multi-select gather), accumulating their
-      // triangles across all bodies into the shared face geometry. In SDF
-      // render modes this kernel instance holds no mesh, so the triangle fill
-      // stays empty — the boundary outline below is the visible highlight
-      // (ticket evq2).
-      const faceHashes = new Set(
-        selectedList.filter((e) => e.kind === "face").map((e) => e.idHash),
-      );
-      const tris: number[] = [];
-      const branchIds = new Set<number>();
-      for (let i = 0; i < count; i++) {
-        let faces: BRepFace[];
-        try {
-          faces = k.bodyBrepFaces(i);
-        } catch {
-          continue;
-        }
-        const wantedFaces = faces.filter((f) => faceHashes.has(f.idHash));
-        for (const f of wantedFaces) branchIds.add(f.branchId);
-        if (wantedFaces.length === 0 || k.bodyVertexCount(i) === 0) continue;
-        let placement: Placement;
-        let faceIndexView: Uint32Array;
-        let positions: Float32Array;
-        let indices: Uint32Array;
-        try {
-          placement = k.bodyPlacement(i);
-          faceIndexView = k.bodyFaceIndexView(i).slice();
-          positions = k.bodyPositionsView(i).slice();
-          indices = k.bodyIndicesView(i).slice();
-        } catch {
-          continue;
-        }
-        const wanted = new Set(wantedFaces.map((f) => f.faceIndex));
-        for (let t = 0; t < faceIndexView.length; t++) {
-          if (!wanted.has(faceIndexView[t])) continue;
-          for (let c = 0; c < 3; c++) {
-            const vi = indices[t * 3 + c];
-            const local: [number, number, number] = [
-              positions[vi * 3],
-              positions[vi * 3 + 1],
-              positions[vi * 3 + 2],
-            ];
-            const w = localToWorld(local, placement);
-            tris.push(w[0], w[1], w[2]);
-          }
-        }
-      }
-      // Boundary outline: every analytic edge whose signature touches one of
-      // the selected faces' branches, as a fresh fat-line object (same WebGPU
-      // re-upload caveat as the edge branch below).
-      const segs: number[] = [];
-      for (let i = 0; i < count; i++) {
-        let edges: BRepEdge[];
-        try {
-          edges = k.bodyBrepEdges(i);
-        } catch {
-          continue;
-        }
-        for (const e of edges) {
-          if (!branchIds.has(e.a) && !branchIds.has(e.b)) continue;
-          segs.push(...polylineToSegments(e.points));
-        }
-      }
-      if (tris.length === 0 && segs.length === 0) return null;
-      faceGeomRef.current.setAttribute(
-        "position",
-        new THREE.Float32BufferAttribute(tris, 3),
-      );
-      faceGeomRef.current.computeBoundingSphere();
-      if (segs.length > 0) {
-        const geom = new LineSegmentsGeometry();
-        geom.setPositions(segs);
-        const obj = new LineSegments2(geom, edgeMatRef.current);
-        obj.frustumCulled = false;
-        obj.renderOrder = 1002;
-        obj.layers.enable(OVERLAY_LAYER);
-        edgeObjRef.current?.geometry.dispose();
-        edgeObjRef.current = obj;
-      } else {
-        edgeObjRef.current?.geometry.dispose();
-        edgeObjRef.current = null;
-      }
-      return { kind: "face" };
-    }
+    const faceHashes = new Set(
+      selectedList.filter((e) => e.kind === "face").map((e) => e.idHash),
+    );
+    const edgeHashes = new Set(
+      selectedList.filter((e) => e.kind === "edge").map((e) => e.idHash),
+    );
+    const vertexHashes = new Set(
+      selectedList.filter((e) => e.kind === "vertex").map((e) => e.idHash),
+    );
 
-    if (selected.kind === "edge") {
-      for (let i = 0; i < count; i++) {
-        let edges: BRepEdge[];
-        try {
-          edges = k.bodyBrepEdges(i);
-        } catch {
-          continue;
-        }
-        const edge = edges.find((e) => e.idHash === selected.idHash);
-        if (!edge) continue;
-        // BRepEdge.points are already in world space (kernel.ts) — unlike faces
-        // and vertices, which are body-local. Folding them through the body
-        // placement again would double-transform and offset the highlight; the
-        // hover overlay (BRepEdgeOverlay) consumes the same points raw.
-        const segs = polylineToSegments(edge.points);
-        if (segs.length === 0) continue;
-        // LineSegmentsGeometry wants the flat 6-per-segment layout that
-        // polylineToSegments already produces (start xyz, end xyz, …). Build a
-        // fresh geometry + object every time (see the ref comment above):
-        // mutating one persistent geometry in place doesn't re-upload on the
-        // WebGPU backend, which froze the highlight on the first edge (twxw).
-        const geom = new LineSegmentsGeometry();
-        geom.setPositions(segs);
-        const obj = new LineSegments2(geom, edgeMatRef.current);
-        obj.frustumCulled = false;
-        obj.renderOrder = 1002;
-        obj.layers.enable(OVERLAY_LAYER);
-        edgeObjRef.current?.geometry.dispose();
-        edgeObjRef.current = obj;
-        return { kind: "edge" };
-      }
-      return null;
-    }
+    const tris: number[] = [];
+    const vertices: [number, number, number][] = [];
+    const branchIds = new Set<number>();
 
-    // vertex
+    // Pass 1 — faces (triangles where this kernel holds a mesh; in SDF render
+    // modes the fill stays empty and the outline below is the highlight,
+    // ticket evq2) and vertices.
     for (let i = 0; i < count; i++) {
-      let verts: BRepVertex[];
       let placement: Placement;
       try {
-        verts = k.bodyBrepVertices(i);
         placement = k.bodyPlacement(i);
       } catch {
         continue;
       }
-      const v = verts.find((vx) => vx.idHash === selected.idHash);
-      if (!v) continue;
-      return { kind: "vertex", world: localToWorld(v.positionLocal, placement) };
+      if (faceHashes.size > 0) {
+        let faces: BRepFace[];
+        try {
+          faces = k.bodyBrepFaces(i);
+        } catch {
+          faces = [];
+        }
+        const wantedFaces = faces.filter((f) => faceHashes.has(f.idHash));
+        for (const f of wantedFaces) branchIds.add(f.branchId);
+        if (wantedFaces.length > 0 && k.bodyVertexCount(i) > 0) {
+          try {
+            const faceIndexView = k.bodyFaceIndexView(i).slice();
+            const positions = k.bodyPositionsView(i).slice();
+            const indices = k.bodyIndicesView(i).slice();
+            const wanted = new Set(wantedFaces.map((f) => f.faceIndex));
+            for (let t = 0; t < faceIndexView.length; t++) {
+              if (!wanted.has(faceIndexView[t])) continue;
+              for (let c = 0; c < 3; c++) {
+                const vi = indices[t * 3 + c];
+                const local: [number, number, number] = [
+                  positions[vi * 3],
+                  positions[vi * 3 + 1],
+                  positions[vi * 3 + 2],
+                ];
+                const w = localToWorld(local, placement);
+                tris.push(w[0], w[1], w[2]);
+              }
+            }
+          } catch {
+            // mesh views unavailable mid-regen — outline still renders
+          }
+        }
+      }
+      if (vertexHashes.size > 0) {
+        try {
+          for (const v of k.bodyBrepVertices(i)) {
+            if (vertexHashes.has(v.idHash))
+              vertices.push(localToWorld(v.positionLocal, placement));
+          }
+        } catch {
+          // mid-regen
+        }
+      }
     }
-    return null;
+
+    // Pass 2 — line work: every analytic edge that bounds a selected face
+    // (outline) or IS a selected edge. BRepEdge.points are already world
+    // space (kernel.ts) — folding them through the placement again would
+    // double-transform (see the hover overlay).
+    const segs: number[] = [];
+    for (let i = 0; i < count; i++) {
+      let edges: BRepEdge[];
+      try {
+        edges = k.bodyBrepEdges(i);
+      } catch {
+        continue;
+      }
+      for (const e of edges) {
+        if (!branchIds.has(e.a) && !branchIds.has(e.b) && !edgeHashes.has(e.idHash))
+          continue;
+        segs.push(...polylineToSegments(e.points));
+      }
+    }
+
+    if (tris.length === 0 && segs.length === 0 && vertices.length === 0) return null;
+
+    faceGeomRef.current.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(tris, 3),
+    );
+    faceGeomRef.current.computeBoundingSphere();
+
+    if (segs.length > 0) {
+      // Fresh fat-line object per selection — the WebGPU backend does not
+      // re-upload a LineSegmentsGeometry mutated in place (ticket twxw).
+      const geom = new LineSegmentsGeometry();
+      geom.setPositions(segs);
+      const obj = new LineSegments2(geom, edgeMatRef.current);
+      obj.frustumCulled = false;
+      obj.renderOrder = 1002;
+      obj.layers.enable(OVERLAY_LAYER);
+      edgeObjRef.current?.geometry.dispose();
+      edgeObjRef.current = obj;
+    } else {
+      edgeObjRef.current?.geometry.dispose();
+      edgeObjRef.current = null;
+    }
+
+    return { hasFace: tris.length > 0, hasLines: segs.length > 0, vertices };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, selected, selectedKey, bodyFingerprint]);
 
   if (!resolved) return null;
 
-  if (resolved.kind === "face") {
-    return (
-      <>
+  return (
+    <>
+      {resolved.hasFace && (
         <mesh
           ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
           geometry={faceGeomRef.current}
@@ -1689,25 +1667,25 @@ export function BRepSelectedOverlay() {
           frustumCulled={false}
           renderOrder={1001}
         />
-        {edgeObjRef.current && <primitive object={edgeObjRef.current} dispose={null} />}
-      </>
-    );
-  }
-  if (resolved.kind === "edge") {
-    // `dispose={null}`: the object identity changes per selection, so R3F
-    // remounts this primitive each time. Without it R3F would auto-dispose the
-    // outgoing object on unmount — including the *shared* material — breaking
-    // every later highlight. We dispose the previous geometry ourselves above.
-    // The memo always sets `edgeObjRef.current` before returning kind "edge".
-    return <primitive object={edgeObjRef.current!} dispose={null} />;
-  }
-  return (
-    <ScreenSpacePoint
-      position={resolved.world}
-      color={ELEMENT_SELECTION_COLOR}
-      px={VERTEX_SELECT_DIAMETER_PX}
-      renderOrder={1003}
-    />
+      )}
+      {/* `dispose={null}`: the object identity changes per selection, so R3F
+          remounts this primitive each time. Without it R3F would auto-dispose
+          the outgoing object on unmount — including the *shared* material —
+          breaking every later highlight. The previous geometry is disposed in
+          the memo above. */}
+      {resolved.hasLines && edgeObjRef.current && (
+        <primitive object={edgeObjRef.current} dispose={null} />
+      )}
+      {resolved.vertices.map((w, i) => (
+        <ScreenSpacePoint
+          key={`sv-${i}`}
+          position={w}
+          color={ELEMENT_SELECTION_COLOR}
+          px={VERTEX_SELECT_DIAMETER_PX}
+          renderOrder={1003}
+        />
+      ))}
+    </>
   );
 }
 
@@ -1761,6 +1739,30 @@ export function BodyHighlightOverlay() {
     }
     const segs: number[] = [];
     for (const e of edges) segs.push(...polylineToSegments(e.points));
+    if (segs.length === 0) {
+      // Bodies without any B-Rep edge (a bare sphere/ellipsoid) still need a
+      // visible selection cue (ticket select-rectangle): fall back to the 12
+      // edges of the body's world AABB from the compiled SDF.
+      try {
+        const aabb = k.bodySdfAabb(bodyIndex);
+        if (aabb.length >= 6) {
+          const c: [number, number, number][] = [
+            [aabb[0], aabb[1], aabb[2]], [aabb[3], aabb[1], aabb[2]],
+            [aabb[3], aabb[4], aabb[2]], [aabb[0], aabb[4], aabb[2]],
+            [aabb[0], aabb[1], aabb[5]], [aabb[3], aabb[1], aabb[5]],
+            [aabb[3], aabb[4], aabb[5]], [aabb[0], aabb[4], aabb[5]],
+          ];
+          const boxEdges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],
+            [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+          ];
+          for (const [a, b] of boxEdges) segs.push(...c[a], ...c[b]);
+        }
+      } catch {
+        // no compiled SDF either — nothing to draw
+      }
+    }
     if (segs.length === 0) return false;
     // Fresh geometry + object per change — the WebGPU backend does not
     // re-upload a LineSegmentsGeometry mutated in place (ticket twxw).

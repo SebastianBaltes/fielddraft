@@ -56,6 +56,7 @@ import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
 import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
+import { bodiesInRect, elementsInRect, type NdcRect, type ProjectFn } from "./boxSelect";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -351,6 +352,21 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
   const [pickResult, setPickResult] = useState<PickResult | null>(null);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoints>(null);
 
+  // ── Box select (rectangle drag from empty space) ──────────────────
+  // Armed on pointerdown over empty space in presets with `boxSelect`;
+  // becomes a visible rectangle once the pointer travels a few px. The
+  // mouseup that ends a drag also fires a click — `suppressClickRef`
+  // swallows exactly that one so it can't clear the fresh selection.
+  const boxDragRef = useRef<{ startX: number; startY: number } | null>(null);
+  // The live rectangle lives in a REF (read synchronously by pointerup —
+  // a fast drag finishes before React commits state) and is mirrored into
+  // state purely to render the overlay.
+  const boxRectRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [boxRect, setBoxRect] = useState<
+    { x0: number; y0: number; x1: number; y1: number } | null
+  >(null);
+  const suppressClickRef = useRef(false);
+
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const host = hostRef.current;
     if (!host) return;
@@ -359,6 +375,16 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     const y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
     setNdc({ x, y, active: true });
+
+    const drag = boxDragRef.current;
+    if (drag) {
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      if (boxRectRef.current !== null || Math.hypot(px - drag.startX, py - drag.startY) > 4) {
+        boxRectRef.current = { x0: drag.startX, y0: drag.startY, x1: px, y1: py };
+        setBoxRect(boxRectRef.current);
+      }
+    }
   };
 
   const handlePointerLeave = (): void => {
@@ -366,8 +392,102 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     setPickResult(null);
   };
 
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!store || event.button !== 0) return;
+    const selection = CONTROLS_PRESETS[controlsPreset].selection;
+    if (!selection.boxSelect) return;
+    // Box select never starts inside another interaction mode…
+    if (
+      state?.sketchSession.active ||
+      state?.measureMode ||
+      state?.filletMode ||
+      state?.facePickMode ||
+      state?.mateMode ||
+      state?.ikMode ||
+      getActiveQueryPicker()
+    )
+      return;
+    // …and only from EMPTY space: nothing hovered, nothing under the ray.
+    if (getHoveredElement()) return;
+    const click = pickAtMouse(event as unknown as React.MouseEvent<HTMLDivElement>, hostRef.current, store);
+    if (click?.hit) return;
+    const host = hostRef.current;
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    boxDragRef.current = {
+      startX: event.clientX - rect.left,
+      startY: event.clientY - rect.top,
+    };
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const drag = boxDragRef.current;
+    const boxRect = boxRectRef.current;
+    boxDragRef.current = null;
+    boxRectRef.current = null;
+    if (!drag || boxRect === null) return;
+    setBoxRect(null);
+    suppressClickRef.current = true;
+    if (!store) return;
+    const host = hostRef.current;
+    const camera = getPublishedPickCamera();
+    if (!host || !camera) return;
+    const rect = host.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    const selection = CONTROLS_PRESETS[controlsPreset].selection;
+    // Industry idiom (Onshape "Selection", Fusion "Selection in Fusion"):
+    // dragging left→right keeps only fully-enclosed entities (window),
+    // right→left also catches crossing ones — where the preset's original
+    // tool distinguishes the two.
+    const mode =
+      selection.boxSelect === "window-crossing" && boxRect.x1 < boxRect.x0
+        ? "crossing"
+        : "window";
+
+    const toNdcX = (px: number) => (px / rect.width) * 2 - 1;
+    const toNdcY = (py: number) => -((py / rect.height) * 2 - 1);
+    const ndcRect: NdcRect = {
+      minX: toNdcX(Math.min(boxRect.x0, boxRect.x1)),
+      maxX: toNdcX(Math.max(boxRect.x0, boxRect.x1)),
+      // The NDC y axis flips: the smaller pixel y is the LARGER ndc y.
+      minY: toNdcY(Math.max(boxRect.y0, boxRect.y1)),
+      maxY: toNdcY(Math.min(boxRect.y0, boxRect.y1)),
+    };
+    const v = new THREE.Vector3();
+    const project: ProjectFn = (x, y, z) => {
+      v.set(x, y, z).project(camera);
+      if (v.z < -1 || v.z > 1) return null;
+      return { x: v.x, y: v.y };
+    };
+    // Onshape's implicit multi-select accumulates box selections too; the
+    // other presets replace unless their additive modifier is held.
+    const additive = selection.implicitMultiSelect || isAdditiveClick(selection, event);
+    if (selection.mode === "element") {
+      store.applyBoxSelection(elementsInRect(store.kernel, project, ndcRect, mode), additive);
+    } else {
+      const ids = bodiesInRect(store.kernel, project, ndcRect, mode)
+        .map((i) => store.kernel.bodySeedFeatureId(i))
+        .filter((id) => id > 0);
+      store.selectFeatureSet(ids, additive);
+    }
+    invalidateCanvas();
+  };
+
+  const handlePointerCancel = (): void => {
+    boxDragRef.current = null;
+    boxRectRef.current = null;
+    setBoxRect(null);
+  };
+
   const handleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     if (!store) return;
+    // The mouseup that finished a box-select drag fires this click too —
+    // swallow it so it can't immediately clear the fresh selection.
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
 
     const click = pickAtMouse(event, hostRef.current, store);
     setPickResult(click);
@@ -396,12 +516,17 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     const hovered = selection.mode === "element" ? getHoveredElement() : null;
     if (hovered) {
       const additive = isAdditiveClick(selection, event);
-      const action = resolveElementClick(
-        hovered,
-        state?.selectedElement ?? null,
-        additive,
-        selection.bodyEscalation,
-      );
+      // Onshape implicit multi-select: every plain click toggles the element
+      // in the multi-select set — accumulate without a modifier, click a
+      // selected element again to deselect it.
+      const action = selection.implicitMultiSelect
+        ? "toggle"
+        : resolveElementClick(
+            hovered,
+            state?.selectedElement ?? null,
+            additive,
+            selection.bodyEscalation,
+          );
       if (action === "toggle") {
         store.toggleElement(hovered);
       } else if (action === "escalate-body") {
@@ -501,11 +626,31 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
       data-testid="fielddraft-canvas"
       onPointerMove={webgpuError ? undefined : handlePointerMove}
       onPointerLeave={webgpuError ? undefined : handlePointerLeave}
+      onPointerDown={webgpuError ? undefined : handlePointerDown}
+      onPointerUp={webgpuError ? undefined : handlePointerUp}
+      onPointerCancel={webgpuError ? undefined : handlePointerCancel}
       onClick={webgpuError ? undefined : handleClick}
       onDragOver={webgpuError ? undefined : handleDragOver}
       onDrop={webgpuError ? undefined : handleDrop}
     >
       {webgpuError && <div className="error">WebGPU is not available. A secure context (HTTPS or localhost) is required.</div>}
+      {boxRect && (
+        <div
+          className={
+            "select-rect" +
+            (CONTROLS_PRESETS[controlsPreset].selection.boxSelect === "window-crossing" &&
+            boxRect.x1 < boxRect.x0
+              ? " is-crossing"
+              : "")
+          }
+          style={{
+            left: Math.min(boxRect.x0, boxRect.x1),
+            top: Math.min(boxRect.y0, boxRect.y1),
+            width: Math.abs(boxRect.x1 - boxRect.x0),
+            height: Math.abs(boxRect.y1 - boxRect.y0),
+          }}
+        />
+      )}
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}

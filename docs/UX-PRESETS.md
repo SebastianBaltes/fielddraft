@@ -82,11 +82,32 @@ flowchart LR
    bei Shift-Down/-Up direkt am Controls-Objekt. Auch die rotationsfreie
    Sketch-Instanz übernimmt das Button-Mapping (Pan bleibt auf der
    gewohnten Taste).
-2. **Phase 2 — Selektions-Idiome** ✅ (teilweise): Multi-Select-Modifier
+2. **Phase 2 — Selektions-Idiome** ✅: Multi-Select-Modifier
    pro Preset (`isAdditiveClick`), Körper-Eskalationsklick abschaltbar
    (`resolveElementClick` bekommt `bodyEscalation`), Objekt-Modus für
    Three.js-Editor/TinkerCAD (Klick selektiert das Feature, keine
-   Sub-Elemente). Box-Select und Onshape-Doppelklick: siehe Offene Punkte.
+   Sub-Elemente). Onshape-Doppelklick: siehe Offene Punkte.
+
+   **Box-Select & implizites Multi-Select** (Ticket select-rectangle):
+   `SelectionBindings` hat drei weitere Schalter —
+   - `implicitMultiSelect` (nur Onshape): jeder einfache LMB-Klick
+     TOGGELT das Element in der Multi-Select-Menge, ohne Modifier;
+     Klick ins Leere oder **Space** (`spaceClears`) räumt auf. Der
+     Körper-Eskalationsklick ist dafür im Onshape-Preset aus (Körper
+     wählt man dort über die Parts-Liste).
+   - `boxSelect`: LMB-Drag von einer leeren Stelle zieht ein
+     Auswahlrechteck. `"window-crossing"` (Onshape, Fusion — beide
+     Hersteller-Doku): links→rechts selektiert nur KOMPLETT enthaltene
+     Kanten/Vertices (blaues Rechteck), rechts→links zusätzlich
+     angeschnittene (gestricheltes Crossing-Rechteck). `"window"`
+     (FreeCAD Std BoxSelection als LMB-Approximation, TinkerCAD
+     Rubber-Band) selektiert immer nur komplett Enthaltenes; im
+     Objekt-Modus (TinkerCAD) ganze Körper (Kugeln ohne B-Rep-Kanten
+     über ihre Welt-AABB). FieldDraft-/Three.js-Preset: `null`, weil
+     LMB dort die Kamera orbitet.
+   - Implementierung: `boxSelect.ts` (pure NDC-Logik, getestet) +
+     Drag-Handling/Overlay im Viewport; `store.applyBoxSelection`
+     bzw. `store.selectFeatureSet` übernehmen die Mengen.
 3. **Phase 3 — Tastatur** ✅ (View-Keys): `keys.views` pro Preset, vom
    globalen Shortcut-Handler in `App.tsx` konsumiert; FreeCAD bindet
    1–6 + 0 auf alle sechs Standardansichten. Shortcut-Tabelle (Settings)
@@ -94,8 +115,6 @@ flowchart LR
 
 ## Offene Punkte
 
-- **Box-Select** (TinkerCAD/Three.js-Editor: LMB-Drag zieht ein
-  Auswahlrechteck) — braucht ein eigenes Drag-Handling im Viewport.
 - **Onshape-Doppelklick** (Kette/alle Flächen eines Features) — erst
   sinnvoll, wenn Kanten-Ketten-Queries existieren.
 - **FreeCAD-Pan-Chord** (MMB+LMB) ist auf RMB approximiert —

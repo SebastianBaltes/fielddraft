@@ -53,6 +53,19 @@ export interface SelectionBindings {
   additive: SelectionModifier[];
   /** Second plain click on the already-selected face selects the body. */
   bodyEscalation: boolean;
+  /** Onshape idiom: every plain LMB click TOGGLES the element in the
+   *  multi-select set — no modifier needed to accumulate, clicking a
+   *  selected element deselects it. Click into empty space clears. */
+  implicitMultiSelect: boolean;
+  /** LMB-drag from empty space draws a selection rectangle.
+   *  "window-crossing": L→R selects fully-contained entities (blue box),
+   *  R→L additionally crossing ones (Onshape, Fusion 360);
+   *  "window": always fully-contained (FreeCAD Std BoxSelection,
+   *  TinkerCAD rubber band); null: no box select (LMB drives the camera
+   *  or the original tool has none). */
+  boxSelect: "window-crossing" | "window" | null;
+  /** Space clears the selection (Onshape). */
+  spaceClears: boolean;
 }
 
 export interface KeyBindings {
@@ -89,6 +102,10 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       mode: "element",
       additive: ["shift", "ctrl", "meta"],
       bodyEscalation: true,
+      implicitMultiSelect: false,
+      // LMB orbits in this preset — the button is never free for a drag.
+      boxSelect: null,
+      spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },
   },
@@ -106,6 +123,10 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       mode: "object",
       additive: ["shift", "ctrl", "meta"],
       bodyEscalation: false,
+      implicitMultiSelect: false,
+      // The editor has no rubber-band select; LMB orbits anyway.
+      boxSelect: null,
+      spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },
   },
@@ -118,10 +139,17 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       panSpeed: 1.2,
       zoomSpeed: 1.6,
     },
+    // Onshape selection idiom (cad.onshape.com/help → Selection): plain
+    // clicks accumulate, Space/empty click clears, L→R box = enclosing,
+    // R→L box = crossing. Body selection lives in the Parts list, so the
+    // face→body escalation click is off here.
     selection: {
       mode: "element",
       additive: ["shift", "ctrl", "meta"],
-      bodyEscalation: true,
+      bodyEscalation: false,
+      implicitMultiSelect: true,
+      boxSelect: "window-crossing",
+      spaceClears: true,
     },
     keys: { views: DEFAULT_VIEW_KEYS },
   },
@@ -136,10 +164,16 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       panSpeed: 1.2,
       zoomSpeed: 1.6,
     },
+    // FreeCAD multi-selects with Ctrl; its box select (Std BoxSelection,
+    // Shift+B) is a window selection — approximated here as a plain
+    // LMB-drag since the button is free.
     selection: {
       mode: "element",
       additive: ["ctrl", "meta"],
       bodyEscalation: true,
+      implicitMultiSelect: false,
+      boxSelect: "window",
+      spaceClears: false,
     },
     keys: {
       views: {
@@ -163,10 +197,15 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       panSpeed: 1.2,
       zoomSpeed: 1.6,
     },
+    // Fusion's default tool IS window select: L→R encloses, R→L crosses
+    // (help.autodesk.com → Selection in Fusion); Ctrl adds to selection.
     selection: {
       mode: "element",
       additive: ["ctrl", "meta"],
       bodyEscalation: true,
+      implicitMultiSelect: false,
+      boxSelect: "window-crossing",
+      spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },
   },
@@ -179,10 +218,15 @@ export const CONTROLS_PRESETS: Record<ControlsPresetId, ControlsPreset> = {
       panSpeed: 1.2,
       zoomSpeed: 1.6,
     },
+    // TinkerCAD rubber-band: drag on empty workplane selects the shapes
+    // inside the box; Shift+click accumulates.
     selection: {
       mode: "object",
       additive: ["shift"],
       bodyEscalation: false,
+      implicitMultiSelect: false,
+      boxSelect: "window",
+      spaceClears: false,
     },
     keys: { views: DEFAULT_VIEW_KEYS },
   },

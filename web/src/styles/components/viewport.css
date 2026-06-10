@@ -11,6 +11,23 @@
   position: relative;
   background: var(--color-bg);
 
+  /* Box-select rectangle (rectangle drag from empty space). Window mode
+   * draws the accent-blue box; right→left crossing mode (Onshape/Fusion
+   * idiom) switches to a dashed warning-tinted box. */
+  & > .select-rect {
+    position: absolute;
+    z-index: 6;
+    pointer-events: none;
+    border: 1px solid var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+
+    &.is-crossing {
+      border-style: dashed;
+      border-color: var(--color-warning);
+      background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+    }
+  }
+
   & > .error {
     position: absolute;
     inset: 0;
