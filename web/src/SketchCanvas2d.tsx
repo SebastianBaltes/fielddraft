@@ -2347,20 +2347,15 @@ function drawOverlay(
   // Bail with a cleared canvas rather than freezing the tab.
   if (!(cam.zoom > 0)) return;
 
-  // Grid: adaptive spacing that snaps to 1/2/5/10/… mm steps and stays
-  // visually stable across zoom levels. Tickets yx6a/bxoo: the grid
-  // lives IN the sketch plane now — each grid line is a straight
-  // sketch-space segment projected through the camera, so the grid
-  // tilts with the plane in the 3D view.
+  // Origin axes: the sketch plane shows NO coordinate grid (ticket g5km),
+  // only the two darker axis lines through the origin for orientation.
+  // Each is a straight sketch-space segment projected through the camera,
+  // so it tilts with the plane in the 3D view (tickets yx6a/bxoo).
   {
-    const minPxGap = 20;
-    let step = 1;
-    while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
-
     // Visible (u, v) range: unproject the canvas corners onto the
     // plane and take the bounding box. Under a tilted perspective view
     // the corners can land far out (near the horizon) — clamp the span
-    // so the line loop stays bounded.
+    // so the axis lines stay bounded.
     const corners = [
       screenToSketch(0, 0, cam),
       screenToSketch(cam.width, 0, cam),
@@ -2386,19 +2381,6 @@ function drawOverlay(
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
     };
-
-    ctx.strokeStyle = "rgba(0,0,0,0.08)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    const gridLeft = Math.floor(left / step) * step;
-    const gridBottom = Math.floor(bottom / step) * step;
-    for (let u = gridLeft; u <= right; u += step) {
-      line([u, bottom], [u, top]);
-    }
-    for (let v = gridBottom; v <= top; v += step) {
-      line([left, v], [right, v]);
-    }
-    ctx.stroke();
 
     // Origin axes (thicker, darker).
     ctx.strokeStyle = "rgba(0,0,0,0.25)";
