@@ -172,7 +172,7 @@
       }
 
       &.is-selected {
-        background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+        background: var(--color-ui-selection);
       }
 
       & .swatch {
@@ -284,7 +284,7 @@
       background: var(--color-bg-hover);
     }
     &.is-selected {
-      background: var(--color-accent-soft);
+      background: var(--color-ui-selection);
     }
 
     /* K7.22 (1): drag/drop reorder indicators. The draggable row
@@ -330,7 +330,9 @@
   }
 
   & .datum-row {
-    cursor: default;
+    /* Selectable like a feature row (ticket r36f): clicking selects the
+     * datum, the visibility toggle stays its own button. */
+    cursor: pointer;
 
     & .kind {
       color: var(--color-text-muted);
@@ -1052,7 +1054,7 @@
       font-size: var(--fs-base);
 
       &:hover { background: var(--color-bg-hover); }
-      &.is-selected { background: var(--color-accent-soft); }
+      &.is-selected { background: var(--color-ui-selection); }
 
       & .kind { width: 1.25rem; text-align: center; flex-shrink: 0; }
       & .name { flex: 1; min-width: 0; }

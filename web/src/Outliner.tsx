@@ -31,6 +31,7 @@ import {
   summarizeDiagnostics,
 } from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
+import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
 import { formatQueryDisplay } from "./queryLabels";
 import { ElementInfo } from "./ElementInfo";
 
@@ -197,6 +198,20 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   const [dialogDraft, setDialogDraft] = useState<
     Record<string, unknown>
   >({});
+  // Element/body selection → related outliner rows (ticket r36f): the
+  // features owning the selected B-Rep element (or contributing to the
+  // highlighted body) render with the GUI selection background, so picking
+  // geometry in the viewport always shows WHERE it came from in the tree.
+  const relatedFeatureIds = useMemo<ReadonlySet<number>>(() => {
+    if (!store) return new Set<number>();
+    if (state.selectedElements.length > 0)
+      return resolveSelectionLinks(store.kernel, state.selectedElements).featureIds;
+    if (state.highlightedBodyIndex !== null)
+      return bodyFeatureIds(store.kernel, state.highlightedBodyIndex);
+    return new Set<number>();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, state.selectedElements, state.highlightedBodyIndex, state.features]);
+
   const selectedFeature = useMemo<FeatureSummary | undefined>(
     () =>
       state.selection.size === 1
@@ -1007,8 +1022,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
             { id: "right",  glyph: "┼", label: "Right" },
           ] as const).map((datum) => {
             const visible = !state.hiddenDatums.has(datum.id);
+            const datumSelected = state.selectedDatum === datum.id;
             return (
-              <li key={datum.id} className="row datum-row" data-testid={`datum-${datum.id}`}>
+              <li
+                key={datum.id}
+                className={"row datum-row" + (datumSelected ? " is-selected" : "")}
+                data-testid={`datum-${datum.id}`}
+                onClick={() => store.selectDatum(datumSelected ? null : datum.id)}
+              >
                 <span className="kind">{datum.glyph}</span>
                 <span className="feature-name">{datum.label}</span>
                 <button
@@ -1071,6 +1092,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               index: number,
             ) => {
               const selected = state.selection.has(feature.id);
+              const related = relatedFeatureIds.has(feature.id);
               const isDragged = draggingId === feature.id;
               const isRolledBack = !!feature.rolled_back;
               const showRbDrop = draggingRollback && rollbackDropIndex === index;
@@ -1082,7 +1104,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                   key={feature.id}
                   className={
                     "row" +
-                    (selected ? " is-selected" : "") +
+                    (selected || related ? " is-selected" : "") +
                     (feature.suppressed ? " is-suppressed" : "") +
                     (isRolledBack ? " is-rolled-back" : "") +
                     (isDragged ? " is-dragging" : "") +
@@ -1328,6 +1350,15 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
   }, [store, state.features, state.meshedBodies]);
   const highlighted = state.highlightedBodyIndex;
 
+  // The body owning the selected B-Rep element renders as selected too
+  // (ticket r36f) — same GUI selection colour as an explicitly highlighted
+  // body, so viewport picks always locate their part in the list.
+  const relatedBodyIndex = useMemo<number | null>(() => {
+    if (!store || state.selectedElements.length === 0) return null;
+    return resolveSelectionLinks(store.kernel, state.selectedElements).bodyIndex;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, state.selectedElements, state.features]);
+
   const handlePartClick = (e: React.MouseEvent, index: number, seedFeature: FeatureSummary | undefined) => {
     e.stopPropagation();
     if (!seedFeature) return;
@@ -1354,7 +1385,7 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
             ? prettifyFeatureName(seedFeature.name, seedFeature.kind, state.scriptTypes)
             : `Body ${index + 1}`;
           const kind = seedFeature?.kind ?? "body";
-          const selected = highlighted === index;
+          const selected = highlighted === index || relatedBodyIndex === index;
           return (
             <li
               key={`${body.id}-${index}`}

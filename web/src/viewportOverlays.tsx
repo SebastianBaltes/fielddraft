@@ -2033,15 +2033,64 @@ const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_S
 const datumEdgesGeometry = new THREE.EdgesGeometry(datumEdgesSource);
 datumEdgesSource.dispose();
 
+/** Pick radius (mm) around the origin marker — generously larger than the
+ *  1.5 mm sphere so the origin stays clickable. */
+const DATUM_ORIGIN_PICK_RADIUS = 6;
+
+/**
+ * Datum under a viewport ray (ticket r36f): "origin" when the ray passes
+ * within {@link DATUM_ORIGIN_PICK_RADIUS} of the world origin, else the
+ * front-most visible default plane the ray hits inside its rendered quad.
+ * Returns null when the ray misses everything (or the datums are hidden).
+ * The plane quads live on the world axes: front = z 0, top = y 0,
+ * right = x 0, each ±DATUM_PLANE_SIZE/2.
+ */
+export function pickDatumAtRay(
+  origin: THREE.Vector3,
+  dir: THREE.Vector3,
+  hidden: ReadonlySet<string>,
+): string | null {
+  const o = [origin.x, origin.y, origin.z];
+  const d = [dir.x, dir.y, dir.z];
+  if (!hidden.has("origin")) {
+    const t = -(o[0] * d[0] + o[1] * d[1] + o[2] * d[2]);
+    if (t > 0) {
+      const dist = Math.hypot(o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]);
+      if (dist <= DATUM_ORIGIN_PICK_RADIUS) return "origin";
+    }
+  }
+  const half = DATUM_PLANE_SIZE / 2;
+  const planes: { id: string; axis: number }[] = [
+    { id: "front", axis: 2 },
+    { id: "top", axis: 1 },
+    { id: "right", axis: 0 },
+  ];
+  let best: string | null = null;
+  let bestT = Infinity;
+  for (const { id, axis } of planes) {
+    if (hidden.has(id)) continue;
+    if (Math.abs(d[axis]) < 1e-9) continue;
+    const t = -o[axis] / d[axis];
+    if (t <= 0 || t >= bestT) continue;
+    const u = o[(axis + 1) % 3] + t * d[(axis + 1) % 3];
+    const v = o[(axis + 2) % 3] + t * d[(axis + 2) % 3];
+    if (Math.abs(u) > half || Math.abs(v) > half) continue;
+    best = id;
+    bestT = t;
+  }
+  return best;
+}
+
 export function DatumOverlay() {
   const { state } = useKernelStore();
   const hidden = state?.hiddenDatums ?? new Set<string>();
+  const selectedDatum = state?.selectedDatum ?? null;
   const invalidate = useThree((s) => s.invalidate);
 
   const originVisible = !hidden.has("origin");
   const visiblePlanes = DATUM_PLANES.filter((p) => !hidden.has(p.id));
 
-  useEffect(() => { invalidate(); }, [hidden, invalidate]);
+  useEffect(() => { invalidate(); }, [hidden, selectedDatum, invalidate]);
 
   if (!originVisible && visiblePlanes.length === 0) return null;
 
@@ -2050,7 +2099,12 @@ export function DatumOverlay() {
       {originVisible && (
         <mesh>
           <sphereGeometry args={[1.5, 16, 16]} />
-          <meshBasicMaterial color={DATUM_COLOR} transparent opacity={0.6} depthTest={false} />
+          <meshBasicMaterial
+            color={selectedDatum === "origin" ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
+            transparent
+            opacity={selectedDatum === "origin" ? 1 : 0.6}
+            depthTest={false}
+          />
         </mesh>
       )}
       {visiblePlanes.map((plane) => (
@@ -2058,15 +2112,19 @@ export function DatumOverlay() {
           <mesh>
             <planeGeometry args={[DATUM_PLANE_SIZE, DATUM_PLANE_SIZE]} />
             <meshBasicMaterial
-              color={DATUM_COLOR}
+              color={selectedDatum === plane.id ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
               transparent
-              opacity={DATUM_PLANE_OPACITY}
+              opacity={selectedDatum === plane.id ? DATUM_PLANE_OPACITY * 2 : DATUM_PLANE_OPACITY}
               side={THREE.DoubleSide}
               depthWrite={false}
             />
           </mesh>
           <lineSegments geometry={datumEdgesGeometry}>
-            <lineBasicMaterial color={DATUM_COLOR} transparent opacity={DATUM_EDGE_OPACITY} />
+            <lineBasicMaterial
+              color={selectedDatum === plane.id ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
+              transparent
+              opacity={selectedDatum === plane.id ? 0.9 : DATUM_EDGE_OPACITY}
+            />
           </lineSegments>
           <mesh
             position={DATUM_LABEL_POS}

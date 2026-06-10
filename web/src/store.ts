@@ -314,6 +314,10 @@ export interface StoreState {
    *  has toggled off ("origin", "top", "front", "right"). Datums not
    *  in this set are visible. Persisted to localStorage. */
   hiddenDatums: ReadonlySet<string>;
+  /** Selected default-geometry datum ("origin", "top", "front", "right"),
+   *  or null. Onshape-style tree/viewport selection of the default planes
+   *  (ticket r36f). Mutually exclusive with feature/element selection. */
+  selectedDatum: string | null;
   highlightedBodyIndex: number | null;
   /** MT-A: the multi-tab project model (part / script / assembly
    *  tabs). Replaces the old two-way `activeTab` toggle — the active
@@ -573,6 +577,7 @@ export class KernelStore {
       threemfStash: null,
       loading: null,
       hiddenDatums: loadHiddenDatumsFromStorage(),
+      selectedDatum: null,
       highlightedBodyIndex: null,
       rollbackIndex: initFeatures.length,
       project,
@@ -673,6 +678,7 @@ export class KernelStore {
       threemfStash: this.state.threemfStash,
       loading: this.state.loading,
       hiddenDatums: this.state.hiddenDatums,
+      selectedDatum: this.state.selectedDatum,
       highlightedBodyIndex: this.state.highlightedBodyIndex,
       rollbackIndex: rbRaw < 0 ? features.length : rbRaw,
       project: this.state.project,
@@ -1328,6 +1334,7 @@ export class KernelStore {
       // Feature selection and element selection are mutually exclusive.
       selectedElement: null,
       selectedElements: [],
+      selectedDatum: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1344,6 +1351,7 @@ export class KernelStore {
       selectionAnchor: id,
       selectedElement: null,
       selectedElements: [],
+      selectedDatum: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1381,6 +1389,7 @@ export class KernelStore {
       selectionAnchor: anchor,
       selectedElement: null,
       selectedElements: [],
+      selectedDatum: null,
     };
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1897,7 +1906,8 @@ export class KernelStore {
     if (
       this.state.selection.size === 0 &&
       this.state.selectionAnchor === null &&
-      this.state.selectedElement === null
+      this.state.selectedElement === null &&
+      this.state.selectedDatum === null
     )
       return;
     this.patch({
@@ -1905,6 +1915,7 @@ export class KernelStore {
       selectionAnchor: null,
       selectedElement: null,
       selectedElements: [],
+      selectedDatum: null,
     });
     this.syncActiveBody();
     this.refreshMeshCache();
@@ -1923,6 +1934,7 @@ export class KernelStore {
       selectionAnchor: null,
       selectedElement: el,
       selectedElements: [el],
+      selectedDatum: null,
     };
     this.syncActiveBody();
     this.notify();
@@ -1945,6 +1957,7 @@ export class KernelStore {
       selectionAnchor: null,
       selectedElement: next.length > 0 ? next[next.length - 1] : null,
       selectedElements: next,
+      selectedDatum: null,
     };
     this.syncActiveBody();
     this.notify();
@@ -1952,9 +1965,32 @@ export class KernelStore {
 
   /** Clear the persistent element selection. No-op when nothing is selected. */
   clearElementSelection(): void {
-    if (this.state.selectedElement === null && this.state.selectedElements.length === 0)
+    if (
+      this.state.selectedElement === null &&
+      this.state.selectedElements.length === 0 &&
+      this.state.selectedDatum === null
+    )
       return;
-    this.patch({ selectedElement: null, selectedElements: [] });
+    this.patch({ selectedElement: null, selectedElements: [], selectedDatum: null });
+    this.notify();
+  }
+
+  /** Select a default-geometry datum ("origin", "top", "front", "right"),
+   *  or clear with null (ticket r36f). Clears the feature- and element-
+   *  level selections — only one selection notion shows at a time. */
+  selectDatum(datumId: string | null): void {
+    if (this.state.selectedDatum === datumId) {
+      if (datumId === null) return;
+    }
+    this.state = {
+      ...this.state,
+      selection: new Set(),
+      selectionAnchor: null,
+      selectedElement: null,
+      selectedElements: [],
+      selectedDatum: datumId,
+      highlightedBodyIndex: null,
+    };
     this.notify();
   }
 

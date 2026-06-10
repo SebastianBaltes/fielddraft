@@ -50,6 +50,13 @@
   --color-element-selection: #0d8a8a;
   --color-element-selection-soft: #d6f0ef;
 
+  /* ── General GUI selection (ticket r36f) ────────────────────
+   * THE background for "this row/item is selected" anywhere in the
+   * chrome (outliner rows, parts list, datum rows, …): a light
+   * gray-blue. Components must use this token instead of ad-hoc
+   * accent mixes so selection reads identically across the UI. */
+  --color-ui-selection: #dde6f0;
+
   /* ── Typography ─────────────────────────────────────────── */
   /* Hard floor: --fs-base = 1rem. NEVER define a smaller value. */
   --font-family-sans:
@@ -144,6 +151,8 @@
 
   --color-element-selection: #2bc4c4;
   --color-element-selection-soft: #133a3a;
+
+  --color-ui-selection: #2d3c50;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.3);

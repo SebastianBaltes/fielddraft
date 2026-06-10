@@ -42,6 +42,7 @@ import {
   AssemblyParts,
   MateConnectorOverlay,
   DatumOverlay,
+  pickDatumAtRay,
   WorldGrid,
   ReferenceMesh,
   PickHud,
@@ -418,6 +419,35 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
       invalidateCanvas();
       return;
     }
+    // Default geometry is selectable in element-selection presets (Onshape
+    // UX, ticket r36f): a click that hits no B-Rep element but lands on a
+    // visible datum plane (or the origin marker) selects that datum. Runs
+    // AFTER element resolution so model geometry always wins over the
+    // planes slicing through it.
+    if (selection.mode === "element" && !click?.hit) {
+      const host = hostRef.current;
+      const camera = getPublishedPickCamera();
+      if (host && camera) {
+        const rect = host.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          const cx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+          const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
+          const datum = pickDatumAtRay(
+            raycaster.ray.origin,
+            raycaster.ray.direction,
+            state?.hiddenDatums ?? new Set<string>(),
+          );
+          if (datum) {
+            store.selectDatum(datum);
+            invalidateCanvas();
+            return;
+          }
+        }
+      }
+    }
+
     store.clearElementSelection();
     if (state?.highlightedBodyIndex != null) store.highlightBody(null);
 
