@@ -14,6 +14,7 @@ import {
   type BRepFace,
   type BRepVertex,
   type FeatureSummary,
+  type HybridLeafInfo,
   type Placement,
   type PickResult,
 } from "./kernel";
@@ -1550,6 +1551,17 @@ export function BRepSelectedOverlay() {
       transparent: true,
     }),
   );
+  // A selected FULL-PRIMITIVE face (a sphere/torus face — no mesh, no
+  // boundary edges, not planar) tints the matching hybrid leaf primitive,
+  // like the body highlight does (ticket yiis).
+  const leafGroupRef = useRef<THREE.Group | null>(null);
+  const disposeLeafGroup = () => {
+    leafGroupRef.current?.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+    leafGroupRef.current = null;
+  };
   // The selected edge gets a BRAND-NEW LineSegments2 + geometry per selection,
   // built in the edge branch of `resolved` below — never an in-place mutation
   // of one persistent geometry. The WebGPU renderer caches a
@@ -1569,7 +1581,9 @@ export function BRepSelectedOverlay() {
       fm.dispose();
       edgeObjRef.current?.geometry.dispose();
       em.dispose();
+      disposeLeafGroup();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Body fingerprint: re-resolve the highlight when bodies actually change
@@ -1588,7 +1602,7 @@ export function BRepSelectedOverlay() {
   // fresh fat-line object, vertices into world positions for the dot
   // markers.
   const resolved = useMemo<
-    | { hasFace: boolean; hasLines: boolean; vertices: [number, number, number][] }
+    | { hasFace: boolean; hasLines: boolean; hasLeafFill: boolean; vertices: [number, number, number][] }
     | null
   >(() => {
     if (!store || selectedList.length === 0) return null;
@@ -1608,6 +1622,7 @@ export function BRepSelectedOverlay() {
     const tris: number[] = [];
     const vertices: [number, number, number][] = [];
     const branchIds = new Set<number>();
+    const leafFills: HybridLeafInfo[] = [];
 
     // Pass 1 — faces (triangles where this kernel holds a mesh; in SDF render
     // modes the fill stays empty and the outline below is the highlight,
@@ -1661,6 +1676,33 @@ export function BRepSelectedOverlay() {
             // mid-regen — outline still renders
           }
           for (const f of wantedFaces) {
+            if (f.surfaceKind === "sphere" || f.surfaceKind === "torus") {
+              // A full-primitive face: no boundary edges to outline and no
+              // planar profile to fill — tint the nearest hybrid leaf of the
+              // same kind, exactly like the body highlight (ticket yiis).
+              try {
+                const leaves = k.bodyHybridInfo(i).leaves.filter(
+                  (l) => l.kind === f.surfaceKind && l.role !== "skip",
+                );
+                const c = localToWorld(f.centroidLocal, placement);
+                let best: (typeof leaves)[number] | null = null;
+                let bestD = Infinity;
+                for (const l of leaves) {
+                  const d =
+                    (l.transform[0] - c[0]) ** 2 +
+                    (l.transform[1] - c[1]) ** 2 +
+                    (l.transform[2] - c[2]) ** 2;
+                  if (d < bestD) {
+                    best = l;
+                    bestD = d;
+                  }
+                }
+                if (best) leafFills.push(best);
+              } catch {
+                // no hybrid info — face stays un-highlighted
+              }
+              continue;
+            }
             if (f.surfaceKind !== "plane") continue;
             const boundary = edges
               .filter((e) => e.a === f.branchId || e.b === f.branchId)
@@ -1712,7 +1754,33 @@ export function BRepSelectedOverlay() {
       }
     }
 
-    if (tris.length === 0 && segs.length === 0 && vertices.length === 0) return null;
+    if (
+      tris.length === 0 &&
+      segs.length === 0 &&
+      vertices.length === 0 &&
+      leafFills.length === 0
+    ) {
+      disposeLeafGroup();
+      return null;
+    }
+
+    // Full-primitive face fills (sphere/torus, ticket yiis): fresh group per
+    // selection, same dispose pattern as the edge object.
+    disposeLeafGroup();
+    if (leafFills.length > 0) {
+      const group = new THREE.Group();
+      for (const leaf of leafFills) {
+        const geo = createPrimitiveGeometry(leaf);
+        if (!geo) continue;
+        const mesh = new THREE.Mesh(geo, faceMatRef.current);
+        applyLeafTransform(mesh, leaf);
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 1001;
+        mesh.layers.enable(OVERLAY_LAYER);
+        group.add(mesh);
+      }
+      if (group.children.length > 0) leafGroupRef.current = group;
+    }
 
     faceGeomRef.current.setAttribute(
       "position",
@@ -1736,7 +1804,12 @@ export function BRepSelectedOverlay() {
       edgeObjRef.current = null;
     }
 
-    return { hasFace: tris.length > 0, hasLines: segs.length > 0, vertices };
+    return {
+      hasFace: tris.length > 0,
+      hasLines: segs.length > 0,
+      hasLeafFill: leafGroupRef.current !== null,
+      vertices,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, selected, selectedKey, bodyFingerprint]);
 
@@ -1760,6 +1833,9 @@ export function BRepSelectedOverlay() {
           the memo above. */}
       {resolved.hasLines && edgeObjRef.current && (
         <primitive object={edgeObjRef.current} dispose={null} />
+      )}
+      {resolved.hasLeafFill && leafGroupRef.current && (
+        <primitive object={leafGroupRef.current} dispose={null} />
       )}
       {resolved.vertices.map((w, i) => (
         <ScreenSpacePoint
