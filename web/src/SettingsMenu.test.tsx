@@ -8,7 +8,7 @@ import type { SettingsState, WorkspaceUnits } from "./SettingsMenu";
   .IS_REACT_ACT_ENVIRONMENT = true;
 
 const DEFAULT_UNITS: WorkspaceUnits = {
-  lengthUnit: "m",
+  lengthUnit: "mm",
   lengthDecimals: "0.123",
   linearAccelerationUnit: "m/s2",
   linearAccelerationDecimals: "0.123",

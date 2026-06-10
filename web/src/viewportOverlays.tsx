@@ -31,6 +31,11 @@ import { setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 
+/** Feature kinds that are themselves a transform of another feature — the
+ *  gizmo edits THEIR params in place instead of appending a new transform
+ *  call onto a geometry feature (ticket p3vh). */
+const TRANSFORM_FEATURE_KINDS = new Set(["translate", "rotate", "scale"]);
+
 export function findSingleSelectedFeature(state: StoreState | null | undefined): FeatureSummary | undefined {
   if (!state || state.selection.size !== 1) return undefined;
   const first = state.selection.values().next().value;
@@ -276,6 +281,39 @@ export function SelectionTransformGizmo() {
       const u = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
       sx = u; sy = u; sz = u;
       mesh.scale.set(u, u, u);
+    }
+    // A selected TRANSFORM feature (Translate/Rotate/Scale row in the
+    // outliner) edits ITS OWN params: `applyGizmo*` targets a geometry
+    // feature and appends/merges a transform onto it, but a transform
+    // feature never appears in the kernel's decoded spine, so the call
+    // was a silent no-op (ticket p3vh — dragging the sphere's translate
+    // gizmo moved nothing). Only the matching mode commits; dragging a
+    // rotate handle on a Translate feature has no parameter to write.
+    if (TRANSFORM_FEATURE_KINDS.has(selectedFeature.kind)) {
+      let current: Record<string, unknown>;
+      try {
+        current = store.kernel.getFeatureCallParams(selectedFeature.id);
+      } catch {
+        return;
+      }
+      if (gizmoMode === "translate" && selectedFeature.kind === "translate") {
+        store.updateFeatureParams(selectedFeature.id, {
+          ...current,
+          translate: [p.x, p.y, p.z],
+        });
+      } else if (gizmoMode === "rotate" && selectedFeature.kind === "rotate") {
+        const e = new THREE.Euler().setFromQuaternion(q, "XYZ");
+        store.updateFeatureParams(selectedFeature.id, {
+          ...current,
+          rotation: [e.x, e.y, e.z],
+        });
+      } else if (gizmoMode === "scale" && selectedFeature.kind === "scale") {
+        store.updateFeatureParams(selectedFeature.id, {
+          ...current,
+          scale: [sx, sy, sz],
+        });
+      }
+      return;
     }
     if (gizmoMode === "translate") {
       store.applyGizmoTranslate(selectedFeature.id, p.x, p.y, p.z);

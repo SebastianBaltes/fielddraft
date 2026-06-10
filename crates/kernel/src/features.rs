@@ -892,7 +892,7 @@ fn push_primitive(
 #[derive(FeatureSchema)]
 #[schema(type = "box")]
 pub struct BoxDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_extents: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
@@ -952,7 +952,7 @@ impl FeatureKind for BoxPrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "sphere")]
 pub struct SphereDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub radius: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
@@ -1013,9 +1013,9 @@ impl FeatureKind for SpherePrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "cylinder")]
 pub struct CylinderDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub radius: f32,
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
@@ -1079,11 +1079,11 @@ impl FeatureKind for CylinderPrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "cone")]
 pub struct ConeDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub r_bottom: f32,
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub r_top: f32,
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
@@ -1143,16 +1143,16 @@ impl FeatureKind for ConePrimitive {
 #[schema(type = "thread")]
 pub struct ThreadDef {
     /// Nominal (outer) radius in mm.
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub nominal_radius: f32,
     /// Pitch — distance per revolution in mm.
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub pitch: f32,
     /// Thread depth in mm (groove amplitude).
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub depth: f32,
     /// Half the total bolt length along Y.
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
@@ -1210,10 +1210,10 @@ impl FeatureKind for ThreadFeature {
 #[schema(type = "torus")]
 pub struct TorusDef {
     /// Distance from the axis to the centre of the tube.
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub major_radius: f32,
     /// Radius of the tube cross-section.
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub minor_radius: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub center: [f32; 3],
@@ -1279,9 +1279,9 @@ impl FeatureKind for TorusPrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "capsule")]
 pub struct CapsuleDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub radius: f32,
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
@@ -1345,7 +1345,7 @@ impl FeatureKind for CapsulePrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "ellipsoid")]
 pub struct EllipsoidDef {
-    #[param(default = [1.0, 1.0, 1.0], unit = "m")]
+    #[param(default = [1.0, 1.0, 1.0], unit = "mm")]
     pub radii: [f32; 3],
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
@@ -1409,9 +1409,9 @@ impl FeatureKind for EllipsoidPrimitive {
 #[derive(FeatureSchema)]
 #[schema(type = "hex_prism")]
 pub struct HexPrismDef {
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub apothem: f32,
-    #[param(unit = "m")]
+    #[param(unit = "mm")]
     pub half_height: f32,
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
@@ -1777,7 +1777,7 @@ impl FeatureKind for TranslateFeature {
         serde_json::json!({
             "type": "translate",
             "params": [
-                {"key": "translate", "name": "Translation", "type": "vec3", "required": false, "unit": "m"}
+                {"key": "translate", "name": "Translation", "type": "vec3", "required": false, "unit": "mm"}
             ]
         })
     }
