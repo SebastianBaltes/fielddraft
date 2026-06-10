@@ -1,8 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { useKernelStore } from "./store";
 import { publishSketchCamera } from "./sketchCameraBridge";
 import {
   consumeViewCommand,
@@ -32,15 +31,9 @@ export function CameraBridgePublisher() {
   }, [camera]);
 
   useFrame(() => {
-    const cam = camera as THREE.OrthographicCamera;
-    const centerU = cam.position?.x ?? 0;
-    const centerV = cam.position?.z ?? 0;
     publishSketchCamera({
       width: size.width,
       height: size.height,
-      zoom: (cam.zoom ?? 1) as number,
-      centerU,
-      centerV,
       devicePixelRatio: (gl as unknown as { getPixelRatio?: () => number }).getPixelRatio?.() ?? window.devicePixelRatio ?? 1,
     });
   });
@@ -48,8 +41,6 @@ export function CameraBridgePublisher() {
 }
 
 export function CameraRig({ preset }: { preset: ControlsPresetId }) {
-  const { state } = useKernelStore();
-  const sketchActive = state?.sketchSession.active ?? false;
   const { camera } = CONTROLS_PRESETS[preset];
   const controlsRef = useRef<{ mouseButtons: OrbitMouseButtons } | null>(null);
 
@@ -76,33 +67,10 @@ export function CameraRig({ preset }: { preset: ControlsPresetId }) {
     };
   }, [camera.shiftMiddleOrbit]);
 
+  // Ticket bxoo: no separate sketch camera — the normal camera and
+  // controls stay live during a sketch session; the overlay projects
+  // through them (sketchCameraBridge).
   const mouseButtons = toOrbitMouseButtons(camera);
-
-  if (sketchActive) {
-    return (
-      <>
-        <OrthographicCamera
-          makeDefault
-          position={[0, 500, 0]}
-          up={[0, 0, -1]}
-          near={1}
-          far={4000}
-          zoom={1.2}
-        />
-        <OrbitControls
-          makeDefault
-          enableDamping={false}
-          enableRotate={false}
-          enablePan
-          enableZoom
-          mouseButtons={mouseButtons}
-          panSpeed={camera.panSpeed}
-          zoomSpeed={camera.zoomSpeed}
-          target={[0, 0, 0]}
-        />
-      </>
-    );
-  }
 
   return (
     <OrbitControls

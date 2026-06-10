@@ -193,7 +193,10 @@ function pickAtMouse(
  * pickers), but only when the filter doesn't restrict to element kinds the
  * click didn't hit.
  */
-function tryQueryPick(click: PickResult | null): boolean {
+function tryQueryPick(
+  click: PickResult | null,
+  store: { kernel: { bodyCount(): number; bodyBrepFaces(i: number): { branchId: number; idHash: string }[] } } | null,
+): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
 
@@ -201,6 +204,26 @@ function tryQueryPick(click: PickResult | null): boolean {
   if (hovered) {
     const query = mapPickToQuery(hovered, picker.entityFilter);
     if (query) return picker.onPick(query);
+  }
+
+  // Click-time face resolution (tickets yx6a/bxoo): the hover overlay
+  // publishes the hovered element from a useFrame that may not have run
+  // between the pointer move and this click (demand frameloop, fast
+  // clicks, automation). Resolve the face directly from the click's
+  // analytic hit instead of dropping the pick.
+  if (click?.hit && store && filterAllows("face", picker.entityFilter)) {
+    try {
+      const count = store.kernel.bodyCount();
+      outer: for (let i = 0; i < count; i++) {
+        for (const face of store.kernel.bodyBrepFaces(i)) {
+          if (!click.branches.includes(face.branchId)) continue;
+          if (picker.onPick(`qFace(${face.idHash})`)) return true;
+          break outer;
+        }
+      }
+    } catch {
+      // fall through to the feature-level path below
+    }
   }
 
   // Feature-level fallback. Skip it when the picker restricts to element
@@ -481,7 +504,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     const click = pickAtMouse(event, hostRef.current, store);
     setPickResult(click);
 
-    if (tryQueryPick(click)) return;
+    if (tryQueryPick(click, store)) return;
     if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
     if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
     if (state?.filletMode) { handleFilletClick(store, click); return; }
@@ -593,15 +616,33 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     }
     const sketchDrop = e.dataTransfer.getData("fielddraft/sketch");
     if (sketchDrop && pickResult?.hit) {
-      const n = pickResult.normal;
-      const ax = Math.abs(n[0]);
-      const ay = Math.abs(n[1]);
-      const az = Math.abs(n[2]);
-      let plane = "qCreatedBy(origin_plane_xy)";
-      if (ax > ay && ax > az) {
-        plane = "qCreatedBy(origin_plane_yz)";
-      } else if (az > ay) {
-        plane = "qCreatedBy(origin_plane_xz)";
+      // Ticket yx6a: dropping the sketch tool on a body face anchors the
+      // sketch to THAT face (qFace); only a miss falls back to the datum
+      // plane closest to the hit normal.
+      let plane: string | null = null;
+      try {
+        const count = store.kernel.bodyCount();
+        outer: for (let i = 0; i < count; i++) {
+          for (const f of store.kernel.bodyBrepFaces(i)) {
+            if (!pickResult.branches.includes(f.branchId)) continue;
+            plane = `qFace(${f.idHash})`;
+            break outer;
+          }
+        }
+      } catch {
+        // fall back to a datum plane
+      }
+      if (!plane) {
+        const n = pickResult.normal;
+        const ax = Math.abs(n[0]);
+        const ay = Math.abs(n[1]);
+        const az = Math.abs(n[2]);
+        plane = "qCreatedBy(origin_plane_xy)";
+        if (ax > ay && ax > az) {
+          plane = "qCreatedBy(origin_plane_yz)";
+        } else if (az > ay) {
+          plane = "qCreatedBy(origin_plane_xz)";
+        }
       }
       store.enterSketch(plane);
     }

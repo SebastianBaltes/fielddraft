@@ -34,11 +34,14 @@ import {
 } from "./queryPickerBridge";
 import type { KernelStore, SketchSessionState } from "./store";
 import {
+  getSketchPlaneFrame,
   readSketchCamera,
   screenToSketch,
+  setSketchPlaneFrame,
   sketchToScreen,
   type SketchCameraState,
 } from "./sketchCameraBridge";
+import { resolvePlaneFrame } from "./sketchPlaneFrame";
 import {
   buildDraftSketchState,
   DRAFT_DRAG_START_ID,
@@ -274,34 +277,20 @@ interface ProjectedEdge {
 
 function projectEdgesToSketchPlane(
   edges: { p0: number[]; p1: number[] }[],
-  planeQuery: string | null,
 ): ProjectedEdge[] {
-  const isXZ = planeQuery?.includes("origin_plane_xz");
-  const isYZ = planeQuery?.includes("origin_plane_yz");
-
-  return edges.map((e) => {
-    let u0: number, v0: number, u1: number, v1: number;
-    if (isXZ) {
-      u0 = e.p0[0];
-      v0 = e.p0[2];
-      u1 = e.p1[0];
-      v1 = e.p1[2];
-    } else if (isYZ) {
-      u0 = e.p0[1];
-      v0 = e.p0[2];
-      u1 = e.p1[1];
-      v1 = e.p1[2];
-    } else {
-      u0 = e.p0[0];
-      v0 = e.p0[1];
-      u1 = e.p1[0];
-      v1 = e.p1[1];
-    }
-    return {
-      p0: [u0, v0] as [number, number],
-      p1: [u1, v1] as [number, number],
-    };
-  });
+  // Tickets yx6a/bxoo: drop each world point into the resolved plane
+  // frame (orthogonal projection along the plane normal).
+  const f = getSketchPlaneFrame();
+  const uv = (p: number[]): [number, number] => {
+    const dx = p[0] - f.origin[0];
+    const dy = p[1] - f.origin[1];
+    const dz = p[2] - f.origin[2];
+    return [
+      dx * f.xAxis[0] + dy * f.xAxis[1] + dz * f.xAxis[2],
+      dx * f.yAxis[0] + dy * f.yAxis[1] + dz * f.yAxis[2],
+    ];
+  };
+  return edges.map((e) => ({ p0: uv(e.p0), p1: uv(e.p1) }));
 }
 
 function nearestPointOnSegment(
@@ -776,6 +765,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const lengthDirtyRef = useRef(false);
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Tickets yx6a/bxoo: resolve the session's plane query to its world
+  // frame and publish it to the camera bridge — sketchToScreen /
+  // screenToSketch project through it with the live 3D camera.
+  useEffect(() => {
+    if (!store || !session.active) {
+      setSketchPlaneFrame(null);
+      return;
+    }
+    setSketchPlaneFrame(
+      resolvePlaneFrame(
+        session.planeQuery ?? "qCreatedBy(origin_plane_xy)",
+        store.kernel,
+      ),
+    );
+    return () => setSketchPlaneFrame(null);
+  }, [store, session.active, session.planeQuery]);
+
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
     if (!store) {
@@ -806,10 +812,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           }
         }
       }
-      projectedEdgesRef.current = projectEdgesToSketchPlane(
-        segs,
-        session.planeQuery,
-      );
+      projectedEdgesRef.current = projectEdgesToSketchPlane(segs);
     } catch {
       projectedEdgesRef.current = [];
     }
@@ -1006,7 +1009,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       return;
     }
     if (!store || !session.active || !session.selectedTool) return;
-    if (e.button !== 0) return; // left button only
+    if (e.button !== 0) {
+      // Ticket bxoo: the normal camera stays live during the session —
+      // forward pan/rotate gestures (right/middle drag) to OrbitControls
+      // mid-tool too, same as select mode.
+      forwardPointerToViewport(e);
+      return;
+    }
     e.preventDefault();
     (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
@@ -2338,17 +2347,45 @@ function drawOverlay(
   // Bail with a cleared canvas rather than freezing the tab.
   if (!(cam.zoom > 0)) return;
 
-  // Grid: adaptive spacing that snaps to 1/2/5/10/… mm steps
-  // and stays visually stable across zoom levels.
+  // Grid: adaptive spacing that snaps to 1/2/5/10/… mm steps and stays
+  // visually stable across zoom levels. Tickets yx6a/bxoo: the grid
+  // lives IN the sketch plane now — each grid line is a straight
+  // sketch-space segment projected through the camera, so the grid
+  // tilts with the plane in the 3D view.
   {
     const minPxGap = 20;
     let step = 1;
     while (step * cam.zoom < minPxGap) step *= step < 5 ? 5 : 2;
 
-    const left = cam.centerU - cam.width / (2 * cam.zoom);
-    const right = cam.centerU + cam.width / (2 * cam.zoom);
-    const top = cam.centerV + cam.height / (2 * cam.zoom);
-    const bottom = cam.centerV - cam.height / (2 * cam.zoom);
+    // Visible (u, v) range: unproject the canvas corners onto the
+    // plane and take the bounding box. Under a tilted perspective view
+    // the corners can land far out (near the horizon) — clamp the span
+    // so the line loop stays bounded.
+    const corners = [
+      screenToSketch(0, 0, cam),
+      screenToSketch(cam.width, 0, cam),
+      screenToSketch(0, cam.height, cam),
+      screenToSketch(cam.width, cam.height, cam),
+    ];
+    const [cu, cv] = screenToSketch(cam.width / 2, cam.height / 2, cam);
+    const maxSpan = (Math.hypot(cam.width, cam.height) / cam.zoom) * 3;
+    const clamp = (x: number, c: number) =>
+      Math.min(c + maxSpan, Math.max(c - maxSpan, x));
+    let left = Infinity, right = -Infinity, bottom = Infinity, top = -Infinity;
+    for (const [u, v] of corners) {
+      left = Math.min(left, clamp(u, cu));
+      right = Math.max(right, clamp(u, cu));
+      bottom = Math.min(bottom, clamp(v, cv));
+      top = Math.max(top, clamp(v, cv));
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(bottom)) return;
+
+    const line = (a: [number, number], b: [number, number]) => {
+      const [ax, ay] = sketchToScreen(a[0], a[1], cam);
+      const [bx, by] = sketchToScreen(b[0], b[1], cam);
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+    };
 
     ctx.strokeStyle = "rgba(0,0,0,0.08)";
     ctx.lineWidth = 1;
@@ -2356,14 +2393,10 @@ function drawOverlay(
     const gridLeft = Math.floor(left / step) * step;
     const gridBottom = Math.floor(bottom / step) * step;
     for (let u = gridLeft; u <= right; u += step) {
-      const [px] = sketchToScreen(u, 0, cam);
-      ctx.moveTo(px, 0);
-      ctx.lineTo(px, cam.height);
+      line([u, bottom], [u, top]);
     }
     for (let v = gridBottom; v <= top; v += step) {
-      const [, py] = sketchToScreen(0, v, cam);
-      ctx.moveTo(0, py);
-      ctx.lineTo(cam.width, py);
+      line([left, v], [right, v]);
     }
     ctx.stroke();
 
@@ -2371,12 +2404,8 @@ function drawOverlay(
     ctx.strokeStyle = "rgba(0,0,0,0.25)";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    const [ox] = sketchToScreen(0, 0, cam);
-    const [, oy] = sketchToScreen(0, 0, cam);
-    ctx.moveTo(ox, 0);
-    ctx.lineTo(ox, cam.height);
-    ctx.moveTo(0, oy);
-    ctx.lineTo(cam.width, oy);
+    line([0, bottom], [0, top]);
+    line([left, 0], [right, 0]);
     ctx.stroke();
   }
 
@@ -3096,14 +3125,25 @@ function drawCircle(
   cam: Readonly<SketchCameraState>,
   color: string,
 ): void {
-  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
-  const radiusPx = radiusMm * cam.zoom;
-  if (radiusPx < 0.5) return;
+  // Tickets yx6a/bxoo: sample in sketch space and project each point —
+  // under a tilted camera the circle is an ellipse on screen, which
+  // `ctx.arc` can't draw.
+  if (radiusMm * cam.zoom < 0.5) return;
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = STROKE_PX;
   ctx.beginPath();
-  ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+  const steps = 64;
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const [px, py] = sketchToScreen(
+      center[0] + radiusMm * Math.cos(t),
+      center[1] + radiusMm * Math.sin(t),
+      cam,
+    );
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
   ctx.stroke();
   ctx.restore();
 }
@@ -3124,15 +3164,28 @@ function drawEllipse(
   cam: Readonly<SketchCameraState>,
   color: string,
 ): void {
-  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
-  const rxPx = radiusXMm * cam.zoom;
-  const ryPx = radiusYMm * cam.zoom;
-  if (rxPx < 0.5 || ryPx < 0.5) return;
+  if (radiusXMm * cam.zoom < 0.5 || radiusYMm * cam.zoom < 0.5) return;
+  // Tickets yx6a/bxoo: sample the rotated ellipse in sketch space and
+  // project each point (see drawCircle).
+  const cosR = Math.cos(rotation);
+  const sinR = Math.sin(rotation);
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = STROKE_PX;
   ctx.beginPath();
-  ctx.ellipse(cx, cy, rxPx, ryPx, -rotation, 0, Math.PI * 2);
+  const steps = 64;
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const ex = radiusXMm * Math.cos(t);
+    const ey = radiusYMm * Math.sin(t);
+    const [px, py] = sketchToScreen(
+      center[0] + ex * cosR - ey * sinR,
+      center[1] + ex * sinR + ey * cosR,
+      cam,
+    );
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
   ctx.stroke();
   ctx.restore();
 }
