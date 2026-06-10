@@ -28,6 +28,11 @@ import {
   createPrimitiveGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
+import {
+  planeToWorld,
+  resolvePlaneFrame,
+  type PlaneFrame,
+} from "./sketchPlaneFrame";
 import { setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -44,34 +49,13 @@ export function findSingleSelectedFeature(state: StoreState | null | undefined):
   return state.features.find((f) => f.id === first);
 }
 
-type SketchPlane = {
-  u: [number, number, number];
-  v: [number, number, number];
-};
-
-function parseSketchPlane(query: string): SketchPlane {
-  if (query.includes("origin_plane_xz")) {
-    return { u: [1, 0, 0], v: [0, 0, 1] };
-  }
-  if (query.includes("origin_plane_yz")) {
-    return { u: [0, 1, 0], v: [0, 0, 1] };
-  }
-  return { u: [1, 0, 0], v: [0, 1, 0] };
-}
-
 function collectSketchLineSegments(
   subCalls: Array<{ type: string; params: Record<string, unknown> }>,
-  plane: SketchPlane,
+  frame: PlaneFrame,
 ): number[] {
   const out: number[] = [];
   const emit = (a: [number, number], b: [number, number]) => {
-    const ax = plane.u[0] * a[0] + plane.v[0] * a[1];
-    const ay = plane.u[1] * a[0] + plane.v[1] * a[1];
-    const az = plane.u[2] * a[0] + plane.v[2] * a[1];
-    const bx = plane.u[0] * b[0] + plane.v[0] * b[1];
-    const by = plane.u[1] * b[0] + plane.v[1] * b[1];
-    const bz = plane.u[2] * b[0] + plane.v[2] * b[1];
-    out.push(ax, ay, az, bx, by, bz);
+    out.push(...planeToWorld(a[0], a[1], frame), ...planeToWorld(b[0], b[1], frame));
   };
 
   const getVec2 = (v: unknown): [number, number] | null => {
@@ -191,8 +175,15 @@ export function SketchOverlay3D() {
           plane?: string;
           sub_calls?: Array<{ type: string; params: Record<string, unknown> }>;
         };
-        const plane = parseSketchPlane(params.plane ?? "");
-        const points = collectSketchLineSegments(params.sub_calls ?? [], plane);
+        // Sketch-in-3D Phase 2 (ticket bxoo): resolve the real plane
+        // frame (datum OR face plane incl. origin offset) instead of
+        // the old hardcoded origin-plane axes.
+        const frame =
+          resolvePlaneFrame(
+            params.plane ?? "qCreatedBy(origin_plane_xy)",
+            store.kernel,
+          ) ?? resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)!;
+        const points = collectSketchLineSegments(params.sub_calls ?? [], frame);
         if (points.length === 0) continue;
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute(
