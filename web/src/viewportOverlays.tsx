@@ -21,7 +21,12 @@ import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
-import { BODY_COLORS } from "./sdfDeferredRenderer";
+import {
+  BODY_COLORS,
+  applyLeafTransform,
+  createPrimitiveGeometry,
+} from "./sdfDeferredRenderer";
+import { triangulatePlanarFace } from "./faceFill";
 import { setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -1606,6 +1611,35 @@ export function BRepSelectedOverlay() {
           } catch {
             // mesh views unavailable mid-regen — outline still renders
           }
+        } else if (wantedFaces.length > 0) {
+          // Mesh-free (SDF render modes): fill PLANAR faces by triangulating
+          // their boundary edges (ticket por8) — Onshape-style full-face
+          // highlight instead of outline-only. Curved faces keep the outline.
+          let edges: BRepEdge[] = [];
+          try {
+            edges = k.bodyBrepEdges(i);
+          } catch {
+            // mid-regen — outline still renders
+          }
+          for (const f of wantedFaces) {
+            if (f.surfaceKind !== "plane") continue;
+            const boundary = edges
+              .filter((e) => e.a === f.branchId || e.b === f.branchId)
+              .map((e) => e.points);
+            if (boundary.length === 0) continue;
+            const originW = localToWorld(f.centroidLocal, placement);
+            const [qx, qy, qz, qw] = placement.rotation;
+            const nl = f.normalLocal;
+            const tx = 2 * (qy * nl[2] - qz * nl[1]);
+            const ty = 2 * (qz * nl[0] - qx * nl[2]);
+            const tz = 2 * (qx * nl[1] - qy * nl[0]);
+            const normalW: [number, number, number] = [
+              nl[0] + qw * tx + qy * tz - qz * ty,
+              nl[1] + qw * ty + qz * tx - qx * tz,
+              nl[2] + qw * tz + qx * ty - qy * tx,
+            ];
+            tris.push(...triangulatePlanarFace(boundary, originW, normalW));
+          }
         }
       }
       if (vertexHashes.size > 0) {
@@ -1706,7 +1740,10 @@ export function BRepSelectedOverlay() {
  * second click on an already-selected face, or a Parts-list row — every
  * analytic B-Rep edge of `state.highlightedBodyIndex` lights up as a fat
  * line in the element-selection colour. Mesh-free, so it works in every
- * render mode, exactly like the edge/face outlines.
+ * render mode, exactly like the edge/face outlines. A body WITHOUT any
+ * B-Rep edge (a bare sphere/torus) tints its analytic leaf primitives
+ * instead — the selection reads as the round body itself, Onshape-style,
+ * not as its AABB wireframe (ticket por8).
  */
 export function BodyHighlightOverlay() {
   const { store, state } = useKernelStore();
@@ -1722,13 +1759,32 @@ export function BodyHighlightOverlay() {
       transparent: true,
     }),
   );
-  const objRef = useRef<LineSegments2 | null>(null);
+  const fillMatRef = useRef(
+    new THREE.MeshBasicMaterial({
+      color: ELEMENT_SELECTION_COLOR,
+      transparent: true,
+      opacity: 0.65,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  const objRef = useRef<THREE.Object3D | null>(null);
+  const disposeObj = () => {
+    objRef.current?.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+    objRef.current = null;
+  };
   useEffect(() => {
     const mat = matRef.current;
+    const fillMat = fillMatRef.current;
     return () => {
-      objRef.current?.geometry.dispose();
+      disposeObj();
       mat.dispose();
+      fillMat.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const bodyFingerprint = useMemo(() => {
@@ -1752,9 +1808,34 @@ export function BodyHighlightOverlay() {
     const segs: number[] = [];
     for (const e of edges) segs.push(...polylineToSegments(e.points));
     if (segs.length === 0) {
-      // Bodies without any B-Rep edge (a bare sphere/ellipsoid) still need a
-      // visible selection cue (ticket select-rectangle): fall back to the 12
-      // edges of the body's world AABB from the compiled SDF.
+      // Bodies without any B-Rep edge (a bare sphere/torus): tint the body's
+      // analytic leaf primitives — the SAME hull shapes the deferred renderer
+      // rasterises — so the selection is the round body itself, not its AABB
+      // box (ticket por8). Leaf transforms are already world space.
+      try {
+        const hybrid = k.bodyHybridInfo(bodyIndex);
+        const group = new THREE.Group();
+        for (const leaf of hybrid.leaves) {
+          if (leaf.role === "skip") continue;
+          const geo = createPrimitiveGeometry(leaf);
+          if (!geo) continue;
+          const mesh = new THREE.Mesh(geo, fillMatRef.current);
+          applyLeafTransform(mesh, leaf);
+          mesh.frustumCulled = false;
+          mesh.renderOrder = 1001;
+          mesh.layers.enable(OVERLAY_LAYER);
+          group.add(mesh);
+        }
+        if (group.children.length > 0) {
+          disposeObj();
+          objRef.current = group;
+          return true;
+        }
+      } catch {
+        // no hybrid info — fall through to the AABB wireframe
+      }
+      // Last resort (no analytic leaves either, e.g. a warped TPMS body):
+      // the 12 edges of the body's world AABB from the compiled SDF.
       try {
         const aabb = k.bodySdfAabb(bodyIndex);
         if (aabb.length >= 6) {
@@ -1784,7 +1865,7 @@ export function BodyHighlightOverlay() {
     obj.frustumCulled = false;
     obj.renderOrder = 1002;
     obj.layers.enable(OVERLAY_LAYER);
-    objRef.current?.geometry.dispose();
+    disposeObj();
     objRef.current = obj;
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
