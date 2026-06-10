@@ -427,10 +427,16 @@ export function BRepEdgeOverlay({
   const { store, state } = useKernelStore();
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
-  const baseGeometryRef = useRef(new THREE.BufferGeometry());
+  // Base edges render as fat lines too (ticket 8f5z: plain LineBasicMaterial
+  // rasterises 1px hairlines on WebGPU that read broken/washed-out up close —
+  // "Kanten wirken nicht voll"). 1.5px through the instanced screen-space
+  // line shader gives the solid Onshape-style wireframe; the 2px weight stays
+  // reserved for the selection.
   const baseMaterialRef = useRef(
-    new THREE.LineBasicMaterial({
+    new Line2NodeMaterial({
       color: 0x1e293b,
+      linewidth: 1.5,
+      worldUnits: false,
       depthTest: false,
       depthWrite: false,
       transparent: true,
@@ -505,10 +511,13 @@ export function BRepEdgeOverlay({
     return out;
   }, [store, bodyFingerprint]);
 
-  const [ready, setReady] = useState(false);
+  // One fresh LineSegments2 for ALL base edges per geometry change — the
+  // WebGPU renderer never re-uploads a LineSegmentsGeometry mutated in place
+  // (ticket twxw), so the merged buffer gets a brand-new geometry + object.
+  const [baseObj, setBaseObj] = useState<LineSegments2 | null>(null);
   useEffect(() => {
     if (edges.length === 0) {
-      setReady(false);
+      setBaseObj(null);
       return;
     }
     let total = 0;
@@ -519,9 +528,14 @@ export function BRepEdgeOverlay({
       merged.set(e.positions, off);
       off += e.positions.length;
     }
-    baseGeometryRef.current.setAttribute("position", new THREE.BufferAttribute(merged, 3));
-    baseGeometryRef.current.computeBoundingSphere();
-    setReady(true);
+    const geom = new LineSegmentsGeometry();
+    geom.setPositions(merged);
+    const obj = new LineSegments2(geom, baseMaterialRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 998;
+    obj.layers.enable(OVERLAY_LAYER);
+    setBaseObj(obj);
+    return () => geom.dispose();
   }, [edges]);
 
   // Screen-space edge hover. The kernel sphere-trace pick reports the face
@@ -664,24 +678,21 @@ export function BRepEdgeOverlay({
   }, [hoveredIdx, edges]);
 
   useEffect(() => {
+    const bm = baseMaterialRef.current;
+    const hm = hoverMaterialRef.current;
     return () => {
-      baseGeometryRef.current.dispose();
-      baseMaterialRef.current.dispose();
-      hoverMaterialRef.current.dispose();
+      bm.dispose();
+      hm.dispose();
     };
   }, []);
 
-  if (mode === "none" || !ready) return null;
+  if (mode === "none" || !baseObj) return null;
 
   return (
     <>
-      <lineSegments
-        ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-        geometry={baseGeometryRef.current}
-        material={baseMaterialRef.current}
-        frustumCulled={false}
-        renderOrder={998}
-      />
+      {/* dispose={null}: object identity changes per rebuild; the previous
+          geometry is disposed by the effect above, the material is shared. */}
+      <primitive object={baseObj} dispose={null} />
       {hoverObj && <primitive object={hoverObj} dispose={null} />}
     </>
   );
