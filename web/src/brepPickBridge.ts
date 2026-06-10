@@ -10,8 +10,11 @@
  * Two overlays publish, by kind, so neither clobbers the other:
  *   - `BRepSelectionOverlay` owns FACE + VERTEX (its own raycast/markers).
  *   - `BRepEdgeOverlay` owns EDGE (signature-matched against the Rust pick).
- * `getHoveredElement` merges them by priority face > vertex > edge — a face
- * hit sits in front of the edges/vertices bounding it.
+ * `getHoveredElement` merges them by priority vertex > edge > face — the
+ * MORE specific element wins (ticket evq2, the usual CAD convention): a
+ * cursor near a corner picks the corner, near an edge the edge, and only
+ * the face interior picks the face. The face under the cursor is otherwise
+ * hit almost everywhere and would shadow both.
  *
  * A plain module-scoped singleton, exactly like `queryPickerBridge`.
  */
@@ -33,12 +36,12 @@ export function setHoveredElementOfKind(
 }
 
 /**
- * The element the cursor is currently over, or `null`. Priority face >
- * vertex > edge so a face in front wins over the edges/vertices on its
- * boundary.
+ * The element the cursor is currently over, or `null`. Priority vertex >
+ * edge > face — the most specific element under the cursor wins, so corners
+ * and edges stay clickable on top of the face that bounds them.
  */
 export function getHoveredElement(): PickedElement | null {
-  return slots.face ?? slots.vertex ?? slots.edge ?? null;
+  return slots.vertex ?? slots.edge ?? slots.face ?? null;
 }
 
 /** The hovered element of a specific kind, or `null`. Used by pickers that

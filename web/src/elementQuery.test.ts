@@ -4,6 +4,7 @@ import {
   filterAllows,
   elementQueryString,
   mapPickToQuery,
+  resolveElementClick,
   type ElementKind,
   type PickedElement,
 } from "./elementQuery";
@@ -94,5 +95,32 @@ describe("mapPickToQuery", () => {
       const q = mapPickToQuery({ kind, idHash: "1" }, undefined);
       expect(q).toMatch(/^q(Face|Edge|Vertex)\(1\)$/);
     }
+  });
+});
+
+describe("resolveElementClick (ticket evq2)", () => {
+  const faceA = { kind: "face", idHash: "100" } as const;
+  const faceB = { kind: "face", idHash: "101" } as const;
+  const edge = { kind: "edge", idHash: "200" } as const;
+  const vertex = { kind: "vertex", idHash: "300" } as const;
+
+  it("additive click always toggles, even on the selected face", () => {
+    expect(resolveElementClick(faceA, faceA, true)).toBe("toggle");
+    expect(resolveElementClick(edge, null, true)).toBe("toggle");
+  });
+
+  it("plain click on an unselected element selects it", () => {
+    expect(resolveElementClick(faceA, null, false)).toBe("select");
+    expect(resolveElementClick(faceA, faceB, false)).toBe("select");
+    expect(resolveElementClick(faceA, edge, false)).toBe("select");
+  });
+
+  it("plain click on the already-selected face escalates to the body", () => {
+    expect(resolveElementClick(faceA, faceA, false)).toBe("escalate-body");
+  });
+
+  it("re-clicking a selected edge or vertex does NOT escalate", () => {
+    expect(resolveElementClick(edge, edge, false)).toBe("select");
+    expect(resolveElementClick(vertex, vertex, false)).toBe("select");
   });
 });

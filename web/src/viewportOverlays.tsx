@@ -945,15 +945,22 @@ const VERTEX_PICK_NDC_RADIUS = 0.035;
 
 /** One body's selectable B-Rep data, resolved to world space for picking. */
 interface BodyPickData {
-  /** World-space triangle mesh (positions + indices), for face raycasts. */
-  geometry: THREE.BufferGeometry;
+  /** World-space triangle mesh (positions + indices), for face raycasts.
+   *  `null` when the main-thread kernel holds no mesh for this body (any SDF
+   *  render mode with worker meshing) — faces are then resolved through the
+   *  kernel's analytic `pick()` raycast instead (ticket evq2). */
+  geometry: THREE.BufferGeometry | null;
   /** Persistent raycast target wrapping {@link geometry} (reused per frame). */
-  pickMesh: THREE.Mesh;
+  pickMesh: THREE.Mesh | null;
   /** Per-triangle B-Rep face arena index (= `bodyFaceIndexView`). */
-  faceIndexView: Uint32Array;
+  faceIndexView: Uint32Array | null;
   faces: BRepFace[];
   /** Vertices with world-space positions folded through the placement. */
   vertices: { idHash: string; world: [number, number, number] }[];
+  /** Analytic edge polylines (world space) keyed for face-outline highlights:
+   *  an edge belongs to a face when the face's packed branch id appears in
+   *  the edge's `(a, b)` signature. */
+  edges: { a: number; b: number; idHash: string; points: number[] }[];
 }
 
 function buildBodyPickData(
@@ -965,42 +972,75 @@ function buildBodyPickData(
     bodyFaceIndexView(i: number): Uint32Array;
     bodyBrepFaces(i: number): BRepFace[];
     bodyBrepVertices(i: number): BRepVertex[];
+    bodyBrepEdges(i: number): BRepEdge[];
     bodyPlacement(i: number): Placement;
   },
 ): BodyPickData[] {
   const out: BodyPickData[] = [];
   const count = kernel.bodyCount();
   for (let i = 0; i < count; i++) {
-    if (kernel.bodyVertexCount(i) === 0) continue;
     let faces: BRepFace[];
     let verts: BRepVertex[];
+    let edges: BRepEdge[];
     let placement: Placement;
-    let faceIndexView: Uint32Array;
-    let positions: Float32Array;
-    let indices: Uint32Array;
     try {
       faces = kernel.bodyBrepFaces(i);
       verts = kernel.bodyBrepVertices(i);
+      edges = kernel.bodyBrepEdges(i);
       placement = kernel.bodyPlacement(i);
-      // Copy out of WASM linear memory — the views alias buffers that any
-      // later mutating kernel call could relocate.
-      faceIndexView = kernel.bodyFaceIndexView(i).slice();
-      positions = kernel.bodyPositionsView(i).slice();
-      indices = kernel.bodyIndicesView(i).slice();
     } catch {
       continue;
     }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    geometry.computeBoundingSphere();
+    // The triangle pick mesh exists only when this kernel instance actually
+    // meshed the body (mesh render mode / sync meshing). The analytic B-Rep
+    // data above is render-mode-independent, so faces and vertices stay
+    // pickable without it.
+    let geometry: THREE.BufferGeometry | null = null;
+    let faceIndexView: Uint32Array | null = null;
+    if (kernel.bodyVertexCount(i) > 0) {
+      try {
+        // Copy out of WASM linear memory — the views alias buffers that any
+        // later mutating kernel call could relocate.
+        faceIndexView = kernel.bodyFaceIndexView(i).slice();
+        const positions = kernel.bodyPositionsView(i).slice();
+        const indices = kernel.bodyIndicesView(i).slice();
+        geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        geometry.computeBoundingSphere();
+      } catch {
+        geometry = null;
+        faceIndexView = null;
+      }
+    }
     const vertices = verts.map((v) => ({
       idHash: v.idHash,
       world: localToWorld(v.positionLocal, placement),
     }));
-    out.push({ geometry, pickMesh: new THREE.Mesh(geometry), faceIndexView, faces, vertices });
+    out.push({
+      geometry,
+      pickMesh: geometry ? new THREE.Mesh(geometry) : null,
+      faceIndexView,
+      faces,
+      vertices,
+      edges: edges.map((e) => ({ a: e.a, b: e.b, idHash: e.idHash, points: e.points })),
+    });
   }
   return out;
+}
+
+/** Flat LineSegments positions (6 floats per segment) for the boundary of
+ *  the face with packed branch id `branchId`: every analytic edge whose
+ *  signature contains the branch. Mesh-free face highlight (ticket evq2). */
+function faceOutlineSegments(bodies: BodyPickData[], branchId: number): number[] {
+  const segs: number[] = [];
+  for (const body of bodies) {
+    for (const e of body.edges) {
+      if (e.a !== branchId && e.b !== branchId) continue;
+      segs.push(...polylineToSegments(e.points));
+    }
+  }
+  return segs;
 }
 
 /**
@@ -1062,7 +1102,7 @@ export function BRepSelectionOverlay({
 
   useEffect(() => {
     return () => {
-      for (const b of bodies) b.geometry.dispose();
+      for (const b of bodies) b.geometry?.dispose();
     };
   }, [bodies]);
 
@@ -1078,18 +1118,23 @@ export function BRepSelectionOverlay({
   const [faceHover, setFaceHover] = useState(false);
   const [vertexHoverIdx, setVertexHoverIdx] = useState<[number, number] | null>(null);
 
-  // Build the highlight triangle list for one arena face index.
-  const highlightFace = (body: BodyPickData, arena: number): void => {
-    const idx = body.geometry.getIndex();
-    const pos = body.geometry.getAttribute("position");
-    if (!idx || !pos) return;
+  // Build the highlight triangle list for one arena face index. Bodies
+  // without a triangle mesh (SDF render modes) contribute no triangles —
+  // their hover feedback is the boundary outline below.
+  const highlightFace = (body: BodyPickData, arena: number | null): void => {
     const tris: number[] = [];
-    const triCount = body.faceIndexView.length;
-    for (let t = 0; t < triCount; t++) {
-      if (body.faceIndexView[t] !== arena) continue;
-      for (let k = 0; k < 3; k++) {
-        const vi = idx.getX(t * 3 + k);
-        tris.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+    if (body.geometry && body.faceIndexView && arena !== null) {
+      const idx = body.geometry.getIndex();
+      const pos = body.geometry.getAttribute("position");
+      if (idx && pos) {
+        const triCount = body.faceIndexView.length;
+        for (let t = 0; t < triCount; t++) {
+          if (body.faceIndexView[t] !== arena) continue;
+          for (let k = 0; k < 3; k++) {
+            const vi = idx.getX(t * 3 + k);
+            tris.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+          }
+        }
       }
     }
     faceHighlightGeom.current.setAttribute(
@@ -1097,6 +1142,35 @@ export function BRepSelectionOverlay({
       new THREE.Float32BufferAttribute(tris, 3),
     );
     faceHighlightGeom.current.computeBoundingSphere();
+  };
+
+  // Boundary-outline hover highlight for the face with the given packed
+  // branch id — the mesh-free feedback path (ticket evq2): every analytic
+  // edge bounding the face lights up in the hover colour.
+  const outlineGeomRef = useRef(new THREE.BufferGeometry());
+  const outlineMatRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: FACE_HOVER_COLOR,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  useEffect(() => {
+    const geom = outlineGeomRef.current;
+    const mat = outlineMatRef.current;
+    return () => {
+      geom.dispose();
+      mat.dispose();
+    };
+  }, []);
+  const highlightFaceOutline = (branchId: number): void => {
+    const segs = faceOutlineSegments(bodies, branchId);
+    outlineGeomRef.current.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(segs, 3),
+    );
+    outlineGeomRef.current.computeBoundingSphere();
   };
 
   useFrame(() => {
@@ -1119,9 +1193,17 @@ export function BRepSelectionOverlay({
     raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
 
     // ── Faces ──
-    let resolvedFace: { body: BodyPickData; arena: number; idHash: string; dist: number } | null = null;
+    // Two resolution paths (ticket evq2): the triangle pick mesh where this
+    // kernel instance holds one (mesh render mode), and the kernel's analytic
+    // `pick()` raycast everywhere else (SDF modes keep main-thread meshes
+    // empty, which used to make faces and vertices unhoverable). The analytic
+    // hit maps its packed branch ids onto `BRepFace.branchId`.
+    let resolvedFace:
+      | { body: BodyPickData; arena: number | null; branchId: number; idHash: string; dist: number }
+      | null = null;
     if (wantFace) {
       for (const body of bodies) {
+        if (!body.pickMesh || !body.faceIndexView) continue;
         const hits = raycaster.current.intersectObject(body.pickMesh, false);
         for (const h of hits) {
           if (h.faceIndex === undefined || h.faceIndex === null) continue;
@@ -1130,23 +1212,44 @@ export function BRepSelectionOverlay({
           const face = body.faces.find((f) => f.faceIndex === arena);
           if (!face) continue;
           if (!resolvedFace || h.distance < resolvedFace.dist) {
-            resolvedFace = { body, arena, idHash: face.idHash, dist: h.distance };
+            resolvedFace = { body, arena, branchId: face.branchId, idHash: face.idHash, dist: h.distance };
           }
           break;
         }
       }
+      if (!resolvedFace && store) {
+        const o = raycaster.current.ray.origin;
+        const d = raycaster.current.ray.direction;
+        const hit = store.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
+        if (hit.hit) {
+          outer: for (const body of bodies) {
+            for (const face of body.faces) {
+              if (!hit.branches.includes(face.branchId)) continue;
+              resolvedFace = { body, arena: null, branchId: face.branchId, idHash: face.idHash, dist: hit.t };
+              break outer;
+            }
+          }
+        }
+      }
     }
 
-    // ── Vertices (nearest in screen space, only if no nearer face hit) ──
+    // ── Vertices (nearest in screen space) ──
+    // A vertex within its snap radius wins over the face under the cursor —
+    // clicking near a corner selects the corner (ticket evq2) — unless the
+    // face hit is clearly in FRONT of it (occluded back-side corner).
     let resolvedVertex:
       | { bi: number; vi: number; idHash: string; ndcDist: number }
       | null = null;
-    if (wantVertex && !resolvedFace) {
+    if (wantVertex) {
       const v = new THREE.Vector3();
+      const camPos = camera.position;
       for (let bi = 0; bi < bodies.length; bi++) {
         const verts = bodies[bi].vertices;
         for (let vi = 0; vi < verts.length; vi++) {
-          v.set(verts[vi].world[0], verts[vi].world[1], verts[vi].world[2]);
+          const w = verts[vi].world;
+          v.set(w[0], w[1], w[2]);
+          const camDist = v.distanceTo(camPos);
+          if (resolvedFace && camDist > resolvedFace.dist * 1.05 + 1e-3) continue;
           v.project(camera);
           if (v.z < -1 || v.z > 1) continue;
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
@@ -1157,9 +1260,11 @@ export function BRepSelectionOverlay({
         }
       }
     }
+    if (resolvedVertex) resolvedFace = null;
 
     if (resolvedFace) {
       highlightFace(resolvedFace.body, resolvedFace.arena);
+      highlightFaceOutline(resolvedFace.branchId);
       if (!faceHover) { setFaceHover(true); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
       setHoveredElementOfKind("face", { kind: "face", idHash: resolvedFace.idHash });
@@ -1184,6 +1289,12 @@ export function BRepSelectionOverlay({
   const picker = getActiveQueryPicker();
   const showVertexMarkers =
     picker !== null && filterAllows("vertex", picker.entityFilter);
+  // Tool-free hovered vertex: render ITS marker even without a picker so a
+  // click near a corner has visible feedback before the click (ticket evq2).
+  const hoveredVertexWorld =
+    !showVertexMarkers && vertexHoverIdx !== null
+      ? bodies[vertexHoverIdx[0]]?.vertices[vertexHoverIdx[1]]?.world ?? null
+      : null;
 
   return (
     <>
@@ -1195,6 +1306,25 @@ export function BRepSelectionOverlay({
           frustumCulled={false}
           renderOrder={997}
         />
+      )}
+      {faceHover && (
+        <lineSegments
+          ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          geometry={outlineGeomRef.current}
+          material={outlineMatRef.current}
+          frustumCulled={false}
+          renderOrder={997}
+        />
+      )}
+      {hoveredVertexWorld && (
+        <mesh
+          position={hoveredVertexWorld}
+          ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          renderOrder={1000}
+        >
+          <sphereGeometry args={[VERTEX_MARKER_RADIUS * 1.6, 12, 12]} />
+          <meshBasicMaterial color={VERTEX_HOVER_COLOR} depthTest={false} transparent opacity={1} />
+        </mesh>
       )}
       {showVertexMarkers &&
         bodies.map((b, bi) =>
@@ -1319,19 +1449,30 @@ export function BRepSelectedOverlay() {
 
     if (selected.kind === "face") {
       // Highlight EVERY selected face (multi-select gather), accumulating their
-      // triangles across all bodies into the shared face geometry.
+      // triangles across all bodies into the shared face geometry. In SDF
+      // render modes this kernel instance holds no mesh, so the triangle fill
+      // stays empty — the boundary outline below is the visible highlight
+      // (ticket evq2).
       const faceHashes = new Set(
         selectedList.filter((e) => e.kind === "face").map((e) => e.idHash),
       );
       const tris: number[] = [];
+      const branchIds = new Set<number>();
       for (let i = 0; i < count; i++) {
         let faces: BRepFace[];
+        try {
+          faces = k.bodyBrepFaces(i);
+        } catch {
+          continue;
+        }
+        const wantedFaces = faces.filter((f) => faceHashes.has(f.idHash));
+        for (const f of wantedFaces) branchIds.add(f.branchId);
+        if (wantedFaces.length === 0 || k.bodyVertexCount(i) === 0) continue;
         let placement: Placement;
         let faceIndexView: Uint32Array;
         let positions: Float32Array;
         let indices: Uint32Array;
         try {
-          faces = k.bodyBrepFaces(i);
           placement = k.bodyPlacement(i);
           faceIndexView = k.bodyFaceIndexView(i).slice();
           positions = k.bodyPositionsView(i).slice();
@@ -1339,10 +1480,7 @@ export function BRepSelectedOverlay() {
         } catch {
           continue;
         }
-        const wanted = new Set(
-          faces.filter((f) => faceHashes.has(f.idHash)).map((f) => f.faceIndex),
-        );
-        if (wanted.size === 0) continue;
+        const wanted = new Set(wantedFaces.map((f) => f.faceIndex));
         for (let t = 0; t < faceIndexView.length; t++) {
           if (!wanted.has(faceIndexView[t])) continue;
           for (let c = 0; c < 3; c++) {
@@ -1357,12 +1495,41 @@ export function BRepSelectedOverlay() {
           }
         }
       }
-      if (tris.length === 0) return null;
+      // Boundary outline: every analytic edge whose signature touches one of
+      // the selected faces' branches, as a fresh fat-line object (same WebGPU
+      // re-upload caveat as the edge branch below).
+      const segs: number[] = [];
+      for (let i = 0; i < count; i++) {
+        let edges: BRepEdge[];
+        try {
+          edges = k.bodyBrepEdges(i);
+        } catch {
+          continue;
+        }
+        for (const e of edges) {
+          if (!branchIds.has(e.a) && !branchIds.has(e.b)) continue;
+          segs.push(...polylineToSegments(e.points));
+        }
+      }
+      if (tris.length === 0 && segs.length === 0) return null;
       faceGeomRef.current.setAttribute(
         "position",
         new THREE.Float32BufferAttribute(tris, 3),
       );
       faceGeomRef.current.computeBoundingSphere();
+      if (segs.length > 0) {
+        const geom = new LineSegmentsGeometry();
+        geom.setPositions(segs);
+        const obj = new LineSegments2(geom, edgeMatRef.current);
+        obj.frustumCulled = false;
+        obj.renderOrder = 1002;
+        obj.layers.enable(OVERLAY_LAYER);
+        edgeObjRef.current?.geometry.dispose();
+        edgeObjRef.current = obj;
+      } else {
+        edgeObjRef.current?.geometry.dispose();
+        edgeObjRef.current = null;
+      }
       return { kind: "face" };
     }
 
@@ -1422,13 +1589,16 @@ export function BRepSelectedOverlay() {
 
   if (resolved.kind === "face") {
     return (
-      <mesh
-        ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-        geometry={faceGeomRef.current}
-        material={faceMatRef.current}
-        frustumCulled={false}
-        renderOrder={1001}
-      />
+      <>
+        <mesh
+          ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          geometry={faceGeomRef.current}
+          material={faceMatRef.current}
+          frustumCulled={false}
+          renderOrder={1001}
+        />
+        {edgeObjRef.current && <primitive object={edgeObjRef.current} dispose={null} />}
+      </>
     );
   }
   if (resolved.kind === "edge") {
@@ -1449,6 +1619,75 @@ export function BRepSelectedOverlay() {
       <meshBasicMaterial color={ELEMENT_SELECTION_COLOR} depthTest={false} />
     </mesh>
   );
+}
+
+/**
+ * Whole-body selection highlight (ticket evq2): when a body is selected —
+ * second click on an already-selected face, or a Parts-list row — every
+ * analytic B-Rep edge of `state.highlightedBodyIndex` lights up as a fat
+ * line in the element-selection colour. Mesh-free, so it works in every
+ * render mode, exactly like the edge/face outlines.
+ */
+export function BodyHighlightOverlay() {
+  const { store, state } = useKernelStore();
+  const bodyIndex = state?.highlightedBodyIndex ?? null;
+
+  const matRef = useRef(
+    new Line2NodeMaterial({
+      color: ELEMENT_SELECTION_COLOR,
+      linewidth: 2,
+      worldUnits: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  const objRef = useRef<LineSegments2 | null>(null);
+  useEffect(() => {
+    const mat = matRef.current;
+    return () => {
+      objRef.current?.geometry.dispose();
+      mat.dispose();
+    };
+  }, []);
+
+  const bodyFingerprint = useMemo(() => {
+    if (!store) return "";
+    const n = store.kernel.bodyCount();
+    let fp = String(n);
+    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    return fp;
+  }, [store, state]);
+
+  const ready = useMemo(() => {
+    if (!store || bodyIndex === null) return false;
+    const k = store.kernel;
+    if (bodyIndex >= k.bodyCount()) return false;
+    let edges: BRepEdge[];
+    try {
+      edges = k.bodyBrepEdges(bodyIndex);
+    } catch {
+      return false;
+    }
+    const segs: number[] = [];
+    for (const e of edges) segs.push(...polylineToSegments(e.points));
+    if (segs.length === 0) return false;
+    // Fresh geometry + object per change — the WebGPU backend does not
+    // re-upload a LineSegmentsGeometry mutated in place (ticket twxw).
+    const geom = new LineSegmentsGeometry();
+    geom.setPositions(segs);
+    const obj = new LineSegments2(geom, matRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 1002;
+    obj.layers.enable(OVERLAY_LAYER);
+    objRef.current?.geometry.dispose();
+    objRef.current = obj;
+    return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, bodyIndex, bodyFingerprint]);
+
+  if (!ready || !objRef.current) return null;
+  return <primitive object={objRef.current} dispose={null} />;
 }
 
 function MeshPreviewBody({ body, mat, bodyIndex }: {

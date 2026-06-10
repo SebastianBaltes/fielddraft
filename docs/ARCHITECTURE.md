@@ -39,9 +39,10 @@ graph TB
    - [State Management](#41-state-management)
    - [WASM Bridge](#42-wasm-bridge)
    - [Rendering Pipeline](#43-rendering-pipeline)
-   - [Sketch System](#44-sketch-system)
-   - [Import/Export](#45-importexport)
-   - [CSS Architecture](#46-css-architecture)
+   - [B-Rep Element Selection & Picking](#44-b-rep-element-selection--picking)
+   - [Sketch System](#45-sketch-system)
+   - [Import/Export](#46-importexport)
+   - [CSS Architecture](#47-css-architecture)
 5. [Go Server](#5-go-server)
 6. [Build System & Deployment](#6-build-system--deployment)
 7. [Testing Strategy](#7-testing-strategy)
@@ -419,7 +420,18 @@ The WebGPU spec allows `GPUBufferBindingType.Storage` (read_write) in fragment s
 
 Both patches are required for the deferred renderer's per-pixel atomic body-tag buffer. Upstream PR: `mrdoob/three.js#33626` — once merged into a Three.js release, the patch file and `patch-package` dependency can be removed.
 
-### 4.4 Sketch System
+### 4.4 B-Rep Element Selection & Picking
+
+Tool-free viewport selection of B-Rep elements (faces, edges, vertices, bodies), independent of the render mode (ticket evq2):
+
+- **Hover resolution** runs per frame in two overlays and publishes to the `brepPickBridge` singleton: `BRepEdgeOverlay` snaps the cursor to analytic edge polylines in screen space; `BRepSelectionOverlay` resolves faces and vertices. Faces resolve via the triangle pick mesh where this kernel instance holds one (mesh render mode), and via the kernel's analytic `pick()` raycast everywhere else — SDF modes keep main-thread meshes empty, the hit's packed branch ids map onto `BRepFace.branchId`. Vertices come from `bodyBrepVertices` (analytic, mesh-free) with a screen-space snap radius and an occlusion gate against the face-hit distance, so back-side corners don't steal the click.
+- **Merge priority** in `getHoveredElement` is vertex > edge > face — the most specific element under the cursor wins (the face is hit almost everywhere and would otherwise shadow both).
+- **Click semantics** (`resolveElementClick` in `elementQuery.ts`): plain click selects the hovered element; Shift/Ctrl/Cmd toggles it in the multi-select set; a second plain click on the already-selected face escalates to the whole body (`highlightedBodyIndex` in the store, shared with the Parts list).
+- **Highlight rendering** is mesh-free where it must be: face hover/selection draw the face's boundary outline (every analytic edge whose signature contains the face's branch id) in addition to the triangle tint where a mesh exists; the selected body renders all of its B-Rep edges as 2 px fat lines (`BodyHighlightOverlay`).
+
+Planned mouse/keyboard preset system (Three.js editor, Onshape, FreeCAD, Fusion, TinkerCAD): see `docs/UX-PRESETS.md`.
+
+### 4.5 Sketch System
 
 Three-layer architecture for 2D parametric constraint sketching:
 
@@ -479,7 +491,7 @@ graph TD
 
 **Critical invariant:** Entity ID allocation order in TypeScript must exactly match kernel allocation. `buildDraftSketchState()` replicates this deterministically. Any mismatch silently corrupts constraint references.
 
-### 4.5 Import/Export
+### 4.6 Import/Export
 
 #### STEP Export
 
@@ -509,7 +521,7 @@ Configurable deflection (0.02 mm linear, 0.1 rad angular). AP242 fallback extrac
 - **Rust kernel** (`export_3mf.rs`): Multi-body 3MF with per-body color palette (8 colors)
 - **TypeScript** (`threemf.ts`): 3MF roundtrip preserving slicer metadata (Bambu, Prusa, Cura, OrcaSlicer)
 
-### 4.6 CSS Architecture
+### 4.7 CSS Architecture
 
 Hierarchical, token-driven CSS with native nesting:
 

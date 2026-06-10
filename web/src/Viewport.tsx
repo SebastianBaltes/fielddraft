@@ -37,6 +37,7 @@ import {
   OctreeCellOverlay,
   BRepSelectionOverlay,
   BRepSelectedOverlay,
+  BodyHighlightOverlay,
   MeshPreview,
   AssemblyParts,
   MateConnectorOverlay,
@@ -52,7 +53,7 @@ import { invalidateCanvas } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
-import { mapPickToQuery, filterAllows, elementQueryString } from "./elementQuery";
+import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -138,6 +139,24 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
     }
     return this.props.children;
   }
+}
+
+/** Body index owning the B-Rep face with this idHash, or `null`. Scans the
+ *  kernel's bodies — cheap (face lists are tiny) and only runs on the
+ *  escalation click (ticket evq2). */
+function findBodyIndexForFace(
+  kernel: { bodyCount(): number; bodyBrepFaces(i: number): { idHash: string }[] },
+  idHash: string,
+): number | null {
+  const count = kernel.bodyCount();
+  for (let i = 0; i < count; i++) {
+    try {
+      if (kernel.bodyBrepFaces(i).some((f) => f.idHash === idHash)) return i;
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 function pickAtMouse(
@@ -363,17 +382,38 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
 
     // Tool-free B-Rep element selection. A plain click on a hovered
     // face/edge/vertex persistently selects it; Shift/Ctrl-click toggles it in
-    // the multi-select set (used to gather coplanar faces for one extrude).
-    // Otherwise clear any element selection and fall through to feature-level.
+    // the multi-select set (used to gather coplanar faces for one extrude);
+    // a second plain click on the already-selected face escalates to the
+    // whole BODY (ticket evq2) — highlighted via every B-Rep edge of the
+    // body plus the Parts-list row. Otherwise clear any element selection
+    // and fall through to feature-level.
     const hovered = getHoveredElement();
     if (hovered) {
       const additive = event.shiftKey || event.ctrlKey || event.metaKey;
-      if (additive) store.toggleElement(hovered);
-      else store.selectElement(hovered);
+      const action = resolveElementClick(
+        hovered,
+        state?.selectedElement ?? null,
+        additive,
+      );
+      if (action === "toggle") {
+        store.toggleElement(hovered);
+      } else if (action === "escalate-body") {
+        const bodyIndex = findBodyIndexForFace(store.kernel, hovered.idHash);
+        if (bodyIndex !== null) {
+          store.clearElementSelection();
+          store.highlightBody(bodyIndex);
+        } else {
+          store.selectElement(hovered);
+        }
+      } else {
+        if (state?.highlightedBodyIndex != null) store.highlightBody(null);
+        store.selectElement(hovered);
+      }
       invalidateCanvas();
       return;
     }
     store.clearElementSelection();
+    if (state?.highlightedBodyIndex != null) store.highlightBody(null);
 
     handleSelectionClick(store, click, event, setMeasurePoints);
   };
@@ -484,6 +524,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
               {showOctreeCells && <OctreeCellOverlay />}
               <BRepSelectionOverlay ndc={ndc} />
               <BRepSelectedOverlay />
+              <BodyHighlightOverlay />
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />
