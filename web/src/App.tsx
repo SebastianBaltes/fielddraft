@@ -9,6 +9,7 @@ import { requestView } from "./viewCommands";
 import { isTextEntryTarget } from "./keyboardTarget";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
+import { CONTROLS_PRESETS, viewShortcutRow } from "./controlsPreset";
 
 export function App() {
   const { store, state, error } = useKernelStore();
@@ -161,22 +162,14 @@ export function App() {
             store.setGizmoMode("rotate");
             e.preventDefault();
             return;
-          case "1":
-            requestView("front");
-            e.preventDefault();
-            return;
-          case "2":
-            requestView("top");
-            e.preventDefault();
-            return;
-          case "3":
-            requestView("right");
-            e.preventDefault();
-            return;
-          case "0":
-            requestView("iso");
-            e.preventDefault();
-            return;
+        }
+        // View keys come from the controls preset (docs/UX-PRESETS.md) —
+        // e.g. FreeCAD binds 1–6 + 0 to all six standard views.
+        const view = CONTROLS_PRESETS[settings.controlsPreset].keys.views[e.key];
+        if (view) {
+          requestView(view);
+          e.preventDefault();
+          return;
         }
       }
 
@@ -200,7 +193,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [store]);
+  }, [store, settings.controlsPreset]);
 
   const activeProjectTab = state?.project.tabs.find(
     (t) => t.id === state.project.activeTabId,
@@ -275,7 +268,7 @@ export function App() {
       <div className="fd-workspace" hidden={activeProjectTab?.kind === "script"}>
         {store && state ? <Toolbar store={store} state={state} /> : null}
         <main className="main">
-          <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} />
+          <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} controlsPreset={settings.controlsPreset} />
           {mobileNavOpen ? (
             <div
               className="fd-nav-scrim"
@@ -330,8 +323,22 @@ export function App() {
                 <tr><td><kbd>Ctrl+A</kbd></td><td>Select all</td></tr>
                 <tr><td><kbd>Ctrl+D</kbd></td><td>Duplicate</td></tr>
                 <tr><td><kbd>Ctrl+S</kbd></td><td>Save project</td></tr>
-                <tr><td><kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd></td><td>Front / Top / Right view</td></tr>
-                <tr><td><kbd>0</kbd></td><td>Isometric view</td></tr>
+                {(() => {
+                  const row = viewShortcutRow(CONTROLS_PRESETS[settings.controlsPreset]);
+                  return (
+                    <tr>
+                      <td>
+                        {row.keys.split(" / ").map((k, i) => (
+                          <span key={k}>
+                            {i > 0 && " / "}
+                            <kbd>{k}</kbd>
+                          </span>
+                        ))}
+                      </td>
+                      <td>{row.action}</td>
+                    </tr>
+                  );
+                })()}
                 <tr><td><kbd>Arrows</kbd></td><td>Nudge selection</td></tr>
                 <tr><td><kbd>F1</kbd></td><td>Toggle this help</td></tr>
               </tbody>

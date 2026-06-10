@@ -123,4 +123,9 @@ describe("resolveElementClick (ticket evq2)", () => {
     expect(resolveElementClick(edge, edge, false)).toBe("select");
     expect(resolveElementClick(vertex, vertex, false)).toBe("select");
   });
+
+  it("presets can turn the body escalation off (docs/UX-PRESETS.md)", () => {
+    expect(resolveElementClick(faceA, faceA, false, false)).toBe("select");
+    expect(resolveElementClick(faceA, faceA, true, false)).toBe("toggle");
+  });
 });

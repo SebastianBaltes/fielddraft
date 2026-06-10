@@ -13,6 +13,13 @@ import {
   type ViewPreset,
 } from "./viewCommands";
 import { publishPickCamera } from "./pickCameraBridge";
+import {
+  CONTROLS_PRESETS,
+  ORBIT_ACTION_CODE,
+  toOrbitMouseButtons,
+  type ControlsPresetId,
+  type OrbitMouseButtons,
+} from "./controlsPreset";
 
 export function CameraBridgePublisher() {
   const { camera, size, gl } = useThree();
@@ -40,9 +47,36 @@ export function CameraBridgePublisher() {
   return null;
 }
 
-export function CameraRig() {
+export function CameraRig({ preset }: { preset: ControlsPresetId }) {
   const { state } = useKernelStore();
   const sketchActive = state?.sketchSession.active ?? false;
+  const { camera } = CONTROLS_PRESETS[preset];
+  const controlsRef = useRef<{ mouseButtons: OrbitMouseButtons } | null>(null);
+
+  // Fusion idiom: MMB pans, orbit only while Shift is held. OrbitControls
+  // reads `mouseButtons` at pointerdown, so swapping the MIDDLE action on
+  // Shift down/up is enough — no re-render needed.
+  useEffect(() => {
+    if (!camera.shiftMiddleOrbit) return;
+    const setShift = (down: boolean) => {
+      const ctrl = controlsRef.current;
+      if (ctrl) {
+        ctrl.mouseButtons.MIDDLE = down
+          ? ORBIT_ACTION_CODE.rotate
+          : ORBIT_ACTION_CODE.pan;
+      }
+    };
+    const onDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShift(true); };
+    const onUp = (e: KeyboardEvent) => { if (e.key === "Shift") setShift(false); };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
+  }, [camera.shiftMiddleOrbit]);
+
+  const mouseButtons = toOrbitMouseButtons(camera);
 
   if (sketchActive) {
     return (
@@ -61,8 +95,9 @@ export function CameraRig() {
           enableRotate={false}
           enablePan
           enableZoom
-          panSpeed={1.2}
-          zoomSpeed={1.6}
+          mouseButtons={mouseButtons}
+          panSpeed={camera.panSpeed}
+          zoomSpeed={camera.zoomSpeed}
           target={[0, 0, 0]}
         />
       </>
@@ -71,11 +106,13 @@ export function CameraRig() {
 
   return (
     <OrbitControls
+      ref={controlsRef as never}
       makeDefault
       enableDamping={false}
-      rotateSpeed={1.4}
-      zoomSpeed={1.6}
-      panSpeed={1.2}
+      mouseButtons={mouseButtons}
+      rotateSpeed={camera.rotateSpeed}
+      zoomSpeed={camera.zoomSpeed}
+      panSpeed={camera.panSpeed}
     />
   );
 }

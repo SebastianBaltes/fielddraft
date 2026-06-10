@@ -54,6 +54,7 @@ import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
+import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -319,7 +320,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean }) {
+export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -381,19 +382,24 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     }
 
     // Tool-free B-Rep element selection. A plain click on a hovered
-    // face/edge/vertex persistently selects it; Shift/Ctrl-click toggles it in
-    // the multi-select set (used to gather coplanar faces for one extrude);
-    // a second plain click on the already-selected face escalates to the
-    // whole BODY (ticket evq2) — highlighted via every B-Rep edge of the
-    // body plus the Parts-list row. Otherwise clear any element selection
-    // and fall through to feature-level.
-    const hovered = getHoveredElement();
+    // face/edge/vertex persistently selects it; an additive click (the
+    // preset's multi-select modifier) toggles it in the multi-select set
+    // (used to gather coplanar faces for one extrude); a second plain
+    // click on the already-selected face escalates to the whole BODY
+    // (ticket evq2) — highlighted via every B-Rep edge of the body plus
+    // the Parts-list row. Object-mode presets (Three.js editor,
+    // TinkerCAD; docs/UX-PRESETS.md) skip sub-elements entirely and fall
+    // through to feature-level selection. Otherwise clear any element
+    // selection and fall through to feature-level.
+    const selection = CONTROLS_PRESETS[controlsPreset].selection;
+    const hovered = selection.mode === "element" ? getHoveredElement() : null;
     if (hovered) {
-      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+      const additive = isAdditiveClick(selection, event);
       const action = resolveElementClick(
         hovered,
         state?.selectedElement ?? null,
         additive,
+        selection.bodyEscalation,
       );
       if (action === "toggle") {
         store.toggleElement(hovered);
@@ -528,7 +534,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />
-              <CameraRig />
+              <CameraRig preset={controlsPreset} />
               <ViewCommandConsumer />
               <CameraQuaternionBridge />
             </>

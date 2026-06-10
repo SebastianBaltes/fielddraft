@@ -47,6 +47,7 @@ function setup() {
     parametricWeave: false,
     showEdgePoints: false,
     showOctreeCells: false,
+    controlsPreset: "fielddraft",
   };
 
   const onChange = vi.fn((next: SettingsState) => {
@@ -257,6 +258,45 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("switches controls preset in settings dialog", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    const select = t.container.querySelector<HTMLSelectElement>(
+      '[data-testid="setting-controls-preset-select"]',
+    )!;
+    expect(select.value).toBe("fielddraft");
+    act(() => {
+      select.value = "onshape";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ controlsPreset: "onshape" }),
+    );
+    expect(localStorage.getItem("fielddraft.controlsPreset")).toBe("onshape");
+    t.cleanup();
+  });
+
+  it("shortcuts table shows the preset's view keys", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    const select = t.container.querySelector<HTMLSelectElement>(
+      '[data-testid="setting-controls-preset-select"]',
+    )!;
+    act(() => {
+      select.value = "freecad";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    click(
+      t.container.querySelector('[data-testid="settings-tab-shortcuts"]')!,
+    );
+    const table = t.container.querySelector('[data-testid="shortcuts-table"]')!;
+    expect(table.textContent).toContain("Front / Top / Right / Back / Bottom / Left / Isometric view");
+    t.cleanup();
+  });
+
   it("shows shortcuts table on shortcuts tab", () => {
     const t = setup();
     openSettingsDialog(t.container);
@@ -338,6 +378,7 @@ describe("loadSettings", () => {
       parametricWeave: true,
       showEdgePoints: false,
       showOctreeCells: false,
+      controlsPreset: "fielddraft",
     });
   });
 
@@ -368,6 +409,7 @@ describe("loadSettings", () => {
       parametricWeave: true,
       showEdgePoints: false,
       showOctreeCells: false,
+      controlsPreset: "fielddraft",
     });
   });
 
@@ -378,5 +420,13 @@ describe("loadSettings", () => {
     const s = loadSettings();
     expect(s.units).toEqual(DEFAULT_UNITS);
     expect(s.theme).toBe("light");
+  });
+
+  it("reads a stored controls preset and rejects unknown ones", () => {
+    localStorage.setItem("fielddraft.controlsPreset", "tinkercad");
+    expect(loadSettings().controlsPreset).toBe("tinkercad");
+
+    localStorage.setItem("fielddraft.controlsPreset", "blender");
+    expect(loadSettings().controlsPreset).toBe("fielddraft");
   });
 });

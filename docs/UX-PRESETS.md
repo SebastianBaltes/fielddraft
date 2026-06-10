@@ -1,6 +1,10 @@
 # UX-Presets — Maus- und Tastatursteuerung anderer CAD-Programme
 
-Stand: 2026-06-10. Konzept aus Ticket 20260610-085906-evq2: Anwender bringen
+Stand: 2026-06-10 — **umgesetzt in v0.6.21** (Registry `web/src/controlsPreset.ts`,
+Setting `fielddraft.controlsPreset`). Was bewusst noch fehlt, steht unter
+„Offene Punkte" am Ende.
+
+Konzept aus Ticket 20260610-085906-evq2: Anwender bringen
 Steuerungs-Gewohnheiten aus ihrem bisherigen Programm mit. Ein Preset-System
 soll die wichtigsten Schemata per Setting abbilden: **Three.js-Editor,
 Onshape, FreeCAD, Fusion 360, TinkerCAD** (plus FieldDraft-Default).
@@ -70,14 +74,30 @@ flowchart LR
 
 ## Umsetzungsphasen
 
-1. **Phase 1 — Kamera-Bindings** (kleinster nützlicher Schritt):
-   Preset-Registry + Settings-Dropdown + `mouseButtons`-Mapping. Damit sind
-   Onshape/FreeCAD/TinkerCAD-Umsteiger bereits arbeitsfähig; LMB wird dort
-   frei für reine Selektion.
-2. **Phase 2 — Selektions-Idiome**: Modifier und Eskalationsverhalten pro
-   Preset (z. B. Onshape-Doppelklick), Box-Select für TinkerCAD/Three.js.
-3. **Phase 3 — Tastatur**: Shortcut-Tabellen pro Preset über
-   `keyboardTarget.ts`; Konflikte mit App-Shortcuts (Sketch-Tools) auflösen.
+1. **Phase 1 — Kamera-Bindings** ✅ (v0.6.21): Preset-Registry
+   (`controlsPreset.ts`) + Settings-Dropdown („Controls preset", UI-Tab) +
+   `mouseButtons`-Mapping in `viewportCamera.tsx`. LMB ist bei
+   Onshape/FreeCAD/Fusion/TinkerCAD frei für reine Selektion. Der
+   Fusion-Sonderfall (Orbit nur bei Shift+MMB) tauscht die MIDDLE-Action
+   bei Shift-Down/-Up direkt am Controls-Objekt. Auch die rotationsfreie
+   Sketch-Instanz übernimmt das Button-Mapping (Pan bleibt auf der
+   gewohnten Taste).
+2. **Phase 2 — Selektions-Idiome** ✅ (teilweise): Multi-Select-Modifier
+   pro Preset (`isAdditiveClick`), Körper-Eskalationsklick abschaltbar
+   (`resolveElementClick` bekommt `bodyEscalation`), Objekt-Modus für
+   Three.js-Editor/TinkerCAD (Klick selektiert das Feature, keine
+   Sub-Elemente). Box-Select und Onshape-Doppelklick: siehe Offene Punkte.
+3. **Phase 3 — Tastatur** ✅ (View-Keys): `keys.views` pro Preset, vom
+   globalen Shortcut-Handler in `App.tsx` konsumiert; FreeCAD bindet
+   1–6 + 0 auf alle sechs Standardansichten. Shortcut-Tabelle (Settings)
+   und Hilfe-Overlay zeigen die View-Zeile preset-abhängig.
 
-Phase 1 ist bewusst klein gehalten und kann als eigenes Ticket umgesetzt
-werden, sobald die Priorisierung es hergibt.
+## Offene Punkte
+
+- **Box-Select** (TinkerCAD/Three.js-Editor: LMB-Drag zieht ein
+  Auswahlrechteck) — braucht ein eigenes Drag-Handling im Viewport.
+- **Onshape-Doppelklick** (Kette/alle Flächen eines Features) — erst
+  sinnvoll, wenn Kanten-Ketten-Queries existieren.
+- **FreeCAD-Pan-Chord** (MMB+LMB) ist auf RMB approximiert —
+  OrbitControls kennt keine Tastenkombinationen aus zwei Maustasten.
+- **Fusion RMB-Markierungsmenü** gibt es nicht; RMB ist dort schlicht frei.

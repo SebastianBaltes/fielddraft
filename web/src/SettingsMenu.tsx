@@ -1,6 +1,14 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import type { KernelStore, StoreState } from "./store";
 import { ReportDialog } from "./ReportDialog";
+import {
+  CONTROLS_PRESETS,
+  CONTROLS_PRESET_OPTIONS,
+  DEFAULT_CONTROLS_PRESET,
+  isControlsPresetId,
+  viewShortcutRow,
+  type ControlsPresetId,
+} from "./controlsPreset";
 
 /* ── localStorage keys ──────────────────────────────────────── */
 const LS_COMPACT = "fielddraft.compact";
@@ -14,6 +22,7 @@ const LS_FRAME_LOOP = "fielddraft.frameLoop";
 const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
+const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
 
 export type LengthUnitKey = "mm" | "cm" | "m" | "in" | "ft";
 export type LinearAccelerationUnitKey = "m/s2" | "mm/s2" | "ft/s2" | "in/s2";
@@ -210,6 +219,9 @@ export interface SettingsState {
    * grid, colour-coded by class (face / edge / vertex), to inspect the
    * adaptive resolution the B-Rep weave actually used. */
   showOctreeCells: boolean;
+  /** Mouse/keyboard control scheme (docs/UX-PRESETS.md) — which CAD
+   * package's habits the camera, selection and view keys follow. */
+  controlsPreset: ControlsPresetId;
 }
 
 function validOr<K extends string>(opts: { key: K }[], val: unknown, fallback: K): K {
@@ -263,6 +275,7 @@ export function loadSettings(): SettingsState {
   let parametricWeave = true;
   let showEdgePoints = false;
   let showOctreeCells = false;
+  let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
     units = parseUnits(localStorage.getItem(LS_UNITS));
@@ -286,10 +299,12 @@ export function loadSettings(): SettingsState {
     if (rawParametric !== null) parametricWeave = rawParametric === "true";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
     showOctreeCells = localStorage.getItem(LS_SHOW_OCTREE_CELLS) === "true";
+    const rawPreset = localStorage.getItem(LS_CONTROLS_PRESET);
+    if (isControlsPresetId(rawPreset)) controlsPreset = rawPreset;
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells };
+  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells, controlsPreset };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -301,26 +316,27 @@ function saveSetting(key: string, value: string): void {
 }
 
 /* ── Keyboard shortcuts table ──────────────────────────────── */
-const SHORTCUTS: { keys: string; action: string }[] = [
-  { keys: "B", action: "Add Box" },
-  { keys: "S", action: "Add Sphere" },
-  { keys: "C", action: "Add Cylinder" },
-  { keys: "T", action: "Add Torus" },
-  { keys: "H", action: "Add Hole" },
-  { keys: "G", action: "Move gizmo" },
-  { keys: "R", action: "Rotate gizmo" },
-  { keys: "Del", action: "Delete selection" },
-  { keys: "Esc", action: "Clear selection" },
-  { keys: "Ctrl+Z", action: "Undo" },
-  { keys: "Ctrl+Shift+Z", action: "Redo" },
-  { keys: "Ctrl+A", action: "Select all" },
-  { keys: "Ctrl+D", action: "Duplicate" },
-  { keys: "Ctrl+S", action: "Save project" },
-  { keys: "1 / 2 / 3", action: "Front / Top / Right view" },
-  { keys: "0", action: "Isometric view" },
-  { keys: "Arrows", action: "Nudge selection" },
-  { keys: "F1", action: "Toggle help overlay" },
-];
+function shortcutRows(preset: ControlsPresetId): { keys: string; action: string }[] {
+  return [
+    { keys: "B", action: "Add Box" },
+    { keys: "S", action: "Add Sphere" },
+    { keys: "C", action: "Add Cylinder" },
+    { keys: "T", action: "Add Torus" },
+    { keys: "H", action: "Add Hole" },
+    { keys: "G", action: "Move gizmo" },
+    { keys: "R", action: "Rotate gizmo" },
+    { keys: "Del", action: "Delete selection" },
+    { keys: "Esc", action: "Clear selection" },
+    { keys: "Ctrl+Z", action: "Undo" },
+    { keys: "Ctrl+Shift+Z", action: "Redo" },
+    { keys: "Ctrl+A", action: "Select all" },
+    { keys: "Ctrl+D", action: "Duplicate" },
+    { keys: "Ctrl+S", action: "Save project" },
+    viewShortcutRow(CONTROLS_PRESETS[preset]),
+    { keys: "Arrows", action: "Nudge selection" },
+    { keys: "F1", action: "Toggle help overlay" },
+  ];
+}
 
 /* ── Component ──────────────────────────────────────────────── */
 
@@ -886,6 +902,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const setControlsPreset = (preset: ControlsPresetId) => {
+    const next = { ...settings, controlsPreset: preset };
+    saveSetting(LS_CONTROLS_PRESET, preset);
+    onSettingsChange(next);
+  };
+
   const toggleShowOctreeCells = () => {
     const next = { ...settings, showOctreeCells: !settings.showOctreeCells };
     saveSetting(LS_SHOW_OCTREE_CELLS, String(next.showOctreeCells));
@@ -978,6 +1000,25 @@ function SettingsDialog({
                     Dark
                   </button>
                 </div>
+              </div>
+
+              <div className="setting-row" data-testid="setting-controls-preset">
+                <span
+                  className="setting-label"
+                  title="Mouse and keyboard scheme of another CAD package — orbit/pan buttons, multi-select modifiers and view keys follow that program's habits."
+                >
+                  Controls preset
+                </span>
+                <select
+                  className="mode-select"
+                  value={settings.controlsPreset}
+                  data-testid="setting-controls-preset-select"
+                  onChange={(e) => setControlsPreset(e.target.value as ControlsPresetId)}
+                >
+                  {CONTROLS_PRESET_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="setting-row" data-testid="setting-render-mode">
@@ -1140,7 +1181,7 @@ function SettingsDialog({
               data-testid="shortcuts-table"
             >
               <tbody>
-                {SHORTCUTS.map((s) => (
+                {shortcutRows(settings.controlsPreset).map((s) => (
                   <tr key={s.keys}>
                     <td className="shortcut-key">
                       {s.keys.split(" / ").map((k, i) => (

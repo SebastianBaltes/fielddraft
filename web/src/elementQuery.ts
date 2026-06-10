@@ -93,10 +93,12 @@ export function mapPickToQuery(
 
 /** What a tool-free viewport click on a hovered element should do
  *  (ticket evq2). Pure decision logic, exercised by the click handler:
- *  - Shift/Ctrl/Cmd-click toggles the element in the multi-select set;
+ *  - an additive click (the controls preset's multi-select modifier)
+ *    toggles the element in the multi-select set;
  *  - a plain click on the face that is ALREADY the selected element
  *    escalates to selecting the whole body (the Onshape-style
- *    "click again for the body" idiom from the ticket);
+ *    "click again for the body" idiom from the ticket) — presets can
+ *    turn this idiom off via `bodyEscalation` (docs/UX-PRESETS.md);
  *  - any other plain click selects the element.
  */
 export type ElementClickAction = "toggle" | "select" | "escalate-body";
@@ -105,9 +107,11 @@ export function resolveElementClick(
   hovered: PickedElement,
   selected: PickedElement | null,
   additive: boolean,
+  bodyEscalation = true,
 ): ElementClickAction {
   if (additive) return "toggle";
   if (
+    bodyEscalation &&
     hovered.kind === "face" &&
     selected !== null &&
     selected.kind === "face" &&
