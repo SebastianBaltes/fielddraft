@@ -422,14 +422,58 @@ interface AnalyticEdge {
 function polylineToSegments(points: number[]): Float32Array {
   const n = points.length / 3;
   if (n < 2) return new Float32Array(0);
-  const seg = new Float32Array((n - 1) * 6);
-  for (let p = 0; p < n - 1; p++) {
-    seg[p * 6] = points[p * 3];
-    seg[p * 6 + 1] = points[p * 3 + 1];
-    seg[p * 6 + 2] = points[p * 3 + 2];
-    seg[p * 6 + 3] = points[(p + 1) * 3];
-    seg[p * 6 + 4] = points[(p + 1) * 3 + 1];
-    seg[p * 6 + 5] = points[(p + 1) * 3 + 2];
+
+  // Collinear decimation (ticket mcvp): the fat-line shader renders every
+  // segment as its own round-capped quad, so a STRAIGHT edge sampled into
+  // many sub-segments shows a small notch at every interior joint once the
+  // stroke is 4px wide. Greedily extend each output segment as long as all
+  // skipped sample points stay within a hair of the chord — a straight edge
+  // collapses to ONE segment, curved edges keep their samples (the chord
+  // tolerance is far below a pixel at any usable zoom).
+  const px = (i: number) => points[i * 3];
+  const py = (i: number) => points[i * 3 + 1];
+  const pz = (i: number) => points[i * 3 + 2];
+  const keep: number[] = [0];
+  let anchor = 0;
+  for (let cand = 2; cand < n; cand++) {
+    const acx = px(cand) - px(anchor);
+    const acy = py(cand) - py(anchor);
+    const acz = pz(cand) - pz(anchor);
+    const acLen2 = acx * acx + acy * acy + acz * acz;
+    const tol2 = Math.max(1e-8 * acLen2, 1e-12);
+    // O(1) probes instead of re-checking the whole span: the mid sample
+    // is where a monotone arc deviates most from the chord, and the
+    // sample just before the candidate catches sharp local kinks.
+    let straight = acLen2 > 0;
+    const probes = [(anchor + cand) >> 1, cand - 1];
+    for (const m of probes) {
+      if (!straight || m <= anchor || m >= cand) continue;
+      const abx = px(m) - px(anchor);
+      const aby = py(m) - py(anchor);
+      const abz = pz(m) - pz(anchor);
+      // squared distance of M from the chord anchor→cand
+      const cx = aby * acz - abz * acy;
+      const cy = abz * acx - abx * acz;
+      const cz = abx * acy - aby * acx;
+      straight = (cx * cx + cy * cy + cz * cz) / acLen2 <= tol2;
+    }
+    if (!straight) {
+      anchor = cand - 1;
+      keep.push(anchor);
+    }
+  }
+  keep.push(n - 1);
+
+  const seg = new Float32Array((keep.length - 1) * 6);
+  for (let s = 0; s < keep.length - 1; s++) {
+    const a = keep[s];
+    const b = keep[s + 1];
+    seg[s * 6] = px(a);
+    seg[s * 6 + 1] = py(a);
+    seg[s * 6 + 2] = pz(a);
+    seg[s * 6 + 3] = px(b);
+    seg[s * 6 + 4] = py(b);
+    seg[s * 6 + 5] = pz(b);
   }
   return seg;
 }
