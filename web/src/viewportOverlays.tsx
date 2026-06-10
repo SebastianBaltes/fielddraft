@@ -216,7 +216,8 @@ export function SketchOverlay3D() {
 }
 
 const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([
-  "boolean", "sketch", "fillet_edge",
+  // extrude: owns its depth-arrow gizmo (ExtrudeDepthGizmo, ticket qqgo)
+  "boolean", "sketch", "fillet_edge", "extrude",
 ]);
 
 export function SelectionTransformGizmo() {

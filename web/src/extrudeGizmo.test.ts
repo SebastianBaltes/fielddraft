@@ -4,7 +4,10 @@ import {
   lengthParamToMm,
   lengthParamWithMm,
   pickTipFace,
+  previewBandRanges,
+  prismBandTriangles,
   resolveExtrudeAnchor,
+  type ExtrudeAnchor,
   type ExtrudeAnchorKernel,
   type TipFaceCandidate,
   type Vec3,
@@ -154,5 +157,62 @@ describe("resolveExtrudeAnchor", () => {
   it("returns null when the feature owns no planar face", () => {
     const k = kernelWith([face("f", 3, 3 << 12, [0, 0, 0], [0, 0, 1])], []);
     expect(resolveExtrudeAnchor(k, 99)).toBeNull();
+  });
+});
+
+describe("previewBandRanges", () => {
+  it("grow, asymmetric: tip travels the full delta, back stays put", () => {
+    const r = previewBandRanges(10, 25, false);
+    expect(r.grow).toBe(true);
+    expect(r.prism).toEqual([-10, 15]);
+    expect(r.delta).toEqual([[0, 15]]);
+  });
+
+  it("shrink, asymmetric: red band covers old tip → new tip", () => {
+    const r = previewBandRanges(10, 4, false);
+    expect(r.grow).toBe(false);
+    expect(r.prism).toEqual([-10, -6]);
+    expect(r.delta).toEqual([[-6, 0]]);
+  });
+
+  it("grow, symmetric: tip travels half, back band mirrors", () => {
+    const r = previewBandRanges(10, 30, true);
+    expect(r.grow).toBe(true);
+    expect(r.prism).toEqual([-20, 10]);
+    expect(r.delta).toEqual([
+      [0, 10],
+      [-20, -10],
+    ]);
+  });
+
+  it("no change: no delta bands", () => {
+    const r = previewBandRanges(10, 10, true);
+    expect(r.prism).toEqual([-10, 0]);
+    expect(r.delta).toEqual([]);
+  });
+});
+
+describe("prismBandTriangles", () => {
+  // One outline segment along +Y on a tip face whose normal is +Z.
+  const anchor: ExtrudeAnchor = {
+    origin: [0, 0, 5],
+    normal: [0, 0, 1],
+    outline: [[1, 0, 5, 1, 2, 5]],
+  };
+
+  it("emits 4 triangles per segment (2 wall + 2 caps)", () => {
+    const tris = prismBandTriangles(anchor, -3, 0);
+    expect(tris.length).toBe(4 * 9);
+    // Every z must sit on one of the two ring planes (5−3=2 or 5).
+    for (let i = 2; i < tris.length; i += 3) {
+      expect([2, 5]).toContain(tris[i]);
+    }
+  });
+
+  it("shifts both rings along the normal by the offsets", () => {
+    const tris = prismBandTriangles(anchor, 1, 4);
+    for (let i = 2; i < tris.length; i += 3) {
+      expect([6, 9]).toContain(tris[i]);
+    }
   });
 });

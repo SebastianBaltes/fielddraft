@@ -102,6 +102,77 @@ export function axisDepthParam(
   return (b * e - f) / denom;
 }
 
+// ── drag preview bands (ticket qqgo) ─────────────────────────────────
+//
+// While the arrow is dragged, NOTHING is committed to the kernel — the
+// preview is drawn locally as translucent prism "bands": slices of the
+// extrusion volume between two signed offsets along the tip normal,
+// measured from the drag-start tip (0 = old tip, negative = into the
+// body). The full preview prism shows the would-be result; delta bands
+// highlight what gets added (grow) or removed (shrink).
+
+export interface PreviewBands {
+  /** The whole would-be prism, [from, to] offsets along the normal. */
+  prism: [number, number];
+  /** Changed slices vs. the drag-start prism (0–2 entries; the back
+   *  band only exists for symmetric extrudes, which grow both ways). */
+  delta: Array<[number, number]>;
+  /** true = previewed depth ≥ drag-start depth (adding material). */
+  grow: boolean;
+}
+
+export function previewBandRanges(
+  startDepthMm: number,
+  previewDepthMm: number,
+  symmetric: boolean,
+): PreviewBands {
+  // Symmetric extrudes grow ±depth/2 about the sketch plane, so the tip
+  // only travels half of a depth change.
+  const factor = symmetric ? 2 : 1;
+  const tip = (previewDepthMm - startDepthMm) / factor;
+  const back = tip - previewDepthMm;
+  const delta: Array<[number, number]> = [];
+  const front: [number, number] = [Math.min(0, tip), Math.max(0, tip)];
+  if (front[1] - front[0] > 1e-9) delta.push(front);
+  const rear: [number, number] = [
+    Math.min(-startDepthMm, back),
+    Math.max(-startDepthMm, back),
+  ];
+  if (rear[1] - rear[0] > 1e-9) delta.push(rear);
+  return { prism: [back, tip], delta, grow: previewDepthMm >= startDepthMm };
+}
+
+/**
+ * Triangle soup (flat xyz) for one prism band: the tip outline shifted
+ * by `offA`/`offB` along the anchor normal, side walls between the two
+ * rings plus centroid-fan caps on both ends. The fan is exact for
+ * profiles star-shaped around the centroid (every primitive profile).
+ */
+export function prismBandTriangles(
+  anchor: ExtrudeAnchor,
+  offA: number,
+  offB: number,
+): number[] {
+  const [nx, ny, nz] = anchor.normal;
+  const ax = nx * offA, ay = ny * offA, az = nz * offA;
+  const bx = nx * offB, by = ny * offB, bz = nz * offB;
+  const [cx, cy, cz] = anchor.origin;
+  const tris: number[] = [];
+  for (const pts of anchor.outline) {
+    for (let i = 0; i + 5 < pts.length; i += 3) {
+      const px = pts[i], py = pts[i + 1], pz = pts[i + 2];
+      const qx = pts[i + 3], qy = pts[i + 4], qz = pts[i + 5];
+      // Side wall quad between the two rings.
+      tris.push(px + ax, py + ay, pz + az, qx + ax, qy + ay, qz + az, qx + bx, qy + by, qz + bz);
+      tris.push(px + ax, py + ay, pz + az, qx + bx, qy + by, qz + bz, px + bx, py + by, pz + bz);
+      // Caps (centroid fan) on both ends.
+      tris.push(cx + ax, cy + ay, cz + az, px + ax, py + ay, pz + az, qx + ax, qy + ay, qz + az);
+      tris.push(cx + bx, cy + by, cz + bz, px + bx, py + by, pz + bz, qx + bx, qy + by, qz + bz);
+    }
+  }
+  return tris;
+}
+
 // ── Length wire form ({"value": 10, "unit": "mm"}) ───────────────────
 
 const UNIT_TO_MM: Record<string, number> = {
