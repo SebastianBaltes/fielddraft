@@ -336,6 +336,54 @@ impl<'a> Context<'a> {
         Ok((region.unwrap(), frame))
     }
 
+    /// Feature ids of the body that owns the first resolvable `qFace(...)` in
+    /// `queries` — the explicit target a face-driven feature (extrude grown from
+    /// a body face) docks into. A face-extrude is flush with its parent by
+    /// construction, so an `Add` must grow *that* body; without the target it
+    /// falls back to AABB overlap, which both misses the parent (the shared
+    /// plane is mesh-derived and lands a fraction of a micron off the parent's
+    /// exact bound) and can spuriously fuse an unrelated body whose loose AABB
+    /// happens to overlap the prism (ticket px2o). Empty if no face resolves, so
+    /// the caller keeps the legacy AABB docking.
+    pub fn face_owner_target_ids(&mut self, queries: &[String]) -> Vec<FeatureId> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::FaceId;
+        use crate::queries::QueryExpr;
+
+        // Locate the woven body (partition order) that carries any picked face.
+        let mut owner_bi: Option<usize> = None;
+        {
+            let woven = self.brep_cache.ensure(&self.features);
+            'scan: for q in queries {
+                let Ok(QueryExpr::Face(hash)) = crate::queries::parse_query(q) else {
+                    continue;
+                };
+                for (bi, (brep, _)) in woven.iter().enumerate() {
+                    for i in 0..brep.faces.len() {
+                        if TopoRef::from_face(brep, FaceId(i as u32)).id_hash == hash {
+                            owner_bi = Some(bi);
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        // `ensure` weaves via `weave_all` → `partition`, so the woven body index
+        // is the partition index: map it straight back to that group's features.
+        let Some(bi) = owner_bi else {
+            return Vec::new();
+        };
+        crate::body::partition(&self.features)
+            .get(bi)
+            .map(|p| {
+                p.feature_indices
+                    .iter()
+                    .map(|&fi| self.features[fi].id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Resolve a set of `qFace(...)` queries into per-face thickened-wall solids
     /// (face thicken — the curved counterpart to [`Context::resolve_extrude_faces`]).
     /// Each face's analytic surface is offset by `outer_off` along +normal and
@@ -2607,6 +2655,10 @@ impl FeatureKind for ExtrudeFeature {
                 &frame.to_transform(),
                 &Transform { translate: [0.0, 0.0, 0.0], rotation, scale },
             );
+            // Dock into the body that owns the picked face: an Add grows that
+            // body (Onshape semantics), and the explicit target keeps the prism
+            // from fusing with an unrelated AABB-overlapping body (ticket px2o).
+            let target_ids = ctx.face_owner_target_ids(&face_queries);
             ctx.features.push(DecodedFeature::from_parts(
                 id.clone(),
                 name,
@@ -2614,7 +2666,7 @@ impl FeatureKind for ExtrudeFeature {
                 primitive,
                 transform,
                 mods,
-                vec![],
+                target_ids,
             ));
             return Ok(());
         }

@@ -486,12 +486,19 @@ fn aabbs_overlap(a: Aabb, b: Aabb) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
     }
-    a.min[0] <= b.max[0]
-        && a.max[0] >= b.min[0]
-        && a.min[1] <= b.max[1]
-        && a.max[1] >= b.min[1]
-        && a.min[2] <= b.max[2]
-        && a.max[2] >= b.min[2]
+    // A flush adjacency (a face-extrude grown from a body's face) meets its
+    // parent at a shared plane, but that plane's coordinate is mesh-derived
+    // (the centroid of a marching-cubes face) and lands a fraction of a micron
+    // off the parent's exact bound. Expand by a tiny tolerance so genuinely
+    // touching bodies still dock; bodies a real gap apart stay separate
+    // (ticket px2o). 1 µm is far below any meaningful CAD feature size.
+    const TOL: f32 = 1e-3;
+    a.min[0] <= b.max[0] + TOL
+        && a.max[0] + TOL >= b.min[0]
+        && a.min[1] <= b.max[1] + TOL
+        && a.max[1] + TOL >= b.min[1]
+        && a.min[2] <= b.max[2] + TOL
+        && a.max[2] + TOL >= b.min[2]
 }
 
 /// Split hash of a body's feature payload: geometry vs. transform.

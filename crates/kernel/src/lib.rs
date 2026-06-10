@@ -6384,6 +6384,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ticket_px2o_extrude_of_face_extrude_docks_into_parent_with_straight_edges() {
+        // Ticket 20260610-230248-px2o: a box's +Y face is extruded (id 5), then
+        // the resulting prism's +X face is extruded again (id 17). The second
+        // face-extrude carried no `target_ids`, so its `Add` docked by AABB
+        // overlap — which (a) missed the parent body (the shared plane is
+        // mesh-derived, ~0.13 µm off the box's exact x = 50 bound) and (b)
+        // spuriously fused the prism with an unrelated, non-touching body whose
+        // loose AABB happened to overlap it. The fused union of two disjoint
+        // solids wove to a degenerate shell: the block rendered but had ZERO
+        // B-Rep faces/edges, so its silhouette showed wavy mesh lines instead of
+        // straight edges ("degenerierte Kanten … hat gar keine BRep-Kanten").
+        //
+        // The face-extrude now targets the body that owns the picked face, so
+        // the prism grows that body (Onshape semantics) and never fuses with an
+        // unrelated solid. The merged body weaves watertight with straight edges.
+        let mut k = Kernel::new();
+        let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
+            {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
+            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false}},
+            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false}}
+        ],"next_feature_id":18}"#;
+        k.load_json(json).unwrap();
+        // Both face-extrudes default to Add and grow the box: ONE body.
+        assert_eq!(
+            k.body_count(),
+            1,
+            "the extrude-of-an-extrude must grow the box body, not stack a second body"
+        );
+        let counts: serde_json::Value =
+            serde_json::from_str(&k.body_brep_counts(0)).unwrap();
+        assert_eq!(
+            counts["watertight"],
+            serde_json::json!(true),
+            "merged body must weave watertight, got {counts}"
+        );
+        // The block now has real B-Rep edges (the bug produced zero), and every
+        // one is straight: no rendered polyline point may bow more than 10 µm
+        // off its own chord (the degenerate fallback bowed them by millimetres).
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        assert!(
+            edges.as_array().unwrap().len() >= 12,
+            "expected the merged prism's straight edges, got {}",
+            edges.as_array().unwrap().len()
+        );
+        for e in edges.as_array().unwrap() {
+            let pts: Vec<f64> = e["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_f64().unwrap())
+                .collect();
+            let n = pts.len() / 3;
+            let p0 = [pts[0], pts[1], pts[2]];
+            let p1 = [pts[(n - 1) * 3], pts[(n - 1) * 3 + 1], pts[(n - 1) * 3 + 2]];
+            let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if len < 1.0 {
+                continue;
+            }
+            let u = [d[0] / len, d[1] / len, d[2] / len];
+            for c in pts.chunks(3) {
+                let v = [c[0] - p0[0], c[1] - p0[1], c[2] - p0[2]];
+                let t = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+                let perp = [v[0] - t * u[0], v[1] - t * u[1], v[2] - t * u[2]];
+                let dev = (perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]).sqrt();
+                assert!(dev < 0.01, "edge {}–{} bows {dev:.4} mm at {c:?}", e["a"], e["b"]);
+            }
+        }
+    }
+
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.
     fn step_cartesian_points(step: &str) -> Vec<[f64; 3]> {
         let mut out = Vec::new();
