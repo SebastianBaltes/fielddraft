@@ -6204,6 +6204,75 @@ mod tests {
         assert_eq!(id_hashes.len(), 12, "all 12 edge idHashes must be distinct");
     }
 
+    #[test]
+    fn ticket_g4rr_sliver_union_weaves_watertight_end_to_end() {
+        // Ticket 20260610-084953-g4rr: the user's exact .fdraft — sphere r=50
+        // grazes the box top edge with only ~0.33 mm penetration after the
+        // final translate (id 12). "Im Union-Bereich Kugel / Würfel
+        // degeneriert die Kante". Runs the REAL pipeline: load_json →
+        // bootstrap → partition → ensure_brep (parametric default on).
+        let mut k = Kernel::new();
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Part",
+            "feature_calls": [
+                {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"union","translate":[0,0,0]}},
+                {"type":"sphere","id":2,"params":{"name":"Sphere 2","op":"union","radius":50,"translate":[-86.59912872314453,0,0]}},
+                {"type":"translate","id":9,"params":{"target_id":2,"translate":[-86.59912872314453,0,0]}},
+                {"type":"boolean","id":10,"params":{"keep_tools":false,"operation":"Union","targets":"","tools":"qCreatedBy(2),qCreatedBy(1)"}},
+                {"type":"translate","id":11,"params":{"target_id":1,"translate":[-23.49043846130371,1.4090451002120972,5.554038047790527]}},
+                {"type":"translate","id":12,"params":{"target_id":2,"translate":[-86.59912872314453,4.231103897094727,103.45809173583984]}}
+            ],
+            "next_feature_id": 15
+        }"#;
+        k.load_json(json).unwrap();
+        assert_eq!(k.body_count(), 1, "boolean union must produce one body");
+        let counts: serde_json::Value =
+            serde_json::from_str(&k.body_brep_counts(0)).unwrap();
+        assert_eq!(
+            counts["watertight"],
+            serde_json::json!(true),
+            "sliver-grazing union must weave watertight, got {counts}"
+        );
+        assert_eq!(
+            counts["faces"],
+            serde_json::json!(7),
+            "6 box faces + 1 sphere face, got {counts}"
+        );
+        assert_eq!(
+            counts["vertices"],
+            serde_json::json!(10),
+            "8 box corners + 2 lens triple points, got {counts}"
+        );
+        assert_eq!(
+            counts["edges"],
+            serde_json::json!(15),
+            "11 plain box edges + 2 top-edge fragments + 2 lens arcs, got {counts}"
+        );
+        // The rendered wireframe polylines (what the user actually sees) must
+        // stay inside the model: no lens-arc tessellation point above the box
+        // top plane (z = 55.554) or beyond the -x face plane (x = -73.4904) —
+        // the reported degeneration was a self-crossing scribble overshooting
+        // both by the old activity band (~0.28 mm).
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        for e in edges.as_array().unwrap() {
+            let (a, b) = (e["a"].as_u64().unwrap(), e["b"].as_u64().unwrap());
+            if a != 8192 && b != 8192 {
+                continue;
+            }
+            let pts: Vec<f64> = e["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_f64().unwrap())
+                .collect();
+            for p in pts.chunks(3) {
+                assert!(p[2] < 55.5541 + 0.01, "lens polyline above box top: {p:?}");
+                assert!(p[0] > -73.4905 - 0.01, "lens polyline beyond -x face: {p:?}");
+            }
+        }
+    }
+
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.
     fn step_cartesian_points(step: &str) -> Vec<[f64; 3]> {
         let mut out = Vec::new();

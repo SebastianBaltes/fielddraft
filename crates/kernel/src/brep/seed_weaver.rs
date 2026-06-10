@@ -22,13 +22,14 @@
 use std::collections::HashMap;
 
 use crate::brep::branch_seed::{seed_branch_pairs, SeedResult};
-use crate::brep::edge_trace::{trace_edge, EdgeEnd, TraceParams};
+use crate::brep::edge_trace::{edge_tangent, project_to_edge, trace_edge, EdgeEnd, TraceParams};
 use crate::brep::edge_walker::{
     body_has_warp, branch_field, branch_leaf_map, cluster_positions,
     collect_non_lipschitz_features, extrude_rim_corner, near_traced, refine_triple_vertex,
     traced_to_hermite, TripleRefine,
 };
 use crate::brep::extraction::both_branches_active;
+use crate::brep::vec3::{add, dist as dist3, dot, normalize, scale, sub};
 use crate::brep::weaving::{branch_halfspace_map, finish_weave};
 use crate::brep::{BRep, Edge, EdgeGeometry, HermiteSample, Vertex, VertexId};
 use crate::csg::BranchId;
@@ -185,16 +186,19 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
 
     // Active-predicate band. `both_branches_active` reports both branches active
     // within `eps` (surface distance) of each surface, so a march OVERSHOOTS the
-    // true corner by ~`eps` before `np` goes inactive and the bisection stops it.
-    // That overshoot is harmless: the trim point is only used to (a) cluster
-    // co-incident corners and (b) SEED `refine_triple_vertex`, which re-solves the
-    // EXACT analytic corner from the half-spaces — so it need only be *close*. We
-    // keep `eps = 1e-3·diag`: large enough that the active→inactive transition is
-    // crisp (the band must comfortably exceed the tracer's project tolerance) yet
-    // an order of magnitude below the cluster `gap`, so all of one corner's
-    // ~`eps`-overshot termini still cluster together. The box-corner test confirms
-    // the *refined* vertices are exact regardless of the raw overshoot.
-    let eps = (1e-3 * diag) as f32;
+    // true corner by ~`eps / sin φ` (φ = crossing angle against the trimming
+    // surface) before `np` goes inactive and the bisection stops it. The band is
+    // therefore the RESOLUTION FLOOR of the whole analytic route: any feature
+    // thinner than `eps` is invisible to the activity test. Ticket g4rr (a sphere
+    // grazing a box edge by 0.33 mm on a 276 mm model) showed `1e-3·diag` is far
+    // too coarse — the eps-shoulders let both lens arcs march clean around their
+    // corners and every terminus of two DISTINCT corners gathered into one
+    // cluster. `1e-5·diag` keeps ~100× headroom over f32 evaluation noise (the
+    // fields evaluate in f32: ~6e-8 relative on coordinates of order `diag`)
+    // while resolving features 100× smaller than before. The activity bisection
+    // reprojects onto the curve (`bisect_active`), so the band no longer needs to
+    // exceed the chord sagitta of a march step.
+    let eps = (1e-5 * diag) as f32;
 
     // Co-component seed dedup radius and corner-cluster gap, both scaled to the
     // model. `near_tol = max_step`: any second seed lying within a step of an
@@ -373,7 +377,31 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
             // Re-solve the EXACT corner from the analytic surfaces. The raw
             // centroid only seeds it, so the trim band's imprecision washes out.
             let pos = match refine_triple_vertex(&halfspaces, &branches, centroid) {
-                TripleRefine::Refined(p) => p,
+                TripleRefine::Refined(p) => {
+                    // Coherence gate (ticket g4rr): a cluster that gathered the
+                    // termini of TWO distinct corners of the same branch triple
+                    // still refines cleanly — Newton converges to ONE of the
+                    // genuine corners, so `Spurious` never fires and both arcs
+                    // would bind both ends to a single vertex (the reported
+                    // self-crossing lens). A member's legitimate distance to its
+                    // refined corner is bounded by the trim overshoot
+                    // `eps / sin φ`; anything an order of magnitude beyond that
+                    // means the gather lumped distinct corners → re-cluster at a
+                    // halved gap, exactly like the spurious path below.
+                    let slack = (1e-3 * diag).max(64.0 * eps as f64);
+                    let coherent = group
+                        .iter()
+                        .all(|&m| dist3(trim_pos[m], p) <= slack);
+                    if !coherent {
+                        let tighter = (g * 0.5).min(0.5 * group_diameter(&trim_pos, &group));
+                        if group.len() > 1 && tighter >= min_gap {
+                            work.push((group, tighter));
+                            continue;
+                        }
+                        return None;
+                    }
+                    p
+                }
                 // Cannot judge analytically (non-analytic branch / rank-
                 // deficient): try the exact swept-extrude rim corner; failing
                 // that, keep the centroid (octree also leaves such a corner at
@@ -385,9 +413,17 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
                 // cluster merged distinct corners — re-cluster tighter — or, once
                 // the gap reaches the active-band floor without splitting, it is a
                 // genuine phantom the analytic route cannot place → octree.
+                //
+                // The next gap is capped at HALF the cluster's diameter, not just
+                // `g/2`: single-linkage clustering can only separate members once
+                // the gap drops below their spacing, so a cluster much tighter
+                // than `g` (six termini of two corners 11 mm apart gathered at a
+                // 27 mm gap — ticket g4rr) would otherwise re-cluster into the
+                // SAME single cluster, and the old `diameter > tighter` guard
+                // turned that dead halving step into a bail-to-octree.
                 TripleRefine::Spurious => {
-                    let tighter = g * 0.5;
-                    if group.len() > 1 && tighter >= min_gap && group_diameter(&trim_pos, &group) > tighter {
+                    let tighter = (g * 0.5).min(0.5 * group_diameter(&trim_pos, &group));
+                    if group.len() > 1 && tighter >= min_gap {
                         work.push((group, tighter));
                         continue;
                     }
@@ -402,17 +438,175 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
         }
     }
 
-    // 5. Emit edges. Vertices are added first (above) so every `VertexId` an
-    //    edge references already exists — mirrors `build_box_wireframe` ordering.
+    // 5. Split + emit edges. Vertices are added first (above) so every
+    //    `VertexId` an edge references already exists — mirrors
+    //    `build_box_wireframe` ordering.
+    //
+    //    Interior-vertex splitting (ticket g4rr): an adaptive march can stride
+    //    clean over a trimmed-away pocket — a third branch covering a stretch
+    //    of the curve narrower than the local step (a sphere grazing a box
+    //    edge carves an 11 mm pocket out of a 100 mm edge; the straight-run
+    //    step is 27 mm). The pocket's BOUNDARIES are still known exactly: the
+    //    other two pairs of the same branch triple traced arcs that trim at
+    //    them, so the resolved corner vertices exist. Any vertex whose branch
+    //    set contains both of this edge's branches and that lies ON the
+    //    polyline interior is such a missed crossing → split there, then drop
+    //    every fragment whose arc midpoint is not on the model boundary.
+    let split_tol = 8.0 * tol; // chord-sagitta budget of the march is `tol`
     for (ri, rec) in records.iter().enumerate() {
-        let geom = EdgeGeometry::Hermite(rec.samples.clone());
+        let start = (!rec.closed)
+            .then(|| side_vertex.get(&(ri, 0)).copied())
+            .flatten();
+        let end = (!rec.closed)
+            .then(|| side_vertex.get(&(ri, 1)).copied())
+            .flatten();
+
+        // Locate interior crossings: nearest polyline point per candidate
+        // vertex. (seg, t) addresses the chord `samples[seg] → samples[seg+1]`
+        // (the wrap chord for a ring); hits at the record's own bound vertices
+        // are not interior and are skipped by id.
+        let pts: Vec<[f64; 3]> = rec.samples.iter().map(|s| s.point).collect();
+        let nseg = if rec.closed { pts.len() } else { pts.len() - 1 };
+        let mut hits: Vec<(usize, f64, VertexId, [f64; 3])> = Vec::new();
+        for (vi, v) in brep.vertices.iter().enumerate() {
+            let vid = VertexId(vi as u32);
+            if Some(vid) == start || Some(vid) == end {
+                continue;
+            }
+            if !(v.branches.contains(&rec.a) && v.branches.contains(&rec.b)) {
+                continue;
+            }
+            let mut best: Option<(usize, f64, f64)> = None; // (seg, t, dist)
+            for seg in 0..nseg {
+                let p0 = pts[seg];
+                let p1 = pts[(seg + 1) % pts.len()];
+                let d = sub(p1, p0);
+                let len2 = dot(d, d);
+                let t = if len2 > 0.0 {
+                    (dot(sub(v.position, p0), d) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let q = add(p0, scale(d, t));
+                let dd = dist3(v.position, q);
+                if best.is_none_or(|(_, _, bd)| dd < bd) {
+                    best = Some((seg, t, dd));
+                }
+            }
+            if let Some((seg, t, dd)) = best {
+                if dd <= split_tol {
+                    hits.push((seg, t, vid, v.position));
+                }
+            }
+        }
+        hits.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap());
+
+        // No interior crossing (the overwhelmingly common case): emit as-is.
+        if hits.is_empty() || (rec.closed && hits.len() < 2) {
+            let geom = EdgeGeometry::Hermite(rec.samples.clone());
+            if rec.closed {
+                // A closed ring (e.g. a cap∩wall rim) carries no bounding vertices.
+                brep.add_edge(Edge::new(geom, rec.a, rec.b, None, None));
+            } else {
+                brep.add_edge(Edge::new(geom, rec.a, rec.b, start, end));
+            }
+            continue;
+        }
+
+        // Fields for cut-node tangents and the fragment-midpoint activity test.
+        let (Some(fa), Some(fb)) = (
+            branch_field(&halfspaces, &leaf_map, rec.a.as_u32()),
+            branch_field(&halfspaces, &leaf_map, rec.b.as_u32()),
+        ) else {
+            return None;
+        };
+        let cut_node = |pos: [f64; 3], seg: usize| -> HermiteSample {
+            let chord = sub(pts[(seg + 1) % pts.len()], pts[seg]);
+            let mut t = edge_tangent(&fa, &fb, pos).unwrap_or_else(|| normalize(chord));
+            if dot(t, chord) < 0.0 {
+                t = scale(t, -1.0);
+            }
+            HermiteSample { point: pos, tangent: t }
+        };
+        // On-boundary test at a fragment's arc midpoint. The midpoint of the
+        // chord chain is reprojected onto the exact curve so the activity test
+        // is evaluated on-surface.
+        let fragment_live = |samples: &[HermiteSample]| -> bool {
+            let mut total = 0.0;
+            for w in samples.windows(2) {
+                total += dist3(w[0].point, w[1].point);
+            }
+            let mut rem = 0.5 * total;
+            let mut mid = samples[0].point;
+            for w in samples.windows(2) {
+                let seg = dist3(w[0].point, w[1].point);
+                if seg >= rem && seg > 0.0 {
+                    mid = add(w[0].point, scale(sub(w[1].point, w[0].point), rem / seg));
+                    break;
+                }
+                rem -= seg;
+            }
+            let mid = project_to_edge(&fa, &fb, mid).unwrap_or(mid);
+            both_branches_active(
+                body,
+                [mid[0] as f32, mid[1] as f32, mid[2] as f32],
+                rec.a,
+                rec.b,
+                eps,
+            )
+        };
+        let mut emit = |samples: Vec<HermiteSample>, s: Option<VertexId>, e: Option<VertexId>| {
+            if samples.len() >= 2 && fragment_live(&samples) {
+                brep.add_edge(Edge::new(
+                    EdgeGeometry::Hermite(samples),
+                    rec.a,
+                    rec.b,
+                    s,
+                    e,
+                ));
+            }
+        };
+
         if rec.closed {
-            // A closed ring (e.g. a cap∩wall rim) carries no bounding vertices.
-            brep.add_edge(Edge::new(geom, rec.a, rec.b, None, None));
+            // Ring with ≥2 crossings: cut into cyclic open fragments, each
+            // bounded by consecutive crossing vertices.
+            for i in 0..hits.len() {
+                let (seg_a, _, vid_a, pos_a) = hits[i];
+                let (seg_b, _, vid_b, pos_b) = hits[(i + 1) % hits.len()];
+                let mut samples = vec![cut_node(pos_a, seg_a)];
+                let mut k = (seg_a + 1) % pts.len();
+                let stop = (seg_b + 1) % pts.len();
+                while k != stop {
+                    samples.push(rec.samples[k].clone());
+                    k = (k + 1) % pts.len();
+                }
+                samples.push(cut_node(pos_b, seg_b));
+                emit(samples, Some(vid_a), Some(vid_b));
+            }
         } else {
-            let start = side_vertex.get(&(ri, 0)).copied();
-            let end = side_vertex.get(&(ri, 1)).copied();
-            brep.add_edge(Edge::new(geom, rec.a, rec.b, start, end));
+            // Open chain: fragments between consecutive cuts, outer fragments
+            // keep the record's original bound vertices.
+            let mut from_sample = 0usize;
+            let mut from_vertex = start;
+            let mut from_node: Option<HermiteSample> = None;
+            for &(seg, _, vid, pos) in &hits {
+                let mut samples: Vec<HermiteSample> = Vec::new();
+                if let Some(n) = from_node.take() {
+                    samples.push(n);
+                }
+                samples.extend_from_slice(&rec.samples[from_sample..=seg]);
+                samples.push(cut_node(pos, seg));
+                emit(samples, from_vertex, Some(vid));
+                from_sample = seg + 1;
+                from_vertex = Some(vid);
+                from_node = Some(cut_node(pos, seg));
+            }
+            let mut samples: Vec<HermiteSample> = Vec::new();
+            if let Some(n) = from_node.take() {
+                samples.push(n);
+            }
+            samples.extend_from_slice(&rec.samples[from_sample..]);
+            emit(samples, from_vertex, end);
         }
     }
 
@@ -736,6 +930,64 @@ mod tests {
             "seed weave of the grazing-top-edge union must be watertight"
         );
         assert_eq!(seed.faces.len(), 7, "6 box faces + 1 sphere face");
+    }
+
+    #[test]
+    fn seed_box_union_sphere_grazing_top_edge_sliver_watertight() {
+        // Ticket 20260610-084953-g4rr: same .fdraft family as the el1x guards,
+        // sphere dragged even higher (z=103.458) so it penetrates the box's top
+        // -x edge by only ~0.33 mm — a quarter of the el1x sliver. The user
+        // reports "Im Union-Bereich Kugel / Würfel degeneriert die Kante".
+        let body = BoundedCsg::from_csg(&CsgNode::Union(
+            Box::new(box_leaf(1, [-23.490438, 1.4090451, 5.554038], [50.0, 50.0, 50.0])),
+            Box::new(CsgNode::Leaf {
+                id: FeatureId::from_u32(2),
+                primitive: Primitive::Sphere {
+                    center: [-86.59913, 4.231104, 103.45809],
+                    radius: 50.0,
+                },
+            }),
+        ));
+        let seed = weave_branch_seeds(&body)
+            .expect("sliver-grazing sphere must weave analytically, not fall back to octree");
+        assert!(
+            seed.shells[0].is_closed,
+            "seed weave of the sliver-grazing union must be watertight"
+        );
+        assert_eq!(seed.faces.len(), 7, "6 box faces + 1 sphere face");
+        // The full corner topology, which the original report degenerated:
+        // the lens crossing the top edge yields TWO distinct triple vertices
+        // (not one merged cluster), and the grazed top edge is SPLIT there
+        // with the sphere-covered stretch (y ∈ [-1.55, 10.01]) dropped.
+        assert_eq!(seed.vertices.len(), 10, "8 box corners + 2 lens triple points");
+        assert_eq!(
+            seed.edges.len(),
+            15,
+            "11 plain box edges + 2 top-edge fragments + 2 lens arcs"
+        );
+        // No lens-arc sample may overshoot the box bounds (the reported
+        // self-crossing scribble): the -x face plane is x = -73.4904, the
+        // top face plane z = 55.554; allow a few microns of trim slack.
+        for e in &seed.edges {
+            let (a, b) = (e.signature.0.as_u32(), e.signature.1.as_u32());
+            if a != 8192 && b != 8192 {
+                continue;
+            }
+            if let EdgeGeometry::Hermite(samples) = &e.geometry {
+                for s in samples {
+                    assert!(
+                        s.point[2] < 55.5541 + 0.01,
+                        "lens sample above the box top: {:?}",
+                        s.point
+                    );
+                    assert!(
+                        s.point[0] > -73.4905 - 0.01,
+                        "lens sample beyond the -x face: {:?}",
+                        s.point
+                    );
+                }
+            }
+        }
     }
 
     #[test]

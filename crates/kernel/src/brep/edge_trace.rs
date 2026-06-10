@@ -362,12 +362,21 @@ const BISECT_ACTIVE_STEPS: usize = 30;
 /// and inactive endpoints are this close, the boundary is pinned to world-ε.
 const BISECT_ACTIVE_TOL: f64 = 1e-7;
 
-/// Locate the active→inactive transition on the segment `[a_active, b_inactive]`
-/// by midpoint bisection, returning the last *active* midpoint (the boundary,
-/// which lies on-surface because both endpoints came from the on-edge march).
-/// `a` is invariant-active and `b` invariant-inactive; each step replaces
-/// whichever endpoint the midpoint matches, so `a` always stays the active side.
+/// Locate the active→inactive transition on the curve span `[a_active,
+/// b_inactive]` by midpoint bisection, returning the last *active* point.
+/// Each chord midpoint is reprojected onto the edge `{f_a = 0, f_b = 0}`
+/// before the activity test: the raw chord deviates from the curve by up to
+/// the sagitta of a full march step, which would dwarf a tight activity band
+/// and make the test evaluate activity *off-surface* (an off-surface point is
+/// "inactive" under a band smaller than the sagitta, collapsing the bisection
+/// toward `a` and leaving the trim a whole step short). A midpoint whose
+/// projection diverges (tangential degeneracy) falls back to the raw chord
+/// midpoint — the historical behaviour. `a` is invariant-active and `b`
+/// invariant-inactive; each step replaces whichever endpoint the midpoint
+/// matches, so `a` always stays the active side.
 fn bisect_active(
+    fa: &Field,
+    fb: &Field,
     f: &dyn Fn([f64; 3]) -> bool,
     a_active: [f64; 3],
     b_inactive: [f64; 3],
@@ -378,7 +387,11 @@ fn bisect_active(
         if dist(a, b) < BISECT_ACTIVE_TOL {
             break;
         }
-        let mid = scale(add(a, b), 0.5);
+        let raw = scale(add(a, b), 0.5);
+        let mid = project_to_edge(fa, fb, raw).unwrap_or(raw);
+        // A projection that jumps outside the bracket would break the
+        // invariant; keep the raw chord midpoint in that case.
+        let mid = if dist(mid, raw) > dist(a, b) { raw } else { mid };
         if f(mid) {
             a = mid;
         } else {
@@ -483,7 +496,7 @@ fn march(
         // is never pushed — it lies in the trimmed-away region.
         if let Some(f) = active {
             if !f(np) {
-                let boundary = bisect_active(f, cur, np);
+                let boundary = bisect_active(fa, fb, f, cur, np);
                 pts.push(boundary);
                 return (pts, MarchEnd::Trimmed(boundary));
             }
