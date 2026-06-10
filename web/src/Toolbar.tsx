@@ -312,12 +312,17 @@ export function Toolbar({ store, state }: ToolbarProps) {
     }
   }, [fd]);
 
+  // Ticket yx6a: the Sketch button opens the session IMMEDIATELY — no
+  // face-pick mode first. A pre-selected face becomes the sketch plane
+  // (Onshape convention); otherwise the session starts on XY and the
+  // plane stays editable in the session panel's query picker.
   const handleSketchEnter = () => {
-    if (state.features.length > 0) {
-      store.enterFacePickMode();
-    } else {
-      store.enterSketch(DEFAULT_SKETCH_PLANE_QUERY);
-    }
+    const el = state.selectedElement;
+    const planeQuery =
+      el && el.kind === "face"
+        ? `qFace(${el.idHash})`
+        : DEFAULT_SKETCH_PLANE_QUERY;
+    store.enterSketch(planeQuery);
   };
 
   const handleSketchToolPick = (typeName: string) => {

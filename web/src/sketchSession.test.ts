@@ -9,6 +9,7 @@ import {
   clearSketchSelection,
   enterSketchSession,
   exitSketchSession,
+  setSketchSessionPlane,
   removeSketchSubCallAt,
   regularPolygonVertices,
   selectSketchTool,
@@ -57,6 +58,18 @@ describe("sketchSession reducers", () => {
   it("exitSketchSession is a no-op when inactive", () => {
     const same = exitSketchSession(INACTIVE_SKETCH_SESSION);
     expect(same).toBe(INACTIVE_SKETCH_SESSION);
+  });
+
+  // Ticket yx6a: the plane is an editable property of the session.
+  it("setSketchSessionPlane re-anchors the active session", () => {
+    const session = enterSketchSession(INACTIVE_SKETCH_SESSION, "qA");
+    const next = setSketchSessionPlane(session, "qFace(42)");
+    expect(next.planeQuery).toBe("qFace(42)");
+    expect(next.active).toBe(true);
+    expect(setSketchSessionPlane(next, "qFace(42)")).toBe(next);
+    expect(setSketchSessionPlane(INACTIVE_SKETCH_SESSION, "qB")).toBe(
+      INACTIVE_SKETCH_SESSION,
+    );
   });
 
   it("selectSketchTool stores the tool name and the initial draft", () => {

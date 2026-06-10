@@ -65,6 +65,13 @@
       pointer-events: auto;
       cursor: default;
     }
+
+    /* Ticket yx6a: while a query picker (e.g. the session panel's
+     * "Sketch plane" field) holds the viewport click focus, the
+     * overlay steps aside so the pick reaches the 3D scene. */
+    &.is-query-pick {
+      pointer-events: none;
+    }
   }
 
   /* Invisible pick-state probe (see PickHud). Kept in the DOM purely as an

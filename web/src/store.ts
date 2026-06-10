@@ -30,6 +30,7 @@ import {
   applySketchToolDraft as reduceApply,
   enterSketchSession as reduceEnter,
   exitSketchSession as reduceExit,
+  setSketchSessionPlane as reduceSetPlane,
   selectSketchTool as reduceSelect,
   setSketchToolDraft as reduceSetDraft,
   removeSketchSubCallAt as reduceRemoveAt,
@@ -289,9 +290,6 @@ export interface StoreState {
    *  extrude"). Cleared automatically on the next successful
    *  mutation. The App renders it as a toast in the topbar. */
   transientError: string | null;
-  /** K7.21e: face-pick mode — the next viewport click selects a
-   *  face to use as the sketch plane instead of defaulting to XY. */
-  facePickMode: boolean;
   /** K9: mate connector placement mode — the next viewport click
    *  places a mate connector at the surface hit point. */
   mateMode: boolean;
@@ -422,16 +420,6 @@ function persistHiddenDatumsToStorage(ids: ReadonlySet<string>): void {
   } catch {
     // ignore
   }
-}
-
-/** Pick the origin datum plane whose normal is closest to the given
- *  direction, expressed as a `qCreatedBy(...)` query string. */
-function normalToPlaneQuery(normal: [number, number, number]): string {
-  const [nx, ny, nz] = normal;
-  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
-  if (ay >= ax && ay >= az) return "qCreatedBy(origin_plane_xz)";
-  if (az >= ax && az >= ay) return "qCreatedBy(origin_plane_xy)";
-  return "qCreatedBy(origin_plane_yz)";
 }
 
 /** Pull a user-readable message out of a wasm-bindgen-thrown error.
@@ -569,7 +557,6 @@ export class KernelStore {
       folders: loadFoldersFromStorage(),
       visibleSketches: loadVisibleSketchesFromStorage(),
       transientError: null,
-      facePickMode: false,
       mateMode: false,
       assembly: initialAssembly,
       ikMode: false,
@@ -670,7 +657,6 @@ export class KernelStore {
       folders: this.state.folders,
       visibleSketches: this.state.visibleSketches,
       transientError: null, // successful commit clears any transient error
-      facePickMode: false,
       mateMode: false,
       assembly: this.state.assembly,
       ikMode: false,
@@ -2063,24 +2049,19 @@ export class KernelStore {
     this.notify();
   }
 
-  enterFacePickMode(): void {
-    this.patch({ facePickMode: true });
-    this.notify();
-  }
-
-  cancelFacePickMode(): void {
-    this.patch({ facePickMode: false });
-    this.notify();
-  }
-
-  enterSketchFromFacePick(normal: [number, number, number]): void {
-    this.patch({ facePickMode: false });
-    const planeQuery = normalToPlaneQuery(normal);
-    this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
-  }
-
   enterSketch(planeQuery: string): void {
     this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
+  }
+
+  /**
+   * Ticket yx6a: re-anchor the ACTIVE session's sketch plane. The
+   * plane is an ordinary feature property now — the session panel's
+   * QueryWidget calls this when the user picks a face (or types a
+   * datum query). Committed (u,v) sub-calls keep their coordinates
+   * and re-project onto the new plane.
+   */
+  setSketchPlane(planeQuery: string): void {
+    this.updateSketch(reduceSetPlane(this.state.sketchSession, planeQuery));
   }
 
   /**

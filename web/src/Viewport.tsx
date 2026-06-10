@@ -220,18 +220,6 @@ function tryQueryPick(click: PickResult | null): boolean {
   return picker.onPick(`qCreatedBy(${contributor})`);
 }
 
-function handleFacePickClick(
-  store: { enterSketchFromFacePick(n: [number, number, number]): void; cancelFacePickMode(): void; enterSketch(q: string): void },
-  click: PickResult | null,
-): void {
-  if (click?.hit && click.contributors.length > 0) {
-    store.enterSketchFromFacePick(click.normal as [number, number, number]);
-  } else {
-    store.cancelFacePickMode();
-    store.enterSketch("qCreatedBy(origin_plane_xy)");
-  }
-}
-
 function handleIkClick(
   store: { runIK(opts: { position: [number, number, number]; endEffectorPartId: string; endEffectorConnectorId: number }): void },
   state: { assembly: { document: { mates: { type: string }[]; parts: { id: string; mateConnectors: { featureId: number }[] }[] } } },
@@ -403,7 +391,6 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
       state?.sketchSession.active ||
       state?.measureMode ||
       state?.filletMode ||
-      state?.facePickMode ||
       state?.mateMode ||
       state?.ikMode ||
       getActiveQueryPicker()
@@ -495,7 +482,6 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
     setPickResult(click);
 
     if (tryQueryPick(click)) return;
-    if (state?.facePickMode) { handleFacePickClick(store, click); return; }
     if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
     if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
     if (state?.filletMode) { handleFilletClick(store, click); return; }
@@ -748,11 +734,6 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
           )}
         </div>
       ) : null}
-      {state?.facePickMode && (
-        <div className="face-pick-hud" data-testid="face-pick-hud">
-          Click a face to set sketch plane — or press Esc for XY
-        </div>
-      )}
       {state?.mateMode && (
         <div className="face-pick-hud" data-testid="mate-mode-hud">
           Click a surface to place a mate connector

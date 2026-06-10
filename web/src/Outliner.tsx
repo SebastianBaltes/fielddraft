@@ -32,7 +32,7 @@ import {
 } from "./sketchSession";
 import { getActive as getActivePicker } from "./queryPickerBridge";
 import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
-import { formatQueryDisplay } from "./queryLabels";
+import { QueryWidget } from "./widgets/widgets";
 import { ElementInfo } from "./ElementInfo";
 
 /** A FieldSkript instance reports its `kind` as the script's id (e.g.
@@ -54,10 +54,6 @@ export function kindGlyph(kind: string, scriptTypes?: readonly ScriptType[]): st
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
 }
 
-
-function formatPlaneQuery(query: string | null): string {
-  return query ? formatQueryDisplay(query) : "—";
-}
 
 export function prettifyFeatureName(
   name: string,
@@ -616,12 +612,17 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
         >
           <div className="header">
             <span>Sketch</span>
-            <span
-              className="plane-query"
-              data-testid="sketch-session-plane"
-            >
-              {formatPlaneQuery(sketchSession.planeQuery)}
-            </span>
+          </div>
+          {/* Ticket yx6a: the sketch plane is an editable feature
+              property — pick a face in the viewport or type a datum
+              query, exactly like the committed sketch's detail view. */}
+          <div className="plane-field" data-testid="sketch-session-plane">
+            <QueryWidget
+              label="Sketch plane"
+              value={sketchSession.planeQuery ?? ""}
+              onChange={(next) => store.setSketchPlane(next)}
+              entityFilter="FACE"
+            />
           </div>
           {sketchSession.selectedTool && sketchToolSchema ? (
             <>

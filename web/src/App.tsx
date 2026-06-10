@@ -117,10 +117,7 @@ export function App() {
         switch (e.key) {
           case "Escape": {
             const cur = store.getState();
-            if (cur.facePickMode) {
-              store.cancelFacePickMode();
-              store.enterSketch("qCreatedBy(origin_plane_xy)");
-            } else if (cur.mateMode) {
+            if (cur.mateMode) {
               store.toggleMateMode();
             } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
               // P0.1: in a sketch session, Esc drops the active drawing

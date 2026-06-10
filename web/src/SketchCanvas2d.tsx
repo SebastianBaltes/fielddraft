@@ -25,8 +25,13 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactElement,
 } from "react";
+import {
+  getActive as getActiveQueryPicker,
+  subscribe as subscribeQueryPicker,
+} from "./queryPickerBridge";
 import type { KernelStore, SketchSessionState } from "./store";
 import {
   readSketchCamera,
@@ -2225,6 +2230,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const toolActive = session.selectedTool !== null;
   const selectMode = session.active && !toolActive;
 
+  // Ticket yx6a: while a query picker holds the viewport click focus
+  // (session panel's "Sketch plane" field), the overlay must not eat
+  // the click — pointer-events drop to none via `.is-query-pick`.
+  const queryPickActive = useSyncExternalStore(
+    subscribeQueryPicker,
+    () => getActiveQueryPicker() !== null,
+    () => false,
+  );
+
   // F18: commit the pending line from the HUD using the latest field
   // strings (closure-fresh on every render, so the typed value is never
   // stale).
@@ -2240,7 +2254,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         data-testid="sketch-canvas-2d"
         className={
           "fd-sketch-canvas" +
-          (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "")
+          (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "") +
+          (queryPickActive ? " is-query-pick" : "")
         }
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

@@ -58,6 +58,17 @@ export function enterSketchSession(
   };
 }
 
+/** Ticket yx6a: re-anchor the active session's plane query. The
+ *  sketch plane is an editable feature property; sub-calls keep
+ *  their (u,v) coordinates and re-project onto the new plane. */
+export function setSketchSessionPlane(
+  state: SketchSessionState,
+  planeQuery: string,
+): SketchSessionState {
+  if (!state.active || state.planeQuery === planeQuery) return state;
+  return { ...state, planeQuery };
+}
+
 /** Drop the session and return to the inactive shape. */
 export function exitSketchSession(
   state: SketchSessionState,
