@@ -60,6 +60,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
+import { closedRegionsCached } from "./sketchRegions";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -131,6 +132,9 @@ const COLOR_SELECTED = "#f97316";
  *  crossing (right→left) = dashed green border. Translucent fills. */
 const COLOR_MARQUEE_ENCLOSING = "#2563eb";
 const COLOR_MARQUEE_CROSSING = "#16a34a";
+/** Ticket 7x4v: translucent shading for closed sketch regions —
+ *  Onshape's light gray face fill. */
+const COLOR_REGION_FILL = "rgba(148, 163, 184, 0.18)";
 const FILL_MARQUEE_ENCLOSING = "rgba(37, 99, 235, 0.12)";
 const FILL_MARQUEE_CROSSING = "rgba(22, 163, 74, 0.12)";
 const MARQUEE_CROSSING_DASH = [6, 4];
@@ -806,16 +810,18 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
   }, [store, session.planeQuery]);
 
-  // Forward wheel-zoom to the WebGPU canvas while in select mode so
-  // OrbitControls keeps zooming under the (pointer-events: auto)
-  // overlay. Native listener with { passive: false } so we can stop
-  // the page from scrolling. Drawing-tool mode is left untouched.
+  // Forward wheel-zoom to the WebGPU canvas so OrbitControls keeps
+  // zooming under the (pointer-events: auto) overlay — in select mode
+  // AND while a drawing tool is active (ticket bouv: Onshape zooms with
+  // the wheel mid-tool too; the cursor keeps rubber-banding because the
+  // overlay only forwards, never swallows, the pointer). Native listener
+  // with { passive: false } so we can stop the page from scrolling.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const onWheel = (e: WheelEvent) => {
       const s = sessionRef.current;
-      if (!s.active || s.selectedTool) return;
+      if (!s.active) return;
       const target = viewportCanvas(canvas);
       if (!target) return;
       target.dispatchEvent(
@@ -2358,6 +2364,27 @@ function drawOverlay(
     ctx.moveTo(0, oy);
     ctx.lineTo(cam.width, oy);
     ctx.stroke();
+  }
+
+  // Ticket 7x4v: shade closed regions (Onshape-style) so loops that will
+  // extrude read as faces. ONE fill call with the nonzero rule —
+  // overlapping loops (a circle inside a rectangle extrudes as their
+  // union) must shade uniformly, not double-darken or punch holes.
+  {
+    const regions = closedRegionsCached(session.subCalls);
+    if (regions.length > 0) {
+      ctx.fillStyle = COLOR_REGION_FILL;
+      ctx.beginPath();
+      for (const poly of regions) {
+        for (let i = 0; i < poly.length; i++) {
+          const [px, py] = sketchToScreen(poly[i][0], poly[i][1], cam);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+      }
+      ctx.fill("nonzero");
+    }
   }
 
   // K6b: draw projected B-Rep edges as faint guide lines.
