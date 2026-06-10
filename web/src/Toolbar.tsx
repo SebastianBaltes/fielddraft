@@ -3,6 +3,7 @@ import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
+import { elementQueryString } from "./elementQuery";
 import { buildDraftSketchState } from "./sketchSession";
 import { applicableConstraints } from "./sketchConstraints";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
@@ -365,6 +366,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
   const hasSketch = state.features.some((f) => f.kind === "sketch");
   const hasFeatures = state.features.length > 0;
+  // Ticket 981k: Extrude works on the current face selection too — as long
+  // as a face is selectable it is extrudable, sketch or not.
+  const selectedFaceQueries = state.selectedElements
+    .filter((e) => e.kind === "face")
+    .map(elementQueryString);
 
   /* ---------- Sketch mode toolbar ---------- */
 
@@ -909,7 +915,24 @@ export function Toolbar({ store, state }: ToolbarProps) {
           testId="thread-split-button"
         />
         <FeatureButton kind="sketch" title="Sketch on XY plane" testId="enter-sketch" onClick={handleSketchEnter} draggable dragType="fielddraft/sketch" />
-        <FeatureButton kind="extrude" title="Extrude latest sketch (20 mm)" testId="extrude-latest-sketch" disabled={!hasSketch} onClick={() => store.addExtrudeFromLatestSketch(20)} />
+        <FeatureButton
+          kind="extrude"
+          title={
+            selectedFaceQueries.length > 0
+              ? "Extrude selected face(s) (10 mm)"
+              : "Extrude latest sketch (20 mm)"
+          }
+          testId="extrude-latest-sketch"
+          disabled={!hasSketch && selectedFaceQueries.length === 0}
+          onClick={() => {
+            if (selectedFaceQueries.length > 0) {
+              store.addExtrudeFaces(selectedFaceQueries);
+              store.clearElementSelection();
+            } else {
+              store.addExtrudeFromLatestSketch(20);
+            }
+          }}
+        />
         <FeatureButton kind="revolve" title="Revolve latest sketch" testId="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()} />
         <FeatureButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
         <FeatureButton kind="linear_pattern" title="Linear pattern (+X, 3x, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} label="Pattern" />
