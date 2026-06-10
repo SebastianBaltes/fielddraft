@@ -31,6 +31,7 @@ import {
   isActive as isQueryPickerActive,
   getActive as getActiveQueryPicker,
   subscribe as subscribeQueryPicker,
+  deactivate as deactivateQueryPicker,
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
@@ -865,7 +866,8 @@ export function QueryWidget({
   error,
   required,
   entityFilter,
-}: WidgetProps<string> & { entityFilter?: string }) {
+  deactivateOnPick,
+}: WidgetProps<string> & { entityFilter?: string; deactivateOnPick?: boolean }) {
   const id = useId();
   const [text, setText] = useState<string>(value);
   const [focused, setFocused] = useState(false);
@@ -886,13 +888,17 @@ export function QueryWidget({
   );
 
   // Single source of truth for what a viewport pick does for this widget.
+  // One-shot pickers (the sketch-plane field) release the viewport after
+  // a single pick so the next click reaches the sketch tools instead of
+  // re-picking the plane (ticket dxrq).
   const onPick = useCallback(
     (query: string) => {
       setText(query);
       onChange(query);
+      if (deactivateOnPick) deactivateQueryPicker();
       return true;
     },
-    [onChange],
+    [onChange, deactivateOnPick],
   );
 
   // The bridge holds at most one active picker. Registering flips this

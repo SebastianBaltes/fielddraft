@@ -77,6 +77,19 @@ export function isActive(ownerId: string): boolean {
   return active !== null && active.ownerId === ownerId;
 }
 
+/**
+ * Force-deactivate whatever picker is active. Used by one-shot pickers
+ * (e.g. the sketch-plane field) that must release the viewport after a
+ * single pick so the next click reaches the sketch tools instead of
+ * re-picking the plane (ticket dxrq).
+ */
+export function deactivate(): void {
+  if (active !== null) {
+    active = null;
+    notify();
+  }
+}
+
 /** Subscribe to active-picker changes. Returns unsubscribe. */
 export function subscribe(listener: () => void): () => void {
   listeners.add(listener);

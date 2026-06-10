@@ -610,6 +610,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               value={sketchSession.planeQuery ?? ""}
               onChange={(next) => store.setSketchPlane(next)}
               entityFilter="FACE"
+              deactivateOnPick
             />
           </div>
           {sketchSession.selectedTool && sketchToolSchema ? (
