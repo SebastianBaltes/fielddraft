@@ -341,6 +341,88 @@ describe("svgToSubCalls", () => {
     expect(svgToSubCalls("not xml at all <<<")).toEqual([]);
     expect(svgToSubCalls("<html><body>nope</body></html>")).toEqual([]);
   });
+
+  // ── packed path-data lexing (ticket bgvh) ────────────────────────────
+  // Minified/optimised SVGs pack numbers without separators; splitting on
+  // whitespace/comma produced NaN tokens whose silent removal shifted all
+  // following arguments and shredded the import.
+
+  it("lexes packed negative numbers in path data (M10-20L-5-5)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M10-20L-5-5"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    expect(c.start).toEqual([10, 20]); // y flipped: -20 → 20
+    expect(c.segments).toEqual([{ kind: "line", to: [-5, 5] }]);
+  });
+
+  it("lexes decimal-shorthand packing (.5.5 = two numbers)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M.5.5L1.5.25"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    expect(c.start).toEqual([0.5, -0.5]);
+    expect(c.segments).toEqual([{ kind: "line", to: [1.5, -0.25] }]);
+  });
+
+  it("lexes packed exponents (1e-3-4 = two numbers)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M1e-3-4L2 3"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    expect(c.start).toEqual([0.001, 4]);
+  });
+
+  it("lexes packed relative curve data (c.5-.3.8-.7 1-1.2)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M10 10c.5-.3.8-.7 1-1.2"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    // Cubic ends at (10+1, 10−1.2) = (11, 8.8) → y-flip (11, −8.8).
+    const last = c.segments[c.segments.length - 1] as { to: [number, number] };
+    expect(last.to[0]).toBeCloseTo(11, 9);
+    expect(last.to[1]).toBeCloseTo(-8.8, 9);
+  });
+
+  it("lexes packed arc flags (a5 5 0 014.5 2)", () => {
+    // large-arc 0, sweep 1, endpoint +4.5,+2 — flags are single chars.
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0a5 5 0 014.5 2"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    const last = c.segments[c.segments.length - 1] as { to: [number, number] };
+    expect(last.to[0]).toBeCloseTo(4.5, 6);
+    expect(last.to[1]).toBeCloseTo(-2, 6);
+    // The arc midpoint must stay within the (possibly scaled-up) radius
+    // of both endpoints — a shifted-argument parse lands far away.
+    const mid = sampleSketchPathAt(c, 0.5);
+    expect(Math.hypot(mid[0] - 0, mid[1] - 0)).toBeLessThan(10);
+  });
+
+  it("lexes doubly-packed arc flag + negative endpoint (00-4.5-2)", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0a5 5 0 00-4.5-2"/></svg>`,
+    );
+    const c = (calls[0].params.contours as PathContour[])[0];
+    const last = c.segments[c.segments.length - 1] as { to: [number, number] };
+    expect(last.to[0]).toBeCloseTo(-4.5, 6);
+    expect(last.to[1]).toBeCloseTo(2, 6);
+  });
+
+  it("lexes packed polygon point lists", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><polygon points="0 0 10 0 10-5"/></svg>`,
+    );
+    expect(ofType(calls, "sketch_line")).toHaveLength(3);
+    expect(calls.map((c) => c.params.end)).toContainEqual([10, 5]);
+  });
+
+  it("lexes packed transform args (translate(10-20))", () => {
+    const calls = svgToSubCalls(
+      `<svg xmlns="http://www.w3.org/2000/svg"><line x1="0" y1="0" x2="1" y2="0" transform="translate(10-20)"/></svg>`,
+    );
+    expect(calls[0].params.start).toEqual([10, 20]);
+  });
 });
 
 describe("dxfToSubCalls", () => {

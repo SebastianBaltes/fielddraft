@@ -81,6 +81,66 @@ function isFiniteNum(n: number): boolean {
   return Number.isFinite(n);
 }
 
+/** SVG number lexer (ticket bgvh). Path data, point lists and transform
+ *  args may PACK numbers without separators — `10-20` is two numbers,
+ *  `.5.3` is two numbers, `1e-3-4` is two numbers. Splitting on
+ *  whitespace/comma and silently dropping the NaN tokens shifts every
+ *  following argument and shreds the whole import, so all SVG number
+ *  parsing goes through this regex lexer instead. */
+const SVG_NUM_RE = /[+-]?(?:\d*\.\d+|\d+\.?)(?:[eE][+-]?\d+)?/g;
+
+function lexNumbers(s: string): number[] {
+  const m = s.match(SVG_NUM_RE);
+  return m ? m.map(Number).filter(isFiniteNum) : [];
+}
+
+/** Lex elliptical-arc (`A`/`a`) argument groups. The two flags are
+ *  SINGLE characters and may be packed against the next number
+ *  (`a5 5 0 014.5 2` ⇒ large-arc 0, sweep 1, x 4.5), so the generic
+ *  number lexer cannot be used for them. Returns flat 7-tuples; a
+ *  malformed tail is dropped. */
+function lexArcArgs(s: string): number[] {
+  const out: number[] = [];
+  let i = 0;
+  const skipSep = () => {
+    while (i < s.length && /[\s,]/.test(s[i])) i++;
+  };
+  const readNumber = (): number | null => {
+    skipSep();
+    const re = /[+-]?(?:\d*\.\d+|\d+\.?)(?:[eE][+-]?\d+)?/y;
+    re.lastIndex = i;
+    const m = re.exec(s);
+    if (!m) return null;
+    i = re.lastIndex;
+    const n = Number(m[0]);
+    return Number.isFinite(n) ? n : null;
+  };
+  const readFlag = (): number | null => {
+    skipSep();
+    const c = s[i];
+    if (c !== "0" && c !== "1") return null;
+    i++;
+    return c === "1" ? 1 : 0;
+  };
+  for (;;) {
+    skipSep();
+    if (i >= s.length) break;
+    const rx = readNumber();
+    const ry = readNumber();
+    const rot = readNumber();
+    const largeArc = readFlag();
+    const sweep = readFlag();
+    const x = readNumber();
+    const y = readNumber();
+    if (rx === null || ry === null || rot === null || largeArc === null ||
+        sweep === null || x === null || y === null) {
+      break;
+    }
+    out.push(rx, ry, rot, largeArc, sweep, x, y);
+  }
+  return out;
+}
+
 /* ───────────────────────── SVG ───────────────────────── */
 
 /** Parse a `transform` attribute into a 2×3 affine matrix [a,b,c,d,e,f]
@@ -305,10 +365,7 @@ function parseTransform(attr: string | null): Mat {
   let match: RegExpExecArray | null;
   while ((match = re.exec(attr)) !== null) {
     const op = match[1];
-    const nums = match[2]
-      .split(/[\s,]+/)
-      .map(Number)
-      .filter(isFiniteNum);
+    const nums = lexNumbers(match[2]);
     let t: Mat | null = null;
     if (op === "translate") {
       t = [1, 0, 0, 1, nums[0] ?? 0, nums[1] ?? 0];
@@ -352,10 +409,7 @@ function num(el: Element, name: string, dflt = 0): number {
 /** Parse the whitespace/comma separated point list of a polyline/polygon. */
 function parsePointList(attr: string | null): Pt[] {
   if (!attr) return [];
-  const nums = attr
-    .split(/[\s,]+/)
-    .map(Number)
-    .filter(isFiniteNum);
+  const nums = lexNumbers(attr);
   const pts: Pt[] = [];
   for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
   return pts;
@@ -601,11 +655,10 @@ function parsePathToSketchPath(d: string, m: Mat): SubCall | null {
   while ((match = cmdRe.exec(d)) !== null) {
     const cmd = match[1];
     const rel = cmd === cmd.toLowerCase() && cmd !== cmd.toUpperCase();
-    const args = match[2]
-      .split(/[\s,]+/)
-      .map(Number)
-      .filter(isFiniteNum);
     const up = cmd.toUpperCase();
+    // Arc args carry single-char flags that may be packed against the
+    // next number — they need their own scanner.
+    const args = up === "A" ? lexArcArgs(match[2]) : lexNumbers(match[2]);
     let i = 0;
 
     if (up === "M") {
