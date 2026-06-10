@@ -2101,13 +2101,20 @@ export class KernelStore {
       console.warn("fielddraft: editSketch() failed to load sub-calls", err);
       return;
     }
-    // K6b.3b uses the same placeholder plane query that
-    // `enterSketch` seeds new sessions with, because the real
-    // plane lives inside the committed FeatureCall params and
-    // we don't round-trip it yet — K6b.3 follow-up adds the
-    // face-lock resolution path.
+    // Round-trip the committed plane query (ticket yx6a): the real plane
+    // lives in the FeatureCall params; falling back to the XY placeholder
+    // silently re-planed every edited sketch.
+    let planeQuery = "qCreatedBy(origin_plane_xy)";
+    try {
+      const params = this.kernel.getFeatureCallParams(featureId);
+      if (typeof params.plane === "string" && params.plane.length > 0) {
+        planeQuery = params.plane;
+      }
+    } catch {
+      // params unavailable — keep the XY fallback
+    }
     this.updateSketch(
-      reduceEnter(this.state.sketchSession, "qCreatedBy(origin_plane_xy)", {
+      reduceEnter(this.state.sketchSession, planeQuery, {
         initialSubCalls: subCalls,
         editingFeatureId: featureId,
       }),
