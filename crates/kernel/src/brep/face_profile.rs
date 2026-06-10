@@ -52,12 +52,48 @@ pub fn face_region_2d(
         // Declared hole loops join the ring pool after the first (outer) ring.
         rings.extend(loop_rings(brep, hole, frame, placement));
     }
+    // A ring that does not CLOSE is a leftover of duplicate boundary edges (a
+    // coplanar seam traced once per branch pair, ticket vyee) — the real ring
+    // already consumed one copy, the orphaned twin can never close. Drop it.
+    rings.retain(|r| {
+        let gap = ring_closing_gap(r);
+        gap <= (0.05 * ring_perimeter(r)).max(1e-6)
+    });
     if rings.is_empty() {
         return None;
     }
     rings.sort_by(|a, b| ring_area(b).abs().total_cmp(&ring_area(a).abs()));
+    // Micro-rings far below the profile scale are tracer noise (the sub-µm
+    // corner squiggles a coplanar seam leaves behind), not real holes.
+    let min_diag = 1e-4 * ring_diag(&rings[0]);
+    rings.retain(|r| ring_diag(r) >= min_diag);
+    // Coincident duplicates: a coplanar seam can emit the SAME boundary once
+    // per branch pair, so the pool may hold the full ring twice (ticket vyee).
+    // Keeping the twin would subtract the profile from itself. Two rings are
+    // duplicates when area, extent and centroid all agree within tolerance —
+    // distinct same-size holes (a bolt circle) differ in centroid.
+    let mut kept: Vec<Ring> = Vec::new();
+    for r in rings {
+        if !kept.iter().any(|k| rings_coincident(k, &r)) {
+            kept.push(r);
+        }
+    }
+    // A "hole" that TOUCHES the outer boundary is a corner squiggle the seam
+    // tracer left behind, not a real hole (real holes lie strictly inside the
+    // profile). Punching it would slit the extrusion at the rim.
+    if kept.len() > 1 {
+        let outer_diag = ring_diag(&kept[0]);
+        let touch_tol = (1e-3 * outer_diag).max(1e-5);
+        let outer_ring = kept.remove(0);
+        kept.retain(|r| {
+            !r.iter().flatten().any(|p| {
+                outer_ring.iter().any(|c| point_near_polyline(*p, c, touch_tol))
+            })
+        });
+        kept.insert(0, outer_ring);
+    }
 
-    let mut it = rings.into_iter();
+    let mut it = kept.into_iter();
     let outer = ring_to_segments(&it.next()?);
     if outer.is_empty() {
         return None;
@@ -109,7 +145,66 @@ fn loop_rings(
             chains.push(uv);
         }
     }
-    assemble_rings(chains)
+    // A coplanar seam is traced once per branch pair, so the loop can carry the
+    // SAME boundary stretch several times — possibly split differently per copy
+    // (ticket vyee). Duplicates make the nearest-endpoint assembly ambiguous and
+    // strand orphans that can never close. Keep chains longest-first and drop
+    // any chain that already lies ENTIRELY on the kept ones (coverage test, so
+    // a split copy is absorbed by the longer original regardless of cut points).
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for c in &chains {
+        for p in c {
+            for k in 0..2 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2)).sqrt();
+    let tol = (1e-3 * diag).max(1e-5);
+    chains.sort_by(|a, b| chain_len(b).total_cmp(&chain_len(a)));
+    let mut unique: Vec<Vec<[f32; 2]>> = Vec::new();
+    for c in chains {
+        // Sample vertices AND segment midpoints: a 2-point chain (an exact
+        // straight edge) shares both endpoints with its neighbours, so the
+        // vertices alone would read as "covered" for every closing edge.
+        let near = |p: [f32; 2]| unique.iter().any(|u| point_near_polyline(p, u, tol));
+        let covered = c.iter().all(|p| near(*p))
+            && c.windows(2).all(|w| {
+                near([(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5])
+            });
+        if !covered {
+            unique.push(c);
+        }
+    }
+    assemble_rings(unique)
+}
+
+/// Length of a chain's polyline.
+fn chain_len(c: &[[f32; 2]]) -> f32 {
+    c.windows(2).map(|w| dist2(w[0], w[1]).sqrt()).sum()
+}
+
+/// Squared distance from point `p` to the segment `a→b`.
+fn point_seg_dist2(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+    let t = if len2 > 0.0 {
+        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    dist2(p, [a[0] + t * ab[0], a[1] + t * ab[1]])
+}
+
+/// `true` once `p` lies within `tol` of any segment of `chain`.
+fn point_near_polyline(p: [f32; 2], chain: &[[f32; 2]], tol: f32) -> bool {
+    let t2 = tol * tol;
+    if chain.len() == 1 {
+        return dist2(p, chain[0]) <= t2;
+    }
+    chain.windows(2).any(|w| point_seg_dist2(p, w[0], w[1]) <= t2)
 }
 
 /// Greedy nearest-endpoint ring assembly. Starting from any unused chain, keep
@@ -158,6 +253,73 @@ fn assemble_rings(chains: Vec<Vec<[f32; 2]>>) -> Vec<Ring> {
         rings.push(ring);
     }
     rings
+}
+
+/// Distance from a ring's final point back to its first — the gap the implicit
+/// closing segment has to bridge. ≈0 for a genuinely closed boundary.
+fn ring_closing_gap(ring: &Ring) -> f32 {
+    let start = ring[0][0];
+    let end = *ring.last().unwrap().last().unwrap();
+    dist2(end, start).sqrt()
+}
+
+/// Total polyline length of a ring's chains (excluding the closing segment).
+fn ring_perimeter(ring: &Ring) -> f32 {
+    let mut len = 0.0;
+    for c in ring {
+        for w in c.windows(2) {
+            len += dist2(w[0], w[1]).sqrt();
+        }
+    }
+    len
+}
+
+/// Mean of a ring's sample points — cheap positional fingerprint for the
+/// duplicate test (NOT an area centroid; coincident rings have coincident
+/// point sets, which is all the comparison needs).
+fn ring_centroid(ring: &Ring) -> [f32; 2] {
+    let mut c = [0.0f32; 2];
+    let mut n = 0.0f32;
+    for chain in ring {
+        for p in chain {
+            c[0] += p[0];
+            c[1] += p[1];
+            n += 1.0;
+        }
+    }
+    [c[0] / n.max(1.0), c[1] / n.max(1.0)]
+}
+
+/// Same boundary traced twice? Area, extent and centroid must all agree within
+/// a relative tolerance — duplicate seam traces differ only by the tracer's
+/// activity band (≈1e-5 of the model), real distinct rings differ structurally.
+fn rings_coincident(a: &Ring, b: &Ring) -> bool {
+    let (da, db) = (ring_diag(a), ring_diag(b));
+    let scale = da.max(db).max(1e-6);
+    if (da - db).abs() > 1e-3 * scale {
+        return false;
+    }
+    if (ring_area(a).abs() - ring_area(b).abs()).abs() > 1e-3 * scale * scale {
+        return false;
+    }
+    let (ca, cb) = (ring_centroid(a), ring_centroid(b));
+    dist2(ca, cb).sqrt() <= 1e-2 * scale
+}
+
+/// Diagonal of a ring's 2D AABB — its overall spatial extent.
+fn ring_diag(ring: &Ring) -> f32 {
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for c in ring {
+        for p in c {
+            for k in 0..2 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let d = [hi[0] - lo[0], hi[1] - lo[1]];
+    (d[0] * d[0] + d[1] * d[1]).sqrt()
 }
 
 /// Shoelace area of a ring's concatenated sample points (sign carries the

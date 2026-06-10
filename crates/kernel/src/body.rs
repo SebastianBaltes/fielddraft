@@ -420,9 +420,13 @@ pub fn weave_all(features: &[DecodedFeature]) -> Vec<(BRep, Transform)> {
             placement: Transform::IDENTITY,
             brep: None,
         };
-        // Query resolution stays on the proven octree path; parametric weaving
-        // produces identical `id_hash`es, so handles resolve either way.
-        body.ensure_brep(features, false);
+        // Parametric (branch-seed) weave, octree fallback — the same route the
+        // renderer uses. Query resolution previously forced the octree path,
+        // but that path collapses on stacked coplanar extrudes at ≳100 mm scale
+        // (ticket vyee: truncated edges, missing faces → garbage face-extrude
+        // profiles); `id_hash`es are toggle-invariant, so handles resolve
+        // identically on both routes.
+        body.ensure_brep(features, true);
         let placement = body.placement;
         breps.push((body.brep.expect("ensure_brep populates the cache").1, placement));
     }

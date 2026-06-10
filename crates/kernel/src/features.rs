@@ -7737,4 +7737,131 @@ mod tests {
             "far from the edge the SDF is unchanged: hard {dh_far} vs filleted {df_far}",
         );
     }
+
+    #[test]
+    fn extrude_side_face_resolves_clean_profile_at_user_scale() {
+        // Ticket vyee: the EXACT user document — 100 mm box, full-top-face
+        // extrude (depth 52.91), then a face extrude of the box's +X side.
+        // The octree weave collapses at this scale (truncated edges, missing
+        // extrusion faces), so query resolution must ride the parametric
+        // (branch-seed) weave: the side face resolves to a CONNECTED 100×100
+        // profile with the +X plane normal, and the final solid grows +25 in X.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let calls = vec![
+            box_call(1, 50.0),
+            FeatureCall::new(
+                "extrude",
+                id(5),
+                json!({
+                    "profiles": "qEdge(18417744930603108066)",
+                    "faces": "qFace(4315924989883055031)",
+                    "depth": { "value": 52.91257140451136, "unit": "mm" },
+                    "depth_back": { "value": 0.0, "unit": "mm" },
+                    "symmetric": false,
+                }),
+            ),
+        ];
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+        {
+            let brep = weave_first(&mut ctx);
+            for i in 0..brep.face_count() {
+                let fid = crate::brep::FaceId(i as u32);
+                if crate::brep::naming::TopoRef::from_face(&brep, fid).id_hash
+                    != 6025886176426920981
+                {
+                    continue;
+                }
+                let face = brep.face(fid);
+                let mut loops: Vec<&crate::brep::Loop> = vec![&face.outer];
+                loops.extend(face.inner.iter());
+                for (li, lp) in loops.iter().enumerate() {
+                    eprintln!("-- face {i} loop {li}: {} edges", lp.edges.len());
+                    for (eid, rev) in &lp.edges {
+                        let pl =
+                            crate::brep::edge_sampling::sample_edge(&brep.edge(*eid).geometry);
+                        let a = pl.first().cloned().unwrap_or_default();
+                        let b = pl.last().cloned().unwrap_or_default();
+                        eprintln!("   edge {eid:?} rev {rev} pts {} {a:?} -> {b:?}", pl.len());
+                    }
+                }
+            }
+        }
+        let (region, frame) = ctx
+            .resolve_extrude_faces(&["qFace(6025886176426920981)".to_string()])
+            .expect("ticket face must resolve");
+        assert!(
+            frame.normal[0] > 0.99,
+            "side face must extrude along +X, got {:?}",
+            frame.normal
+        );
+        assert_paths_connected(&region);
+        let bb = region.aabb();
+        let (w, h) = (bb.max[0] - bb.min[0], bb.max[1] - bb.min[1]);
+        assert!((w - 100.0).abs() < 0.2, "side profile width {w} (aabb {bb:?})");
+        assert!((h - 100.0).abs() < 0.2, "side profile height {h} (aabb {bb:?})");
+
+        // Full doc incl. the 25 mm side extrude → the solid must actually grow
+        // sideways (+X), not collapse (the octree route wove a y=-50 sliver).
+        let mut calls2 = calls.clone();
+        calls2.push(FeatureCall::new(
+            "extrude",
+            id(8),
+            json!({
+                "profiles": "",
+                "faces": "qFace(6025886176426920981)",
+                "depth": { "value": 25.0, "unit": "mm" },
+                "depth_back": { "value": 0.0, "unit": "mm" },
+                "symmetric": false,
+            }),
+        ));
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        registry.regenerate(&mut ctx2, &calls2, None).unwrap();
+
+        // The RENDERED solid (SDF) must grow sideways: a 25 mm slab on the +X
+        // side face, NOT a sliver at the bottom (what the broken profile swept).
+        let solid = crate::csg::CsgNode::from_decoded(&ctx2.features);
+        let inside = [
+            [60.0, 0.0, 0.0],    // middle of the new slab
+            [74.0, 40.0, 40.0],  // near the slab's outer corner
+            [0.0, 80.0, 0.0],    // original top extrude untouched
+        ];
+        for p in inside {
+            let d = solid.sdf(p, crate::csg::EvalMode::Visual);
+            assert!(d < 0.0, "{p:?} must be inside the solid, sdf {d}");
+        }
+        let outside = [
+            [76.0, 0.0, 0.0],    // just past the slab
+            [60.0, 55.0, 0.0],   // above the slab (it spans y ∈ [-50, 50] only)
+            [0.0, -55.0, 0.0],   // below the body — nothing may grow downward
+        ];
+        for p in outside {
+            let d = solid.sdf(p, crate::csg::EvalMode::Visual);
+            assert!(d > 0.0, "{p:?} must be outside the solid, sdf {d}");
+        }
+
+        // The weave must at least keep the established geometry intact (the
+        // octree route collapsed everything to a y=-50 sliver).
+        let brep2 = weave_first(&mut ctx2);
+        let mut mn = [f32::MAX; 3];
+        let mut mx = [f32::MIN; 3];
+        for v in &brep2.vertices {
+            for k in 0..3 {
+                mn[k] = mn[k].min(v.position[k] as f32);
+                mx[k] = mx[k].max(v.position[k] as f32);
+            }
+        }
+        assert!((mx[1] - 102.91257).abs() < 0.1, "top must stay at y=102.91, got {mx:?}");
+        assert!((mn[1] + 50.0).abs() < 0.1, "bottom must stay at y=-50, got {mn:?}");
+        let mut owners: std::collections::BTreeMap<u32, usize> = Default::default();
+        for i in 0..brep2.face_count() {
+            *owners
+                .entry(brep2.face(crate::brep::FaceId(i as u32)).branch_id.feature_id())
+                .or_default() += 1;
+        }
+        eprintln!("final brep: vert aabb {mn:?}..{mx:?} faces by owner {owners:?}");
+    }
 }

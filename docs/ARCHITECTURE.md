@@ -245,6 +245,23 @@ extrude grows its source body instead of stacking a second Part onto it.
 Known limitation: a flush `add` (coplanar faces) weaves watertight but
 keeps duplicate coplanar faces — coplanar branch merging is an open item.
 
+Query resolution (`body.rs::weave_all`, the base of `qFace`/`qEdge`
+handle lookup and the face-extrude profile) rides the parametric
+branch-seed weave with octree fallback — the same route as the renderer
+(tickets oa9h/vyee: the pure octree route collapses on stacked coplanar
+extrudes at ≳100 mm scale; `id_hash`es are toggle-invariant, so handles
+resolve identically on both routes). The face-extrude profile builder
+(`brep/face_profile.rs::face_region_2d`) does NOT trust the weave's
+loop order around coplanar seams: projected edge chains are
+coverage-deduplicated (a chain lying entirely on already-kept chains is
+a duplicate seam trace, however it was split), assembled into rings by
+nearest-endpoint proximity, and filtered — non-closing rings (orphaned
+duplicate leftovers), micro-rings below 1e-4 of the profile extent and
+"holes" touching the outer boundary (corner squiggles from the seam
+tracer) are dropped; coincident rings deduplicate by area + extent +
+centroid. Largest surviving ring = outer profile, the rest subtract as
+holes.
+
 Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse.
 
 #### Meshing (`dc.rs`, `mdc.rs`)
