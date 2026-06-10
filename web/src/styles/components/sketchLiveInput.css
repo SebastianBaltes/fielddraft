@@ -1,23 +1,28 @@
-/* F18: live numeric input HUD shown while a LINE is being drawn.
+/* F18: live numeric input shown while a LINE is being drawn.
  *
  * Root: .fd-sketch-live-input — a small floating overlay positioned at
  * the line midpoint (left/top set inline as dynamic values). Holds a
  * single LENGTH field; the user types an exact value and presses Enter to
- * commit a precise, parametric line (the angle follows the cursor). */
+ * commit a precise, parametric line (the angle follows the cursor).
+ *
+ * Styled as the ONE compact blue length pill (ticket c2ox): it replaces
+ * the canvas-drawn distance label while a pending line is in flight, so
+ * the length never shows twice. Mirrors the canvas label's look — white
+ * pill, accent border, accent text. */
 
 .fd-sketch-live-input {
   position: absolute;
   z-index: 20;
-  /* Anchor at the supplied midpoint, then lift the box above the line
+  /* Anchor at the supplied midpoint, then lift the pill above the line
    * so it doesn't sit on top of the cursor. */
   transform: translate(-50%, calc(-100% - var(--space-3)));
   display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  align-items: center;
+  padding: 0 var(--space-1);
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
   pointer-events: auto;
 
   & .field {
@@ -26,31 +31,23 @@
     gap: var(--space-1);
   }
 
-  & .cap {
-    font-size: var(--fs-base);
-    font-weight: var(--fw-semibold);
-    color: var(--color-accent);
-  }
-
   & .unit {
     font-size: var(--fs-base);
-    color: var(--color-text-muted);
+    color: var(--color-accent);
   }
 
   & input {
     width: 4.5rem;
-    padding: var(--space-1) var(--space-2);
+    padding: 0;
     font-size: var(--fs-base);
     font-family: var(--font-family-mono);
-    color: var(--color-text);
-    background: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    color: var(--color-accent);
+    background: transparent;
+    border: none;
+    text-align: right;
 
     &:focus {
       outline: none;
-      border-color: var(--color-accent);
-      box-shadow: 0 0 0 2px var(--color-accent-soft);
     }
   }
 }

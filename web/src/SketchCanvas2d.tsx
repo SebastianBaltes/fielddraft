@@ -2255,7 +2255,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           style={{ left: `${hud.left}px`, top: `${hud.top}px` }}
         >
           <label className="field">
-            <span className="cap">L</span>
             <input
               ref={lengthInputRef}
               data-testid="sketch-live-length"
@@ -2727,7 +2726,10 @@ function drawOverlay(
     drawLine(ctx, start, current, cam, COLOR_PREVIEW, STROKE_PX);
     drawPoint(ctx, start, cam, COLOR_PREVIEW);
     drawPoint(ctx, current, cam, COLOR_PREVIEW);
-    drawDistanceLabel(ctx, start, current, cam);
+    // A pending (click-started) line shows the EDITABLE live-input field
+    // instead — drawing the canvas label too doubled the length readout
+    // (ticket c2ox).
+    if (drag.kind === "line") drawDistanceLabel(ctx, start, current, cam);
   } else if (drag.kind === "rectangle") {
     const { start, current } = drag;
     drawRectangle(ctx, start, current, cam, COLOR_PREVIEW);
