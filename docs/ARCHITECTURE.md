@@ -242,8 +242,18 @@ Features carry an Onshape-style result-body op (`BoolOp`: `add` / `new` /
 Defaults: primitives (box, sphere, …) and imported meshes seed `new`
 bodies; extrude/revolve/sweep/thicken default to `add` so e.g. a face
 extrude grows its source body instead of stacking a second Part onto it.
-Known limitation: a flush `add` (coplanar faces) weaves watertight but
-keeps duplicate coplanar faces — coplanar branch merging is an open item.
+Known limitation: a flush `add` (coplanar faces) currently weaves a
+**non-manifold** B-Rep — ghost membrane faces (branch faces that lie
+entirely inside the union), duplicated coincident rim edges and coplanar
+walls without a seam edge (ticket o2j9: two flush boxes yield Euler
+characteristic −16 instead of 2). Root cause: the weave has no boundary
+classification stage — `finish_weave` materialises one face per branch
+unconditionally and `ssi::plane_plane` returns zero components for
+coincident planes. The fix is a planned classification stage
+(IN/ON-same/ON-opposite + coincidence registry), see
+`docs/BREP-CLASSIFICATION-PLAN.md`. Note the mesh/render path never
+reads the B-Rep, so this corrupts wireframe/picking/STEP only, never
+the model.
 
 Query resolution (`body.rs::weave_all`, the base of `qFace`/`qEdge`
 handle lookup and the face-extrude profile) rides the parametric
@@ -260,7 +270,10 @@ duplicate leftovers), micro-rings below 1e-4 of the profile extent and
 "holes" touching the outer boundary (corner squiggles from the seam
 tracer) are dropped; coincident rings deduplicate by area + extent +
 centroid. Largest surviving ring = outer profile, the rest subtract as
-holes.
+holes. (This armor — duplicated in `faceFill.ts` on the web side — is a
+downstream mitigation of the missing classification stage above; once
+`BREP-CLASSIFICATION-PLAN.md` lands, both copies should become
+removable.)
 
 Each `Body` caches: compiled SDF opcodes, mesh, topology, payload hash (for incremental meshing), and a version counter for GPU buffer reuse.
 
