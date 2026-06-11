@@ -54,6 +54,12 @@ use serde::{Deserialize, Serialize};
 use crate::csg::BranchId;
 use fielddraft_protocol::{HalfSpace, Transform};
 
+/// The body's symbolic surface table: branch id → analytic carrier
+/// half-space in its world transform, walked off the CSG tree by
+/// [`weaving::branch_halfspace_map`]. The shared input of SSI seeding, the
+/// coincidence registry, face materialisation and vertex refinement.
+pub type BranchSurfaceMap = std::collections::HashMap<u32, (HalfSpace, Transform)>;
+
 /// serde adapter for [`BranchId`], which is a protocol-adjacent newtype that
 /// deliberately does not derive `Serialize`/`Deserialize` itself. We round-trip
 /// it through its public `u32` payload so B-Rep entities stay serialisable

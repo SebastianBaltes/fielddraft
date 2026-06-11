@@ -33,7 +33,7 @@
 //! start point makes the whole cell non-extractable (we emit nothing — never
 //! a phantom).
 
-use std::collections::HashMap;
+use crate::brep::BranchSurfaceMap;
 
 use nalgebra::{Matrix3, Vector3};
 
@@ -49,7 +49,6 @@ use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 /// [`crate::brep::weaving::branch_halfspace_map`]. Threaded into feature
 /// extraction so a branch with an analytic surface is projected onto its OWN
 /// surface (DL-75) instead of the body SDF — see [`project_branch_analytic`].
-type HalfspaceMap = HashMap<u32, (HalfSpace, Transform)>;
 
 /// Project `p` (world) exactly onto a branch's own analytic surface, given its
 /// [`HalfSpace`] and local→world placement (DL-75).
@@ -240,7 +239,7 @@ fn project_branch(
     body: &BoundedCsg,
     cell: &OctreeCell,
     branch: BranchId,
-    halfspaces: &HalfspaceMap,
+    halfspaces: &BranchSurfaceMap,
 ) -> Option<ProjectedPoint> {
     // Analytic fast path (DL-75): when the branch carries an analytic surface,
     // project the cell centre straight onto THAT surface. Only populated for
@@ -499,7 +498,7 @@ fn reproject_branch_near(
     p: [f32; 3],
     dirs: &[Vector3<f32>],
     delta: f32,
-    halfspaces: &HalfspaceMap,
+    halfspaces: &BranchSurfaceMap,
 ) -> Option<ProjectedPoint> {
     // Analytic fast path (DL-75): re-anchor straight onto the branch's own
     // surface, never the wrong sheet of a shelled body's twin surfaces.
@@ -685,7 +684,7 @@ fn solve_edge_point(
 pub fn extract_edge_point(
     body: &BoundedCsg,
     cell: &OctreeCell,
-    halfspaces: &HalfspaceMap,
+    halfspaces: &BranchSurfaceMap,
 ) -> Option<EdgePoint> {
     if cell.class != CellClass::Edge || cell.branches.len() != 2 {
         return None;
@@ -841,7 +840,7 @@ fn solve_vertex_point(planes: &[(BranchId, ProjectedPoint)]) -> Option<[f32; 3]>
 pub fn extract_vertex(
     body: &BoundedCsg,
     cell: &OctreeCell,
-    halfspaces: &HalfspaceMap,
+    halfspaces: &BranchSurfaceMap,
 ) -> Option<Vertex> {
     if cell.class != CellClass::Vertex || cell.branches.len() < 3 {
         return None;
@@ -952,7 +951,7 @@ pub fn extract_features(body: &BoundedCsg, octree: &Octree) -> (Vec<EdgePoint>, 
 
 /// Like [`extract_features`], but with an explicit `pure_octree` toggle.
 ///
-/// When `pure_octree == true` the analytic DL-75 [`HalfspaceMap`] is forced
+/// When `pure_octree == true` the analytic DL-75 [`BranchSurfaceMap`] is forced
 /// **empty**, disabling the analytic branch-projection fast-path even for
 /// shelled bodies. Everything else is identical. This yields a purely numeric
 /// octree extraction, needed as a clean reference for the differential oracle
@@ -970,7 +969,7 @@ pub fn extract_features_with(
     let halfspaces = if !pure_octree && body_contains_shell(body) {
         crate::brep::weaving::branch_halfspace_map(body)
     } else {
-        HalfspaceMap::new()
+        BranchSurfaceMap::new()
     };
     let edges = octree
         .edge_cells()
@@ -1023,7 +1022,7 @@ mod tests {
         let mut count = 0;
         let mut signatures = HashSet::new();
         for cell in octree.edge_cells() {
-            if let Some(ep) = extract_edge_point(&body, cell, &HalfspaceMap::new()) {
+            if let Some(ep) = extract_edge_point(&body, cell, &BranchSurfaceMap::new()) {
                 count += 1;
                 // On the surface.
                 let p = [
@@ -1064,7 +1063,7 @@ mod tests {
         let mut by_branches: std::collections::HashMap<Vec<u32>, [f64; 3]> =
             std::collections::HashMap::new();
         for cell in octree.vertex_cells() {
-            if let Some(v) = extract_vertex(&body, cell, &HalfspaceMap::new()) {
+            if let Some(v) = extract_vertex(&body, cell, &BranchSurfaceMap::new()) {
                 assert!(
                     v.branches.len() >= 3,
                     "vertex with <3 branches: {:?}",
@@ -1150,8 +1149,8 @@ mod tests {
             class: CellClass::Face,
             branches: vec![BranchId(1 << 4)],
         };
-        assert!(extract_edge_point(&body, &face_cell, &HalfspaceMap::new()).is_none());
-        assert!(extract_vertex(&body, &face_cell, &HalfspaceMap::new()).is_none());
+        assert!(extract_edge_point(&body, &face_cell, &BranchSurfaceMap::new()).is_none());
+        assert!(extract_vertex(&body, &face_cell, &BranchSurfaceMap::new()).is_none());
     }
 
     #[test]

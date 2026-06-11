@@ -461,7 +461,7 @@ use super::tol::{ADAPT_MAX_FRACTION, ADAPT_MIN_FRACTION, ADAPT_TOL_FRACTION};
 /// only *away* from the leaf SDF's own C0 creases; the same-feature guard in
 /// [`build_wireframe`] keeps a sweep's own wall∩cap seam off this path.
 pub(crate) fn branch_field<'a>(
-    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    halfspaces: &crate::brep::BranchSurfaceMap,
     leaf_map: &HashMap<u32, &'a BoundedCsg>,
     branch: u32,
 ) -> Option<Field<'a>> {
@@ -755,7 +755,7 @@ fn point_seg_dist2(q: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
 /// its bleed branch by `O(feature size)`. A branch with no analytic surface (a
 /// tessellated sweep wall) cannot be disproven, so it is kept conservatively.
 fn vertex_bounds_seam(
-    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    halfspaces: &crate::brep::BranchSurfaceMap,
     branches: &[BranchId],
     pos: [f64; 3],
     spacing: f64,
@@ -1130,7 +1130,7 @@ pub(crate) enum TripleRefine {
 }
 
 pub(crate) fn refine_triple_vertex(
-    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    halfspaces: &crate::brep::BranchSurfaceMap,
     branches: &[BranchId],
     seed: [f64; 3],
 ) -> TripleRefine {
@@ -1490,7 +1490,7 @@ pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
 /// branch — we cannot validate it and must not drop legitimate edges. See
 /// DL-52.
 fn chain_on_both_surfaces(
-    halfspaces: &HashMap<u32, (fielddraft_protocol::HalfSpace, fielddraft_protocol::Transform)>,
+    halfspaces: &crate::brep::BranchSurfaceMap,
     sa: u32,
     sb: u32,
     samples: &[HermiteSample],

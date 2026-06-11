@@ -1,7 +1,7 @@
 //! Sketch-wall collection and the DL-50 lift of extrude/revolve profiles
 //! into analytic 3D half-spaces.
 
-use std::collections::HashMap;
+use crate::brep::BranchSurfaceMap;
 
 use crate::compose_transforms;
 use crate::csg::BranchId;
@@ -211,7 +211,7 @@ pub(super) fn collect_extrude_halfspaces(
     sketch: &BoundedSketch2d,
     half_height: f32,
     world_transform: &Transform,
-    out: &mut HashMap<u32, (HalfSpace, Transform)>,
+    out: &mut BranchSurfaceMap,
 ) {
     let xf = *world_transform;
     // Caps: top z = +hh, bottom z = −hh. Outward normals ±z, offsets
@@ -269,7 +269,7 @@ pub(super) fn collect_revolve_halfspaces(
     id: &fielddraft_protocol::FeatureId,
     sketch: &BoundedSketch2d,
     world_transform: &Transform,
-    out: &mut HashMap<u32, (HalfSpace, Transform)>,
+    out: &mut BranchSurfaceMap,
 ) {
     let xf = *world_transform;
     // A `SketchWall::Line` here carries the (r, y)-plane normal/offset,

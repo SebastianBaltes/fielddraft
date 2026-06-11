@@ -47,8 +47,8 @@ use std::collections::HashMap;
 use crate::brep::edge_walker::{build_wireframe, build_wireframe_with};
 use crate::brep::octree::Octree;
 use crate::brep::{
-    BRep, EdgeGeometry, EdgeId, Face, HermiteSample, Loop, NurbsCurve, Shell, Solid,
-    SurfaceGeometry, VertexId,
+    BRep, BranchSurfaceMap, EdgeGeometry, EdgeId, Face, HermiteSample, Loop, NurbsCurve, Shell,
+    Solid, SurfaceGeometry, VertexId,
 };
 use crate::bvh::BoundedCsg;
 use crate::csg::BranchId;
@@ -180,11 +180,21 @@ pub fn weave_pure_octree(body: &BoundedCsg, octree: &Octree) -> BRep {
 /// ordering, watertightness, the stable `id_hash` naming — is byte-identical,
 /// so toggling parametric weaving never changes a body's element handles.
 pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
-    // (1) Upgrade every Hermite edge to NURBS. The edge-walk samples stop
-    // roughly one octree cell short of each bounding corner (the corner is a
-    // Vertex cell, not an Edge cell), so we anchor the chain's first/last
-    // sample to the resolved start/end vertex position before fitting — the
-    // NURBS then interpolates its topological vertices exactly (DL-26).
+    upgrade_hermite_edges(&mut brep);
+
+    let halfspaces = branch_halfspace_map(body);
+    let complemented = complemented_features(body);
+    let (memberships, culled) = canonicalize_coincident(&mut brep, body, &halfspaces);
+    let face_ids = materialize_faces(&mut brep, &halfspaces, &complemented, &memberships, &culled);
+    assemble_solid(brep, face_ids)
+}
+
+/// Phase (1): upgrade every Hermite edge to NURBS. The edge-walk samples stop
+/// roughly one octree cell short of each bounding corner (the corner is a
+/// Vertex cell, not an Edge cell), so we anchor the chain's first/last
+/// sample to the resolved start/end vertex position before fitting — the
+/// NURBS then interpolates its topological vertices exactly (DL-26).
+fn upgrade_hermite_edges(brep: &mut BRep) {
     let vertex_pos: Vec<[f64; 3]> = brep.vertices.iter().map(|v| v.position).collect();
     for edge in &mut brep.edges {
         if let EdgeGeometry::Hermite(samples) = &edge.geometry {
@@ -223,27 +233,33 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
             edge.geometry = EdgeGeometry::Nurbs(hermite_to_nurbs(&samples));
         }
     }
+}
 
-    let halfspaces = branch_halfspace_map(body);
-    let complemented = complemented_features(body);
-
-    // (1b) Coincidence canonicalisation (Phases 2+3 of
-    // BREP-CLASSIFICATION-PLAN, ticket o2j9). The registry names — purely
-    // symbolically — which branches share a carrier surface. With that fact
-    // established, three bookkeeping steps repair the branch→face attribution
-    // that coincidence breaks:
-    //
-    //  - duplicate seam traces (each side of a flush joint traces its own
-    //    copy of the rim) merge into ONE canonical edge carrying the union of
-    //    both sides' face memberships and the class-minimal signature;
-    //  - membrane branches (an opposite-oriented coincidence partner AND no
-    //    material crossing anywhere on the face: flush-add contact planes,
-    //    flush-remove zero-thickness walls, pins refilling their holes) are
-    //    culled before face materialisation;
-    //  - fin edges — traces that lost their second face to the cull (they lay
-    //    on a measure-zero f = 0 sheet, not on ∂body) — are dropped.
-    //
-    // Transversal bodies (empty registry) skip all of this.
+/// Phase (1b): coincidence canonicalisation (Phases 2+3 of
+/// BREP-CLASSIFICATION-PLAN, ticket o2j9). The registry names — purely
+/// symbolically — which branches share a carrier surface. With that fact
+/// established, three bookkeeping steps repair the branch→face attribution
+/// that coincidence breaks:
+///
+///  - duplicate seam traces (each side of a flush joint traces its own
+///    copy of the rim) merge into ONE canonical edge carrying the union of
+///    both sides' face memberships and the class-minimal signature;
+///  - membrane branches (an opposite-oriented coincidence partner AND no
+///    material crossing anywhere on the face: flush-add contact planes,
+///    flush-remove zero-thickness walls, pins refilling their holes) are
+///    culled before face materialisation;
+///  - fin edges — traces that lost their second face to the cull (they lay
+///    on a measure-zero f = 0 sheet, not on ∂body) — are dropped.
+///
+/// Transversal bodies (empty registry) skip all of this.
+///
+/// Returns the per-edge face memberships (initialised from the signatures,
+/// grown by seam merging) and the set of culled membrane branches.
+fn canonicalize_coincident(
+    brep: &mut BRep,
+    body: &BoundedCsg,
+    halfspaces: &BranchSurfaceMap,
+) -> (Vec<Vec<u32>>, std::collections::HashSet<u32>) {
     let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
     let mut memberships: Vec<Vec<u32>> = brep
         .edges
@@ -266,16 +282,30 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
             (aabb.max[2] - aabb.min[2]) as f64,
         ])
         .max(1.0);
-        drop_point_contact_edges(&mut brep, &mut memberships, diag);
-        weld_seam_vertices(&mut brep, &mut memberships, diag);
-        merge_coincident_edges(&mut brep, &registry, &mut memberships, diag);
-        culled = cull_membrane_branches(body, &brep, &registry, &halfspaces, &memberships, diag);
-        drop_fin_edges(body, &mut brep, &mut memberships, &culled, &halfspaces, diag);
+        drop_point_contact_edges(brep, &mut memberships, diag);
+        weld_seam_vertices(brep, &mut memberships, diag);
+        merge_coincident_edges(brep, &registry, &mut memberships, diag);
+        culled = cull_membrane_branches(body, brep, &registry, halfspaces, &memberships, diag);
+        drop_fin_edges(body, brep, &mut memberships, &culled, halfspaces, diag);
     }
+    (memberships, culled)
+}
 
-    // (2) Group edges by branch: every branch in an edge's membership set is
-    // one face. Memberships start as the two signature branches and grow by
-    // seam merging (1b). Preserve first-seen order for determinism.
+/// Phases (2) + (2b): materialise one [`Face`] per branch.
+///
+/// (2) groups edges by branch — every branch in an edge's membership set is
+/// one face (memberships start as the two signature branches and grow by
+/// seam merging), first-seen order preserved for determinism — and orders
+/// each face's boundary into outer + inner loops. (2b) adds the edgeless
+/// closed analytic faces (a lone full sphere, SA-6). Membrane branches in
+/// `culled` are skipped.
+fn materialize_faces(
+    brep: &mut BRep,
+    halfspaces: &BranchSurfaceMap,
+    complemented: &std::collections::HashSet<u32>,
+    memberships: &[Vec<u32>],
+    culled: &std::collections::HashSet<u32>,
+) -> Vec<crate::brep::FaceId> {
     let mut branch_order: Vec<u32> = Vec::new();
     let mut edges_by_branch: HashMap<u32, Vec<EdgeId>> = HashMap::new();
     for (i, members) in memberships.iter().enumerate() {
@@ -319,10 +349,10 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
         // happens on a watertight body, which is asserted via the connectivity
         // check below.
         let (outer, inner) = match order_loops(
-            &brep,
+            brep,
             edge_ids,
             &surface,
-            branch_is_complemented(branch_id, &complemented),
+            branch_is_complemented(branch_id, complemented),
         ) {
             Some(loops) => {
                 let outer = Loop::new(loops.outer);
@@ -372,7 +402,7 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     // from `edges_by_branch` would be a *degenerate* (unbounded / clipped-away)
     // face, not a genuinely closed one — those stay out (DL-54).
     if brep.edges.is_empty() {
-        for (&branch_u32, (hs, xf)) in &halfspaces {
+        for (&branch_u32, (hs, xf)) in halfspaces {
             if edges_by_branch.contains_key(&branch_u32) {
                 continue;
             }
@@ -389,9 +419,14 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
         }
     }
 
-    // (3) Shell + solid. Watertight iff every edge is used by exactly two face
-    // loops (DL-24) — or, for an edgeless body, iff it is a single closed
-    // analytic face (a lone sphere: one face, no edges, closed shell — SA-6).
+    face_ids
+}
+
+/// Phase (3): shell + solid assembly. Watertight iff every edge is used by
+/// exactly two face loops (DL-24) — or, for an edgeless body, iff it is a
+/// single closed analytic face (a lone sphere: one face, no edges, closed
+/// shell — SA-6).
+fn assemble_solid(mut brep: BRep, face_ids: Vec<crate::brep::FaceId>) -> BRep {
     let is_closed = if brep.edges.is_empty() {
         face_ids.len() == 1
     } else {

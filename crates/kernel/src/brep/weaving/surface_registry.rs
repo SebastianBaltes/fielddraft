@@ -1,12 +1,13 @@
 //! The symbolic source: branch → analytic half-space map and complement
 //! parity, walked straight off the CSG tree (DL-19/DL-20).
 
+use crate::brep::BranchSurfaceMap;
 use std::collections::HashMap;
 
 use crate::bvh::BoundedCsg;
 use crate::compose_transforms;
 use crate::csg::{offset_halfspace_inward, primitive_halfspaces, BranchId};
-use fielddraft_protocol::{HalfSpace, Transform};
+use fielddraft_protocol::Transform;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
 use super::*;
@@ -20,13 +21,13 @@ use super::*;
 /// space: the primitive `center` offset (applied as `lp = p − center` inside
 /// the expansion, *not* part of `world_transform`) is folded in as a local
 /// pre-translation, `world_transform ∘ translate(center)` (DL-20).
-pub fn branch_halfspace_map(body: &BoundedCsg) -> HashMap<u32, (HalfSpace, Transform)> {
+pub fn branch_halfspace_map(body: &BoundedCsg) -> BranchSurfaceMap {
     let mut out = HashMap::new();
     collect_halfspaces(body, &mut out);
     out
 }
 
-pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut HashMap<u32, (HalfSpace, Transform)>) {
+pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) {
     match node {
         BoundedCsg::Leaf {
             id,

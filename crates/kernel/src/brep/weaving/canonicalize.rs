@@ -3,6 +3,7 @@
 //! the steps that turn per-branch tracing output into manifold topology on
 //! coincident geometry.
 
+use crate::brep::BranchSurfaceMap;
 use std::collections::HashMap;
 
 use crate::brep::{
@@ -11,7 +12,7 @@ use crate::brep::{
 };
 use crate::bvh::BoundedCsg;
 use crate::csg::BranchId;
-use fielddraft_protocol::{HalfSpace, Transform};
+use fielddraft_protocol::HalfSpace;
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
 use crate::brep::vec3::{cross, normalize as unit, scale, sub};
@@ -228,7 +229,7 @@ pub(super) fn cull_membrane_branches(
     body: &BoundedCsg,
     brep: &BRep,
     registry: &crate::brep::coincidence::CoincidenceRegistry,
-    halfspaces: &HashMap<u32, (HalfSpace, Transform)>,
+    halfspaces: &BranchSurfaceMap,
     memberships: &[Vec<u32>],
     diag: f64,
 ) -> std::collections::HashSet<u32> {
@@ -467,7 +468,7 @@ pub(super) fn drop_fin_edges(
     brep: &mut BRep,
     memberships: &mut Vec<Vec<u32>>,
     culled: &std::collections::HashSet<u32>,
-    halfspaces: &HashMap<u32, (HalfSpace, Transform)>,
+    halfspaces: &BranchSurfaceMap,
     diag: f64,
 ) {
     use crate::csg::EvalMode;
