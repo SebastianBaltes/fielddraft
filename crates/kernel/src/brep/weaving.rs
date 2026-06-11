@@ -228,6 +228,64 @@ fn collect_halfspaces(node: &BoundedCsg, out: &mut HashMap<u32, (HalfSpace, Tran
     }
 }
 
+/// Complement parity per feature (F0-2): the set of `feature_id`s sitting
+/// under an odd number of subtraction branches in the CSG tree. The half-space
+/// map stores every face with its **primitive-outward** orientation; for a
+/// subtracted feature the body-outward normal is the complement, so its loop
+/// winding must flip. Decided symbolically on the tree — never by sampling.
+///
+/// Shell inner walls flip too, but per *branch* (the [`BranchId::INNER_WALL_FLAG`]
+/// bit), see [`branch_is_complemented`].
+pub(crate) fn complemented_features(body: &BoundedCsg) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    collect_parity(body, false, &mut out);
+    out
+}
+
+/// Whether `branch`'s primitive-outward surface normal points INTO the body —
+/// feature complement parity XOR the shell inner-wall flag (a hollow's inner
+/// wall faces the cavity, i.e. opposite its carrier surface).
+pub(crate) fn branch_is_complemented(
+    branch: BranchId,
+    complemented: &std::collections::HashSet<u32>,
+) -> bool {
+    complemented.contains(&branch.feature_id()) != branch.is_inner_wall()
+}
+
+fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::collections::HashSet<u32>) {
+    match node {
+        BoundedCsg::Leaf { id, .. }
+        | BoundedCsg::Extrude { id, .. }
+        | BoundedCsg::Revolve { id, .. } => {
+            if flipped {
+                out.insert(id.as_u32_or_root().unwrap_or(0));
+            }
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_parity(left, flipped, out);
+            collect_parity(right, flipped, out);
+        }
+        BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. } => {
+            collect_parity(left, flipped, out);
+            collect_parity(right, !flipped, out);
+        }
+        BoundedCsg::MaskedBlend { left, right, is_difference, .. } => {
+            collect_parity(left, flipped, out);
+            collect_parity(right, flipped != *is_difference, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => collect_parity(inner, flipped, out),
+        BoundedCsg::Empty => {}
+    }
+}
+
 // ─── Extrude / Revolve analytic faces (DL-50) ────────────────────────────────
 
 /// A 2D sketch boundary group's analytic geometry, used to lift each
@@ -943,6 +1001,99 @@ fn ring_uv_area(brep: &BRep, ring: &[(EdgeId, bool)], surface: &SurfaceGeometry)
     Some(area * 0.5)
 }
 
+/// Concatenated, traversal-oriented dense sample points of a ring (curve
+/// tessellation via [`super::edge_sampling::sample_edge`]). Unlike the
+/// vertex-only chords of [`ring_signed_area`], this gives closed rim circles
+/// (no bounding vertices) a usable polygon, so their winding has a sign.
+fn ring_sample_points(brep: &BRep, ring: &[(EdgeId, bool)]) -> Vec<[f64; 3]> {
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    for &(eid, reversed) in ring {
+        let mut s = super::edge_sampling::sample_edge(&brep.edge(eid).geometry);
+        if reversed {
+            s.reverse();
+        }
+        pts.extend(s);
+    }
+    pts
+}
+
+/// Sampled signed area of a ring in the tangent plane of `normal` (basis with
+/// `u × v = normal`). Positive = counter-clockwise seen from the side `normal`
+/// points toward. The sampled analogue of [`ring_signed_area`]; closed circle
+/// edges contribute their true ±πr² instead of 0.
+fn sampled_area_plane(points: &[[f64; 3]], normal: [f64; 3]) -> f64 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let u = {
+        let a = if normal[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        unit(project_tangent(a, normal))
+    };
+    let v = [
+        normal[1] * u[2] - normal[2] * u[1],
+        normal[2] * u[0] - normal[0] * u[2],
+        normal[0] * u[1] - normal[1] * u[0],
+    ];
+    let proj = |p: [f64; 3]| -> (f64, f64) {
+        (
+            p[0] * u[0] + p[1] * u[1] + p[2] * u[2],
+            p[0] * v[0] + p[1] * v[1] + p[2] * v[2],
+        )
+    };
+    let mut area = 0.0;
+    for i in 0..points.len() {
+        let (x0, y0) = proj(points[i]);
+        let (x1, y1) = proj(points[(i + 1) % points.len()]);
+        area += x0 * y1 - x1 * y0;
+    }
+    area * 0.5
+}
+
+/// Winding metrics of a ring in the surface's `(u, v)` domain, with `u`
+/// unwrapped across the periodic seam: `(net_du, mean_v, shoelace)`.
+///
+/// - `net_du` ≈ 0 for a loop that closes in the parameter domain (bounded),
+///   ±2π for a full-revolution rim around the axis.
+/// - `mean_v` locates the ring along the second parameter.
+/// - `shoelace` is the signed area of the loop closed in unwrapped
+///   coordinates — the winding signal for bounded loops (~0 for rims).
+///
+/// Sign convention: the `(u = atan2(z, x), v)` parameterizations of
+/// [`surface_uv`] are all **left-handed** with respect to the
+/// primitive-outward normal (`∂p/∂u × ∂p/∂v` points inward, since `u`
+/// increases clockwise about local +Y) — "face on the left in 3D" therefore
+/// maps to "face on the RIGHT in the uv plane".
+fn ring_uv_metrics(points: &[[f64; 3]], surface: &SurfaceGeometry) -> Option<(f64, f64, f64)> {
+    use std::f64::consts::{PI, TAU};
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(points.len() + 1);
+    for p in points {
+        let Some((mut u, v)) = surface_uv(surface, *p) else {
+            continue; // parametric pole (e.g. a sphere cap apex sample)
+        };
+        if let Some(&(prev_u, _)) = uv.last() {
+            while u - prev_u > PI {
+                u -= TAU;
+            }
+            while u - prev_u < -PI {
+                u += TAU;
+            }
+        }
+        uv.push((u, v));
+    }
+    if uv.len() < 3 {
+        return None;
+    }
+    let net_du = uv.last().unwrap().0 - uv[0].0;
+    let mean_v = uv.iter().map(|&(_, v)| v).sum::<f64>() / uv.len() as f64;
+    let mut shoelace = 0.0;
+    for i in 0..uv.len() {
+        let (x0, y0) = uv[i];
+        let (x1, y1) = uv[(i + 1) % uv.len()];
+        shoelace += x0 * y1 - x1 * y0;
+    }
+    Some((net_du, mean_v, shoelace * 0.5))
+}
+
 /// Whether a ring is a single full-revolution circle edge (no bounding
 /// vertices) — the natural periodic boundary of a cylinder/cone/sphere/torus
 /// wall, peeled off whole at the start of [`order_loops`].
@@ -967,7 +1118,19 @@ fn is_full_revolution(brep: &BRep, ring: &[(EdgeId, bool)]) -> bool {
 ///
 /// Returns `None` only if the edges cannot be assembled into closed rings at all
 /// (degenerate topology) — the caller then keeps the unordered fallback.
-fn order_loops(brep: &BRep, edge_ids: &[EdgeId], surface: &SurfaceGeometry) -> Option<FaceLoops> {
+///
+/// `complemented` is the branch's complement parity ([`branch_is_complemented`]):
+/// the body-outward normal is the primitive-outward normal flipped, so every
+/// winding requirement negates. The F0-2 contract enforced here: walking any
+/// loop in stored order with the BODY-outward normal up keeps the face on the
+/// left — outer loops CCW, holes CW, on planar AND curved surfaces, closed
+/// rims included. That is exactly the `manifold_violations` fwd/rev convention.
+fn order_loops(
+    brep: &BRep,
+    edge_ids: &[EdgeId],
+    surface: &SurfaceGeometry,
+    complemented: bool,
+) -> Option<FaceLoops> {
     if edge_ids.is_empty() {
         return None;
     }
@@ -1018,18 +1181,27 @@ fn order_loops(brep: &BRep, edge_ids: &[EdgeId], surface: &SurfaceGeometry) -> O
         SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
     );
 
+    // The sign of a CORRECTLY wound outer loop: CCW seen along the
+    // body-outward normal. With a complemented branch the body-outward normal
+    // is the primitive normal flipped, so the required sign negates.
+    let s = if complemented { -1.0 } else { 1.0 };
+
     // Classify outer vs. inner and fix winding.
     if is_planar {
-        if let Some(p) = rep_pos {
+        if let Some(p) = rep_pos.or_else(|| ring_sample_points(brep, &rings[0]).first().copied()) {
             if let Some(n) = surface_normal_at(surface, p) {
-                // Pick the largest-magnitude-area ring as outer.
-                let mut areas: Vec<f64> =
-                    rings.iter().map(|r| ring_signed_area(brep, r, n)).collect();
+                // Pick the largest-magnitude-area ring as outer, on SAMPLED
+                // areas (closed circle rings have real area, not 0 — F0-2).
+                let mut areas: Vec<f64> = rings
+                    .iter()
+                    .map(|r| sampled_area_plane(&ring_sample_points(brep, r), n))
+                    .collect();
                 let outer_idx = (0..rings.len())
                     .max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))
                     .unwrap();
-                // Outer must wind CCW (area > 0); holes must wind CW (area < 0).
-                if areas[outer_idx] < 0.0 {
+                // Outer must wind CCW w.r.t. the body-outward normal
+                // (area · s > 0); holes must wind the opposite way.
+                if areas[outer_idx] * s < 0.0 {
                     rings[outer_idx].reverse();
                     flip_orientations(&mut rings[outer_idx]);
                     areas[outer_idx] = -areas[outer_idx];
@@ -1038,7 +1210,7 @@ fn order_loops(brep: &BRep, edge_ids: &[EdgeId], surface: &SurfaceGeometry) -> O
                     if i == outer_idx {
                         continue;
                     }
-                    if areas[i] > 0.0 {
+                    if areas[i] * s > 0.0 {
                         ring.reverse();
                         flip_orientations(ring);
                         areas[i] = -areas[i];
@@ -1089,6 +1261,59 @@ fn order_loops(brep: &BRep, edge_ids: &[EdgeId], surface: &SurfaceGeometry) -> O
     } else {
         extent_max(&rings)
     };
+    // Enforce winding on the curved face (F0-2; winding used to be left "as
+    // ordered"). Work in the uv plane, where "face on the left in 3D
+    // body-outward" means "face on the RIGHT" for an uncomplemented branch
+    // (left-handed parameterization, see `ring_uv_metrics`) — negated by `s`.
+    //
+    // - Bounded loops (closing in uv): an outer bound of a uv region with the
+    //   region on the right winds CW → shoelace sign must be `−s`; holes the
+    //   opposite (`+s`).
+    // - Full-revolution rims (net_du = ±2π): the required traversal direction
+    //   depends on which side of the rim the face lies along v, NOT on the
+    //   outer/inner role — face below (smaller v) → `du · s > 0`, face above
+    //   → `du · s < 0`. The face side comes from the mean v of the face's
+    //   OTHER rings; a lone rim (e.g. a spherical cap cut) has no reference
+    //   and keeps its walk order (documented v1 limitation).
+    //
+    // Unparameterized surfaces (tessellated / gyroid) keep their walk order.
+    let metrics: Vec<Option<(f64, f64, f64)>> = rings
+        .iter()
+        .map(|r| ring_uv_metrics(&ring_sample_points(brep, r), surface))
+        .collect();
+    let ring_count = rings.len();
+    let mean_v_other = |skip: usize| -> Option<f64> {
+        let vs: Vec<f64> = (0..ring_count)
+            .filter(|&j| j != skip)
+            .filter_map(|j| metrics[j].map(|(_, v, _)| v))
+            .collect();
+        if vs.is_empty() {
+            None
+        } else {
+            Some(vs.iter().sum::<f64>() / vs.len() as f64)
+        }
+    };
+    for i in 0..rings.len() {
+        let Some((net_du, mean_v, shoelace)) = metrics[i] else {
+            continue;
+        };
+        let bounded = net_du.abs() < std::f64::consts::PI;
+        let flip = if bounded {
+            let required = if i == outer_idx { -s } else { s };
+            shoelace * required < 0.0
+        } else {
+            let Some(v_other) = mean_v_other(i) else {
+                continue;
+            };
+            let required_du = if v_other < mean_v { s } else { -s };
+            net_du * required_du < 0.0
+        };
+        if flip {
+            rings[i].reverse();
+            flip_orientations(&mut rings[i]);
+        }
+    }
+
     let outer = rings.remove(outer_idx);
     Some(FaceLoops { outer, inner: rings })
 }
@@ -1185,6 +1410,7 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
     // (2) Group edges by branch: every BranchId appearing in any signature is
     // one face. Preserve first-seen order for determinism.
     let halfspaces = branch_halfspace_map(body);
+    let complemented = complemented_features(body);
     let mut branch_order: Vec<u32> = Vec::new();
     let mut edges_by_branch: HashMap<u32, Vec<EdgeId>> = HashMap::new();
     for (i, edge) in brep.edges.iter().enumerate() {
@@ -1225,7 +1451,12 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
         // as a last resort (kept so the face is still recorded) — this never
         // happens on a watertight body, which is asserted via the connectivity
         // check below.
-        let (outer, inner) = match order_loops(&brep, edge_ids, &surface) {
+        let (outer, inner) = match order_loops(
+            &brep,
+            edge_ids,
+            &surface,
+            branch_is_complemented(branch_id, &complemented),
+        ) {
             Some(loops) => {
                 let outer = Loop::new(loops.outer);
                 let inner: Vec<Loop> = loops.inner.into_iter().map(Loop::new).collect();
@@ -2611,7 +2842,7 @@ mod tests {
             surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 0.0 },
             transform: Transform::IDENTITY,
         };
-        let loops = order_loops(&brep, &[e0, e2, e3, e1], &surface)
+        let loops = order_loops(&brep, &[e0, e2, e3, e1], &surface, false)
             .expect("should close into a cycle");
         assert!(loops.inner.is_empty(), "a single square has no holes");
         let ring = loops.outer;
@@ -3886,7 +4117,7 @@ mod tests {
 
         let (brep, eids) = curved_face_rings(&[outer, hole]);
         let loops =
-            order_loops(&brep, &eids, &cone_surface()).expect("must order into rings");
+            order_loops(&brep, &eids, &cone_surface(), false).expect("must order into rings");
 
         // The fix: the radially small but parametrically large loop is the outer
         // bound; the physically large hole is inner.
@@ -3938,7 +4169,7 @@ mod tests {
         let (brep, eids) = planar_face_edges(&verts, &edges);
 
         let loops =
-            order_loops(&brep, &eids, &plane_xy()).expect("reflex polygon must order into a ring");
+            order_loops(&brep, &eids, &plane_xy(), false).expect("reflex polygon must order into a ring");
         assert!(loops.inner.is_empty(), "a simple polygon has no holes");
         assert_eq!(loops.outer.len(), 6, "all 6 boundary edges in the ring");
 
@@ -3993,7 +4224,7 @@ mod tests {
         ];
         let (brep, eids) = planar_face_edges(&verts, &edges);
 
-        let loops = order_loops(&brep, &eids, &plane_xy()).expect("must order into rings");
+        let loops = order_loops(&brep, &eids, &plane_xy(), false).expect("must order into rings");
         assert_eq!(loops.outer.len(), 4, "outer square has 4 edges");
         assert_eq!(loops.inner.len(), 1, "exactly one inner hole loop");
         assert_eq!(loops.inner[0].len(), 4, "inner square has 4 edges");

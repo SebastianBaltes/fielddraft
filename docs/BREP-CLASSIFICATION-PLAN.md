@@ -155,15 +155,26 @@ jeweiligen Phase.
   Fix-Ort: Die Face-Materialisierung in Phase 3 muss **pro
   zusammenhängender Region** eine Face erzeugen (Ring-Faces inklusive),
   nicht pro Branch.
-- **F0-2 — Loop-Orientierung auf gekrümmten Flächen war nie konsistent.**
-  Schon der nackte Zylinder verletzt die fwd/rev-Manifold-Konvention:
-  `order_loops` schiebt geschlossene Rim-Kreise für *jeden* Konsumenten mit
-  festem `reversed = false` in die Ringe (weaving.rs) und lässt die Windung
-  gekrümmter Flächen „as ordered". Wand und Kappe durchlaufen denselben Rim
-  in gleicher Richtung. Vorbestehend und bisher unsichtbar, weil
-  Mesh/Render die BRep nie lesen; STEP-Konsumenten tolerieren es offenbar.
-  Eigenständiger Fix vor/neben Phase 1 — ohne ihn kann kein
-  Zylinder-Szenario des Gates jemals grün werden.
+- **F0-2 — Loop-Orientierung auf gekrümmten Flächen war nie konsistent
+  (BEHOBEN).** Schon der nackte Zylinder verletzte die
+  fwd/rev-Manifold-Konvention: `order_loops` schob geschlossene Rim-Kreise
+  für *jeden* Konsumenten mit festem `reversed = false` in die Ringe und
+  ließ die Windung gekrümmter Flächen „as ordered"; zusätzlich wickelten
+  Tool-Faces von Differences planar nach der **Primitiv**-Normale (das
+  Komplement fehlte). Fix (Commit nach Phase 0, rein symbolisch — keine
+  Sampling-Epsilons): (a) `complemented_features` — Komplement-Parität pro
+  Feature aus dem CSG-Baum (Difference-rechts toggelt; Shell-Innenwand
+  flippt per `INNER_WALL_FLAG`), (b) gesampelte Ring-Flächen
+  (`ring_sample_points` + `sampled_area_plane`), womit Rim-Kreise erstmals
+  ein Windungs-Vorzeichen haben, (c) uv-Windungsmetriken
+  (`ring_uv_metrics`): alle `(u = atan2(z,x), v)`-Parametrisierungen sind
+  linkshändig zur Primitiv-Normale; gebundene Loops werden per
+  uv-Shoelace gewickelt (Outer `−s`, Löcher `+s`), Voll-Rims nach
+  **Flächenseite** (Fläche bei kleinerem v → `du·s > 0`) — die Outer/Inner-
+  Rolle ist für Rims das falsche Kriterium (Annulus). Deklarierte
+  Restlücke: einsame Voll-Rims ohne Referenz-Ring (Kugelkappen-Schnitt)
+  behalten ihre Walk-Ordnung. Gate-Guards: `gate_plain_cylinder`,
+  `gate_remove_through_hole_genus1` (beide grün, inkl. Parität).
 
 ### Phase 1 — Koinzidenz-Registry (analytisch, exakt)
 

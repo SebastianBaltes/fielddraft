@@ -179,22 +179,24 @@ fn gate_union_overlapping_boxes() {
     assert_gate(&body, 0.5, 0, "overlapping boxes");
 }
 
-// ─── F0-2: curved-face loop orientation — known red ─────────────────────────
+// ─── F0-2: curved-face loop orientation — FIXED, green guards ────────────────
 
 #[test]
-#[ignore = "Gate-Befund F0-2 — Rim-/Kurvenflächen-Loop-Orientierung verletzt fwd/rev-Konvention, bekannt rot"]
 fn gate_plain_cylinder() {
-    // Even a lone cylinder violates the manifold orientation convention: both
-    // rim circles are consumed with `reversed = false` by wall AND cap.
+    // F0-2 regression guard: a lone cylinder used to violate the manifold
+    // orientation convention (both rim circles consumed `reversed = false` by
+    // wall AND cap). Fixed by winding enforcement in `order_loops` — sampled
+    // ring areas + uv winding metrics + complement parity.
     let body = BoundedCsg::from_csg(&cylinder_leaf(1, [0.0; 3], 5.0, 4.0));
     assert_gate(&body, 0.4, 0, "plain cylinder");
 }
 
 #[test]
-#[ignore = "Gate-Befund F0-2 — Rim-Orientierung auch am Genus-1-Loch, bekannt rot"]
 fn gate_remove_through_hole_genus1() {
-    // Box with a cylindrical through-hole: genus 1, Euler–Poincaré 0. Red for
-    // the same rim-orientation reason as the plain cylinder.
+    // F0-2 regression guard: box with a cylindrical through-hole — genus 1,
+    // Euler–Poincaré 0. Exercises rim orientation AND complement parity (the
+    // subtracted cylinder's wall faces the body with its primitive normal
+    // flipped).
     let body = difference(
         box_leaf(1, [0.0; 3], [5.0, 5.0, 5.0]),
         cylinder_leaf(2, [0.0; 3], 2.5, 6.0),
