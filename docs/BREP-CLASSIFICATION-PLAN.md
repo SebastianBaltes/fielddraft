@@ -380,6 +380,72 @@ oa9h/vyee-Mechanik an der Wurzel. Nachgelagert, weil die Seed-Route nach
 Phase 3 den Normalfall trägt und die Octree-Route über das gemeinsame
 `finish_weave` bereits von Phase 1–3 profitiert.
 
+### Phase 5 — Refactoring & Aufräumen (Code und Konzepte konsolidieren)
+
+Die Phasen 0–3 sind in sechs schnellen Feature-Commits entstanden; der Code
+funktioniert, aber Struktur und Konzepte hinken der Implementierung
+hinterher. Phase 5 zahlt diese Schuld ab, **ohne Verhaltensänderung als
+Ziel** — das Phase-0-Gate plus die volle Suite sind die Wächter, jede
+Teilstufe wird einzeln grün committet.
+
+**5a — Eine Toleranz-Policy statt Streu-Epsilons.** Der Survey-Befund: neben
+der einen deklarierten Registry-Toleranz (`COINCIDENCE_REL_TOL`) leben 15+
+Inline-Literale im Modul, teils absolut (`ssi.rs PARALLEL_EPS/BOX_SLACK/
+ON_SURF`, `branch_pairs.rs OVERLAP_EPS`, `edge_walker.rs VERTEX_REFINE_TOL`),
+teils ad-hoc skalenrelativ (`diag * 1e-4` u. ä.), dazu duplizierte
+`ADAPT_*`-Konstanten in `edge_walker.rs`/`seed_weaver.rs`. Neues Modul
+`brep::tol`: jede Toleranz bekommt einen Namen, eine dokumentierte
+Begründung (wovor schützt sie, warum dieser Wert) und eine Klasse —
+*längen-skalenrelativ* (Standard, × AABB-Diagonale), *dimensionslos*
+(Winkel, Faktoren) oder *begründet absolut* (nur wo f32-Maschinenepsilon
+o. ä. der echte Anker ist). Wertänderungen nur dort, wo die Gate-Familie
+(inkl. ≳100-mm-Szenarien) sie deckt; riskante Kandidaten werden migriert,
+benannt und mit dem Ist-Wert eingefroren, die Umstellung auf skalenrelativ
+als Kommentar-Auftrag im Modul dokumentiert. Damit ist Punkt 3 der
+Architektur-Problemliste (Skalen-Fragilität) strukturell adressiert.
+
+**5b — `weaving.rs` entflechten.** 4964 Zeilen, davon ~2500 Tests; das
+Modul ist vom Weber zum Küchenspülbecken gewachsen (Halfspace-Registry,
+Sketch-Lifting, Flächengeometrie, Loop-Ordnung, Kanonikalisierung,
+Fast-Path-Wireframes, Weave-Kern). Split in ein Verzeichnismodul mit klaren
+Schichten, als **reiner Move** (keine Logikänderung im selben Commit):
+
+- `weaving/surface_registry.rs` — `branch_halfspace_map`,
+  `complemented_features`, Paritäts-Walk (die symbolische Quelle, von der
+  Registry und SSI leben)
+- `weaving/sketch_surfaces.rs` — Sketch-Wall-Collection, Extrude-/
+  Revolve-Lift (DL-50)
+- `weaving/surface_queries.rs` — `surface_normal_at`, `surface_uv`,
+  Tangenten-/Winkelhelfer
+- `weaving/loop_ordering.rs` — `order_loops`, `order_one_ring`,
+  Ring-Metriken
+- `weaving/canonicalize.rs` — die Phase-2/3-Kanonikalisierung
+  (merge/weld/cull/fin/compact)
+- `weaving/wireframes.rs` — Box-/Zylinder-Fast-Paths, `weave_parametric`
+- `weaving/mod.rs` — `weave`, `weave_pure_octree`, `finish_weave`,
+  Re-Exports (öffentliche API bleibt unverändert)
+
+**5c — Konzepte benennen.** `finish_weave` (249 Zeilen) wird zur lesbaren
+Pipeline aus benannten Phasen-Funktionen (NURBS-Anker → Kanonikalisierung →
+Face-Materialisierung → Edgeless-Faces → Shell-Assembly); `order_loops`
+(195 Zeilen) trennt sich in planare und gekrümmte Ring-Klassifikation.
+Implizite Konzepte bekommen Typen: `Ring` statt `Vec<(EdgeId, bool)>`,
+`RingUvMetrics` statt `(f64, f64, f64)`, `BranchSurface` statt
+`HashMap<u32, (HalfSpace, Transform)>`-Tupelzugriff. Bool-Parameter mit
+Bedeutungsgewicht (`complemented`) behalten ihren Namen aus der Registry —
+keine Enum-Kosmetik ohne Mehrwert.
+
+**5d — Hygiene & Doku.** Debug-`eprintln!` in `octree.rs` entfernen;
+unbegründete Magie dokumentieren (0.2-Centroid-Pull der Membran-Erkennung,
+24 Newton-Iterationen, 64 SSI-Seeds pro Kurve); Glossar der eingeführten
+Begriffe (Carrier, Membran, Fin, Seam, Rim, Kanonikalisierung) in
+`brep/mod.rs`; `docs/ARCHITECTURE.md` auf die neue Modulstruktur
+nachziehen.
+
+**Reihenfolge:** 5a → 5b → 5c → 5d. Die Toleranz-Policy zuerst (kleinste
+Oberfläche, größter konzeptioneller Hebel), der Datei-Split davor wäre
+doppelte Bewegung. Jede Stufe einzeln: Tests grün → Commit → Push.
+
 ## Nicht-Ziele / deklarierte Limitationen
 
 - **Tangentialer Kontakt** (Kontaktordnung 1): SSI-Kurve degeneriert,
