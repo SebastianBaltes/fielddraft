@@ -6456,20 +6456,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 (voll) — exakt-koinzidente Extrude-Stapel: SSI liefert 0 Seeds, CoincidentSurface-Fall fehlt noch"]
     fn ticket_o2j9_two_face_extrude_weaves_manifold() {
         // Ticket 20260610-235049-o2j9: „2 Flächen Extrusion führt zu kaputter
         // Geometrie / Kantenfindung". A single extrude feature targeting TWO
-        // picked faces stacks flush coplanar prisms. The coincidence
-        // canonicalisation closes the seams of single flush stacks (see the
-        // classification gate + tickets px2o/9zlq), and `face_plane_frame`
-        // now anchors face-extrudes exactly on the analytic carrier, so the
-        // stacked planes are exactly coincident. REMAINING (known red): with
-        // a deep stack almost every carrier pair is exactly coincident, so
-        // `ssi::plane_plane` produces ZERO seeds and the wireframe collapses
-        // (E=0) before canonicalisation can help — that is the plan's full
-        // Phase 3 (`CoincidentSurface` SSI case, 2D arrangement on the
-        // shared carrier). Un-ignore when it lands.
+        // picked faces stacks flush coplanar prisms onto an already deeply
+        // coincident body. Three roots, all fixed (BREP-CLASSIFICATION-PLAN
+        // Phase 3):
+        // - near-coincident wall pairs (µm mesh-derived profile drift) made
+        //   SSI manufacture a µrad-angle intersection line from noise — the
+        //   coincidence registry now gates `seed_branch_pairs` (the plan's
+        //   `CoincidentSurface` SSI case);
+        // - `both_branches_active` lacked the on-boundary fact, so a seam
+        //   march on a concave corner line ran 950 mm past the body, stalled,
+        //   and bailed the whole body to the octree (the reported E=0/F=24
+        //   ghost-face collapse);
+        // - the two-face extrude's union profile abuts its parts along a
+        //   shared sketch edge; the internal membrane's cap rim survived as
+        //   an open edge striping the merged cap — `drop_fin_edges` now
+        //   proves interior-to-survivor-face edges away.
+        // The exact decoded geometry is also pinned at weave level in
+        // `classification_gate.rs` (`gate_ticket_o2j9_*`).
         let mut k = Kernel::new();
         let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
             {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
@@ -6480,16 +6486,29 @@ mod tests {
         assert_eq!(k.body_count(), 1);
 
         // Re-pick the user's two faces from the live model: two distinct
-        // upward-facing (+Z) planar faces.
+        // upward-facing (+Z) planar faces. The body has THREE such faces (box
+        // top + the prisms' +Z walls); pick the two ABUTTING prism walls
+        // (centroid y > 50) deterministically — the third combination (box
+        // top + prism17 wall) touches only at a corner point, which is a
+        // legitimate kissing-contact non-manifold, not this ticket's case.
         let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
-        let mut picks: Vec<String> = Vec::new();
+        let mut picks: Vec<(f64, String)> = Vec::new();
         for f in faces.as_array().unwrap() {
             let n = f["normalLocal"].as_array().unwrap();
+            let c = f["centroidLocal"].as_array().unwrap();
             if n[2].as_f64().unwrap() > 0.99 && f["surfaceKind"] == "plane" {
-                picks.push(f["idHash"].as_str().unwrap().to_string());
+                picks.push((
+                    c[1].as_f64().unwrap(),
+                    f["idHash"].as_str().unwrap().to_string(),
+                ));
             }
         }
-        assert!(picks.len() >= 2, "need two +Z faces to re-create the ticket, got {picks:?}");
+        let picks: Vec<String> = {
+            let mut p: Vec<_> = picks.into_iter().filter(|(y, _)| *y > 50.0).collect();
+            p.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            p.into_iter().map(|(_, h)| h).collect()
+        };
+        assert!(picks.len() >= 2, "need two abutting +Z faces to re-create the ticket, got {picks:?}");
         let params = format!(
             r#"{{"depth":{{"unit":"mm","value":25}},"depth_back":{{"unit":"mm","value":0}},"faces":"qFace({}),qFace({})","profiles":"","symmetric":false}}"#,
             picks[0], picks[1]

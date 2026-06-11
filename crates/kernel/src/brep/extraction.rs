@@ -596,7 +596,21 @@ pub(crate) fn both_branches_active(
     bb: BranchId,
     eps: f32,
 ) -> bool {
-    let (_, contributors) = body.evaluate(p, eps, EvalMode::Logical);
+    let (f, contributors) = body.evaluate(p, eps, EvalMode::Logical);
+    // On-boundary gate (ticket o2j9, deep stacks): the contributor set alone
+    // is necessary but NOT sufficient. Far outside the body, on the extension
+    // of a concave corner line, the nearest-feature attribution still reports
+    // both branches — an extrude's 2D profile corner keeps both adjacent wall
+    // groups as contributors at ANY axial distance (box leaves are saved only
+    // by their max-of-half-spaces decomposition, where the far face binds).
+    // A seam march then never goes inactive and runs to `max_arc`, bailing
+    // the whole body to the octree. The logical field value carries the
+    // missing fact: a real seam point lies ON the boundary (|f| ≤ eps); a
+    // membrane sheet (f = 0 between two flush solids) intentionally stays
+    // active — the coincidence canonicalisation owns that case.
+    if f.abs() > eps {
+        return false;
+    }
     let slice = contributors.as_slice();
     slice.contains(&ba) && slice.contains(&bb)
 }

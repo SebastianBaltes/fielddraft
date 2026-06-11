@@ -22,6 +22,7 @@
 //! is *not* unresolved.
 
 use crate::brep::branch_pairs::{enumerate_branch_pairs, BranchPair};
+use crate::brep::coincidence::CoincidenceRegistry;
 use crate::brep::ssi::{ssi_seeds, SsiResult};
 use crate::brep::weaving::branch_halfspace_map;
 use crate::bvh::BoundedCsg;
@@ -55,9 +56,31 @@ pub struct SeedResult {
 /// overlap box. See the module docs for the resolved/unresolved contract.
 pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
     let map = branch_halfspace_map(body);
+    // The coincidence registry (BREP-CLASSIFICATION-PLAN Phase 1) names —
+    // analytically, with the topic's single tolerance — which branch pairs
+    // share a carrier surface. This is the plan's Phase-3 `CoincidentSurface`
+    // SSI case, decided HERE because this is the one place that has both the
+    // surfaces and the body context the registry needs.
+    let registry = CoincidenceRegistry::build(body);
     let mut result = SeedResult::default();
 
     for pair in enumerate_branch_pairs(body) {
+        // Coincident carriers have NO transversal intersection curve. Without
+        // this gate, two stacked walls whose parameters differ by honest float
+        // drift (a mesh-derived face-extrude profile, ~µm at 100 mm) present
+        // to SSI as planes meeting at a µrad angle: SSI manufactures an
+        // ill-conditioned "intersection line" out of pure noise, and the
+        // active-interval march — for which the whole shared wall is active —
+        // runs unbounded and stalls, bailing the entire body to the octree
+        // (the o2j9 deep-stack collapse). The pair itself contributes no edge
+        // seeds; the seam edges ON a shared carrier are produced by the
+        // transversal pairs with the surfaces that BOUND the coincident
+        // regions, and the coincidence canonicalisation in `finish_weave`
+        // merges the per-side duplicates.
+        if registry.relative(pair.a, pair.b).is_some() {
+            continue;
+        }
+
         let (Some((ha, ta)), Some((hb, tb))) =
             (map.get(&pair.a.as_u32()), map.get(&pair.b.as_u32()))
         else {

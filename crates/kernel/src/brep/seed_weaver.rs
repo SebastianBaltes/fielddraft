@@ -229,8 +229,15 @@ fn build_seed_wireframe(body: &BoundedCsg) -> Option<BRep> {
         groups.entry(key).or_default().push(i);
     }
 
+    // Deterministic group order: HashMap iteration is randomised per process,
+    // which would shuffle the edge arena (and with it the face order every
+    // consumer sees) from run to run. Handles are arena-order-independent,
+    // but UI face lists and test pick order are not.
+    let mut group_list: Vec<((u32, u32), Vec<usize>)> = groups.into_iter().collect();
+    group_list.sort_unstable_by_key(|(key, _)| *key);
+
     let mut records: Vec<EdgeRecord> = Vec::new();
-    for (_key, members) in groups {
+    for (_key, members) in group_list {
         // `covered` marks group seeds already absorbed by an emitted polyline.
         let mut covered = vec![false; members.len()];
         for idx in 0..members.len() {

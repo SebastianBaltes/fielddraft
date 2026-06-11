@@ -41,7 +41,7 @@ nicht als Bool — Ordnung 1 dockt später an dieselbe Stelle an.
 
 ---
 
-## 1. Koinzidente Trägerflächen (koplanar / koaxial) — IN ARBEIT
+## 1. Koinzidente Trägerflächen (koplanar / koaxial) — KERN UMGESETZT
 
 **Problem.** Zwei Branches auf derselben Trägerfläche (bündige Box-Stapel,
 koplanare Extrude-Stapel, koaxial gleichradige Zylinder) brechen die stillen
@@ -53,11 +53,16 @@ Gleiche Wurzel hinter dem Octree-Kontributor-Schmieren (oa9h/vyee).
 **Lösung.** Klassifikationsstufe IN/ON-same/ON-opposite mit analytischer
 Koinzidenz-Registry. **Plan-SSOT: `docs/BREP-CLASSIFICATION-PLAN.md`**
 (Phasen 0–4: Invarianten-Gate → Registry → Interior-Cull →
-CoincidentSurface-SSI mit 2D-Arrangement → Octree auf Klassen). Deckt auch
+CoincidentSurface-Gate im Seeding → Octree auf Klassen). Deckt auch
 die Null-Dicke-Semantik bei bündigem `remove` ab (ON-opposite).
 
-**Status.** Vom User voll getragen, nächster Implementierungsschritt
-(Phase 0). Schließt o2j9, entschärft oa9h/vyee an der Wurzel.
+**Status.** Phasen 0–3 umgesetzt (v0.6.58–0.6.63), Ticket o2j9 geschlossen:
+Gate, Registry, Kanonikalisierung in `finish_weave`, Koinzidenz-Gate in
+`seed_branch_pairs`, On-Boundary-Gate in `both_branches_active`,
+Interior-Fin-Beweis. Das ursprünglich geplante 2D-Arrangement war nicht
+nötig (Naht-Kanten kommen aus den transversalen Paaren mit den berandenden
+Flächen). Offen: Phase 4 (Octree-Route auf Klassen — Produktionspfad ist die
+Seed-Route) und F0-1 (Face-pro-Region).
 
 ## 2. Tangentialer Kontakt (Kontaktordnung 1) — ZURÜCKGESTELLT, Design-Direktive aktiv
 

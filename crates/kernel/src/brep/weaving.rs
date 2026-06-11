@@ -2260,7 +2260,17 @@ fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>>, diag: f6
 /// - one survivor, and a ±ε probe inside the survivor's carrier shows the
 ///   edge sits clearly OFF the body boundary on BOTH sides (a flush-remove
 ///   ghost trace on a measure-zero `f = 0` sheet, e.g. body-wall × erased
-///   tool-wall traces).
+///   tool-wall traces); or
+/// - one survivor, and the probe shows the edge is INTERIOR to the
+///   survivor's own face: ON the body boundary on both sides with the
+///   survivor among the contributors there. That is the rim of a culled
+///   internal membrane crossing the middle of a face — a two-face extrude's
+///   union profile abuts its parts along a shared sketch edge, and the
+///   resulting zero-thickness wall pair leaves its cap rims striping the
+///   merged cap (ticket o2j9). An edge bounding two regions of the SAME
+///   face separates nothing in a 2-manifold. A genuine seam rim is NOT
+///   caught by this: across a real rim the carrier continues into material
+///   (f < 0) or off the body, so the far probe fails the on-boundary test.
 ///
 /// Anything ambiguous stays: a genuine seam rim whose duplicate failed to
 /// merge (sub-µm mesh-derived drift) remains as an honestly OPEN edge, so
@@ -2317,15 +2327,27 @@ fn drop_fin_edges(
             if norm(d) < 0.5 {
                 return true;
             }
-            let off_boundary = |side: f64| -> bool {
-                let p = [
+            let probe = |side: f64| -> [f32; 3] {
+                [
                     (q[0] + d[0] * eps * side) as f32,
                     (q[1] + d[1] * eps * side) as f32,
                     (q[2] + d[2] * eps * side) as f32,
-                ];
-                (body.sdf(p, EvalMode::Logical) as f64).abs() > eps * 0.3
+                ]
             };
-            !(off_boundary(1.0) && off_boundary(-1.0))
+            let off_boundary = |side: f64| -> bool {
+                (body.sdf(probe(side), EvalMode::Logical) as f64).abs() > eps * 0.3
+            };
+            // Interior-to-survivor probe: on the body boundary AND the
+            // survivor branch owns the surface there.
+            let in_survivor_face = |side: f64| -> bool {
+                let (f, contributors) =
+                    body.evaluate(probe(side), (eps * 0.3) as f32, EvalMode::Logical);
+                (f as f64).abs() <= eps * 0.3
+                    && contributors.as_slice().contains(&BranchId(survivors[0]))
+            };
+            let ghost = off_boundary(1.0) && off_boundary(-1.0);
+            let interior = !ghost && in_survivor_face(1.0) && in_survivor_face(-1.0);
+            !(ghost || interior)
         })
         .collect();
     if keep.iter().all(|&k| k) {

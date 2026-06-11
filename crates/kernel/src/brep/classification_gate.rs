@@ -316,6 +316,184 @@ fn gate_union_coaxial_cylinder_stack_octree_route() {
 }
 
 #[test]
+fn gate_union_flush_extrude_covers_box_face() {
+    // The ticket's intermediate body, idealised: a box leaf whose face is
+    // fully covered by a flush face-extrude prism of identical cross-section.
+    // All four prism walls are coplanar with box side faces, the contact
+    // plane is an ON-opposite membrane pair. Both routes pass here because
+    // the axis-aligned Rectangle prim keeps the octree's DL-75 analytic
+    // fast-path alive; the rotated Path variants below do not (Phase 4).
+    let body = union(
+        box_leaf(1, [0.0, 0.0, 0.0], [50.0, 50.0, 50.0]),
+        rect_extrude(5, [50.0, 50.0], 26.0, 76.0),
+    );
+    assert_gate(&body, 3.0, 0, "flush extrude covers box face");
+}
+
+/// The ticket's REAL feature 5, byte-exact from the decoded spine: a
+/// face-extrude on the box's +Y face whose sketch is a closed 4-line PATH
+/// (not a Rectangle prim), placed by a rotation quat. Exactly coincident
+/// everywhere (the anchor fix).
+fn ticket_extrude5() -> CsgNode {
+    let path = Sketch2d::Prim(Sketch2dPrimitive::Path {
+        segments: vec![
+            fielddraft_protocol::SketchSegment::Line { start: [-50.0, -50.0], end: [50.0, -50.0] },
+            fielddraft_protocol::SketchSegment::Line { start: [50.0, -50.0], end: [50.0, 50.0] },
+            fielddraft_protocol::SketchSegment::Line { start: [50.0, 50.0], end: [-50.0, 50.0] },
+            fielddraft_protocol::SketchSegment::Line { start: [-50.0, 50.0], end: [-50.0, -50.0] },
+        ],
+        closed: true,
+    });
+    let extrude = CsgNode::Extrude {
+        id: FeatureId::from_u32(5),
+        sketch: Box::new(path),
+        half_height: 26.456285,
+    };
+    let inner = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, 26.456285], ..Transform::IDENTITY },
+        Box::new(extrude),
+    );
+    CsgNode::Transform(
+        Transform {
+            translate: [0.0, 50.0, 0.0],
+            rotation: [0.5, 0.5, 0.5, -0.5],
+            scale: [1.0, 1.0, 1.0],
+        },
+        Box::new(inner),
+    )
+}
+
+/// The ticket's REAL feature 17: extruded from prism5's +X face; the carrier
+/// plane is exact, but the in-plane profile coords carry the mesh-derived
+/// µm drift (50.00049 / −50.0009 / 26.457184 / −26.456078).
+fn ticket_extrude17() -> CsgNode {
+    let path = Sketch2d::Prim(Sketch2dPrimitive::Path {
+        segments: vec![
+            fielddraft_protocol::SketchSegment::Line { start: [50.00049, 26.457184], end: [-50.0009, 26.457184] },
+            fielddraft_protocol::SketchSegment::Line { start: [-50.0009, 26.457184], end: [-50.0008, -26.456078] },
+            fielddraft_protocol::SketchSegment::Line { start: [-50.0008, -26.456078], end: [50.00039, -26.456078] },
+            fielddraft_protocol::SketchSegment::Line { start: [50.00039, -26.456078], end: [50.00049, 26.457184] },
+        ],
+        closed: true,
+    });
+    let extrude = CsgNode::Extrude {
+        id: FeatureId::from_u32(17),
+        sketch: Box::new(path),
+        half_height: 49.372684,
+    };
+    let inner = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, 49.372684], ..Transform::IDENTITY },
+        Box::new(extrude),
+    );
+    CsgNode::Transform(
+        Transform {
+            translate: [50.0, 76.45608, -0.00020685856],
+            rotation: [0.0, 0.70710677, 0.0, 0.70710677],
+            scale: [1.0, 1.0, 1.0],
+        },
+        Box::new(inner),
+    )
+}
+
+#[test]
+fn gate_ticket_o2j9_box_plus_extrude5_seed_route() {
+    // The ticket's first intermediate body (box + face-extrude 5): rotated
+    // placement, Path sketch, exact coincidence on all four walls + membrane.
+    // Production (seed) route must weave it manifold; the octree route smears
+    // at the rotated coincident walls (Phase 4, like the cylinder stack).
+    let body = union(box_leaf(1, [0.0, 0.0, 0.0], [50.0, 50.0, 50.0]), ticket_extrude5());
+    let seed = weave_branch_seeds(&body).expect("ticket box+extrude5 is seed-weavable");
+    assert_solid_invariants(&seed, 0, "ticket box+extrude5 [seed route]");
+}
+
+/// The ticket's REAL feature 18 (the reported two-face extrude): ONE extrude
+/// feature over the UNION of two mesh-derived Path profiles — the box's +Z
+/// face and prism17's +Z wall, both in the carrier plane z = 50 — which abut
+/// along a shared, µm-drifted edge at sketch-y ≈ 50. The union's internal
+/// seam yields two near-coincident ON-opposite wall groups WITHIN the same
+/// feature.
+fn ticket_extrude18() -> CsgNode {
+    use fielddraft_protocol::SketchSegment::Line;
+    let path_a = Sketch2d::Prim(Sketch2dPrimitive::Path {
+        segments: vec![
+            Line { start: [-26.456581, 50.0002], end: [-26.457207, -50.00069] },
+            Line { start: [-26.457207, -50.00069], end: [26.456264, -50.000565] },
+            Line { start: [26.456264, -50.000565], end: [26.456078, 50.000515] },
+            Line { start: [26.456078, 50.000515], end: [-26.456581, 50.0002] },
+        ],
+        closed: true,
+    });
+    let path_b = Sketch2d::Prim(Sketch2dPrimitive::Path {
+        segments: vec![
+            Line { start: [-26.457901, 148.74646], end: [-26.456581, 50.0002] },
+            Line { start: [-26.456581, 50.0002], end: [26.456078, 50.000515] },
+            Line { start: [26.456078, 50.000515], end: [26.457157, 148.74646] },
+            Line { start: [26.457157, 148.74646], end: [-26.457901, 148.74646] },
+        ],
+        closed: true,
+    });
+    let extrude = CsgNode::Extrude {
+        id: FeatureId::from_u32(18),
+        sketch: Box::new(Sketch2d::Union(Box::new(path_a), Box::new(path_b))),
+        half_height: 12.5,
+    };
+    let inner = CsgNode::Transform(
+        Transform { translate: [0.0, 0.0, 12.5], ..Transform::IDENTITY },
+        Box::new(extrude),
+    );
+    CsgNode::Transform(
+        Transform {
+            translate: [-0.00020580407, 76.45626, 50.0],
+            rotation: [0.0, 0.0, -0.70710677, 0.70710677],
+            scale: [1.0, 1.0, 1.0],
+        },
+        Box::new(inner),
+    )
+}
+
+#[test]
+fn gate_ticket_o2j9_full_two_face_extrude_seed_route() {
+    // The ticket's full 4-feature body: deep coincident stack + the two-face
+    // extrude whose union profile carries an internal µm-drifted seam.
+    let body = BoundedCsg::from_csg(&CsgNode::Union(
+        Box::new(CsgNode::Union(
+            Box::new(CsgNode::Union(
+                Box::new(box_leaf(1, [0.0, 0.0, 0.0], [50.0, 50.0, 50.0])),
+                Box::new(ticket_extrude5()),
+            )),
+            Box::new(ticket_extrude17()),
+        )),
+        Box::new(ticket_extrude18()),
+    ));
+    let seed = weave_branch_seeds(&body).expect("ticket 4-feature body is seed-weavable");
+    assert_solid_invariants(&seed, 0, "ticket full two-face extrude [seed route]");
+}
+
+#[test]
+fn gate_ticket_o2j9_box_plus_extrude5_plus_extrude17_seed_route() {
+    // The ticket's full loaded body. Two regression roots live here:
+    // (a) prism17's walls carry µm in-plane profile drift, so wall pairs
+    //     against prism5/box are near-coincident — without the registry gate
+    //     in `seed_branch_pairs` SSI manufactures a µrad-angle "intersection
+    //     line" from the drift noise;
+    // (b) the body's concave corner line (box∪prism5∪prism17 leave one empty
+    //     quadrant) extends to infinity with both wall branches still
+    //     reported as nearest-feature contributors — without the |f| ≤ eps
+    //     on-boundary gate in `both_branches_active` the seam march runs to
+    //     `max_arc` and bails the whole body to the octree (the reported
+    //     E=0/F=24 ghost-face collapse).
+    let body = BoundedCsg::from_csg(&CsgNode::Union(
+        Box::new(CsgNode::Union(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [50.0, 50.0, 50.0])),
+            Box::new(ticket_extrude5()),
+        )),
+        Box::new(ticket_extrude17()),
+    ));
+    let seed = weave_branch_seeds(&body).expect("ticket 3-feature body is seed-weavable");
+    assert_solid_invariants(&seed, 0, "ticket box+extrude5+extrude17 [seed route]");
+}
+
+#[test]
 fn gate_remove_flush_zero_thickness_wall() {
     // Subtraction whose tool face coincides with the body face at x = 5: the
     // wall between them has exactly zero thickness and must vanish entirely.

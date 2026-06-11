@@ -87,7 +87,7 @@ Epsilon-Stellschraube im SSI-/Octree-Pfad, die einen Koinzidenz-Fall
 ```mermaid
 graph TB
     CSG["CSG-Baum (Branches)"] --> Reg["Phase 1: Koinzidenz-Registry<br/>analytische Äquivalenzklassen,<br/>orientiert: ON-same / ON-opposite"]
-    Reg --> SSI["SSI: transversal wie bisher,<br/>NEU: CoincidentSurface-Fall<br/>(2D-Arrangement statt 0 Komponenten)"]
+    Reg --> SSI["SSI/Seeding: transversal wie bisher,<br/>koinzidente Paare seeden NICHT<br/>(Registry-Gate in seed_branch_pairs)"]
     SSI --> Trace["edge_trace (unverändert)"]
     Trace --> FW["finish_weave + Phase 2/3:<br/>Klassifikation IN/ON,<br/>Region-Cull, Edge-Kanonik"]
     FW --> Gate["Phase 0: Invarianten-Gate<br/>Euler χ + manifold_violations"]
@@ -268,12 +268,59 @@ verkettete Face-Extrudes):
   Körpergrenze. Ambiges bleibt ehrlich offen, damit `is_watertight` nie aus
   einer unvollständigen Wireframe „hergestellt" wird.
 
-**Verbleibend für Phase 3 (voll), `ticket_o2j9…`-Test ignoriert-rot:**
-Bei tiefen exakt-koinzidenten Stapeln (Zwei-Flächen-Extrusion des Tickets)
-liefert `ssi::plane_plane` für fast alle Paare null Seeds → die Wireframe
-kollabiert (E=0), bevor Kanonikalisierung greifen kann. Das ist genau der
-`CoincidentSurface`-SSI-Fall mit 2D-Arrangement auf dem gemeinsamen
-Carrier — der Kern des ursprünglichen Phase-3-Texts unten.
+### Phase 3 (voll) — UMGESETZT: der `CoincidentSurface`-Fall ohne 2D-Arrangement
+
+Das Ticket-Szenario (Zwei-Flächen-Extrusion auf tiefem Stapel) ist
+geschlossen — `ticket_o2j9…` läuft, plus drei Gate-Guards auf der byte-exakt
+decodierten Ticket-Geometrie (`gate_ticket_o2j9_*`). Die Diagnose am realen
+Dokument ergab DREI Wurzeln, keine davon brauchte das ursprünglich geplante
+2D-Arrangement:
+
+1. **Koinzidente Paare nie als transversal seeden** (der eigentliche
+   `CoincidentSurface`-Fall, implementiert als Registry-Gate in
+   `seed_branch_pairs` statt als `SsiResult`-Variante — dort existieren
+   Flächen UND Body-Kontext, also genau EINE Toleranzquelle): Profile aus
+   `face_profile` tragen µm-In-Plane-Drift (die Ebene ist seit dem
+   Anker-Fix exakt, die Profilkoordinaten sind mesh-abgeleitet). Zwei
+   gestapelte Wände präsentieren sich SSI dadurch als Ebenen mit
+   µrad-Winkel: `plane_plane` fabriziert aus reinem Drift-Rauschen eine
+   „Schnittlinie", auf der die ganze gemeinsame Wand aktiv ist → der Marsch
+   stallt → die GANZE Seed-Route bailt → Octree-Fallback → der gemeldete
+   E=0/F=24-Geisterflächen-Kollaps. Paare mit `registry.relative(a,b)`
+   liefern jetzt keine Seeds; die Naht-Kanten eines gemeinsamen Carriers
+   entstehen aus den transversalen Paaren mit den **berandenden** Flächen,
+   die Kanonikalisierung (1b) verheiratet die Seiten.
+2. **On-Boundary-Gate in `both_branches_active`:** Die Contributor-Menge
+   allein ist notwendig, nicht hinreichend — weit außerhalb des Körpers, auf
+   der Verlängerung einer konkaven Eckenlinie, melden Extrude-Leaves am
+   2D-Profil-Eckpunkt BEIDE angrenzenden Wandgruppen als nächste Features
+   (Box-Leaves rettet zufällig die max-Zerlegung). Ein Naht-Marsch lief so
+   950 mm am Körper vorbei bis `max_arc`. Jetzt gilt zusätzlich
+   `|f| ≤ eps` (das Logical-Feld lag als ignorierter Rückgabewert ohnehin
+   vor); Membran-Blätter (f = 0) bleiben absichtlich aktiv — die gehören
+   der Kanonikalisierung.
+3. **Interior-Fin-Beweis in `drop_fin_edges`:** Das Union-Profil einer
+   Mehr-Flächen-Extrusion stößt seine Teilprofile an einer gemeinsamen
+   Sketch-Kante aneinander → interne Null-Dicke-Wandpaare (ON-opposite,
+   werden gecullt), deren Cap-Rims als 1-Survivor-Kanten MITTEN über die
+   verschmolzene Cap-Fläche streifen. Neuer Beweis-Zweig: beidseitig
+   on-boundary UND der Survivor-Branch beidseitig im Contributor-Set →
+   Interior-Kante der eigenen Face → trennt in einer 2-Mannigfaltigkeit
+   nichts → weg. Ein echter Naht-Rim wird nicht erfasst (jenseits eines
+   echten Rims läuft der Carrier ins Material, f < 0).
+
+Das **2D-Arrangement aus dem ursprünglichen Phase-3-Text war nicht nötig**:
+die Naht-Kanten auf gemeinsamen Carriern kommen vollständig aus den
+transversalen Paaren mit den berandenden Flächen — ein Arrangement würde
+erst für Fälle gebraucht, in denen koinzidente Regionen NICHT durch
+transversale Dritt-Flächen berandet sind. Sollte so ein Fall auftauchen,
+ist der ursprüngliche Text unten die Referenz.
+
+Bekannte Restlücken: F0-1 (Face-pro-Region, Plus-Familie), Phase 4
+(Octree-Route auf den Ticket-Bodies degeneriert weiter an rotierten/
+gekrümmten koinzidenten Wänden — Produktion nimmt die Seed-Route),
+nichtdeterministische qFace-Auflösung auf degenerierten Zwischenständen ist
+mit der jetzt sauberen Seed-Route mit-behoben.
 
 ### Ursprünglicher Phasen-Text (Referenz)
 
