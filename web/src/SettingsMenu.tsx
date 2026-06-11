@@ -15,7 +15,6 @@ const LS_COMPACT = "fielddraft.compact";
 const LS_UNITS = "fielddraft.units";
 const LS_THEME = "fielddraft.theme";
 const LS_RENDER_MODE = "fielddraft.renderMode";
-const LS_SHOW_EDGES = "fielddraft.showEdges";
 const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
@@ -202,7 +201,6 @@ export interface SettingsState {
   theme: ThemeChoice;
   renderMode: RenderMode;
   meshAlgorithm: MeshAlgorithm;
-  showEdges: boolean;
   brepEdgeMode: BRepEdgeMode;
   frameLoop: FrameLoopMode;
   /** Milestone-1 parametric weaving: exact analytic B-Rep for pure grundforms
@@ -269,7 +267,6 @@ export function loadSettings(): SettingsState {
   let theme: ThemeChoice = "light";
   let renderMode: RenderMode = "sdf-deferred";
   let meshAlgorithm: MeshAlgorithm = "mdc";
-  let showEdges = true;
   let brepEdgeMode: BRepEdgeMode = "xray";
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;
@@ -287,8 +284,6 @@ export function loadSettings(): SettingsState {
     const rawAlgo = localStorage.getItem(LS_MESH_ALGORITHM);
     if (rawAlgo && VALID_MESH_ALGORITHMS.includes(rawAlgo as MeshAlgorithm))
       meshAlgorithm = rawAlgo as MeshAlgorithm;
-    const rawEdges = localStorage.getItem(LS_SHOW_EDGES);
-    if (rawEdges !== null) showEdges = rawEdges !== "false";
     const rawBrepEdge = localStorage.getItem(LS_BREP_EDGE_MODE);
     if (rawBrepEdge && VALID_BREP_EDGE_MODES.includes(rawBrepEdge as BRepEdgeMode))
       brepEdgeMode = rawBrepEdge as BRepEdgeMode;
@@ -304,7 +299,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, showEdges, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells, controlsPreset };
+  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells, controlsPreset };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -872,12 +867,6 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
-  const toggleShowEdges = () => {
-    const next = { ...settings, showEdges: !settings.showEdges };
-    saveSetting(LS_SHOW_EDGES, String(next.showEdges));
-    onSettingsChange(next);
-  };
-
   const setBRepEdgeMode = (mode: BRepEdgeMode) => {
     const next = { ...settings, brepEdgeMode: mode };
     saveSetting(LS_BREP_EDGE_MODE, mode);
@@ -1050,20 +1039,6 @@ function SettingsDialog({
                   </select>
                 </div>
               )}
-
-              <div className="setting-row" data-testid="setting-show-edges">
-                <span className="setting-label">Edge detection</span>
-                <button
-                  type="button"
-                  className={"toggle" + (settings.showEdges ? " is-on" : "")}
-                  role="switch"
-                  aria-checked={settings.showEdges}
-                  data-testid="setting-show-edges-toggle"
-                  onClick={toggleShowEdges}
-                >
-                  {settings.showEdges ? "On" : "Off"}
-                </button>
-              </div>
 
               <div className="setting-row" data-testid="setting-brep-edges">
                 <span className="setting-label">B-Rep edges</span>

@@ -96,16 +96,15 @@ interface SceneProps {
   ndc: { x: number; y: number; active: boolean };
   onPick: (result: PickResult | null) => void;
   renderMode: string;
-  showEdges: boolean;
   brepEdgeMode: BRepEdgeMode;
 }
-function Scene({ ndc, onPick, renderMode, showEdges, brepEdgeMode }: SceneProps) {
+function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
   const { store } = useKernelStore();
   if (!store) return null;
   return (
     <>
-      {renderMode === "sdf-vm" && <SdfVmOverlay showEdges={showEdges} brepEdgeMode={brepEdgeMode} />}
-      {renderMode === "sdf-deferred" && <SdfDeferredOverlay showEdges={showEdges} brepEdgeMode={brepEdgeMode} />}
+      {renderMode === "sdf-vm" && <SdfVmOverlay brepEdgeMode={brepEdgeMode} />}
+      {renderMode === "sdf-deferred" && <SdfDeferredOverlay brepEdgeMode={brepEdgeMode} />}
       {renderMode === "mesh" && <MeshPreview />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
@@ -335,7 +334,7 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
-export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; showEdges: boolean; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
+export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
   const { store, state } = useKernelStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
@@ -727,7 +726,7 @@ export function Viewport({ renderMode, showEdges, brepEdgeMode, frameLoop, showE
           {canvasReady && (
             <>
               <ClearColorSync />
-              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} showEdges={showEdges} brepEdgeMode={brepEdgeMode} />
+              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
               <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
               {showEdgePoints && <BRepEdgePointsOverlay />}

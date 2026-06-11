@@ -272,7 +272,7 @@ export function App() {
       <div className="fd-workspace" hidden={activeProjectTab?.kind === "script"}>
         {store && state ? <Toolbar store={store} state={state} /> : null}
         <main className="main">
-          <Viewport renderMode={settings.renderMode} showEdges={settings.showEdges} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} controlsPreset={settings.controlsPreset} />
+          <Viewport renderMode={settings.renderMode} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} controlsPreset={settings.controlsPreset} />
           {mobileNavOpen ? (
             <div
               className="fd-nav-scrim"

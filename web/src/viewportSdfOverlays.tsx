@@ -121,7 +121,7 @@ function copyOpcodes(k: KernelLike, bodyIndex: number): Float32Array {
   return view.length > 0 ? view.slice() : new Float32Array(0);
 }
 
-export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
+export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const invalidate = useThree((s) => s.invalidate);
@@ -213,7 +213,6 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
       applyMaterials(pipeline, vmMaterials, count);
       matFeaturesRef.current = featuresArr;
     }
-    pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 
@@ -238,7 +237,7 @@ export function SdfVmOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; 
   return null;
 }
 
-export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boolean; brepEdgeMode: BRepEdgeMode }) {
+export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
@@ -360,7 +359,6 @@ export function SdfDeferredOverlay({ showEdges, brepEdgeMode }: { showEdges: boo
       updateDeferredSelection(pipeline, selectedBodies);
       selectionRef.current = selection;
     }
-    pipeline.showEdgesU.value = showEdges ? 1 : 0;
 
     if (!readyRef.current || compilingRef.current) return;
 

@@ -217,7 +217,6 @@ export interface DeferredPipelineState {
   width: number;
   height: number;
   volumeTextures: THREE.Data3DTexture[];
-  showEdgesU: ReturnType<typeof uniform>;
   needsShadeRebuild: boolean;
 }
 
@@ -306,7 +305,6 @@ function createShadeMaterial(
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
-  showEdgesU: ReturnType<typeof uniform>,
   nearU: ReturnType<typeof uniform>,
   farU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
@@ -443,8 +441,8 @@ function createShadeMaterial(
     const result = vec4(0, 0, 0, 0).toVar();
 
     If(hasHit.greaterThan(int(0)), () => {
-      // Shade the hit (normal → PBR → edges → selection tint → wireframe) via
-      // the shared SDF pipeline. The view direction points from the shaded
+      // Shade the hit (normal → PBR → selection tint → wireframe) via the
+      // shared SDF pipeline. The view direction points from the shaded
       // surface point back to the camera.
       const viewDirWorld = normalize(camPosU.sub(shadePos));
       result.assign(shadeSdfHit({
@@ -455,7 +453,6 @@ function createShadeMaterial(
         materialBuf,
         viewMatU,
         viewDirWorld,
-        showEdgesU,
         sdfEval,
         selectionBuf,
       }));
@@ -532,7 +529,6 @@ export function initDeferredPipeline(
   const camPosUniform = uniform(new THREE.Vector3(0, 0, 100));
   const viewMatU = uniform(new THREE.Matrix4());
   const widthU = uniform(width);
-  const showEdgesU = uniform(1);
   const nearU = uniform(1);
   const farU = uniform(4000);
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
@@ -557,7 +553,6 @@ export function initDeferredPipeline(
     camPosUniform,
     viewMatU,
     widthU,
-    showEdgesU,
     nearU,
     farU,
   );
@@ -593,7 +588,6 @@ export function initDeferredPipeline(
     camPosUniform,
     viewMatU,
     widthU,
-    showEdgesU,
     nearU,
     farU,
     bodyOpaqueMeshes: new Map(),
@@ -876,7 +870,6 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.camPosUniform,
     state.viewMatU,
     state.widthU,
-    state.showEdgesU,
     state.nearU,
     state.farU,
     state.volumeTextures,

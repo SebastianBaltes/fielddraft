@@ -203,19 +203,14 @@ export const FRESNEL_EDGE_MAX = 0.85;
 export const DISPLACE_FREQ_Y = 1.3;
 export const DISPLACE_FREQ_Z = 0.7;
 
-export const EDGE_EPS = 0.5;
-export const EDGE_THRESH_MIN = 0.1;
-export const EDGE_THRESH_MAX = 0.5;
-export const EDGE_COLOR = 0.12;
-
 // ── Shared hit shading ─────────────────────────────────────────────
 
 /**
  * Shade a raymarched SDF surface hit: central-difference normal → PBR lighting
- * → optional edge-darkening, selection tint, and wireframe-grid alpha. Emits
- * its nodes into the calling `Fn()` body (it uses `If`), and returns the final
- * `vec4(color, alpha)`. Shared by the single-pass VM renderer and the deferred
- * renderer so the lighting/material/edge/wireframe logic lives in one place.
+ * → selection tint and wireframe-grid alpha. Emits its nodes into the calling
+ * `Fn()` body (it uses `If`), and returns the final `vec4(color, alpha)`.
+ * Shared by the single-pass VM renderer and the deferred renderer so the
+ * lighting/material/wireframe logic lives in one place.
  *
  * @param p              — world-space hit position (vec3 node)
  * @param bi             — body index (int node)
@@ -224,7 +219,6 @@ export const EDGE_COLOR = 0.12;
  * @param materialBuf    — per-body material storage buffer (MAT_* layout)
  * @param viewMatU       — view-matrix uniform (world → view)
  * @param viewDirWorld   — world-space direction toward the camera (vec3 node)
- * @param showEdgesU     — edge-overlay toggle uniform (>0.5 = on)
  * @param sdfEval        — compiled SDF eval node-fn
  * @param selectionBuf   — optional per-body selection-flag buffer; when given,
  *                         selected bodies (>0.5) get a blue highlight tint
@@ -237,7 +231,6 @@ export function shadeSdfHit({
   materialBuf,
   viewMatU,
   viewDirWorld,
-  showEdgesU,
   sdfEval,
   selectionBuf,
 }: any) {
@@ -273,23 +266,6 @@ export function shadeSdfHit({
   const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
   const emissive = vec3(er, eg, eb);
   const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
-
-  If(showEdgesU.greaterThan(float(0.5)), () => {
-    const edgeEps = float(EDGE_EPS);
-    const eex = vec3(edgeEps, 0, 0);
-    const eey = vec3(0, edgeEps, 0);
-    const eez = vec3(0, 0, edgeEps);
-    const edgeSum = abs(
-      sdfEval({ p: p.add(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-        .add(sdfEval({ p: p.sub(eex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: p.add(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: p.sub(eey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: p.add(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-        .add(sdfEval({ p: p.sub(eez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi }))
-    );
-    const edgeFac = smoothstep(float(EDGE_THRESH_MIN), float(EDGE_THRESH_MAX), edgeSum);
-    color.assign(mix(color, vec3(EDGE_COLOR), edgeFac));
-  });
 
   if (selectionBuf) {
     const sel = selectionBuf.element(bi);

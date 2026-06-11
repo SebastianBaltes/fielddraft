@@ -75,7 +75,6 @@ export interface VmPipelineState {
   viewMatU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
-  showEdgesU: ReturnType<typeof uniform>;
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -103,7 +102,6 @@ export function initVmPipeline(): VmPipelineState {
     viewMatU: uniform(new THREE.Matrix4()),
     nearU: uniform(1),
     farU: uniform(4000),
-    showEdgesU: uniform(1),
   };
 }
 
@@ -236,8 +234,8 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z.mul(1.001);
     depth.assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU)).toStack();
 
-    // Shade the hit (normal → PBR → edges → wireframe) via the shared SDF
-    // pipeline. The view direction is the negated ray direction (a unit vector
+    // Shade the hit (normal → PBR → wireframe) via the shared SDF pipeline.
+    // The view direction is the negated ray direction (a unit vector
     // already). This single-pass renderer has no per-body selection overlay.
     return shadeSdfHit({
       p: hitPos,
@@ -247,7 +245,6 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
       materialBuf: state.materialBuf,
       viewMatU: state.viewMatU,
       viewDirWorld: rd.negate(),
-      showEdgesU: state.showEdgesU,
       sdfEval,
     });
   })();
