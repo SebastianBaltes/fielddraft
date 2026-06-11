@@ -28,6 +28,7 @@ pub mod branch_pairs;
 pub mod branch_seed;
 #[cfg(test)]
 mod classification_gate;
+pub mod coincidence;
 pub mod diff;
 pub mod edge_sampling;
 pub mod edge_trace;
