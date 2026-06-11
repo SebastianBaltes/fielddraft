@@ -114,10 +114,17 @@ und kann später kommen (oder nie).
 
 ## Phasen
 
-### Phase 0 — Invarianten-Gate (zuerst, vor jedem Kern-Eingriff)
+### Phase 0 — Invarianten-Gate (zuerst, vor jedem Kern-Eingriff) — UMGESETZT
 
-Testmatrix mit harten Assertions auf `euler_characteristic() == 2` (Genus 0)
-und `manifold_violations().is_empty()`:
+Implementiert in `crates/kernel/src/brep/classification_gate.rs`: Testmatrix
+mit harten Assertions auf `manifold_violations().is_empty()` und die
+**verallgemeinerte Euler-Poincaré-Charakteristik**
+`(V + geschlossene Kanten) − E + (F − Inner-Loops) == 2 − 2·Genus` —
+das naive `V − E + F == 2` aus der ursprünglichen Planfassung zählt
+geschlossene Rim-Kanten (Kreis = 1-Zelle plus implizite 0-Zelle) und
+Ring-Faces (Annulus: χ = 0) falsch und wäre für die Soll-Topologie mehrerer
+Matrix-Szenarien unerfüllbar. Empirisch verifiziert: Box 2, Zylinder 2,
+Box-mit-Durchgangsloch (Genus 1) 0.
 
 - Box ∪ Box: bündig gleicher Querschnitt, bündig kleinerer auf größerem
   (partielle Überdeckung), überlappend, kreuzend, kantenberührend (Policy-Test,
@@ -131,7 +138,32 @@ und `manifold_violations().is_empty()`:
 Erwartung: Diese Tests sind anfangs **rot** (bis auf die generischen Fälle).
 Sie definieren „fertig" für Phase 2/3 und schützen die bestehende
 826-Test-Suite messbar vor Regressionen. Toggle-Invarianz (`id_hash` Seed ↔
-Octree) bleibt Teil des Gates.
+Octree) bleibt Teil des Gates. Stand der Umsetzung: 3 grüne Guards (Box,
+überlappende Boxen, Kissing-Contact-Policy), 10 dokumentiert-rote Szenarien
+als `#[ignore]` mit Begründung — un-ignorieren ist das Fertig-Kriterium der
+jeweiligen Phase.
+
+**Befunde aus dem Gate-Bau** (beide neu, beide Routen identisch betroffen):
+
+- **F0-1 — Multi-Region-Branches, ganz ohne Koinzidenz.** Ein voll
+  transversales Plus (zwei kreuzende Boxen *unterschiedlicher* Höhe) ist
+  heute non-manifold (Euler 0 statt 2): die höhere Box zerschneidet die
+  Seitenwände der flacheren in **zwei getrennte Rechtecke** und wird selbst
+  zu Annulus-Wänden durchstoßen — „eine Face pro Branch" kann beides nicht
+  darstellen. Das ist die Totalitäts-/Injektivitätsverletzung der
+  Branch→Face-Attribution in ihrer koinzidenzfreien Form und bestätigt den
+  Fix-Ort: Die Face-Materialisierung in Phase 3 muss **pro
+  zusammenhängender Region** eine Face erzeugen (Ring-Faces inklusive),
+  nicht pro Branch.
+- **F0-2 — Loop-Orientierung auf gekrümmten Flächen war nie konsistent.**
+  Schon der nackte Zylinder verletzt die fwd/rev-Manifold-Konvention:
+  `order_loops` schiebt geschlossene Rim-Kreise für *jeden* Konsumenten mit
+  festem `reversed = false` in die Ringe (weaving.rs) und lässt die Windung
+  gekrümmter Flächen „as ordered". Wand und Kappe durchlaufen denselben Rim
+  in gleicher Richtung. Vorbestehend und bisher unsichtbar, weil
+  Mesh/Render die BRep nie lesen; STEP-Konsumenten tolerieren es offenbar.
+  Eigenständiger Fix vor/neben Phase 1 — ohne ihn kann kein
+  Zylinder-Szenario des Gates jemals grün werden.
 
 ### Phase 1 — Koinzidenz-Registry (analytisch, exakt)
 
@@ -196,7 +228,10 @@ Der eigentliche Fix (schließt o2j9):
    Branch-IDs der Klasse).
 4. Partiell überdeckte Faces (kleiner Block auf großem): behaltene Region als
    Face mit Inner-Loop (Naht-Ring) — Mechanik existiert (`order_loops`,
-   DL-58).
+   DL-58). Allgemeiner (Befund F0-1): Die Face-Materialisierung erzeugt eine
+   Face **pro zusammenhängender Grenzregion** eines Branches, nicht pro
+   Branch — das deckt getrennte Regionen (transversales Plus) und
+   Annulus-Wände gleich mit ab; `spatial_index` disambiguiert wie gehabt.
 
 Scope-Begrenzung: Trägerflächen Plane, Cylinder, Sphere; Arrangement-Kurven
 Linie + Kreisbogen. Koinzidenz auf NURBS-Trägerflächen ist deklarierte
