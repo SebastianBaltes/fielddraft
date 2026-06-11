@@ -241,7 +241,6 @@ fn gate_union_crossing_boxes_coplanar_tops() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — koinzidente Wände (o2j9), bekannt rot"]
 fn gate_union_flush_boxes_same_cross_section() {
     // The o2j9 headline: two boxes, identical cross-section, stacked flush at
     // z = 5. Expected solid: a single 10×10×20 box with a seam ring (Euler 2).
@@ -254,7 +253,6 @@ fn gate_union_flush_boxes_same_cross_section() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — partielle Überdeckung (Ring-Face), bekannt rot"]
 fn gate_union_flush_smaller_box_on_larger() {
     // Partial coverage: a small block sitting flush on a big one. The big
     // box's +Z face must survive as a ring face (inner seam loop).
@@ -266,7 +264,6 @@ fn gate_union_flush_smaller_box_on_larger() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — koplanare Extrude-Stapel (o2j9), bekannt rot"]
 fn gate_union_coplanar_extrude_stack_small() {
     // The o2j9 user scenario at sketch scale: two rectangle extrudes stacked
     // flush along Z.
@@ -278,7 +275,6 @@ fn gate_union_coplanar_extrude_stack_small() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 + oa9h/vyee — koplanare Extrude-Stapel ≳100 mm, bekannt rot"]
 fn gate_union_coplanar_extrude_stack_large() {
     // The same stack at ≳100 mm: guards the absolute-epsilon scale fragility
     // from tickets oa9h/vyee alongside the coincidence fix.
@@ -290,11 +286,28 @@ fn gate_union_coplanar_extrude_stack_large() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — koaxial gleichradige Zylinder, bekannt rot"]
-fn gate_union_coaxial_cylinder_stack() {
+fn gate_union_coaxial_cylinder_stack_seed_route() {
     // The cylinder twin of the flush-box case (shaft, boss-on-boss): equal
     // radius, coaxial, stacked flush. Coincident *cylinder* walls — the
-    // registry must be surface-generic, not plane-only. (Also needs F0-2.)
+    // registry is surface-generic, not plane-only. Green on the production
+    // (branch-seed) route: membrane caps culled, the seam rim merged into
+    // one closed edge joining both wall faces.
+    let body = union(
+        cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 4.0),
+        cylinder_leaf(2, [0.0, 8.0, 0.0], 5.0, 4.0),
+    );
+    let seed = weave_branch_seeds(&body).expect("cylinder stack is seed-weavable");
+    assert_solid_invariants(&seed, 0, "coaxial cylinder stack [seed route]");
+}
+
+#[test]
+#[ignore = "BREP-CLASSIFICATION-PLAN Phase 4 — Octree-Kontributoren schmieren am koinzidenten Zylinder-Saum, bekannt rot"]
+fn gate_union_coaxial_cylinder_stack_octree_route() {
+    // The octree route fragments the coincident seam rim into short arcs
+    // (the oa9h/vyee contributor smear — plane seams are saved by the DL-75
+    // analytic fast-path, cylinder seams are not). Root fix: Phase 4,
+    // contributor logic on coincidence classes. Includes the toggle-
+    // invariance assert, which equally needs Phase 4.
     let body = union(
         cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 4.0),
         cylinder_leaf(2, [0.0, 8.0, 0.0], 5.0, 4.0),
@@ -303,7 +316,6 @@ fn gate_union_coaxial_cylinder_stack() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 — bündiges remove (Null-Dicke, ON-opposite), bekannt rot"]
 fn gate_remove_flush_zero_thickness_wall() {
     // Subtraction whose tool face coincides with the body face at x = 5: the
     // wall between them has exactly zero thickness and must vanish entirely.

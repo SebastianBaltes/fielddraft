@@ -202,7 +202,51 @@ modelliert Kontakt als **Ordnung** (0 transversal, 1 tangential,
 ∞ koinzident), nicht als Bool. Phase 1 implementiert nur Ordnung ∞; das
 Interface lässt tangentialen Kontakt später ohne Redesign andocken.
 
-### Phase 2 — Pass A: Interior-Cull in `finish_weave`
+### Phasen 2 + 3 (Kern) — UMGESETZT als Koinzidenz-Kanonikalisierung in `finish_weave`
+
+Stand der Umsetzung (Schritt „(1b)" in `finish_weave`, gated auf nicht-leere
+Registry — transversale Körper nehmen den unveränderten Fast-Path):
+
+1. **Punkt-Kontakt-Filter** (`drop_point_contact_edges`): An bündigen Nähten
+   traced der Weaver auch Kreuz-Paare (box1-Wand ∩ box2-Nachbarwand), deren
+   Aktivitäts-Überlappung ein einzelner Punkt ist — Null-Längen-Kanten, die
+   die Ring-Ordnung vergiften. Werden verworfen.
+2. **Vertex-Weld** (`weld_seam_vertices`): Jede Naht-Seite traced eigene
+   Eckpunkt-Kopien (identische Position, getrennte Arena-Einträge) — ohne
+   Weld verbinden Ringe nicht über die Naht.
+3. **Edge-Kanonikalisierung** (`merge_coincident_edges`): Kanten mit gleicher
+   kanonischer Signatur (kleinste Branch-IDs der Klasse) und identischem
+   Kurvensegment verschmelzen zu EINER topologischen Kante mit der
+   **Vereinigung beider Face-Mitgliedschaften**. Identität ist billig, weil
+   der Carrier-Paar-Schnitt eine eindeutige Kurve ist: geschlossene Loops
+   gleicher Klasse sind dieselbe Kurve (Centroid-Sanity-Check), offene
+   Kanten vergleichen nur die Newton-verfeinerten Endpunkte.
+4. **Membran-Cull** (`cull_membrane_branches`, der geplante Pass A — jetzt
+   VOR der Face-Materialisierung): Kandidaten sind exakt die Branches mit
+   Opposite-Partner in der Registry; ±ε-Seitigkeits-Probe an Centroid + bis
+   zu 8 nach innen gezogenen Randpunkten. Beidseitig innen (Membran) ODER
+   beidseitig außen (Null-Dicke-remove) → Branch materialisiert keine Face.
+5. **Fin-Drop** (`drop_fin_edges`): Kanten, deren Mitgliedschaft durch den
+   Cull unter zwei Faces fällt, lagen auf einem maßnull-f=0-Blatt (z. B.
+   die Geisterwand des bündigen remove) und werden verworfen — bewusst NUR
+   bei Cull-Verlust, ehrlich offene Topologie anderswo bleibt sichtbar.
+
+Face-Gruppierung läuft seither über Mitgliedschaften statt roher
+Signaturen; Ring-Faces bei partieller Überdeckung entstehen automatisch
+(die Naht-Kanten landen via Mitgliedschaft im Edge-Set der großen Face,
+`order_loops`/DL-58 klassifiziert sie als Inner-Loop).
+
+**Gate-Stand danach:** bündige Boxen (gleich + kleiner-auf-größer),
+Extrude-Stapel klein und ≳100 mm, bündiges remove, Zylinder-Stack
+(Seed-Route) — alle grün, beide Routen (Boxen/Extrudes) inkl.
+Toggle-Invarianz. Noch rot (ignoriert): die Plus-Familie (F0-1
+Multi-Region — braucht Face-pro-Region, s. u.) und die Octree-Route des
+Zylinder-Stacks (Kontributor-Schmiere am gekrümmten Saum → Phase 4;
+Plane-Säume rettet der DL-75-Fastpath).
+
+### Ursprünglicher Phasen-Text (Referenz)
+
+#### Phase 2 — Pass A: Interior-Cull in `finish_weave`
 
 Ankerpunkt: nach der Face-Materialisierung (weaving.rs:1265), vor der
 Shell-Assembly (weaving.rs:1294). Pro Face: repräsentativen Flächenpunkt
@@ -221,7 +265,7 @@ STEP profitieren sofort), hinterlässt aber an der Naht **offene Topologie**
 (die Rim-Duplikate bleiben; das Phase-0-Gate bleibt teilweise rot).
 Zwischenzustand, kein Endzustand.
 
-### Phase 3 — Koinzidenz-Naht: SSI-Fall `CoincidentSurface`
+#### Phase 3 — Koinzidenz-Naht: SSI-Fall `CoincidentSurface`
 
 Der eigentliche Fix (schließt o2j9):
 
