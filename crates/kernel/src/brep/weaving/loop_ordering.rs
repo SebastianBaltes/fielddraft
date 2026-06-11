@@ -1,0 +1,556 @@
+//! Face boundary-loop ordering: the reflex-aware turning-angle walk
+//! (DL-58), ring metrics, and outer/inner classification with manifold
+//! winding.
+
+
+use crate::brep::{
+    BRep, EdgeGeometry, EdgeId,
+    SurfaceGeometry, VertexId,
+};
+use fielddraft_protocol::HalfSpace;
+
+// ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
+use crate::brep::vec3::{normalize as unit, sub};
+use crate::brep::vec3::norm;
+use super::*;
+
+/// The ordered boundary loops of one face: an outer ring plus zero or more
+/// inner (hole) rings, all guaranteed connected and consistently wound.
+pub(super) struct FaceLoops {
+    pub(super) outer: Vec<(EdgeId, bool)>,
+    pub(super) inner: Vec<Vec<(EdgeId, bool)>>,
+}
+
+/// Order one connected ring out of `pool` (indices into `edge_ids`), starting at
+/// `seed`, using **turning-angle disambiguation** so reflex vertices (where ≥3
+/// of the face's edges meet) are traversed correctly. At each step we sit at the
+/// current walk vertex `cur`, having arrived along reversed-incoming tangent
+/// `back` (the direction pointing back the way we came, in the face tangent
+/// plane); among all unused candidate edges incident to `cur` we pick the one
+/// whose outgoing tangent makes the **largest CCW turn** from `back` about the
+/// face normal — i.e. the next edge encountered sweeping counter-clockwise,
+/// which keeps the face interior consistently on one side and hugs the local
+/// boundary even at a reflex vertex or a vertex shared with a hole.
+///
+/// Marks consumed indices in `used`. Returns the ordered ring, or `None` if the
+/// chain cannot close (degenerate topology).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn order_one_ring(
+    brep: &BRep,
+    edge_ids: &[EdgeId],
+    used: &mut [bool],
+    seed: usize,
+    normal_at: &dyn Fn([f64; 3]) -> Option<[f64; 3]>,
+) -> Option<Vec<(EdgeId, bool)>> {
+    let endpoints = |e: EdgeId| -> Option<(VertexId, VertexId)> {
+        let edge = brep.edge(e);
+        Some((edge.start?, edge.end?))
+    };
+
+    let (first_start, mut cur) = endpoints(edge_ids[seed])?;
+    used[seed] = true;
+    let mut ring: Vec<(EdgeId, bool)> = vec![(edge_ids[seed], false)];
+    // Reversed-incoming tangent: pointing from the new `cur` back toward the
+    // seed's start (i.e. the negated outgoing tangent of the seed edge).
+    let mut back = outgoing_tangent(brep, edge_ids[seed], cur, true)?;
+
+    loop {
+        // Gather all unused candidate edges incident to `cur`.
+        let mut best: Option<(usize, bool, f64)> = None; // (index, reversed, angle)
+        let normal = normal_at(brep.vertex(cur).position);
+        for (i, &eid) in edge_ids.iter().enumerate() {
+            if used[i] {
+                continue;
+            }
+            let (s, e) = endpoints(eid)?;
+            let reversed = if s == cur {
+                false
+            } else if e == cur {
+                true
+            } else {
+                continue;
+            };
+            let out = match outgoing_tangent(brep, eid, cur, reversed) {
+                Some(t) => t,
+                None => continue,
+            };
+            let angle = match normal {
+                Some(n) => {
+                    let bt = project_tangent(back, n);
+                    let ot = project_tangent(out, n);
+                    if norm(bt) < 1e-9 || norm(ot) < 1e-9 {
+                        // Degenerate projection: fall back to "any" (angle 0).
+                        0.0
+                    } else {
+                        // Largest CCW turn from `back` to the outgoing tangent.
+                        // Map into [0, 2π) so the maximum is the sharpest hug.
+                        let a = signed_angle(bt, ot, n);
+                        if a <= 0.0 {
+                            a + std::f64::consts::TAU
+                        } else {
+                            a
+                        }
+                    }
+                }
+                None => 0.0, // no usable normal → first-match (greedy) behaviour
+            };
+            let better = match best {
+                None => true,
+                Some((_, _, ba)) => angle > ba,
+            };
+            if better {
+                best = Some((i, reversed, angle));
+            }
+            if normal.is_none() {
+                break; // greedy fallback: take the first incident edge
+            }
+        }
+
+        let (i, reversed, _) = best?;
+        used[i] = true;
+        let (s, e) = endpoints(edge_ids[i])?;
+        let next = if reversed { s } else { e };
+        ring.push((edge_ids[i], reversed));
+        // New reversed-incoming tangent at `next`: negated outgoing tangent of
+        // the edge we just traversed, i.e. its outgoing tangent leaving `next`
+        // when oriented the *opposite* way.
+        back = outgoing_tangent(brep, edge_ids[i], next, !reversed)?;
+        cur = next;
+
+        if cur == first_start {
+            return Some(ring);
+        }
+    }
+}
+
+/// Signed area of a ring projected into the tangent plane defined by `normal`,
+/// using vertex positions. Positive = the ring winds counter-clockwise seen
+/// from the side `normal` points toward. Edges without bounding vertices (full
+/// circles) are skipped; a single closed-circle edge yields area 0 and is
+/// classified by length elsewhere.
+pub(super) fn ring_signed_area(brep: &BRep, ring: &[(EdgeId, bool)], normal: [f64; 3]) -> f64 {
+    // Build an in-plane orthonormal basis (u, v) with u×v = normal.
+    let u = {
+        let a = if normal[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        unit(project_tangent(a, normal))
+    };
+    let v = [
+        normal[1] * u[2] - normal[2] * u[1],
+        normal[2] * u[0] - normal[0] * u[2],
+        normal[0] * u[1] - normal[1] * u[0],
+    ];
+    let proj = |p: [f64; 3]| -> (f64, f64) {
+        (
+            p[0] * u[0] + p[1] * u[1] + p[2] * u[2],
+            p[0] * v[0] + p[1] * v[1] + p[2] * v[2],
+        )
+    };
+    let mut area = 0.0;
+    for &(eid, reversed) in ring {
+        let edge = brep.edge(eid);
+        let (Some(s), Some(e)) = (edge.start, edge.end) else {
+            continue;
+        };
+        let (a, b) = if reversed { (e, s) } else { (s, e) };
+        let (x0, y0) = proj(brep.vertex(a).position);
+        let (x1, y1) = proj(brep.vertex(b).position);
+        area += x0 * y1 - x1 * y0;
+    }
+    area * 0.5
+}
+
+/// Total chord length of a ring. Used to rank the *full-revolution* trim
+/// circles of a curved wall (cylinder/cone tube) against each other — among
+/// those periodic boundaries the longest is taken as the outer bound, the rest
+/// as inner (DL-58). Bounded (vertex-delimited) loops are classified instead by
+/// parametric signed area ([`ring_uv_area`]), which world-space chord length
+/// would misrank on a tapered surface.
+pub(super) fn ring_extent(brep: &BRep, ring: &[(EdgeId, bool)]) -> f64 {
+    let mut len = 0.0;
+    for &(eid, _) in ring {
+        let edge = brep.edge(eid);
+        if let (Some(s), Some(e)) = (edge.start, edge.end) {
+            len += norm(sub(brep.vertex(s).position, brep.vertex(e).position));
+        } else {
+            // Closed-circle edge: use its control polygon span as a proxy.
+            if let EdgeGeometry::Nurbs(c) = &edge.geometry {
+                for w in c.control_points.windows(2) {
+                    len += norm(sub(w[0], w[1]));
+                }
+            }
+        }
+    }
+    len
+}
+
+/// Parametric signed area of a bounded ring, computed in the surface's `(u, v)`
+/// domain ([`surface_uv`]). This is the curved-surface analogue of
+/// [`ring_signed_area`]: it measures how much *parameter* area the loop
+/// encloses, which — unlike world-space chord length — is invariant to a
+/// tapered surface's varying radius, so the true outer boundary outranks holes
+/// regardless of their physical size. `u` is unwrapped across the periodic seam
+/// so the shoelace stays continuous. Returns `None` if any vertex has no
+/// `(u, v)` (e.g. a full-revolution circle edge, or an unparameterized surface).
+pub(super) fn ring_uv_area(brep: &BRep, ring: &[(EdgeId, bool)], surface: &SurfaceGeometry) -> Option<f64> {
+    // Collect the ring's ordered tail vertices (b of edge i == a of edge i+1,
+    // so the tails are the polygon vertices), mapped to (u, v) and unwrapped.
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(ring.len());
+    for &(eid, reversed) in ring {
+        let edge = brep.edge(eid);
+        let (Some(s), Some(e)) = (edge.start, edge.end) else {
+            return None;
+        };
+        let tail = if reversed { e } else { s };
+        let (mut u, v) = surface_uv(surface, brep.vertex(tail).position)?;
+        if let Some(&(prev_u, _)) = uv.last() {
+            while u - prev_u > std::f64::consts::PI {
+                u -= std::f64::consts::TAU;
+            }
+            while u - prev_u < -std::f64::consts::PI {
+                u += std::f64::consts::TAU;
+            }
+        }
+        uv.push((u, v));
+    }
+    if uv.len() < 3 {
+        return None;
+    }
+    let mut area = 0.0;
+    for i in 0..uv.len() {
+        let (x0, y0) = uv[i];
+        let (x1, y1) = uv[(i + 1) % uv.len()];
+        area += x0 * y1 - x1 * y0;
+    }
+    Some(area * 0.5)
+}
+
+/// Concatenated, traversal-oriented dense sample points of a ring (curve
+/// tessellation via [`crate::brep::edge_sampling::sample_edge`]). Unlike the
+/// vertex-only chords of [`ring_signed_area`], this gives closed rim circles
+/// (no bounding vertices) a usable polygon, so their winding has a sign.
+pub(super) fn ring_sample_points(brep: &BRep, ring: &[(EdgeId, bool)]) -> Vec<[f64; 3]> {
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    for &(eid, reversed) in ring {
+        let mut s = crate::brep::edge_sampling::sample_edge(&brep.edge(eid).geometry);
+        if reversed {
+            s.reverse();
+        }
+        pts.extend(s);
+    }
+    pts
+}
+
+/// Sampled signed area of a ring in the tangent plane of `normal` (basis with
+/// `u × v = normal`). Positive = counter-clockwise seen from the side `normal`
+/// points toward. The sampled analogue of [`ring_signed_area`]; closed circle
+/// edges contribute their true ±πr² instead of 0.
+pub(super) fn sampled_area_plane(points: &[[f64; 3]], normal: [f64; 3]) -> f64 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let u = {
+        let a = if normal[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        unit(project_tangent(a, normal))
+    };
+    let v = [
+        normal[1] * u[2] - normal[2] * u[1],
+        normal[2] * u[0] - normal[0] * u[2],
+        normal[0] * u[1] - normal[1] * u[0],
+    ];
+    let proj = |p: [f64; 3]| -> (f64, f64) {
+        (
+            p[0] * u[0] + p[1] * u[1] + p[2] * u[2],
+            p[0] * v[0] + p[1] * v[1] + p[2] * v[2],
+        )
+    };
+    let mut area = 0.0;
+    for i in 0..points.len() {
+        let (x0, y0) = proj(points[i]);
+        let (x1, y1) = proj(points[(i + 1) % points.len()]);
+        area += x0 * y1 - x1 * y0;
+    }
+    area * 0.5
+}
+
+/// Winding metrics of a ring in the surface's `(u, v)` domain, with `u`
+/// unwrapped across the periodic seam: `(net_du, mean_v, shoelace)`.
+///
+/// - `net_du` ≈ 0 for a loop that closes in the parameter domain (bounded),
+///   ±2π for a full-revolution rim around the axis.
+/// - `mean_v` locates the ring along the second parameter.
+/// - `shoelace` is the signed area of the loop closed in unwrapped
+///   coordinates — the winding signal for bounded loops (~0 for rims).
+///
+/// Sign convention: the `(u = atan2(z, x), v)` parameterizations of
+/// [`surface_uv`] are all **left-handed** with respect to the
+/// primitive-outward normal (`∂p/∂u × ∂p/∂v` points inward, since `u`
+/// increases clockwise about local +Y) — "face on the left in 3D" therefore
+/// maps to "face on the RIGHT in the uv plane".
+pub(super) fn ring_uv_metrics(points: &[[f64; 3]], surface: &SurfaceGeometry) -> Option<(f64, f64, f64)> {
+    use std::f64::consts::{PI, TAU};
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(points.len() + 1);
+    for p in points {
+        let Some((mut u, v)) = surface_uv(surface, *p) else {
+            continue; // parametric pole (e.g. a sphere cap apex sample)
+        };
+        if let Some(&(prev_u, _)) = uv.last() {
+            while u - prev_u > PI {
+                u -= TAU;
+            }
+            while u - prev_u < -PI {
+                u += TAU;
+            }
+        }
+        uv.push((u, v));
+    }
+    if uv.len() < 3 {
+        return None;
+    }
+    let net_du = uv.last().unwrap().0 - uv[0].0;
+    let mean_v = uv.iter().map(|&(_, v)| v).sum::<f64>() / uv.len() as f64;
+    let mut shoelace = 0.0;
+    for i in 0..uv.len() {
+        let (x0, y0) = uv[i];
+        let (x1, y1) = uv[(i + 1) % uv.len()];
+        shoelace += x0 * y1 - x1 * y0;
+    }
+    Some((net_du, mean_v, shoelace * 0.5))
+}
+
+/// Whether a ring is a single full-revolution circle edge (no bounding
+/// vertices) — the natural periodic boundary of a cylinder/cone/sphere/torus
+/// wall, peeled off whole at the start of [`order_loops`].
+pub(super) fn is_full_revolution(brep: &BRep, ring: &[(EdgeId, bool)]) -> bool {
+    ring.len() == 1 && {
+        let e = brep.edge(ring[0].0);
+        e.start.is_none() && e.end.is_none()
+    }
+}
+
+/// Order a face's edges into one outer ring plus inner (hole) rings, with
+/// reflex-correct turning-angle ordering and outer/inner classification.
+///
+/// The face surface provides the outward normal that orients the tangent plane;
+/// `surface_normal_at` yields it per-vertex (constant for a plane). The seed
+/// ring is oriented so the OUTER loop winds counter-clockwise seen from outside
+/// the face (positive projected signed area), matching the STEP
+/// `ADVANCED_FACE(... .T.)` convention; holes are reversed to wind the opposite
+/// way. For planar faces classification is by signed-area magnitude (largest =
+/// outer); for curved faces a full-revolution trim circle wins by chord extent
+/// (DL-58), otherwise bounded loops are ranked by parametric (u, v) signed area.
+///
+/// Returns `None` only if the edges cannot be assembled into closed rings at all
+/// (degenerate topology) — the caller then keeps the unordered fallback.
+///
+/// `complemented` is the branch's complement parity ([`branch_is_complemented`]):
+/// the body-outward normal is the primitive-outward normal flipped, so every
+/// winding requirement negates. The F0-2 contract enforced here: walking any
+/// loop in stored order with the BODY-outward normal up keeps the face on the
+/// left — outer loops CCW, holes CW, on planar AND curved surfaces, closed
+/// rims included. That is exactly the `manifold_violations` fwd/rev convention.
+pub(super) fn order_loops(
+    brep: &BRep,
+    edge_ids: &[EdgeId],
+    surface: &SurfaceGeometry,
+    complemented: bool,
+) -> Option<FaceLoops> {
+    if edge_ids.is_empty() {
+        return None;
+    }
+
+    // A self-closing circle edge (no bounding vertices) is its own ring; a face
+    // can be bounded by one or more such circles (a cylinder wall between two
+    // trim circles). Peel those off first.
+    let mut rings: Vec<Vec<(EdgeId, bool)>> = Vec::new();
+    let mut used = vec![false; edge_ids.len()];
+    for (i, &eid) in edge_ids.iter().enumerate() {
+        let edge = brep.edge(eid);
+        if edge.start.is_none() && edge.end.is_none() {
+            used[i] = true;
+            rings.push(vec![(eid, false)]);
+        }
+    }
+
+    let normal_at = |p: [f64; 3]| surface_normal_at(surface, p);
+
+    // Order the remaining vertex-bounded edges into one or more rings.
+    while let Some(seed) = (0..edge_ids.len()).find(|&i| !used[i]) {
+        let ring = order_one_ring(brep, edge_ids, &mut used, seed, &normal_at)?;
+        rings.push(ring);
+    }
+
+    if rings.is_empty() {
+        return None;
+    }
+
+    // Determine a representative face normal (for planar faces it is constant;
+    // for curved faces we just need a consistent reference for area signs).
+    let rep_pos = {
+        // Use the first ring's first vertex position if available.
+        let mut p = None;
+        'outer: for ring in &rings {
+            for &(eid, _) in ring {
+                let edge = brep.edge(eid);
+                if let Some(s) = edge.start {
+                    p = Some(brep.vertex(s).position);
+                    break 'outer;
+                }
+            }
+        }
+        p
+    };
+    let is_planar = matches!(
+        surface,
+        SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
+    );
+
+    // The sign of a CORRECTLY wound outer loop: CCW seen along the
+    // body-outward normal. With a complemented branch the body-outward normal
+    // is the primitive normal flipped, so the required sign negates.
+    let s = if complemented { -1.0 } else { 1.0 };
+
+    // Classify outer vs. inner and fix winding.
+    if is_planar {
+        if let Some(p) = rep_pos.or_else(|| ring_sample_points(brep, &rings[0]).first().copied()) {
+            if let Some(n) = surface_normal_at(surface, p) {
+                // Pick the largest-magnitude-area ring as outer, on SAMPLED
+                // areas (closed circle rings have real area, not 0 — F0-2).
+                let mut areas: Vec<f64> = rings
+                    .iter()
+                    .map(|r| sampled_area_plane(&ring_sample_points(brep, r), n))
+                    .collect();
+                let outer_idx = (0..rings.len())
+                    .max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))
+                    .unwrap();
+                // Outer must wind CCW w.r.t. the body-outward normal
+                // (area · s > 0); holes must wind the opposite way.
+                if areas[outer_idx] * s < 0.0 {
+                    rings[outer_idx].reverse();
+                    flip_orientations(&mut rings[outer_idx]);
+                    areas[outer_idx] = -areas[outer_idx];
+                }
+                for (i, ring) in rings.iter_mut().enumerate() {
+                    if i == outer_idx {
+                        continue;
+                    }
+                    if areas[i] * s > 0.0 {
+                        ring.reverse();
+                        flip_orientations(ring);
+                        areas[i] = -areas[i];
+                    }
+                }
+                let outer = rings.remove(outer_idx);
+                return Some(FaceLoops { outer, inner: rings });
+            }
+        }
+    }
+
+    // Curved face (or planar fallback without a usable normal). Winding is left
+    // as ordered (STEP only needs connected rings here); we only pick which ring
+    // is the outer bound:
+    //
+    // - If any ring is a full-revolution trim circle, it is the surface's
+    //   natural periodic boundary and encloses every bounded sub-loop, so the
+    //   outer bound is the longest such circle (DL-58 extent rule — the
+    //   cylinder/cone tube + drilled-box convention). All other rings are inner.
+    // - Otherwise every ring is a bounded loop: classify by parametric (u, v)
+    //   signed area, the largest by magnitude being outer. This is invariant to
+    //   a tapered surface's varying radius, so a physically large hole no longer
+    //   out-ranks a radially small true boundary (which world-space chord length
+    //   would get wrong).
+    // - With no usable parameterization (tessellated / gyroid) fall back to the
+    //   extent rule.
+    let extent_max = |rings: &[Vec<(EdgeId, bool)>]| {
+        (0..rings.len())
+            .max_by(|&a, &b| ring_extent(brep, &rings[a]).total_cmp(&ring_extent(brep, &rings[b])))
+            .unwrap()
+    };
+    let full_rev: Vec<usize> = (0..rings.len())
+        .filter(|&i| is_full_revolution(brep, &rings[i]))
+        .collect();
+    let outer_idx = if !full_rev.is_empty() {
+        *full_rev
+            .iter()
+            .max_by(|&&a, &&b| ring_extent(brep, &rings[a]).total_cmp(&ring_extent(brep, &rings[b])))
+            .unwrap()
+    } else if let Some(areas) = rings
+        .iter()
+        .map(|r| ring_uv_area(brep, r, surface))
+        .collect::<Option<Vec<f64>>>()
+    {
+        (0..rings.len())
+            .max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()))
+            .unwrap()
+    } else {
+        extent_max(&rings)
+    };
+    // Enforce winding on the curved face (F0-2; winding used to be left "as
+    // ordered"). Work in the uv plane, where "face on the left in 3D
+    // body-outward" means "face on the RIGHT" for an uncomplemented branch
+    // (left-handed parameterization, see `ring_uv_metrics`) — negated by `s`.
+    //
+    // - Bounded loops (closing in uv): an outer bound of a uv region with the
+    //   region on the right winds CW → shoelace sign must be `−s`; holes the
+    //   opposite (`+s`).
+    // - Full-revolution rims (net_du = ±2π): the required traversal direction
+    //   depends on which side of the rim the face lies along v, NOT on the
+    //   outer/inner role — face below (smaller v) → `du · s > 0`, face above
+    //   → `du · s < 0`. The face side comes from the mean v of the face's
+    //   OTHER rings; a lone rim (e.g. a spherical cap cut) has no reference
+    //   and keeps its walk order (documented v1 limitation).
+    //
+    // Unparameterized surfaces (tessellated / gyroid) keep their walk order.
+    let metrics: Vec<Option<(f64, f64, f64)>> = rings
+        .iter()
+        .map(|r| ring_uv_metrics(&ring_sample_points(brep, r), surface))
+        .collect();
+    let ring_count = rings.len();
+    let mean_v_other = |skip: usize| -> Option<f64> {
+        let vs: Vec<f64> = (0..ring_count)
+            .filter(|&j| j != skip)
+            .filter_map(|j| metrics[j].map(|(_, v, _)| v))
+            .collect();
+        if vs.is_empty() {
+            None
+        } else {
+            Some(vs.iter().sum::<f64>() / vs.len() as f64)
+        }
+    };
+    for i in 0..rings.len() {
+        let Some((net_du, mean_v, shoelace)) = metrics[i] else {
+            continue;
+        };
+        let bounded = net_du.abs() < std::f64::consts::PI;
+        let flip = if bounded {
+            let required = if i == outer_idx { -s } else { s };
+            shoelace * required < 0.0
+        } else {
+            let Some(v_other) = mean_v_other(i) else {
+                continue;
+            };
+            let required_du = if v_other < mean_v { s } else { -s };
+            net_du * required_du < 0.0
+        };
+        if flip {
+            rings[i].reverse();
+            flip_orientations(&mut rings[i]);
+        }
+    }
+
+    let outer = rings.remove(outer_idx);
+    Some(FaceLoops { outer, inner: rings })
+}
+
+/// Reverse the per-entry orientation flags of a ring after reversing its order,
+/// so head-to-tail connectivity is preserved.
+pub(super) fn flip_orientations(ring: &mut [(EdgeId, bool)]) {
+    for entry in ring.iter_mut() {
+        entry.1 = !entry.1;
+    }
+}
+
+// ─── public entry point ─────────────────────────────────────────────────────
