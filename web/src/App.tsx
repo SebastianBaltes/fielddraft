@@ -6,6 +6,10 @@ import { FieldSkriptEditor } from "./FieldSkriptEditor";
 import { BottomTabs } from "./BottomTabs";
 import { useKernelStore } from "./store";
 import { requestView } from "./viewCommands";
+import {
+  getActive as getActiveQueryPicker,
+  deactivate as deactivateQueryPicker,
+} from "./queryPickerBridge";
 import { isTextEntryTarget } from "./keyboardTarget";
 import { SettingsMenu, loadSettings, WorkspaceUnitsContext } from "./SettingsMenu";
 import type { SettingsState } from "./SettingsMenu";
@@ -114,9 +118,17 @@ export function App() {
       // Single-key shortcuts (no modifier). Skipped when
       // focus is in an input (guard at the top of onKey).
       if (!ctrl && !e.shiftKey && !e.altKey) {
+        const cur2 = store.getState();
         switch (e.key) {
           case "Escape": {
             const cur = store.getState();
+            // An armed query picker owns the viewport clicks — Escape
+            // releases it first, before any mode/tool fallbacks.
+            if (getActiveQueryPicker()) {
+              deactivateQueryPicker();
+              e.preventDefault();
+              return;
+            }
             if (cur.mateMode) {
               store.toggleMateMode();
             } else if (cur.sketchSession.active && cur.sketchSession.selectedTool) {
@@ -138,31 +150,42 @@ export function App() {
               e.preventDefault();
             }
             return;
+          // Primitive/gizmo keys are modelling-workspace shortcuts —
+          // inside a sketch session they would silently add 3D features
+          // (or flip gizmo modes) behind the sketch. View keys below
+          // stay live: orienting the camera is useful while sketching.
           case "b":
+            if (cur2.sketchSession.active) return;
             store.addPrimitive("box");
             e.preventDefault();
             return;
           case "s":
+            if (cur2.sketchSession.active) return;
             store.addPrimitive("sphere");
             e.preventDefault();
             return;
           case "c":
+            if (cur2.sketchSession.active) return;
             store.addPrimitive("cylinder");
             e.preventDefault();
             return;
           case "t":
+            if (cur2.sketchSession.active) return;
             store.addPrimitive("torus");
             e.preventDefault();
             return;
           case "h":
+            if (cur2.sketchSession.active) return;
             store.addHole();
             e.preventDefault();
             return;
           case "g":
+            if (cur2.sketchSession.active) return;
             store.setGizmoMode("translate");
             e.preventDefault();
             return;
           case "r":
+            if (cur2.sketchSession.active) return;
             store.setGizmoMode("rotate");
             e.preventDefault();
             return;

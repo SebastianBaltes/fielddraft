@@ -925,7 +925,16 @@ export function QueryWidget({
     }
   }, [autoArmed, value, active, id, onPick, entityFilter]);
 
-  const activate = () => {
+  // True toggle: arming twice releases the viewport again. Without
+  // this, a picker whose target can't be picked (or one armed by
+  // accident) kept click-focus forever and every viewport click
+  // silently vanished — the button's own title already promised
+  // "click here to cancel".
+  const toggleActive = () => {
+    if (active) {
+      deactivateQueryPicker();
+      return;
+    }
     registerQueryPicker({ ownerId: id, onPick, entityFilter });
   };
 
@@ -945,7 +954,7 @@ export function QueryWidget({
               ? "Click in the viewport to select, or click here to cancel"
               : "Click here, then click in the viewport to select"
           }
-          onClick={activate}
+          onClick={toggleActive}
         >
           {active ? "◎" : "⊕"}
         </button>
@@ -1044,7 +1053,12 @@ export function MultiQueryWidget({
     }
   }, [autoArmed, value, active, id, entityFilter]);
 
+  // Same toggle semantics as QueryWidget: a second click stops picking.
   const activate = () => {
+    if (active) {
+      deactivateQueryPicker();
+      return;
+    }
     registerQueryPicker({
       ownerId: id,
       onPick: (q: string) => onPickRef.current(q),
@@ -1066,7 +1080,8 @@ export function MultiQueryWidget({
         className={"query-picker multi" + (active ? " is-active" : "")}
         onClick={(e) => {
           if ((e.target as HTMLElement).closest(".chip-remove")) return;
-          activate();
+          if ((e.target as HTMLElement).closest(".query-focus-toggle")) return;
+          if (!active) activate();
         }}
         style={{ cursor: "pointer" }}
       >

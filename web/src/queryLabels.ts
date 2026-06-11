@@ -7,9 +7,24 @@
  */
 
 export const QUERY_DISPLAY_LABELS: Record<string, string> = {
-  "qCreatedBy(origin_plane_xy)": "XY Plane",
-  "qCreatedBy(origin_plane_xz)": "XZ Plane",
-  "qCreatedBy(origin_plane_yz)": "YZ Plane",
+  // Named like the Default-geometry rows in the outliner and the labels
+  // on the viewport datum quads — "Front" is what the user sees in 3D,
+  // the axis pair is kept as a hint for query authors.
+  "qCreatedBy(origin_plane_xy)": "Front (XY)",
+  "qCreatedBy(origin_plane_xz)": "Top (XZ)",
+  "qCreatedBy(origin_plane_yz)": "Right (YZ)",
+};
+
+/**
+ * Query expression for a default datum plane, by outliner/viewport datum
+ * id (`"front" | "top" | "right"`). The inverse of the naming above —
+ * kept beside it so the two maps can't drift. `"origin"` (the origin
+ * marker datum) has no plane query and returns undefined.
+ */
+export const DATUM_PLANE_QUERIES: Record<string, string> = {
+  front: "qCreatedBy(origin_plane_xy)",
+  top: "qCreatedBy(origin_plane_xz)",
+  right: "qCreatedBy(origin_plane_yz)",
 };
 
 /**

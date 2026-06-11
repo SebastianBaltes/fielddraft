@@ -53,6 +53,7 @@ import { PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
@@ -163,11 +164,11 @@ function findBodyIndexForFace(
   return null;
 }
 
-function pickAtMouse(
+/** Camera ray through the mouse position, or null without camera/layout. */
+function rayAtMouse(
   event: React.MouseEvent<HTMLDivElement>,
   host: HTMLDivElement | null,
-  store: { kernel: { pick(origin: number[], dir: number[]): PickResult } },
-): PickResult | null {
+): THREE.Ray | null {
   const camera = getPublishedPickCamera();
   if (!host || !camera) return null;
   const rect = host.getBoundingClientRect();
@@ -176,8 +177,18 @@ function pickAtMouse(
   const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
-  const o = raycaster.ray.origin;
-  const d = raycaster.ray.direction;
+  return raycaster.ray;
+}
+
+function pickAtMouse(
+  event: React.MouseEvent<HTMLDivElement>,
+  host: HTMLDivElement | null,
+  store: { kernel: { pick(origin: number[], dir: number[]): PickResult } },
+): PickResult | null {
+  const ray = rayAtMouse(event, host);
+  if (!ray) return null;
+  const o = ray.origin;
+  const d = ray.direction;
   return store.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
 }
 
@@ -191,10 +202,17 @@ function pickAtMouse(
  * to feature-level `qCreatedBy` (extrude/boolean and other body/feature
  * pickers), but only when the filter doesn't restrict to element kinds the
  * click didn't hit.
+ *
+ * `datumAtRay` resolves the default datum plane under the click lazily
+ * (front/top/right, or null). A FACE picker that hits no model geometry
+ * picks that datum plane as `qCreatedBy(origin_plane_…)` — without this,
+ * an empty project has nothing pickable at all and the sketch-plane
+ * field's picker can never complete.
  */
 function tryQueryPick(
   click: PickResult | null,
   store: { kernel: { bodyCount(): number; bodyBrepFaces(i: number): { branchId: number; idHash: string }[] } } | null,
+  datumAtRay?: () => string | null,
 ): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
@@ -223,6 +241,15 @@ function tryQueryPick(
     } catch {
       // fall through to the feature-level path below
     }
+  }
+
+  // Default datum planes (front/top/right). Model geometry always wins —
+  // this only runs when the click hit no body — and the origin marker is
+  // a point, not a plane, so it never satisfies a FACE pick.
+  if (!click?.hit && datumAtRay && filterAllows("face", picker.entityFilter)) {
+    const datum = datumAtRay();
+    const query = datum ? DATUM_PLANE_QUERIES[datum] : undefined;
+    if (query && picker.onPick(query)) return true;
   }
 
   // Feature-level fallback. Skip it when the picker restricts to element
@@ -503,7 +530,16 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     const click = pickAtMouse(event, hostRef.current, store);
     setPickResult(click);
 
-    if (tryQueryPick(click, store)) return;
+    const datumAtClick = (): string | null => {
+      const ray = rayAtMouse(event, hostRef.current);
+      if (!ray) return null;
+      return pickDatumAtRay(
+        ray.origin,
+        ray.direction,
+        state?.hiddenDatums ?? new Set<string>(),
+      );
+    };
+    if (tryQueryPick(click, store, datumAtClick)) return;
     if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
     if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
     if (state?.filletMode) { handleFilletClick(store, click); return; }
@@ -560,26 +596,11 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     // AFTER element resolution so model geometry always wins over the
     // planes slicing through it.
     if (selection.mode === "element" && !click?.hit) {
-      const host = hostRef.current;
-      const camera = getPublishedPickCamera();
-      if (host && camera) {
-        const rect = host.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          const cx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-          const cy = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
-          const raycaster = new THREE.Raycaster();
-          raycaster.setFromCamera(new THREE.Vector2(cx, cy), camera);
-          const datum = pickDatumAtRay(
-            raycaster.ray.origin,
-            raycaster.ray.direction,
-            state?.hiddenDatums ?? new Set<string>(),
-          );
-          if (datum) {
-            store.selectDatum(datum);
-            invalidateCanvas();
-            return;
-          }
-        }
+      const datum = datumAtClick();
+      if (datum) {
+        store.selectDatum(datum);
+        invalidateCanvas();
+        return;
       }
     }
 
@@ -744,7 +765,10 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           )}
         </Canvas>
       </CanvasErrorBoundary>
-      {!state?.sketchSession.active && <ViewCube />}
+      {/* The cube stays up during a sketch session — the camera is the
+          normal 3D camera there too (sketch-in-3D), and "look straight at
+          the plane" is the single most wanted view action while drawing. */}
+      <ViewCube />
       {state?.sketchSession.active ? (
         <SketchCanvas2d store={store} session={state.sketchSession} />
       ) : null}

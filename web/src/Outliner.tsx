@@ -27,6 +27,8 @@ import { emptyDiagnostics, type SketchDiagnostics } from "./solver/types";
 import { buildDraftSketchState } from "./sketchSession";
 import { SketchSubCalls, SKETCH_SUB_LABEL } from "./SketchSubCalls";
 import { getActive as getActivePicker } from "./queryPickerBridge";
+import { DATUM_PLANE_QUERIES } from "./queryLabels";
+import { filterAllows } from "./elementQuery";
 import { bodyFeatureIds, resolveSelectionLinks } from "./selectionLinks";
 import { QueryWidget } from "./widgets/widgets";
 import { ElementInfo } from "./ElementInfo";
@@ -907,7 +909,18 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                 key={datum.id}
                 className={"row datum-row" + (datumSelected ? " is-selected" : "")}
                 data-testid={`datum-${datum.id}`}
-                onClick={() => store.selectDatum(datumSelected ? null : datum.id)}
+                onClick={() => {
+                  // An armed FACE picker (e.g. the sketch-plane field)
+                  // accepts the datum row as a pick — same affordance as
+                  // clicking the plane quad in the viewport.
+                  const picker = getActivePicker();
+                  const query = DATUM_PLANE_QUERIES[datum.id];
+                  if (picker && query && filterAllows("face", picker.entityFilter)) {
+                    picker.onPick(query);
+                    return;
+                  }
+                  store.selectDatum(datumSelected ? null : datum.id);
+                }}
               >
                 <span className="kind">{datum.glyph}</span>
                 <span className="feature-name">{datum.label}</span>
