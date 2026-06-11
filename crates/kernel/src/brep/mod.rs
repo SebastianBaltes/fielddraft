@@ -23,6 +23,32 @@
 //! `Vec`s and reference each other through newtype index handles
 //! ([`VertexId`], [`EdgeId`], …). This is the borrow-checker-friendly idiom —
 //! no `Rc`/`RefCell`, cheap to clone, and trivially serialisable.
+//!
+//! ## Glossary
+//!
+//! Terms used throughout the pipeline (introduced by the coincidence work,
+//! `docs/BREP-CLASSIFICATION-PLAN.md`):
+//!
+//! - **Carrier**: the infinite analytic surface a branch's face lives on
+//!   (plane / cylinder / sphere …), independent of trimming. Coincidence is
+//!   decided between carriers, symbolically ([`coincidence`]).
+//! - **Coincidence class**: an oriented equivalence class of branches whose
+//!   carriers are the same surface — ON-same (stacked walls, seam) or
+//!   ON-opposite (flush contact, membrane).
+//! - **Membrane**: a measure-zero `f = 0` sheet with material on BOTH sides
+//!   (flush-add contact plane, flush-remove zero-thickness wall). Not part
+//!   of the body boundary — culled before face materialisation.
+//! - **Seam**: the edge where two ON-same coincident faces meet at a 180°
+//!   dihedral. Valid manifold topology (faces are deliberately NOT merged).
+//! - **Fin**: an edge whose adjoining face regions were culled (it lay on a
+//!   membrane, not on `∂body`) — dropped with an interior proof, never to
+//!   fake watertightness.
+//! - **Rim**: a closed-circle boundary edge without bounding vertices (a
+//!   cylinder cap circle, a full-revolution trim).
+//! - **Canonicalisation**: the post-trace pass
+//!   (`weaving::canonicalize`) that rewrites per-branch trace output into
+//!   manifold topology on coincident geometry: weld seam vertices, merge
+//!   duplicate seam edges per class, cull membranes, drop fins.
 
 pub mod branch_pairs;
 pub mod branch_seed;

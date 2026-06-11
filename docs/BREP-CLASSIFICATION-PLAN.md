@@ -380,7 +380,7 @@ oa9h/vyee-Mechanik an der Wurzel. Nachgelagert, weil die Seed-Route nach
 Phase 3 den Normalfall trägt und die Octree-Route über das gemeinsame
 `finish_weave` bereits von Phase 1–3 profitiert.
 
-### Phase 5 — Refactoring & Aufräumen (Code und Konzepte konsolidieren)
+### Phase 5 — Refactoring & Aufräumen (Code und Konzepte konsolidieren) — UMGESETZT
 
 Die Phasen 0–3 sind in sechs schnellen Feature-Commits entstanden; der Code
 funktioniert, aber Struktur und Konzepte hinken der Implementierung
@@ -445,6 +445,25 @@ nachziehen.
 **Reihenfolge:** 5a → 5b → 5c → 5d. Die Toleranz-Policy zuerst (kleinste
 Oberfläche, größter konzeptioneller Hebel), der Datei-Split davor wäre
 doppelte Bewegung. Jede Stufe einzeln: Tests grün → Commit → Push.
+
+**Umsetzung** (v0.6.71–0.6.74, je Stufe ein Commit, 851 Tests grün,
+Warning-frei): 5a `brep::tol` mit drei Klassen (skalenrelativ /
+dimensionslos / eingefroren-absolut mit Konvertierungsauftrag); die
+Kanonikalisierung läuft über `tol::on_boundary`/`loop_centroid`,
+`ADAPT_*` ist dedupliziert, `BOX_SLACK`/`OVERLAP_EPS` zu
+`AABB_TOUCH_SLACK` vereinheitlicht — reine Migration ohne Wertänderung.
+5b `weaving/` als Verzeichnismodul (surface_registry / sketch_surfaces /
+surface_queries / loop_ordering / canonicalize / wireframes / tests),
+öffentliche API unverändert. 5c `finish_weave` als benannte Pipeline
+(upgrade_hermite_edges → canonicalize_coincident → materialize_faces →
+assemble_solid), `order_loops` = assemble_rings +
+classify_rings_planar/curved; Typen `BranchSurfaceMap`, `Ring`,
+`RingUvMetrics`; `ring_signed_area` ist als Test-Orakel `#[cfg(test)]`.
+5d Glossar in `brep/mod.rs`, Heuristik-Begründungen (Membran-Probe-Pull
+0.2, `VERTEX_REFINE_MAX_ITER`), ARCHITECTURE.md §3.4 auf den Ist-Stand;
+das vermutete Debug-`eprintln!` in `octree.rs` lag in Testcode — kein
+Produktions-Logging im Modul außer dem bewussten
+Degenerate-Topology-Warnpfad.
 
 ## Nicht-Ziele / deklarierte Limitationen
 

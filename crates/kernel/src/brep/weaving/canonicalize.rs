@@ -282,6 +282,13 @@ pub(super) fn branch_is_membrane(
         [acc[0] + p[0] * inv, acc[1] + p[1] * inv, acc[2] + p[2] * inv]
     });
 
+    // Probe the centroid plus up to 8 boundary-biased points: each is a
+    // boundary sample pulled 20% toward the centroid — far enough inside the
+    // face that the ±ε probe clears the bounding edges' own zero set, close
+    // enough to the rim to catch a face that is membrane only near its
+    // middle but crosses material toward the boundary (partial overlap).
+    // The exact fraction is uncritical (anything well inside (0, 0.5)
+    // works); 8 probes match the octree's facewise sampling budget.
     let mut probes: Vec<[f64; 3]> = vec![centroid];
     let step = (samples.len() / 8).max(1);
     for s in samples.iter().step_by(step).take(8) {

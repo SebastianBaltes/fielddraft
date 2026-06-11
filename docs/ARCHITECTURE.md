@@ -242,19 +242,22 @@ Features carry an Onshape-style result-body op (`BoolOp`: `add` / `new` /
 Defaults: primitives (box, sphere, …) and imported meshes seed `new`
 bodies; extrude/revolve/sweep/thicken default to `add` so e.g. a face
 extrude grows its source body instead of stacking a second Part onto it.
-Known limitation: a flush `add` (coplanar faces) currently weaves a
-**non-manifold** B-Rep — ghost membrane faces (branch faces that lie
-entirely inside the union), duplicated coincident rim edges and coplanar
-walls without a seam edge (ticket o2j9: two flush boxes yield Euler
-characteristic −16 instead of 2). Root cause: the weave has no boundary
-classification stage — `finish_weave` materialises one face per branch
-unconditionally and `ssi::plane_plane` returns zero components for
-coincident planes. The fix is a planned classification stage
-(IN/ON-same/ON-opposite + coincidence registry), see
-`docs/BREP-CLASSIFICATION-PLAN.md`. Note the mesh/render path never
-reads the B-Rep, so this corrupts wireframe/picking/STEP only, never
-the model. This is the first item of the geometric-kernel debt list in
-`docs/ARCHITECTURE-ROADMAP.md` (tangential contact, tolerance policy,
+Coincident geometry (a flush `add`, stacked coplanar extrudes, coaxial
+equal-radius cylinders) weaves manifold on the production seed route:
+the coincidence registry (`brep/coincidence.rs`, plan Phase 1) decides
+carrier identity symbolically, gates SSI seeding, and the
+canonicalisation pass in `finish_weave` (`brep/weaving/canonicalize.rs`,
+plan Phases 2+3) welds seam vertices, merges duplicate seam edges per
+class, culls membrane faces and drops fins (ticket o2j9, closed). The
+invariant gate (`brep/classification_gate.rs`) pins Euler-Poincaré and
+manifold orientation on the scenario matrix. Honestly open (documented
+red in the gate, plan): the pure octree fallback still degenerates on
+rotated coincident walls (plan Phase 4), and a fully transversal plus of
+two boxes still materialises one face per branch instead of one per
+boundary region (finding F0-1). Tolerances of the topic live centrally
+in `brep/tol.rs` (one scale-relative policy, frozen-absolute legacy
+constants carry a conversion mandate). The remaining geometric-kernel
+debt list is in `docs/ARCHITECTURE-ROADMAP.md` (tangential contact,
 provenance-based naming, kissing-contact policy, C⁰ gradient caveats).
 
 Query resolution (`body.rs::weave_all`, the base of `qFace`/`qEdge`

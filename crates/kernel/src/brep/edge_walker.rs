@@ -1088,6 +1088,10 @@ fn max_vertex_cell_size(octree: &Octree) -> f64 {
 }
 
 /// Maximum Gauss-Newton iterations when re-solving an analytic triple vertex.
+/// Quadratic convergence from a centroid start needs ~5; the LM damping slows
+/// near-degenerate (grazing) corners to roughly linear, so the cap carries
+/// ~5× headroom before declaring the corner phantom. Cost per iteration is
+/// three f32 field evaluations — generosity is cheap.
 const VERTEX_REFINE_MAX_ITER: usize = 24;
 // Acceptance residual for a refined analytic triple vertex; a near-tangential
 // corner whose surfaces do not truly meet stays above it and is rejected
