@@ -509,13 +509,13 @@ export function BRepEdgeOverlay({
   const invalidate = useThree((s) => s.invalidate);
   // Base edges render as fat lines too (ticket 8f5z: plain LineBasicMaterial
   // rasterises 1px hairlines on WebGPU that read broken/washed-out up close —
-  // "Kanten wirken nicht voll"). 1.5px through the instanced screen-space
-  // line shader gives the solid Onshape-style wireframe; the 2px weight stays
-  // reserved for the selection.
+  // "Kanten wirken nicht voll"). 2.5px through the instanced screen-space
+  // line shader gives the solid Onshape-style wireframe; hover (3px) and
+  // selection (4px) stay heavier.
   const baseMaterialRef = useRef(
     new Line2NodeMaterial({
       color: 0x1e293b,
-      linewidth: 1.5,
+      linewidth: 2.5,
       worldUnits: false,
       depthTest: false,
       depthWrite: false,
@@ -527,8 +527,8 @@ export function BRepEdgeOverlay({
   // through the same fat-line path as the *selected* edge (LineSegments2 +
   // Line2NodeMaterial) because that is the one line path proven to composite
   // over the SDF passes on the WebGPU backend — a plain LineSegments hover
-  // overlay never showed up there. 2.5px wide (ticket bqvz: 1px drowned in
-  // the 1.5px base wireframe); the bolder 4px stays reserved for the
+  // overlay never showed up there. 3px wide (ticket bqvz: 1px drowned in
+  // the base wireframe); the bolder 4px stays reserved for the
   // selection, so hover and selection share the hue but differ in brightness
   // and weight.
   const hoverMaterialRef = useRef(
@@ -1076,11 +1076,11 @@ const ELEMENT_SELECTION_COLOR = 0xff7a00;
  *  then deepens the tone. */
 const ELEMENT_HOVER_COLOR = 0xffc080;
 /** Stroke width of hovered-element fat lines (ticket bqvz: the old 1px hover
- *  was barely distinguishable from the 1.5px base wireframe). Clearly wider
- *  than the base edges, clearly slimmer than the 4px selection stroke. */
-const ELEMENT_HOVER_LINEWIDTH = 2.5;
+ *  was barely distinguishable from the base wireframe). Clearly wider
+ *  than the 2.5px base edges, clearly slimmer than the 4px selection stroke. */
+const ELEMENT_HOVER_LINEWIDTH = 3;
 /** Vertex markers size in SCREEN pixels (ticket 7zs8): the selected edge
- *  draws as a 4px fat line, the hovered edge as a 2.5px fat line. World-space
+ *  draws as a 4px fat line, the hovered edge as a 3px fat line. World-space
  *  spheres looked huge at modelling zoom levels. */
 const VERTEX_SELECT_DIAMETER_PX = 4;
 const VERTEX_HOVER_DIAMETER_PX = 3;
