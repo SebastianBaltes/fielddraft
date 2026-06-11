@@ -16,13 +16,13 @@
 //!
 //! ## Tolerance footprint
 //!
-//! Exactly ONE relative tolerance, [`COINCIDENCE_REL_TOL`], scaled by the
-//! body's AABB diagonal for lengths and used raw for angles. Where surface
-//! parameters are construction-identical (a face-extrude seeded from a body
-//! face, a sketch on a face) the upstream f32 values are bit-equal and any
-//! tolerance passes; the constant only covers honest numeric drift through
-//! transform chains. It must stay well above f32 round-off (≈ 6e-8 relative,
-//! times transform-chain headroom) and well below feature size.
+//! Exactly ONE relative tolerance, [`tol::COINCIDENCE_REL_TOL`], scaled by
+//! the body's AABB diagonal for lengths and used raw for angles (see the
+//! sizing rationale there). Where surface parameters are
+//! construction-identical (a face-extrude seeded from a body face, a sketch
+//! on a face) the upstream f32 values are bit-equal and any tolerance
+//! passes; the constant only covers honest numeric drift through transform
+//! chains.
 //!
 //! ## Contact order
 //!
@@ -40,21 +40,8 @@ use crate::bvh::BoundedCsg;
 use crate::csg::BranchId;
 use fielddraft_protocol::{HalfSpace, Transform};
 
+use super::tol;
 use super::vec3::{cross, norm, normalize, scale as vscale, sub};
-
-/// THE coincidence tolerance: relative to the body's AABB diagonal for
-/// lengths, raw for angles (radians ≈ dimensionless). The single allowed
-/// tolerance of the coincidence topic (plan, Phase 1) — do not introduce
-/// others.
-///
-/// Sizing: construction-identical parameters compare bit-equal and pass any
-/// tolerance; the constant exists for honest numeric drift. The binding case
-/// is **mesh-derived face-extrude geometry** (ticket o2j9/px2o): a face
-/// picked off the woven B-Rep anchors its plane on sampled positions that
-/// sit up to ~0.5 µm off the exact bound at 100 mm scale (~5e-6 relative).
-/// 1e-5 covers that with 2× headroom while still being far below feature
-/// size (2.8 µm at a 280 mm diagonal).
-pub const COINCIDENCE_REL_TOL: f64 = 1e-5;
 
 /// Order of contact between two carrier surfaces. Phase 1 registers only
 /// [`ContactOrder::Coincident`]; [`ContactOrder::Tangent`] is the reserved
@@ -119,8 +106,8 @@ impl CoincidenceRegistry {
             (aabb.max[1] - aabb.min[1]) as f64,
             (aabb.max[2] - aabb.min[2]) as f64,
         ]);
-        let tol_len = (diag.max(1.0)) * COINCIDENCE_REL_TOL;
-        let tol_ang = COINCIDENCE_REL_TOL;
+        let tol_len = tol::coincidence_len(diag);
+        let tol_ang = tol::COINCIDENCE_ANG_TOL;
 
         let complemented = complemented_features(body);
         let halfspaces = branch_halfspace_map(body);

@@ -89,9 +89,9 @@ impl Field<'_> {
 /// Newton iteration cap. With quadratic convergence 8 is generous; a sample
 /// that has not converged by then sits on a degenerate/spurious pair.
 const PROJECT_MAX_ITER: usize = 8;
-/// Convergence tolerance on `max(|f_a|, |f_b|)` (world units). The fields are
-/// true distances near their surfaces, so this is a metric tolerance.
-const PROJECT_TOL: f64 = 1e-9;
+// Convergence tolerance on `max(|f_a|, |f_b|)` — frozen-absolute, see
+// `brep::tol`.
+use super::tol::PROJECT_TOL;
 /// Rank guard: reject the step when `sin²θ` between the two surface normals
 /// drops below this (θ ≲ 0.06°). There the cross product collapses, the
 /// Jacobian is rank-deficient, and the "edge" is a tangential degeneracy with
@@ -358,9 +358,9 @@ fn advance(
 /// Bisection passes for [`bisect_active`]. 30 midpoint halvings shrink a step-
 /// sized segment by 2^-30 (≈ 1e-9 of `step`), far below the on-surface scale.
 const BISECT_ACTIVE_STEPS: usize = 30;
-/// Segment-length floor at which [`bisect_active`] stops early — once the active
-/// and inactive endpoints are this close, the boundary is pinned to world-ε.
-const BISECT_ACTIVE_TOL: f64 = 1e-7;
+// Segment-length floor at which [`bisect_active`] stops early — frozen-
+// absolute, see `brep::tol`.
+use super::tol::BISECT_ACTIVE_TOL;
 
 /// Locate the active→inactive transition on the curve span `[a_active,
 /// b_inactive]` by midpoint bisection, returning the last *active* point.

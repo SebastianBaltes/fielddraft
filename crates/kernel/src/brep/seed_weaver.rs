@@ -89,13 +89,10 @@ fn scope_supported(body: &BoundedCsg) -> bool {
     true
 }
 
-/// Curvature-adaptive trace fractions, mirroring the octree route's private
-/// constants (`edge_walker.rs` `ADAPT_*_FRACTION`). Kept local because they are
-/// private there; the values are deliberately identical so a seed-woven edge and
-/// an octree-woven one of the same geometry sample to the same chord fidelity.
-const ADAPT_TOL_FRACTION: f64 = 1.0e-4;
-const ADAPT_MIN_FRACTION: f64 = 1.0e-4;
-const ADAPT_MAX_FRACTION: f64 = 0.1;
+// Curvature-adaptive trace fractions — shared with the octree route via
+// `brep::tol`: a seed-woven edge and an octree-woven one of the same geometry
+// must sample to the same chord fidelity.
+use super::tol::{ADAPT_MAX_FRACTION, ADAPT_MIN_FRACTION, ADAPT_TOL_FRACTION};
 
 /// One traced seam edge, captured *after* its Hermite conversion so we no longer
 /// hold the borrowing `Field`s (which borrow `leaf_map`). Open edges carry their

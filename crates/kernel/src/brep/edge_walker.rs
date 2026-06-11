@@ -442,19 +442,12 @@ const SEAM_MAX_ARC_FACTOR: f64 = 4.0;
 // bounding vertices); the SSI march then places points by curvature down to this
 // absolute tolerance, decoupling sub-mm edge detail from octree depth.
 
-/// Arc-to-chord (sagitta) budget per traced segment: 1e-4 of the model diagonal
-/// → ~0.1 mm on a 1 m object, independent of octree resolution.
-const ADAPT_TOL_FRACTION: f64 = 1.0e-4;
-
-/// Straight-run stride cap: on a near-flat seam the step grows to this fraction
-/// of the diagonal (also capped at half the edge's own span, so every edge keeps
-/// an interior sample). Kept modest so the widened `vertex_reach`/`close_tol`
-/// stay well below an edge's length and never short-circuit its topology.
-const ADAPT_MAX_FRACTION: f64 = 0.1;
-
-/// High-curvature stride floor: bounds the work at a near-crease (a true crease
-/// is a vertex, handled by topology) while still allowing sub-mm sampling.
-const ADAPT_MIN_FRACTION: f64 = 1.0e-4;
+// Curvature-adaptive trace fractions — shared with the seed route via
+// `brep::tol` so both routes sample identical geometry to identical chord
+// fidelity (rationale there). The straight-run cap is additionally capped at
+// half the edge's own span at the use site, so every edge keeps an interior
+// sample.
+use super::tol::{ADAPT_MAX_FRACTION, ADAPT_MIN_FRACTION, ADAPT_TOL_FRACTION};
 
 /// The scalar [`Field`] backing a branch. Every primitive face — box plane,
 /// sphere, (infinite) cylinder, cone, torus, and the analytic extrude/revolve
@@ -1096,11 +1089,10 @@ fn max_vertex_cell_size(octree: &Octree) -> f64 {
 
 /// Maximum Gauss-Newton iterations when re-solving an analytic triple vertex.
 const VERTEX_REFINE_MAX_ITER: usize = 24;
-/// Convergence threshold on the largest per-surface signed-distance residual
-/// for accepting a refined analytic triple vertex (world units, matching the
-/// extractor's `ACCEPT_EPS` spirit). A near-tangential corner whose surfaces do
-/// not truly meet leaves the residual above this and is rejected (keep centroid).
-const VERTEX_REFINE_TOL: f32 = 1e-3;
+// Acceptance residual for a refined analytic triple vertex; a near-tangential
+// corner whose surfaces do not truly meet stays above it and is rejected
+// (keep centroid). Frozen-absolute, see `brep::tol`.
+use super::tol::VERTEX_REFINE_TOL;
 
 /// Re-solve a multi-branch vertex as the exact common zero of its branches'
 /// analytic surfaces, by Gauss-Newton from the centroid `seed` (DL-66).

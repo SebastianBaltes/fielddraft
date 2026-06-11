@@ -1848,11 +1848,11 @@ fn merge_coincident_edges(
     memberships: &mut Vec<Vec<u32>>,
     diag: f64,
 ) {
-    // Identity tolerances, derived from THE coincidence constant: endpoint
-    // vertices are Newton-refined (tight, ×10 headroom); closed-loop
-    // centroids come from chord sampling of curved rims (sag-limited, looser).
-    let tol_pt = diag * super::coincidence::COINCIDENCE_REL_TOL * 10.0;
-    let tol_loop = diag * 2e-3;
+    // Identity tolerances: endpoint vertices are Newton-refined (tight);
+    // closed-loop centroids come from chord sampling of curved rims
+    // (sag-limited, looser). Rationale in `brep::tol`.
+    let tol_pt = super::tol::on_boundary(diag);
+    let tol_loop = super::tol::loop_centroid(diag);
 
     let canon = |b: BranchId| -> u32 {
         registry
@@ -2046,7 +2046,7 @@ fn cull_membrane_branches(
     memberships: &[Vec<u32>],
     diag: f64,
 ) -> std::collections::HashSet<u32> {
-    let eps = diag * 1e-4;
+    let eps = super::tol::on_boundary(diag);
     let mut edges_of: HashMap<u32, Vec<EdgeId>> = HashMap::new();
     for (i, members) in memberships.iter().enumerate() {
         for &b in members {
@@ -2180,7 +2180,7 @@ fn drop_point_contact_edges(
     memberships: &mut Vec<Vec<u32>>,
     diag: f64,
 ) {
-    let tol = diag * super::coincidence::COINCIDENCE_REL_TOL * 10.0;
+    let tol = super::tol::on_boundary(diag);
     let keep: Vec<bool> = brep
         .edges
         .iter()
@@ -2214,7 +2214,7 @@ fn drop_point_contact_edges(
 /// onto the lowest-index entry, which takes the union of the branch sets.
 /// Only runs on coincident bodies (caller gates on a non-empty registry).
 fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>>, diag: f64) {
-    let tol = diag * super::coincidence::COINCIDENCE_REL_TOL * 10.0;
+    let tol = super::tol::on_boundary(diag);
     let n = brep.vertices.len();
     let mut alias: Vec<u32> = (0..n as u32).collect();
     let mut welded = false;
@@ -2288,7 +2288,7 @@ fn drop_fin_edges(
     if culled.is_empty() {
         return;
     }
-    let eps = diag * 1e-4;
+    let eps = super::tol::on_boundary(diag);
     let keep: Vec<bool> = brep
         .edges
         .iter()

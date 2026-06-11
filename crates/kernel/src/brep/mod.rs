@@ -45,6 +45,7 @@ pub mod projection;
 pub mod seed_weaver;
 pub mod ssi;
 pub mod step_export;
+pub mod tol;
 mod vec3;
 pub mod weaving;
 

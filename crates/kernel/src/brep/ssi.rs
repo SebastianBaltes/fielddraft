@@ -62,19 +62,16 @@ pub enum SsiResult {
 /// Both axes use the same count so the seam-wrap bookkeeping stays simple.
 const SCAN_RES: usize = 64;
 
+// Identity/slack tolerances live in `brep::tol`; `BOX_SLACK` is the AABB
+// membership slack on line-box clipping, `PARALLEL_EPS` the unit-direction
+// degeneracy guard.
+use super::tol::{AABB_TOUCH_SLACK as BOX_SLACK, PARALLEL_EPS};
+
 /// Bisection-refinement steps applied to each raw contour crossing. The grid
 /// crossing is already linearly interpolated (≈ one cell of error); 16 halvings
 /// of a one-cell bracket drive the residual to ≈ cell/2¹⁶ ≪ 1e-5 of the box,
 /// comfortably inside the 1e-4 on-surface tolerance the tests assert.
 const BISECT_STEPS: usize = 16;
-
-/// Numeric guard for "two normals are (anti)parallel" and similar
-/// degenerate-direction tests.
-const PARALLEL_EPS: f32 = 1e-6;
-
-/// Absolute slack on AABB membership / line-box clipping, so a seed landing
-/// exactly on a box wall is not rejected by float rounding.
-const BOX_SLACK: f32 = 1e-4;
 
 /// How many seeds the closed-form paths spread along a single component (a line
 /// segment or a circle). A component can be trimmed by a third surface into

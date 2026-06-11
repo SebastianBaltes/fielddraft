@@ -94,13 +94,11 @@ pub struct BranchPair {
     pub origin: PairOrigin,
 }
 
-/// Absolute slack for the AABB overlap test. Real edges live exactly where two
-/// AABBs *touch* — adjacent solids sharing a face, a cutting cylinder tangent to
-/// a box wall — so a strict `min < max` test would wrongly prune them. With this
-/// epsilon a touching/coincident pair counts as overlapping. 1e-4 is well below
-/// any modelling-relevant feature size yet comfortably above float noise from
-/// transform-composed leaf AABBs.
-const OVERLAP_EPS: f32 = 1e-4;
+// Slack for the AABB overlap test (see `brep::tol`). Real edges live exactly
+// where two AABBs *touch* — adjacent solids sharing a face, a cutting cylinder
+// tangent to a box wall — so a strict `min < max` test would wrongly prune
+// them; with this slack a touching/coincident pair counts as overlapping.
+use super::tol::AABB_TOUCH_SLACK as OVERLAP_EPS;
 
 /// Statically enumerate **every** branch in the CSG tree, each carrying its
 /// owning leaf's world AABB. Out-of-scope carriers (Twist/Bend/Displace and
