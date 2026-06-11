@@ -253,7 +253,9 @@ coincident planes. The fix is a planned classification stage
 (IN/ON-same/ON-opposite + coincidence registry), see
 `docs/BREP-CLASSIFICATION-PLAN.md`. Note the mesh/render path never
 reads the B-Rep, so this corrupts wireframe/picking/STEP only, never
-the model.
+the model. This is the first item of the geometric-kernel debt list in
+`docs/ARCHITECTURE-ROADMAP.md` (tangential contact, tolerance policy,
+provenance-based naming, kissing-contact policy, C⁰ gradient caveats).
 
 Query resolution (`body.rs::weave_all`, the base of `qFace`/`qEdge`
 handle lookup and the face-extrude profile) rides the parametric

@@ -154,6 +154,11 @@ Output: pro Body eine Map Branch → (Klassen-ID, Orientierung). Konsumenten:
 SSI (Phase 3), finish_weave (Phase 2/3), später Octree-Kontributor-Logik
 (Phase 4).
 
+Design-Direktive (aus `ARCHITECTURE-ROADMAP.md`, Punkt 2): die Registry
+modelliert Kontakt als **Ordnung** (0 transversal, 1 tangential,
+∞ koinzident), nicht als Bool. Phase 1 implementiert nur Ordnung ∞; das
+Interface lässt tangentialen Kontakt später ohne Redesign andocken.
+
 ### Phase 2 — Pass A: Interior-Cull in `finish_weave`
 
 Ankerpunkt: nach der Face-Materialisierung (weaving.rs:1265), vor der
@@ -209,12 +214,15 @@ Phase 3 den Normalfall trägt und die Octree-Route über das gemeinsame
 
 ## Nicht-Ziele / deklarierte Limitationen
 
-- **Tangentiale Quadriken** (Zylinder tangential an Ebene, ungleichradige
-  Berührung): SSI-Kurve degeneriert, ∇f_a × ∇f_b → 0, der Tracer hat keine
-  Marschrichtung. Selten in Praxis-Geometrie — **aber**: Fillets/Blends sind
-  per Konstruktion überall tangential; sobald BREP-FEATURE-VISION Fillets
-  angeht, braucht das eine eigene Lösung (tangentiale Kanten symbolisch aus
-  der Feature-Konstruktion, nicht aus SSI). Bis dahin: known limitation.
+- **Tangentialer Kontakt** (Kontaktordnung 1): SSI-Kurve degeneriert,
+  ∇f_a × ∇f_b → 0 entlang der ganzen Kante, der Tracer hat keine
+  Marschrichtung. Betrifft nicht nur Fillets, sondern jeden G1-Stoß
+  (Revolves/Extrudes mit tangentengleichen Profilen). Per User-Entscheidung
+  2026-06-11 **zurückgestellt**; Lösungsrichtung (konstruktive Provenienz:
+  Tangenz-Fakt aus Sketch-Constraints/Profildaten, Kante symbolisch aus der
+  Konstruktion, nie aus SSI) und Auslöser stehen in
+  `docs/ARCHITECTURE-ROADMAP.md`, Punkt 2. Die Registry (Phase 1) hält per
+  Kontaktordnungs-Feld die Andockstelle offen.
 - **Kissing Contact** (Berührung in Punkt oder Kante, z. B. zwei Boxen teilen
   genau eine Kante): die Union ist **inhärent nicht-mannigfaltig** — das ist
   keine Pipeline-Schwäche, sondern Topologie. Policy: Weave liefert das
