@@ -181,7 +181,7 @@ trait FeatureKind: Send + Sync {
 }
 ```
 
-`FeatureRegistry::with_builtins()` registers ~24 feature kinds: primitives, patterns (linear/circular/mirror), transforms (translate/rotate/scale), sketch, extrude, revolve, sweep, boolean, fillet, shell, material. `regenerate()` walks feature calls in document order, resolves formula variables, and dispatches to each feature's `execute()`.
+`FeatureRegistry::with_builtins()` registers ~24 feature kinds: primitives, patterns (linear/circular/mirror), transforms (translate/rotate/scale), sketch, extrude, revolve, sweep, boolean, fillet, shell, material. `regenerate()` walks feature calls in document order, resolves formula variables, and dispatches to each feature's `execute()`. Regeneration is **error-tolerant** (Onshape semantics, ticket sx5a): a failing feature is recorded in the returned `RegenErrors` and skipped — it contributes no geometry while the rest of the document regenerates normally. The kernel keeps the messages in `feature_errors`, `listFeatures` exports them per feature (`error`), and the UI paints the row/dialog title red with the message as the tooltip. Mutations therefore never get rejected because a feature can't execute — creating an extrude with an empty or non-coplanar profile succeeds and the feature reports its error until the params are fixed.
 
 `Context` holds the mutable document reference, solved sketch data (`HashMap<FeatureId, SketchData>`), and collected edge fillets.
 

@@ -81,6 +81,10 @@ export interface FeatureDialogProps {
   /** Optional footer slot for view-state controls that don't
    *  belong in the definition (e.g. transparency slider). */
   footer?: React.ReactNode;
+  /** Regen error of the edited feature (ticket sx5a): paints the dialog
+   *  title red, with the message as the hover tooltip — Onshape-style
+   *  feature-error signalling. */
+  error?: string | null;
 }
 
 export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }> = {
@@ -162,6 +166,7 @@ export function FeatureDialog({
   onCommit,
   onCancel,
   footer,
+  error,
 }: FeatureDialogProps) {
   const handleParamChange = (key: string, next: unknown) => {
     if (key === "_material_preset") {
@@ -173,7 +178,10 @@ export function FeatureDialog({
   return (
     <div className="fd-feature-dialog" data-feature-type={schema.type}>
       <div className="header">
-        <div className="title">
+        <div
+          className={"title" + (error ? " has-error" : "")}
+          title={error || undefined}
+        >
           {FEATURE_TYPE_META[schema.type]?.glyph ? (
             <span className="glyph" aria-hidden="true">{FEATURE_TYPE_META[schema.type].glyph}</span>
           ) : null}

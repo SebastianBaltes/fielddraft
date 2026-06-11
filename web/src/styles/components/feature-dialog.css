@@ -32,6 +32,11 @@
     font-size: var(--fs-md);
     font-weight: var(--fw-semibold);
     color: var(--color-text);
+
+    /* Regenerations-Fehler (ticket sx5a): Titel rot, Meldung im title-Attribut. */
+    &.has-error {
+      color: var(--color-error);
+    }
     text-transform: capitalize;
     flex: 1;
     display: flex;

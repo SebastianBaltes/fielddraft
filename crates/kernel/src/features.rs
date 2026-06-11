@@ -856,41 +856,124 @@ impl FeatureRegistry {
     /// after the failing call runs, and the caller can inspect the
     /// partially-mutated context to show the user which feature
     /// went red.
+    /// Walk the calls in document order and execute each one. A failing
+    /// feature is **recorded and skipped** instead of fail-stopping the
+    /// whole document (Onshape semantics, ticket sx5a): it contributes no
+    /// geometry, the rest of the model regenerates normally, and the UI
+    /// surfaces the per-feature error (red title + tooltip). Returns the
+    /// collected per-feature errors — empty means a clean regen.
     pub fn regenerate(
         &self,
         ctx: &mut Context<'_>,
         calls: &[FeatureCall],
         rollback_after: Option<usize>,
-    ) -> Result<(), FeatureError> {
+    ) -> RegenErrors {
         // K8.11: snapshot the variables table once per
         // regenerate — execute paths don't mutate it, and
         // cloning here means the param resolver can borrow
         // without tangling with the `ctx.document` mutable
         // borrow.
         let variables = ctx.document.variables.clone();
+        let mut errors: Vec<(FeatureId, FeatureError)> = Vec::new();
         for (i, call) in calls.iter().enumerate() {
             if call.suppressed || rollback_after.is_some_and(|ra| i >= ra) {
                 continue;
             }
-            let feature = self
-                .features
-                .get(&call.type_name)
-                .ok_or_else(|| FeatureError::UnknownFeatureType(call.type_name.clone()))?;
+            let Some(feature) = self.features.get(&call.type_name) else {
+                errors.push((
+                    call.id.clone(),
+                    FeatureError::UnknownFeatureType(call.type_name.clone()),
+                ));
+                continue;
+            };
             // K8.11: resolve any formula-valued params (e.g.
             // `{value: "=width/2", unit: "mm"}`) against the
             // document variables before handing them off to
             // `execute`. Features see plain numeric values and
             // don't need to know the formula engine exists.
             let mut resolved = call.params.clone();
-            crate::expr::resolve_params_with_variables(&mut resolved, &variables)
-                .map_err(|e| FeatureError::InvalidParameter {
-                    feature: "<formula>",
-                    name: "params",
-                    message: format!("{} (in {})", e, call.type_name),
-                })?;
-            feature.execute(ctx, &call.id, &resolved)?;
+            if let Err(e) =
+                crate::expr::resolve_params_with_variables(&mut resolved, &variables)
+            {
+                errors.push((
+                    call.id.clone(),
+                    FeatureError::InvalidParameter {
+                        feature: "<formula>",
+                        name: "params",
+                        message: format!("{} (in {})", e, call.type_name),
+                    },
+                ));
+                continue;
+            }
+            if let Err(e) = feature.execute(ctx, &call.id, &resolved) {
+                errors.push((call.id.clone(), e));
+            }
         }
-        Ok(())
+        RegenErrors(errors)
+    }
+}
+
+/// Per-feature errors collected by the error-tolerant [`FeatureRegistry::
+/// regenerate`] (ticket sx5a) — one entry per failing call, in document
+/// order. The `unwrap`/`unwrap_err`/`expect`/`is_err` mirrors keep the
+/// pre-tolerance `Result` call-site ergonomics: "unwrap" asserts a clean
+/// regen, "unwrap_err" asserts at least one failure and yields the first.
+#[derive(Debug, Default)]
+#[must_use = "a regen may have recorded per-feature errors"]
+pub struct RegenErrors(pub Vec<(FeatureId, FeatureError)>);
+
+impl RegenErrors {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn is_err(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    /// First failing feature's error, if any.
+    pub fn err(self) -> Option<FeatureError> {
+        self.0.into_iter().next().map(|(_, e)| e)
+    }
+
+    /// Panic if any feature failed (mirror of the old `Result::unwrap`).
+    #[track_caller]
+    pub fn unwrap(self) {
+        if let Some((id, err)) = self.0.first() {
+            panic!("feature {id} failed to regenerate: {err}");
+        }
+    }
+
+    /// Panic with `msg` if any feature failed (mirror of `Result::expect`).
+    #[track_caller]
+    pub fn expect(self, msg: &str) {
+        if let Some((id, err)) = self.0.first() {
+            panic!("{msg}: feature {id} failed to regenerate: {err}");
+        }
+    }
+
+    /// Panic if the regen was CLEAN; otherwise return the first failing
+    /// feature's error (mirror of the old `Result::unwrap_err`).
+    #[track_caller]
+    pub fn unwrap_err(self) -> FeatureError {
+        match self.0.into_iter().next() {
+            Some((_, e)) => e,
+            None => panic!("regenerate succeeded but an error was expected"),
+        }
+    }
+
+    /// Like [`Self::unwrap_err`] but with a caller message (mirror of
+    /// `Result::expect_err`).
+    #[track_caller]
+    pub fn expect_err(self, msg: &str) -> FeatureError {
+        match self.0.into_iter().next() {
+            Some((_, e)) => e,
+            None => panic!("{msg}: regenerate succeeded but an error was expected"),
+        }
     }
 }
 
@@ -4105,10 +4188,11 @@ mod tests {
     }
 
     #[test]
-    fn regeneration_is_fail_stop() {
+    fn regeneration_is_error_tolerant() {
         // Build: one good sphere, one bad cylinder (missing half_height),
-        // one good box. The sphere must land on the spine, the cylinder
-        // must error, and the box must *not* run because of fail-stop.
+        // one good box. Onshape semantics (ticket sx5a): the cylinder's
+        // error is RECORDED against its feature id and skipped, while the
+        // sphere AND the box both land on the spine.
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -4121,9 +4205,11 @@ mod tests {
                 json!({ "half_extents": [1.0, 1.0, 1.0] }),
             ),
         ];
-        let err = registry.regenerate(&mut ctx, &calls, None).unwrap_err();
+        let errors = registry.regenerate(&mut ctx, &calls, None);
+        assert_eq!(errors.0.len(), 1, "exactly the cylinder must fail");
+        assert_eq!(errors.0[0].0, id(2));
         assert!(matches!(
-            err,
+            errors.0[0].1,
             FeatureError::MissingParameter {
                 feature: "cylinder",
                 name: "half_height"
@@ -4131,12 +4217,16 @@ mod tests {
         ));
         assert_eq!(
             ctx.features.len(),
-            1,
-            "fail-stop: only the sphere should have landed"
+            2,
+            "error tolerance: sphere and box must both land"
         );
         assert!(matches!(
             ctx.features[0].export_primitive(),
             Some(Primitive::Sphere { .. })
+        ));
+        assert!(matches!(
+            ctx.features[1].export_primitive(),
+            Some(Primitive::Box { .. })
         ));
     }
 

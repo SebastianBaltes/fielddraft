@@ -985,6 +985,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                     "row" +
                     (selected || related ? " is-selected" : "") +
                     (feature.suppressed ? " is-suppressed" : "") +
+                    (feature.error ? " has-error" : "") +
                     (isRolledBack ? " is-rolled-back" : "") +
                     (isDragged ? " is-dragging" : "") +
                     (dropIndex === index ? " drop-above" : "") +
@@ -998,6 +999,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                   data-testid={`feature-row-${feature.id}`}
                   data-feature-id={feature.id}
                   data-feature-kind={feature.kind}
+                  title={feature.error || undefined}
                   data-feature-suppressed={feature.suppressed ? "true" : "false"}
                   draggable={!isRolledBack}
                   onDragStart={isRolledBack ? undefined : (e) => handleFeatureDragStart(e, feature.id)}
@@ -1151,6 +1153,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                 schema={selectedSchema}
                 definition={dialogDraft}
                 onChange={handleDialogChange}
+                error={selectedFeature?.error ?? null}
               />
               {/* Ticket yx6a: a committed sketch's detail view embeds
                   its element list (read-only) plus the edit entry —

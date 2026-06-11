@@ -1613,7 +1613,8 @@ export class KernelStore {
    *  afterwards via the feature dialog. Returns the new feature id, or `null`
    *  on a kernel error (e.g. the faces are not coplanar). */
   addExtrudeFaces(faceQueries: string[], depthMm = 25): number | null {
-    if (faceQueries.length === 0) return null;
+    // An EMPTY selection is allowed (ticket 1rax): the feature is created
+    // with no profile and the dialog's query picker fills it afterwards.
     let id: number;
     try {
       // Created as a PENDING ghost (ticket x7af): the call lands suppressed,
@@ -3534,8 +3535,10 @@ export class KernelStore {
    *  Returns the new feature id, or `null` when there's no
    *  sketch to consume. */
   addRevolveFromLatestSketch(): number | null {
-    const sketchId = this.latestSketchId();
-    if (sketchId === null) return null;
+    // No sketch yet → create an EMPTY revolve (ticket 1rax): the dialog's
+    // query picker fills `profiles` afterwards; until then the feature
+    // reports its regen error Onshape-style (red title + tooltip).
+    const sketchId = this.latestSketchId() ?? 0;
     let id: number;
     try {
       id = this.kernel.addRevolve(sketchId, this.state.nextOp, 0, 0, 0);

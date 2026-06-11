@@ -678,7 +678,10 @@ mod tests {
         set_runner(runner);
         let result = registry.regenerate(&mut ctx, calls, None);
         clear_runner();
-        result.map(|()| ctx.features)
+        match result.err() {
+            Some(e) => Err(e),
+            None => Ok(ctx.features),
+        }
     }
 
     fn script_call(type_name: &str, id: &str) -> FeatureCall {

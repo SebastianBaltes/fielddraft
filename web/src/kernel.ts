@@ -271,6 +271,11 @@ export interface FeatureSummary {
    *  treat the absence as `false`. */
   suppressed?: boolean;
   rolled_back?: boolean;
+  /** Regen error of a failing feature (ticket sx5a, Onshape semantics):
+   *  the feature stays in the document but contributes no geometry; the
+   *  outliner paints it red and shows this message as the tooltip.
+   *  Omitted from the JSON when the feature regenerated cleanly. */
+  error?: string;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;

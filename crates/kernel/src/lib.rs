@@ -400,6 +400,10 @@ struct FeatureSummary {
     suppressed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     rolled_back: bool,
+    /// Regen error message of a failing feature (ticket sx5a) — the
+    /// outliner paints the row red and exposes this as the tooltip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// Owned by the JS side. Holds the canonical document and the
@@ -468,6 +472,11 @@ pub struct Kernel {
     /// regenerate pass, so the viewport can render datum triads without
     /// re-resolving the face query on the JS side.
     mate_connectors: Vec<features::ResolvedMateConnector>,
+    /// Per-feature regen errors from the last `bootstrap_features_from_calls`
+    /// (ticket sx5a, Onshape semantics): a failing feature stays in the
+    /// document, contributes no geometry, and carries its message here —
+    /// `listFeatures` exports it so the UI can paint the row red.
+    feature_errors: std::collections::HashMap<FeatureId, String>,
     /// Rollback bar position: if set, features at index >= this value
     /// are skipped during regeneration (but stay in the document).
     rollback_after: Option<usize>,
@@ -973,6 +982,7 @@ impl Kernel {
             mesh_version: 0,
             edge_fillets: Vec::new(),
             mate_connectors: Vec::new(),
+            feature_errors: std::collections::HashMap::new(),
             rollback_after: None,
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
@@ -1028,6 +1038,11 @@ impl Kernel {
     /// again via `sync_feature_calls`, but leaving the restore
     /// in place keeps this helper independent of its caller's
     /// sequencing.
+    /// Always returns `Ok(())` since the regen loop became error-tolerant
+    /// (ticket sx5a): a failing feature is recorded in `feature_errors`
+    /// and skipped — it contributes no geometry — instead of fail-stopping
+    /// the document. The `Result` signature stays so the many defensive
+    /// call sites keep compiling; their revert branches are dead defense.
     fn bootstrap_features_from_calls(&mut self) -> Result<(), features::FeatureError> {
         let mut registry = features::FeatureRegistry::with_builtins();
         // FieldSkript S2b: a document's scripts register as runtime
@@ -1049,18 +1064,23 @@ impl Kernel {
         // `self.decoded` — the sole producer of the IR. On a fail-stop
         // error the partial spine is still captured so the caller can
         // render what regenerated before the failing call.
-        let (result, spine) = {
+        let (errors, spine) = {
             let mut ctx = features::Context::new(&mut self.document);
-            let r = registry.regenerate(&mut ctx, &calls, rollback);
+            let errs = registry.regenerate(&mut ctx, &calls, rollback);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
             // C2: capture resolved mate-connector CSYS for the viewport.
             self.mate_connectors = std::mem::take(&mut ctx.mate_connectors);
-            (r, std::mem::take(&mut ctx.features))
+            (errs, std::mem::take(&mut ctx.features))
         };
         self.document.feature_calls = calls;
         self.decoded = spine;
-        result
+        self.feature_errors = errors
+            .0
+            .into_iter()
+            .map(|(id, e)| (id, e.to_string()))
+            .collect();
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = toJson)]
@@ -1239,6 +1259,7 @@ impl Kernel {
                     scale: spine.transform.scale,
                     suppressed: call.suppressed,
                     rolled_back: rb,
+                    error: self.feature_errors.get(&call.id).cloned(),
                 });
             } else {
                 // K8.9: hole pushes its spine entry under a
@@ -1302,6 +1323,7 @@ impl Kernel {
                     scale: [1.0, 1.0, 1.0],
                     suppressed: call.suppressed,
                     rolled_back: rb,
+                    error: self.feature_errors.get(&call.id).cloned(),
                 });
             }
         }
@@ -1473,6 +1495,17 @@ impl Kernel {
         cy: f32,
         cz: f32,
     ) -> Result<u32, JsError> {
+        let op_wire = Self::op_wire_name(op)?;
+        // `sketch_id == 0` creates an EMPTY revolve (ticket 1rax): the
+        // dialog's query picker fills `profiles` afterwards; until then
+        // the feature reports its regen error (red title + tooltip).
+        if sketch_id == 0 {
+            return self.push_feature_call("revolve", serde_json::json!({
+                "profiles": "",
+                "operation": op_wire,
+                "center": [cx, cy, cz],
+            }));
+        }
         let sketch_feature_id = FeatureId::from_u32(sketch_id);
         let exists = self
             .document
@@ -1484,7 +1517,6 @@ impl Kernel {
                 "feature {sketch_id} is not a sketch"
             )));
         }
-        let op_wire = Self::op_wire_name(op)?;
         self.push_feature_call("revolve", serde_json::json!({
             "profiles": format!("qCreatedBy({sketch_feature_id})"),
             "operation": op_wire,
@@ -4305,6 +4337,32 @@ mod tests {
         let json = k.list_features().unwrap();
         assert!(json.contains("\"kind\":\"box\""));
         assert!(json.contains("\"op\":\"new\""));
+        // clean regen → no error field serialized
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn list_features_exports_per_feature_regen_error() {
+        // Onshape semantics (ticket sx5a): a broken feature call is
+        // ACCEPTED — it stays in the document, contributes no geometry,
+        // and `listFeatures` carries its regen error for the red title.
+        let mut k = Kernel::new();
+        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            .unwrap();
+        let broken = k
+            .push_feature_call(
+                "extrude",
+                serde_json::json!({ "profiles": "", "faces": "", "depth": { "value": 25.0, "unit": "mm" } }),
+            )
+            .expect("a broken feature is created, not rejected");
+        let json = k.list_features().unwrap();
+        assert!(json.contains("\"error\""), "{json}");
+        // the healthy box stays on the spine, the broken extrude doesn't
+        assert_eq!(k.feature_count(), 1);
+        // fixing nothing but suppressing clears the error on regen
+        k.set_feature_suppressed(broken, true).unwrap();
+        let json = k.list_features().unwrap();
+        assert!(!json.contains("\"error\""), "{json}");
     }
 
     #[test]

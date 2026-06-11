@@ -559,6 +559,15 @@
     }
   }
 
+  /* Feature mit Regenerations-Fehler (ticket sx5a): roter Titel,
+     die Fehlermeldung haengt als title-Attribut an der Zeile. */
+  & .row.has-error {
+    & .feature-name,
+    & .kind {
+      color: var(--color-error);
+    }
+  }
+
   & .row.is-rolled-back {
     opacity: 0.45;
 

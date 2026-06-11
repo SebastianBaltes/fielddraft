@@ -920,25 +920,39 @@ export function Toolbar({ store, state }: ToolbarProps) {
           testId="thread-split-button"
         />
         <FeatureButton kind="sketch" title="Sketch on XY plane" testId="enter-sketch" onClick={handleSketchEnter} draggable dragType="fielddraft/sketch" />
+        {/* Extrude/Revolve stay enabled without a matching selection
+            (ticket 1rax): clicking creates the feature with an EMPTY
+            profile and the dialog's query picker fills it afterwards —
+            until then the feature reports its error Onshape-style. */}
         <FeatureButton
           kind="extrude"
           title={
             selectedFaceQueries.length > 0
               ? "Extrude selected face(s) (25 mm)"
-              : "Extrude latest sketch (25 mm)"
+              : hasSketch
+                ? "Extrude latest sketch (25 mm)"
+                : "Extrude — pick faces or a sketch in the dialog"
           }
           testId="extrude-latest-sketch"
-          disabled={!hasSketch && selectedFaceQueries.length === 0}
+          disabled={!hasFeatures && !hasSketch}
           onClick={() => {
             if (selectedFaceQueries.length > 0) {
               store.addExtrudeFaces(selectedFaceQueries);
               store.clearElementSelection();
-            } else {
+            } else if (hasSketch) {
               store.addExtrudeFromLatestSketch(25);
+            } else {
+              store.addExtrudeFaces([]);
             }
           }}
         />
-        <FeatureButton kind="revolve" title="Revolve latest sketch" testId="revolve-latest-sketch" disabled={!hasSketch} onClick={() => store.addRevolveFromLatestSketch()} />
+        <FeatureButton
+          kind="revolve"
+          title={hasSketch ? "Revolve latest sketch" : "Revolve — pick a sketch in the dialog"}
+          testId="revolve-latest-sketch"
+          disabled={!hasFeatures && !hasSketch}
+          onClick={() => store.addRevolveFromLatestSketch()}
+        />
         <FeatureButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
         <FeatureButton kind="linear_pattern" title="Linear pattern (+X, 3x, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} label="Pattern" />
         <FeatureButton kind="circular_pattern" title="Circular pattern (6x, 360°)" testId="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()} label="Circ" />
