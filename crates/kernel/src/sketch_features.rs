@@ -2382,6 +2382,48 @@ impl FeatureKind for SketchFeature {
 // one sketch are unioned together so a sketch with several
 // overlapping shapes lowers to one filled area.
 
+/// Drop closed-Path boundary segments that lie ON the revolve axis
+/// (sketch x = 0). The half-profile of a body of revolution is
+/// conventionally closed by an edge along the axis; revolving makes
+/// that edge interior, not surface — keeping it would leave a phantom
+/// zero-distance "wall" along the whole axis (a 2 mm shell then leaves
+/// a solid rod standing in the middle, and the weave grows a
+/// degenerate radius-0 cylinder face). Dropping the segments keeps the
+/// even-odd parity for every sample at r ≥ 0 — a +x ray cast from
+/// r ≥ 0 never crosses x = 0 — while the distance magnitude now comes
+/// from the real wall.
+pub fn strip_revolve_axis_segments(sketch: Sketch2d) -> Sketch2d {
+    const AXIS_EPS: f32 = 1e-4;
+    fn on_axis(seg: &SketchSegment) -> bool {
+        let max_abs_x = match seg {
+            SketchSegment::Line { start, end } => start[0].abs().max(end[0].abs()),
+            SketchSegment::QuadBezier { p0, p1, p2 } => {
+                p0[0].abs().max(p1[0].abs()).max(p2[0].abs())
+            }
+            // A circular arc can't lie on a straight line.
+            SketchSegment::Arc { .. } => return false,
+        };
+        max_abs_x <= AXIS_EPS
+    }
+    match sketch {
+        Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments,
+            closed: true,
+        }) => {
+            let kept: Vec<SketchSegment> = segments.into_iter().filter(|s| !on_axis(s)).collect();
+            Sketch2d::Prim(Sketch2dPrimitive::Path {
+                segments: kept,
+                closed: true,
+            })
+        }
+        Sketch2d::Union(a, b) => Sketch2d::Union(
+            Box::new(strip_revolve_axis_segments(*a)),
+            Box::new(strip_revolve_axis_segments(*b)),
+        ),
+        other => other,
+    }
+}
+
 /// Lower a spline definition to its analytic segment chain —
 /// shared by the open-spline region arm and the loop-inference
 /// pass below.

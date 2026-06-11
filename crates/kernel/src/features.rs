@@ -3112,6 +3112,10 @@ impl FeatureKind for RevolveFeature {
             feature: RevolveDef::TYPE_NAME,
             name: "profiles",
         })?;
+        // The axis edge of a half-profile is interior after revolving,
+        // not surface — strip it so distances near the axis are real
+        // (shell would otherwise keep a phantom rod along the axis).
+        let sketch = crate::sketch_features::strip_revolve_axis_segments(sketch);
 
         let name = optional_display_name(def, || format!("Revolve {id}"));
         let rotation = optional_rotation(def);
@@ -7787,6 +7791,94 @@ mod tests {
             )
             .unwrap_err();
         assert!(format!("{err:?}").contains("edge"), "error mentions the edge param: {err:?}");
+    }
+
+    /// End-to-end regression for the UI vase exercise: a Front-plane
+    /// sketch whose profile is FREE lines (axis, rim, foot, bottom) plus
+    /// an OPEN interpolated spline (the wall), stitched into a region by
+    /// K7.1 loop inference, revolved around Y, then shelled 2 mm through
+    /// the top rim face. Before loop inference this produced a footless
+    /// cup (the open spline was implicitly chord-closed and all lines
+    /// were dropped).
+    #[test]
+    fn vase_from_free_lines_and_spline_revolves_and_shells() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            id(1),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_point", "id": "p1", "params": { "at": [0.0, -70.0] } },
+                    { "type": "sketch_point", "id": "p2", "params": { "at": [0.0, 68.0] } },
+                    { "type": "sketch_point", "id": "p3", "params": { "at": [45.0, 68.0] } },
+                    { "type": "sketch_point", "id": "p4", "params": { "at": [30.0, -62.0] } },
+                    { "type": "sketch_point", "id": "p5", "params": { "at": [26.0, -70.0] } },
+                    { "type": "sketch_line", "id": "l1", "params": { "start": [0.0, -70.0], "end": [0.0, 68.0] } },
+                    { "type": "sketch_line", "id": "l2", "params": { "start": [0.0, 68.0], "end": [45.0, 68.0] } },
+                    { "type": "sketch_line", "id": "l3", "params": { "start": [30.0, -62.0], "end": [26.0, -70.0] } },
+                    { "type": "sketch_line", "id": "l4", "params": { "start": [26.0, -70.0], "end": [0.0, -70.0] } },
+                    { "type": "sketch_spline", "id": "s1", "params": {
+                        "points": [45.0, 68.0, 33.044, 50.471, 26.707, 42.324, 38.476, 20.596, 50.245, -9.732, 44.360, -45.039, 30.0, -62.0],
+                        "closed": false, "mode": "interpolate" } }
+                ]
+            }),
+        );
+        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)" }));
+        registry
+            .regenerate(&mut ctx, &[sketch_call.clone(), revolve_call.clone()], None)
+            .unwrap();
+
+        // The solid before shelling: interior filled, foot present (the
+        // loop-inference regression), nothing outside the silhouette.
+        let solid = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let sdf = |t: &crate::csg::CsgNode, p: [f32; 3]| t.sdf(p, crate::csg::EvalMode::Logical);
+        assert!(sdf(&solid, [0.0, 0.0, 0.0]) <= 0.0, "core solid");
+        assert!(sdf(&solid, [49.0, -10.0, 0.0]) < 0.0, "belly solid");
+        assert!(sdf(&solid, [20.0, -69.0, 0.0]) < 0.0, "foot present");
+        assert!(sdf(&solid, [60.0, 0.0, 0.0]) > 0.0, "outside");
+        assert!(sdf(&solid, [40.0, 42.0, 0.0]) > 0.0, "neck waist clears");
+
+        // Find the planar top rim face (normal +Y at y = 68) in the weave —
+        // the face a user would pick to open the vase.
+        let mut top_hash = None;
+        for (brep, _) in ctx.brep_cache.ensure(&ctx.features) {
+            for i in 0..brep.faces.len() {
+                let fid = crate::brep::FaceId(i as u32);
+                if let crate::brep::SurfaceGeometry::Analytic { surface, transform } =
+                    &brep.face(fid).surface
+                {
+                    if let fielddraft_protocol::HalfSpace::Plane { normal, .. } = surface {
+                        if normal[1] > 0.99 && (transform.translate[1] - 68.0).abs() < 1e-3 {
+                            top_hash =
+                                Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                        }
+                    }
+                }
+            }
+        }
+        let top_hash = top_hash.expect("weave exposes the planar top rim face");
+
+        let shell_call = FeatureCall::new(
+            "shell",
+            id(3),
+            json!({
+                "open_faces": format!("qFace({top_hash})"),
+                "thickness": { "value": 2.0, "unit": "mm" },
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call, shell_call], None)
+            .unwrap();
+
+        let hollow = crate::csg::CsgNode::from_decoded(&ctx.features);
+        assert!(sdf(&hollow, [0.0, 0.0, 0.0]) > 0.0, "core carved out");
+        assert!(sdf(&hollow, [0.0, 67.0, 0.0]) > 0.0, "top rim is open");
+        assert!(sdf(&hollow, [49.0, -10.0, 0.0]) < 0.0, "belly wall remains");
+        assert!(sdf(&hollow, [0.0, -69.0, 0.0]) < 0.0, "bottom stays closed");
+        assert!(sdf(&hollow, [60.0, 0.0, 0.0]) > 0.0, "outside stays outside");
     }
 
     #[test]
