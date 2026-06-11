@@ -29,6 +29,7 @@ function edge(idHash: string, featA: number, featB: number): BRepEdge {
     b: pack(featB, 2),
     points: [],
     controlPoints: [],
+    faces: [],
     degree: 1,
     idHash,
   };

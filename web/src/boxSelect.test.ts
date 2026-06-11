@@ -23,6 +23,7 @@ function edge(idHash: string, pts: number[][]): BRepEdge {
     b: 2 << 12,
     points: pts.flat(),
     controlPoints: [],
+    faces: [],
     degree: 1,
     idHash,
   };

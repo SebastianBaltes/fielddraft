@@ -141,6 +141,7 @@ describe("resolveExtrudeAnchor", () => {
     b,
     points,
     controlPoints: [],
+    faces: [],
     degree: 1,
     idHash: "e",
   });
@@ -184,14 +185,16 @@ describe("resolveExtrudeAnchor", () => {
 
   describe("resolvePendingExtrudeAnchor (ticket x7af)", () => {
     const baseBranch = 1 << 12;
+    // "top" sits at arena index 0 (the face() helper hardcodes faceIndex 0);
+    // the boundary association runs through edge.faces (ticket b91c).
     const k = kernelWith(
       [
         face("top", 1, baseBranch, [0, 0, 50], [0, 0, 1]),
         face("side", 1, (1 << 12) | 1, [50, 0, 0], [1, 0, 0]),
       ],
       [
-        edge(baseBranch, (1 << 12) | 1, [50, -50, 50, 50, 50, 50]),
-        edge((1 << 12) | 1, (1 << 12) | 2, [50, -50, -50, 50, 50, -50]),
+        { ...edge(baseBranch, (1 << 12) | 1, [50, -50, 50, 50, 50, 50]), faces: [0, 1] },
+        { ...edge((1 << 12) | 1, (1 << 12) | 2, [50, -50, -50, 50, 50, -50]), faces: [1, 2] },
       ],
     );
 

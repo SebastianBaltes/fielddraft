@@ -334,9 +334,12 @@ export function resolvePendingExtrudeAnchor(
     } catch {
       // outline optional — arrow still works
     }
-    const branchIds = new Set(matches.map((f) => f.branchId));
+    // Face-precise boundary via the edge→face arena association (ticket
+    // b91c) — the picked profile may be ONE of two coplanar split faces
+    // sharing a branch signature, and only its own boundary may outline.
+    const arenas = new Set(matches.map((f) => f.faceIndex));
     const outline = edges
-      .filter((e) => branchIds.has(e.a) || branchIds.has(e.b))
+      .filter((e) => e.faces.some((fi) => arenas.has(fi)))
       .map((e) => {
         const pts = new Array<number>(e.points.length);
         for (let k = 0; k + 2 < e.points.length; k += 3) {

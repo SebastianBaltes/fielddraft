@@ -2935,6 +2935,22 @@ impl Kernel {
             }
             out
         };
+        // Edge → adjacent face ARENA indices (same ordering as
+        // `bodyBrepFaces`). Selection display needs the face-precise
+        // association: coplanar split faces share one branch signature
+        // (the coincidence canonicalisation), so matching edges by
+        // `a`/`b` alone lights up the whole coplanar family (ticket b91c).
+        let mut edge_faces: Vec<Vec<u32>> = vec![Vec::new(); brep.edges.len()];
+        for (fk, face) in brep.faces.iter().enumerate() {
+            for lp in std::iter::once(&face.outer).chain(face.inner.iter()) {
+                for (eid, _) in &lp.edges {
+                    let v = &mut edge_faces[eid.0 as usize];
+                    if !v.contains(&(fk as u32)) {
+                        v.push(fk as u32);
+                    }
+                }
+            }
+        }
         for (k, edge) in brep.edges.iter().enumerate() {
             let id_hash = TopoRef::from_edge(brep, EdgeId(k as u32)).id_hash;
             let points = to_world(&crate::brep::edge_sampling::sample_edge(&edge.geometry));
@@ -2951,6 +2967,7 @@ impl Kernel {
                 "points": points,
                 "controlPoints": control_points,
                 "degree": degree,
+                "faces": edge_faces[k],
             }));
         }
         serde_json::Value::Array(edges).to_string()

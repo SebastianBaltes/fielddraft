@@ -85,6 +85,10 @@ export interface BRepEdge {
    *  1 (every control point is an on-curve node). */
   degree: number;
   idHash: string;
+  /** Arena indices (== `BRepFace.faceIndex`) of the faces this edge bounds.
+   *  Face-precise — unlike the `a`/`b` branch signature, which coplanar
+   *  split faces share (ticket b91c). */
+  faces: number[];
 }
 
 /** One topology-octree leaf cell (debug overlay). `min`/`max` are the cell's

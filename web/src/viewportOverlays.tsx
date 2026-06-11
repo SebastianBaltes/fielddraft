@@ -1155,10 +1155,11 @@ interface BodyPickData {
   faces: BRepFace[];
   /** Vertices with world-space positions folded through the placement. */
   vertices: { idHash: string; world: [number, number, number] }[];
-  /** Analytic edge polylines (world space) keyed for face-outline highlights:
-   *  an edge belongs to a face when the face's packed branch id appears in
-   *  the edge's `(a, b)` signature. */
-  edges: { a: number; b: number; idHash: string; points: number[] }[];
+  /** Analytic edge polylines (world space) keyed for face-outline highlights.
+   *  `faces` carries the FACE-precise arena association (== faceIndex,
+   *  ticket b91c); the `(a, b)` branch signature stays as the fallback for
+   *  picks that only know the branch (coplanar split faces share one). */
+  edges: { a: number; b: number; idHash: string; points: number[]; faces: number[] }[];
 }
 
 function buildBodyPickData(
@@ -1221,7 +1222,13 @@ function buildBodyPickData(
       faceIndexView,
       faces,
       vertices,
-      edges: edges.map((e) => ({ a: e.a, b: e.b, idHash: e.idHash, points: e.points })),
+      edges: edges.map((e) => ({
+        a: e.a,
+        b: e.b,
+        idHash: e.idHash,
+        points: e.points,
+        faces: e.faces,
+      })),
     });
   }
   return out;
@@ -1363,17 +1370,46 @@ export function BRepSelectionOverlay({
     const mat = outlineMatRef.current;
     return () => mat.dispose();
   }, []);
-  // Hovered face branch id, published from useFrame; the outline gets a
-  // BRAND-NEW LineSegments2 + geometry per change — the WebGPU renderer does
-  // not re-upload a line geometry mutated in place (ticket twxw).
-  const [hoverFaceBranch, setHoverFaceBranch] = useState<number | null>(null);
+  // Hovered face, published from useFrame; the outline gets a BRAND-NEW
+  // LineSegments2 + geometry per change — the WebGPU renderer does not
+  // re-upload a line geometry mutated in place (ticket twxw). The functional
+  // setter bails on identical (body, arena, branchId) so the per-frame
+  // publish never re-renders.
+  type HoverFace = { body: BodyPickData; arena: number | null; branchId: number };
+  const [hoverFace, setHoverFace] = useState<HoverFace | null>(null);
+  const publishHoverFace = (next: HoverFace | null): void => {
+    setHoverFace((prev) => {
+      if (next === null) return prev === null ? prev : null;
+      if (
+        prev !== null &&
+        prev.body === next.body &&
+        prev.arena === next.arena &&
+        prev.branchId === next.branchId
+      )
+        return prev;
+      return next;
+    });
+  };
   const [outlineObj, setOutlineObj] = useState<LineSegments2 | null>(null);
   useEffect(() => {
-    if (hoverFaceBranch === null) {
+    if (hoverFace === null) {
       setOutlineObj(null);
       return;
     }
-    const segs = faceOutlineSegments(bodies, hoverFaceBranch);
+    // Face-precise outline when the triangle pick resolved an arena index
+    // (edge.faces association, ticket b91c) — coplanar split faces share a
+    // branch signature, so the branch fallback (analytic SDF pick, no
+    // arena) lights the whole coplanar family.
+    let segs: number[];
+    if (hoverFace.arena !== null) {
+      segs = [];
+      for (const e of hoverFace.body.edges) {
+        if (!e.faces.includes(hoverFace.arena)) continue;
+        segs.push(...polylineToSegments(e.points));
+      }
+    } else {
+      segs = faceOutlineSegments(bodies, hoverFace.branchId);
+    }
     if (segs.length === 0) {
       setOutlineObj(null);
       return;
@@ -1387,7 +1423,7 @@ export function BRepSelectionOverlay({
     setOutlineObj(obj);
     invalidate();
     return () => geom.dispose();
-  }, [hoverFaceBranch, bodies, invalidate]);
+  }, [hoverFace, bodies, invalidate]);
 
   useFrame(() => {
     const picker = getActiveQueryPicker();
@@ -1398,7 +1434,7 @@ export function BRepSelectionOverlay({
     if (!ndc.active || bodies.length === 0) {
       if (faceHover) { setFaceHover(false); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
-      setHoverFaceBranch(null);
+      publishHoverFace(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
       return;
@@ -1489,14 +1525,18 @@ export function BRepSelectionOverlay({
 
     if (resolvedFace) {
       highlightFace(resolvedFace.body, resolvedFace.arena);
-      setHoverFaceBranch(resolvedFace.branchId);
+      publishHoverFace({
+        body: resolvedFace.body,
+        arena: resolvedFace.arena,
+        branchId: resolvedFace.branchId,
+      });
       if (!faceHover) { setFaceHover(true); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
       setHoveredElementOfKind("face", { kind: "face", idHash: resolvedFace.idHash });
       setHoveredElementOfKind("vertex", null);
     } else if (resolvedVertex) {
       if (faceHover) { setFaceHover(false); invalidate(); }
-      setHoverFaceBranch(null);
+      publishHoverFace(null);
       const next: [number, number] = [resolvedVertex.bi, resolvedVertex.vi];
       if (!vertexHoverIdx || vertexHoverIdx[0] !== next[0] || vertexHoverIdx[1] !== next[1]) {
         setVertexHoverIdx(next);
@@ -1507,7 +1547,7 @@ export function BRepSelectionOverlay({
     } else {
       if (faceHover) { setFaceHover(false); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
-      setHoverFaceBranch(null);
+      publishHoverFace(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
     }
@@ -1684,7 +1724,10 @@ export function BRepSelectedOverlay() {
 
     const tris: number[] = [];
     const vertices: [number, number, number][] = [];
-    const branchIds = new Set<number>();
+    // Selected face ARENA indices per body (edge.faces association,
+    // ticket b91c) — matching by branch signature would light the whole
+    // coplanar family, since split coplanar faces share one branch id.
+    const wantedArenasByBody = new Map<number, Set<number>>();
     const leafFills: HybridLeafInfo[] = [];
 
     // Pass 1 — faces (triangles where this kernel holds a mesh; in SDF render
@@ -1705,7 +1748,9 @@ export function BRepSelectedOverlay() {
           faces = [];
         }
         const wantedFaces = faces.filter((f) => faceHashes.has(f.idHash));
-        for (const f of wantedFaces) branchIds.add(f.branchId);
+        if (wantedFaces.length > 0) {
+          wantedArenasByBody.set(i, new Set(wantedFaces.map((f) => f.faceIndex)));
+        }
         if (wantedFaces.length > 0 && k.bodyVertexCount(i) > 0) {
           try {
             const faceIndexView = k.bodyFaceIndexView(i).slice();
@@ -1768,7 +1813,7 @@ export function BRepSelectedOverlay() {
             }
             if (f.surfaceKind !== "plane") continue;
             const boundary = edges
-              .filter((e) => e.a === f.branchId || e.b === f.branchId)
+              .filter((e) => e.faces.includes(f.faceIndex))
               .map((e) => e.points);
             if (boundary.length === 0) continue;
             const originW = localToWorld(f.centroidLocal, placement);
@@ -1799,9 +1844,10 @@ export function BRepSelectedOverlay() {
     }
 
     // Pass 2 — line work: every analytic edge that bounds a selected face
-    // (outline) or IS a selected edge. BRepEdge.points are already world
-    // space (kernel.ts) — folding them through the placement again would
-    // double-transform (see the hover overlay).
+    // (outline, by face ARENA index — ticket b91c) or IS a selected edge.
+    // BRepEdge.points are already world space (kernel.ts) — folding them
+    // through the placement again would double-transform (see the hover
+    // overlay).
     const segs: number[] = [];
     for (let i = 0; i < count; i++) {
       let edges: BRepEdge[];
@@ -1810,9 +1856,11 @@ export function BRepSelectedOverlay() {
       } catch {
         continue;
       }
+      const wantedArenas = wantedArenasByBody.get(i);
       for (const e of edges) {
-        if (!branchIds.has(e.a) && !branchIds.has(e.b) && !edgeHashes.has(e.idHash))
-          continue;
+        const boundsSelectedFace =
+          wantedArenas !== undefined && e.faces.some((fi) => wantedArenas.has(fi));
+        if (!boundsSelectedFace && !edgeHashes.has(e.idHash)) continue;
         segs.push(...polylineToSegments(e.points));
       }
     }
