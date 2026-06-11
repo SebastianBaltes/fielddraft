@@ -6455,6 +6455,56 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "BREP-CLASSIFICATION-PLAN Phase 3 (voll) — exakt-koinzidente Extrude-Stapel: SSI liefert 0 Seeds, CoincidentSurface-Fall fehlt noch"]
+    fn ticket_o2j9_two_face_extrude_weaves_manifold() {
+        // Ticket 20260610-235049-o2j9: „2 Flächen Extrusion führt zu kaputter
+        // Geometrie / Kantenfindung". A single extrude feature targeting TWO
+        // picked faces stacks flush coplanar prisms. The coincidence
+        // canonicalisation closes the seams of single flush stacks (see the
+        // classification gate + tickets px2o/9zlq), and `face_plane_frame`
+        // now anchors face-extrudes exactly on the analytic carrier, so the
+        // stacked planes are exactly coincident. REMAINING (known red): with
+        // a deep stack almost every carrier pair is exactly coincident, so
+        // `ssi::plane_plane` produces ZERO seeds and the wireframe collapses
+        // (E=0) before canonicalisation can help — that is the plan's full
+        // Phase 3 (`CoincidentSurface` SSI case, 2D arrangement on the
+        // shared carrier). Un-ignore when it lands.
+        let mut k = Kernel::new();
+        let json = r#"{"schema_version":1,"name":"Part","feature_calls":[
+            {"type":"box","id":1,"params":{"half_extents":[50,50,50],"op":"new","translate":[0,0,0]}},
+            {"type":"extrude","id":5,"params":{"depth":{"unit":"mm","value":52.91257140451136},"depth_back":{"unit":"mm","value":0},"faces":"qFace(4315924989883055031)","profiles":"","symmetric":false}},
+            {"type":"extrude","id":17,"params":{"depth":{"unit":"mm","value":98.74537260854363},"depth_back":{"unit":"mm","value":0},"faces":"qFace(16665108990841144567)","profiles":"","symmetric":false}}
+        ],"next_feature_id":18}"#;
+        k.load_json(json).unwrap();
+        assert_eq!(k.body_count(), 1);
+
+        // Re-pick the user's two faces from the live model: two distinct
+        // upward-facing (+Z) planar faces.
+        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+        let mut picks: Vec<String> = Vec::new();
+        for f in faces.as_array().unwrap() {
+            let n = f["normalLocal"].as_array().unwrap();
+            if n[2].as_f64().unwrap() > 0.99 && f["surfaceKind"] == "plane" {
+                picks.push(f["idHash"].as_str().unwrap().to_string());
+            }
+        }
+        assert!(picks.len() >= 2, "need two +Z faces to re-create the ticket, got {picks:?}");
+        let params = format!(
+            r#"{{"depth":{{"unit":"mm","value":25}},"depth_back":{{"unit":"mm","value":0}},"faces":"qFace({}),qFace({})","profiles":"","symmetric":false}}"#,
+            picks[0], picks[1]
+        );
+        k.add_feature_call("extrude", &params).unwrap();
+
+        assert_eq!(k.body_count(), 1, "the two-face extrude grows the box body");
+        let counts: serde_json::Value = serde_json::from_str(&k.body_brep_counts(0)).unwrap();
+        assert_eq!(
+            counts["watertight"],
+            serde_json::json!(true),
+            "the two-face-extrude stack must weave watertight, got {counts}"
+        );
+    }
+
     /// Collect every `CARTESIAN_POINT('',(x,y,z))` coordinate from a STEP file.
     fn step_cartesian_points(step: &str) -> Vec<[f64; 3]> {
         let mut out = Vec::new();

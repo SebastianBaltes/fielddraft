@@ -46,7 +46,15 @@ use super::vec3::{cross, norm, normalize, scale as vscale, sub};
 /// lengths, raw for angles (radians ≈ dimensionless). The single allowed
 /// tolerance of the coincidence topic (plan, Phase 1) — do not introduce
 /// others.
-pub const COINCIDENCE_REL_TOL: f64 = 1e-6;
+///
+/// Sizing: construction-identical parameters compare bit-equal and pass any
+/// tolerance; the constant exists for honest numeric drift. The binding case
+/// is **mesh-derived face-extrude geometry** (ticket o2j9/px2o): a face
+/// picked off the woven B-Rep anchors its plane on sampled positions that
+/// sit up to ~0.5 µm off the exact bound at 100 mm scale (~5e-6 relative).
+/// 1e-5 covers that with 2× headroom while still being far below feature
+/// size (2.8 µm at a 280 mm diagonal).
+pub const COINCIDENCE_REL_TOL: f64 = 1e-5;
 
 /// Order of contact between two carrier surfaces. Phase 1 registers only
 /// [`ContactOrder::Coincident`]; [`ContactOrder::Tangent`] is the reserved

@@ -45,7 +45,7 @@ use fielddraft_protocol::sketch2d::{g1_group_segments, SketchSegment, PATH_G1_CO
 use fielddraft_protocol::{HalfSpace, Primitive, Transform};
 
 // ─── small vector helpers (f64): shared, see brep::vec3 ─────────────────────
-use super::vec3::{add, normalize as unit, scale, sub};
+use super::vec3::{add, cross, normalize as unit, scale, sub};
 use super::vec3::norm;
 
 // ─── (1) Hermite → NURBS fitting ────────────────────────────────────────────
@@ -1453,7 +1453,7 @@ pub(crate) fn finish_weave(mut brep: BRep, body: &BoundedCsg) -> BRep {
         weld_seam_vertices(&mut brep, &mut memberships, diag);
         merge_coincident_edges(&mut brep, &registry, &mut memberships, diag);
         culled = cull_membrane_branches(body, &brep, &registry, &halfspaces, &memberships, diag);
-        drop_fin_edges(&mut brep, &mut memberships, &culled);
+        drop_fin_edges(body, &mut brep, &mut memberships, &culled, &halfspaces, diag);
     }
 
     // (2) Group edges by branch: every branch in an edge's membership set is
@@ -1868,15 +1868,26 @@ fn merge_coincident_edges(
             .unwrap_or(b.as_u32())
     };
 
-    // Group edges by canonical signature; only groups whose key actually
-    // involves a coincidence class can contain duplicates.
-    let mut groups: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    // Group edges by EACH classed branch of their signature (canonical class
+    // representative). Keying per single class — not per signature pair — is
+    // deliberate: the two trace copies of a seam rim share the membrane's
+    // class, but their *wall* partners may be sub-µm mesh-derived planes that
+    // sit outside the registry tolerance (face-extrude geometry). The carrier
+    // class plus geometric identity of the segment is sufficient: both copies
+    // lie on the SAME carrier, so coincident endpoints mean the same edge.
+    let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, e) in brep.edges.iter().enumerate() {
-        let (a, b) = (canon(e.signature.0), canon(e.signature.1));
-        let key = if a <= b { (a, b) } else { (b, a) };
-        groups.entry(key).or_default().push(i);
+        for b in [e.signature.0, e.signature.1] {
+            if registry.class_of(b).is_some() {
+                let c = canon(b);
+                let g = groups.entry(c).or_default();
+                if g.last() != Some(&i) {
+                    g.push(i);
+                }
+            }
+        }
     }
-    let mut keys: Vec<(u32, u32)> = groups.keys().copied().collect();
+    let mut keys: Vec<u32> = groups.keys().copied().collect();
     keys.sort_unstable();
 
     let mut edge_keep = vec![true; brep.edges.len()];
@@ -1885,16 +1896,12 @@ fn merge_coincident_edges(
 
     for key in keys {
         let idxs = &groups[&key];
-        let class_involved = idxs.iter().any(|&i| {
-            let e = &brep.edges[i];
-            registry.class_of(e.signature.0).is_some() || registry.class_of(e.signature.1).is_some()
-        });
-        if !class_involved {
-            continue;
-        }
         // Greedy geometric subgrouping: first occurrence is the survivor.
         let mut reps: Vec<usize> = Vec::new();
         for &i in idxs {
+            if !edge_keep[i] {
+                continue; // already merged away under another class key
+            }
             let mut merged = false;
             for &r in &reps {
                 if r != i && edges_identical(brep, r, i, tol_pt, tol_loop) {
@@ -1931,8 +1938,15 @@ fn merge_coincident_edges(
             }
             if !merged {
                 reps.push(i);
-                // Canonical signature for deterministic seam naming.
-                brep.edges[i].signature = (BranchId(key.0), BranchId(key.1));
+                // Canonical signature for deterministic seam naming (the
+                // plan's "kleinste Branch-IDs der Klasse").
+                let e = &mut brep.edges[i];
+                let (a, b) = (canon(e.signature.0), canon(e.signature.1));
+                e.signature = if a <= b {
+                    (BranchId(a), BranchId(b))
+                } else {
+                    (BranchId(b), BranchId(a))
+                };
             }
         }
     }
@@ -1969,12 +1983,12 @@ fn merge_coincident_edges(
     compact_edges_and_vertices(brep, &edge_keep, memberships);
 }
 
-/// Whether two edges on the SAME canonical carrier pair are the same segment
-/// of that pair's intersection curve. Closed loops: the carrier-pair
-/// intersection is one curve, so two closed loops are identical (centroid
-/// sanity check). Open edges: identical iff the refined endpoint vertex
+/// Whether two edges on the SAME coincidence-class carrier are the same
+/// segment of an intersection curve. Closed loops: identical iff centroid
+/// AND extent agree (a centroid match alone would merge concentric loops of
+/// different size). Open edges: identical iff the refined endpoint vertex
 /// positions coincide as an unordered pair.
-fn edges_identical(brep: &BRep, a: usize, b: usize, tol_pt: f64, tol_loop: f64) -> bool {
+fn edges_identical(brep: &BRep, a: usize, b: usize, tol_pt: f64, _tol_loop: f64) -> bool {
     let (ea, eb) = (&brep.edges[a], &brep.edges[b]);
     let closed_a = ea.start.is_none() && ea.end.is_none();
     let closed_b = eb.start.is_none() && eb.end.is_none();
@@ -1982,20 +1996,26 @@ fn edges_identical(brep: &BRep, a: usize, b: usize, tol_pt: f64, tol_loop: f64) 
         return false;
     }
     if closed_a {
-        let centroid = |e: &Edge| -> Option<[f64; 3]> {
+        // The tolerance absorbs chord-sampling sag on curved rims
+        // (~1.2e-3·R at 16 samples/span) but stays proportional to the loop
+        // itself, so different loops sharing a centroid never merge.
+        let metrics = |e: &Edge| -> Option<([f64; 3], f64)> {
             let pts = super::edge_sampling::sample_edge(&e.geometry);
-            if pts.is_empty() {
+            if pts.len() < 3 {
                 return None;
             }
             let inv = 1.0 / pts.len() as f64;
-            Some(pts.iter().fold([0.0; 3], |acc, p| {
+            let c = pts.iter().fold([0.0; 3], |acc, p| {
                 [acc[0] + p[0] * inv, acc[1] + p[1] * inv, acc[2] + p[2] * inv]
-            }))
+            });
+            let extent = pts.iter().map(|p| norm(sub(*p, c))).fold(0.0, f64::max);
+            Some((c, extent))
         };
-        let (Some(ca), Some(cb)) = (centroid(ea), centroid(eb)) else {
+        let (Some((ca, ra)), Some((cb, rb))) = (metrics(ea), metrics(eb)) else {
             return false;
         };
-        return norm(sub(ca, cb)) < tol_loop;
+        let tol_id = tol_pt.max(2e-3 * ra.max(rb));
+        return norm(sub(ca, cb)) < tol_id && (ra - rb).abs() < tol_id;
     }
     let (Some(as_), Some(ae)) = (ea.start, ea.end) else {
         return false;
@@ -2231,27 +2251,81 @@ fn weld_seam_vertices(brep: &mut BRep, memberships: &mut Vec<Vec<u32>>, diag: f6
     compact_edges_and_vertices(brep, &keep, memberships);
 }
 
-/// Drop fin edges: traces whose membership keeps fewer than two
-/// non-membrane faces. Pre-cull every traced edge bounds exactly two branch
-/// faces; when the cull removes a membrane partner the leftover lies on a
-/// measure-zero `f = 0` sheet (a flush-remove ghost wall), not on ∂body.
-/// Edges with two surviving memberships — the canonical seam edges — stay.
-/// Restricted to membership loss through the cull: an honestly open boundary
-/// elsewhere keeps its edge (and its `manifold_violations` entry).
+/// Drop fin edges: traces that lost their membrane partner to the cull AND
+/// demonstrably bound nothing. Candidates are edges whose membership keeps
+/// fewer than two faces; a candidate is dropped only with **proof**:
+///
+/// - zero survivors (both branches were membranes) — the edge can bound no
+///   face at all; or
+/// - one survivor, and a ±ε probe inside the survivor's carrier shows the
+///   edge sits clearly OFF the body boundary on BOTH sides (a flush-remove
+///   ghost trace on a measure-zero `f = 0` sheet, e.g. body-wall × erased
+///   tool-wall traces).
+///
+/// Anything ambiguous stays: a genuine seam rim whose duplicate failed to
+/// merge (sub-µm mesh-derived drift) remains as an honestly OPEN edge, so
+/// `is_watertight` stays false and the production octree fallback still
+/// fires. The fin drop must never manufacture watertightness.
 fn drop_fin_edges(
+    body: &BoundedCsg,
     brep: &mut BRep,
     memberships: &mut Vec<Vec<u32>>,
     culled: &std::collections::HashSet<u32>,
+    halfspaces: &HashMap<u32, (HalfSpace, Transform)>,
+    diag: f64,
 ) {
+    use crate::csg::EvalMode;
     if culled.is_empty() {
         return;
     }
-    let keep: Vec<bool> = memberships
+    let eps = diag * 1e-4;
+    let keep: Vec<bool> = brep
+        .edges
         .iter()
-        .map(|m| {
+        .zip(memberships.iter())
+        .map(|(edge, m)| {
             let lost_to_cull = m.iter().any(|b| culled.contains(b));
-            let survivors = m.iter().filter(|b| !culled.contains(b)).count();
-            !(lost_to_cull && survivors < 2)
+            let survivors: Vec<u32> =
+                m.iter().copied().filter(|b| !culled.contains(b)).collect();
+            if !lost_to_cull || survivors.len() >= 2 {
+                return true;
+            }
+            if survivors.is_empty() {
+                return false; // membrane-internal: no face can reference it
+            }
+            // One survivor: probe the edge midpoint within the survivor's
+            // carrier, perpendicular to the edge. A real boundary edge has
+            // the survivor's face (f ≈ 0) on at least one side; a ghost
+            // trace is clearly off-boundary on both.
+            let Some((hs, xf)) = halfspaces.get(&survivors[0]) else {
+                return true;
+            };
+            let surface = SurfaceGeometry::Analytic { surface: hs.clone(), transform: *xf };
+            let pts = super::edge_sampling::sample_edge(&edge.geometry);
+            if pts.len() < 2 {
+                return true;
+            }
+            let mid = pts.len() / 2;
+            let t = unit(sub(pts[(mid + 1).min(pts.len() - 1)], pts[mid.saturating_sub(1)]));
+            let Some(q) = snap_to_carrier(&surface, pts[mid]) else {
+                return true;
+            };
+            let Some(n) = surface_normal_at(&surface, q) else {
+                return true;
+            };
+            let d = unit(cross(n, t));
+            if norm(d) < 0.5 {
+                return true;
+            }
+            let off_boundary = |side: f64| -> bool {
+                let p = [
+                    (q[0] + d[0] * eps * side) as f32,
+                    (q[1] + d[1] * eps * side) as f32,
+                    (q[2] + d[2] * eps * side) as f32,
+                ];
+                (body.sdf(p, EvalMode::Logical) as f64).abs() > eps * 0.3
+            };
+            !(off_boundary(1.0) && off_boundary(-1.0))
         })
         .collect();
     if keep.iter().all(|&k| k) {

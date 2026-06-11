@@ -212,11 +212,34 @@ pub fn face_plane_frame(
 
     // Centroid (body-local) → world via the placement.
     let fp = Fingerprint::of_face(brep, id);
-    let c_local = [
+    let mut c_local = [
         fp.centroid[0] as f32,
         fp.centroid[1] as f32,
         fp.centroid[2] as f32,
     ];
+    // The fingerprint centroid is sample-derived and sits up to ~µm off the
+    // carrier. For an analytic planar face, project it onto the EXACT plane
+    // (ticket o2j9): a face-extrude anchored here lands flush on the carrier
+    // to f32 precision, so stacked extrudes are exactly coincident and the
+    // coincidence registry takes its exact path instead of chasing drift.
+    if let crate::brep::SurfaceGeometry::Analytic {
+        surface: fielddraft_protocol::HalfSpace::Plane { normal, offset },
+        transform,
+    } = &brep.face(id).surface
+    {
+        let n = normalize3(crate::quat_rotate(transform.rotation, *normal));
+        let s = transform.scale[0];
+        let d = s * offset
+            + n[0] * transform.translate[0]
+            + n[1] * transform.translate[1]
+            + n[2] * transform.translate[2];
+        let err = c_local[0] * n[0] + c_local[1] * n[1] + c_local[2] * n[2] - d;
+        c_local = [
+            c_local[0] - err * n[0],
+            c_local[1] - err * n[1],
+            c_local[2] - err * n[2],
+        ];
+    }
     let origin = {
         let p = crate::quat_rotate(
             placement.rotation,

@@ -244,6 +244,37 @@ Multi-Region — braucht Face-pro-Region, s. u.) und die Octree-Route des
 Zylinder-Stacks (Kontributor-Schmiere am gekrümmten Saum → Phase 4;
 Plane-Säume rettet der DL-75-Fastpath).
 
+**Nachschärfungen aus der o2j9-Ticket-Validierung** (reale Dokumente,
+verkettete Face-Extrudes):
+
+- **Anker-Drift getilgt:** `face_plane_frame` ankerte Face-Extrudes auf dem
+  sample-abgeleiteten Fingerprint-Centroid (~0,5 µm neben dem Carrier bei
+  100 mm) — jede Stapelstufe driftete neu, und im
+  Beinahe-Koinzidenz-Regime ist der Tracer hypersensitiv (52 vs. 22 Kanten
+  aus 6e-5 Unterschied; die „watertight"-Baseline dieses Bodys hatte Euler
+  −18). Der Centroid wird jetzt auf die **exakte analytische Ebene**
+  projiziert — gestapelte Face-Extrudes sind exakt koinzident
+  (Leitregel: Drift an der Quelle töten statt Toleranzen jagen).
+- **Toleranz-Dimensionierung:** `COINCIDENCE_REL_TOL = 1e-5` (vorher 1e-6),
+  dimensioniert am bindenden Fall mesh-abgeleiteter Profile (~5e-6 relativ)
+  mit 2× Headroom; Begründung am Konstanten-Kommentar.
+- **Merge pro Klassen-Branch** statt pro Signatur-Paar: die Wand-Partner
+  zweier Naht-Kopien dürfen außerhalb der Registry-Toleranz liegen — der
+  gemeinsame Carrier plus Endpunkt-Identität genügt.
+- **Closed-Loop-Identität:** Centroid UND Extent, loop-proportional
+  toleriert — Centroid allein hätte konzentrische Loops verschmolzen.
+- **Fin-Drop nur mit Beweis:** 0 Survivor → weg; 1 Survivor → ±ε-Probe im
+  Survivor-Carrier, gedroppt nur wenn beidseitig klar abseits der
+  Körpergrenze. Ambiges bleibt ehrlich offen, damit `is_watertight` nie aus
+  einer unvollständigen Wireframe „hergestellt" wird.
+
+**Verbleibend für Phase 3 (voll), `ticket_o2j9…`-Test ignoriert-rot:**
+Bei tiefen exakt-koinzidenten Stapeln (Zwei-Flächen-Extrusion des Tickets)
+liefert `ssi::plane_plane` für fast alle Paare null Seeds → die Wireframe
+kollabiert (E=0), bevor Kanonikalisierung greifen kann. Das ist genau der
+`CoincidentSurface`-SSI-Fall mit 2D-Arrangement auf dem gemeinsamen
+Carrier — der Kern des ursprünglichen Phase-3-Texts unten.
+
 ### Ursprünglicher Phasen-Text (Referenz)
 
 #### Phase 2 — Pass A: Interior-Cull in `finish_weave`
