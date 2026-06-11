@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   axisDepthParam,
+  faceQueryHashes,
   lengthParamToMm,
   lengthParamWithMm,
   pickTipFace,
   previewBandRanges,
   prismBandTriangles,
   resolveExtrudeAnchor,
+  resolvePendingExtrudeAnchor,
   type ExtrudeAnchor,
   type ExtrudeAnchorKernel,
   type TipFaceCandidate,
@@ -179,6 +181,54 @@ describe("resolveExtrudeAnchor", () => {
     const k = kernelWith([face("f", 3, 3 << 12, [0, 0, 0], [0, 0, 1])], []);
     expect(resolveExtrudeAnchor(k, 99)).toBeNull();
   });
+
+  describe("resolvePendingExtrudeAnchor (ticket x7af)", () => {
+    const baseBranch = 1 << 12;
+    const k = kernelWith(
+      [
+        face("top", 1, baseBranch, [0, 0, 50], [0, 0, 1]),
+        face("side", 1, (1 << 12) | 1, [50, 0, 0], [1, 0, 0]),
+      ],
+      [
+        edge(baseBranch, (1 << 12) | 1, [50, -50, 50, 50, 50, 50]),
+        edge((1 << 12) | 1, (1 << 12) | 2, [50, -50, -50, 50, 50, -50]),
+      ],
+    );
+
+    it("anchors the would-be tip above the profile face", () => {
+      const a = resolvePendingExtrudeAnchor(k, ["top"], 25);
+      expect(a).not.toBeNull();
+      expect(a!.origin).toEqual([0, 0, 75]);
+      expect(a!.normal[2]).toBeCloseTo(1);
+      // outline = the profile face's boundary, lifted onto the tip plane
+      expect(a!.outline).toHaveLength(1);
+      expect(a!.outline[0][2]).toBeCloseTo(75);
+      expect(a!.outline[0][5]).toBeCloseTo(75);
+    });
+
+    it("a negative depth anchors below the face with a flipped tip-out normal", () => {
+      const a = resolvePendingExtrudeAnchor(k, ["top"], -30);
+      expect(a).not.toBeNull();
+      expect(a!.origin).toEqual([0, 0, 20]);
+      expect(a!.normal[2]).toBeCloseTo(-1);
+      expect(a!.outline[0][2]).toBeCloseTo(20);
+    });
+
+    it("returns null when no profile face matches", () => {
+      expect(resolvePendingExtrudeAnchor(k, ["nope"], 10)).toBeNull();
+      expect(resolvePendingExtrudeAnchor(k, [], 10)).toBeNull();
+    });
+  });
+});
+
+describe("faceQueryHashes", () => {
+  it("parses qFace multi-queries and ignores everything else", () => {
+    expect(faceQueryHashes("qFace(abc),qFace(def)")).toEqual(["abc", "def"]);
+    expect(faceQueryHashes("qFace(x)")).toEqual(["x"]);
+    expect(faceQueryHashes("qCreatedBy(3)")).toEqual([]);
+    expect(faceQueryHashes("")).toEqual([]);
+    expect(faceQueryHashes(undefined)).toEqual([]);
+  });
 });
 
 describe("previewBandRanges", () => {
@@ -210,6 +260,14 @@ describe("previewBandRanges", () => {
     const r = previewBandRanges(10, 10, true);
     expect(r.prism).toEqual([-10, 0]);
     expect(r.delta).toEqual([]);
+  });
+
+  it("crossing the base plane, asymmetric: prism extends below, delta spans old tip → new tip (x7af)", () => {
+    const r = previewBandRanges(10, -5, false);
+    expect(r.grow).toBe(false);
+    // tip offset −15 (the new tip sits 5 below the base, base itself is −10)
+    expect(r.prism).toEqual([-10, -15]);
+    expect(r.delta).toEqual([[-15, 0]]);
   });
 });
 

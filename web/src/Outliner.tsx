@@ -307,6 +307,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   };
 
   const handleDialogCancel = () => {
+    // Cancelling a PENDING ghost feature (created suppressed, never
+    // confirmed — ticket x7af) drops the feature entirely; the undo-replay
+    // below would only roll back param edits and leave the ghost behind.
+    if (selectedFeature && store.isPendingFeature(selectedFeature.id)) {
+      store.cancelPendingFeature();
+      store.clearSelection();
+      return;
+    }
     const undosNeeded = state.undoDepth - dialogOpenUndoDepth;
     for (let i = 0; i < undosNeeded; i++) {
       if (!store.undo()) break;

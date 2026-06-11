@@ -909,12 +909,25 @@ impl Kernel {
         type_name: &str,
         params: serde_json::Value,
     ) -> Result<u32, JsError> {
+        self.push_feature_call_with(type_name, params, false)
+    }
+
+    /// `suppressed: true` creates the call as a PENDING ghost in one undo
+    /// step (ticket x7af): the regen loop skips it, so the body keeps its
+    /// pre-feature shape until the UI confirms via `setFeatureSuppressed`.
+    fn push_feature_call_with(
+        &mut self,
+        type_name: &str,
+        params: serde_json::Value,
+        suppressed: bool,
+    ) -> Result<u32, JsError> {
         self.snapshot();
         let id = self.document.allocate_id();
         let flat = id
             .as_u32_if_flat()
             .expect("K4.5.1 still issues flat-numeric feature ids");
-        let call = fielddraft_protocol::FeatureCall::new(type_name, id, params);
+        let mut call = fielddraft_protocol::FeatureCall::new(type_name, id, params);
+        call.suppressed = suppressed;
         self.document.feature_calls.push(call);
         if let Err(err) = self.bootstrap_features_from_calls() {
             self.undo();
@@ -1612,6 +1625,8 @@ impl Kernel {
     /// `depth_mm`. `symmetric` grows `±depth/2` about the plane; `false` is a
     /// blind / two-sided extrude `[−depth_back, +depth]` along the face normal
     /// (the default the UI sends, matching Onshape). Adds material (Union).
+    /// `suppressed` creates the call as a pending ghost (ticket x7af): the
+    /// body keeps its pre-extrude shape until the UI confirms the feature.
     #[wasm_bindgen(js_name = addExtrudeFaces)]
     pub fn add_extrude_faces(
         &mut self,
@@ -1619,14 +1634,15 @@ impl Kernel {
         depth_mm: f32,
         symmetric: bool,
         depth_back_mm: f32,
+        suppressed: bool,
     ) -> Result<u32, JsError> {
-        self.push_feature_call("extrude", serde_json::json!({
+        self.push_feature_call_with("extrude", serde_json::json!({
             "profiles": "",
             "faces": faces,
             "depth": { "value": depth_mm, "unit": "mm" },
             "symmetric": symmetric,
             "depth_back": { "value": depth_back_mm, "unit": "mm" },
-        }))
+        }), suppressed)
     }
 
     /// Thicken one or more **curved** analytic faces into a thin solid wall by

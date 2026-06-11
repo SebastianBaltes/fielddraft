@@ -30,11 +30,13 @@ import { findSingleSelectedFeature } from "./viewportOverlays";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import {
   axisDepthParam,
+  faceQueryHashes,
   lengthParamToMm,
   lengthParamWithMm,
   previewBandRanges,
   prismBandTriangles,
   resolveExtrudeAnchor,
+  resolvePendingExtrudeAnchor,
   type ExtrudeAnchor,
 } from "./extrudeGizmo";
 
@@ -67,8 +69,14 @@ export function ExtrudeDepthGizmo() {
   const invalidate = useThree((s) => s.invalidate);
 
   const selected = findSingleSelectedFeature(state);
+  // A PENDING extrude (created suppressed, awaiting dialog confirmation —
+  // ticket x7af) keeps the gizmo alive: the ghost prism IS its preview.
+  const pending =
+    selected != null && store !== null && store.isPendingFeature(selected.id);
   const extrudeId =
-    selected?.kind === "extrude" && !selected.suppressed && !selected.rolled_back
+    selected?.kind === "extrude" &&
+    !selected.rolled_back &&
+    (!selected.suppressed || pending)
       ? selected.id
       : null;
 
@@ -89,18 +97,28 @@ export function ExtrudeDepthGizmo() {
   const headRef = useRef<THREE.Mesh>(null);
   const shaftRef = useRef<THREE.Mesh>(null);
 
-  // Current depth (mm) straight from the feature params. `depthMm` is
-  // the prism's axial extent (depth, or depth+depth_back for one-sided),
-  // which doubles as the tip-cap-vs-wall discriminator below.
-  const depthInfo = useMemo<{ depthMm: number; symmetric: boolean } | null>(() => {
+  // Current depth (mm) straight from the feature params. `depthMm` is the
+  // prism's axial EXTENT along the tip-out normal (always positive; depth,
+  // or depth+depth_back for one-sided), which doubles as the
+  // tip-cap-vs-wall discriminator below. The wire `depth` may be NEGATIVE
+  // for a blind extrude growing in the −normal direction (ticket x7af) —
+  // `sign` maps the gizmo's extent back onto the signed wire param.
+  const depthInfo = useMemo<
+    { depthMm: number; symmetric: boolean; sign: 1 | -1; rawMm: number } | null
+  >(() => {
     if (!store || extrudeId === null) return null;
     try {
       const params = store.getFeatureParams(extrudeId);
-      const depthMm = lengthParamToMm(params.depth);
-      if (depthMm === null) return null;
-      const backMm = lengthParamToMm(params.depth_back) ?? 0;
+      const rawMm = lengthParamToMm(params.depth);
+      if (rawMm === null) return null;
+      const backMm = Math.max(0, lengthParamToMm(params.depth_back) ?? 0);
       const symmetric = params.symmetric !== false;
-      return { depthMm: depthMm + (symmetric ? 0 : backMm), symmetric };
+      if (symmetric) {
+        return { depthMm: Math.abs(rawMm), symmetric, sign: 1, rawMm };
+      }
+      const lo = Math.min(-backMm, rawMm);
+      const hi = Math.max(-backMm, rawMm);
+      return { depthMm: hi - lo, symmetric, sign: rawMm < 0 ? -1 : 1, rawMm };
     } catch {
       return null;
     }
@@ -110,16 +128,27 @@ export function ExtrudeDepthGizmo() {
   // Resolve the anchor against the live B-Rep. `state` in the deps
   // re-resolves after the pointerup commit. The axial extent picks the
   // tip cap unambiguously even when the prism keeps both caps (ticket
-  // zzl1) — see pickTipFace.
+  // zzl1) — see pickTipFace. A PENDING ghost contributes no faces of its
+  // own, so its anchor derives from the PROFILE faces on the unextruded
+  // body instead (ticket x7af) — that body is the depth's true reference.
   const anchor = useMemo<ExtrudeAnchor | null>(() => {
     if (!store || extrudeId === null) return null;
     try {
+      if (pending) {
+        if (!depthInfo) return null;
+        const params = store.getFeatureParams(extrudeId);
+        return resolvePendingExtrudeAnchor(
+          store.kernel,
+          faceQueryHashes(params.faces),
+          depthInfo.symmetric ? depthInfo.depthMm / 2 : depthInfo.rawMm,
+        );
+      }
       return resolveExtrudeAnchor(store.kernel, extrudeId, depthInfo?.depthMm);
     } catch {
       return null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, extrudeId, state, depthInfo]);
+  }, [store, extrudeId, state, depthInfo, pending]);
 
   // Translucent preview bands: at rest, the whole extruded prism in
   // light blue; during a drag, the would-be prism plus delta bands
@@ -139,7 +168,10 @@ export function ExtrudeDepthGizmo() {
       out.push({ geom: g, color, opacity });
     };
     if (!preview) {
-      push(-depthInfo.depthMm, 0, GROW_COLOR, PRISM_OPACITY);
+      // The at-rest prism: for a PENDING ghost this is the only rendering
+      // the extrude gets at all (the body excludes it), so it draws at the
+      // stronger delta opacity (ticket x7af).
+      push(-depthInfo.depthMm, 0, GROW_COLOR, pending ? DELTA_OPACITY : PRISM_OPACITY);
     } else {
       const ranges = previewBandRanges(
         preview.startDepthMm,
@@ -151,7 +183,7 @@ export function ExtrudeDepthGizmo() {
       for (const [a, b] of ranges.delta) push(a, b, tint, DELTA_OPACITY);
     }
     return out;
-  }, [anchor, depthInfo, preview]);
+  }, [anchor, depthInfo, preview, pending]);
 
   useEffect(
     () => () => {
@@ -231,9 +263,13 @@ export function ExtrudeDepthGizmo() {
     const commitDepth = (mm: number) => {
       try {
         const params = store.getFeatureParams(extrudeId);
+        // `mm` is signed along the TIP-OUT axis; `sign` maps it back to the
+        // wire depth along the profile normal. Crossing the base plane
+        // (negative `mm`) flips the extrude direction (ticket x7af).
+        const sign = depthInfoRef.current?.sign ?? 1;
         store.updateFeatureParams(extrudeId, {
           ...params,
-          depth: lengthParamWithMm(params.depth, mm),
+          depth: lengthParamWithMm(params.depth, sign * mm),
         });
       } catch {
         // kernel rejected — the preview collapses back to the old depth
@@ -272,8 +308,17 @@ export function ExtrudeDepthGizmo() {
       // Symmetric extrudes grow ±depth/2 about the plane — the tip only
       // moves half a depth unit per drag unit, so double the delta to
       // keep the arrow glued to the cursor.
-      const factor = depthInfoRef.current?.symmetric ? 2 : 1;
-      const next = Math.max(MIN_DEPTH_MM, drag.startDepth + (t - drag.startT) * factor);
+      const di = depthInfoRef.current;
+      const factor = di?.symmetric ? 2 : 1;
+      let next = drag.startDepth + (t - drag.startT) * factor;
+      if (di?.symmetric) {
+        // Symmetric grows about the plane — sign has no direction meaning.
+        next = Math.max(MIN_DEPTH_MM, next);
+      } else if (Math.abs(next) < MIN_DEPTH_MM) {
+        // Blind extrudes may cross the base plane and grow the other way
+        // (ticket x7af) — only the degenerate zero extent is skipped.
+        next = next >= 0 ? MIN_DEPTH_MM : -MIN_DEPTH_MM;
+      }
       drag.lastDepth = next;
       dragTipOffRef.current = (next - drag.startDepth) / factor;
       setPreview({ depthMm: next, startDepthMm: drag.startDepth });

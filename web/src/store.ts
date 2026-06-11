@@ -618,6 +618,16 @@ export class KernelStore {
   getState = (): StoreState => this.state;
 
   private commit(nextSelection?: ReadonlySet<number>, nextAnchor?: number | null): void {
+    // A mutation that moves the selection away from the pending ghost
+    // feature confirms it first (e.g. creating the next feature while the
+    // ghost's dialog is still open) — see the pending-feature section.
+    if (
+      this.pendingFeature !== null &&
+      nextSelection !== undefined &&
+      !nextSelection.has(this.pendingFeature)
+    ) {
+      this.confirmPendingInline();
+    }
     const features = this.kernel.listFeatures();
     const rbRaw = this.kernel.getRollbackIndex();
     this.state = {
@@ -1274,6 +1284,7 @@ export class KernelStore {
     let removed = false;
     for (const id of this.state.selection) {
       if (this.kernel.removeFeature(id)) {
+        if (this.pendingFeature === id) this.pendingFeature = null;
         this.meshDataCache.delete(id);
         removed = true;
       }
@@ -1284,6 +1295,7 @@ export class KernelStore {
 
   removeFeature(id: number): boolean {
     if (!this.kernel.removeFeature(id)) return false;
+    if (this.pendingFeature === id) this.pendingFeature = null;
     this.meshDataCache.delete(id);
     const next = new Set(this.state.selection);
     next.delete(id);
@@ -1310,9 +1322,61 @@ export class KernelStore {
     return true;
   }
 
+  // ── pending feature (ticket x7af) ─────────────────────────────────
+  //
+  // A feature created as a suppressed GHOST awaiting confirmation: the
+  // body keeps its pre-feature shape and the gizmo previews the result
+  // translucently. Confirmation (unsuppress → the kernel applies it for
+  // real) fires when the feature stops being the edited selection — the
+  // dialog's OK, a click elsewhere, or the creation of another feature.
+  // Cancel drops the ghost feature entirely.
+
+  private pendingFeature: number | null = null;
+
+  /** Is `id` the not-yet-confirmed ghost feature? The extrude gizmo uses
+   *  this to keep working on a suppressed-but-pending feature. */
+  isPendingFeature(id: number): boolean {
+    return this.pendingFeature === id;
+  }
+
+  /** Unsuppress the pending ghost WITHOUT committing — shared by
+   *  {@link confirmPendingFeature} and `commit()` (which refreshes state
+   *  itself right after). No-op when nothing is pending or the feature
+   *  has already been removed (undo, delete). */
+  private confirmPendingInline(): void {
+    const id = this.pendingFeature;
+    if (id === null) return;
+    this.pendingFeature = null;
+    if (!this.state.features.some((f) => f.id === id)) return;
+    try {
+      this.kernel.setFeatureSuppressed(id, false);
+    } catch (err) {
+      console.error("fielddraft: confirm pending feature failed", err);
+      this.setTransientError(formatKernelError(err, "Feature failed"));
+    }
+  }
+
+  /** Confirm the pending ghost: the kernel regenerates with the feature
+   *  active and the body renders it for real. */
+  confirmPendingFeature(): void {
+    if (this.pendingFeature === null) return;
+    this.confirmPendingInline();
+    this.commit();
+  }
+
+  /** Cancel the pending ghost: remove the feature without it ever having
+   *  contributed geometry. */
+  cancelPendingFeature(): void {
+    const id = this.pendingFeature;
+    if (id === null) return;
+    this.pendingFeature = null;
+    this.removeFeature(id);
+  }
+
   // ── selection ─────────────────────────────────────────────────────
 
   selectOnly(id: number): void {
+    if (id !== this.pendingFeature) this.confirmPendingFeature();
     this.state = {
       ...this.state,
       selection: new Set([id]),
@@ -1328,6 +1392,7 @@ export class KernelStore {
   }
 
   toggleSelect(id: number): void {
+    if (id !== this.pendingFeature) this.confirmPendingFeature();
     const next = new Set(this.state.selection);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -1350,6 +1415,7 @@ export class KernelStore {
    * anchor exists yet this falls back to a single selection.
    */
   selectRangeTo(id: number): void {
+    if (id !== this.pendingFeature) this.confirmPendingFeature();
     const features = this.state.features;
     const targetIdx = features.findIndex((f) => f.id === id);
     if (targetIdx === -1) return;
@@ -1550,12 +1616,17 @@ export class KernelStore {
     if (faceQueries.length === 0) return null;
     let id: number;
     try {
-      id = this.kernel.addExtrudeFaces(faceQueries.join(","), depthMm, false, 0);
+      // Created as a PENDING ghost (ticket x7af): the call lands suppressed,
+      // so the body keeps its pre-extrude shape — the gizmo renders the
+      // would-be prism translucently against the ORIGINAL body — until the
+      // detail dialog confirms (OK / deselect). Cancel drops the feature.
+      id = this.kernel.addExtrudeFaces(faceQueries.join(","), depthMm, false, 0, true);
     } catch (err) {
       console.error("fielddraft: addExtrudeFaces failed", err);
       this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
+    this.pendingFeature = id;
     this.commit(new Set([id]), id);
     return id;
   }
@@ -1889,6 +1960,8 @@ export class KernelStore {
   }
 
   clearSelection(): void {
+    // Deselecting the pending ghost confirms it (the dialog's OK path).
+    this.confirmPendingFeature();
     if (
       this.state.selection.size === 0 &&
       this.state.selectionAnchor === null &&
@@ -1914,6 +1987,7 @@ export class KernelStore {
    *  in the viewport. Clears the feature-level selection so the two notions
    *  never both show. Ephemeral UI state — not persisted. */
   selectElement(el: PickedElement): void {
+    this.confirmPendingFeature();
     this.state = {
       ...this.state,
       selection: new Set(),
@@ -1931,6 +2005,7 @@ export class KernelStore {
    *  new last member when removed. Used to gather coplanar faces for a single
    *  face-extrude. Clears the feature-level selection like {@link selectElement}. */
   toggleElement(el: PickedElement): void {
+    this.confirmPendingFeature();
     const same = (a: PickedElement, b: PickedElement) =>
       a.kind === b.kind && a.idHash === b.idHash;
     const present = this.state.selectedElements.some((e) => same(e, el));

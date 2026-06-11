@@ -2602,25 +2602,30 @@ impl FeatureKind for ExtrudeFeature {
         // that consumes a typed runtime length is responsible for
         // converting once, at the edge.
         let depth_mm = d.depth.to_mm();
-        if depth_mm <= 0.0 {
+
+        // Direction mode → (half-height, centre offset along the plane normal).
+        // Symmetric (default) is ±|depth|/2 about the plane — the legacy sketch
+        // behaviour (dz = 0). Blind / two-sided spans the sorted interval over
+        // `{−back, +depth}` → a NEGATIVE depth extrudes in the −normal
+        // direction (Onshape: the depth drag may cross the profile plane and
+        // grow the body the other way, ticket x7af). Centre sits mid-span
+        // along local Z (which the frame maps to the plane normal). The
+        // `center[2]` shift is folded into the primitive below.
+        let back_mm = d.depth_back.to_mm().max(0.0);
+        let (half_depth_z, dz) = if d.symmetric {
+            (depth_mm.abs() / 2.0, 0.0)
+        } else {
+            let lo = (-back_mm).min(depth_mm);
+            let hi = (-back_mm).max(depth_mm);
+            ((hi - lo) / 2.0, (hi + lo) / 2.0)
+        };
+        if half_depth_z <= 0.0 {
             return Err(FeatureError::InvalidParameter {
                 feature: ExtrudeDef::TYPE_NAME,
                 name: "depth",
-                message: format!("must be > 0 mm, got {depth_mm}"),
+                message: format!("extrude extent must be > 0 mm, got depth {depth_mm} / depth_back {back_mm}"),
             });
         }
-
-        // Direction mode → (half-height, centre offset along the plane normal).
-        // Symmetric (default) is ±depth/2 about the plane — the legacy sketch
-        // behaviour (dz = 0). Blind / two-sided spans `[−back, +depth]` → centre
-        // at `(depth − back)/2` along local Z (which the frame maps to the plane
-        // normal). The `center[2]` shift is folded into the primitive below.
-        let back_mm = d.depth_back.to_mm().max(0.0);
-        let (half_depth_z, dz) = if d.symmetric {
-            (depth_mm / 2.0, 0.0)
-        } else {
-            ((depth_mm + back_mm) / 2.0, (depth_mm - back_mm) / 2.0)
-        };
 
         let name = optional_display_name(def, || format!("Extrude {id}"));
         let rotation = optional_rotation(def);
@@ -4925,12 +4930,12 @@ mod tests {
                 }
             ));
         }
-        // Negative depth (encoded via a negative value field)
+        // Zero extent (depth 0, no depth_back) — nothing to sweep.
         {
             let mut ctx = Context::new(&mut doc);
             let def = json!({
                 "profiles": "q",
-                "depth": { "value": -5.0, "unit": "mm" },
+                "depth": { "value": 0.0, "unit": "mm" },
                 "profile_half_x": 1.0,
                 "profile_half_y": 1.0,
             });
@@ -4943,6 +4948,54 @@ mod tests {
                     ..
                 }
             ));
+        }
+    }
+
+    #[test]
+    fn extrude_negative_depth_sweeps_in_the_minus_normal_direction() {
+        // Onshape-style depth drag through the profile plane (ticket x7af):
+        // symmetric treats the sign as irrelevant (±|d|/2), blind mode spans
+        // the sorted interval over {−back, depth} — a negative depth grows
+        // the prism on the −normal side of the plane.
+        let feature = ExtrudeFeature;
+        let mut doc = empty_ctx();
+
+        // Symmetric: |−5|/2 = 2.5 half-extent, centred on the plane.
+        {
+            let mut ctx = Context::new(&mut doc);
+            let def = json!({
+                "profiles": "q",
+                "depth": { "value": -5.0, "unit": "mm" },
+                "profile_half_x": 1.0,
+                "profile_half_y": 1.0,
+            });
+            feature.execute(&mut ctx, &id(1), &def).unwrap();
+            match &ctx.features[0].export_primitive().expect("primitive") {
+                Primitive::Box { center, half_extents } => {
+                    assert_eq!(*center, [0.0, 0.0, 0.0]);
+                    assert!((half_extents[2] - 2.5).abs() < 1e-6);
+                }
+                other => panic!("expected Primitive::Box, got {other:?}"),
+            }
+        }
+        // Blind: span [−10, 0] → centre z = −5, half-extent 5.
+        {
+            let mut ctx = Context::new(&mut doc);
+            let def = json!({
+                "profiles": "q",
+                "depth": { "value": -10.0, "unit": "mm" },
+                "profile_half_x": 1.0,
+                "profile_half_y": 1.0,
+                "symmetric": false,
+            });
+            feature.execute(&mut ctx, &id(2), &def).unwrap();
+            match &ctx.features[0].export_primitive().expect("primitive") {
+                Primitive::Box { center, half_extents } => {
+                    assert!((center[2] - -5.0).abs() < 1e-6);
+                    assert!((half_extents[2] - 5.0).abs() < 1e-6);
+                }
+                other => panic!("expected Primitive::Box, got {other:?}"),
+            }
         }
     }
 

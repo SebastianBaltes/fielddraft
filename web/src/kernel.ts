@@ -1145,14 +1145,17 @@ export class Kernel {
 
   /** Extrude one or more coplanar planar faces (P1). `faces` is a
    *  comma-separated list of `qFace(<idHash>)` queries; `symmetric=false`
-   *  is the blind/two-sided Onshape default growing outward from the face. */
+   *  is the blind/two-sided Onshape default growing outward from the face.
+   *  `suppressed=true` creates the call as a pending ghost (ticket x7af):
+   *  the body keeps its pre-extrude shape until the feature is confirmed. */
   addExtrudeFaces(
     faces: string,
     depthMm: number,
     symmetric: boolean,
     depthBackMm: number,
+    suppressed = false,
   ): number {
-    return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm);
+    return this.inner.addExtrudeFaces(faces, depthMm, symmetric, depthBackMm, suppressed);
   }
 
   /** Thicken one or more curved faces into a thin solid wall offset along the

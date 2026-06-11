@@ -272,6 +272,99 @@ export interface ExtrudeAnchor {
   outline: number[][];
 }
 
+/** Parse the idHashes out of a multi-query of `qFace(<idHash>)` terms. */
+export function faceQueryHashes(faces: unknown): string[] {
+  if (typeof faces !== "string") return [];
+  const out: string[] = [];
+  for (const m of faces.matchAll(/qFace\(([^)]+)\)/g)) out.push(m[1]);
+  return out;
+}
+
+/**
+ * Anchor for a PENDING (suppressed) face-extrude (ticket x7af). The ghost
+ * contributes no B-Rep faces of its own, so the anchor derives from the
+ * PROFILE faces it was created from — which still exist unchanged on the
+ * pre-extrude body; that body is the extrude's true reference, so the
+ * preview measures from the original face rather than from a previously
+ * committed partial extrude. The returned anchor mirrors the
+ * committed-tip convention (origin on the would-be tip plane, normal
+ * pointing tip-out, outline shifted onto that plane) so the band/drag
+ * math is shared. `tipOffsetMm` is the SIGNED depth along the profile
+ * normal — negative grows the prism in the −normal direction.
+ */
+export function resolvePendingExtrudeAnchor(
+  kernel: ExtrudeAnchorKernel,
+  faceIdHashes: string[],
+  tipOffsetMm: number,
+): ExtrudeAnchor | null {
+  if (faceIdHashes.length === 0) return null;
+  const wanted = new Set(faceIdHashes);
+  const count = kernel.bodyCount();
+  for (let i = 0; i < count; i++) {
+    let faces: BRepFace[];
+    let placement: Placement;
+    try {
+      faces = kernel.bodyBrepFaces(i);
+      placement = kernel.bodyPlacement(i);
+    } catch {
+      continue;
+    }
+    const matches = faces.filter((f) => wanted.has(f.idHash));
+    if (matches.length === 0) continue;
+    const n = rotateToWorld(matches[0].normalLocal, placement);
+    const len = Math.hypot(n[0], n[1], n[2]) || 1;
+    const profileNormal: Vec3 = [n[0] / len, n[1] / len, n[2] / len];
+    // Average centroid keeps the band's fan centre inside a coplanar
+    // multi-face profile — fine for the translucent preview.
+    const centroid: Vec3 = [0, 0, 0];
+    for (const f of matches) {
+      const c = localToWorld(f.centroidLocal, placement);
+      centroid[0] += c[0] / matches.length;
+      centroid[1] += c[1] / matches.length;
+      centroid[2] += c[2] / matches.length;
+    }
+    const shift: Vec3 = [
+      profileNormal[0] * tipOffsetMm,
+      profileNormal[1] * tipOffsetMm,
+      profileNormal[2] * tipOffsetMm,
+    ];
+    let edges: BRepEdge[] = [];
+    try {
+      edges = kernel.bodyBrepEdges(i);
+    } catch {
+      // outline optional — arrow still works
+    }
+    const branchIds = new Set(matches.map((f) => f.branchId));
+    const outline = edges
+      .filter((e) => branchIds.has(e.a) || branchIds.has(e.b))
+      .map((e) => {
+        const pts = new Array<number>(e.points.length);
+        for (let k = 0; k + 2 < e.points.length; k += 3) {
+          pts[k] = e.points[k] + shift[0];
+          pts[k + 1] = e.points[k + 1] + shift[1];
+          pts[k + 2] = e.points[k + 2] + shift[2];
+        }
+        return pts;
+      })
+      .filter((p) => p.length >= 6);
+    const sign = tipOffsetMm < 0 ? -1 : 1;
+    return {
+      origin: [
+        centroid[0] + shift[0],
+        centroid[1] + shift[1],
+        centroid[2] + shift[2],
+      ],
+      normal: [
+        profileNormal[0] * sign,
+        profileNormal[1] * sign,
+        profileNormal[2] * sign,
+      ],
+      outline,
+    };
+  }
+  return null;
+}
+
 /**
  * Locate the tip face of a committed extrude in the current B-Rep.
  * Returns `null` while the feature contributes no resolvable planar
