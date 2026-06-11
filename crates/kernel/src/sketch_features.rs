@@ -2382,6 +2382,112 @@ impl FeatureKind for SketchFeature {
 // one sketch are unioned together so a sketch with several
 // overlapping shapes lowers to one filled area.
 
+/// Lower a spline definition to its analytic segment chain —
+/// shared by the open-spline region arm and the loop-inference
+/// pass below.
+fn lower_spline_segments(d: &SketchSplineDef) -> Vec<SketchSegment> {
+    let pts: Vec<[f32; 2]> = d
+        .points
+        .chunks(2)
+        .filter(|c| c.len() == 2)
+        .map(|c| [c[0], c[1]])
+        .collect();
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    match d.mode {
+        SplineMode::Interpolate => catmull_rom_quad_beziers(&pts, d.closed, 16),
+        SplineMode::Control => {
+            let cp: Vec<[f64; 2]> = pts.iter().map(|p| [p[0] as f64, p[1] as f64]).collect();
+            bspline_quad_beziers(&cp, d.closed, 0.05)
+        }
+    }
+}
+
+/// One chainable element for the loop-inference pass: the lowered
+/// segments of a free `sketch_line` or open `sketch_spline`, plus the
+/// index of the sub-call it came from.
+struct ChainElement {
+    call_index: usize,
+    segments: Vec<SketchSegment>,
+}
+
+/// Endpoint-coincidence tolerance for loop inference (mm). Snapped
+/// geometry is exactly coincident (the solver equalises coordinates),
+/// so this only needs to absorb f32 rounding — a visibly open contour
+/// must NOT silently close.
+const LOOP_JOIN_TOL: f32 = 1e-3;
+
+/// K7.1 loop inference: chain free open elements (lines, open splines)
+/// into closed contours by endpoint coincidence. Greedy walk per start
+/// element; at a junction of ≥ 3 elements the first match wins (no
+/// backtracking — V1). Returns the closed loops (keyed by the call
+/// index of their first member, so the caller can splice each loop
+/// into the accumulator at the position the user drew it) plus the
+/// set of consumed call indices.
+fn infer_closed_loops(
+    elems: &[ChainElement],
+) -> (HashMap<usize, Vec<Vec<SketchSegment>>>, std::collections::HashSet<usize>) {
+    let close = |a: [f32; 2], b: [f32; 2]| {
+        (a[0] - b[0]).abs() <= LOOP_JOIN_TOL && (a[1] - b[1]).abs() <= LOOP_JOIN_TOL
+    };
+    let mut loops: HashMap<usize, Vec<Vec<SketchSegment>>> = HashMap::new();
+    let mut consumed = std::collections::HashSet::new();
+    let mut used = vec![false; elems.len()];
+    for start in 0..elems.len() {
+        if used[start] || elems[start].segments.is_empty() {
+            continue;
+        }
+        let mut chain: Vec<SketchSegment> = elems[start].segments.clone();
+        let mut members = vec![start];
+        used[start] = true;
+        let chain_start = chain.first().unwrap().start_point();
+        let mut chain_end = chain.last().unwrap().end_point();
+        while !close(chain_end, chain_start) {
+            let mut found = false;
+            for (j, elem) in elems.iter().enumerate() {
+                if used[j] || elem.segments.is_empty() {
+                    continue;
+                }
+                let s = elem.segments.first().unwrap().start_point();
+                let e = elem.segments.last().unwrap().end_point();
+                if close(chain_end, s) {
+                    chain.extend(elem.segments.iter().cloned());
+                    chain_end = e;
+                } else if close(chain_end, e) {
+                    chain.extend(elem.segments.iter().rev().map(|sg| sg.reversed()));
+                    chain_end = s;
+                } else {
+                    continue;
+                }
+                used[j] = true;
+                members.push(j);
+                found = true;
+                break;
+            }
+            if !found {
+                break;
+            }
+        }
+        if close(chain_end, chain_start) && chain.len() >= 2 {
+            for &m in &members {
+                consumed.insert(elems[m].call_index);
+            }
+            let anchor = members.iter().map(|&m| elems[m].call_index).min().unwrap();
+            loops.entry(anchor).or_default().push(chain);
+        } else {
+            // Open chain: release the members so they can join a loop
+            // seeded from a different start element. `start` itself
+            // stays used — re-seeding from it would just rebuild the
+            // same open chain.
+            for &m in &members[1..] {
+                used[m] = false;
+            }
+        }
+    }
+    (loops, consumed)
+}
+
 /// Walk a sketch's committed sub_calls and assemble a
 /// [`Sketch2d`] tree of every closed-region primitive they
 /// contain. Returns [`Sketch2d::Empty`] when the sub-spine has
@@ -2405,8 +2511,75 @@ pub fn build_sketch2d_from_sub_calls_raw(raw: &[serde_json::Value]) -> Sketch2d 
 }
 
 pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
+    // K7.1 loop inference: free `sketch_line`s and open `sketch_spline`s
+    // form no region on their own, but a chain of them whose endpoints
+    // coincide (the snap tools guarantee exact coincidence) encloses an
+    // area exactly like a polygon/closed-spline does. Gather the
+    // chainable elements, stitch closed loops, and splice each loop into
+    // the accumulator at the position of its first member so the
+    // order-sensitive modifiers (mirror, offset) keep their semantics.
+    let mut chainable: Vec<ChainElement> = Vec::new();
+    for (idx, call) in sub_calls.iter().enumerate() {
+        if call
+            .params
+            .get("construction")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match call.type_name.as_str() {
+            "sketch_line" => {
+                if let Ok(d) = SketchLineDef::parse(&call.params) {
+                    let len = ((d.end[0] - d.start[0]).powi(2)
+                        + (d.end[1] - d.start[1]).powi(2))
+                    .sqrt();
+                    if len > LOOP_JOIN_TOL {
+                        chainable.push(ChainElement {
+                            call_index: idx,
+                            segments: vec![SketchSegment::Line {
+                                start: d.start,
+                                end: d.end,
+                            }],
+                        });
+                    }
+                }
+            }
+            "sketch_spline" => {
+                if let Ok(d) = SketchSplineDef::parse(&call.params) {
+                    if !d.closed {
+                        let segments = lower_spline_segments(&d);
+                        if !segments.is_empty() {
+                            chainable.push(ChainElement {
+                                call_index: idx,
+                                segments,
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let (mut inferred_loops, consumed) = infer_closed_loops(&chainable);
+
     let mut acc: Option<Sketch2d> = None;
-    for call in sub_calls {
+    for (idx, call) in sub_calls.iter().enumerate() {
+        if let Some(loops) = inferred_loops.remove(&idx) {
+            for segments in loops {
+                let node = Sketch2d::Prim(Sketch2dPrimitive::Path {
+                    segments,
+                    closed: true,
+                });
+                acc = Some(match acc {
+                    None => node,
+                    Some(prev) => Sketch2d::Union(Box::new(prev), Box::new(node)),
+                });
+            }
+        }
+        if consumed.contains(&idx) {
+            continue;
+        }
         // Construction geometry is reference-only: it participates in the
         // constraint solve (the TS side still builds solver entities for
         // it) but never contributes to the extrudable region. The flag
@@ -2525,35 +2698,14 @@ pub fn build_sketch2d_from_sub_calls(sub_calls: &[FeatureCall]) -> Sketch2d {
                 Some(Sketch2dPrimitive::Polygon { vertices: verts })
             }
             "sketch_spline" => {
+                // Closed splines (and open ones no loop consumed) lower
+                // to a Path; the quad-Bézier fit lives in
+                // [`lower_spline_segments`], shared with loop inference.
                 let d = match SketchSplineDef::parse(&call.params) {
                     Ok(d) => d,
                     Err(_) => continue,
                 };
-                let pts: Vec<[f32; 2]> = d
-                    .points
-                    .chunks(2)
-                    .filter(|c| c.len() == 2)
-                    .map(|c| [c[0], c[1]])
-                    .collect();
-                if pts.len() < 2 {
-                    continue;
-                }
-                let segs = match d.mode {
-                    SplineMode::Interpolate => {
-                        // Catmull-Rom interpolating spline lowered to a
-                        // quad-Bézier Path (16 sub-steps per span).
-                        catmull_rom_quad_beziers(&pts, d.closed, 16)
-                    }
-                    SplineMode::Control => {
-                        // Real cubic B-spline: exact Boehm → Bézier →
-                        // quad lowering. Flatness 0.05 mm keeps the
-                        // quad fit visually exact while reusing the
-                        // kernel's QuadBezier SDF machinery.
-                        let cp: Vec<[f64; 2]> =
-                            pts.iter().map(|p| [p[0] as f64, p[1] as f64]).collect();
-                        bspline_quad_beziers(&cp, d.closed, 0.05)
-                    }
-                };
+                let segs = lower_spline_segments(&d);
                 if segs.is_empty() {
                     continue;
                 }
@@ -4298,6 +4450,135 @@ mod tests {
         assert!(sketch.sdf([20.0, 0.0]) < 0.0);
         // A point far from both is outside.
         assert!(sketch.sdf([100.0, 100.0]) > 0.0);
+    }
+
+    #[test]
+    fn loop_inference_closes_a_rectangle_of_free_lines() {
+        // Four free lines whose endpoints coincide exactly — drawn in
+        // mixed directions to exercise the reversed() chaining. K7.1
+        // must stitch them into one closed region.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_line",
+                id(1),
+                json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(2),
+                json!({ "start": [10.0, 8.0], "end": [10.0, 0.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(3),
+                json!({ "start": [10.0, 8.0], "end": [0.0, 8.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(4),
+                json!({ "start": [0.0, 0.0], "end": [0.0, 8.0] }),
+            ),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([5.0, 4.0]) < 0.0, "rectangle centre inside");
+        assert!(sketch.sdf([15.0, 4.0]) > 0.0, "right of rectangle outside");
+        assert!(sketch.sdf([5.0, -3.0]) > 0.0, "below rectangle outside");
+    }
+
+    #[test]
+    fn loop_inference_mixes_lines_and_open_spline() {
+        // A vase-like profile: lines on three sides, an open
+        // interpolated spline as the fourth. The chain closes through
+        // the spline's endpoints.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_line",
+                id(1),
+                json!({ "start": [0.0, 0.0], "end": [0.0, 20.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(2),
+                json!({ "start": [0.0, 20.0], "end": [10.0, 20.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_spline",
+                id(3),
+                json!({
+                    "points": [10.0, 20.0, 12.0, 10.0, 8.0, 0.0],
+                    "closed": false,
+                    "mode": "interpolate"
+                }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(4),
+                json!({ "start": [8.0, 0.0], "end": [0.0, 0.0] }),
+            ),
+        ];
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([5.0, 10.0]) < 0.0, "interior inside");
+        assert!(sketch.sdf([-5.0, 10.0]) > 0.0, "left of axis outside");
+        assert!(sketch.sdf([20.0, 10.0]) > 0.0, "far right outside");
+    }
+
+    #[test]
+    fn loop_inference_leaves_open_chains_empty() {
+        // Three sides of a square — endpoint chain never closes, so
+        // no region may be invented.
+        let calls = vec![
+            FeatureCall::new(
+                "sketch_line",
+                id(1),
+                json!({ "start": [0.0, 0.0], "end": [10.0, 0.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(2),
+                json!({ "start": [10.0, 0.0], "end": [10.0, 8.0] }),
+            ),
+            FeatureCall::new(
+                "sketch_line",
+                id(3),
+                json!({ "start": [10.0, 8.0], "end": [0.0, 8.0] }),
+            ),
+        ];
+        assert!(matches!(
+            build_sketch2d_from_sub_calls(&calls),
+            Sketch2d::Empty
+        ));
+    }
+
+    #[test]
+    fn loop_inference_two_disjoint_loops_union() {
+        // Two separate closed triangles of free lines → a Union with
+        // both interiors filled.
+        let mut calls = Vec::new();
+        let tri = |o: f32, base: u32| -> Vec<FeatureCall> {
+            vec![
+                FeatureCall::new(
+                    "sketch_line",
+                    id(base),
+                    json!({ "start": [o, 0.0], "end": [o + 6.0, 0.0] }),
+                ),
+                FeatureCall::new(
+                    "sketch_line",
+                    id(base + 1),
+                    json!({ "start": [o + 6.0, 0.0], "end": [o + 3.0, 6.0] }),
+                ),
+                FeatureCall::new(
+                    "sketch_line",
+                    id(base + 2),
+                    json!({ "start": [o + 3.0, 6.0], "end": [o, 0.0] }),
+                ),
+            ]
+        };
+        calls.extend(tri(0.0, 1));
+        calls.extend(tri(20.0, 4));
+        let sketch = build_sketch2d_from_sub_calls(&calls);
+        assert!(sketch.sdf([3.0, 2.0]) < 0.0, "first triangle inside");
+        assert!(sketch.sdf([23.0, 2.0]) < 0.0, "second triangle inside");
+        assert!(sketch.sdf([13.0, 2.0]) > 0.0, "between triangles outside");
     }
 
     #[test]

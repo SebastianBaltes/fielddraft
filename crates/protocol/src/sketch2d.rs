@@ -958,6 +958,36 @@ impl SketchSegment {
         }
     }
 
+    /// The same curve traversed in the opposite direction:
+    /// `reversed().start_point() == end_point()` and vice versa.
+    /// Used by the loop-inference pass that chains free sketch
+    /// segments into closed contours regardless of the direction
+    /// each element was drawn in.
+    pub fn reversed(&self) -> Self {
+        match self {
+            Self::Line { start, end } => Self::Line {
+                start: *end,
+                end: *start,
+            },
+            Self::QuadBezier { p0, p1, p2 } => Self::QuadBezier {
+                p0: *p2,
+                p1: *p1,
+                p2: *p0,
+            },
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => Self::Arc {
+                center: *center,
+                radius: *radius,
+                start_angle: *start_angle + *sweep_angle,
+                sweep_angle: -*sweep_angle,
+            },
+        }
+    }
+
     /// Position on the curve at parameter `t ∈ [0, 1]`. This is
     /// the actual curve point (distinct from `closest_point`),
     /// used to flatten a segment into a polyline.
