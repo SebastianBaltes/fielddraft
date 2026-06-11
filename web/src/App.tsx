@@ -77,6 +77,13 @@ export function App() {
       if (activeTab?.kind === "script") return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
+        // In a sketch session Delete acts on the SKETCH selection only —
+        // never on 3D features, which would vanish invisibly behind the
+        // sketch plane.
+        if (store.getState().sketchSession.active) {
+          if (store.deleteSketchSelection()) e.preventDefault();
+          return;
+        }
         if (store.removeSelected()) e.preventDefault();
         return;
       }

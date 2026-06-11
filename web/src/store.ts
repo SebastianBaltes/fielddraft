@@ -40,6 +40,7 @@ import {
   clearSketchSelection as reduceClearSelection,
   buildDraftSketchState,
   subCallsForSelection,
+  entityOwnerSubCalls,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
 import {
@@ -2316,6 +2317,33 @@ export class KernelStore {
    */
   removeSketchSubCall(index: number): void {
     this.updateSketch(reduceRemoveAt(this.state.sketchSession, index));
+  }
+
+  /**
+   * Delete the sketch elements currently selected in select mode
+   * (Delete/Backspace in a sketch session). Maps the selected entity
+   * ids to their owning geometry sub-calls and drops those rows
+   * (descending, so earlier indices stay valid); constraints that
+   * reference the removed entities are cascaded by the reducer.
+   * Returns true when something was deleted.
+   */
+  deleteSketchSelection(): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active || session.selection.length === 0) return false;
+    const owner = entityOwnerSubCalls(session.subCalls);
+    const indices = [
+      ...new Set(
+        session.selection
+          .map((id) => owner.get(id))
+          .filter((i): i is number => i !== undefined),
+      ),
+    ].sort((a, b) => b - a);
+    if (indices.length === 0) return false;
+    let next = session;
+    for (const i of indices) next = reduceRemoveAt(next, i);
+    this.updateSketch(next);
+    void solveAndReplace(this);
+    return true;
   }
 
   /**
