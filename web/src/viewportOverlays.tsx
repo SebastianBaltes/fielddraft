@@ -33,7 +33,7 @@ import {
   resolvePlaneFrame,
   type PlaneFrame,
 } from "./sketchPlaneFrame";
-import { setHoveredElementOfKind } from "./brepPickBridge";
+import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 
@@ -527,13 +527,14 @@ export function BRepEdgeOverlay({
   // through the same fat-line path as the *selected* edge (LineSegments2 +
   // Line2NodeMaterial) because that is the one line path proven to composite
   // over the SDF passes on the WebGPU backend — a plain LineSegments hover
-  // overlay never showed up there. 1px wide; the bolder 2px stays reserved
-  // for the selection, so hover and selection share the hue but differ in
-  // brightness and weight.
+  // overlay never showed up there. 2.5px wide (ticket bqvz: 1px drowned in
+  // the 1.5px base wireframe); the bolder 4px stays reserved for the
+  // selection, so hover and selection share the hue but differ in brightness
+  // and weight.
   const hoverMaterialRef = useRef(
     new Line2NodeMaterial({
       color: ELEMENT_HOVER_COLOR,
-      linewidth: 1,
+      linewidth: ELEMENT_HOVER_LINEWIDTH,
       worldUnits: false,
       depthTest: false,
       depthWrite: false,
@@ -1070,13 +1071,17 @@ const VERTEX_COLOR = 0xb07820;
  *  selection highlight), distinct from the blue picker-highlight. */
 const ELEMENT_SELECTION_COLOR = 0xff7a00;
 /** Hover colour for B-Rep elements: the SAME gold-orange hue as
- *  {@link ELEMENT_SELECTION_COLOR}, lightened (ticket m0yw) — hover previews
- *  the selection it would make, selection then deepens the tone. */
-const ELEMENT_HOVER_COLOR = 0xffb066;
-/** Vertex markers size in SCREEN pixels (ticket 7zs8): diameter ≈ 2× the
- *  matching edge stroke — the selected edge draws as a 2px fat line, the
- *  hovered edge as a 1px LineBasicMaterial (hover rounds up for HiDPI
- *  visibility). World-space spheres looked huge at modelling zoom levels. */
+ *  {@link ELEMENT_SELECTION_COLOR}, lightened (ticket m0yw, brightened again
+ *  in ticket bqvz) — hover previews the selection it would make, selection
+ *  then deepens the tone. */
+const ELEMENT_HOVER_COLOR = 0xffc080;
+/** Stroke width of hovered-element fat lines (ticket bqvz: the old 1px hover
+ *  was barely distinguishable from the 1.5px base wireframe). Clearly wider
+ *  than the base edges, clearly slimmer than the 4px selection stroke. */
+const ELEMENT_HOVER_LINEWIDTH = 2.5;
+/** Vertex markers size in SCREEN pixels (ticket 7zs8): the selected edge
+ *  draws as a 4px fat line, the hovered edge as a 2.5px fat line. World-space
+ *  spheres looked huge at modelling zoom levels. */
 const VERTEX_SELECT_DIAMETER_PX = 4;
 const VERTEX_HOVER_DIAMETER_PX = 3;
 /** Screen-space radius (in NDC units) within which a vertex marker counts as
@@ -1337,34 +1342,52 @@ export function BRepSelectionOverlay({
     faceHighlightGeom.current.computeBoundingSphere();
   };
 
-  // Boundary-outline hover highlight for the face with the given packed
-  // branch id — the mesh-free feedback path (ticket evq2): every analytic
-  // edge bounding the face lights up in the hover colour.
-  const outlineGeomRef = useRef(new THREE.BufferGeometry());
+  // Boundary-outline hover highlight for the hovered face (ticket evq2) —
+  // every analytic edge bounding the face lights up exactly like a hovered
+  // edge. This is the ONLY face-hover feedback in the SDF render modes (no
+  // triangle fill there), and it must go through the fat-line path
+  // (LineSegments2 + Line2NodeMaterial): the previous plain LineBasicMaterial
+  // lineSegments never composited on the WebGPU backend, so hovering a face
+  // gave no edge feedback at all (ticket bqvz).
   const outlineMatRef = useRef(
-    new THREE.LineBasicMaterial({
-      color: FACE_HOVER_COLOR,
+    new Line2NodeMaterial({
+      color: ELEMENT_HOVER_COLOR,
+      linewidth: ELEMENT_HOVER_LINEWIDTH,
+      worldUnits: false,
       depthTest: false,
       depthWrite: false,
       transparent: true,
     }),
   );
   useEffect(() => {
-    const geom = outlineGeomRef.current;
     const mat = outlineMatRef.current;
-    return () => {
-      geom.dispose();
-      mat.dispose();
-    };
+    return () => mat.dispose();
   }, []);
-  const highlightFaceOutline = (branchId: number): void => {
-    const segs = faceOutlineSegments(bodies, branchId);
-    outlineGeomRef.current.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(segs, 3),
-    );
-    outlineGeomRef.current.computeBoundingSphere();
-  };
+  // Hovered face branch id, published from useFrame; the outline gets a
+  // BRAND-NEW LineSegments2 + geometry per change — the WebGPU renderer does
+  // not re-upload a line geometry mutated in place (ticket twxw).
+  const [hoverFaceBranch, setHoverFaceBranch] = useState<number | null>(null);
+  const [outlineObj, setOutlineObj] = useState<LineSegments2 | null>(null);
+  useEffect(() => {
+    if (hoverFaceBranch === null) {
+      setOutlineObj(null);
+      return;
+    }
+    const segs = faceOutlineSegments(bodies, hoverFaceBranch);
+    if (segs.length === 0) {
+      setOutlineObj(null);
+      return;
+    }
+    const geom = new LineSegmentsGeometry();
+    geom.setPositions(new Float32Array(segs));
+    const obj = new LineSegments2(geom, outlineMatRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 999;
+    obj.layers.enable(OVERLAY_LAYER);
+    setOutlineObj(obj);
+    invalidate();
+    return () => geom.dispose();
+  }, [hoverFaceBranch, bodies, invalidate]);
 
   useFrame(() => {
     const picker = getActiveQueryPicker();
@@ -1375,12 +1398,21 @@ export function BRepSelectionOverlay({
     if (!ndc.active || bodies.length === 0) {
       if (faceHover) { setFaceHover(false); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
+      setHoverFaceBranch(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
       return;
     }
     const filter = picker?.entityFilter;
-    const wantFace = picker ? filterAllows("face", filter) : true;
+    // An edge inside its pick band beats the face it bounds — the bridge
+    // merge already resolves clicks that way (vertex > edge > face), so the
+    // visuals must agree: with the face outline now drawn in the same hover
+    // style (ticket bqvz), keeping both lit would mask WHICH edge a click
+    // selects. A face-only picker keeps the face highlight alive instead.
+    const edgeWins =
+      getHoveredElementOfKind("edge") !== null &&
+      (!picker || filterAllows("edge", filter));
+    const wantFace = !edgeWins && (picker ? filterAllows("face", filter) : true);
     const wantVertex = picker ? filterAllows("vertex", filter) : true;
 
     raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
@@ -1457,13 +1489,14 @@ export function BRepSelectionOverlay({
 
     if (resolvedFace) {
       highlightFace(resolvedFace.body, resolvedFace.arena);
-      highlightFaceOutline(resolvedFace.branchId);
+      setHoverFaceBranch(resolvedFace.branchId);
       if (!faceHover) { setFaceHover(true); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
       setHoveredElementOfKind("face", { kind: "face", idHash: resolvedFace.idHash });
       setHoveredElementOfKind("vertex", null);
     } else if (resolvedVertex) {
       if (faceHover) { setFaceHover(false); invalidate(); }
+      setHoverFaceBranch(null);
       const next: [number, number] = [resolvedVertex.bi, resolvedVertex.vi];
       if (!vertexHoverIdx || vertexHoverIdx[0] !== next[0] || vertexHoverIdx[1] !== next[1]) {
         setVertexHoverIdx(next);
@@ -1474,6 +1507,7 @@ export function BRepSelectionOverlay({
     } else {
       if (faceHover) { setFaceHover(false); invalidate(); }
       if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
+      setHoverFaceBranch(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
     }
@@ -1500,15 +1534,9 @@ export function BRepSelectionOverlay({
           renderOrder={997}
         />
       )}
-      {faceHover && (
-        <lineSegments
-          ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
-          geometry={outlineGeomRef.current}
-          material={outlineMatRef.current}
-          frustumCulled={false}
-          renderOrder={997}
-        />
-      )}
+      {/* dispose={null}: fresh object per hovered face; the previous geometry
+          is disposed by the outline effect, the material is shared. */}
+      {outlineObj && <primitive object={outlineObj} dispose={null} />}
       {hoveredVertexWorld && (
         <ScreenSpacePoint
           position={hoveredVertexWorld}
