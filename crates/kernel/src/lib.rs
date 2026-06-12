@@ -460,6 +460,14 @@ pub struct Kernel {
     /// resolve analytically falls back to the octree weave per-body, so the
     /// result is never worse than the octree route. Toggle via `setParametricWeave`.
     parametric_weave: bool,
+    /// While `true` (web: gizmo drag with "B-Rep rebuild while dragging"
+    /// off, and permanently in the mesher worker), the kernel never weaves:
+    /// the regen face-tagging pass is skipped and the per-body B-Rep exports
+    /// serve only a still-current cache — a body whose geometry changed
+    /// reports empty payloads. `setBrepSuppressed(false)` catches up with
+    /// ONE weave per stale body and bumps their versions so the frontend
+    /// refetches. Runtime-only, never serialised.
+    brep_suppressed: bool,
     /// Global version counter bumped on every mesh rebuild (any body
     /// touched). Frontend uses this to detect "anything changed";
     /// per-body freshness is tracked by each `Body`'s own `version`.
@@ -651,14 +659,25 @@ impl Kernel {
 
         self.bodies = new_bodies;
 
-        // Brocken A (A3): tag every freshly-built mesh with per-vertex B-Rep
-        // FACE IDENTITY so a hovered/clicked triangle resolves to a stable
-        // face. Bodies carried through the affine fast-path keep their old
-        // (already-tagged) mesh untouched — their `face_index` is still valid
-        // because correlation is body-LOCAL and a pure move doesn't change
-        // which face a vertex sits on. We therefore only (re)tag meshes whose
-        // `face_index` is missing/out-of-sync, weaving the B-Rep once and
-        // sharing the cache with the later face/vertex exports.
+        // Brocken A (A3): face-identity tagging. Skipped while B-Rep output
+        // is suppressed (gizmo drag) — `setBrepSuppressed(false)` runs the
+        // catch-up pass once at drag end.
+        if !self.brep_suppressed {
+            self.retag_mesh_faces();
+        }
+
+        self.mesh_version = self.mesh_version.wrapping_add(1);
+    }
+
+    /// Brocken A (A3): tag every freshly-built mesh with per-vertex B-Rep
+    /// FACE IDENTITY so a hovered/clicked triangle resolves to a stable
+    /// face. Bodies carried through the affine fast-path keep their old
+    /// (already-tagged) mesh untouched — their `face_index` is still valid
+    /// because correlation is body-LOCAL and a pure move doesn't change
+    /// which face a vertex sits on. We therefore only (re)tag meshes whose
+    /// `face_index` is missing/out-of-sync, weaving the B-Rep once and
+    /// sharing the cache with the later face/vertex exports.
+    fn retag_mesh_faces(&mut self) {
         let parametric = self.parametric_weave;
         for i in 0..self.bodies.len() {
             let tc = self.bodies[i].mesh.triangle_count();
@@ -678,8 +697,6 @@ impl Kernel {
             );
             self.bodies[i].mesh.face_index = tags;
         }
-
-        self.mesh_version = self.mesh_version.wrapping_add(1);
     }
 
     /// Build a mesh for a body's feature subset at the requested
@@ -997,6 +1014,7 @@ impl Kernel {
             sync_meshing: true,
             mesh_algorithm: 0,
             parametric_weave: true,
+            brep_suppressed: false,
             mesh_version: 0,
             edge_fillets: Vec::new(),
             mate_connectors: Vec::new(),
@@ -2933,6 +2951,16 @@ impl Kernel {
 
     // ── Per-body *feature-based* B-Rep (sharp topology) ──────────
 
+    /// Gate for the per-body B-Rep exports while weaving is suppressed
+    /// (`setBrepSuppressed`): `true` when serving body `i` costs no weave —
+    /// either suppression is off, or the body's cached B-Rep is still
+    /// current (e.g. after a pure move, whose placement-invariant key is
+    /// unchanged). `false` means "emit an empty payload"; as a side effect
+    /// the body's `placement` has been refreshed.
+    fn brep_export_allowed(&mut self, i: usize) -> bool {
+        !self.brep_suppressed || self.bodies[i].brep_is_current(&self.decoded)
+    }
+
     /// Counts of the body's feature-based B-Rep entities as a JSON
     /// object: `{"vertices","edges","faces","shells","solids",
     /// "watertight"}`. `watertight` reflects the body's single outer
@@ -2947,6 +2975,13 @@ impl Kernel {
     /// feature-based B-Rep captures sharp topology only (DL-29).
     #[wasm_bindgen(js_name = bodyBrepCounts)]
     pub fn body_brep_counts(&mut self, i: usize) -> String {
+        if !self.brep_export_allowed(i) {
+            return serde_json::json!({
+                "vertices": 0, "edges": 0, "faces": 0,
+                "shells": 0, "solids": 0, "watertight": false,
+            })
+            .to_string();
+        }
         // Split the borrow: `ensure_brep` needs `&mut bodies[i]` and
         // `&document.features` simultaneously, which a method on the
         // whole `Kernel` can't express without aliasing.
@@ -2985,6 +3020,9 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::EdgeId;
 
+        if !self.brep_export_allowed(i) {
+            return "[]".into();
+        }
         self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let placement = self.bodies[i].placement;
         let brep = self.bodies[i].brep_cached().expect("woven above");
@@ -3053,6 +3091,16 @@ impl Kernel {
     /// every call (not cached); this is a diagnostic path, not the hot path.
     #[wasm_bindgen(js_name = bodyOctreeCells)]
     pub fn body_octree_cells(&mut self, i: usize) -> String {
+        if !self.brep_export_allowed(i) {
+            let p = self.bodies[i].placement; // refreshed by the gate
+            return serde_json::json!({
+                "translate": p.translate,
+                "rotation": p.rotation,
+                "scale": p.scale[0],
+                "cells": [],
+            })
+            .to_string();
+        }
         // Refresh placement off the (cached) weave, then rebuild the octree.
         self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let placement = self.bodies[i].placement;
@@ -3090,6 +3138,9 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
 
+        if !self.brep_export_allowed(i) {
+            return "[]".into();
+        }
         self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut faces = Vec::with_capacity(brep.faces.len());
@@ -3120,6 +3171,9 @@ impl Kernel {
         use crate::brep::naming::TopoRef;
         use crate::brep::VertexId;
 
+        if !self.brep_export_allowed(i) {
+            return "[]".into();
+        }
         self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
         let brep = self.bodies[i].brep_cached().expect("woven above");
         let mut verts = Vec::with_capacity(brep.vertices.len());
@@ -3141,12 +3195,12 @@ impl Kernel {
     /// `{"translate":[x,y,z],"rotation":[x,y,z,w],"scale":[sx,sy,sz]}`
     /// (Brocken A2). B-Reps stay body-LOCAL and an affine transform never
     /// invalidates them; the frontend composes this placement back in
-    /// (`localToWorld`) to obtain world coordinates. `placement` is recomputed
-    /// lazily on the first `ensure_brep`, so we weave first to guarantee it is
-    /// current.
+    /// (`localToWorld`) to obtain world coordinates. Placement is derived
+    /// straight from the features — it never depends on the weave, so this
+    /// refreshes it directly without ever triggering a B-Rep build.
     #[wasm_bindgen(js_name = bodyPlacement)]
     pub fn body_placement(&mut self, i: usize) -> String {
-        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        self.bodies[i].refresh_placement(&self.decoded);
         let p = self.bodies[i].placement;
         serde_json::json!({
             "translate": p.translate,
@@ -3389,6 +3443,38 @@ impl Kernel {
             b.version = b.version.wrapping_add(1);
         }
         self.mesh_version = self.mesh_version.wrapping_add(1);
+        true
+    }
+
+    /// Suppress every B-Rep weave while a gizmo drag streams throttled
+    /// parameter commits (web setting "B-Rep rebuild while dragging",
+    /// default suppressed). While on, regen skips the eager face-tagging
+    /// weave and the B-Rep exports (`bodyBrepEdges`/`Faces`/`Vertices`/
+    /// `Counts`) serve only a still-current cache — a body whose geometry
+    /// changed under the drag reports empty payloads until the drag ends.
+    /// Turning the flag off bumps the version of every body whose B-Rep
+    /// went stale (the frontend's refetch signal) and re-runs the
+    /// face-tagging pass, weaving each stale body exactly once. Returns
+    /// `false` if the flag was already at `on`.
+    #[wasm_bindgen(js_name = setBrepSuppressed)]
+    pub fn set_brep_suppressed(&mut self, on: bool) -> bool {
+        if self.brep_suppressed == on {
+            return false;
+        }
+        self.brep_suppressed = on;
+        if !on {
+            let mut any_stale = false;
+            for i in 0..self.bodies.len() {
+                if !self.bodies[i].brep_is_current(&self.decoded) {
+                    self.bodies[i].version = self.bodies[i].version.wrapping_add(1);
+                    any_stale = true;
+                }
+            }
+            self.retag_mesh_faces();
+            if any_stale {
+                self.mesh_version = self.mesh_version.wrapping_add(1);
+            }
+        }
         true
     }
 
@@ -4232,6 +4318,59 @@ mod tests {
             Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
         );
         assert!(next.is_ok(), "regeneration succeeds after the cascade delete");
+    }
+
+    /// `setBrepSuppressed` (web: gizmo drag with "B-Rep rebuild while
+    /// dragging" off): while suppressed the kernel never weaves — a body
+    /// whose geometry changed exports EMPTY B-Rep payloads, while a body
+    /// whose cached weave is still current (pure move — the key is
+    /// placement-invariant) keeps serving it. Un-suppressing bumps the
+    /// stale body's version (the frontend's refetch signal) and the next
+    /// export weaves once.
+    #[test]
+    fn brep_suppression_serves_cache_or_empty_then_catches_up() {
+        let mut k = Kernel::new();
+        let box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            .unwrap();
+        // Warm the cache: a box weaves to its 12-edge wireframe.
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        assert_eq!(edges.as_array().unwrap().len(), 12, "box wireframe woven");
+
+        assert!(k.set_brep_suppressed(true), "flag flips on");
+        assert!(!k.set_brep_suppressed(true), "repeat is a no-op");
+
+        // A pure move keeps the placement-invariant cache current — the
+        // edges still export, without any re-weave.
+        assert!(k.apply_gizmo_translate(box_id, 5.0, 0.0, 0.0));
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        assert_eq!(
+            edges.as_array().unwrap().len(),
+            12,
+            "cached weave survives a pure move while suppressed"
+        );
+
+        // A geometry change (boolean remove) makes the cache stale →
+        // every B-Rep export turns empty instead of weaving.
+        k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_REMOVE, 5.0, 0.0, 0.0, 0.5, 0.0, 0.0)
+            .unwrap();
+        let v_stale = k.body_version(0);
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        assert!(edges.as_array().unwrap().is_empty(), "stale edges export empty");
+        let faces: serde_json::Value = serde_json::from_str(&k.body_brep_faces(0)).unwrap();
+        assert!(faces.as_array().unwrap().is_empty(), "stale faces export empty");
+        let counts: serde_json::Value = serde_json::from_str(&k.body_brep_counts(0)).unwrap();
+        assert_eq!(counts["edges"], 0, "stale counts export zeroed");
+
+        // Un-suppress: the stale body's version bumps and the export
+        // weaves the fresh boolean result exactly once.
+        assert!(k.set_brep_suppressed(false), "flag flips off");
+        assert_ne!(k.body_version(0), v_stale, "version bump signals refetch");
+        let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
+        assert!(
+            !edges.as_array().unwrap().is_empty(),
+            "weave catches up after un-suppress"
+        );
     }
 
     #[test]

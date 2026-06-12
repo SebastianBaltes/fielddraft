@@ -199,6 +199,25 @@ impl Body {
         &self.brep.as_ref().unwrap().1
     }
 
+    /// Refresh [`Body::placement`] from the anchor feature without touching
+    /// the weave. Cheap (O(features)) — placement never depends on the
+    /// B-Rep, so callers that only need the current world pose can skip
+    /// [`Body::ensure_brep`] entirely.
+    pub fn refresh_placement(&mut self, features: &[DecodedFeature]) {
+        self.placement = compute_body_placement(features, &self.feature_indices);
+    }
+
+    /// `true` when the cached B-Rep still matches the body's
+    /// placement-invariant content key — i.e. [`Body::ensure_brep`] would be
+    /// a pure cache hit. Refreshes `placement` as a side effect (the key is
+    /// computed relative to it). Never weaves; used by the kernel's B-Rep
+    /// suppression gate (gizmo drags) to serve cache-or-empty.
+    pub fn brep_is_current(&mut self, features: &[DecodedFeature]) -> bool {
+        self.refresh_placement(features);
+        let key = hash_body_local_payload(features, &self.feature_indices, &self.placement);
+        matches!(&self.brep, Some((k, _)) if *k == key)
+    }
+
     /// Borrow the already-woven B-Rep without re-weaving, or `None` if
     /// [`Body::ensure_brep`] has never run (or the cache was invalidated).
     /// Lets a caller weave a batch of bodies first, then borrow them all

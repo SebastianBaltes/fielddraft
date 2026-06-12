@@ -19,6 +19,7 @@ const LS_BREP_EDGE_MODE = "fielddraft.brepEdgeMode";
 const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
 const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
+const LS_DRAG_BREP_RECOMPUTE = "fielddraft.dragBrepRecompute";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
@@ -209,6 +210,12 @@ export interface SettingsState {
    * and falls back to the octree weave per-body for anything not yet handled,
    * so the result is never worse. */
   parametricWeave: boolean;
+  /** Re-weave and display the exact B-Rep live during gizmo drags. Off by
+   * default: the throttled drag commits then only update the render mesh,
+   * B-Rep edges of geometry-changed bodies hide for the drag's duration,
+   * and the weave runs exactly once on release — keeps weave-heavy drags
+   * (booleans against spline-revolves) fluid. */
+  dragBrepRecompute: boolean;
   /** Debug overlay: render each B-Rep edge's individual sample points as
    * markers, so a NURBS edge's tessellation density (many points vs. few) is
    * visible at a glance. */
@@ -273,6 +280,7 @@ export function loadSettings(): SettingsState {
   let brepEdgeMode: BRepEdgeMode = "xray";
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;
+  let dragBrepRecompute = false;
   let showEdgePoints = false;
   const showOctreeCells = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
@@ -295,6 +303,7 @@ export function loadSettings(): SettingsState {
       frameLoop = rawFrameLoop;
     const rawParametric = localStorage.getItem(LS_PARAMETRIC_WEAVE);
     if (rawParametric !== null) parametricWeave = rawParametric === "true";
+    dragBrepRecompute = localStorage.getItem(LS_DRAG_BREP_RECOMPUTE) === "true";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
     // showOctreeCells is deliberately NOT read back — drop any stale key so a
     // tab frozen by the overlay recovers on reload.
@@ -304,7 +313,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, showEdgePoints, showOctreeCells, controlsPreset };
+  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, showEdgePoints, showOctreeCells, controlsPreset };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -890,6 +899,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleDragBrepRecompute = () => {
+    const next = { ...settings, dragBrepRecompute: !settings.dragBrepRecompute };
+    saveSetting(LS_DRAG_BREP_RECOMPUTE, String(next.dragBrepRecompute));
+    onSettingsChange(next);
+  };
+
   const toggleShowEdgePoints = () => {
     const next = { ...settings, showEdgePoints: !settings.showEdgePoints };
     saveSetting(LS_SHOW_EDGE_POINTS, String(next.showEdgePoints));
@@ -1095,6 +1110,22 @@ function SettingsDialog({
                   onClick={toggleParametricWeave}
                 >
                   {settings.parametricWeave ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-drag-brep">
+                <span className="setting-label" title="Re-weave and display the exact B-Rep live during gizmo drags. Off: the drag updates only the render mesh — affected B-Rep edges hide while dragging and re-weave once on release. Keeps drags fluid on weave-heavy models.">
+                  B-Rep rebuild while dragging
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.dragBrepRecompute ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.dragBrepRecompute}
+                  data-testid="setting-drag-brep-toggle"
+                  onClick={toggleDragBrepRecompute}
+                >
+                  {settings.dragBrepRecompute ? "On" : "Off"}
                 </button>
               </div>
 

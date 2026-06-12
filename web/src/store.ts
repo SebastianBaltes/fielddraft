@@ -764,6 +764,37 @@ export class KernelStore {
     if (this.kernel.setParametricWeave(enabled)) this.notify();
   }
 
+  /** Setting "B-Rep rebuild while dragging" (default false): when off, a
+   * gizmo drag suppresses every B-Rep weave for its whole duration — the
+   * throttled drag commits only re-mesh, and the exact B-Rep weaves once
+   * on release (`endGizmoDrag`). When on, drags keep the historical
+   * live-weave behaviour. */
+  private dragBrepRecompute = false;
+  private gizmoDragActive = false;
+
+  setDragBrepRecompute(enabled: boolean): void {
+    this.dragBrepRecompute = enabled;
+    // Flipping the setting ON mid-drag lifts an active suppression.
+    if (enabled && this.gizmoDragActive && this.kernel.setBrepSuppressed(false)) {
+      this.notify();
+    }
+  }
+
+  /** Called by the transform gizmo when a drag starts (dragging-changed). */
+  beginGizmoDrag(): void {
+    this.gizmoDragActive = true;
+    if (!this.dragBrepRecompute) this.kernel.setBrepSuppressed(true);
+  }
+
+  /** Called when the drag ends (or the gizmo unmounts mid-drag). The
+   * kernel un-suppress weaves each stale body once and bumps its version;
+   * notify so the edge/face overlays refetch. Idempotent. */
+  endGizmoDrag(): void {
+    if (!this.gizmoDragActive) return;
+    this.gizmoDragActive = false;
+    if (this.kernel.setBrepSuppressed(false)) this.notify();
+  }
+
   private scheduleWorkerRebuild(): void {
     if (!this.worker || !this.workerAvailable) return;
     if (!this.dcMeshingEnabled) return;

@@ -147,6 +147,14 @@ async function ensureKernel(): Promise<ReadyKernel> {
       if (!kernel.syncMeshing()) {
         kernel.setSyncMeshing(true);
       }
+      // The worker only ships render meshes (positions/normals/indices/
+      // classifications/contributors) — it never exports B-Rep payloads or
+      // the per-triangle face tags. Without this, every geometry-changing
+      // rebuild paid the kernel's eager face-tagging pass, which weaves the
+      // full B-Rep (multi-second on weave-heavy bodies) for a buffer nobody
+      // reads. Regen-internal weaves (element queries during regenerate)
+      // are unaffected by this flag.
+      kernel.setBrepSuppressed(true);
 
       // K4.5.5: from this point on, the worker's global scope is
       // the Regeneration Worker sandbox — no network, no timers,

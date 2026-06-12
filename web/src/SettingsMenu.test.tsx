@@ -44,6 +44,7 @@ function setup() {
     brepEdgeMode: "xray",
     frameLoop: "demand",
     parametricWeave: false,
+    dragBrepRecompute: false,
     showEdgePoints: false,
     showOctreeCells: false,
     controlsPreset: "fielddraft",
@@ -257,6 +258,22 @@ describe("SettingsMenu", () => {
     t.cleanup();
   });
 
+  it("toggles drag B-Rep rebuild in settings dialog (default off)", () => {
+    const t = setup();
+    openSettingsDialog(t.container);
+
+    const toggle = t.container.querySelector(
+      '[data-testid="setting-drag-brep-toggle"]',
+    )!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    click(toggle);
+    expect(t.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ dragBrepRecompute: true }),
+    );
+    expect(localStorage.getItem("fielddraft.dragBrepRecompute")).toBe("true");
+    t.cleanup();
+  });
+
   it("switches controls preset in settings dialog", () => {
     const t = setup();
     openSettingsDialog(t.container);
@@ -374,6 +391,7 @@ describe("loadSettings", () => {
       brepEdgeMode: "xray",
       frameLoop: "demand",
       parametricWeave: true,
+      dragBrepRecompute: false,
       showEdgePoints: false,
       showOctreeCells: false,
       controlsPreset: "fielddraft",
@@ -404,6 +422,7 @@ describe("loadSettings", () => {
       brepEdgeMode: "xray",
       frameLoop: "demand",
       parametricWeave: true,
+      dragBrepRecompute: false,
       showEdgePoints: false,
       showOctreeCells: false,
       controlsPreset: "fielddraft",

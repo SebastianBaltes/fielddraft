@@ -337,6 +337,10 @@ export function SelectionTransformGizmo() {
 
     const onDragging = (e: { value: boolean }) => {
       if (defaultControls) (defaultControls as any).enabled = !e.value;
+      // "B-Rep rebuild while dragging" (default off): suppress the
+      // per-commit weave for the whole drag, catch up once on release.
+      if (e.value) store.beginGizmoDrag();
+      else store.endGizmoDrag();
     };
     const onChange = () => invalidate();
     const onObjectChange = () => {
@@ -366,6 +370,9 @@ export function SelectionTransformGizmo() {
       scene.remove(helper);
       tc.dispose();
       tcRef.current = null;
+      // Unmounting mid-drag (feature deselected/deleted) must lift an
+      // active B-Rep suppression; a no-op otherwise (idempotent).
+      store.endGizmoDrag();
     };
   }, [selectedFeature?.id, gizmoMode, camera, gl, scene, defaultControls, invalidate, store]);
 

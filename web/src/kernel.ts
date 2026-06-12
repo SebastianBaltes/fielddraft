@@ -668,6 +668,16 @@ export class Kernel {
     return this.inner.setParametricWeave(enabled);
   }
 
+  /** Suppress every B-Rep weave while a gizmo drag streams throttled
+   * commits ("B-Rep rebuild while dragging" off): bodies whose geometry
+   * changed export empty B-Rep payloads instead of weaving. Turning the
+   * flag off weaves the catch-up once and bumps the stale bodies'
+   * versions so the overlays refetch. Returns `true` if the flag
+   * actually changed. */
+  setBrepSuppressed(on: boolean): boolean {
+    return this.inner.setBrepSuppressed(on);
+  }
+
   // ── outliner ────────────────────────────────────────────────────────
 
   listFeatures(): FeatureSummary[] {

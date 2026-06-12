@@ -375,7 +375,8 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 
 **Worker architecture** (`mesher.worker.ts`):
 - Main thread kernel: document state + undo history + picking (sync meshing disabled — the worker is brought up BEFORE the initial document load, so booting a persisted project never runs the DC pass or the mesh face-tagging weave on the main thread)
-- Worker kernel: independent copy with Dual Contouring enabled
+- Worker kernel: independent copy with Dual Contouring enabled, and B-Rep weaving permanently suppressed (`setBrepSuppressed(true)`): the worker only ships render meshes, so the eager face-tagging weave would build a B-Rep nobody reads. Regen-internal weaves (element queries during regenerate) are unaffected.
+- **Drag B-Rep suppression**: while a transform gizmo drags (setting "B-Rep rebuild while dragging", default off), the main-thread kernel is also put in `setBrepSuppressed(true)` — the throttled drag commits only re-mesh; B-Rep exports (`bodyBrepEdges`/`Faces`/`Vertices`/`Counts`) serve a still-current cache (pure moves keep their placement-invariant weave) or empty payloads. On release the kernel un-suppresses, weaves each stale body exactly once and bumps its version so the overlays refetch (`store.beginGizmoDrag()`/`endGizmoDrag()`).
 - Communication: `{type: "rebuild", documentJson, resolutions, activeBodyId}` → `{type: "bodies", bodies: [{id, positions, normals, indices, ...}]}`
 - TypedArrays transferred (zero-copy) via structured clone
 - Progressive refinement: initial coarse pass (half-res), then auto-refine to full resolution

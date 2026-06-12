@@ -460,7 +460,7 @@ fn march(
     // tied to `max_step` would dwarf the small strides on a finely-sampled curved
     // loop and fire a false closure a few steps in, shattering the ring (DL-81).
     let mut close_tol = p.close_tol;
-    for step_i in 0..p.max_steps {
+    for _ in 0..p.max_steps {
         // A bounding vertex ahead within reach ends the arc exactly: append the
         // vertex itself (not a projected approximation) and stop. The reach
         // follows the *current* stride in adaptive mode (`1.5 × step`): on a
