@@ -219,7 +219,8 @@ impl Octree {
         // so their shared wall classifies as Face instead of smearing into
         // edge cells along the whole contact (the oa9h/vyee mechanic).
         let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
-        recurse(body, &cfg, &registry, root, 0, &mut leaves);
+        let root_samples = gather_samples(body, &cfg, root);
+        recurse(body, &cfg, &registry, root, 0, &mut leaves, &root_samples);
         Octree { leaves }
     }
 
@@ -267,6 +268,7 @@ impl Octree {
 }
 
 /// One corner / centre sample.
+#[derive(Clone)]
 struct Sample {
     value: f32,
     branches: [BranchId; crate::csg::MAX_CONTRIBUTORS],
@@ -274,6 +276,11 @@ struct Sample {
 }
 
 /// Subdivide `cell` recursively, pushing surviving classified leaves.
+/// `samples` are the cell's 9 evaluation samples (8 corners + centre),
+/// computed by the PARENT subdivision: all 8 siblings of one subdivision
+/// share the same cell size — hence the same contributor `eps` — so their
+/// 27 corner lattice points are evaluated ONCE and handed down instead of
+/// 8×8 per-child corner re-evaluations (the SDF eval dominates the build).
 fn recurse(
     body: &BoundedCsg,
     cfg: &OctreeConfig,
@@ -281,8 +288,9 @@ fn recurse(
     cell: Aabb,
     depth: u32,
     out: &mut Vec<OctreeCell>,
+    samples: &[Sample; 9],
 ) {
-    let class = classify(body, cfg, registry, cell);
+    let class = classify(registry, cell, samples);
 
     let size = cell.size();
     let largest_edge = size[0].max(size[1]).max(size[2]);
@@ -325,6 +333,15 @@ fn recurse(
 }
 
 /// Split `cell` into its 8 octants and recurse into each.
+///
+/// Corner-eval sharing: the 8 octants' corners form a 3×3×3 lattice of
+/// 27 points; all octants have the same size, hence the same contributor
+/// `eps`, so each lattice point is evaluated exactly once here and the
+/// per-child 8-corner sets are assembled from it (27 + 8 child centres =
+/// 35 evals instead of 72 — the SDF evaluation dominates the build).
+/// Parent samples are NOT reused: the contributor eps scales with the
+/// cell diagonal, so a parent sample at the same point carries a fatter
+/// branch set and would change classification semantics.
 fn subdivide(
     body: &BoundedCsg,
     cfg: &OctreeConfig,
@@ -333,11 +350,37 @@ fn subdivide(
     depth: u32,
     out: &mut Vec<OctreeCell>,
 ) {
+    let size = cell.size();
+    let child_diag = 0.5
+        * (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
+    let child_eps = child_diag * cfg.eps_factor;
+
     let mid = [
         0.5 * (cell.min[0] + cell.max[0]),
         0.5 * (cell.min[1] + cell.max[1]),
         0.5 * (cell.min[2] + cell.max[2]),
     ];
+    let coord = |axis: usize, idx: usize| -> f32 {
+        match idx {
+            0 => cell.min[axis],
+            1 => mid[axis],
+            _ => cell.max[axis],
+        }
+    };
+    // 27 shared lattice samples, indexed ix + 3·iy + 9·iz.
+    let mut lattice: Vec<Sample> = Vec::with_capacity(27);
+    for iz in 0..3 {
+        for iy in 0..3 {
+            for ix in 0..3 {
+                lattice.push(sample_at(
+                    body,
+                    [coord(0, ix), coord(1, iy), coord(2, iz)],
+                    child_eps,
+                ));
+            }
+        }
+    }
+
     for i in 0..8 {
         let (lo_x, hi_x) = if i & 1 == 0 {
             (cell.min[0], mid[0])
@@ -358,23 +401,39 @@ fn subdivide(
             min: [lo_x, lo_y, lo_z],
             max: [hi_x, hi_y, hi_z],
         };
-        recurse(body, cfg, registry, child, depth + 1, out);
+        // The child's 8 corners out of the lattice (corner j of octant i
+        // sits at lattice coordinate (i_axis + j_axis) per axis)…
+        let mut samples: Vec<Sample> = Vec::with_capacity(9);
+        for j in 0..8 {
+            let ix = ((i & 1) + (j & 1)) as usize;
+            let iy = (((i >> 1) & 1) + ((j >> 1) & 1)) as usize;
+            let iz = (((i >> 2) & 1) + ((j >> 2) & 1)) as usize;
+            samples.push(lattice[ix + 3 * iy + 9 * iz].clone());
+        }
+        // …plus its own centre (unique per octant, off the lattice).
+        samples.push(sample_at(
+            body,
+            [
+                0.5 * (child.min[0] + child.max[0]),
+                0.5 * (child.min[1] + child.max[1]),
+                0.5 * (child.min[2] + child.max[2]),
+            ],
+            child_eps,
+        ));
+        let samples: [Sample; 9] = samples.try_into().ok().expect("9 samples");
+        recurse(body, cfg, registry, child, depth + 1, out, &samples);
     }
 }
 
-/// Classify `cell` from its 8 corner samples (plus centre).
-fn classify(
-    body: &BoundedCsg,
-    cfg: &OctreeConfig,
-    registry: &crate::brep::coincidence::CoincidenceRegistry,
-    cell: Aabb,
-) -> Classification {
+/// Evaluate a cell's 9 samples (8 corners + centre) at its own
+/// diagonal-scaled contributor eps. Used for the ROOT cell only — every
+/// deeper cell receives its samples from the parent's shared lattice
+/// (see [`subdivide`]).
+fn gather_samples(body: &BoundedCsg, cfg: &OctreeConfig, cell: Aabb) -> [Sample; 9] {
     let size = cell.size();
     let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
     let eps = diag * cfg.eps_factor;
-
-    // 8 corners + centre.
-    let mut samples = Vec::with_capacity(9);
+    let mut samples: Vec<Sample> = Vec::with_capacity(9);
     for i in 0..8 {
         let x = if i & 1 == 0 { cell.min[0] } else { cell.max[0] };
         let y = if i & 2 == 0 { cell.min[1] } else { cell.max[1] };
@@ -390,10 +449,24 @@ fn classify(
         ],
         eps,
     ));
+    samples.try_into().ok().expect("9 samples")
+}
+
+/// Classify `cell` from its 8 corner samples (plus centre). The samples
+/// arrive precomputed from the parent subdivision's shared lattice (or
+/// [`gather_samples`] for the root) — the eps they were taken at is this
+/// cell's own diagonal-scaled contributor eps.
+fn classify(
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    cell: Aabb,
+    samples: &[Sample; 9],
+) -> Classification {
+    let size = cell.size();
+    let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
 
     // Distinct branch set across all samples.
     let mut branches: Vec<BranchId> = Vec::new();
-    for s in &samples {
+    for s in samples.iter() {
         for &b in &s.branches[..s.branch_len] {
             if !branches.contains(&b) {
                 branches.push(b);
