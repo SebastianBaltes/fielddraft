@@ -419,6 +419,16 @@ describe("loadSettings", () => {
     expect(s.theme).toBe("light");
   });
 
+  it("never restores the octree-cells overlay and drops a stale key", () => {
+    // A persisted "true" used to re-trigger the synchronous octree dump on
+    // every reload, freezing the tab with no way to recover.
+    localStorage.setItem("fielddraft.showOctreeCells", "true");
+
+    const s = loadSettings();
+    expect(s.showOctreeCells).toBe(false);
+    expect(localStorage.getItem("fielddraft.showOctreeCells")).toBeNull();
+  });
+
   it("reads a stored controls preset and rejects unknown ones", () => {
     localStorage.setItem("fielddraft.controlsPreset", "tinkercad");
     expect(loadSettings().controlsPreset).toBe("tinkercad");

@@ -215,7 +215,10 @@ export interface SettingsState {
   showEdgePoints: boolean;
   /** Debug overlay: render the topology octree's leaf cells as a wireframe
    * grid, colour-coded by class (face / edge / vertex), to inspect the
-   * adaptive resolution the B-Rep weave actually used. */
+   * adaptive resolution the B-Rep weave actually used. Session-only, never
+   * persisted: the dump rebuilds the octree synchronously on the main thread
+   * and can take minutes on complex bodies — persisting it would re-freeze the
+   * tab on every reload with no way to recover. */
   showOctreeCells: boolean;
   /** Mouse/keyboard control scheme (docs/UX-PRESETS.md) — which CAD
    * package's habits the camera, selection and view keys follow. */
@@ -271,7 +274,7 @@ export function loadSettings(): SettingsState {
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;
   let showEdgePoints = false;
-  let showOctreeCells = false;
+  const showOctreeCells = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
   try {
     compact = localStorage.getItem(LS_COMPACT) === "true";
@@ -293,7 +296,9 @@ export function loadSettings(): SettingsState {
     const rawParametric = localStorage.getItem(LS_PARAMETRIC_WEAVE);
     if (rawParametric !== null) parametricWeave = rawParametric === "true";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
-    showOctreeCells = localStorage.getItem(LS_SHOW_OCTREE_CELLS) === "true";
+    // showOctreeCells is deliberately NOT read back — drop any stale key so a
+    // tab frozen by the overlay recovers on reload.
+    localStorage.removeItem(LS_SHOW_OCTREE_CELLS);
     const rawPreset = localStorage.getItem(LS_CONTROLS_PRESET);
     if (isControlsPresetId(rawPreset)) controlsPreset = rawPreset;
   } catch {
@@ -899,7 +904,6 @@ function SettingsDialog({
 
   const toggleShowOctreeCells = () => {
     const next = { ...settings, showOctreeCells: !settings.showOctreeCells };
-    saveSetting(LS_SHOW_OCTREE_CELLS, String(next.showOctreeCells));
     onSettingsChange(next);
   };
 
@@ -1111,7 +1115,7 @@ function SettingsDialog({
               </div>
 
               <div className="setting-row" data-testid="setting-octree-cells">
-                <span className="setting-label" title="Draw the topology octree's leaf cells as a wireframe grid, colour-coded by class (face / edge / vertex) — inspect the adaptive resolution the B-Rep weave used.">
+                <span className="setting-label" title="Draw the topology octree's leaf cells as a wireframe grid, colour-coded by class (face / edge / vertex) — inspect the adaptive resolution the B-Rep weave used. Rebuilds the octree on the spot and can stall for minutes on complex bodies; resets to Off on reload.">
                   Octree cells
                 </span>
                 <button
