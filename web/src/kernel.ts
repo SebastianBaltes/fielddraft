@@ -477,6 +477,12 @@ export class Kernel {
     return new Float32Array(this.inner.bodySdfAabb(i));
   }
 
+  /** CPU-mirror eval of the body's compiled opcode stream — the parity
+   *  reference for the GPU probe (`window.__fdSdfVmProbe`). */
+  bodySdfEval(i: number, x: number, y: number, z: number): number {
+    return this.inner.bodySdfEval(i, x, y, z);
+  }
+
   bodyVolumeCount(i: number): number {
     return this.inner.bodyVolumeCount(i);
   }

@@ -2861,6 +2861,18 @@ impl Kernel {
             .map_or(0, |s| s.opcodes.len())
     }
 
+    /// Evaluate the body's compiled opcode stream on the CPU mirror
+    /// interpreter at a world point. This is the parity REFERENCE for the
+    /// GPU probe (`window.__fdSdfVmProbe` runs the live TSL interpreter on
+    /// the same stream): both sides interpret identical bytes, so any
+    /// disagreement is a GPU-side interpreter bug.
+    #[wasm_bindgen(js_name = bodySdfEval)]
+    pub fn body_sdf_eval(&self, i: usize, x: f32, y: f32, z: f32) -> f32 {
+        self.bodies[i].compiled_sdf.as_ref().map_or(f32::MAX, |s| {
+            sdf_compiler::eval_opcodes_with_volumes(&s.opcodes, [x, y, z], &s.volumes)
+        })
+    }
+
     #[wasm_bindgen(js_name = bodySdfAabb)]
     pub fn body_sdf_aabb(&self, i: usize) -> Vec<f32> {
         self.bodies[i]
