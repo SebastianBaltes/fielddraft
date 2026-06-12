@@ -25,6 +25,7 @@ import type {
   MesherBodyPayload,
   MesherRebuildRequest,
 } from "./mesher.worker";
+import type { WeaveBrepsResponse, WeaveRequest } from "./weaver.worker";
 import {
   INACTIVE_SKETCH_SESSION as _INACTIVE,
   applySketchToolDraft as reduceApply,
@@ -484,6 +485,20 @@ export class KernelStore {
   private workerAvailable = false;
   private dcMeshingEnabled = true;
 
+  /** B-Rep weaver worker (third kernel instance). While it's up, the
+   *  main kernel's B-Rep exports stay PERMANENTLY suppressed
+   *  (cache-or-empty, never a synchronous main-thread weave); after
+   *  every commit the stale bodies are farmed out here and the woven
+   *  results come back as MessagePack buffers for `importBodyBrep`. */
+  private weaver: Worker | null = null;
+  private weaverAvailable = false;
+  private weaverRequestCounter = 0;
+  private latestWeaveRequestId = 0;
+  private weaverInflight = false;
+  private weaveQueued = false;
+  /** Mirror of the parametric-weave setting for weave requests. */
+  private parametricWeaveEnabled = true;
+
   /** MT-A: which part tab's document is currently loaded into the live
    *  kernel. `null` only transiently during construction. */
   private loadedPartTabId: string | null = null;
@@ -520,6 +535,31 @@ export class KernelStore {
         err,
       );
       this.workerAvailable = false;
+    }
+
+    // Bring up the B-Rep weaver worker. With it available, the main
+    // kernel never weaves synchronously for an export again: exports are
+    // permanently suppressed to cache-or-empty, and `scheduleWeave`
+    // (called after every commit) keeps the caches fresh off-thread.
+    // On failure the legacy behaviour remains: overlays weave
+    // synchronously on first fetch.
+    try {
+      this.weaver = new Worker(
+        new URL("./weaver.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.weaver.addEventListener("message", (event) => {
+        this.handleWeaverMessage(event);
+      });
+      this.weaverAvailable = true;
+      this.kernel.setBrepSuppressed(true);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "fielddraft: could not start weaver worker, falling back to synchronous B-Rep weaving",
+        err,
+      );
+      this.weaverAvailable = false;
     }
 
     // ── MT-A: build the project + load the active/first part into the
@@ -617,6 +657,9 @@ export class KernelStore {
         sceneSize: this.kernel.sceneAabb().size as [number, number, number],
       };
     }
+    // First async weave for the freshly loaded document — the overlays
+    // mount against empty exports and refetch when the imports land.
+    this.scheduleWeave();
   }
 
   // ── pub-sub ───────────────────────────────────────────────────────
@@ -715,6 +758,7 @@ export class KernelStore {
     this.syncActiveBody();
     this.autosave.schedule(this.serializeProject());
     this.refreshMeshCache();
+    this.scheduleWeave();
     for (const listener of this.listeners) listener();
   }
 
@@ -766,9 +810,13 @@ export class KernelStore {
   /** Milestone-1 parametric weaving toggle. Only the woven B-Rep changes (the
    * DC render mesh is identical), so we just flip the kernel flag and notify —
    * the kernel bumps each body's version, which refetches the B-Rep edge /
-   * face overlays. */
+   * face overlays. In weaver mode the cleared caches re-weave off-thread. */
   setParametricWeave(enabled: boolean): void {
-    if (this.kernel.setParametricWeave(enabled)) this.notify();
+    this.parametricWeaveEnabled = enabled;
+    if (this.kernel.setParametricWeave(enabled)) {
+      this.scheduleWeave();
+      this.notify();
+    }
   }
 
   /** Setting "B-Rep rebuild while dragging" (default false): when off, a
@@ -783,7 +831,11 @@ export class KernelStore {
     this.dragBrepRecompute = enabled;
     // Flipping the setting ON mid-drag lifts an active suppression.
     if (enabled && this.gizmoDragActive && this.state.gizmoDragSuppressed) {
-      this.kernel.setBrepSuppressed(false);
+      if (this.weaverAvailable) {
+        this.scheduleWeave();
+      } else {
+        this.kernel.setBrepSuppressed(false);
+      }
       this.patch({ gizmoDragSuppressed: false });
       this.notify();
     }
@@ -805,24 +857,36 @@ export class KernelStore {
   }
 
   /** Called by the transform gizmo when a drag starts (dragging-changed).
-   * Besides suppressing the kernel weave, `gizmoDragSuppressed` hides all
-   * B-Rep overlays — even cached (pure-move) edges only refresh at the
-   * 50ms commit cadence and would visibly trail the drag. */
+   * `gizmoDragSuppressed` hides all B-Rep overlays — even cached
+   * (pure-move) edges only refresh at the 50ms commit cadence and would
+   * visibly trail the drag. With the weaver worker up the main kernel is
+   * permanently suppressed anyway and `scheduleWeave` skips scheduling
+   * for the drag's duration; the legacy (no-weaver) path additionally
+   * toggles the kernel suppression flag. */
   beginGizmoDrag(): void {
     this.gizmoDragActive = true;
     if (!this.dragBrepRecompute) {
-      this.kernel.setBrepSuppressed(true);
+      if (!this.weaverAvailable) this.kernel.setBrepSuppressed(true);
       this.patch({ gizmoDragSuppressed: true });
       this.notify();
     }
   }
 
-  /** Called when the drag ends (or the gizmo unmounts mid-drag). The
-   * kernel un-suppress weaves each stale body once and bumps its version;
-   * notify so the re-shown edge/face overlays refetch. Idempotent. */
+  /** Called when the drag ends (or the gizmo unmounts mid-drag). Weaver
+   * mode schedules the off-thread catch-up weave; the legacy path
+   * un-suppresses the kernel, which weaves each stale body synchronously
+   * once and bumps its version so overlays refetch. Idempotent. */
   endGizmoDrag(): void {
     if (!this.gizmoDragActive) return;
     this.gizmoDragActive = false;
+    if (this.weaverAvailable) {
+      this.scheduleWeave();
+      if (this.state.gizmoDragSuppressed) {
+        this.patch({ gizmoDragSuppressed: false });
+        this.notify();
+      }
+      return;
+    }
     const kernelChanged = this.kernel.setBrepSuppressed(false);
     if (this.state.gizmoDragSuppressed) {
       this.patch({ gizmoDragSuppressed: false });
@@ -893,6 +957,57 @@ export class KernelStore {
     } else if (this.pendingRefine) {
       this.pendingRefine = false;
       this.postWorkerRebuild(false);
+    }
+  }
+
+  /**
+   * Farm the stale B-Rep weaves out to the weaver worker. Rapid-fire
+   * commits coalesce exactly like mesh rebuilds: while a weave is in
+   * flight, subsequent calls flip `weaveQueued`; the response handler
+   * posts one new request against the LATEST document. During a
+   * suppressed gizmo drag nothing is scheduled — `endGizmoDrag` runs
+   * the catch-up.
+   */
+  private scheduleWeave(): void {
+    if (!this.weaver || !this.weaverAvailable) return;
+    if (this.gizmoDragActive && !this.dragBrepRecompute) return;
+    if (this.weaverInflight) {
+      this.weaveQueued = true;
+      return;
+    }
+    const stale = this.kernel.bodyBrepStaleIds();
+    if (stale.length === 0) return;
+    this.weaverRequestCounter += 1;
+    this.latestWeaveRequestId = this.weaverRequestCounter;
+    this.weaverInflight = true;
+    this.weaveQueued = false;
+    const request: WeaveRequest = {
+      type: "weave",
+      requestId: this.weaverRequestCounter,
+      documentJson: this.kernel.toJson(),
+      parametricWeave: this.parametricWeaveEnabled,
+      bodyIds: stale,
+    };
+    this.weaver.postMessage(request);
+  }
+
+  private handleWeaverMessage(event: MessageEvent): void {
+    const data = event.data as WeaveBrepsResponse | undefined;
+    if (!data || data.type !== "breps") return;
+    this.weaverInflight = false;
+    let imported = false;
+    if (data.requestId === this.latestWeaveRequestId) {
+      for (const item of data.items) {
+        // Validated against the CURRENT placement-invariant key — a
+        // result that raced a newer edit misses here; the queued
+        // re-schedule below covers it against the latest document.
+        if (this.kernel.importBodyBrep(item.id, item.bytes)) imported = true;
+      }
+    }
+    if (imported) this.notify();
+    if (this.weaveQueued) {
+      this.weaveQueued = false;
+      this.scheduleWeave();
     }
   }
 

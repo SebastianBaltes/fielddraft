@@ -3016,6 +3016,91 @@ impl Kernel {
         .to_string()
     }
 
+    /// Stable ids (see [`Kernel::body_id`]) of bodies whose woven B-Rep is
+    /// NOT current — i.e. an export would either weave synchronously (no
+    /// suppression) or serve an empty payload (suppressed). The async
+    /// weaver pipeline polls this after every commit and farms the listed
+    /// bodies out to the weaver worker. Refreshes placements as a side
+    /// effect; never weaves.
+    #[wasm_bindgen(js_name = bodyBrepStaleIds)]
+    pub fn body_brep_stale_ids(&mut self) -> String {
+        let mut stale: Vec<u32> = Vec::new();
+        for i in 0..self.bodies.len() {
+            if !self.bodies[i].brep_is_current(&self.decoded) {
+                stale.push(self.body_id(i));
+            }
+        }
+        serde_json::to_string(&stale).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// WEAVER WORKER: weave body `body_id`'s B-Rep against the current
+    /// document state and return it serialized as MessagePack
+    /// `(placement-invariant key, BRep)` (named mode — the B-Rep's
+    /// internally-tagged enums need a self-describing format), ready for
+    /// [`Kernel::import_body_brep`] on the main thread. Returns an empty
+    /// buffer when the id is unknown (the document changed under the
+    /// request) or serialization fails — the importer treats both as a
+    /// miss and the next scheduled weave supersedes.
+    #[wasm_bindgen(js_name = weaveBodyBrep)]
+    pub fn weave_body_brep(&mut self, body_id: u32) -> Vec<u8> {
+        let Some(i) = (0..self.bodies.len()).find(|&i| self.body_id(i) == body_id)
+        else {
+            return Vec::new();
+        };
+        self.bodies[i].ensure_brep(&self.decoded, self.parametric_weave);
+        let Some((key, brep)) = self.bodies[i].brep.as_ref() else {
+            return Vec::new();
+        };
+        let mut buf = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut buf)
+            .with_struct_map()
+            .with_human_readable();
+        use serde::Serialize as _;
+        if (*key, brep).serialize(&mut ser).is_err() {
+            return Vec::new();
+        }
+        buf
+    }
+
+    /// MAIN THREAD: install a worker-woven B-Rep (payload from
+    /// [`Kernel::weave_body_brep`]) into the body's cache. The serialized
+    /// placement-invariant key is validated against the CURRENT document
+    /// state — a result that raced a newer edit simply misses, and the
+    /// next scheduled weave supersedes it. On success the body version
+    /// bumps and the mesh faces re-tag (a no-op in worker-meshing mode,
+    /// where main-thread meshes are empty) so overlays and picking
+    /// refetch. Returns whether anything was installed.
+    #[wasm_bindgen(js_name = importBodyBrep)]
+    pub fn import_body_brep(&mut self, body_id: u32, bytes: &[u8]) -> bool {
+        use crate::brep::BRep;
+        let Some(i) = (0..self.bodies.len()).find(|&i| self.body_id(i) == body_id)
+        else {
+            return false;
+        };
+        let mut de = rmp_serde::Deserializer::new(bytes).with_human_readable();
+        use serde::Deserialize as _;
+        let Ok((key, brep)) = <(u64, BRep)>::deserialize(&mut de) else {
+            return false;
+        };
+        self.bodies[i].refresh_placement(&self.decoded);
+        let current = crate::body::hash_body_local_payload(
+            &self.decoded,
+            &self.bodies[i].feature_indices,
+            &self.bodies[i].placement,
+        );
+        if current != key {
+            return false; // raced a newer edit — superseded
+        }
+        if matches!(&self.bodies[i].brep, Some((k, _)) if *k == key) {
+            return false; // already current — avoid version churn
+        }
+        self.bodies[i].brep = Some((key, brep));
+        self.bodies[i].version = self.bodies[i].version.wrapping_add(1);
+        self.retag_mesh_faces();
+        self.mesh_version = self.mesh_version.wrapping_add(1);
+        true
+    }
+
     /// Per-body analytic B-Rep edges, sampled to **world-space** polylines for
     /// viewport rendering and hover. Returns a JSON array; each edge is
     /// `{"a":<branch u32>,"b":<branch u32>,"idHash":<decimal string>,
@@ -4092,6 +4177,59 @@ mod tests {
             "undo must restore the pre-drag half extent, got {}",
             arr[0]
         );
+    }
+
+    /// Weaver-worker round trip: `weaveBodyBrep` serializes the woven
+    /// B-Rep + placement-invariant key; `importBodyBrep` installs it into
+    /// a kernel whose cache is cold, bumping the body version. A document
+    /// edit between export and import invalidates the key and the import
+    /// is rejected.
+    #[test]
+    fn weave_body_brep_roundtrips_through_import() {
+        let mut k = Kernel::new();
+        let _box_id = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0)
+            .unwrap();
+        let sphere_id = k
+            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_ADD, 25.0, 0.0, 0.0, 20.0, 0.0, 0.0)
+            .unwrap();
+        assert_eq!(k.body_count(), 1);
+        let body_id = k.body_id(0);
+
+        let bytes = k.weave_body_brep(body_id);
+        assert!(!bytes.is_empty(), "weave must serialize a non-empty payload");
+        let edge_count_woven = k.bodies[0].brep_cached().unwrap().edge_count();
+        assert!(edge_count_woven > 0, "box∪sphere weave has at least the seam");
+
+        // Cold cache (a fresh kernel after a reload would look like this).
+        k.bodies[0].brep = None;
+        let version_before = k.bodies[0].version;
+        assert!(k.import_body_brep(body_id, &bytes), "matching key must install");
+        assert_eq!(k.bodies[0].brep_cached().unwrap().edge_count(), edge_count_woven);
+        assert_eq!(k.bodies[0].version, version_before.wrapping_add(1));
+
+        // Re-import of an already-current B-Rep is a no-op (no version churn).
+        assert!(!k.import_body_brep(body_id, &bytes));
+
+        // A geometry edit between export and import must reject the payload.
+        let mut params: serde_json::Value =
+            serde_json::from_str(&k.get_feature_call_params(sphere_id).unwrap()).unwrap();
+        params["radius"] = serde_json::json!(22.5);
+        k.replace_feature_call_params(sphere_id, &params.to_string(), false)
+            .unwrap();
+        k.bodies[0].brep = None;
+        assert!(
+            !k.import_body_brep(body_id, &bytes),
+            "stale key must be rejected after a geometry edit"
+        );
+
+        // And the stale-ids poll reports the body until a weave lands.
+        let stale: Vec<u32> = serde_json::from_str(&k.body_brep_stale_ids()).unwrap();
+        assert_eq!(stale, vec![body_id]);
+        let fresh = k.weave_body_brep(body_id);
+        assert!(k.import_body_brep(body_id, &fresh) || k.bodies[0].brep_cached().is_some());
+        let stale_after: Vec<u32> = serde_json::from_str(&k.body_brep_stale_ids()).unwrap();
+        assert!(stale_after.is_empty());
     }
 
     #[test]

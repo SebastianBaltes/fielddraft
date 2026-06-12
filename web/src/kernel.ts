@@ -517,6 +517,27 @@ export class Kernel {
   }
 
   /**
+   * Stable body ids (see {@link KernelHandle.bodyId}) whose woven B-Rep
+   * is NOT current. The store's async weave pipeline polls this after
+   * every commit and posts the listed bodies to the weaver worker.
+   * Never weaves.
+   */
+  bodyBrepStaleIds(): number[] {
+    return JSON.parse(this.inner.bodyBrepStaleIds()) as number[];
+  }
+
+  /**
+   * Install a weaver-worker result (MessagePack `(key, BRep)` from the
+   * worker kernel's `weaveBodyBrep`). Validated against the CURRENT
+   * placement-invariant cache key — a result that raced a newer edit is
+   * rejected. Returns whether anything was installed (the body version
+   * bumped, overlays should refetch).
+   */
+  importBodyBrep(bodyId: number, bytes: Uint8Array): boolean {
+    return this.inner.importBodyBrep(bodyId, bytes);
+  }
+
+  /**
    * **Debug only.** Topology-octree leaf cells of body `i` for the octree-cell
    * overlay — the adaptive grid the B-Rep weave classifies into face/edge/
    * vertex cells. Cells come in the body-LOCAL frame plus the placement that
