@@ -3,7 +3,11 @@
 import * as THREE from "three";
 import {
   If,
+  Loop,
   abs,
+  clamp,
+  cos,
+  cross,
   float,
   fract,
   int,
@@ -11,6 +15,8 @@ import {
   min,
   mix,
   normalize,
+  select,
+  sin,
   smoothstep,
   storage,
   vec3,
@@ -203,6 +209,29 @@ export const FRESNEL_EDGE_MAX = 0.85;
 export const DISPLACE_FREQ_Y = 1.3;
 export const DISPLACE_FREQ_Z = 0.7;
 
+// ── Ambient occlusion ──────────────────────────────────────────────
+//
+// Hemisphere AO over the SDF. A single ray along the normal cannot
+// darken WIDE cavities (straight out of a vase cavity is free space —
+// the occlusion comes from the walls all around), so we sample four
+// directions: the normal plus three rays tilted ~53° towards it,
+// spread 120° apart in azimuth. Tap distances are in model units (mm)
+// and reach feature scale so concave interiors read as interiors —
+// without AO a shell cavity is indistinguishable from a flat lid.
+// Per-tap weights sum to 1 PER RAY, and ray contributions add up
+// without renormalizing: a fully open hemisphere scores 0, while a
+// single fully-blocked ray already darkens by SDF_AO_STRENGTH·1.
+// Dividing by the ray count instead would need every ray of the
+// hemisphere blocked for full effect — real cavities (vase floor:
+// occ ≈ 0.4) would never get past a ~10% dim.
+export const SDF_AO_TAPS: [number, number][] = [
+  [4, 0.3],
+  [12, 0.35],
+  [36, 0.35],
+];
+export const SDF_AO_STRENGTH = 0.85;
+export const SDF_AO_FLOOR = 0.2;
+
 // ── Shared hit shading ─────────────────────────────────────────────
 
 /**
@@ -266,6 +295,55 @@ export function shadeSdfHit({
   const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
   const emissive = vec3(er, eg, eb);
   const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
+
+  // Hemisphere AO (see SDF_AO_TAPS): accumulate, per ray and tap, how
+  // far the SDF falls short of the UNOCCLUDED expectation. Over an
+  // infinite flat surface a ray tilted by θ from the normal sees
+  // sdf = dist·cos(θ), not dist — so that (not dist itself) is the
+  // zero-occlusion baseline; comparing against dist would darken
+  // every flat surface by a constant ~40% and wash out the cavity
+  // contrast this pass exists for.
+  //
+  // Both loops MUST be runtime TSL Loops so there is exactly ONE
+  // sdfEval call site here: every call site inlines the entire VM
+  // interpreter into the shader, and unrolling 4×3 copies blows the
+  // WGSL module up far enough to hang the shader compiler (observed
+  // as "WebGPU Device Lost" mid-compile on the vase).
+  const helper = select(abs(n.y).greaterThan(float(0.9)), vec3(1, 0, 0), vec3(0, 1, 0));
+  const t1 = normalize(cross(n, helper));
+  const t2 = cross(n, t1);
+  const occ = float(0).toVar();
+  const rayCount = 4;
+  Loop(int(rayCount), ({ i: ray }) => {
+    const az = float(ray.sub(int(1))).mul((2 * Math.PI) / 3);
+    const tilted = normalize(
+      n.mul(0.6).add(t1.mul(cos(az).mul(0.8))).add(t2.mul(sin(az).mul(0.8))),
+    );
+    const dir = select(ray.equal(int(0)), n, tilted).toVar();
+    Loop(int(SDF_AO_TAPS.length), ({ i: tap }) => {
+      const [dist, weight] = SDF_AO_TAPS.reduceRight(
+        ([accDist, accWeight], [tDist, tWeight], idx) => [
+          select(tap.equal(int(idx)), float(tDist), accDist),
+          select(tap.equal(int(idx)), float(tWeight), accWeight),
+        ],
+        [float(0), float(0)],
+      );
+      const d = sdfEval({
+        p: p.add(dir.mul(dist)),
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx: bi,
+      });
+      const expected = dist.mul(dir.dot(n));
+      occ.addAssign(clamp(expected.sub(d).div(expected), float(0), float(1)).mul(weight));
+    });
+  });
+  const ao = clamp(
+    float(1).sub(occ.mul(SDF_AO_STRENGTH)),
+    float(SDF_AO_FLOOR),
+    float(1),
+  );
+  color.assign(color.mul(ao));
 
   if (selectionBuf) {
     const sel = selectionBuf.element(bi);
