@@ -363,6 +363,7 @@ function handleSelectionClick(
 
 export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
   const { store, state } = useKernelStore();
+  const suppressBrepOverlays = state?.gizmoDragSuppressed ?? false;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
   const [webgpuError, setWebgpuError] = useState(false);
@@ -749,12 +750,20 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
               <ClearColorSync />
               <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} brepEdgeMode={brepEdgeMode} />
               <ReferenceMesh />
-              <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
-              {showEdgePoints && <BRepEdgePointsOverlay />}
-              {showOctreeCells && <OctreeCellOverlay />}
-              <BRepSelectionOverlay ndc={ndc} />
-              <BRepSelectedOverlay />
-              <BodyHighlightOverlay />
+              {/* All B-Rep overlays hide during a suppressed gizmo drag:
+                  the kernel serves no fresh weave then, and even cached
+                  edges only refresh per 50ms commit — they'd trail the
+                  drag. They remount (and refetch) on release. */}
+              {!suppressBrepOverlays && (
+                <>
+                  <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+                  {showEdgePoints && <BRepEdgePointsOverlay />}
+                  {showOctreeCells && <OctreeCellOverlay />}
+                  <BRepSelectionOverlay ndc={ndc} />
+                  <BRepSelectedOverlay />
+                  <BodyHighlightOverlay />
+                </>
+              )}
               <MateConnectorOverlay />
               <AssemblyParts />
               <WorldGrid />

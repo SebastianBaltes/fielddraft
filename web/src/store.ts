@@ -300,6 +300,11 @@ export interface StoreState {
   ikMode: boolean;
   /** K7.21h: transform gizmo mode. */
   gizmoMode: "translate" | "rotate" | "scale";
+  /** True while a transform-gizmo drag runs WITH B-Rep suppression
+   *  (setting "B-Rep rebuild while dragging" off). The viewport hides
+   *  every B-Rep overlay for the drag's duration — cached edges would
+   *  otherwise trail the live mesh at the 50ms commit cadence. */
+  gizmoDragSuppressed: boolean;
   /** 3MF roundtrip: stashed slicer metadata from import, used on re-export. */
   threemfStash: ThreeMfStash | null;
   /** Rollback bar position: features at index >= this value are
@@ -588,6 +593,7 @@ export class KernelStore {
       assembly: initialAssembly,
       ikMode: false,
       gizmoMode: "translate" as const,
+      gizmoDragSuppressed: false,
       threemfStash: null,
       loading: null,
       hiddenDatums: loadHiddenDatumsFromStorage(),
@@ -678,6 +684,7 @@ export class KernelStore {
       assembly: this.state.assembly,
       ikMode: false,
       gizmoMode: this.state.gizmoMode,
+      gizmoDragSuppressed: this.state.gizmoDragSuppressed,
       threemfStash: this.state.threemfStash,
       loading: this.state.loading,
       hiddenDatums: this.state.hiddenDatums,
@@ -775,24 +782,39 @@ export class KernelStore {
   setDragBrepRecompute(enabled: boolean): void {
     this.dragBrepRecompute = enabled;
     // Flipping the setting ON mid-drag lifts an active suppression.
-    if (enabled && this.gizmoDragActive && this.kernel.setBrepSuppressed(false)) {
+    if (enabled && this.gizmoDragActive && this.state.gizmoDragSuppressed) {
+      this.kernel.setBrepSuppressed(false);
+      this.patch({ gizmoDragSuppressed: false });
       this.notify();
     }
   }
 
-  /** Called by the transform gizmo when a drag starts (dragging-changed). */
+  /** Called by the transform gizmo when a drag starts (dragging-changed).
+   * Besides suppressing the kernel weave, `gizmoDragSuppressed` hides all
+   * B-Rep overlays — even cached (pure-move) edges only refresh at the
+   * 50ms commit cadence and would visibly trail the drag. */
   beginGizmoDrag(): void {
     this.gizmoDragActive = true;
-    if (!this.dragBrepRecompute) this.kernel.setBrepSuppressed(true);
+    if (!this.dragBrepRecompute) {
+      this.kernel.setBrepSuppressed(true);
+      this.patch({ gizmoDragSuppressed: true });
+      this.notify();
+    }
   }
 
   /** Called when the drag ends (or the gizmo unmounts mid-drag). The
    * kernel un-suppress weaves each stale body once and bumps its version;
-   * notify so the edge/face overlays refetch. Idempotent. */
+   * notify so the re-shown edge/face overlays refetch. Idempotent. */
   endGizmoDrag(): void {
     if (!this.gizmoDragActive) return;
     this.gizmoDragActive = false;
-    if (this.kernel.setBrepSuppressed(false)) this.notify();
+    const kernelChanged = this.kernel.setBrepSuppressed(false);
+    if (this.state.gizmoDragSuppressed) {
+      this.patch({ gizmoDragSuppressed: false });
+      this.notify();
+    } else if (kernelChanged) {
+      this.notify();
+    }
   }
 
   private scheduleWorkerRebuild(): void {
