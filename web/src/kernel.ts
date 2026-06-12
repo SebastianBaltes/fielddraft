@@ -901,15 +901,20 @@ export class Kernel {
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the
-   *  extrude plane on the world Z axis. Returns the new
-   *  feature id. */
+   *  extrude plane on the world Z axis. `suppressed` creates
+   *  the call as a PENDING ghost (ticket x7af) — the body
+   *  keeps its pre-extrude shape until the dialog confirms.
+   *  Returns the new feature id. */
   addExtrude(
     sketchId: number,
     depthMm: number,
     op: BoolOpTagValue,
     tz = 0,
+    suppressed = false,
   ): number {
-    return this.guardMut(() => this.inner.addExtrude(sketchId, depthMm, op, tz));
+    return this.guardMut(() =>
+      this.inner.addExtrude(sketchId, depthMm, op, tz, suppressed),
+    );
   }
 
   /** K7.2: serialise the current scene as ASCII STL. */

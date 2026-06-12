@@ -9,6 +9,7 @@ import {
   prismBandTriangles,
   resolveExtrudeAnchor,
   resolvePendingExtrudeAnchor,
+  resolvePendingSketchExtrudeAnchor,
   type ExtrudeAnchor,
   type ExtrudeAnchorKernel,
   type TipFaceCandidate,
@@ -220,6 +221,71 @@ describe("resolveExtrudeAnchor", () => {
     it("returns null when no profile face matches", () => {
       expect(resolvePendingExtrudeAnchor(k, ["nope"], 10)).toBeNull();
       expect(resolvePendingExtrudeAnchor(k, [], 10)).toBeNull();
+    });
+  });
+
+  describe("resolvePendingSketchExtrudeAnchor", () => {
+    // A sketch (feature 7) on the XY datum plane with one 10×6 rectangle.
+    // The plane is a datum, so the resolver never touches body B-Reps —
+    // a pending sketch extrude must anchor even on an empty scene.
+    const sketchKernel = {
+      bodyCount: () => 0,
+      bodyBrepFaces: () => [],
+      bodyPlacement: () => IDENTITY,
+      getFeatureCallParams: (id: number): Record<string, unknown> => {
+        if (id !== 7) throw new Error("unknown feature");
+        return {
+          plane: "qCreatedBy(origin_plane_xy)",
+          sub_calls: [
+            {
+              type: "sketch_rectangle",
+              params: { corner_a: [0, 0], corner_b: [10, 6] },
+            },
+          ],
+        };
+      },
+    };
+
+    it("anchors on the tip plane with the rectangle outline", () => {
+      const a = resolvePendingSketchExtrudeAnchor(
+        sketchKernel,
+        { profiles: "qCreatedBy(7)" },
+        12.5,
+      );
+      expect(a).not.toBeNull();
+      expect(a!.normal[2]).toBeCloseTo(1);
+      expect(a!.origin[0]).toBeCloseTo(5);
+      expect(a!.origin[1]).toBeCloseTo(3);
+      expect(a!.origin[2]).toBeCloseTo(12.5);
+      expect(a!.outline).toHaveLength(4);
+      for (const seg of a!.outline) {
+        expect(seg[2]).toBeCloseTo(12.5);
+        expect(seg[5]).toBeCloseTo(12.5);
+      }
+    });
+
+    it("a negative depth anchors below the plane with a flipped normal", () => {
+      const a = resolvePendingSketchExtrudeAnchor(
+        sketchKernel,
+        { profiles: "qCreatedBy(7)" },
+        -8,
+      );
+      expect(a).not.toBeNull();
+      expect(a!.normal[2]).toBeCloseTo(-1);
+      expect(a!.origin[2]).toBeCloseTo(-8);
+    });
+
+    it("returns null without a parsable profiles query or sketch", () => {
+      expect(
+        resolvePendingSketchExtrudeAnchor(sketchKernel, { profiles: "" }, 10),
+      ).toBeNull();
+      expect(
+        resolvePendingSketchExtrudeAnchor(
+          sketchKernel,
+          { profiles: "qCreatedBy(99)" },
+          10,
+        ),
+      ).toBeNull();
     });
   });
 });

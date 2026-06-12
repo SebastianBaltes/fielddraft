@@ -42,6 +42,7 @@ import {
   prismBandTriangles,
   resolveExtrudeAnchor,
   resolvePendingExtrudeAnchor,
+  resolvePendingSketchExtrudeAnchor,
   type ExtrudeAnchor,
 } from "./extrudeGizmo";
 
@@ -154,11 +155,16 @@ export function ExtrudeDepthGizmo() {
       if (pending) {
         if (!depthInfo) return null;
         const params = store.getFeatureParams(extrudeId);
-        return resolvePendingExtrudeAnchor(
-          store.kernel,
-          faceQueryHashes(params.faces),
-          depthInfo.symmetric ? depthInfo.depthMm / 2 : depthInfo.rawMm,
-        );
+        const tipOff = depthInfo.symmetric
+          ? depthInfo.depthMm / 2
+          : depthInfo.rawMm;
+        const hashes = faceQueryHashes(params.faces);
+        // A face-driven ghost anchors on its profile faces; a
+        // SKETCH-driven ghost has no faces and anchors on the sketch
+        // plane + its drawable curves instead.
+        return hashes.length > 0
+          ? resolvePendingExtrudeAnchor(store.kernel, hashes, tipOff)
+          : resolvePendingSketchExtrudeAnchor(store.kernel, params, tipOff);
       }
       return resolveExtrudeAnchor(store.kernel, extrudeId, depthInfo?.depthMm);
     } catch {

@@ -1492,7 +1492,10 @@ impl Kernel {
     /// `Primitive::Extrude` half_depth_z becomes `depth_mm /
     /// 2`). `op` uses the same `BoolOp::TAG_*` tags as
     /// `add_primitive`. `tz` positions the extrude plane along
-    /// the world Z axis.
+    /// the world Z axis. `suppressed` creates the call as a
+    /// PENDING ghost (ticket x7af, same flow as
+    /// `addExtrudeFaces`): the body keeps its pre-extrude shape
+    /// until the detail dialog confirms.
     #[wasm_bindgen(js_name = addExtrude)]
     pub fn add_extrude(
         &mut self,
@@ -1500,6 +1503,7 @@ impl Kernel {
         depth_mm: f32,
         op: u32,
         tz: f32,
+        suppressed: bool,
     ) -> Result<u32, JsError> {
         let sketch_feature_id = FeatureId::from_u32(sketch_id);
         let exists = self
@@ -1513,14 +1517,18 @@ impl Kernel {
             )));
         }
         let op_wire = Self::op_wire_name(op)?;
-        self.push_feature_call("extrude", serde_json::json!({
-            "profiles": format!("qCreatedBy({sketch_feature_id})"),
-            "depth": { "value": depth_mm, "unit": "mm" },
-            "profile_half_x": 0.0,
-            "profile_half_y": 0.0,
-            "operation": op_wire,
-            "center": [0.0, 0.0, tz],
-        }))
+        self.push_feature_call_with(
+            "extrude",
+            serde_json::json!({
+                "profiles": format!("qCreatedBy({sketch_feature_id})"),
+                "depth": { "value": depth_mm, "unit": "mm" },
+                "profile_half_x": 0.0,
+                "profile_half_y": 0.0,
+                "operation": op_wire,
+                "center": [0.0, 0.0, tz],
+            }),
+            suppressed,
+        )
     }
 
     /// K8.4: append a `revolve` feature call that consumes the
@@ -3968,7 +3976,7 @@ mod tests {
             .unwrap();
 
         let extrude_id = k
-            .add_extrude(sketch_id, 16.0, BoolOp::TAG_NEW, 0.0)
+            .add_extrude(sketch_id, 16.0, BoolOp::TAG_NEW, 0.0, false)
             .unwrap();
         assert_ne!(extrude_id, sketch_id);
 
@@ -4023,7 +4031,7 @@ mod tests {
                 }]"#,
             )
             .unwrap();
-        k.add_extrude(sketch_id, 4.0, BoolOp::TAG_REMOVE, 0.0).unwrap();
+        k.add_extrude(sketch_id, 4.0, BoolOp::TAG_REMOVE, 0.0, false).unwrap();
         let extrude_spine = k
             .decoded
             .iter()

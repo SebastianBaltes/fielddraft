@@ -3784,13 +3784,19 @@ export class KernelStore {
     if (sketchId === null) return null;
     let id: number;
     try {
-      id = this.kernel.addExtrude(sketchId, depthMm, this.state.nextOp, 0);
+      // Created as a PENDING ghost (ticket x7af), exactly like face
+      // extrudes: the call lands SUPPRESSED, so the scene keeps its
+      // pre-extrude shape — the gizmo renders the would-be prism from
+      // the SKETCH-PLANE anchor — until the detail dialog confirms
+      // (OK / deselect). Cancel drops the feature.
+      id = this.kernel.addExtrude(sketchId, depthMm, this.state.nextOp, 0, true);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addExtrude failed", err);
       this.setTransientError(formatKernelError(err, "Extrude failed"));
       return null;
     }
+    this.pendingFeature = id;
     this.commit(new Set([id]), id);
     return id;
   }

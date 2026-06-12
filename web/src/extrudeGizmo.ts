@@ -17,6 +17,8 @@ import {
   type BRepFace,
   type Placement,
 } from "./kernel";
+import { resolvePlaneFrame, type PlaneFrameKernel } from "./sketchPlaneFrame";
+import { collectSketchLineSegments, type SketchSubCall } from "./sketchOutline";
 
 export type Vec3 = [number, number, number];
 
@@ -366,6 +368,91 @@ export function resolvePendingExtrudeAnchor(
     };
   }
   return null;
+}
+
+/** Kernel slice for the pending-SKETCH-extrude anchor: the plane-frame
+ *  resolver's needs plus the sketch's wire params. */
+export interface SketchExtrudeAnchorKernel extends PlaneFrameKernel {
+  getFeatureCallParams(id: number): Record<string, unknown>;
+}
+
+/** Parse the sketch id out of a `qCreatedBy(<id>)` profiles query. */
+export function sketchProfileQueryId(profiles: unknown): number | null {
+  if (typeof profiles !== "string") return null;
+  const m = profiles.match(/^qCreatedBy\((\d+)\)$/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Anchor for a PENDING (suppressed) SKETCH-extrude. The ghost
+ * contributes no B-Rep at all and the profile is a sketch, not body
+ * faces — so the anchor derives from the SKETCH PLANE: origin = the
+ * profile centroid lifted onto the would-be tip plane, normal = the
+ * plane normal, outline = the sketch's drawable curves shifted onto
+ * the tip plane. Mirrors `resolvePendingExtrudeAnchor`'s tip
+ * convention so the band/drag math is shared. `tipOffsetMm` is the
+ * SIGNED depth along the plane normal.
+ */
+export function resolvePendingSketchExtrudeAnchor(
+  kernel: SketchExtrudeAnchorKernel,
+  extrudeParams: Record<string, unknown>,
+  tipOffsetMm: number,
+): ExtrudeAnchor | null {
+  const sketchId = sketchProfileQueryId(extrudeParams.profiles);
+  if (sketchId === null) return null;
+  let sketchParams: Record<string, unknown>;
+  try {
+    sketchParams = kernel.getFeatureCallParams(sketchId);
+  } catch {
+    return null;
+  }
+  const planeQuery =
+    typeof sketchParams.plane === "string"
+      ? sketchParams.plane
+      : "qCreatedBy(origin_plane_xy)";
+  const frame =
+    resolvePlaneFrame(planeQuery, kernel) ??
+    resolvePlaneFrame("qCreatedBy(origin_plane_xy)", kernel);
+  if (!frame) return null;
+  const subCalls = Array.isArray(sketchParams.sub_calls)
+    ? (sketchParams.sub_calls as SketchSubCall[])
+    : [];
+  const segs = collectSketchLineSegments(subCalls, frame);
+  if (segs.length < 6) return null;
+  const n = frame.normal;
+  const shift: Vec3 = [
+    n[0] * tipOffsetMm,
+    n[1] * tipOffsetMm,
+    n[2] * tipOffsetMm,
+  ];
+  const outline: number[][] = [];
+  for (let i = 0; i + 5 < segs.length; i += 6) {
+    outline.push([
+      segs[i] + shift[0],
+      segs[i + 1] + shift[1],
+      segs[i + 2] + shift[2],
+      segs[i + 3] + shift[0],
+      segs[i + 4] + shift[1],
+      segs[i + 5] + shift[2],
+    ]);
+  }
+  const centroid: Vec3 = [0, 0, 0];
+  const pointCount = segs.length / 3;
+  for (let i = 0; i + 2 < segs.length; i += 3) {
+    centroid[0] += segs[i] / pointCount;
+    centroid[1] += segs[i + 1] / pointCount;
+    centroid[2] += segs[i + 2] / pointCount;
+  }
+  const sign = tipOffsetMm < 0 ? -1 : 1;
+  return {
+    origin: [
+      centroid[0] + shift[0],
+      centroid[1] + shift[1],
+      centroid[2] + shift[2],
+    ],
+    normal: [n[0] * sign, n[1] * sign, n[2] * sign],
+    outline,
+  };
 }
 
 /**
