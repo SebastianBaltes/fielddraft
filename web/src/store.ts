@@ -3773,6 +3773,24 @@ export class KernelStore {
     return id;
   }
 
+  /** Helix-sweep the latest committed sketch (screw threads) with
+   *  default pitch/turns — the detail dialog tunes the rest. Without a
+   *  sketch an EMPTY helix is created and the dialog's query picker
+   *  fills `profiles` afterwards (same flow as revolve). */
+  addHelixFromLatestSketch(): number | null {
+    const sketchId = this.latestSketchId() ?? 0;
+    let id: number;
+    try {
+      id = this.kernel.addHelix(sketchId, this.state.nextOp);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addHelix failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume or the

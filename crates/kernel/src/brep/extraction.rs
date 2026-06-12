@@ -123,7 +123,7 @@ pub(crate) fn body_contains_shell(body: &BoundedCsg) -> bool {
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Displace { inner, .. } => body_contains_shell(inner),
-        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => false,
+        BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Helix { .. } => false,
     }
 }
 
@@ -377,7 +377,8 @@ fn body_prefers_wide_seed(body: &BoundedCsg) -> bool {
         | BoundedCsg::Bend { .. }
         | BoundedCsg::Displace { .. }
         | BoundedCsg::Extrude { .. }
-        | BoundedCsg::Revolve { .. } => false,
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. } => false,
     }
 }
 

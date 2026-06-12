@@ -324,6 +324,25 @@ pub enum Primitive {
         sketch: Sketch2d,
         center: [f32; 3],
     },
+    /// Helical sweep of a 2D sketch profile around the local Y axis —
+    /// the real screw-thread building block (the toy [`Primitive::Thread`]
+    /// is a fixed cosine groove). Same profile convention as
+    /// [`Primitive::Revolve`]: the sketch `x` coordinate is the radial
+    /// distance from the axis, `y` the axial position. One profile
+    /// instance per revolution, advancing `pitch` mm in `y` per turn,
+    /// `turns` revolutions total. `left_handed` flips the winding.
+    /// `taper` is the tangent of the taper half-angle — the radius
+    /// shrinks by `taper · Δy` along +y (NPT-style tapered threads).
+    /// The profile's axial extent should stay ≤ `pitch` (adjacent turns
+    /// must not overlap; standard thread forms satisfy this).
+    Helix {
+        sketch: Sketch2d,
+        center: [f32; 3],
+        pitch: f32,
+        turns: f32,
+        left_handed: bool,
+        taper: f32,
+    },
 }
 
 /// Analytic surface a primitive sub-face lies on. The B-Rep substrate
@@ -380,6 +399,7 @@ impl Primitive {
     pub const KIND_HEX_PRISM: u32 = 10;
     pub const KIND_IMPORTED_MESH: u32 = 11;
     pub const KIND_ELLIPSOID: u32 = 12;
+    pub const KIND_HELIX: u32 = 13;
 
     pub fn kind_tag(&self) -> u32 {
         match self {
@@ -394,6 +414,7 @@ impl Primitive {
             Primitive::Thread { .. } => Self::KIND_THREAD,
             Primitive::Gyroid { .. } => Self::KIND_GYROID,
             Primitive::Revolve { .. } => Self::KIND_REVOLVE,
+            Primitive::Helix { .. } => Self::KIND_HELIX,
             Primitive::ImportedMesh { .. } => Self::KIND_IMPORTED_MESH,
             Primitive::Ellipsoid { .. } => Self::KIND_ELLIPSOID,
         }
@@ -409,7 +430,10 @@ impl Primitive {
     /// when FieldSkript gains a raw user-SDF op — non-Lipschitz by
     /// construction. See DL-71.
     pub fn is_non_lipschitz(&self) -> bool {
-        matches!(self, Primitive::Thread { .. } | Primitive::Gyroid { .. })
+        matches!(
+            self,
+            Primitive::Thread { .. } | Primitive::Gyroid { .. } | Primitive::Helix { .. }
+        )
     }
 
     /// **Space-filling** primitives whose zero-set threads through (nearly)
@@ -436,6 +460,7 @@ impl Primitive {
             Primitive::Thread { .. } => "Thread",
             Primitive::Gyroid { .. } => "Gyroid",
             Primitive::Revolve { .. } => "Revolve",
+            Primitive::Helix { .. } => "Helix",
             Primitive::ImportedMesh { .. } => "Imported mesh",
             Primitive::Ellipsoid { .. } => "Ellipsoid",
         }

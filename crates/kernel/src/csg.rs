@@ -434,6 +434,32 @@ impl Aabb {
                     ],
                 }
             }
+            // Helical sweep: radial extent like Revolve (plus taper
+            // growth over the axial span), axial extent grows by one
+            // pitch per turn (instance k advances k·pitch; within a
+            // turn the helix adds up to one more pitch).
+            Primitive::Helix { sketch, center, pitch, turns, taper, .. } => {
+                let bb2 = sketch.aabb();
+                if bb2.is_empty() {
+                    return Self::EMPTY;
+                }
+                let axial = pitch.max(0.0) * (turns.max(0.0).ceil() + 1.0);
+                let span_y = (bb2.max[1] - bb2.min[1]) + axial;
+                let r_max =
+                    bb2.max[0].abs().max(bb2.min[0].abs()) + taper.abs() * span_y;
+                Self {
+                    min: [
+                        center[0] - r_max,
+                        center[1] + bb2.min[1] - pitch.max(0.0),
+                        center[2] - r_max,
+                    ],
+                    max: [
+                        center[0] + r_max,
+                        center[1] + bb2.max[1] + axial,
+                        center[2] + r_max,
+                    ],
+                }
+            }
             Primitive::Torus { center: c, major_radius, minor_radius } => {
                 let r = *major_radius + minor_radius;
                 Self {
@@ -751,6 +777,21 @@ pub enum CsgNode {
         id: FeatureId,
         sketch: Box<Sketch2d>,
     },
+    /// Helical sweep of a 2D sketch around the local Y axis (see
+    /// [`Primitive::Helix`] for the profile/turn semantics). Carries
+    /// the derived `y_anchor` / `r_inner` so the hot eval never
+    /// recomputes the sketch AABB. Single [`FeatureId`] contributor,
+    /// same rationale as Extrude/Revolve.
+    Helix {
+        id: FeatureId,
+        sketch: Box<Sketch2d>,
+        pitch: f32,
+        turns: f32,
+        left_handed: bool,
+        taper: f32,
+        y_anchor: f32,
+        r_inner: f32,
+    },
 }
 
 /// DL-61 Stage B: the decoded runtime IR of one feature.
@@ -884,6 +925,31 @@ impl DecodedFeature {
                     )
                 }
             }
+            Primitive::Helix { ref sketch, center, pitch, turns, left_handed, taper } => {
+                let (y_anchor, r_inner) = crate::helix_profile_anchor(sketch);
+                let centered = CsgNode::Helix {
+                    id: id.clone(),
+                    sketch: Box::new(sketch.clone()),
+                    pitch,
+                    turns,
+                    left_handed,
+                    taper,
+                    y_anchor,
+                    r_inner,
+                };
+                if center == [0.0, 0.0, 0.0] {
+                    centered
+                } else {
+                    CsgNode::Transform(
+                        Transform {
+                            translate: center,
+                            rotation: [0.0, 0.0, 0.0, 1.0],
+                            scale: [1.0, 1.0, 1.0],
+                        },
+                        Box::new(centered),
+                    )
+                }
+            }
             other => CsgNode::Leaf {
                 id: id.clone(),
                 primitive: other,
@@ -971,6 +1037,16 @@ impl DecodedFeature {
                         center: [0.0, 0.0, 0.0],
                     })
                 }
+                CsgNode::Helix { sketch, pitch, turns, left_handed, taper, .. } => {
+                    return Some(Primitive::Helix {
+                        sketch: (**sketch).clone(),
+                        center: [0.0, 0.0, 0.0],
+                        pitch: *pitch,
+                        turns: *turns,
+                        left_handed: *left_handed,
+                        taper: *taper,
+                    })
+                }
                 // The extrude/revolve self-centering Transform: restore
                 // its translate as the primitive's `center`.
                 CsgNode::Transform(t, inner) => match &**inner {
@@ -989,6 +1065,16 @@ impl DecodedFeature {
                         return Some(Primitive::Revolve {
                             sketch: (**sketch).clone(),
                             center: t.translate,
+                        })
+                    }
+                    CsgNode::Helix { sketch, pitch, turns, left_handed, taper, .. } => {
+                        return Some(Primitive::Helix {
+                            sketch: (**sketch).clone(),
+                            center: t.translate,
+                            pitch: *pitch,
+                            turns: *turns,
+                            left_handed: *left_handed,
+                            taper: *taper,
                         })
                     }
                     _ => cur = inner,
@@ -1145,14 +1231,14 @@ impl CsgNode {
                 a.collect_leaf_primitives(out);
                 b.collect_leaf_primitives(out);
             }
-            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Empty => {}
+            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Helix { .. } | CsgNode::Empty => {}
         }
     }
 
     /// Collect all leaf FeatureIds reachable from this node.
     fn contains_any_target(&self, target_ids: &[FeatureId]) -> bool {
         match self {
-            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } => {
+            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } => {
                 let root = id.root_ancestor();
                 target_ids.iter().any(|tid| root == tid)
             }
@@ -1205,7 +1291,7 @@ impl CsgNode {
                 a.collect_leaf_ids(out);
                 b.collect_leaf_ids(out);
             }
-            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } => {
+            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } => {
                 out.push(id.clone());
             }
             CsgNode::Empty => {}
@@ -1341,6 +1427,19 @@ impl CsgNode {
                 } else {
                     sketch.sdf([r, p[1]])
                 }
+            }
+            CsgNode::Helix {
+                id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+            } => {
+                let (q, scale) = crate::helix_profile_point(
+                    p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                );
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
+                } else {
+                    sketch.sdf(q)
+                };
+                d * scale
             }
         }
     }
@@ -1573,6 +1672,25 @@ impl CsgNode {
                 let c = revolve_contributors(id, &band);
                 (band.distance, c)
             }
+            CsgNode::Helix {
+                id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+            } => {
+                let (q, scale) = crate::helix_profile_point(
+                    p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                );
+                // The contributor band epsilon lives in WORLD units; widen
+                // it by the inverse Lipschitz scale so profile-space edge
+                // matching stays comparable.
+                let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_with_edges_retained(q, eps / scale.max(1e-6), &mut |g| {
+                        open.contains_sub(id, g)
+                    })
+                } else {
+                    sketch.sdf_with_edges(q, eps / scale.max(1e-6))
+                };
+                let c = revolve_contributors(id, &band);
+                (band.distance * scale, c)
+            }
         }
     }
 
@@ -1680,6 +1798,25 @@ impl CsgNode {
                     Aabb {
                         min: [-r_max, s.min[1], -r_max],
                         max: [r_max, s.max[1], r_max],
+                    }
+                }
+            }
+            CsgNode::Helix { sketch, pitch, turns, taper, .. } => {
+                let s = sketch.aabb();
+                if s.is_empty() {
+                    Aabb::EMPTY
+                } else {
+                    // Radial extent like Revolve, plus the taper shear's
+                    // growth over the axial span; axially the instances
+                    // advance one pitch per turn (+1 pitch of slack for
+                    // the in-turn helical rise on both ends).
+                    let axial = pitch.max(0.0) * (turns.max(0.0).ceil() + 1.0);
+                    let span_y = (s.max[1] - s.min[1]) + axial;
+                    let r_max =
+                        s.max[0].abs().max(s.min[0].abs()) + taper.abs() * span_y;
+                    Aabb {
+                        min: [-r_max, s.min[1] - pitch.max(0.0), -r_max],
+                        max: [r_max, s.max[1] + axial, r_max],
                     }
                 }
             }
@@ -3159,6 +3296,77 @@ mod tests {
             center: [cx, cy],
             radius: r,
         })
+    }
+
+    /// Thread-like helix: rectangle profile r∈[8,10], y∈[−0.6,0.6],
+    /// pitch 2mm, 5 turns, right-handed, no taper.
+    fn test_helix() -> CsgNode {
+        CsgNode::Helix {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(rect_sketch(9.0, 0.0, 1.0, 0.6)),
+            pitch: 2.0,
+            turns: 5.0,
+            left_handed: false,
+            taper: 0.0,
+            y_anchor: 0.0,
+            r_inner: 8.0,
+        }
+    }
+
+    #[test]
+    fn helix_sdf_winds_with_the_pitch() {
+        let h = test_helix();
+        let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
+
+        // Turn 0 ridge at θ=0: inside.
+        assert!(d([9.0, 0.0, 0.0]) < 0.0, "ridge centre must be inside");
+        // Half a pitch later at the same angle: the groove between turns.
+        assert!(d([9.0, 1.0, 0.0]) > 0.0, "between turns must be outside");
+        // Helical invariance: a quarter turn advances y by pitch/4.
+        let d0 = d([9.0, 0.0, 0.0]);
+        let d90 = d([0.0, 0.5, 9.0]);
+        assert!(
+            (d0 - d90).abs() < 1e-4,
+            "helical invariance violated: {d0} vs {d90}"
+        );
+        // Without the y-advance the quarter-turn point is off the ridge.
+        assert!(d([0.0, 0.0, 9.0]) > d0 + 0.1);
+        // Turn 1 instance exists one pitch up.
+        assert!(d([9.0, 2.0, 0.0]) < 0.0);
+        // Beyond the last turn (k clamps to 4 → w = 12 − 8 = 4): outside.
+        assert!(d([9.0, 12.0, 0.0]) > 0.0);
+        // Radially off the profile: outside on both sides.
+        assert!(d([11.5, 0.0, 0.0]) > 0.0);
+        assert!(d([6.5, 0.0, 0.0]) > 0.0);
+        // On the axis: well outside (bore), field positive and finite.
+        let axis = d([0.0, 0.0, 0.0]);
+        assert!(axis > 0.0 && axis.is_finite());
+    }
+
+    #[test]
+    fn helix_left_handed_flips_the_winding() {
+        let mut h = test_helix();
+        if let CsgNode::Helix { left_handed, .. } = &mut h {
+            *left_handed = true;
+        }
+        let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
+        // The right-handed invariance point is now off the ridge…
+        assert!(d([0.0, 0.5, 9.0]) > 0.0);
+        // …and the mirrored advance is on it.
+        assert!(d([0.0, -0.5, 9.0]) < 0.0);
+    }
+
+    #[test]
+    fn helix_aabb_covers_all_turns() {
+        let h = test_helix();
+        let bb = h.aabb();
+        // Radial: the profile reaches r=10.
+        assert!(bb.min[0] <= -10.0 && bb.max[0] >= 10.0);
+        assert!(bb.min[2] <= -10.0 && bb.max[2] >= 10.0);
+        // Axial: turn 4's instance tops out near y = 8.6 plus the
+        // in-turn rise; the AABB must cover it.
+        assert!(bb.min[1] <= -0.6);
+        assert!(bb.max[1] >= 10.0);
     }
 
     #[test]

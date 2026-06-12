@@ -800,6 +800,7 @@ impl FeatureRegistry {
         r.register(Box::new(ExtrudeFeature));
         r.register(Box::new(ThickenFeature));
         r.register(Box::new(RevolveFeature));
+        r.register(Box::new(HelixFeature));
         r.register(Box::new(HoleFeature));
         r.register(Box::new(TorusPrimitive));
         r.register(Box::new(CapsulePrimitive));
@@ -3163,6 +3164,126 @@ impl FeatureKind for RevolveFeature {
     }
 }
 
+/// `helix` — Rust-native feature that sweeps a sketch profile along a
+/// HELICAL path around the local Y axis: the real screw-thread
+/// building block. The sketch is interpreted exactly like Revolve's —
+/// `x` = radial distance from the axis, `y` = axial position — and one
+/// profile instance is swept per revolution, advancing `pitch` per
+/// turn for `turns` revolutions. The profile's axial extent should
+/// stay ≤ `pitch` (adjacent turns must not overlap; every standard
+/// thread form satisfies this). Union it with a core cylinder for an
+/// external thread, or subtract it from a bore for an internal one.
+#[derive(FeatureSchema)]
+#[schema(type = "helix")]
+pub struct HelixDef {
+    /// Sketch profile this helix consumes. `qCreatedBy(sketch_id)`
+    /// is the only query variant honoured today.
+    pub profiles: ::fielddraft_protocol::Query,
+
+    /// Axial advance per revolution.
+    #[param(name = "Pitch", default = ::fielddraft_protocol::Length::mm(2.0))]
+    pub pitch: ::fielddraft_protocol::Length,
+
+    /// Number of revolutions (fractional turns allowed).
+    #[param(name = "Turns", default = 8.0)]
+    pub turns: f32,
+
+    /// Winding direction — `true` for a left-hand thread.
+    #[param(name = "Left-handed", default = false)]
+    pub left_handed: bool,
+
+    /// Taper half-angle in DEGREES (NPT-style conical threads): the
+    /// radius shrinks by `tan(angle)` per mm along +y. `0` = straight.
+    #[param(name = "Taper angle", default = 0.0)]
+    pub taper_angle: f32,
+
+    /// Boolean op used to fold the helical body into the running
+    /// feature spine. Defaults to [`BoolOp::Add`].
+    #[param(default = ::fielddraft_protocol::BoolOp::Add)]
+    pub operation: BoolOp,
+
+    /// Override for the helix axis centre in world space.
+    #[param(default = [0.0, 0.0, 0.0])]
+    pub center: [f32; 3],
+}
+
+pub struct HelixFeature;
+
+impl FeatureKind for HelixFeature {
+    fn type_name(&self) -> &'static str {
+        HelixDef::TYPE_NAME
+    }
+
+    fn schema_json(&self) -> Value {
+        HelixDef::schema_json()
+    }
+
+    fn execute(
+        &self,
+        ctx: &mut Context<'_>,
+        id: &FeatureId,
+        def: &Value,
+    ) -> Result<(), FeatureError> {
+        let d = HelixDef::parse(def)?;
+
+        // Resolve the `profiles` query against the sketch table —
+        // identical to RevolveFeature (a helix without a real profile
+        // produces no geometry at all).
+        let mut sketch_frame = crate::sketch_features::SketchFrame::IDENTITY;
+        let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
+            let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
+            let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
+                return None;
+            };
+            let sketch_data = ctx.sketches.get(&sketch_id)?;
+            let sketch2d = crate::sketch_features::build_sketch2d_from_sub_calls(
+                &sketch_data.sub_calls,
+            );
+            if matches!(sketch2d, ::fielddraft_protocol::Sketch2d::Empty) {
+                None
+            } else {
+                sketch_frame = sketch_data.frame;
+                Some(sketch2d)
+            }
+        })()
+        .ok_or(FeatureError::MissingParameter {
+            feature: HelixDef::TYPE_NAME,
+            name: "profiles",
+        })?;
+
+        let name = optional_display_name(def, || format!("Helix {id}"));
+        let rotation = optional_rotation(def);
+        let scale = optional_scale(def);
+
+        let transform = crate::compose_transforms(
+            &sketch_frame.to_transform(),
+            &Transform {
+                translate: [0.0, 0.0, 0.0],
+                rotation,
+                scale,
+            },
+        );
+
+        ctx.features.push(DecodedFeature::from_parts(
+            id.clone(),
+            name,
+            d.operation,
+            Primitive::Helix {
+                sketch,
+                center: d.center,
+                pitch: d.pitch.to_mm().max(0.001),
+                turns: d.turns.max(0.0),
+                left_handed: d.left_handed,
+                taper: d.taper_angle.to_radians().tan(),
+            },
+            transform,
+            PrimitiveModifiers::NONE,
+            vec![],
+        ));
+        Ok(())
+    }
+}
+
 // ─── K8.0: Linear pattern ────────────────────────────────────────
 //
 // The first bona-fide parametric pattern feature. Given a
@@ -3938,7 +4059,7 @@ mod tests {
     #[test]
     fn with_builtins_registers_the_k1_primitives_and_k4_5_8_extrude() {
         let registry = FeatureRegistry::with_builtins();
-        assert_eq!(registry.len(), 28);
+        assert_eq!(registry.len(), 29);
         assert!(registry.get("box").is_some());
         assert!(registry.get("sphere").is_some());
         assert!(registry.get("cylinder").is_some());
@@ -4000,6 +4121,7 @@ mod tests {
                 "extrude",
                 "fillet_edge",
                 "gyroid",
+                "helix",
                 "hex_prism",
                 "hole",
                 "imported_mesh",

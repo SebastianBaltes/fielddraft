@@ -203,6 +203,7 @@ fn sdf_primitive_generic<T: DualNum<f64> + Copy + PartialOrd>(
         // these happens at the tree level (Layer B).
         Primitive::Extrude { .. }
         | Primitive::Revolve { .. }
+        | Primitive::Helix { .. }
         | Primitive::ImportedMesh { .. } => {
             let p_f32 = [p[0].re() as f32, p[1].re() as f32, p[2].re() as f32];
             let d = crate::sdf_primitive(prim, p_f32);
@@ -647,6 +648,48 @@ fn eval_bounded_d3_open(
                 eval_sketch_generic(sketch_ref, [r, local[1]])
             };
             d * D3::from(world_transform.min_scale() as f64)
+        }
+        BoundedCsg::Helix {
+            id,
+            sketch,
+            pitch,
+            turns,
+            left_handed,
+            taper,
+            y_anchor,
+            r_inner,
+            world_transform,
+            ..
+        } => {
+            // Dual mirror of `crate::helix_profile_point`: r and the
+            // unwrap angle stay dual (smooth away from the axis); the
+            // turn index k and the Lipschitz scale are frozen on the
+            // real parts (piecewise-constant resp. a conservative
+            // normalisation factor, not part of the surface gradient).
+            let tau = std::f64::consts::TAU;
+            let pitch_f = (*pitch).max(1e-3) as f64;
+            let local = world_to_local_d3(world_transform, p);
+            let r = safe_sqrt(local[0] * local[0] + local[2] * local[2]);
+            let theta = local[2].atan2(local[0]);
+            let hand = if *left_handed { -1.0 } else { 1.0 };
+            let w_base = local[1] - theta * D3::from(hand * pitch_f / tau);
+            let k_max = ((*turns).ceil() as f64 - 1.0).max(0.0);
+            let k = ((w_base.re - *y_anchor as f64) / pitch_f).round().clamp(0.0, k_max);
+            let w = w_base - D3::from(k * pitch_f);
+            let rp = r - (local[1] - D3::from(*y_anchor as f64)) * D3::from(*taper as f64);
+            let rr = r.re.max(*r_inner as f64).max(pitch_f / tau * 0.25).max(1e-3);
+            let q = pitch_f / (tau * rr);
+            let taper_f = *taper as f64;
+            let scale = 1.0 / (1.0 + q * q + taper_f * taper_f).sqrt();
+            let sketch_ref: &crate::sketch2d::BoundedSketch2d = sketch;
+            let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                eval_sketch_retained_d3(sketch_ref, [rp, w], 0, &mut |g| {
+                    open.contains_sub(id, g)
+                })
+            } else {
+                eval_sketch_generic(sketch_ref, [rp, w])
+            };
+            d * D3::from(scale * world_transform.min_scale() as f64)
         }
     }
 }

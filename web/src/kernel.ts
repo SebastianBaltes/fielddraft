@@ -898,6 +898,20 @@ export class Kernel {
     return this.inner.addRevolve(sketchId, op, cx, cy, cz);
   }
 
+  /** Append a helix feature sweeping the sketch's profile along a
+   *  helical path around the sketch-local Y axis (real screw
+   *  threads). `pitchMm` is the axial advance per revolution,
+   *  `turns` the revolution count. `sketchId === 0` creates an
+   *  empty helix the dialog's query picker fills afterwards. */
+  addHelix(
+    sketchId: number,
+    op: BoolOpTagValue,
+    pitchMm = 2,
+    turns = 8,
+  ): number {
+    return this.guardMut(() => this.inner.addHelix(sketchId, op, pitchMm, turns));
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

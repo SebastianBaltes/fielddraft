@@ -158,6 +158,7 @@ fn primitive_command(handle: &str, prim: &Primitive) -> Option<Value> {
         Primitive::Capsule { .. }
         | Primitive::Ellipsoid { .. }
         | Primitive::Thread { .. }
+        | Primitive::Helix { .. }
         | Primitive::Gyroid { .. }
         | Primitive::ImportedMesh { .. } => None,
     }

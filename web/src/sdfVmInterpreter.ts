@@ -13,11 +13,13 @@ import {
   If,
   Loop,
   abs,
+  atan,
   clamp,
   float,
   int,
   max,
   min,
+  round,
   sqrt,
   step,
   texture3D,
@@ -40,6 +42,7 @@ import {
   OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE,
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
+  OP_WARP_HELIX, OP_HELIX_SCALE,
   OP_MASKED_BLEND, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
@@ -386,6 +389,18 @@ export function buildVmSdfEvalFn(
       }).ElseIf(tag.equal(int(OP_REVOLVE_SCALE)), () => {
         const s = rd();
         pushV(popV().mul(s));
+      }).ElseIf(tag.equal(int(OP_HELIX_SCALE)), () => {
+        // The current point is still the WARPED profile point — its x
+        // is the (tapered) radial coordinate the bound depends on.
+        const s = rd().toVar();
+        const pitch = rd().toVar();
+        const taper = rd().toVar();
+        const rInner = rd().toVar();
+        const tau = float(6.2831853);
+        const rr = max(max(ptx, rInner), max(pitch.div(tau).mul(0.25), float(1e-3))).toVar();
+        const q = pitch.div(rr.mul(tau)).toVar();
+        const lip = float(1).div(q.mul(q).add(taper.mul(taper)).add(1).sqrt());
+        pushV(popV().mul(s).mul(lip));
       }).ElseIf(tag.equal(int(OP_OFFSET_2D)), () => {
         const dist = rd();
         pushV(popV().sub(dist));
@@ -434,6 +449,27 @@ export function buildVmSdfEvalFn(
       }).ElseIf(tag.equal(int(OP_WARP_REVOLVE)), () => {
         const r = ptx.mul(ptx).add(ptz.mul(ptz)).sqrt();
         ptx.assign(r);
+        ptz.assign(0);
+
+      }).ElseIf(tag.equal(int(OP_WARP_HELIX)), () => {
+        // Helical unwrap into the profile's (r', w) frame — the GPU
+        // mirror of the kernel's `helix_profile_point` (OP_HELIX_SCALE
+        // below applies the matching Lipschitz normalisation). Nearest
+        // turn instance by rounding, clamped to the finite sweep.
+        const pitch = rd().toVar();
+        const hand = rd().toVar();
+        const kMax = rd().toVar();
+        const yAnchor = rd().toVar();
+        const taper = rd().toVar();
+        const tau = float(6.2831853);
+        const r = ptx.mul(ptx).add(ptz.mul(ptz)).sqrt().toVar();
+        const theta = atan(ptz, ptx).toVar();
+        const wBase = pty.sub(hand.mul(pitch).mul(theta).div(tau)).toVar();
+        const k = clamp(round(wBase.sub(yAnchor).div(pitch)), float(0), kMax).toVar();
+        const w = wBase.sub(k.mul(pitch)).toVar();
+        const rp = r.sub(taper.mul(pty.sub(yAnchor))).toVar();
+        ptx.assign(rp);
+        pty.assign(w);
         ptz.assign(0);
 
       }).ElseIf(tag.equal(int(OP_MASKED_BLEND)), () => {

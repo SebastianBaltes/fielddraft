@@ -228,7 +228,10 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
     match node {
         BoundedCsg::Empty => {}
 
-        BoundedCsg::Leaf { .. } | BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
+        BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. } => {
             out.extend(leaf_branches(node));
         }
 
@@ -329,7 +332,10 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
     match node {
         BoundedCsg::Empty => Vec::new(),
 
-        BoundedCsg::Leaf { .. } | BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {
+        BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. } => {
             let bs = leaf_branches(node);
             // Intrinsic pairs: the operand's own candidate edges. All branches of
             // a leaf share its AABB, so the overlap box is simply that AABB.

@@ -99,6 +99,7 @@ export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }>
   sketch:             { label: "Sketch",           glyph: "✎" },
   extrude:            { label: "Extrude",          glyph: "↥" },
   revolve:            { label: "Revolve",          glyph: "↻" },
+  helix:              { label: "Helix",            glyph: "⧖" },
   hole:               { label: "Hole",             glyph: "⊖" },
   thread:             { label: "Thread",           glyph: "⏍" },
   gyroid:             { label: "Gyroid",           glyph: "🕸" },

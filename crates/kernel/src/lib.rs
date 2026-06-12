@@ -191,6 +191,56 @@ pub fn inverse(t: &Transform) -> Transform {
     }
 }
 
+/// Profile-frame anchor of a [`Primitive::Helix`]: `(y_anchor, r_inner)`
+/// — the sketch's axial centre (per-turn instance reference) and its
+/// inner radius (clamps the near-axis Lipschitz blow-up).
+pub fn helix_profile_anchor(sketch: &fielddraft_protocol::Sketch2d) -> (f32, f32) {
+    let bb = sketch.aabb();
+    if bb.is_empty() {
+        (0.0, 0.0)
+    } else {
+        ((bb.min[1] + bb.max[1]) * 0.5, bb.min[0].max(0.0))
+    }
+}
+
+/// Map a helix-LOCAL point into the swept profile's 2D `(r, w)` frame and
+/// return the conservative Lipschitz scale of the unwrap. The helix winds
+/// about the local Y axis; the profile instance index per turn is chosen
+/// by nearest-rounding (exact while the profile's axial extent stays ≤
+/// `pitch`) and clamped to `[0, ceil(turns)−1]` for the finite sweep.
+/// `taper` shears the radial coordinate along +y. The scale bounds
+/// `‖J‖_F` of the map: `|∇w|² = 1 + (pitch/(2πr))²` (the tangential
+/// unwrap), `|∇r'|² ≤ 1 + taper²` — dividing the profile distance by the
+/// combined bound keeps the field ≤ true distance (sphere-march safe),
+/// the same self-normalisation idea as `Primitive::Thread` / Gyroid.
+/// `r` is clamped below by `r_inner` (and a pitch-derived floor) so the
+/// near-axis bound does not collapse the field to zero inside the bore.
+/// Mirrored in the web GPU interpreter (`OP_WARP_HELIX`/`OP_HELIX_SCALE`).
+pub fn helix_profile_point(
+    p: [f32; 3],
+    pitch: f32,
+    turns: f32,
+    left_handed: bool,
+    taper: f32,
+    y_anchor: f32,
+    r_inner: f32,
+) -> ([f32; 2], f32) {
+    use std::f32::consts::TAU;
+    let pitch = pitch.max(1e-3);
+    let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+    let theta = p[2].atan2(p[0]);
+    let hand = if left_handed { -1.0 } else { 1.0 };
+    let w_base = p[1] - hand * pitch * theta / TAU;
+    let k_max = (turns.ceil() - 1.0).max(0.0);
+    let k = ((w_base - y_anchor) / pitch).round().clamp(0.0, k_max);
+    let w = w_base - k * pitch;
+    let rp = r - taper * (p[1] - y_anchor);
+    let rr = r.max(r_inner).max(pitch / TAU * 0.25).max(1e-3);
+    let q = pitch / (TAU * rr);
+    let scale = 1.0 / (1.0 + q * q + taper * taper).sqrt();
+    ([rp, w], scale)
+}
+
 /// SDF of a single primitive at world point `p`.
 pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
     match primitive {
@@ -249,6 +299,23 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
             let dz = p[2] - center[2];
             let r = (dx * dx + dz * dz).sqrt();
             sketch.sdf([r, p[1] - center[1]])
+        }
+        // Helical sweep: unwrap into the profile's (r, w) frame and
+        // evaluate the 2D sketch SDF, Lipschitz-normalised. Mirrors
+        // `CsgNode::Helix`'s tree eval for the non-tree (picking) path.
+        Primitive::Helix { sketch, center, pitch, turns, left_handed, taper } => {
+            let (y_anchor, r_inner) = helix_profile_anchor(sketch);
+            let local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+            let (q, scale) = helix_profile_point(
+                local,
+                *pitch,
+                *turns,
+                *left_handed,
+                *taper,
+                y_anchor,
+                r_inner,
+            );
+            sketch.sdf(q) * scale
         }
         Primitive::Torus { center, major_radius, minor_radius } => {
             let dx = p[0] - center[0];
@@ -810,6 +877,7 @@ impl Kernel {
             "cylinder" => "cylinder",
             "extrude" => "extrude",
             "revolve" => "revolve",
+            "helix" => "helix",
             "hole" => "hole",
             "gyroid" => "gyroid",
             "imported_mesh" => "imported_mesh",
@@ -866,6 +934,7 @@ impl Kernel {
         let label = match call.type_name.as_str() {
             "sketch" => "Sketch",
             "revolve" => "Revolve",
+            "helix" => "Helix",
             "hole" => "Hole",
             "gyroid" => "Gyroid",
             "imported_mesh" => "Imported mesh",
@@ -1571,6 +1640,48 @@ impl Kernel {
             "profiles": format!("qCreatedBy({sketch_feature_id})"),
             "operation": op_wire,
             "center": [cx, cy, cz],
+        }))
+    }
+
+    /// Append a `helix` feature call sweeping the sketch's profile
+    /// along a helical path around the sketch-local Y axis (real
+    /// screw threads — see `HelixDef`). `pitch_mm` is the axial
+    /// advance per revolution, `turns` the revolution count. As with
+    /// `addRevolve`, `sketch_id == 0` creates an EMPTY helix whose
+    /// `profiles` the dialog's query picker fills afterwards.
+    #[wasm_bindgen(js_name = addHelix)]
+    pub fn add_helix(
+        &mut self,
+        sketch_id: u32,
+        op: u32,
+        pitch_mm: f32,
+        turns: f32,
+    ) -> Result<u32, JsError> {
+        let op_wire = Self::op_wire_name(op)?;
+        if sketch_id == 0 {
+            return self.push_feature_call("helix", serde_json::json!({
+                "profiles": "",
+                "operation": op_wire,
+                "pitch": { "value": pitch_mm, "unit": "mm" },
+                "turns": turns,
+            }));
+        }
+        let sketch_feature_id = FeatureId::from_u32(sketch_id);
+        let exists = self
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.id == sketch_feature_id && c.type_name == "sketch");
+        if !exists {
+            return Err(JsError::new(&format!(
+                "feature {sketch_id} is not a sketch"
+            )));
+        }
+        self.push_feature_call("helix", serde_json::json!({
+            "profiles": format!("qCreatedBy({sketch_feature_id})"),
+            "operation": op_wire,
+            "pitch": { "value": pitch_mm, "unit": "mm" },
+            "turns": turns,
         }))
     }
 
@@ -4135,6 +4246,59 @@ mod tests {
     /// `coalesce=true` after one initial `coalesce=false` — undo must
     /// treat the whole sequence as a SINGLE step that restores the
     /// pre-drag value.
+    /// Full feature path of the helix screw thread: core cylinder +
+    /// triangle thread-profile sketch + `addHelix`, validated through
+    /// the COMPILED opcode field (`bodySdfEval` — the exact stream the
+    /// GPU interprets).
+    #[test]
+    fn helix_feature_threads_a_cylinder() {
+        let mut k = Kernel::new();
+        // Core cylinder along Y: r = 8.2, height ±10.
+        let _cyl = k
+            .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
+            .unwrap();
+        // Thread profile: ISO-ish 60° triangle in the (r, y) plane —
+        // base inside the core (r=8 < 8.2), apex at r=9.4, centred at
+        // y = −8.2, axial extent 1.6 ≤ pitch 2.
+        let sub_calls = r#"[
+            {
+                "type": "sketch_polygon",
+                "id": "100",
+                "params": { "vertices": [8.0, -9.0, 9.4, -8.2, 8.0, -7.4] }
+            }
+        ]"#;
+        let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+        let helix_id = k.add_helix(sketch_id, BoolOp::TAG_ADD, 2.0, 8.0).unwrap();
+        assert_ne!(helix_id, sketch_id);
+
+        // One body: the thread fuses onto the core.
+        assert_eq!(k.body_count(), 1);
+        let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+
+        // Inside the core.
+        assert!(d(0.0, 0.0, 0.0) < 0.0);
+        // On the thread ridge at θ=0 (outside the bare core radius!).
+        assert!(d(8.5, -8.2, 0.0) < 0.0, "ridge must fuse onto the core");
+        // In the groove between turns at the same radius.
+        assert!(d(8.5, -7.0, 0.0) > 0.0, "groove must stay open");
+        // Helical invariance: half a turn advances y by pitch/2.
+        assert!(d(-8.5, -7.2, 0.0) < 0.0, "thread must wind with the pitch");
+        // The un-advanced half-turn point sits in the groove.
+        assert!(d(-8.5, -8.2, 0.0) > 0.0);
+        // Past the last turn (8 turns × 2mm from −8.2 → thread tops out
+        // near y ≈ 7.8): high on the cylinder there is no ridge.
+        assert!(d(8.5, 9.5, 0.0) > 0.0);
+
+        // The outliner row reports the helix kind.
+        let list: serde_json::Value =
+            serde_json::from_str(&k.list_features().unwrap()).unwrap();
+        assert!(list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["kind"] == "helix"));
+    }
+
     #[test]
     fn coalesced_replace_is_one_undo_step() {
         let mut k = Kernel::new();

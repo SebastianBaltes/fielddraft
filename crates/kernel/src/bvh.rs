@@ -167,6 +167,22 @@ pub enum BoundedCsg {
         world_transform: Transform,
         aabb: Aabb,
     },
+    /// BVH-wrapped helical sweep (see [`CsgNode::Helix`]). The query
+    /// maps 3D to the profile's `(r, w)` frame via
+    /// [`crate::helix_profile_point`] (nearest-turn unwrap + Lipschitz
+    /// scale) before hitting the 2D tree.
+    Helix {
+        id: FeatureId,
+        sketch: Box<BoundedSketch2d>,
+        pitch: f32,
+        turns: f32,
+        left_handed: bool,
+        taper: f32,
+        y_anchor: f32,
+        r_inner: f32,
+        world_transform: Transform,
+        aabb: Aabb,
+    },
     /// K10.3: spatially-masked blend. BVH mirror of
     /// [`CsgNode::MaskedBlend`]. The AABB is the union of both
     /// children (same conservative bound as SmoothUnion).
@@ -227,6 +243,7 @@ impl BoundedCsg {
             | BoundedCsg::Offset { aabb, .. }
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. }
+            | BoundedCsg::Helix { aabb, .. }
             | BoundedCsg::MaskedBlend { aabb, .. }
             | BoundedCsg::Morph { aabb, .. } => *aabb,
         }
@@ -267,7 +284,7 @@ impl BoundedCsg {
             | BoundedCsg::Shell { inner, .. } => {
                 inner.collect_leaf_transforms(out);
             }
-            BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } => {}
+            BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Helix { .. } => {}
         }
     }
 
@@ -482,6 +499,29 @@ impl BoundedCsg {
                     sketch.sdf([r, local[1]])
                 };
                 d * world_transform.min_scale()
+            }
+            BoundedCsg::Helix {
+                id,
+                sketch,
+                pitch,
+                turns,
+                left_handed,
+                taper,
+                y_anchor,
+                r_inner,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let (q, scale) = crate::helix_profile_point(
+                    local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                );
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
+                } else {
+                    sketch.sdf(q)
+                };
+                d * scale * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let da = left.sdf_open(p, mode, open);
@@ -726,6 +766,35 @@ impl BoundedCsg {
                     sketch.sdf_with_edges([r, local[1]], eps)
                 };
                 let d = band.distance * world_transform.min_scale();
+                let c = revolve_contributors(id, &band);
+                (d, c)
+            }
+            BoundedCsg::Helix {
+                id,
+                sketch,
+                pitch,
+                turns,
+                left_handed,
+                taper,
+                y_anchor,
+                r_inner,
+                world_transform,
+                ..
+            } => {
+                let local = world_to_local(world_transform, p);
+                let (q, scale) = crate::helix_profile_point(
+                    local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                );
+                // Widen the edge band by the inverse Lipschitz scale so
+                // profile-space matching stays comparable to world eps.
+                let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_with_edges_retained(q, eps / scale.max(1e-6), &mut |g| {
+                        open.contains_sub(id, g)
+                    })
+                } else {
+                    sketch.sdf_with_edges(q, eps / scale.max(1e-6))
+                };
+                let d = band.distance * scale * world_transform.min_scale();
                 let c = revolve_contributors(id, &band);
                 (d, c)
             }
@@ -994,6 +1063,36 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Helix {
+            id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+        } => {
+            let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
+            let s2 = bounded_sketch.aabb();
+            let local_aabb = if s2.is_empty() {
+                Aabb::EMPTY
+            } else {
+                let axial = pitch.max(0.0) * (turns.max(0.0).ceil() + 1.0);
+                let span_y = (s2.max[1] - s2.min[1]) + axial;
+                let r_max = s2.max[0].abs().max(s2.min[0].abs()) + taper.abs() * span_y;
+                Aabb {
+                    min: [-r_max, s2.min[1] - pitch.max(0.0), -r_max],
+                    max: [r_max, s2.max[1] + axial, r_max],
+                }
+            };
+            let aabb = local_aabb.transformed(carry);
+            BoundedCsg::Helix {
+                id: id.clone(),
+                sketch: Box::new(bounded_sketch),
+                pitch: *pitch,
+                turns: *turns,
+                left_handed: *left_handed,
+                taper: *taper,
+                y_anchor: *y_anchor,
+                r_inner: *r_inner,
+                world_transform: *carry,
+                aabb,
+            }
+        }
         CsgNode::Morph(a, b, t) => {
             let left = build(a, carry);
             let right = build(b, carry);
@@ -1200,6 +1299,12 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     });
                 }
             }
+        }
+        // A helical sweep has no hybrid raytracer mapping — the
+        // conservative SDF march covers it (non-Lipschitz family).
+        BoundedCsg::Helix { .. } => {
+            info.is_union_only = false;
+            info.needs_full_sdf = true;
         }
     }
 }

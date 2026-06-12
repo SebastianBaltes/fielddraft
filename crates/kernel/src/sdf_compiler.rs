@@ -68,6 +68,8 @@ pub const OP_WARP_TWIST: u32     = 0x32; // +1: rate — rotate XZ by rate*y
 pub const OP_WARP_BEND: u32      = 0x33; // +1: rate — rotate XY by rate*x
 pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(3)
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
+pub const OP_WARP_HELIX: u32     = 0x36; // +5: pitch + hand + k_max + y_anchor + taper — point ← (r−taper·(y−y0), w, 0)
+pub const OP_HELIX_SCALE: u32    = 0x37; // +4: scale + pitch + taper + r_inner — pops d2d, multiplies by scale·lipschitz(point.x)
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
@@ -323,6 +325,41 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(world_transform.min_scale());
             out.push(op(OP_WARP_POP));
         }
+        BoundedCsg::Helix {
+            id,
+            sketch,
+            pitch,
+            turns,
+            left_handed,
+            taper,
+            y_anchor,
+            r_inner,
+            world_transform,
+            ..
+        } => {
+            // Helical unwrap into the profile frame, then the shared 2D
+            // sketch eval, then the per-point Lipschitz normalisation —
+            // mirrors `crate::helix_profile_point` (and the web GPU
+            // interpreter's OP_WARP_HELIX / OP_HELIX_SCALE arms).
+            let excl = open
+                .has_feature(id.as_u32_or_root().unwrap_or(0))
+                .then_some((id, open));
+            out.push(op(OP_WARP_PUSH));
+            emit_warp_transform(world_transform, out);
+            out.push(op(OP_WARP_HELIX));
+            out.push(pitch.max(1e-3));
+            out.push(if *left_handed { -1.0 } else { 1.0 });
+            out.push((turns.ceil() - 1.0).max(0.0));
+            out.push(*y_anchor);
+            out.push(*taper);
+            emit_sketch(sketch, out, 0, excl);
+            out.push(op(OP_HELIX_SCALE));
+            out.push(world_transform.min_scale());
+            out.push(pitch.max(1e-3));
+            out.push(*taper);
+            out.push(*r_inner);
+            out.push(op(OP_WARP_POP));
+        }
     }
 }
 
@@ -571,7 +608,7 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
             out.push(*depth);
             out.push(*half_height);
         }
-        Primitive::Extrude { .. } | Primitive::Revolve { .. } => {
+        Primitive::Extrude { .. } | Primitive::Revolve { .. } | Primitive::Helix { .. } => {
             out.push(op(OP_PRIM_CONST));
             out.push(0.0);
         }
@@ -1027,6 +1064,20 @@ pub fn eval_opcodes_with_volumes(
                 let d = pop_v!();
                 push_v!(d * scale);
             }
+            OP_HELIX_SCALE => {
+                let scale = rd!();
+                let pitch = rd!();
+                let taper = rd!();
+                let r_inner = rd!();
+                let tau = std::f32::consts::TAU;
+                // The current point is still the WARPED profile point —
+                // its x is the (tapered) radial coordinate.
+                let rr = pt[0].max(r_inner).max(pitch / tau * 0.25).max(1e-3);
+                let q = pitch / (tau * rr);
+                let lip = 1.0 / (1.0 + q * q + taper * taper).sqrt();
+                let d = pop_v!();
+                push_v!(d * scale * lip);
+            }
             OP_OFFSET_2D => {
                 let dist = rd!();
                 let d = pop_v!();
@@ -1071,6 +1122,21 @@ pub fn eval_opcodes_with_volumes(
             OP_WARP_REVOLVE => {
                 let r = (pt[0] * pt[0] + pt[2] * pt[2]).sqrt();
                 pt = [r, pt[1], 0.0];
+            }
+            OP_WARP_HELIX => {
+                let pitch = rd!();
+                let hand = rd!();
+                let k_max = rd!();
+                let y_anchor = rd!();
+                let taper = rd!();
+                let tau = std::f32::consts::TAU;
+                let r = (pt[0] * pt[0] + pt[2] * pt[2]).sqrt();
+                let theta = pt[2].atan2(pt[0]);
+                let w_base = pt[1] - hand * pitch * theta / tau;
+                let k = ((w_base - y_anchor) / pitch).round().clamp(0.0, k_max);
+                let w = w_base - k * pitch;
+                let rp = r - taper * (pt[1] - y_anchor);
+                pt = [rp, w, 0.0];
             }
 
             // ── Masked blend ───────────────────────────────────
@@ -1417,6 +1483,59 @@ mod tests {
                 "mismatch at {p:?}: bvh={expected} compiled={got} (tol={tol})",
             );
         }
+    }
+
+    #[test]
+    fn helix_opcode_stream_matches_tree_eval() {
+        // Thread-like helix (rect profile r∈[8,10], pitch 2, 5 turns)
+        // unioned onto a core cylinder — GPU/CPU opcode parity against
+        // the BVH tree eval, including the Lipschitz normalisation.
+        let features = vec![
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(1),
+                "Core".into(),
+                BoolOp::New,
+                Primitive::Cylinder { center: [0.0, 0.0, 0.0], radius: 8.2, half_height: 7.0 },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            ),
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(2),
+                "Helix".into(),
+                BoolOp::Add,
+                Primitive::Helix {
+                    sketch: fielddraft_protocol::Sketch2d::Prim(
+                        fielddraft_protocol::Sketch2dPrimitive::Rectangle {
+                            center: [9.0, 0.0],
+                            half_extents: [1.0, 0.6],
+                        },
+                    ),
+                    center: [0.0, 0.0, 0.0],
+                    pitch: 2.0,
+                    turns: 5.0,
+                    left_handed: false,
+                    taper: 0.0,
+                },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![],
+            ),
+        ];
+        let bvh = BoundedCsg::from_csg(&CsgNode::from_decoded(&features));
+        let compiled = compile_body(&bvh);
+        let points = [
+            [9.0, 0.0, 0.0],
+            [9.0, 1.0, 0.0],
+            [0.0, 0.5, 9.0],
+            [9.0, 2.0, 0.0],
+            [9.0, 12.0, 0.0],
+            [11.5, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [4.0, 3.3, 4.0],
+            [-9.0, 5.1, 0.2],
+        ];
+        assert_sdf_match(&bvh, &compiled, &points, 1e-4);
     }
 
     #[test]

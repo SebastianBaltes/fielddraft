@@ -303,6 +303,10 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         | BoundedCsg::Displace { inner, .. }
         | BoundedCsg::Offset { inner, .. }
         | BoundedCsg::Shell { inner, .. } => bounded_contains_space_filling(inner),
+        // A helical sweep counts as weave-excluded too (DL-71 family):
+        // the thread surface would make the octree refine on thousands
+        // of cells for non-Lipschitz seams the weaver discards anyway.
+        BoundedCsg::Helix { .. } => true,
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }
 }
@@ -886,6 +890,15 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             id.hash(hasher);
             hash_sketch2d(sketch, hasher);
         }
+        CsgNode::Helix { id, sketch, pitch, turns, left_handed, taper, .. } => {
+            17u8.hash(hasher);
+            id.hash(hasher);
+            pitch.to_bits().hash(hasher);
+            turns.to_bits().hash(hasher);
+            left_handed.hash(hasher);
+            taper.to_bits().hash(hasher);
+            hash_sketch2d(sketch, hasher);
+        }
     }
 }
 
@@ -940,6 +953,17 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             for v in center {
                 v.to_bits().hash(hasher);
             }
+            hash_sketch2d(sketch, hasher);
+        }
+        Primitive::Helix { sketch, center, pitch, turns, left_handed, taper } => {
+            16u8.hash(hasher);
+            for v in center {
+                v.to_bits().hash(hasher);
+            }
+            pitch.to_bits().hash(hasher);
+            turns.to_bits().hash(hasher);
+            left_handed.hash(hasher);
+            taper.to_bits().hash(hasher);
             hash_sketch2d(sketch, hasher);
         }
         Primitive::Torus { center, major_radius, minor_radius } => {

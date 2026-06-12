@@ -631,7 +631,8 @@ fn collect_leaf_nodes<'a>(node: &'a BoundedCsg, out: &mut HashMap<u32, &'a Bound
     match node {
         BoundedCsg::Leaf { id, .. }
         | BoundedCsg::Extrude { id, .. }
-        | BoundedCsg::Revolve { id, .. } => {
+        | BoundedCsg::Revolve { id, .. }
+        | BoundedCsg::Helix { id, .. } => {
             out.insert(BranchId::from_feature(id).feature_id(), node);
         }
         BoundedCsg::Union { left, right, .. }
@@ -684,6 +685,11 @@ pub(crate) fn collect_non_lipschitz_features(node: &BoundedCsg, out: &mut std::c
             if primitive.is_non_lipschitz() {
                 out.insert(BranchId::from_feature(id).feature_id());
             }
+        }
+        // A helical sweep is non-Lipschitz by construction (the unwrap
+        // self-normalisation) — same exemption as a Thread leaf.
+        BoundedCsg::Helix { id, .. } => {
+            out.insert(BranchId::from_feature(id).feature_id());
         }
         BoundedCsg::Union { left, right, .. }
         | BoundedCsg::Difference { left, right, .. }
@@ -1475,6 +1481,7 @@ pub(crate) fn body_has_warp(node: &BoundedCsg) -> bool {
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Helix { .. }
         | BoundedCsg::Empty => false,
     }
 }

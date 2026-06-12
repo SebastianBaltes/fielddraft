@@ -116,15 +116,16 @@ Document
 
 **FeatureId** supports flat (`"42"`) and hierarchical (`"3.op.mask_0"`) identifiers.
 
-**Primitive enum** — 13 geometric shape types:
+**Primitive enum** — 14 geometric shape types:
 
 | Primitive | Description |
 |-----------|-------------|
 | `Box`, `Sphere`, `Cylinder`, `Torus`, `Cone`, `Capsule`, `HexPrism`, `Ellipsoid` | Direct SDF evaluation |
 | `Extrude` | 2D sketch profile swept along Z |
 | `Revolve` | 2D sketch profile revolved around Y |
+| `Helix` | 2D sketch profile swept HELICALLY around Y (real screw threads): pitch per turn, turn count, handedness, taper. Cylindrical unwrap `w = y − pitch·θ/2π` with nearest-turn instancing (profile axial extent must stay ≤ pitch) evaluates the shared 2D sketch SDF at `(r − taper·Δy, w)`; the result is divided by the conservative Jacobian bound `√(1 + (pitch/2πr)² + taper²)` (r clamped below by the profile's inner radius) so the sphere-march never overshoots — the same self-normalisation family as Thread/Gyroid. Opcodes `OP_WARP_HELIX`/`OP_HELIX_SCALE` mirror this in both VMs. Weave-excluded (non-Lipschitz, DL-71): helix bodies render via the SDF, no B-Rep wireframe. |
 | `Gyroid` | TPMS lattice (`\|f\| - thickness`) |
-| `Thread` | Metric helix |
+| `Thread` | Metric helix (legacy toy: fixed cosine groove — prefer the `helix` feature) |
 | `ImportedMesh` | CSG-participating triangle mesh (passthrough storage) |
 
 **Typed parameters** (K4.5.4f): `Length` (mm/cm/m/in → mm), `Angle` (deg/rad), `Query`, `MultiQuery`, `BoolOp` (`add`/`new`/`remove`/`intersect`, Onshape result-body vocabulary).

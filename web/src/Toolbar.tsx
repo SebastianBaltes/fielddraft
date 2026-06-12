@@ -953,6 +953,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
           disabled={!hasFeatures && !hasSketch}
           onClick={() => store.addRevolveFromLatestSketch()}
         />
+        <FeatureButton
+          kind="helix"
+          title={hasSketch ? "Helix sweep of the latest sketch (screw threads)" : "Helix — pick a sketch in the dialog"}
+          testId="helix-latest-sketch"
+          disabled={!hasFeatures && !hasSketch}
+          onClick={() => store.addHelixFromLatestSketch()}
+        />
         <FeatureButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
         <FeatureButton kind="linear_pattern" title="Linear pattern (+X, 3x, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} label="Pattern" />
         <FeatureButton kind="circular_pattern" title="Circular pattern (6x, 360°)" testId="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()} label="Circ" />

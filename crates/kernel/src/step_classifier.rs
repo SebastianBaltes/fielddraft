@@ -211,6 +211,9 @@ fn classify_primitive(p: &Primitive) -> StepSupport {
         Primitive::HexPrism { .. } => StepSupport::Hard,
 
         // Not representable in B-Rep
+        Primitive::Helix { .. } => StepSupport::Excluded(
+            "helical sweep not representable as simple B-Rep".into(),
+        ),
         Primitive::Thread { .. } => StepSupport::Excluded(
             "helix thread not representable as simple B-Rep".into(),
         ),
