@@ -74,7 +74,7 @@ pub(super) fn surface_normal_at(surface: &SurfaceGeometry, p: [f64; 3]) -> Optio
             }
             Some(rot_to_world(dir))
         }
-        HalfSpace::RevolvedProfile { segments, ccw, .. } => {
+        HalfSpace::RevolvedProfile { segments, ccw, extend_start, extend_end, .. } => {
             // Profile-plane gradient lifted radially, like the cone/cylinder.
             let l = to_local(p);
             let r_xz = norm([l[0], 0.0, l[2]]);
@@ -82,6 +82,8 @@ pub(super) fn surface_normal_at(surface: &SurfaceGeometry, p: [f64; 3]) -> Optio
                 segments,
                 *ccw,
                 [r_xz as f32, l[1] as f32],
+                *extend_start,
+                *extend_end,
             );
             let dir = if r_xz > 1e-9 {
                 [g2[0] as f64 * l[0] / r_xz, g2[1] as f64, g2[0] as f64 * l[2] / r_xz]

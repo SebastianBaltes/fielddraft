@@ -1365,6 +1365,7 @@ fn open_shell_weaves_inner_wall_and_keeps_outer_faces() {
         thickness,
         // Open the +Z face: its outward gate is the plane z = +half.
         vec![crate::csg::OpenSurface {
+            branch: crate::csg::BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
             surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: half },
             placement: Transform::IDENTITY,
         }],

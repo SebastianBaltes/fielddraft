@@ -88,7 +88,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                 }
             }
         }
-        BoundedCsg::Shell { inner, thickness, .. } => {
+        BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
             // The outer faces are geometrically unchanged (the shell preserves
             // `d = 0`), so they keep their entries. Additionally register each
             // outer analytic face's inward offset under its inner-wall branch id
@@ -107,7 +107,14 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             // map and every pair touching them bails the body to the octree.
             let mut profiles = HashMap::new();
             collect_revolve_profile_carriers(inner, &mut profiles);
+            let opened =
+                |branch: u32| open_faces.iter().any(|f| f.branch == branch);
             for (key, (hs, xf)) in &sub {
+                // An OPENED face has no inner wall — the cavity passes
+                // through it (retained-boundary erosion).
+                if opened(*key) {
+                    continue;
+                }
                 // CAREFUL with frames: a lifted entry's transform can carry a
                 // folded local pre-translation (the cone's apex shift, a
                 // plane's y offset) — the profile segments are authored in
@@ -127,13 +134,39 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
                                 segments: segments.clone(),
                                 ccw: *ccw,
                                 offset: *thickness,
+                                extend_start: true,
+                                extend_end: true,
                             },
                             *profile_xf,
                         )
                     }),
                 };
-                if let Some(entry) = inner_entry {
-                    out.entry(BranchId(*key).inner_wall().as_u32()).or_insert(entry);
+                if let Some((mut inner_hs, inner_xf)) = inner_entry {
+                    // Per-end carrier shape for profile inner walls: a chain
+                    // end whose ADJACENT group was opened gets the stadium
+                    // (the erosion rounds the retained chain's endpoint —
+                    // the opened face's rim root lives on that arc); ends
+                    // shared with a retained neighbour keep the tangent
+                    // extension (smooth field → crisp miter edge).
+                    if let fielddraft_protocol::HalfSpace::RevolvedProfile {
+                        extend_start,
+                        extend_end,
+                        ..
+                    } = &mut inner_hs
+                    {
+                        let b = BranchId(*key);
+                        let (f, g) = (b.feature_id(), b.sub());
+                        let neighbour_open = |n: u32| {
+                            open_faces.iter().any(|of| {
+                                let ob = BranchId(of.branch);
+                                ob.feature_id() == f && ob.sub() == n
+                            })
+                        };
+                        *extend_start = g == 0 || !neighbour_open(g - 1);
+                        *extend_end = !neighbour_open(g + 1);
+                    }
+                    out.entry(BranchId(*key).inner_wall().as_u32())
+                        .or_insert((inner_hs, inner_xf));
                 }
             }
             out.extend(sub);
@@ -173,6 +206,8 @@ fn collect_revolve_profile_carriers(
                         segments,
                         ccw,
                         offset: 0.0,
+                        extend_start: true,
+                        extend_end: true,
                     },
                     *world_transform,
                 ));

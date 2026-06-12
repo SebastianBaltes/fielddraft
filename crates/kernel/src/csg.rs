@@ -533,19 +533,68 @@ pub enum BlendMode {
     Chamfer,
 }
 
-/// An analytic surface removed from a [`CsgNode::Shell`] to open it. Generalises
-/// the planar opening to any analytic B-Rep face (Plane, Cylinder, Sphere, Cone,
-/// Torus): the outward-oriented gate `g(p) = sdf_halfspace(surface, W⁻¹·p)`, which
-/// is `≤ 0` inside the body and `0` on the face. `surface` is the face's local
-/// [`HalfSpace`]; `placement` is its rigid local→world transform (`body placement
-/// ∘ face transform`). The shell's cavity is not eroded where this surface is the
-/// nearest boundary, so the wall opens flush with the face. For a plane, `g`
-/// reduces exactly to `normal·p − offset`; for curved faces the gate is a true
-/// Euclidean distance (∇g ≈ 1), so the shell taper stays well-conditioned.
+/// A B-Rep face removed from a [`CsgNode::Shell`] to open it.
+///
+/// `branch` is the face's [`BranchId`] (feature id + sub-face index): the
+/// shell's cavity erosion measures the distance to the **retained** boundary —
+/// the owning leaf's SDF re-evaluated with this sub-face removed — so the wall
+/// keeps a constant `thickness` right up to the opened face and ends there in
+/// a crisp annular rim (`wall = max(d, −(d_ret + t))`). The earlier gate-taper
+/// formulation (`e = clamp(d − g, 0, t)`) let the wall thin to a knife edge at
+/// the opening and is gone.
+///
+/// `surface`/`placement` keep the face's analytic geometry (local [`HalfSpace`]
+/// + rigid local→world transform) for consumers that need the opening's shape
+/// — e.g. the weave's open-face annulus classification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenSurface {
+    pub branch: u32,
     pub surface: HalfSpace,
     pub placement: Transform,
+}
+
+/// Stack-chained set of opened branch ids, threaded through SDF evaluation
+/// without per-eval allocation. Each [`CsgNode::Shell`] pushes its own open
+/// faces for the retained-boundary (`d_ret`) re-evaluation of its subtree;
+/// nested shells chain their sets.
+#[derive(Clone, Copy)]
+pub(crate) struct OpenBranchSet<'a> {
+    faces: &'a [OpenSurface],
+    parent: Option<&'a OpenBranchSet<'a>>,
+}
+
+impl<'a> OpenBranchSet<'a> {
+    pub(crate) const EMPTY: OpenBranchSet<'static> =
+        OpenBranchSet { faces: &[], parent: None };
+
+    pub(crate) fn push(parent: &'a OpenBranchSet<'a>, faces: &'a [OpenSurface]) -> Self {
+        OpenBranchSet { faces, parent: Some(parent) }
+    }
+
+    /// Whether the chain holds no opened branches at all. Load-bearing for
+    /// AABB pruning: a retained-boundary field extends past its leaf's AABB
+    /// (the solid is "extended through the opening"), so the Lipschitz
+    /// ≥ dist-to-AABB bound only holds when the set is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.faces.is_empty() && self.parent.is_none_or(|p| p.is_empty())
+    }
+
+    /// Whether any opened branch belongs to `feature` — the cheap gate the
+    /// leaf arms check before switching to the retained evaluation.
+    pub(crate) fn has_feature(&self, feature: u32) -> bool {
+        self.faces.iter().any(|f| BranchId(f.branch).feature_id() == feature)
+            || self.parent.is_some_and(|p| p.has_feature(feature))
+    }
+
+    /// Whether the exact branch (feature + sub) is opened.
+    pub(crate) fn contains(&self, branch: u32) -> bool {
+        self.faces.iter().any(|f| f.branch == branch)
+            || self.parent.is_some_and(|p| p.contains(branch))
+    }
+
+    pub(crate) fn contains_sub(&self, feature: &FeatureId, sub: u32) -> bool {
+        self.contains(BranchId::from_feature_sub(feature, sub).as_u32())
+    }
 }
 
 impl OpenSurface {
@@ -579,41 +628,18 @@ impl OpenSurface {
     }
 }
 
-/// Inward shell SDF with optional openings (see [`CsgNode::Shell`]).
+/// Inward shell SDF with retained-boundary openings (see [`CsgNode::Shell`]).
 ///
-/// `d` is the solid's signed distance at `p`, `thickness` the wall thickness.
-/// The cavity is the solid eroded by a *local* depth `e`: `thickness` away from
-/// every open plane, tapering linearly to `0` as the nearest open plane becomes
-/// the active (closest) boundary. The wall is the solid minus that cavity,
-/// `max(d, −(d + e))`, so it hugs the outer surface and breaks open exactly at
-/// the selected faces. With no open planes `e == thickness` everywhere → a
-/// closed inward shell.
-/// The shell's local erosion depth `e` at `p` (see [`open_shell_sdf`]): the
-/// cavity is the solid eroded by `e`, which is `thickness` away from every open
-/// face and tapers linearly to `0` as the nearest open face becomes the active
-/// boundary. Factored out so the contributor-tracking [`BoundedCsg::Shell`]
-/// evaluate can reconstruct the inner-wall term `−(d + e)` and tag it with
-/// inner-wall provenance (DL-75).
+/// `d` is the solid's signed distance at `p`; `d_ret` is the same subtree
+/// re-evaluated with every opened sub-face removed from its *distance* (sign
+/// unchanged) — the distance to the **retained** boundary. The cavity is the
+/// solid eroded by `thickness` measured against that retained boundary, so the
+/// wall keeps a constant thickness right up to an opened face and meets it in
+/// a crisp annular rim: `wall = max(d, −(d_ret + thickness))`. With no open
+/// faces `d_ret == d` → the classic closed inward shell `max(d, −(d + t))`.
 #[inline]
-pub fn open_shell_erosion(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
-    if open_faces.is_empty() {
-        thickness
-    } else {
-        // g = nearest open-face gate value. `d − g` is ~0 when an open face is the
-        // active boundary and grows as it recedes; clamping to [0, thickness]
-        // gives the taper that breaks the cavity through at the selected faces.
-        let g = open_faces
-            .iter()
-            .map(|f| f.eval(p))
-            .fold(f32::NEG_INFINITY, f32::max);
-        (d - g).clamp(0.0, thickness)
-    }
-}
-
-#[inline]
-pub fn open_shell_sdf(d: f32, thickness: f32, open_faces: &[OpenSurface], p: [f32; 3]) -> f32 {
-    let e = open_shell_erosion(d, thickness, open_faces, p);
-    d.max(-(d + e))
+pub fn shell_wall_sdf(d: f32, d_ret: f32, thickness: f32) -> f32 {
+    d.max(-(d_ret + thickness))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1193,27 +1219,40 @@ impl CsgNode {
     /// support (see [`EvalMode`]). Until K10 lands both modes return
     /// bit-identical values.
     pub fn sdf(&self, p: [f32; 3], mode: EvalMode) -> f32 {
+        self.sdf_open(p, mode, &OpenBranchSet::EMPTY)
+    }
+
+    /// [`Self::sdf`] under a set of opened shell branches: leaves owning an
+    /// opened sub-face evaluate their RETAINED boundary distance instead
+    /// (sign unchanged) — see [`shell_wall_sdf`].
+    pub(crate) fn sdf_open(&self, p: [f32; 3], mode: EvalMode, open: &OpenBranchSet<'_>) -> f32 {
         match self {
             CsgNode::Empty => f32::INFINITY,
-            CsgNode::Leaf { primitive, .. } => sdf_primitive(primitive, p),
+            CsgNode::Leaf { id, primitive } => {
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    leaf_sdf_retained(id, primitive, p, open)
+                } else {
+                    sdf_primitive(primitive, p)
+                }
+            }
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
-                inner.sdf(local, mode) * t.min_scale()
+                inner.sdf_open(local, mode, open) * t.min_scale()
             }
-            CsgNode::Union(a, b) => a.sdf(p, mode).min(b.sdf(p, mode)),
-            CsgNode::Difference(a, b) => a.sdf(p, mode).max(-b.sdf(p, mode)),
-            CsgNode::Intersection(a, b) => a.sdf(p, mode).max(b.sdf(p, mode)),
+            CsgNode::Union(a, b) => a.sdf_open(p, mode, open).min(b.sdf_open(p, mode, open)),
+            CsgNode::Difference(a, b) => a.sdf_open(p, mode, open).max(-b.sdf_open(p, mode, open)),
+            CsgNode::Intersection(a, b) => a.sdf_open(p, mode, open).max(b.sdf_open(p, mode, open)),
             CsgNode::SmoothUnion(a, b, r, mode_blend) => {
-                let da = a.sdf(p, mode);
-                let db = b.sdf(p, mode);
+                let da = a.sdf_open(p, mode, open);
+                let db = b.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Visual => crate::csg::blend_min(da, db, *r, *mode_blend),
                     EvalMode::Logical => da.min(db),
                 }
             }
             CsgNode::SmoothDifference(a, b, r, mode_blend) => {
-                let da = a.sdf(p, mode);
-                let db = b.sdf(p, mode);
+                let da = a.sdf_open(p, mode, open);
+                let db = b.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Visual => -crate::csg::blend_min(-da, db, *r, *mode_blend),
                     EvalMode::Logical => da.max(-db),
@@ -1223,29 +1262,36 @@ impl CsgNode {
                 let angle = *rate * p[1];
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
-                inner.sdf(twisted, mode)
+                inner.sdf_open(twisted, mode, open)
             }
             CsgNode::Bend(inner, rate) => {
                 let angle = *rate * p[0];
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-                inner.sdf(bent, mode)
+                inner.sdf_open(bent, mode, open)
             }
             CsgNode::Displace(inner, depth, freq) => {
-                let d = inner.sdf(p, mode);
+                let d = inner.sdf_open(p, mode, open);
                 let disp = *depth
                     * (p[0] * freq).sin()
                     * (p[1] * freq * 1.3).sin()
                     * (p[2] * freq * 0.7).sin();
                 d - disp
             }
-            CsgNode::Shell(inner, thickness, open) => {
-                open_shell_sdf(inner.sdf(p, mode), *thickness, open, p)
+            CsgNode::Shell(inner, thickness, faces) => {
+                let d = inner.sdf_open(p, mode, open);
+                let d_ret = if faces.is_empty() {
+                    d
+                } else {
+                    let merged = OpenBranchSet::push(open, faces);
+                    inner.sdf_open(p, mode, &merged)
+                };
+                shell_wall_sdf(d, d_ret, *thickness)
             }
-            CsgNode::Offset(inner, delta) => inner.sdf(p, mode) - delta,
+            CsgNode::Offset(inner, delta) => inner.sdf_open(p, mode, open) - delta,
             CsgNode::Morph(a, b, t) => {
-                let da = a.sdf(p, mode);
-                let db = b.sdf(p, mode);
+                let da = a.sdf_open(p, mode, open);
+                let db = b.sdf_open(p, mode, open);
                 (1.0 - t) * da + t * db
             }
             CsgNode::MaskedBlend {
@@ -1257,8 +1303,8 @@ impl CsgNode {
                 blend_mode,
                 is_difference,
             } => {
-                let da = a.sdf(p, mode);
-                let db_raw = b.sdf(p, mode);
+                let da = a.sdf_open(p, mode, open);
+                let db_raw = b.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Logical => hard_combine(*is_difference, da, db_raw),
                     EvalMode::Visual => {
@@ -1276,13 +1322,25 @@ impl CsgNode {
                 }
             }
             CsgNode::Extrude {
+                id,
                 sketch,
                 half_height,
-                ..
-            } => sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height),
-            CsgNode::Revolve { sketch, .. } => {
+            } => {
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let d2 = sketch
+                        .sdf_retained([p[0], p[1]], &mut |g| open.contains_sub(id, g));
+                    extrude_retained_combine(id, d2, p[2], *half_height, open)
+                } else {
+                    sdf_extrude(sketch.sdf([p[0], p[1]]), p[2], *half_height)
+                }
+            }
+            CsgNode::Revolve { id, sketch } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
-                sketch.sdf([r, p[1]])
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_retained([r, p[1]], &mut |g| open.contains_sub(id, g))
+                } else {
+                    sketch.sdf([r, p[1]])
+                }
             }
         }
     }
@@ -1313,37 +1371,50 @@ impl CsgNode {
         eps: f32,
         mode: EvalMode,
     ) -> (f32, Contributors) {
+        self.evaluate_open(p, eps, mode, &OpenBranchSet::EMPTY)
+    }
+
+    /// [`Self::evaluate`] under a set of opened shell branches — the
+    /// provenance sibling of [`Self::sdf_open`]: opened sub-faces are removed
+    /// from both the distance and the contributor band.
+    pub(crate) fn evaluate_open(
+        &self,
+        p: [f32; 3],
+        eps: f32,
+        mode: EvalMode,
+        open: &OpenBranchSet<'_>,
+    ) -> (f32, Contributors) {
         match self {
             CsgNode::Empty => (f32::INFINITY, Contributors::empty()),
             CsgNode::Leaf { id, primitive } => {
-                expand_evaluate_leaf(id, primitive, p, eps)
+                expand_evaluate_leaf_retained(id, primitive, p, eps, open)
             }
             CsgNode::Transform(t, inner) => {
                 let local = world_to_local(t, p);
-                let (d, c) = inner.evaluate(local, eps, mode);
+                let (d, c) = inner.evaluate_open(local, eps, mode, open);
                 (d * t.min_scale(), c)
             }
             CsgNode::Union(a, b) => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 combine_min(da, ca, db, cb, eps)
             }
             CsgNode::Difference(a, b) => {
                 // result = max(da, -db). Sign flip on `db` does NOT
                 // change the contributor identity — it still names
                 // the subtracted leaf.
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 combine_max(da, ca, -db, cb, eps)
             }
             CsgNode::Intersection(a, b) => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 combine_max(da, ca, db, cb, eps)
             }
             CsgNode::SmoothUnion(a, b, r, mode_blend) => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 match mode {
                     EvalMode::Visual => {
                         let d = crate::csg::blend_min(da, db, *r, *mode_blend);
@@ -1355,8 +1426,8 @@ impl CsgNode {
                 }
             }
             CsgNode::SmoothDifference(a, b, r, mode_blend) => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 match mode {
                     EvalMode::Visual => {
                         let d = -crate::csg::blend_min(-da, db, *r, *mode_blend);
@@ -1371,36 +1442,46 @@ impl CsgNode {
                 let angle = *rate * p[1];
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
-                inner.evaluate(twisted, eps, mode)
+                inner.evaluate_open(twisted, eps, mode, open)
             }
             CsgNode::Bend(inner, rate) => {
                 let angle = *rate * p[0];
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-                inner.evaluate(bent, eps, mode)
+                inner.evaluate_open(bent, eps, mode, open)
             }
             CsgNode::Displace(inner, depth, freq) => {
-                let (d, c) = inner.evaluate(p, eps, mode);
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 let disp = *depth
                     * (p[0] * freq).sin()
                     * (p[1] * freq * 1.3).sin()
                     * (p[2] * freq * 0.7).sin();
                 (d - disp, c)
             }
-            CsgNode::Shell(inner, thickness, open) => {
-                let (d, c) = inner.evaluate(p, eps, mode);
-                (open_shell_sdf(d, *thickness, open, p), c)
+            CsgNode::Shell(inner, thickness, faces) => {
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
+                let (d_ret, c_ret) = if faces.is_empty() {
+                    (d, c)
+                } else {
+                    let merged = OpenBranchSet::push(open, faces);
+                    inner.evaluate_open(p, eps, mode, &merged)
+                };
+                // Shell is `max(d, −(d_ret + t))`: a hard combine_max of the
+                // outer surface (term `d`) against the inner wall (the
+                // RETAINED faces offset inward → inner-wall contributors,
+                // DL-75). Opened faces never gain an inner wall.
+                combine_max(d, c, -(d_ret + *thickness), c_ret.mapped_inner(), eps)
             }
             CsgNode::Offset(inner, delta) => {
                 // The offset preserves the carrier's contributor identity — the
                 // surface just shifts by `δ` along its normal — so the woven face
                 // keeps the carrier's branch id and stays selectable.
-                let (d, c) = inner.evaluate(p, eps, mode);
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 (d - delta, c)
             }
             CsgNode::Morph(a, b, t) => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db, cb) = b.evaluate_open(p, eps, mode, open);
                 let d = (1.0 - t) * da + t * db;
                 let mut c = ca;
                 c.extend(cb);
@@ -1415,8 +1496,8 @@ impl CsgNode {
                 blend_mode,
                 is_difference,
             } => {
-                let (da, ca) = a.evaluate(p, eps, mode);
-                let (db_raw, cb) = b.evaluate(p, eps, mode);
+                let (da, ca) = a.evaluate_open(p, eps, mode, open);
+                let (db_raw, cb) = b.evaluate_open(p, eps, mode, open);
                 let db = if *is_difference { -db_raw } else { db_raw };
                 match mode {
                     EvalMode::Logical => {
@@ -1459,14 +1540,36 @@ impl CsgNode {
                 // edge names both colliding branches (uniform with analytic
                 // CSG; the both-branches gate no longer needs to special-
                 // case sweeps).
-                let band = sketch.sdf_with_edges([p[0], p[1]], eps);
-                let d = sdf_extrude(band.distance, p[2], *half_height);
-                let c = extrude_contributors(id, &band, p[2], *half_height, eps);
-                (d, c)
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let band = sketch.sdf_with_edges_retained([p[0], p[1]], eps, &mut |g| {
+                        open.contains_sub(id, g)
+                    });
+                    let d = extrude_retained_combine(id, band.distance, p[2], *half_height, open);
+                    let c = extrude_contributors_retained(
+                        id,
+                        &band,
+                        p[2],
+                        *half_height,
+                        eps,
+                        open,
+                    );
+                    (d, c)
+                } else {
+                    let band = sketch.sdf_with_edges([p[0], p[1]], eps);
+                    let d = sdf_extrude(band.distance, p[2], *half_height);
+                    let c = extrude_contributors(id, &band, p[2], *half_height, eps);
+                    (d, c)
+                }
             }
             CsgNode::Revolve { id, sketch } => {
                 let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
-                let band = sketch.sdf_with_edges([r, p[1]], eps);
+                let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_with_edges_retained([r, p[1]], eps, &mut |g| {
+                        open.contains_sub(id, g)
+                    })
+                } else {
+                    sketch.sdf_with_edges([r, p[1]], eps)
+                };
                 let c = revolve_contributors(id, &band);
                 (band.distance, c)
             }
@@ -1597,6 +1700,27 @@ pub(crate) fn sdf_extrude(d2: f32, z: f32, half_height: f32) -> f32 {
     outside + inside
 }
 
+/// Retained-boundary combine for an extrude leaf: the 2D retained field
+/// joined with whichever caps are NOT opened. A plain `max` (interior-exact;
+/// the exact-corner blend of [`sdf_extrude`] only matters outside, where the
+/// shell erosion never reads `d_ret`).
+pub(crate) fn extrude_retained_combine(
+    id: &FeatureId,
+    d2_ret: f32,
+    z: f32,
+    half_height: f32,
+    open: &OpenBranchSet<'_>,
+) -> f32 {
+    let mut d = d2_ret;
+    if !open.contains_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB) {
+        d = d.max(z - half_height);
+    }
+    if !open.contains_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB) {
+        d = d.max(-z - half_height);
+    }
+    d
+}
+
 /// Contributor band for an **extrude** point (DL-50 / DL-65). The extrude
 /// SDF is `max(d2, |z| − hh)`, so the nearest surface is whichever term
 /// ties the max within `eps`. A wall tie emits *every* banded sketch
@@ -1634,6 +1758,48 @@ pub(crate) fn extrude_contributors(
     }
     // Degenerate guard: never return an empty set — name the dominant
     // wall group so the point still has a provenance.
+    if c.is_empty() {
+        let g = band.groups().first().copied().unwrap_or(0);
+        c.push(BranchId::from_feature_sub(id, g));
+    }
+    c
+}
+
+/// Retained sibling of [`extrude_contributors`]: opened caps neither enter
+/// the max nor the band (the side band is already retained-filtered by the
+/// caller).
+pub(crate) fn extrude_contributors_retained(
+    id: &FeatureId,
+    band: &SketchEdgeBand,
+    z: f32,
+    half_height: f32,
+    eps: f32,
+    open: &OpenBranchSet<'_>,
+) -> Contributors {
+    let wall = band.distance;
+    let top = if open.contains_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB) {
+        f32::NEG_INFINITY
+    } else {
+        z - half_height
+    };
+    let bot = if open.contains_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB) {
+        f32::NEG_INFINITY
+    } else {
+        -z - half_height
+    };
+    let d_max = wall.max(top).max(bot);
+    let mut c = Contributors::empty();
+    if (wall - d_max).abs() <= eps {
+        for &g in band.groups() {
+            c.push(BranchId::from_feature_sub(id, g));
+        }
+    }
+    if top.is_finite() && (top - d_max).abs() <= eps {
+        c.push(BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB));
+    }
+    if bot.is_finite() && (bot - d_max).abs() <= eps {
+        c.push(BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB));
+    }
     if c.is_empty() {
         let g = band.groups().first().copied().unwrap_or(0);
         c.push(BranchId::from_feature_sub(id, g));
@@ -2100,6 +2266,91 @@ pub(crate) fn primitive_halfspaces(prim: &Primitive) -> Option<PrimitiveHalfSpac
     }
 }
 
+/// Retained-boundary SDF of a leaf primitive: the max over its half-space
+/// faces with the opened sub-faces removed — the solid extended through the
+/// openings. Exact in the interior (where the shell erosion reads it);
+/// conservative outside corners. Primitives without a half-space split
+/// (Sphere/Torus/Gyroid: the single face IS the whole boundary) have nothing
+/// to retain, so exclusion is ignored and the wall stays closed there.
+pub(crate) fn leaf_sdf_retained(
+    id: &FeatureId,
+    prim: &Primitive,
+    p: [f32; 3],
+    open: &OpenBranchSet<'_>,
+) -> f32 {
+    let Some(hs) = primitive_halfspaces(prim) else {
+        return sdf_primitive(prim, p);
+    };
+    let lp = [p[0] - hs.center[0], p[1] - hs.center[1], p[2] - hs.center[2]];
+    let mut d = f32::NEG_INFINITY;
+    let mut excluded_any = false;
+    for f in hs.faces() {
+        if open.contains_sub(id, f.sub) {
+            excluded_any = true;
+            continue;
+        }
+        let fp = [
+            lp[0] - f.local_offset[0],
+            lp[1] - f.local_offset[1],
+            lp[2] - f.local_offset[2],
+        ];
+        d = d.max(sdf_halfspace(&f.half_space, fp));
+    }
+    if !excluded_any {
+        // No face of THIS leaf is opened — return the exact primitive SDF.
+        return sdf_primitive(prim, p);
+    }
+    d
+}
+
+/// Contributor-banded sibling of [`leaf_sdf_retained`]: the retained max and
+/// the retained faces within `eps` of it (opened faces never contribute).
+pub(crate) fn expand_evaluate_leaf_retained(
+    id: &FeatureId,
+    prim: &Primitive,
+    p: [f32; 3],
+    eps: f32,
+    open: &OpenBranchSet<'_>,
+) -> (f32, Contributors) {
+    if !open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+        return expand_evaluate_leaf(id, prim, p, eps);
+    }
+    let Some(hs) = primitive_halfspaces(prim) else {
+        return expand_evaluate_leaf(id, prim, p, eps);
+    };
+    let lp = [p[0] - hs.center[0], p[1] - hs.center[1], p[2] - hs.center[2]];
+    let face_d = |f: &HalfSpaceFace| {
+        let fp = [
+            lp[0] - f.local_offset[0],
+            lp[1] - f.local_offset[1],
+            lp[2] - f.local_offset[2],
+        ];
+        sdf_halfspace(&f.half_space, fp)
+    };
+    let mut d_max = f32::NEG_INFINITY;
+    let mut excluded_any = false;
+    for f in hs.faces() {
+        if open.contains_sub(id, f.sub) {
+            excluded_any = true;
+            continue;
+        }
+        d_max = d_max.max(face_d(f));
+    }
+    if !excluded_any {
+        return expand_evaluate_leaf(id, prim, p, eps);
+    }
+    let mut c = Contributors::empty();
+    for f in hs.faces() {
+        if open.contains_sub(id, f.sub) {
+            continue;
+        }
+        if (face_d(f) - d_max).abs() <= eps {
+            c.push(BranchId::from_feature_sub(id, f.sub));
+        }
+    }
+    (d_max, c)
+}
+
 /// Evaluate a leaf primitive with half-space decomposition for branch
 /// tracking. Returns the original (L2-exact) SDF value but computes
 /// per-face BranchIds by projecting onto the half-space composition.
@@ -2193,12 +2444,14 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             (f.abs() - thickness) * s * 0.2887
         }
-        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
             let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
             let (d, _) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
                 segments,
                 *ccw,
                 [r, p[1]],
+                *extend_start,
+                *extend_end,
             );
             d + offset
         }
@@ -2250,12 +2503,14 @@ pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
             }
         }
         HalfSpace::Gyroid { .. } => [0.0, 0.0, 0.0],
-        HalfSpace::RevolvedProfile { segments, ccw, .. } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset: _, extend_start, extend_end } => {
             let rho = (p[0] * p[0] + p[2] * p[2]).sqrt();
             let (_, g2) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
                 segments,
                 *ccw,
                 [rho, p[1]],
+                *extend_start,
+                *extend_end,
             );
             if rho > 1e-9 {
                 [g2[0] * p[0] / rho, g2[1], g2[0] * p[2] / rho]
@@ -2308,11 +2563,13 @@ pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpa
         // gate is computable cheaply here (it would need the profile's minimum
         // curvature radius); an over-thick wall yields an empty active set and
         // is pruned by the activity tests downstream.
-        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
             Some(HalfSpace::RevolvedProfile {
                 segments: segments.clone(),
                 ccw: *ccw,
                 offset: offset + thickness,
+                extend_start: *extend_start,
+                extend_end: *extend_end,
             })
         }
     }
@@ -2400,15 +2657,14 @@ mod tests {
     }
 
     #[test]
-    fn open_shell_sdf_closed_is_an_inward_wall() {
-        // No open planes → wall from the surface (d = 0) inward to d = −t,
-        // hollow beyond. Outer surface preserved.
+    fn shell_wall_sdf_closed_is_an_inward_wall() {
+        // Closed shell (d_ret = d) → wall from the surface (d = 0) inward to
+        // d = −t, hollow beyond. Outer surface preserved.
         let t = 2.0;
-        let p = [0.0, 0.0, 0.0];
-        assert!((open_shell_sdf(0.0, t, &[], p)).abs() < 1e-6, "surface on boundary");
-        assert!(open_shell_sdf(-1.0, t, &[], p) < 0.0, "mid-wall is solid");
-        assert!((open_shell_sdf(-2.0, t, &[], p)).abs() < 1e-6, "inner wall face");
-        assert!(open_shell_sdf(-5.0, t, &[], p) > 0.0, "deep interior is hollow");
+        assert!((shell_wall_sdf(0.0, 0.0, t)).abs() < 1e-6, "surface on boundary");
+        assert!(shell_wall_sdf(-1.0, -1.0, t) < 0.0, "mid-wall is solid");
+        assert!((shell_wall_sdf(-2.0, -2.0, t)).abs() < 1e-6, "inner wall face");
+        assert!(shell_wall_sdf(-5.0, -5.0, t) > 0.0, "deep interior is hollow");
     }
 
     #[test]
@@ -2421,6 +2677,9 @@ mod tests {
                 1,
                 2.0,
                 vec![OpenSurface {
+                    // The box's +Z face is sub 5−1… see `primitive_halfspaces`:
+                    // sub 4 = plane [0,0,1].
+                    branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 4).as_u32(),
                     surface: HalfSpace::Plane { normal: [0.0, 0.0, 1.0], offset: 10.0 },
                     placement: Transform::IDENTITY,
                 }],
@@ -2434,32 +2693,63 @@ mod tests {
         assert!(s([0.0, 0.0, 9.0]) > 0.0, "just under the open top is open");
         assert!(s([9.0, 0.0, 0.0]) < 0.0, "+X side wall is solid");
         assert!(s([0.0, 0.0, -9.0]) < 0.0, "bottom wall is solid (closed face)");
-        // The outer surface is preserved everywhere — including over the
-        // opening, where the rim sits exactly on the original face.
+        // The outer surface is preserved everywhere — and the rim BAND still
+        // ends exactly on the original face plane (the face centre, in
+        // contrast, is now plain void: the material there is gone).
         assert!(s([10.0, 0.0, 0.0]).abs() < 1e-4, "+X outer face preserved");
-        assert!(s([0.0, 0.0, 10.0]).abs() < 1e-4, "top rim on the original face");
+        assert!(s([9.0, 0.0, 10.0]).abs() < 1e-4, "rim band ends on the original face");
+        assert!(s([0.0, 0.0, 10.0]) > 0.0, "open face centre is void");
+        // Retained-boundary semantics: the wall keeps its FULL 2 mm thickness
+        // right up to the opened face — no knife-edge taper at the rim. The
+        // rim band on the open plane is solid from x = 8…10.
+        assert!(s([9.0, 0.0, 9.9]) < 0.0, "rim band keeps full thickness");
+        assert!(s([8.1, 0.0, 9.9]) < 0.0, "rim annulus inner edge at x = 8");
+        assert!(s([7.9, 0.0, 9.9]) > 0.0, "cavity reaches the open plane at x < 8");
     }
 
     #[test]
-    fn open_shell_curved_gate_opens_at_the_curved_face() {
-        // A curved opening: gate = an InfiniteCylinder (axis Y, radius 10), the
-        // lateral face of a cylinder body. `open_shell_sdf` must break the wall
-        // through at the curved surface yet keep it everywhere radially deeper.
-        let t = 2.0;
-        let open = vec![OpenSurface {
-            surface: HalfSpace::InfiniteCylinder { radius: 10.0 },
-            placement: Transform::IDENTITY,
-        }];
-        // 1 mm inside the lateral wall: gate g = 9 − 10 = −1 = d ⇒ e = 0 ⇒ open.
-        assert!(
-            open_shell_sdf(-1.0, t, &open, [9.0, 0.0, 0.0]) > 0.0,
-            "just inside the curved wall is open"
-        );
-        // On the axis (radially far inside): gate ≈ −10 ⇒ e = t ⇒ wall present.
-        assert!(
-            open_shell_sdf(-1.0, t, &open, [0.0, 0.0, 0.0]) < 0.0,
-            "axis interior keeps the wall"
-        );
+    fn open_shell_curved_face_leaves_the_retained_plates() {
+        // Opening the LATERAL face of a cylinder (sub 0, the InfiniteCylinder
+        // wall): the retained boundary is just the two caps, so the shell
+        // degenerates to two 2 mm plates — the whole mid-band is open, the
+        // material near each cap stays.
+        let features = vec![
+            DecodedFeature {
+                id: FeatureId::from_u32(1),
+                name: "Cylinder".to_string(),
+                op: BoolOp::New,
+                blend_radius: 0.0,
+                blend_mode: BlendMode::Fillet,
+                target_ids: vec![],
+                transform: Transform::IDENTITY,
+                node: CsgNode::Leaf {
+                    id: FeatureId::from_u32(1),
+                    primitive: Primitive::Cylinder {
+                        center: [0.0, 0.0, 0.0],
+                        radius: 10.0,
+                        half_height: 10.0,
+                    },
+                },
+            },
+            shell_feature(
+                2,
+                1,
+                2.0,
+                vec![OpenSurface {
+                    branch: BranchId::from_feature_sub(&FeatureId::from_u32(1), 0).as_u32(),
+                    surface: HalfSpace::InfiniteCylinder { radius: 10.0 },
+                    placement: Transform::IDENTITY,
+                }],
+            ),
+        ];
+        let tree = CsgNode::from_decoded(&features);
+        let s = |p: [f32; 3]| tree.sdf(p, EvalMode::Logical);
+
+        assert!(s([9.0, 0.0, 0.0]) > 0.0, "just inside the opened lateral wall is open");
+        assert!(s([0.0, 0.0, 0.0]) > 0.0, "axis mid-height is open (no lateral wall left)");
+        assert!(s([0.0, 9.0, 0.0]) < 0.0, "top cap plate is solid");
+        assert!(s([0.0, -9.0, 0.0]) < 0.0, "bottom cap plate is solid");
+        assert!(s([0.0, 7.0, 0.0]) > 0.0, "below the 2 mm top plate is hollow");
     }
 
     #[test]
@@ -2469,6 +2759,7 @@ mod tests {
         // (Eikonal-normalised), not the unscaled local SDF, so the shell taper
         // keeps its true millimetre width regardless of the body's placement scale.
         let scaled = OpenSurface {
+            branch: 0,
             surface: HalfSpace::Sphere { radius: 1.0 },
             placement: Transform {
                 translate: [0.0, 0.0, 0.0],
@@ -2485,6 +2776,7 @@ mod tests {
         // the ellipsoid's x semi-axis (= 2), proving the gradient normalisation
         // beats the raw local SDF (which would report 1).
         let aniso = OpenSurface {
+            branch: 0,
             surface: HalfSpace::Sphere { radius: 1.0 },
             placement: Transform {
                 translate: [0.0, 0.0, 0.0],

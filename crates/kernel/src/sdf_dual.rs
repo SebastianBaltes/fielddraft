@@ -247,7 +247,7 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             (f.abs() - T::from(*thickness as f64)) * s * T::from(0.2887)
         }
-        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
             // First-order lift: the profile's signed distance and (r,y)-normal
             // are evaluated at the PRIMAL point (the closest-point solve has no
             // generic dual form), then linearised as d ≈ d0 + n·((r,y)−(r0,y0)).
@@ -261,6 +261,8 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
                 segments,
                 *ccw,
                 [r0 as f32, y0 as f32],
+                *extend_start,
+                *extend_end,
             );
             T::from(d0 as f64 + *offset as f64)
                 + (r_t - T::from(r0)) * T::from(n2[0] as f64)
@@ -268,61 +270,6 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
         }
     }
 }
-
-/// Rotate a dual vector `v` by quaternion `q = [x, y, z, w]` (constant), via the
-/// standard `v + 2w(q×v) + 2 q×(q×v)` form. Used by the dual open-shell gate.
-fn quat_rotate_d3(q: [f32; 4], v: [D3; 3]) -> [D3; 3] {
-    let (qx, qy, qz, qw) = (
-        D3::from(q[0] as f64),
-        D3::from(q[1] as f64),
-        D3::from(q[2] as f64),
-        D3::from(q[3] as f64),
-    );
-    let two = D3::from(2.0);
-    let tx = (qy * v[2] - qz * v[1]) * two;
-    let ty = (qz * v[0] - qx * v[2]) * two;
-    let tz = (qx * v[1] - qy * v[0]) * two;
-    [
-        v[0] + qw * tx + (qy * tz - qz * ty),
-        v[1] + qw * ty + (qz * tx - qx * tz),
-        v[2] + qw * tz + (qx * ty - qy * tx),
-    ]
-}
-
-/// Dual-number mirror of [`crate::csg::OpenSurface::eval`]: the outward,
-/// world-distance gate of one open face (DL-75). Maps the dual point world→local
-/// (rigid inverse undoing the placement scale), evaluates the face's analytic
-/// [`HalfSpace`], then Eikonal-normalises by the real world-gradient magnitude (a
-/// scalar, so it scales the dual cleanly).
-fn open_surface_eval_d3(f: &crate::csg::OpenSurface, p: [D3; 3]) -> D3 {
-    let t = &f.placement;
-    let d = [
-        p[0] - D3::from(t.translate[0] as f64),
-        p[1] - D3::from(t.translate[1] as f64),
-        p[2] - D3::from(t.translate[2] as f64),
-    ];
-    let conj = [-t.rotation[0], -t.rotation[1], -t.rotation[2], t.rotation[3]];
-    let r = quat_rotate_d3(conj, d);
-    let lp = [
-        r[0] / D3::from(t.scale[0] as f64),
-        r[1] / D3::from(t.scale[1] as f64),
-        r[2] / D3::from(t.scale[2] as f64),
-    ];
-    let fval = sdf_halfspace_generic(&f.surface, lp);
-    let lpr = [lp[0].re as f32, lp[1].re as f32, lp[2].re as f32];
-    let grad = crate::csg::grad_halfspace(&f.surface, lpr);
-    let gn = ((grad[0] / t.scale[0]).powi(2)
-        + (grad[1] / t.scale[1]).powi(2)
-        + (grad[2] / t.scale[2]).powi(2))
-    .sqrt();
-    if gn > 1e-9 {
-        fval / D3::from(gn as f64)
-    } else {
-        fval
-    }
-}
-
-// ─── Generic helpers ─────────────────────────────────────────────────
 
 /// Generic extrude composition. Mirrors `crate::csg::sdf_extrude`.
 fn sdf_extrude_generic<T: DualNum<f64> + Copy + PartialOrd>(d2: T, z: T, half_h: T) -> T {
@@ -450,15 +397,32 @@ fn eval_primitive_d3(prim: &Primitive, p: [D3; 3]) -> D3 {
 /// Full BVH tree traversal with dual numbers. Mirrors `BoundedCsg::sdf`
 /// in `bvh.rs`, using D3 for exact gradient propagation.
 fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
+    eval_bounded_d3_open(node, p, mode, &crate::csg::OpenBranchSet::EMPTY)
+}
+
+/// [`eval_bounded_d3`] under a set of opened shell branches — the dual mirror
+/// of `BoundedCsg::sdf_open` (retained-boundary shell erosion).
+fn eval_bounded_d3_open(
+    node: &BoundedCsg,
+    p: [D3; 3],
+    mode: EvalMode,
+    open: &crate::csg::OpenBranchSet<'_>,
+) -> D3 {
     match node {
         BoundedCsg::Empty => D3::from(f64::INFINITY),
         BoundedCsg::Leaf {
+            id,
             primitive,
             world_transform,
             ..
         } => {
             let local = world_to_local_d3(world_transform, p);
-            eval_primitive_d3(primitive, local) * D3::from(world_transform.min_scale() as f64)
+            let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                eval_leaf_retained_d3(id, primitive, local, open)
+            } else {
+                eval_primitive_d3(primitive, local)
+            };
+            d * D3::from(world_transform.min_scale() as f64)
         }
         BoundedCsg::Union { left, right, .. } => {
             let p_real = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
@@ -469,29 +433,29 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             } else {
                 (&**right, &**left, dist_left)
             };
-            let d_first = eval_bounded_d3(first_node, p, mode);
-            if second_bound > 0.0 && (d_first.re as f32) < second_bound {
+            let d_first = eval_bounded_d3_open(first_node, p, mode, open);
+            if open.is_empty() && second_bound > 0.0 && (d_first.re as f32) < second_bound {
                 d_first
             } else {
-                let d_second = eval_bounded_d3(second_node, p, mode);
+                let d_second = eval_bounded_d3_open(second_node, p, mode, open);
                 if d_first < d_second { d_first } else { d_second }
             }
         }
         BoundedCsg::Difference { left, right, .. } => {
             let p_real = [p[0].re as f32, p[1].re as f32, p[2].re as f32];
-            let d_left = eval_bounded_d3(left, p, mode);
+            let d_left = eval_bounded_d3_open(left, p, mode, open);
             let dist_right = distance_point_to_aabb(p_real, right.aabb());
-            if dist_right > 0.0 && (d_left.re as f32) >= -dist_right {
+            if open.is_empty() && dist_right > 0.0 && (d_left.re as f32) >= -dist_right {
                 d_left
             } else {
-                let d_right = eval_bounded_d3(right, p, mode);
+                let d_right = eval_bounded_d3_open(right, p, mode, open);
                 let neg_right = -d_right;
                 if d_left > neg_right { d_left } else { neg_right }
             }
         }
         BoundedCsg::Intersection { left, right, .. } => {
-            let da = eval_bounded_d3(left, p, mode);
-            let db = eval_bounded_d3(right, p, mode);
+            let da = eval_bounded_d3_open(left, p, mode, open);
+            let db = eval_bounded_d3_open(right, p, mode, open);
             if da > db { da } else { db }
         }
         BoundedCsg::SmoothUnion {
@@ -501,8 +465,8 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             mode: blend_mode,
             ..
         } => {
-            let da = eval_bounded_d3(left, p, mode);
-            let db = eval_bounded_d3(right, p, mode);
+            let da = eval_bounded_d3_open(left, p, mode, open);
+            let db = eval_bounded_d3_open(right, p, mode, open);
             match mode {
                 EvalMode::Visual => {
                     blend_min_generic(da, db, D3::from(*radius as f64), *blend_mode)
@@ -519,8 +483,8 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             mode: blend_mode,
             ..
         } => {
-            let da = eval_bounded_d3(left, p, mode);
-            let db = eval_bounded_d3(right, p, mode);
+            let da = eval_bounded_d3_open(left, p, mode, open);
+            let db = eval_bounded_d3_open(right, p, mode, open);
             match mode {
                 EvalMode::Visual => {
                     -blend_min_generic(-da, db, D3::from(*radius as f64), *blend_mode)
@@ -535,13 +499,13 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             let angle = D3::from(*rate as f64) * p[1];
             let (s, c) = angle.sin_cos();
             let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
-            eval_bounded_d3(inner, twisted, mode)
+            eval_bounded_d3_open(inner, twisted, mode, open)
         }
         BoundedCsg::Bend { inner, rate, .. } => {
             let angle = D3::from(*rate as f64) * p[0];
             let (s, c) = angle.sin_cos();
             let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-            eval_bounded_d3(inner, bent, mode)
+            eval_bounded_d3_open(inner, bent, mode, open)
         }
         BoundedCsg::Displace {
             inner,
@@ -549,7 +513,7 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             freq,
             ..
         } => {
-            let d = eval_bounded_d3(inner, p, mode);
+            let d = eval_bounded_d3_open(inner, p, mode, open);
             let freq_d = D3::from(*freq as f64);
             let disp = D3::from(*depth as f64)
                 * (p[0] * freq_d).sin()
@@ -558,38 +522,22 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             d - disp
         }
         BoundedCsg::Offset { inner, delta, .. } => {
-            eval_bounded_d3(inner, p, mode) - D3::from(*delta as f64)
+            eval_bounded_d3_open(inner, p, mode, open) - D3::from(*delta as f64)
         }
         BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
-            // Mirror `crate::csg::open_shell_sdf` exactly (DL-75): the inward wall
-            // `max(d, −(d + e))` with local erosion `e = clamp(d − g, 0, t)`,
-            // `g = max` over the open-face gates. The OLD centred `|d| − t` here
-            // was stale (it pre-dated the open-shell rework) and disagreed with
-            // the renderer / `evaluate`, so once the weave stopped skipping shells
-            // the B-Rep's surface_gradient read the wrong sheet.
-            let d = eval_bounded_d3(inner, p, mode);
-            let t = D3::from(*thickness as f64);
-            let e = if open_faces.is_empty() {
-                t
+            // Retained-boundary shell (mirrors `crate::csg::shell_wall_sdf`):
+            // wall = max(d, −(d_ret + t)) with d_ret the inner subtree under
+            // the opened branches — constant wall thickness, crisp rim at the
+            // opened faces.
+            let d = eval_bounded_d3_open(inner, p, mode, open);
+            let d_ret = if open_faces.is_empty() {
+                d
             } else {
-                let mut g = open_surface_eval_d3(&open_faces[0], p);
-                for f in &open_faces[1..] {
-                    let gate = open_surface_eval_d3(f, p);
-                    if gate.re > g.re {
-                        g = gate;
-                    }
-                }
-                // e = clamp(d − g, 0, t).
-                let de = d - g;
-                let lo = if de.re > 0.0 { de } else { D3::from(0.0) };
-                if lo.re < t.re {
-                    lo
-                } else {
-                    t
-                }
+                let merged = crate::csg::OpenBranchSet::push(open, open_faces);
+                eval_bounded_d3_open(inner, p, mode, &merged)
             };
-            // shell = max(d, −(d + e)).
-            let neg = -(d + e);
+            let t = D3::from(*thickness as f64);
+            let neg = -(d_ret + t);
             if d.re >= neg.re {
                 d
             } else {
@@ -599,8 +547,8 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
         BoundedCsg::Morph {
             left, right, t, ..
         } => {
-            let da = eval_bounded_d3(left, p, mode);
-            let db = eval_bounded_d3(right, p, mode);
+            let da = eval_bounded_d3_open(left, p, mode, open);
+            let db = eval_bounded_d3_open(right, p, mode, open);
             let t_d = D3::from(*t as f64);
             (D3::from(1.0) - t_d) * da + t_d * db
         }
@@ -614,8 +562,8 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             is_difference,
             ..
         } => {
-            let da = eval_bounded_d3(left, p, mode);
-            let db_raw = eval_bounded_d3(right, p, mode);
+            let da = eval_bounded_d3_open(left, p, mode, open);
+            let db_raw = eval_bounded_d3_open(right, p, mode, open);
             match mode {
                 EvalMode::Logical => {
                     if *is_difference {
@@ -649,6 +597,7 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             }
         }
         BoundedCsg::Extrude {
+            id,
             sketch,
             half_height,
             world_transform,
@@ -656,12 +605,33 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
         } => {
             let local = world_to_local_d3(world_transform, p);
             let sketch_ref: &crate::sketch2d::BoundedSketch2d = sketch;
-            let d_sketch = eval_sketch_generic(sketch_ref, [local[0], local[1]]);
-            let result =
-                sdf_extrude_generic(d_sketch, local[2], D3::from(*half_height as f64));
+            let result = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                let d2 = eval_sketch_retained_d3(sketch_ref, [local[0], local[1]], 0, &mut |g| {
+                    open.contains_sub(id, g)
+                });
+                let hh = D3::from(*half_height as f64);
+                let mut d = d2;
+                if !open.contains_sub(id, crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB) {
+                    let top = local[2] - hh;
+                    if top.re > d.re {
+                        d = top;
+                    }
+                }
+                if !open.contains_sub(id, crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB) {
+                    let bot = -local[2] - hh;
+                    if bot.re > d.re {
+                        d = bot;
+                    }
+                }
+                d
+            } else {
+                let d_sketch = eval_sketch_generic(sketch_ref, [local[0], local[1]]);
+                sdf_extrude_generic(d_sketch, local[2], D3::from(*half_height as f64))
+            };
             result * D3::from(world_transform.min_scale() as f64)
         }
         BoundedCsg::Revolve {
+            id,
             sketch,
             world_transform,
             ..
@@ -669,8 +639,148 @@ fn eval_bounded_d3(node: &BoundedCsg, p: [D3; 3], mode: EvalMode) -> D3 {
             let local = world_to_local_d3(world_transform, p);
             let r = safe_sqrt(local[0] * local[0] + local[2] * local[2]);
             let sketch_ref: &crate::sketch2d::BoundedSketch2d = sketch;
-            let d = eval_sketch_generic(sketch_ref, [r, local[1]]);
+            let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                eval_sketch_retained_d3(sketch_ref, [r, local[1]], 0, &mut |g| {
+                    open.contains_sub(id, g)
+                })
+            } else {
+                eval_sketch_generic(sketch_ref, [r, local[1]])
+            };
             d * D3::from(world_transform.min_scale() as f64)
+        }
+    }
+}
+
+/// Dual retained-boundary leaf SDF: the max over the primitive's RETAINED
+/// half-space faces (mirrors `crate::csg::leaf_sdf_retained`).
+fn eval_leaf_retained_d3(
+    id: &fielddraft_protocol::FeatureId,
+    prim: &Primitive,
+    p: [D3; 3],
+    open: &crate::csg::OpenBranchSet<'_>,
+) -> D3 {
+    let Some(hs) = crate::csg::primitive_halfspaces(prim) else {
+        return eval_primitive_d3(prim, p);
+    };
+    let lp = [
+        p[0] - D3::from(hs.center[0] as f64),
+        p[1] - D3::from(hs.center[1] as f64),
+        p[2] - D3::from(hs.center[2] as f64),
+    ];
+    let mut best: Option<D3> = None;
+    let mut excluded_any = false;
+    for f in hs.faces() {
+        if open.contains_sub(id, f.sub) {
+            excluded_any = true;
+            continue;
+        }
+        let fp = [
+            lp[0] - D3::from(f.local_offset[0] as f64),
+            lp[1] - D3::from(f.local_offset[1] as f64),
+            lp[2] - D3::from(f.local_offset[2] as f64),
+        ];
+        let v = eval_halfspace_d3(&f.half_space, fp);
+        best = Some(match best {
+            Some(b) if b.re >= v.re => b,
+            _ => v,
+        });
+    }
+    if !excluded_any {
+        return eval_primitive_d3(prim, p);
+    }
+    best.unwrap_or_else(|| D3::from(f64::NEG_INFINITY))
+}
+
+/// Dual SDF of a single analytic half-space face in its centred local frame
+/// (mirrors `crate::csg::sdf_halfspace` for the kinds `primitive_halfspaces`
+/// enumerates).
+fn eval_halfspace_d3(hs: &fielddraft_protocol::HalfSpace, p: [D3; 3]) -> D3 {
+    use fielddraft_protocol::HalfSpace as H;
+    match hs {
+        H::Plane { normal, offset } => {
+            p[0] * D3::from(normal[0] as f64)
+                + p[1] * D3::from(normal[1] as f64)
+                + p[2] * D3::from(normal[2] as f64)
+                - D3::from(*offset as f64)
+        }
+        H::InfiniteCylinder { radius } => {
+            safe_sqrt(p[0] * p[0] + p[2] * p[2]) - D3::from(*radius as f64)
+        }
+        H::Sphere { radius } => {
+            safe_sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) - D3::from(*radius as f64)
+        }
+        H::Cone { half_angle } => {
+            let r = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
+            let (sin_a, cos_a) = (*half_angle as f64).sin_cos();
+            let y_abs = if p[1].re >= 0.0 { p[1] } else { -p[1] };
+            r * D3::from(cos_a) - y_abs * D3::from(sin_a)
+        }
+        H::Torus { major_radius, minor_radius } => {
+            let r_xz = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
+            let q0 = r_xz - D3::from(*major_radius as f64);
+            safe_sqrt(q0 * q0 + p[1] * p[1]) - D3::from(*minor_radius as f64)
+        }
+        // Never enumerated by `primitive_halfspaces`; fall back to a constant.
+        _ => D3::from(f64::INFINITY),
+    }
+}
+
+/// Dual retained-boundary sketch SDF: distance over retained boundary groups,
+/// sign from the full tree (mirrors `BoundedSketch2d::sdf_retained`). Branch
+/// ids are global across the sketch booleans, advancing by `edge_count`.
+fn eval_sketch_retained_d3(
+    sketch: &crate::sketch2d::BoundedSketch2d,
+    p: [D3; 2],
+    base: u32,
+    is_excluded: &mut dyn FnMut(u32) -> bool,
+) -> D3 {
+    use crate::sketch2d::BoundedSketch2d as B;
+    match sketch {
+        B::Empty => D3::from(f64::INFINITY),
+        B::Prim { primitive, .. } => match primitive {
+            Sketch2dPrimitive::Path { segments, .. } => {
+                // Retained field = NEGATED unsigned distance (continuous
+                // through the opening; see `Sketch2dPrimitive::sdf_retained`).
+                let mut best: Option<D3> = None;
+                let mut excluded_any = false;
+                let groups = fielddraft_protocol::sketch2d::segment_groups(segments);
+                for (seg, g) in segments.iter().zip(groups) {
+                    if is_excluded(base + g) {
+                        excluded_any = true;
+                        continue;
+                    }
+                    let v = sketch_segment_distance_generic(seg, p);
+                    best = Some(match best {
+                        Some(b) if b.re <= v.re => b,
+                        _ => v,
+                    });
+                }
+                if !excluded_any {
+                    return sdf_primitive2d_generic(primitive, p);
+                }
+                -best.unwrap_or_else(|| D3::from(f64::INFINITY))
+            }
+            _ => sdf_primitive2d_generic(primitive, p),
+        },
+        B::Union { left, right, .. } => {
+            let dl = eval_sketch_retained_d3(left, p, base, is_excluded);
+            let dr =
+                eval_sketch_retained_d3(right, p, base + left.edge_count(), is_excluded);
+            if dl.re <= dr.re { dl } else { dr }
+        }
+        B::Difference { left, right, .. } => {
+            let dl = eval_sketch_retained_d3(left, p, base, is_excluded);
+            let dr =
+                -eval_sketch_retained_d3(right, p, base + left.edge_count(), is_excluded);
+            if dl.re >= dr.re { dl } else { dr }
+        }
+        B::Intersection { left, right, .. } => {
+            let dl = eval_sketch_retained_d3(left, p, base, is_excluded);
+            let dr = eval_sketch_retained_d3(right, p, base + left.edge_count(), is_excluded);
+            if dl.re >= dr.re { dl } else { dr }
+        }
+        B::Offset { inner, distance, .. } => {
+            eval_sketch_retained_d3(inner, p, base, is_excluded) - D3::from(*distance as f64)
         }
     }
 }

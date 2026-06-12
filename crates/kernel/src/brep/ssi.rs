@@ -274,21 +274,19 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                 }),
             });
         }
-        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
             let (off, ccw) = (*offset, *ccw);
+            let (ext_start, ext_end) = (*extend_start, *extend_end);
             // Offset-corrected point on one segment: p(t) − offset·n_out(t),
-            // with the tangent from a central difference (robust for every
-            // segment kind; the exact derivative is not exposed).
+            // with the EXACT closed-form tangent. (A central difference is
+            // noise here: adaptive spline lowering emits millimetre-short
+            // segments whose f32 point differences corrupt the normal by
+            // ~1e-3 — enough to push bisected roots off the overlap box.)
             let offset_pt = move |seg: &'a fielddraft_protocol::sketch2d::SketchSegment,
                                   tt: f32|
                   -> [f32; 2] {
                 let p = seg.point_at(tt);
-                let h = 1e-3f32;
-                let p0 = seg.point_at((tt - h).max(0.0));
-                let p1 = seg.point_at((tt + h).min(1.0));
-                let (dx, dy) = (p1[0] - p0[0], p1[1] - p0[1]);
-                let len = (dx * dx + dy * dy).sqrt().max(1e-12);
-                let tan = [dx / len, dy / len];
+                let tan = seg.tangent_at(tt);
                 let n = if ccw { [tan[1], -tan[0]] } else { [-tan[1], tan[0]] };
                 [p[0] - off * n[0], p[1] - off * n[1]]
             };
@@ -298,37 +296,74 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                     eval: Box::new(move |s| to_world(offset_pt(seg, s))),
                 });
             }
-            // Tangent-extension rays (path-backward from the first point,
-            // path-forward from the last), offset applied with the ray's
-            // constant normal. Length = the local overlap diagonal.
+            // Chain-end pieces. An EXTENDED end contributes its tangent ray
+            // (path-backward from the first point, path-forward from the
+            // last), offset applied with the ray's constant normal; length =
+            // the local overlap diagonal. A STADIUM end (adjacent group
+            // opened) contributes the endpoint ARC instead: the offset level
+            // set rounds the chain end at radius |off| — that arc is where
+            // the opened face's rim root lives.
             if let (Some(first), Some(last)) = (segments.first(), segments.last()) {
                 let pad = local_diag + 4.0 * off.abs();
                 let a0 = first.start_point();
                 let ta0 = first.tangent_at_start();
                 let n0 = if ccw { [ta0[1], -ta0[0]] } else { [-ta0[1], ta0[0]] };
-                pieces.push(ProfilePiece {
-                    samples: 96,
-                    eval: Box::new(move |s| {
-                        let u = s * pad;
-                        to_world([
-                            a0[0] - u * ta0[0] - off * n0[0],
-                            a0[1] - u * ta0[1] - off * n0[1],
-                        ])
-                    }),
-                });
+                if ext_start {
+                    pieces.push(ProfilePiece {
+                        samples: 96,
+                        eval: Box::new(move |s| {
+                            let u = s * pad;
+                            to_world([
+                                a0[0] - u * ta0[0] - off * n0[0],
+                                a0[1] - u * ta0[1] - off * n0[1],
+                            ])
+                        }),
+                    });
+                } else if off.abs() > 1e-6 {
+                    // Stadium cap arc, quarter sweep: φ=0 → the offset
+                    // curve's own start (−n0), φ=π/2 → the backward cap apex
+                    // (−ta0). Beyond π/2 the closest-point sign flips and the
+                    // carrier has no surface, so sampling further would
+                    // manufacture phantom roots.
+                    pieces.push(ProfilePiece {
+                        samples: 96,
+                        eval: Box::new(move |s| {
+                            let phi = s * std::f32::consts::FRAC_PI_2;
+                            let (sin_p, cos_p) = phi.sin_cos();
+                            to_world([
+                                a0[0] + off * (-n0[0] * cos_p - ta0[0] * sin_p),
+                                a0[1] + off * (-n0[1] * cos_p - ta0[1] * sin_p),
+                            ])
+                        }),
+                    });
+                }
                 let b0 = last.end_point();
                 let tb0 = last.tangent_at_end();
                 let n1 = if ccw { [tb0[1], -tb0[0]] } else { [-tb0[1], tb0[0]] };
-                pieces.push(ProfilePiece {
-                    samples: 96,
-                    eval: Box::new(move |s| {
-                        let u = s * pad;
-                        to_world([
-                            b0[0] + u * tb0[0] - off * n1[0],
-                            b0[1] + u * tb0[1] - off * n1[1],
-                        ])
-                    }),
-                });
+                if ext_end {
+                    pieces.push(ProfilePiece {
+                        samples: 96,
+                        eval: Box::new(move |s| {
+                            let u = s * pad;
+                            to_world([
+                                b0[0] + u * tb0[0] - off * n1[0],
+                                b0[1] + u * tb0[1] - off * n1[1],
+                            ])
+                        }),
+                    });
+                } else if off.abs() > 1e-6 {
+                    pieces.push(ProfilePiece {
+                        samples: 96,
+                        eval: Box::new(move |s| {
+                            let phi = s * std::f32::consts::FRAC_PI_2;
+                            let (sin_p, cos_p) = phi.sin_cos();
+                            to_world([
+                                b0[0] + off * (-n1[0] * cos_p + tb0[0] * sin_p),
+                                b0[1] + off * (-n1[1] * cos_p + tb0[1] * sin_p),
+                            ])
+                        }),
+                    });
+                }
             }
         }
         _ => return None,

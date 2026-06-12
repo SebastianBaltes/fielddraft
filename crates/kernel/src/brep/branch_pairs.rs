@@ -247,14 +247,18 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
         // A Shell duplicates every wrapped branch as its inward-offset inner
         // wall (the cavity boundary, [`BranchId::inner_wall`]) — the same ids
         // the registry's DL-75 entries and the SDF contributor tagging use.
-        // Inner walls of opened faces (and of zero-area carriers like a
-        // revolve's on-axis group) have no real surface; their seeds simply
-        // land inactive and are dropped, so enumerating them is sound.
-        BoundedCsg::Shell { inner, .. } => {
+        // OPENED faces are skipped: the retained-boundary erosion passes the
+        // cavity straight through them, so they have no inner wall (and the
+        // registry deliberately registers none — enumerating one would bail
+        // the body to the octree over a missing carrier). Zero-area carriers
+        // (a revolve's on-axis group) still enumerate; their seeds simply
+        // land inactive and are dropped.
+        BoundedCsg::Shell { inner, open_faces, .. } => {
             let before = out.len();
             walk(inner, out);
             let walls: Vec<Branch> = out[before..]
                 .iter()
+                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u32()))
                 .map(|b| Branch { id: b.id.inner_wall(), ..*b })
                 .collect();
             out.extend(walls);
@@ -366,10 +370,11 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
         // annulus meets the cavity wall). A branch paired with its OWN inner
         // wall is a constant-offset pair with no intersection; SSI rejects it
         // with zero components, so it is not special-cased here.
-        BoundedCsg::Shell { inner, .. } => {
+        BoundedCsg::Shell { inner, open_faces, .. } => {
             let bs = collect_pairs(inner, out);
             let walls: Vec<Branch> = bs
                 .iter()
+                .filter(|b| !open_faces.iter().any(|f| f.branch == b.id.as_u32()))
                 .map(|b| Branch { id: b.id.inner_wall(), ..*b })
                 .collect();
             let origin = |x: &Branch, y: &Branch| {

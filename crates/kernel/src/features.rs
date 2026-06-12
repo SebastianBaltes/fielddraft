@@ -251,7 +251,11 @@ impl<'a> Context<'a> {
                 let world = compose_placement(placement, transform);
                 let owner = FeatureId::from_u32(brep.faces[i].branch_id.feature_id());
                 return Some((
-                    crate::csg::OpenSurface { surface: surface.clone(), placement: world },
+                    crate::csg::OpenSurface {
+                        branch: brep.faces[i].branch_id.as_u32(),
+                        surface: surface.clone(),
+                        placement: world,
+                    },
                     owner,
                 ));
             }
@@ -8175,6 +8179,12 @@ mod tests {
         assert!(d([0.0, 0.0, 0.0]) > 0.0, "cavity carved out: {}", d([0.0, 0.0, 0.0]));
         assert!(d([1.0, 0.0, 0.0]) > 0.0, "no phantom axis rod: {}", d([1.0, 0.0, 0.0]));
         assert!(d([0.0, 67.0, 0.0]) > 0.0, "top rim open: {}", d([0.0, 67.0, 0.0]));
+        // Retained-boundary erosion: the wall keeps its FULL 2 mm thickness up
+        // to the mouth (no knife-edge taper — the user-visible "Singularität
+        // zum Deckel"). 0.5 mm inside the outer flare at y = 67.5 is solid;
+        // radially well inside the inner wall it is open.
+        assert!(d([44.2, 67.5, 0.0]) < 0.0, "rim band solid: {}", d([44.2, 67.5, 0.0]));
+        assert!(d([40.0, 67.5, 0.0]) > 0.0, "mouth open inside rim: {}", d([40.0, 67.5, 0.0]));
         assert!(d([49.0, -10.0, 0.0]) < 0.0, "belly wall solid: {}", d([49.0, -10.0, 0.0]));
         assert!(d([0.0, -69.0, 0.0]) < 0.0, "bottom closed: {}", d([0.0, -69.0, 0.0]));
         assert!(d([60.0, 0.0, 0.0]) > 0.0, "outside: {}", d([60.0, 0.0, 0.0]));
@@ -8250,7 +8260,9 @@ mod tests {
         let mut profile_carriers = 0;
         let mut inner_profile_carriers = 0;
         for (key, (hs, xf)) in map.iter() {
-            let fielddraft_protocol::HalfSpace::RevolvedProfile { segments, ccw, offset } = hs
+            let fielddraft_protocol::HalfSpace::RevolvedProfile {
+                segments, ccw, offset, extend_start, extend_end,
+            } = hs
             else {
                 continue;
             };
@@ -8270,7 +8282,7 @@ mod tests {
                     // normal so the point sits on the offset surface.
                     let (_, n2) =
                         fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
-                            segments, *ccw, p2,
+                            segments, *ccw, p2, *extend_start, *extend_end,
                         );
                     let q2 = [p2[0] - offset * n2[0], p2[1] - offset * n2[1]];
                     for theta in [0.0f32, 1.3, 2.9] {
@@ -8319,9 +8331,10 @@ mod tests {
     /// the whole ring. The octree route's rim jitter (r wandering 44.1…45
     /// through the blind `edge_residual`) cannot pass the 0.05 mm bound here.
     ///
-    /// The OPENED vase (taper erosion at the mouth) is gated to the octree
-    /// for now — asserted at the end — because the constant-offset inner-wall
-    /// carrier does not model the flare wedge near the opening.
+    /// The OPENED vase weaves over the seed path too (retained-boundary shell
+    /// erosion): constant 2 mm wall up to the mouth, where the lid annulus
+    /// meets the inner wall in the inner rim circle (r ≈ 42.58: 2 mm
+    /// perpendicular to the tilted spline wall = 2/sin α in the rim plane).
     #[test]
     fn vase_seed_weave_yields_exact_circle_edges() {
         let registry = FeatureRegistry::with_builtins();
@@ -8390,16 +8403,51 @@ mod tests {
             "cavity floor ring near y=−68 missing: {rings:?}"
         );
 
-        // The OPENED vase falls back to the octree (taper carrier missing).
+        // The OPENED vase weaves over the seed path as well — exact rings,
+        // including the NEW inner rim circle where the lid annulus meets the
+        // inner wall (retained-boundary erosion, no knife edge).
         let mut doc2 = empty_ctx();
         let mut ctx2 = Context::new(&mut doc2);
         regen_shelled_vase(&registry, &mut ctx2);
         let parts2 = crate::body::partition(&ctx2.features);
         let bounded2 =
             crate::body::build_bounded_for_body(&ctx2.features, &parts2[0].feature_indices);
+        let brep2 = crate::brep::seed_weaver::weave_branch_seeds(&bounded2)
+            .expect("the opened vase must weave via the analytic seed path");
+        assert!(brep2.validate().is_ok(), "opened-vase B-Rep must be well-formed");
+
+        let mut rings2: Vec<(f32, f32)> = Vec::new();
+        for e in &brep2.edges {
+            let samples = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            assert!(samples.len() >= 8, "ring edge has a dense sampling");
+            let (mut rmin, mut rmax) = (f32::INFINITY, f32::NEG_INFINITY);
+            let (mut ymin, mut ymax) = (f32::INFINITY, f32::NEG_INFINITY);
+            for p in &samples {
+                let r = ((p[0] * p[0] + p[2] * p[2]) as f32).sqrt();
+                rmin = rmin.min(r);
+                rmax = rmax.max(r);
+                ymin = ymin.min(p[1] as f32);
+                ymax = ymax.max(p[1] as f32);
+            }
+            assert!(
+                rmax - rmin < 0.05 && ymax - ymin < 0.05,
+                "opened-vase edge is not a clean circle: r ∈ [{rmin}, {rmax}], y ∈ [{ymin}, {ymax}]"
+            );
+            rings2.push((0.5 * (ymin + ymax), 0.5 * (rmin + rmax)));
+        }
+        let has_ring2 = |y: f32, r: f32, tol: f32| {
+            rings2.iter().any(|&(ry, rr)| (ry - y).abs() < tol && (rr - r).abs() < tol)
+        };
+        assert!(has_ring2(68.0, 45.0, 0.05), "outer rim circle r=45 missing: {rings2:?}");
+        // Inner rim: the 2 mm wall measured PERPENDICULAR to the tilted
+        // spline wall — in the rim plane that is 2/sin(α) ≈ 2.42 mm inward
+        // of r=45 for this profile's start tangent.
+        assert!(has_ring2(68.0, 42.58, 0.05), "inner rim circle r≈42.58 missing: {rings2:?}");
+        assert!(has_ring2(-70.0, 26.0, 0.05), "foot circle r=26 missing: {rings2:?}");
+        assert!(has_ring2(-62.0, 30.0, 0.05), "knick ring r=30 missing: {rings2:?}");
         assert!(
-            crate::brep::seed_weaver::weave_branch_seeds(&bounded2).is_none(),
-            "the opened vase must take the octree route until taper carriers exist"
+            rings2.iter().any(|&(ry, rr)| (ry + 68.0).abs() < 0.1 && (20.0..29.0).contains(&rr)),
+            "cavity floor ring near y=−68 missing: {rings2:?}"
         );
     }
 

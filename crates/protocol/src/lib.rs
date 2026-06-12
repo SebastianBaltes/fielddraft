@@ -343,15 +343,25 @@ pub enum HalfSpace {
     Gyroid { cell_size: f32, thickness: f32 },
     /// One G1 group of a revolved sketch-path profile: `segments` live in the
     /// profile's `(r, y)` half-plane and are revolved about the local y-axis.
-    /// The carrier extends past the chain ends along the end tangents (see
-    /// [`sketch2d::group_signed_distance_and_normal`]). The surface is the
-    /// zero set of `signed_profile_distance + offset` — the Shell inner wall
-    /// reuses the same segments with `offset = thickness`. `ccw` is the
-    /// owning closed path's winding (fixes the material side of the sign).
+    /// The surface is the zero set of `signed_profile_distance + offset` —
+    /// the Shell inner wall reuses the same segments with `offset =
+    /// thickness`. `ccw` is the owning closed path's winding (fixes the
+    /// material side of the sign).
+    ///
+    /// `extend_start`/`extend_end` select the carrier shape past each chain
+    /// end (see [`sketch2d::group_signed_distance_and_normal`]): `true` is
+    /// the tangent-ray extension — the smooth field across a shared corner
+    /// with the ADJACENT group, giving the crisp miter edge between the two
+    /// faces. `false` is the plain closest-point field, whose offset level
+    /// set rounds the endpoint with an arc ("stadium") — exactly the surface
+    /// the retained-boundary shell erosion produces where the neighbouring
+    /// group was OPENED, e.g. a vase's inner wall meeting the opened mouth.
     RevolvedProfile {
         segments: Vec<sketch2d::SketchSegment>,
         ccw: bool,
         offset: f32,
+        extend_start: bool,
+        extend_end: bool,
     },
 }
 

@@ -13,7 +13,7 @@
 use fielddraft_protocol::{BakedVolume, HalfSpace, Primitive, Transform};
 
 use crate::bvh::BoundedCsg;
-use crate::csg::{Aabb, BlendMode, OpenSurface};
+use crate::csg::{Aabb, BlendMode};
 use crate::sketch2d::{BoundedSketch2d, Sketch2dPrimitive, SketchSegment};
 use crate::quat_rotate;
 
@@ -36,6 +36,7 @@ pub const OP_PRIM_CONST: u32     = 0x09; // +1:  constant distance
 pub const OP_PRIM_GYROID: u32    = 0x0A; // +10: transform(8) + cell_size(1) + thickness(1)
 pub const OP_PRIM_THREAD: u32    = 0x0B; // +12: transform(8) + nom_r + pitch + depth + half_h
 pub const OP_PRIM_TEX3D: u32     = 0x0C; // +15: tex_idx(1) + transform(8) + aabb_min(3) + aabb_max(3)
+pub const OP_PRIM_HALFSPACE: u32 = 0x0D; // +15: kind(1) + transform(10) + params(4) — one analytic half-space face (retained-boundary shell)
 
 // 2D primitives — evaluate at (point.x, point.y), push onto stack.
 pub const OP_PRIM2D_CIRCLE: u32  = 0x10; // +3: center(2) + radius(1)
@@ -52,12 +53,13 @@ pub const OP_SMOOTH_UNION: u32   = 0x23; // +2: radius(1) + mode(1)
 pub const OP_SMOOTH_DIFF: u32    = 0x24; // +2: radius(1) + mode(1)
 
 // Unary / compositor operators.
-pub const OP_SHELL: u32          = 0x29; // +1: thickness
+pub const OP_SHELL: u32          = 0x29; // +1: thickness — pops 1, closed inward shell max(d, −(d+t))
 pub const OP_MORPH: u32          = 0x2A; // +1: t — pops 2, pushes lerp
 pub const OP_DISPLACE_VAL: u32   = 0x2B; // +2: depth + freq — pops 1, uses point
-pub const OP_EXTRUDE: u32        = 0x2C; // +2: half_height + scale — pops d2d, uses point.z
+pub const OP_EXTRUDE: u32        = 0x2C; // +3: half_height + scale + cap_mask(1=top,2=bottom retained) — pops d2d, uses point.z
 pub const OP_REVOLVE_SCALE: u32  = 0x2D; // +1: scale — pops d2d, multiplies by scale
 pub const OP_OFFSET_2D: u32      = 0x2E; // +1: distance — pops 1, pushes d - distance
+pub const OP_NEG: u32            = 0x2F; // +0: pops 1, pushes −v — retained path fields are −unsigned distance
 
 // Domain warps — modify the point register.
 pub const OP_WARP_PUSH: u32      = 0x30; // +0: save point to point stack
@@ -103,7 +105,7 @@ pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
         opcodes: Vec::with_capacity(256),
         volumes: Vec::new(),
     };
-    emit_node(node, &mut ctx);
+    emit_node(node, &mut ctx, &crate::csg::OpenBranchSet::EMPTY);
     ctx.opcodes.push(f32::from_bits(OP_END));
     CompiledSdf {
         opcodes: ctx.opcodes,
@@ -123,7 +125,7 @@ fn blend_mode_f32(m: BlendMode) -> f32 {
     }
 }
 
-fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
+fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBranchSet<'_>) {
     let out = &mut ctx.opcodes;
     match node {
         BoundedCsg::Empty => {
@@ -131,25 +133,30 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(f32::MAX);
         }
         BoundedCsg::Leaf {
+            id,
             primitive,
             world_transform,
             ..
         } => {
-            emit_leaf_primitive(primitive, world_transform, ctx);
+            if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                emit_leaf_retained(id, primitive, world_transform, ctx, open);
+            } else {
+                emit_leaf_primitive(primitive, world_transform, ctx);
+            }
         }
         BoundedCsg::Union { left, right, .. } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             ctx.opcodes.push(op(OP_UNION));
         }
         BoundedCsg::Difference { left, right, .. } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             ctx.opcodes.push(op(OP_DIFFERENCE));
         }
         BoundedCsg::Intersection { left, right, .. } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             ctx.opcodes.push(op(OP_INTERSECT));
         }
         BoundedCsg::SmoothUnion {
@@ -159,8 +166,8 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             mode,
             ..
         } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_SMOOTH_UNION));
             out.push(*radius);
@@ -173,8 +180,8 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             mode,
             ..
         } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_SMOOTH_DIFF));
             out.push(*radius);
@@ -184,20 +191,20 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(op(OP_WARP_PUSH));
             out.push(op(OP_WARP_TWIST));
             out.push(*rate);
-            emit_node(inner, ctx);
+            emit_node(inner, ctx, open);
             ctx.opcodes.push(op(OP_WARP_POP));
         }
         BoundedCsg::Bend { inner, rate, .. } => {
             out.push(op(OP_WARP_PUSH));
             out.push(op(OP_WARP_BEND));
             out.push(*rate);
-            emit_node(inner, ctx);
+            emit_node(inner, ctx, open);
             ctx.opcodes.push(op(OP_WARP_POP));
         }
         BoundedCsg::Displace {
             inner, depth, freq, ..
         } => {
-            emit_node(inner, ctx);
+            emit_node(inner, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_DISPLACE_VAL));
             out.push(*depth);
@@ -206,7 +213,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
         BoundedCsg::Offset { inner, delta, .. } => {
             // `Offset` is `child − δ`. `OP_OFFSET_2D` is dimension-agnostic on the
             // distance stack (pops 1, pushes `d − δ`), so it serves the 3D node too.
-            emit_node(inner, ctx);
+            emit_node(inner, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_OFFSET_2D));
             out.push(*delta);
@@ -217,24 +224,31 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             open_faces,
             ..
         } => {
-            emit_node(inner, ctx);
-            let out = &mut ctx.opcodes;
-            out.push(op(OP_SHELL));
-            out.push(*thickness);
-            // Variable-length operand: open-face count, then per face a record of
-            // `kind(1) + transform(10) + params`. Zero faces ⇒ a closed inward
-            // shell. The VM maps world→local via the transform and evaluates the
-            // face's analytic half-space SDF, so curved openings work too.
-            out.push(open_faces.len() as f32);
-            for f in open_faces {
-                emit_open_surface(f, out);
+            // Retained-boundary shell: wall = max(d, −(d_ret + t)). The closed
+            // case folds to the single-subtree OP_SHELL; an opened shell
+            // compiles the inner subtree TWICE — the second copy under the
+            // opened branches (its leaves emit retained-boundary fields) —
+            // and combines with the existing stack ops:
+            //   push d; push d_ret; OFFSET(−t) → d_ret + t; DIFFERENCE → wall.
+            emit_node(inner, ctx, open);
+            if open_faces.is_empty() {
+                let out = &mut ctx.opcodes;
+                out.push(op(OP_SHELL));
+                out.push(*thickness);
+            } else {
+                let merged = crate::csg::OpenBranchSet::push(open, open_faces);
+                emit_node(inner, ctx, &merged);
+                let out = &mut ctx.opcodes;
+                out.push(op(OP_OFFSET_2D));
+                out.push(-*thickness);
+                out.push(op(OP_DIFFERENCE));
             }
         }
         BoundedCsg::Morph {
             left, right, t, ..
         } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_MORPH));
             out.push(*t);
@@ -249,8 +263,8 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             is_difference,
             ..
         } => {
-            emit_node(left, ctx);
-            emit_node(right, ctx);
+            emit_node(left, ctx, open);
+            emit_node(right, ctx, open);
             let out = &mut ctx.opcodes;
             out.push(op(OP_MASKED_BLEND));
             // Count-prefixed polyline: n then n×[x,y,z]. A 1-point
@@ -265,28 +279,46 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx) {
             out.push(if *is_difference { 1.0 } else { 0.0 });
         }
         BoundedCsg::Extrude {
+            id,
             sketch,
             half_height,
             world_transform,
             ..
         } => {
+            let excl = open
+                .has_feature(id.as_u32_or_root().unwrap_or(0))
+                .then_some((id, open));
+            let mut cap_mask = 3.0_f32;
+            if let Some((id, open)) = excl {
+                if open.contains_sub(id, crate::csg::BranchId::EXTRUDE_CAP_TOP_SUB) {
+                    cap_mask -= 1.0;
+                }
+                if open.contains_sub(id, crate::csg::BranchId::EXTRUDE_CAP_BOTTOM_SUB) {
+                    cap_mask -= 2.0;
+                }
+            }
             out.push(op(OP_WARP_PUSH));
             emit_warp_transform(world_transform, out);
-            emit_sketch(sketch, out);
+            emit_sketch(sketch, out, 0, excl);
             out.push(op(OP_EXTRUDE));
             out.push(*half_height);
             out.push(world_transform.min_scale());
+            out.push(cap_mask);
             out.push(op(OP_WARP_POP));
         }
         BoundedCsg::Revolve {
+            id,
             sketch,
             world_transform,
             ..
         } => {
+            let excl = open
+                .has_feature(id.as_u32_or_root().unwrap_or(0))
+                .then_some((id, open));
             out.push(op(OP_WARP_PUSH));
             emit_warp_transform(world_transform, out);
             out.push(op(OP_WARP_REVOLVE));
-            emit_sketch(sketch, out);
+            emit_sketch(sketch, out, 0, excl);
             out.push(op(OP_REVOLVE_SCALE));
             out.push(world_transform.min_scale());
             out.push(op(OP_WARP_POP));
@@ -332,30 +364,76 @@ pub(crate) const OPEN_KIND_CYLINDER: f32 = 1.0;
 pub(crate) const OPEN_KIND_SPHERE: f32 = 2.0;
 pub(crate) const OPEN_KIND_CONE: f32 = 3.0;
 pub(crate) const OPEN_KIND_TORUS: f32 = 4.0;
-/// A face with no openable closed-form gate (TPMS) — keeps the wall closed.
+/// A non-analytic surface (TPMS / profile) — never emitted as a retained face.
 pub(crate) const OPEN_KIND_NEVER: f32 = 5.0;
-/// Floats per serialised open-face record (kind + transform + 4 params).
-pub(crate) const OPEN_REC_LEN: usize = 15;
 
-/// Serialise one [`OpenSurface`] as a fixed-stride `OPEN_REC_LEN` record.
-fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
-    let kind = match &f.surface {
+/// Retained-boundary leaf: `max` over the primitive's half-space faces with
+/// the opened ones removed (the GPU mirror of `csg::leaf_sdf_retained`). Each
+/// retained face is one `OP_PRIM_HALFSPACE` record folded with
+/// `OP_INTERSECT`; an all-faces-open leaf degenerates to `−∞` (no retained
+/// boundary → everything is cavity).
+fn emit_leaf_retained(
+    id: &fielddraft_protocol::FeatureId,
+    prim: &Primitive,
+    world_transform: &Transform,
+    ctx: &mut CompileCtx,
+    open: &crate::csg::OpenBranchSet<'_>,
+) {
+    let Some(hs) = crate::csg::primitive_halfspaces(prim) else {
+        // No half-space split (Sphere-as-mesh etc. never reach here; TPMS /
+        // imported meshes have nothing to retain) — exclusion is ignored.
+        emit_leaf_primitive(prim, world_transform, ctx);
+        return;
+    };
+    let retained: Vec<_> =
+        hs.faces().iter().filter(|f| !open.contains_sub(id, f.sub)).collect();
+    if retained.len() == hs.faces().len() {
+        emit_leaf_primitive(prim, world_transform, ctx);
+        return;
+    }
+    let out = &mut ctx.opcodes;
+    if retained.is_empty() {
+        out.push(op(OP_PRIM_CONST));
+        out.push(f32::NEG_INFINITY);
+        return;
+    }
+    for (i, f) in retained.iter().enumerate() {
+        // Face frame: world ∘ translate(center + local_offset), the same DL-20
+        // fold the weaver uses.
+        let translate = [
+            hs.center[0] + f.local_offset[0],
+            hs.center[1] + f.local_offset[1],
+            hs.center[2] + f.local_offset[2],
+        ];
+        let face_xf = crate::compose_transforms(
+            world_transform,
+            &Transform { translate, ..Transform::IDENTITY },
+        );
+        emit_halfspace_record(&f.half_space, &face_xf, out);
+        if i > 0 {
+            out.push(op(OP_INTERSECT));
+        }
+    }
+}
+
+/// One `OP_PRIM_HALFSPACE` record: kind + transform(10) + params(4).
+fn emit_halfspace_record(surface: &HalfSpace, placement: &Transform, out: &mut Vec<f32>) {
+    let kind = match surface {
         HalfSpace::Plane { .. } => OPEN_KIND_PLANE,
         HalfSpace::InfiniteCylinder { .. } => OPEN_KIND_CYLINDER,
         HalfSpace::Sphere { .. } => OPEN_KIND_SPHERE,
         HalfSpace::Cone { .. } => OPEN_KIND_CONE,
         HalfSpace::Torus { .. } => OPEN_KIND_TORUS,
         HalfSpace::Gyroid { .. } => OPEN_KIND_NEVER,
-        // No fixed-stride GPU record can carry profile segments; the gate
-        // stays closed (conservative — the wall is rendered solid).
         HalfSpace::RevolvedProfile { .. } => OPEN_KIND_NEVER,
     };
+    out.push(op(OP_PRIM_HALFSPACE));
     out.push(kind);
-    out.extend_from_slice(&f.placement.translate);
-    out.extend_from_slice(&f.placement.rotation);
-    out.extend_from_slice(&f.placement.scale);
-    // Four param slots, zero-padded; layout matches `fd_open_gate`.
-    let params = match &f.surface {
+    out.extend_from_slice(&placement.translate);
+    out.extend_from_slice(&placement.rotation);
+    out.extend_from_slice(&placement.scale);
+    // Four param slots, zero-padded; layout matches the WGSL mirror.
+    let params = match surface {
         HalfSpace::Plane { normal, offset } => [normal[0], normal[1], normal[2], *offset],
         HalfSpace::InfiniteCylinder { radius } | HalfSpace::Sphere { radius } => {
             [*radius, 0.0, 0.0, 0.0]
@@ -369,70 +447,33 @@ fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
     out.extend_from_slice(&params);
 }
 
-/// Outward-oriented open-face gate `g(local)` in the face's local frame, mirroring
-/// `csg::sdf_halfspace`/`grad_halfspace` and `web/src/sdfRenderer.ts`'s
-/// `fd_open_gate`. Returns a *world* Euclidean distance: the local SDF is
-/// Eikonal-normalised by `|S⁻¹∇f|` (`scale` = the placement scale) so a scaled
-/// body placement does not stretch the shell taper. Exact for uniform scale.
-fn open_gate_local(local: [f32; 3], kind: f32, p: [f32; 4], scale: [f32; 3]) -> f32 {
-    // (f, grad) = local SDF value and its analytic gradient (unit-norm where smooth).
-    let (f, grad) = if kind < 0.5 {
+/// Raw local SDF of one analytic half-space face, mirroring
+/// `csg::sdf_halfspace` and the WGSL `fd_halfspace_local`. The caller scales
+/// by the placement's min-scale, the same convention as every other leaf
+/// primitive opcode.
+fn halfspace_local(local: [f32; 3], kind: f32, p: [f32; 4]) -> f32 {
+    if kind < 0.5 {
         // Plane: normal = (p0, p1, p2), offset = p3.
-        (
-            local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3],
-            [p[0], p[1], p[2]],
-        )
+        local[0] * p[0] + local[1] * p[1] + local[2] * p[2] - p[3]
     } else if kind < 1.5 {
         // Infinite cylinder, radius p0, axis Y.
-        let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
-        let grad = if rho > 1e-9 {
-            [local[0] / rho, 0.0, local[2] / rho]
-        } else {
-            [0.0, 0.0, 0.0]
-        };
-        (rho - p[0], grad)
+        (local[0] * local[0] + local[2] * local[2]).sqrt() - p[0]
     } else if kind < 2.5 {
         // Sphere, radius p0.
-        let len = (local[0] * local[0] + local[1] * local[1] + local[2] * local[2]).sqrt();
-        let grad = if len > 1e-9 {
-            [local[0] / len, local[1] / len, local[2] / len]
-        } else {
-            [0.0, 0.0, 0.0]
-        };
-        (len - p[0], grad)
+        (local[0] * local[0] + local[1] * local[1] + local[2] * local[2]).sqrt() - p[0]
     } else if kind < 3.5 {
         // Cone, half-angle p0, apex at origin, axis Y.
         let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
         let (sin_a, cos_a) = p[0].sin_cos();
-        let grad = if rho > 1e-9 {
-            [cos_a * local[0] / rho, -local[1].signum() * sin_a, cos_a * local[2] / rho]
-        } else {
-            [0.0, -local[1].signum() * sin_a, 0.0]
-        };
-        (rho * cos_a - local[1].abs() * sin_a, grad)
+        rho * cos_a - local[1].abs() * sin_a
     } else if kind < 4.5 {
         // Torus, major p0, minor p1.
         let rho = (local[0] * local[0] + local[2] * local[2]).sqrt();
         let q0 = rho - p[0];
-        let k = (q0 * q0 + local[1] * local[1]).sqrt();
-        let grad = if k > 1e-9 && rho > 1e-9 {
-            [q0 * local[0] / (rho * k), local[1] / k, q0 * local[2] / (rho * k)]
-        } else {
-            [0.0, 0.0, 0.0]
-        };
-        (k - p[1], grad)
+        (q0 * q0 + local[1] * local[1]).sqrt() - p[1]
     } else {
-        // Never opens (TPMS / non-analytic).
-        return f32::NEG_INFINITY;
-    };
-    let gn = ((grad[0] / scale[0]).powi(2)
-        + (grad[1] / scale[1]).powi(2)
-        + (grad[2] / scale[2]).powi(2))
-    .sqrt();
-    if gn > 1e-9 {
-        f / gn
-    } else {
-        f
+        // Non-analytic (TPMS / profile) — never emitted as retained faces.
+        f32::INFINITY
     }
 }
 
@@ -549,41 +590,54 @@ fn emit_leaf_primitive(prim: &Primitive, t: &Transform, ctx: &mut CompileCtx) {
 
 // ── 2D sketch inlining ────────────────────────────────────────────
 
-fn emit_sketch(sketch: &BoundedSketch2d, out: &mut Vec<f32>) {
+/// `excl` carries the owning sweep's feature id + opened branch set; `base` is
+/// this subtree's first global boundary-group id (right-boolean children start
+/// past the left child's `edge_count`), matching the kernel's retained walk.
+fn emit_sketch(
+    sketch: &BoundedSketch2d,
+    out: &mut Vec<f32>,
+    base: u32,
+    excl: Option<(&fielddraft_protocol::FeatureId, &crate::csg::OpenBranchSet<'_>)>,
+) {
     match sketch {
         BoundedSketch2d::Empty => {
             out.push(op(OP_PRIM_CONST));
             out.push(f32::MAX);
         }
         BoundedSketch2d::Prim { primitive, .. } => {
-            emit_sketch_primitive(primitive, out);
+            emit_sketch_primitive(primitive, out, base, excl);
         }
         BoundedSketch2d::Union { left, right, .. } => {
-            emit_sketch(left, out);
-            emit_sketch(right, out);
+            emit_sketch(left, out, base, excl);
+            emit_sketch(right, out, base + left.edge_count(), excl);
             out.push(op(OP_UNION));
         }
         BoundedSketch2d::Difference { left, right, .. } => {
-            emit_sketch(left, out);
-            emit_sketch(right, out);
+            emit_sketch(left, out, base, excl);
+            emit_sketch(right, out, base + left.edge_count(), excl);
             out.push(op(OP_DIFFERENCE));
         }
         BoundedSketch2d::Intersection { left, right, .. } => {
-            emit_sketch(left, out);
-            emit_sketch(right, out);
+            emit_sketch(left, out, base, excl);
+            emit_sketch(right, out, base + left.edge_count(), excl);
             out.push(op(OP_INTERSECT));
         }
         BoundedSketch2d::Offset {
             inner, distance, ..
         } => {
-            emit_sketch(inner, out);
+            emit_sketch(inner, out, base, excl);
             out.push(op(OP_OFFSET_2D));
             out.push(*distance);
         }
     }
 }
 
-fn emit_sketch_primitive(prim: &Sketch2dPrimitive, out: &mut Vec<f32>) {
+fn emit_sketch_primitive(
+    prim: &Sketch2dPrimitive,
+    out: &mut Vec<f32>,
+    base: u32,
+    excl: Option<(&fielddraft_protocol::FeatureId, &crate::csg::OpenBranchSet<'_>)>,
+) {
     match prim {
         Sketch2dPrimitive::Circle { center, radius } => {
             out.push(op(OP_PRIM2D_CIRCLE));
@@ -618,48 +672,73 @@ fn emit_sketch_primitive(prim: &Sketch2dPrimitive, out: &mut Vec<f32>) {
             out.push(*sweep_angle);
         }
         Sketch2dPrimitive::Path { segments, closed } => {
-            // The stream carries the analytic segments themselves — exact
-            // distance and exact even-odd parity on the GPU. (The former
-            // polyline flattening closed the contour with a synthetic edge;
-            // for an axis-stripped revolve profile that edge lay ON the
-            // axis and Shell inflated it into a phantom 2 mm rod.) Records
-            // are pre-split y-monotone so the shader's crossing test is the
-            // plain half-open endpoint rule with one closed-form root.
-            let records: Vec<SketchSegment> = segments
-                .iter()
-                .flat_map(fielddraft_protocol::sketch2d::split_y_monotone)
-                .collect();
-            out.push(op(OP_PRIM2D_PATH));
-            out.push(records.len() as f32);
-            out.push(if *closed { 1.0 } else { 0.0 });
-            for seg in &records {
-                match seg {
-                    SketchSegment::Line { start, end } => {
-                        out.push(0.0);
-                        out.extend_from_slice(start);
-                        out.extend_from_slice(end);
-                        out.extend_from_slice(&[0.0, 0.0]);
-                    }
-                    SketchSegment::QuadBezier { p0, p1, p2 } => {
-                        out.push(1.0);
-                        out.extend_from_slice(p0);
-                        out.extend_from_slice(p1);
-                        out.extend_from_slice(p2);
-                    }
-                    SketchSegment::Arc {
-                        center,
-                        radius,
-                        start_angle,
-                        sweep_angle,
-                    } => {
-                        out.push(2.0);
-                        out.extend_from_slice(center);
-                        out.push(*radius);
-                        out.push(*start_angle);
-                        out.push(*sweep_angle);
-                        out.push(0.0);
-                    }
+            // Retained-boundary exclusion (opened shell faces): the field is
+            // the NEGATED unsigned distance to the retained groups — an OPEN
+            // path record (unsigned) + NEG. Continuous through the opening;
+            // see `Sketch2dPrimitive::sdf_retained`.
+            if let Some((id, open)) = excl {
+                let groups = fielddraft_protocol::sketch2d::g1_group_segments(
+                    segments,
+                    fielddraft_protocol::sketch2d::PATH_G1_COS_THRESHOLD,
+                );
+                if groups.iter().any(|g| open.contains_sub(id, base + g)) {
+                    let retained: Vec<SketchSegment> = segments
+                        .iter()
+                        .zip(&groups)
+                        .filter(|(_, g)| !open.contains_sub(id, base + **g))
+                        .map(|(s, _)| s.clone())
+                        .collect();
+                    emit_path_record(&retained, false, out);
+                    out.push(op(OP_NEG));
+                    return;
                 }
+            }
+            emit_path_record(segments, *closed, out);
+        }
+    }
+}
+
+/// One `OP_PRIM2D_PATH` record. The stream carries the analytic segments
+/// themselves — exact distance and exact even-odd parity on the GPU. (The
+/// former polyline flattening closed the contour with a synthetic edge; for
+/// an axis-stripped revolve profile that edge lay ON the axis and Shell
+/// inflated it into a phantom 2 mm rod.) Records are pre-split y-monotone so
+/// the shader's crossing test is the plain half-open endpoint rule with one
+/// closed-form root.
+fn emit_path_record(segments: &[SketchSegment], closed: bool, out: &mut Vec<f32>) {
+    let records: Vec<SketchSegment> = segments
+        .iter()
+        .flat_map(fielddraft_protocol::sketch2d::split_y_monotone)
+        .collect();
+    out.push(op(OP_PRIM2D_PATH));
+    out.push(records.len() as f32);
+    out.push(if closed { 1.0 } else { 0.0 });
+    for seg in &records {
+        match seg {
+            SketchSegment::Line { start, end } => {
+                out.push(0.0);
+                out.extend_from_slice(start);
+                out.extend_from_slice(end);
+                out.extend_from_slice(&[0.0, 0.0]);
+            }
+            SketchSegment::QuadBezier { p0, p1, p2 } => {
+                out.push(1.0);
+                out.extend_from_slice(p0);
+                out.extend_from_slice(p1);
+                out.extend_from_slice(p2);
+            }
+            SketchSegment::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => {
+                out.push(2.0);
+                out.extend_from_slice(center);
+                out.push(*radius);
+                out.push(*start_angle);
+                out.push(*sweep_angle);
+                out.push(0.0);
             }
         }
     }
@@ -788,6 +867,12 @@ pub fn eval_opcodes_with_volumes(
                 let hh = rd!();
                 push_v!(sdf_thread_local(local, nr, pitch, depth, hh) * scale);
             }
+            OP_PRIM_HALFSPACE => {
+                let kind = rd!();
+                let (local, scale) = read_transform_and_localise(opcodes, &mut pc, pt);
+                let params = [rd!(), rd!(), rd!(), rd!()];
+                push_v!(halfspace_local(local, kind, params) * scale);
+            }
 
             // ── 2D primitives ──────────────────────────────────
             OP_PRIM2D_CIRCLE => {
@@ -890,26 +975,12 @@ pub fn eval_opcodes_with_volumes(
 
             // ── Unary / compositor operators ───────────────────
             OP_SHELL => {
+                // Closed inward shell. Opened shells compile to two subtrees
+                // + OFFSET(−t) + DIFFERENCE instead (retained-boundary
+                // erosion), so this op carries only the thickness.
                 let thickness = rd!();
-                let count = rd!() as usize;
-                // g = nearest open-face gate value (−∞ when none, so the clamp
-                // below yields the full thickness → closed shell). Each face is a
-                // fixed `OPEN_REC_LEN` record: kind, transform(10), 4 params.
-                let mut g = f32::NEG_INFINITY;
-                for _ in 0..count {
-                    let kind = opcodes[pc];
-                    let translate = [opcodes[pc + 1], opcodes[pc + 2], opcodes[pc + 3]];
-                    let quat = [opcodes[pc + 4], opcodes[pc + 5], opcodes[pc + 6], opcodes[pc + 7]];
-                    let scale = [opcodes[pc + 8], opcodes[pc + 9], opcodes[pc + 10]];
-                    let params =
-                        [opcodes[pc + 11], opcodes[pc + 12], opcodes[pc + 13], opcodes[pc + 14]];
-                    pc += OPEN_REC_LEN;
-                    let local = world_to_local_inline(pt, translate, quat, scale);
-                    g = g.max(open_gate_local(local, kind, params, scale));
-                }
                 let d = pop_v!();
-                let e = (d - g).clamp(0.0, thickness);
-                push_v!(d.max(-(d + e)));
+                push_v!(d.max(-(d + thickness)));
             }
             OP_MORPH => {
                 let t = rd!();
@@ -930,11 +1001,26 @@ pub fn eval_opcodes_with_volumes(
             OP_EXTRUDE => {
                 let half_h = rd!();
                 let scale = rd!();
+                let cap_mask = rd!() as u32;
                 let d2d = pop_v!();
-                let wz = pt[2].abs() - half_h;
-                let outside = (d2d.max(0.0).powi(2) + wz.max(0.0).powi(2)).sqrt();
-                let inside = d2d.max(wz).min(0.0);
-                push_v!((outside + inside) * scale);
+                if cap_mask == 3 {
+                    // Both caps retained: exact-corner composition (IQ).
+                    let wz = pt[2].abs() - half_h;
+                    let outside = (d2d.max(0.0).powi(2) + wz.max(0.0).powi(2)).sqrt();
+                    let inside = d2d.max(wz).min(0.0);
+                    push_v!((outside + inside) * scale);
+                } else {
+                    // Opened cap(s): plain max over the retained terms
+                    // (mirrors `csg::extrude_retained_combine`).
+                    let mut d = d2d;
+                    if cap_mask & 1 != 0 {
+                        d = d.max(pt[2] - half_h);
+                    }
+                    if cap_mask & 2 != 0 {
+                        d = d.max(-pt[2] - half_h);
+                    }
+                    push_v!(d * scale);
+                }
             }
             OP_REVOLVE_SCALE => {
                 let scale = rd!();
@@ -945,6 +1031,10 @@ pub fn eval_opcodes_with_volumes(
                 let dist = rd!();
                 let d = pop_v!();
                 push_v!(d - dist);
+            }
+            OP_NEG => {
+                let v = pop_v!();
+                push_v!(-v);
             }
 
             // ── Domain warps ───────────────────────────────────
@@ -1317,6 +1407,11 @@ mod tests {
         for &p in points {
             let expected = bvh.sdf(p, EvalMode::Visual);
             let got = eval_opcodes(&compiled.opcodes, p);
+            // Same-sign infinities agree (an emptied body reads +∞ on both
+            // paths; the literal difference would be NaN).
+            if expected.is_infinite() && got.is_infinite() && expected.signum() == got.signum() {
+                continue;
+            }
             assert!(
                 (expected - got).abs() < tol,
                 "mismatch at {p:?}: bvh={expected} compiled={got} (tol={tol})",
@@ -1644,7 +1739,12 @@ mod tests {
         let shell = CsgNode::Shell(
             Box::new(sphere),
             1.0,
-            vec![OpenSurface {
+            vec![crate::csg::OpenSurface {
+                branch: crate::csg::BranchId::from_feature_sub(
+                    &FeatureId::from_u32(1),
+                    0,
+                )
+                .as_u32(),
                 surface: HalfSpace::Sphere { radius: 10.0 },
                 placement: Transform::IDENTITY,
             }],

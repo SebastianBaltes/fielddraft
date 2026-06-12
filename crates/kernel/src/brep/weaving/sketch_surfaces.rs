@@ -390,7 +390,13 @@ pub(super) fn collect_revolve_halfspaces(
     for (group, segments, ccw) in groups {
         let branch = BranchId::from_feature_sub(id, group);
         out.entry(branch.as_u32()).or_insert((
-            HalfSpace::RevolvedProfile { segments, ccw, offset: 0.0 },
+            HalfSpace::RevolvedProfile {
+                segments,
+                ccw,
+                offset: 0.0,
+                extend_start: true,
+                extend_end: true,
+            },
             xf,
         ));
     }

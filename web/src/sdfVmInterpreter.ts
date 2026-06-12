@@ -37,11 +37,11 @@ import {
   OP_PRIM2D_PATH,
   OP_UNION, OP_DIFFERENCE, OP_INTERSECT, OP_SMOOTH_UNION, OP_SMOOTH_DIFF,
   OP_SHELL, OP_MORPH, OP_DISPLACE_VAL, OP_EXTRUDE, OP_REVOLVE_SCALE,
-  OP_OFFSET_2D,
+  OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE,
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
   OP_MASKED_BLEND, OP_END,
-  worldToLocalFn, openGateFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
+  worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
   blendMinFn, sdfCapsule3dFn, sdfExtrudeFn,
@@ -347,45 +347,13 @@ export function buildVmSdfEvalFn(
         pushV(blendMinFn({ a: a.negate(), b, r, mode }).negate());
 
       }).ElseIf(tag.equal(int(OP_SHELL)), () => {
-        // Inward shell with optional openings (mirrors `open_shell_sdf`): erode
-        // the solid by a local depth that tapers to 0 at the nearest open face,
-        // so the wall breaks through there. Each open face is a fixed 15-float
-        // record (`OPEN_REC_LEN`): kind(1) + transform(10) + params(4), letting
-        // any analytic face (plane / cylinder / sphere / cone / torus) open.
-        const REC = 15;
+        // CLOSED inward shell: wall = max(d, −(d + t)). Opened shells compile
+        // to two subtrees + OFFSET(−t) + DIFFERENCE instead (retained-boundary
+        // erosion, mirrors `csg::shell_wall_sdf`), so this op carries only the
+        // thickness.
         const thickness = rd();
-        const nRaw = rd();
-        const nInt = floatToIntFn({ v: nRaw });
-        const recStart = pc.toVar();
-        pc.addAssign(nInt.mul(REC));
         const d = popV();
-        // g = nearest open-face gate; −1e30 when none → clamp yields the full
-        // thickness (a closed shell).
-        const g = float(-1e30).toVar();
-        const ii = int(0).toVar();
-        Loop(nInt, () => {
-          const base = recStart.add(ii.mul(REC));
-          const kind = opBuf.element(base);
-          const translate = vec3(
-            opBuf.element(base.add(1)), opBuf.element(base.add(2)), opBuf.element(base.add(3)),
-          );
-          const quat = vec4(
-            opBuf.element(base.add(4)), opBuf.element(base.add(5)),
-            opBuf.element(base.add(6)), opBuf.element(base.add(7)),
-          );
-          const scale = vec3(
-            opBuf.element(base.add(8)), opBuf.element(base.add(9)), opBuf.element(base.add(10)),
-          );
-          const params = vec4(
-            opBuf.element(base.add(11)), opBuf.element(base.add(12)),
-            opBuf.element(base.add(13)), opBuf.element(base.add(14)),
-          );
-          const local = worldToLocalFn({ p: vec3(ptx, pty, ptz), translate, quat, scale });
-          g.assign(max(g, openGateFn({ local, kind, p: params, scale })));
-          ii.addAssign(1);
-        });
-        const e = clamp(d.sub(g), float(0), thickness);
-        pushV(max(d, d.add(e).negate()));
+        pushV(max(d, d.add(thickness).negate()));
       }).ElseIf(tag.equal(int(OP_MORPH)), () => {
         const t = rd();
         const b = popV(), a = popV();
@@ -399,14 +367,38 @@ export function buildVmSdfEvalFn(
         pushV(d.sub(dpth.mul(disp)));
       }).ElseIf(tag.equal(int(OP_EXTRUDE)), () => {
         const half_h = rd(), s = rd();
+        const capMask = floatToIntFn({ v: rd() });
         const d2d = popV();
-        pushV(sdfExtrudeFn({ d2d, z: ptz, half_h }).mul(s));
+        // cap_mask 3 = both caps retained → exact-corner composition (IQ);
+        // an opened cap drops its term: plain max over the retained ones
+        // (mirrors `csg::extrude_retained_combine`).
+        const res = float(0).toVar();
+        If(capMask.equal(int(3)), () => {
+          res.assign(sdfExtrudeFn({ d2d, z: ptz, half_h }));
+        }).ElseIf(capMask.equal(int(1)), () => {
+          res.assign(max(d2d, ptz.sub(half_h)));
+        }).ElseIf(capMask.equal(int(2)), () => {
+          res.assign(max(d2d, ptz.negate().sub(half_h)));
+        }).Else(() => {
+          res.assign(d2d);
+        });
+        pushV(res.mul(s));
       }).ElseIf(tag.equal(int(OP_REVOLVE_SCALE)), () => {
         const s = rd();
         pushV(popV().mul(s));
       }).ElseIf(tag.equal(int(OP_OFFSET_2D)), () => {
         const dist = rd();
         pushV(popV().sub(dist));
+      }).ElseIf(tag.equal(int(OP_NEG)), () => {
+        pushV(popV().negate());
+      }).ElseIf(tag.equal(int(OP_PRIM_HALFSPACE)), () => {
+        // One analytic half-space face (retained-boundary shell): kind +
+        // transform(10) + params(4); raw local SDF × min-scale, like every
+        // other primitive opcode.
+        const kind = rd();
+        const { local, scale: s } = emitTransformAndLocal();
+        const p0 = rd(), p1 = rd(), p2 = rd(), p3 = rd();
+        pushV(halfspaceLocalFn({ local, kind, p: vec4(p0, p1, p2, p3) }).mul(s));
 
       }).ElseIf(tag.equal(int(OP_WARP_PUSH)), () => {
         pushP(ptx, pty, ptz);

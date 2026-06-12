@@ -192,7 +192,7 @@ The `CsgNode` enum (16 variants) represents the constructive solid geometry tree
 - **Leaf:** `Leaf { id, primitive }` — terminal SDF evaluation
 - **Binary ops:** `Union`, `Difference`, `Intersection`, `SmoothUnion`, `SmoothDifference`
 - **Domain warps:** `Twist` (rotate XZ by rate*y), `Bend` (rotate XY by rate*x), `Displace` (sine-product bump)
-- **Modifiers:** `Shell` (`|sdf| - thickness`), `Morph` (lerp between SDFs)
+- **Modifiers:** `Shell` (inward wall `max(d, −(d_ret + t))`; opened faces are removed from the *retained-boundary* field `d_ret` — the leaf re-evaluates with the opened sub-faces' distance contributions dropped, so the wall keeps constant thickness right up to each opening and ends in a crisp annular rim), `Morph` (lerp between SDFs)
 - **Profile-based:** `Extrude { sketch, half_height }`, `Revolve { sketch }`
 - **Masked blend:** Capsule-masked smooth transition between two SDFs
 

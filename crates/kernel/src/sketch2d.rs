@@ -238,6 +238,101 @@ impl BoundedSketch2d {
             }
         }
     }
+
+    /// [`Self::sdf`] with excluded boundary groups removed from the distance
+    /// while the sign stays with the full tree — the retained-boundary shell
+    /// erosion (mirrors [`Sketch2d::sdf_retained`], same global group ids as
+    /// [`Self::sdf_with_edges`]). No AABB pruning: the retained field of an
+    /// opened path extends past the sketch AABB, so the 3D bounds don't hold.
+    pub fn sdf_retained(&self, p: [f32; 2], is_excluded: &mut dyn FnMut(u32) -> bool) -> f32 {
+        self.sdf_retained_at(p, 0, is_excluded)
+    }
+
+    fn sdf_retained_at(
+        &self,
+        p: [f32; 2],
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> f32 {
+        match self {
+            Self::Empty => f32::INFINITY,
+            Self::Prim { primitive, .. } => primitive.sdf_retained(p, base, is_excluded),
+            Self::Union { left, right, .. } => left
+                .sdf_retained_at(p, base, is_excluded)
+                .min(right.sdf_retained_at(p, base + left.edge_count(), is_excluded)),
+            Self::Difference { left, right, .. } => left
+                .sdf_retained_at(p, base, is_excluded)
+                .max(-right.sdf_retained_at(p, base + left.edge_count(), is_excluded)),
+            Self::Intersection { left, right, .. } => left
+                .sdf_retained_at(p, base, is_excluded)
+                .max(right.sdf_retained_at(p, base + left.edge_count(), is_excluded)),
+            Self::Offset { inner, distance, .. } => {
+                inner.sdf_retained_at(p, base, is_excluded) - distance
+            }
+        }
+    }
+
+    /// Eps-banded sibling of [`Self::sdf_retained`]; band ids are global,
+    /// excluded groups never enter the band.
+    pub fn sdf_with_edges_retained(
+        &self,
+        p: [f32; 2],
+        eps: f32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> SketchEdgeBand {
+        self.sdf_with_edges_retained_at(p, eps, 0, is_excluded)
+    }
+
+    fn sdf_with_edges_retained_at(
+        &self,
+        p: [f32; 2],
+        eps: f32,
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> SketchEdgeBand {
+        match self {
+            Self::Empty => SketchEdgeBand::new(f32::INFINITY),
+            Self::Prim { primitive, .. } => {
+                primitive.sdf_with_edges_retained(p, eps, base, is_excluded)
+            }
+            Self::Union { left, right, .. } => {
+                let bl = left.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let br = right.sdf_with_edges_retained_at(
+                    p,
+                    eps,
+                    base + left.edge_count(),
+                    is_excluded,
+                );
+                SketchEdgeBand::combine_min(bl, br, eps)
+            }
+            Self::Difference { left, right, .. } => {
+                let bl = left.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let mut br = right.sdf_with_edges_retained_at(
+                    p,
+                    eps,
+                    base + left.edge_count(),
+                    is_excluded,
+                );
+                br.distance = -br.distance;
+                SketchEdgeBand::combine_max(bl, br, eps)
+            }
+            Self::Intersection { left, right, .. } => {
+                let bl = left.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let br = right.sdf_with_edges_retained_at(
+                    p,
+                    eps,
+                    base + left.edge_count(),
+                    is_excluded,
+                );
+                SketchEdgeBand::combine_max(bl, br, eps)
+            }
+            Self::Offset { inner, distance, .. } => {
+                let mut band = inner.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                band.distance -= distance;
+                band
+            }
+        }
+    }
 }
 
 // ── Contour extraction via Marching Squares ─────────────────────

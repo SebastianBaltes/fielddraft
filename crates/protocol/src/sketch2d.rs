@@ -470,6 +470,108 @@ impl Sketch2dPrimitive {
         }
     }
 
+    /// Retained-boundary field: the NEGATED unsigned distance to the
+    /// non-excluded boundary groups — the 2D kernel of the retained-boundary
+    /// shell erosion. Always ≤ 0: the field treats everything as "material
+    /// extended through the openings", which keeps it CONTINUOUS across the
+    /// opened face (a parity-based sign would jump right where the opening's
+    /// rim edge lives, killing the edge tracer's activity band there). The
+    /// shell wall `max(d, −(d_ret + t))` caps it with the true outer surface,
+    /// so the zero set is unchanged. `is_excluded` receives global group ids;
+    /// `base` is this primitive's first group id in the owning sketch tree
+    /// (see [`Sketch2d::edge_count`]). Only a `Path` has removable groups;
+    /// for every other primitive the single boundary IS the surface, so
+    /// exclusion is ignored (the wall stays closed there).
+    pub fn sdf_retained(
+        &self,
+        p: [f32; 2],
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> f32 {
+        match self {
+            Self::Path { segments, .. } => {
+                let mut any = false;
+                let (dist, _) = path_retained_distance(p, segments, |g| {
+                    let ex = is_excluded(base + g);
+                    any |= ex;
+                    ex
+                });
+                if !any {
+                    return self.sdf(p);
+                }
+                -dist
+            }
+            _ => self.sdf(p),
+        }
+    }
+
+    /// Eps-banded sibling of [`Self::sdf_retained`]: the negated unsigned
+    /// distance plus the retained groups within `eps` of it (excluded groups
+    /// never enter the band).
+    pub fn sdf_with_edges_retained(
+        &self,
+        p: [f32; 2],
+        eps: f32,
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> SketchEdgeBand {
+        match self {
+            Self::Path { segments, .. } => {
+                let n = segments.len();
+                if n == 0 {
+                    return SketchEdgeBand::new(f32::INFINITY);
+                }
+                let mut stack = [f32::INFINITY; PATH_STACK_SEGMENTS];
+                let mut heap: Vec<f32>;
+                let dists: &mut [f32] = if n <= PATH_STACK_SEGMENTS {
+                    &mut stack[..n]
+                } else {
+                    heap = vec![f32::INFINITY; n];
+                    &mut heap[..]
+                };
+                let mut min_d = f32::INFINITY;
+                let mut group = 0u32;
+                let mut any = false;
+                for (i, seg) in segments.iter().enumerate() {
+                    if i > 0
+                        && !g1_continuous(&segments[i - 1], &segments[i], PATH_G1_COS_THRESHOLD)
+                    {
+                        group += 1;
+                    }
+                    if is_excluded(base + group) {
+                        any = true;
+                        continue;
+                    }
+                    if seg.distance_lower_bound(p) > min_d + eps {
+                        continue;
+                    }
+                    let d = seg.unsigned_distance(p);
+                    dists[i] = d;
+                    if d < min_d {
+                        min_d = d;
+                    }
+                }
+                if !any {
+                    return self.sdf_with_edges(p, eps).offset(base);
+                }
+                let mut band = SketchEdgeBand::new(-min_d);
+                let mut group = 0u32;
+                for i in 0..n {
+                    if i > 0
+                        && !g1_continuous(&segments[i - 1], &segments[i], PATH_G1_COS_THRESHOLD)
+                    {
+                        group += 1;
+                    }
+                    if dists[i].is_finite() && dists[i] - min_d <= eps {
+                        band.push(base + group);
+                    }
+                }
+                band
+            }
+            _ => self.sdf_with_edges(p, eps).offset(base),
+        }
+    }
+
     pub fn aabb(&self) -> Aabb2 {
         match self {
             Self::Circle { center, radius } => Aabb2 {
@@ -535,6 +637,47 @@ pub fn sdf_path(p: [f32; 2], segments: &[SketchSegment], closed: bool) -> f32 {
     } else {
         unsigned
     }
+}
+
+/// Exact minimum unsigned distance over the path's **retained** boundary:
+/// segments whose G1 group (per [`g1_group_segments`], computed on the fly
+/// without allocating) is NOT excluded. Returns the closest retained foot
+/// point alongside the distance so dual-number callers can lift the field to
+/// first order. Returns `(f32::INFINITY, p)` when every group is excluded.
+///
+/// This is the open-shell erosion kernel (retained-boundary semantics): the
+/// shell's cavity is `sign(full path) · retained distance ≤ −t`, so the wall
+/// keeps a constant thickness `t` up to the opened face instead of tapering
+/// to a knife edge there. The *sign* deliberately stays with the full closed
+/// path — see `CsgNode::Shell`.
+pub fn path_retained_distance(
+    p: [f32; 2],
+    segments: &[SketchSegment],
+    mut is_excluded: impl FnMut(u32) -> bool,
+) -> (f32, [f32; 2]) {
+    let mut best = f32::INFINITY;
+    let mut best_cp = p;
+    let mut group = 0u32;
+    for (i, seg) in segments.iter().enumerate() {
+        if i > 0 && !g1_continuous(&segments[i - 1], seg, PATH_G1_COS_THRESHOLD) {
+            group += 1;
+        }
+        if is_excluded(group) {
+            continue;
+        }
+        if seg.distance_lower_bound(p) >= best {
+            continue;
+        }
+        let (cp, _) = seg.closest_point_and_tangent(p);
+        let dx = p[0] - cp[0];
+        let dy = p[1] - cp[1];
+        let d = (dx * dx + dy * dy).sqrt();
+        if d < best {
+            best = d;
+            best_cp = cp;
+        }
+    }
+    (best, best_cp)
 }
 
 /// Exact minimum unsigned distance over all segments, plus the index of the
@@ -1129,6 +1272,86 @@ impl Sketch2d {
             }
         }
     }
+
+    /// [`Self::sdf`] with excluded boundary groups removed from the distance
+    /// (sign stays with the full tree) — the retained-boundary shell erosion,
+    /// threaded through the sketch booleans with the same global group
+    /// numbering as [`Self::sdf_with_edges`].
+    pub fn sdf_retained(&self, p: [f32; 2], is_excluded: &mut dyn FnMut(u32) -> bool) -> f32 {
+        self.sdf_retained_at(p, 0, is_excluded)
+    }
+
+    fn sdf_retained_at(
+        &self,
+        p: [f32; 2],
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> f32 {
+        match self {
+            Self::Empty => f32::INFINITY,
+            Self::Prim(prim) => prim.sdf_retained(p, base, is_excluded),
+            Self::Union(a, b) => a
+                .sdf_retained_at(p, base, is_excluded)
+                .min(b.sdf_retained_at(p, base + a.edge_count(), is_excluded)),
+            Self::Difference(a, b) => a
+                .sdf_retained_at(p, base, is_excluded)
+                .max(-b.sdf_retained_at(p, base + a.edge_count(), is_excluded)),
+            Self::Intersection(a, b) => a
+                .sdf_retained_at(p, base, is_excluded)
+                .max(b.sdf_retained_at(p, base + a.edge_count(), is_excluded)),
+            Self::Offset { inner, distance } => {
+                inner.sdf_retained_at(p, base, is_excluded) - distance
+            }
+        }
+    }
+
+    /// Eps-banded sibling of [`Self::sdf_retained`]; band ids are global
+    /// (already offset), excluded groups never enter the band.
+    pub fn sdf_with_edges_retained(
+        &self,
+        p: [f32; 2],
+        eps: f32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> SketchEdgeBand {
+        self.sdf_with_edges_retained_at(p, eps, 0, is_excluded)
+    }
+
+    fn sdf_with_edges_retained_at(
+        &self,
+        p: [f32; 2],
+        eps: f32,
+        base: u32,
+        is_excluded: &mut dyn FnMut(u32) -> bool,
+    ) -> SketchEdgeBand {
+        match self {
+            Self::Empty => SketchEdgeBand::new(f32::INFINITY),
+            Self::Prim(prim) => prim.sdf_with_edges_retained(p, eps, base, is_excluded),
+            Self::Union(a, b) => {
+                let ba = a.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let bb =
+                    b.sdf_with_edges_retained_at(p, eps, base + a.edge_count(), is_excluded);
+                SketchEdgeBand::combine_min(ba, bb, eps)
+            }
+            Self::Difference(a, b) => {
+                let ba = a.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let mut bb =
+                    b.sdf_with_edges_retained_at(p, eps, base + a.edge_count(), is_excluded);
+                bb.distance = -bb.distance;
+                SketchEdgeBand::combine_max(ba, bb, eps)
+            }
+            Self::Intersection(a, b) => {
+                let ba = a.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                let bb =
+                    b.sdf_with_edges_retained_at(p, eps, base + a.edge_count(), is_excluded);
+                SketchEdgeBand::combine_max(ba, bb, eps)
+            }
+            Self::Offset { inner, distance } => {
+                let mut band = inner.sdf_with_edges_retained_at(p, eps, base, is_excluded);
+                band.distance -= distance;
+                band
+            }
+        }
+    }
 }
 
 // ── Sketch segments (analytical curves) ─────────────────────────────
@@ -1384,6 +1607,35 @@ impl SketchSegment {
         normalize(raw)
     }
 
+    /// Exact unit tangent at parameter `t` (forward direction). Closed-form
+    /// derivative per segment kind — central differencing here is NOT an
+    /// option: adaptive spline lowering produces millimetre-short segments
+    /// whose f32 point differences are pure noise at usable step sizes.
+    pub fn tangent_at(&self, t: f32) -> [f32; 2] {
+        let raw = match self {
+            Self::Line { start, end } => [end[0] - start[0], end[1] - start[1]],
+            Self::QuadBezier { p0, p1, p2 } => {
+                // B'(t) = 2(1−t)(p1−p0) + 2t(p2−p1)
+                let mt = 1.0 - t;
+                [
+                    2.0 * (mt * (p1[0] - p0[0]) + t * (p2[0] - p1[0])),
+                    2.0 * (mt * (p1[1] - p0[1]) + t * (p2[1] - p1[1])),
+                ]
+            }
+            Self::Arc {
+                start_angle,
+                sweep_angle,
+                ..
+            } => {
+                let sign = if *sweep_angle >= 0.0 { 1.0 } else { -1.0 };
+                let a = start_angle + t * sweep_angle;
+                let (st, ct) = a.sin_cos();
+                [-sign * st, sign * ct]
+            }
+        };
+        normalize(raw)
+    }
+
     /// Unit tangent at t=1 (end of the curve).
     pub fn tangent_at_end(&self) -> [f32; 2] {
         let raw = match self {
@@ -1435,6 +1687,19 @@ pub fn g1_group_segments(segments: &[SketchSegment], cos_threshold: f32) -> Vec<
     group
 }
 
+/// Per-segment G1 group ids as a lazy iterator — the allocation-free sibling
+/// of [`g1_group_segments`], for callers that walk segments once (the
+/// kernel's dual-number retained-distance mirror).
+pub fn segment_groups(segments: &[SketchSegment]) -> impl Iterator<Item = u32> + '_ {
+    let mut group = 0u32;
+    (0..segments.len()).map(move |i| {
+        if i > 0 && !g1_continuous(&segments[i - 1], &segments[i], PATH_G1_COS_THRESHOLD) {
+            group += 1;
+        }
+        group
+    })
+}
+
 /// Signed distance (and its 2D gradient) from `p` to the **carrier** of one
 /// G1 path group: the group's segments, extended past both chain ends along
 /// their end tangents so the field stays smooth where the neighbouring
@@ -1452,10 +1717,19 @@ pub fn g1_group_segments(segments: &[SketchSegment], cos_threshold: f32) -> Vec<
 /// For a group that wraps a closed path's seam the two extension rays sit
 /// at the wrap joint instead of the geometric ends; distances *on* the
 /// group are unaffected, only the carrier's far extension differs.
+///
+/// `extend_start`/`extend_end` select the carrier shape past each chain end:
+/// `true` extends along the end tangent (smooth field across the shared
+/// corner with the adjacent group → crisp miter edge), `false` keeps the
+/// plain closest-point field whose offset level set rounds the endpoint with
+/// an arc ("stadium") — the retained-boundary shell erosion surface where
+/// the neighbouring group was opened.
 pub fn group_signed_distance_and_normal(
     segments: &[SketchSegment],
     ccw: bool,
     p: [f32; 2],
+    extend_start: bool,
+    extend_end: bool,
 ) -> (f32, [f32; 2]) {
     debug_assert!(!segments.is_empty());
     let mut best_d2 = f32::INFINITY;
@@ -1481,13 +1755,15 @@ pub fn group_signed_distance_and_normal(
     // Tangent-ray extensions. The traversal direction stays path-forward on
     // both rays (start ray runs BACKWARD from the first point), so the
     // outward-normal sign convention is seamless across the chain ends.
-    if let (Some(first), Some(last)) = (segments.first(), segments.last()) {
+    if let (true, Some(first)) = (extend_start, segments.first()) {
         let a = first.start_point();
         let ta = first.tangent_at_start();
         let u = -((p[0] - a[0]) * ta[0] + (p[1] - a[1]) * ta[1]);
         if u > 0.0 {
             consider([a[0] - u * ta[0], a[1] - u * ta[1]], ta);
         }
+    }
+    if let (true, Some(last)) = (extend_end, segments.last()) {
         let b = last.end_point();
         let tb = last.tangent_at_end();
         let v = (p[0] - b[0]) * tb[0] + (p[1] - b[1]) * tb[1];

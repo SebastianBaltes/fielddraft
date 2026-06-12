@@ -26,6 +26,7 @@ export const OP_PRIM_CONST     = 0x09;
 export const OP_PRIM_GYROID    = 0x0A;
 export const OP_PRIM_THREAD    = 0x0B;
 export const OP_PRIM_TEX3D     = 0x0C;
+export const OP_PRIM_HALFSPACE = 0x0D;
 
 export const OP_PRIM2D_CIRCLE  = 0x10;
 export const OP_PRIM2D_RECT    = 0x11;
@@ -45,6 +46,7 @@ export const OP_DISPLACE_VAL   = 0x2B;
 export const OP_EXTRUDE        = 0x2C;
 export const OP_REVOLVE_SCALE  = 0x2D;
 export const OP_OFFSET_2D      = 0x2E;
+export const OP_NEG            = 0x2F;
 
 export const OP_WARP_PUSH      = 0x30;
 export const OP_WARP_POP       = 0x31;
@@ -78,49 +80,34 @@ export const worldToLocalFn = wgslFn(`
   }
 `);
 
-// Outward-oriented open-face gate for OP_SHELL, mirroring the kernel's
-// `csg::sdf_halfspace` / `sdf_compiler::open_gate_local`. `kind` selects the
-// analytic surface; `p` holds up to four params (layout per kind, zero-padded):
+// Raw local SDF of one analytic half-space face for OP_PRIM_HALFSPACE,
+// mirroring the kernel's `csg::sdf_halfspace` / `sdf_compiler::halfspace_local`
+// (retained-boundary shell faces). `kind` selects the surface; `p` holds up to
+// four params (layout per kind, zero-padded):
 //   0 plane: normal=(p.x,p.y,p.z), offset=p.w
 //   1 infinite cylinder (axis Y): radius=p.x
 //   2 sphere: radius=p.x
 //   3 cone (apex origin, axis Y): half_angle=p.x
 //   4 torus: major=p.x, minor=p.y
-//   5 never (TPMS / non-analytic): keeps the wall closed
-// Returns a *world* Euclidean distance: the local SDF is Eikonal-normalised by
-// |S⁻¹∇f| (`scale` = placement scale) so a scaled body placement does not stretch
-// the shell taper. Exact for uniform scale. Mirrors csg::grad_halfspace.
-export const openGateFn = wgslFn(`
-  fn fd_open_gate(local: vec3f, kind: f32, p: vec4f, scale: vec3f) -> f32 {
-    var f: f32;
-    var grad: vec3f;
+//   5 non-analytic (never emitted as a retained face)
+// The caller scales by the placement's min-scale, like every other primitive.
+export const halfspaceLocalFn = wgslFn(`
+  fn fd_halfspace_local(local: vec3f, kind: f32, p: vec4f) -> f32 {
     if (kind < 0.5) {
-      f = dot(local, vec3f(p.x, p.y, p.z)) - p.w;
-      grad = vec3f(p.x, p.y, p.z);
+      return dot(local, vec3f(p.x, p.y, p.z)) - p.w;
     } else if (kind < 1.5) {
-      let rho = length(vec2f(local.x, local.z));
-      f = rho - p.x;
-      grad = select(vec3f(0.0), vec3f(local.x / rho, 0.0, local.z / rho), rho > 1e-9);
+      return length(vec2f(local.x, local.z)) - p.x;
     } else if (kind < 2.5) {
-      let len = length(local);
-      f = len - p.x;
-      grad = select(vec3f(0.0), local / len, len > 1e-9);
+      return length(local) - p.x;
     } else if (kind < 3.5) {
       let rho = length(vec2f(local.x, local.z));
-      f = rho * cos(p.x) - abs(local.y) * sin(p.x);
-      let sy = -sign(local.y) * sin(p.x);
-      grad = select(vec3f(0.0, sy, 0.0), vec3f(cos(p.x) * local.x / rho, sy, cos(p.x) * local.z / rho), rho > 1e-9);
+      return rho * cos(p.x) - abs(local.y) * sin(p.x);
     } else if (kind < 4.5) {
       let rho = length(vec2f(local.x, local.z));
       let q0 = rho - p.x;
-      let k = length(vec2f(q0, local.y));
-      f = k - p.y;
-      grad = select(vec3f(0.0), vec3f(q0 * local.x / (rho * k), local.y / k, q0 * local.z / (rho * k)), k > 1e-9 && rho > 1e-9);
-    } else {
-      return -1e30;
+      return length(vec2f(q0, local.y)) - p.y;
     }
-    let gn = length(grad / scale);
-    return select(f, f / gn, gn > 1e-9);
+    return 1e30;
   }
 `);
 

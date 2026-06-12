@@ -29,7 +29,7 @@ use serde::Serialize;
 use fielddraft_protocol::{FeatureId, Primitive, Transform};
 
 use crate::csg::{
-    expand_evaluate_leaf, extrude_contributors, open_shell_erosion, open_shell_sdf,
+    extrude_contributors, OpenBranchSet,
     revolve_contributors, sdf_extrude,
     Aabb, BlendMode, Contributors, CsgNode, EvalMode, OpenSurface,
 };
@@ -130,8 +130,8 @@ pub enum BoundedCsg {
         aabb: Aabb,
     },
     /// Shell: hollow the child into an inward wall of given thickness, with
-    /// optional `open_faces` (planar or curved) where the wall breaks through
-    /// (see [`crate::csg::open_shell_sdf`]).
+    /// optional `open_faces` where the wall breaks through with constant
+    /// thickness (see [`crate::csg::shell_wall_sdf`]).
     Shell {
         inner: Box<BoundedCsg>,
         thickness: f32,
@@ -290,15 +290,28 @@ impl BoundedCsg {
     /// that K10 will introduce) but short-circuits boolean branches
     /// whose AABB already dominates the running accumulator.
     pub fn sdf(&self, p: [f32; 3], mode: EvalMode) -> f32 {
+        self.sdf_open(p, mode, &OpenBranchSet::EMPTY)
+    }
+
+    /// [`Self::sdf`] under a set of opened shell branches: leaves owning an
+    /// opened sub-face evaluate their RETAINED boundary distance instead
+    /// (sign unchanged) — see [`crate::csg::shell_wall_sdf`].
+    pub(crate) fn sdf_open(&self, p: [f32; 3], mode: EvalMode, open: &OpenBranchSet<'_>) -> f32 {
         match self {
             BoundedCsg::Empty => f32::INFINITY,
             BoundedCsg::Leaf {
+                id,
                 primitive,
                 world_transform,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                sdf_primitive(primitive, local) * world_transform.min_scale()
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    crate::csg::leaf_sdf_retained(id, primitive, local, open)
+                } else {
+                    sdf_primitive(primitive, local)
+                };
+                d * world_transform.min_scale()
             }
             BoundedCsg::Union { left, right, .. } => {
                 // Visit the AABB-closer child first — it's more
@@ -310,7 +323,7 @@ impl BoundedCsg {
                 } else {
                     (&**right, &**left, dist_left)
                 };
-                let d_first = first_node.sdf(p, mode);
+                let d_first = first_node.sdf_open(p, mode, open);
                 // Safe prune: when `p` sits *outside* the second
                 // child's AABB (`second_bound > 0`), that child's SDF
                 // is ≥ `second_bound` by the Lipschitz-1 property of
@@ -318,11 +331,13 @@ impl BoundedCsg {
                 // already ≤ the bound, the other branch can't win
                 // the min. When `second_bound == 0` we're inside
                 // both AABBs and have no lower bound — fall back to
-                // the full recursion.
-                if second_bound > 0.0 && d_first < second_bound {
+                // the full recursion. Retained-boundary fields (open
+                // shells) extend past their AABB, so pruning is off
+                // whenever an open set is active.
+                if open.is_empty() && second_bound > 0.0 && d_first < second_bound {
                     d_first
                 } else {
-                    d_first.min(second_node.sdf(p, mode))
+                    d_first.min(second_node.sdf_open(p, mode, open))
                 }
             }
             BoundedCsg::Difference { left, right, .. } => {
@@ -332,16 +347,16 @@ impl BoundedCsg {
                 // `-d_right ≤ -dist_right`. When `d_left ≥ -dist_right`,
                 // `max(d_left, -d_right) = d_left` — the subtracted
                 // body can't carve anything at this point.
-                let d_left = left.sdf(p, mode);
+                let d_left = left.sdf_open(p, mode, open);
                 let dist_right = distance_point_to_aabb(p, right.aabb());
-                if dist_right > 0.0 && d_left >= -dist_right {
+                if open.is_empty() && dist_right > 0.0 && d_left >= -dist_right {
                     d_left
                 } else {
-                    d_left.max(-right.sdf(p, mode))
+                    d_left.max(-right.sdf_open(p, mode, open))
                 }
             }
             BoundedCsg::Intersection { left, right, .. } => {
-                left.sdf(p, mode).max(right.sdf(p, mode))
+                left.sdf_open(p, mode, open).max(right.sdf_open(p, mode, open))
             }
             // K10.0: smooth variants. No AABB pruning in the
             // blend zone — both children must be evaluated to
@@ -354,8 +369,8 @@ impl BoundedCsg {
                 mode: blend_mode,
                 ..
             } => {
-                let da = left.sdf(p, mode);
-                let db = right.sdf(p, mode);
+                let da = left.sdf_open(p, mode, open);
+                let db = right.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Visual => crate::csg::blend_min(da, db, *radius, *blend_mode),
                     EvalMode::Logical => da.min(db),
@@ -368,8 +383,8 @@ impl BoundedCsg {
                 mode: blend_mode,
                 ..
             } => {
-                let da = left.sdf(p, mode);
-                let db = right.sdf(p, mode);
+                let da = left.sdf_open(p, mode, open);
+                let db = right.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Visual => -crate::csg::blend_min(-da, db, *radius, *blend_mode),
                     EvalMode::Logical => da.max(-db),
@@ -379,16 +394,16 @@ impl BoundedCsg {
                 let angle = *rate * p[1];
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
-                inner.sdf(twisted, mode)
+                inner.sdf_open(twisted, mode, open)
             }
             BoundedCsg::Bend { inner, rate, .. } => {
                 let angle = *rate * p[0];
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-                inner.sdf(bent, mode)
+                inner.sdf_open(bent, mode, open)
             }
             BoundedCsg::Displace { inner, depth, freq, .. } => {
-                let d = inner.sdf(p, mode);
+                let d = inner.sdf_open(p, mode, open);
                 let disp = *depth
                     * (p[0] * freq).sin()
                     * (p[1] * freq * 1.3).sin()
@@ -396,9 +411,16 @@ impl BoundedCsg {
                 d - disp
             }
             BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
-                open_shell_sdf(inner.sdf(p, mode), *thickness, open_faces, p)
+                let d = inner.sdf_open(p, mode, open);
+                let d_ret = if open_faces.is_empty() {
+                    d
+                } else {
+                    let merged = OpenBranchSet::push(open, open_faces);
+                    inner.sdf_open(p, mode, &merged)
+                };
+                crate::csg::shell_wall_sdf(d, d_ret, *thickness)
             }
-            BoundedCsg::Offset { inner, delta, .. } => inner.sdf(p, mode) - delta,
+            BoundedCsg::Offset { inner, delta, .. } => inner.sdf_open(p, mode, open) - delta,
             BoundedCsg::MaskedBlend {
                 left,
                 right,
@@ -409,8 +431,8 @@ impl BoundedCsg {
                 is_difference,
                 ..
             } => {
-                let da = left.sdf(p, mode);
-                let db_raw = right.sdf(p, mode);
+                let da = left.sdf_open(p, mode, open);
+                let db_raw = right.sdf_open(p, mode, open);
                 match mode {
                     EvalMode::Logical => {
                         if *is_difference { da.max(-db_raw) } else { da.min(db_raw) }
@@ -430,27 +452,40 @@ impl BoundedCsg {
                 }
             }
             BoundedCsg::Extrude {
+                id,
                 sketch,
                 half_height,
                 world_transform,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let d2 = sketch.sdf([local[0], local[1]]);
-                sdf_extrude(d2, local[2], *half_height) * world_transform.min_scale()
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let d2 = sketch
+                        .sdf_retained([local[0], local[1]], &mut |g| open.contains_sub(id, g));
+                    crate::csg::extrude_retained_combine(id, d2, local[2], *half_height, open)
+                } else {
+                    sdf_extrude(sketch.sdf([local[0], local[1]]), local[2], *half_height)
+                };
+                d * world_transform.min_scale()
             }
             BoundedCsg::Revolve {
+                id,
                 sketch,
                 world_transform,
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                sketch.sdf([r, local[1]]) * world_transform.min_scale()
+                let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_retained([r, local[1]], &mut |g| open.contains_sub(id, g))
+                } else {
+                    sketch.sdf([r, local[1]])
+                };
+                d * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
-                let da = left.sdf(p, mode);
-                let db = right.sdf(p, mode);
+                let da = left.sdf_open(p, mode, open);
+                let db = right.sdf_open(p, mode, open);
                 (1.0 - t) * da + t * db
             }
         }
@@ -470,6 +505,18 @@ impl BoundedCsg {
         eps: f32,
         mode: EvalMode,
     ) -> (f32, Contributors) {
+        self.evaluate_open(p, eps, mode, &OpenBranchSet::EMPTY)
+    }
+
+    /// [`Self::evaluate`] under a set of opened shell branches — opened
+    /// sub-faces are removed from both the distance and the contributor band.
+    pub(crate) fn evaluate_open(
+        &self,
+        p: [f32; 3],
+        eps: f32,
+        mode: EvalMode,
+        open: &OpenBranchSet<'_>,
+    ) -> (f32, Contributors) {
         match self {
             BoundedCsg::Empty => (f32::INFINITY, Contributors::empty()),
             BoundedCsg::Leaf {
@@ -479,22 +526,23 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let (d, c) = expand_evaluate_leaf(id, primitive, local, eps);
+                let (d, c) =
+                    crate::csg::expand_evaluate_leaf_retained(id, primitive, local, eps, open);
                 (d * world_transform.min_scale(), c)
             }
             BoundedCsg::Union { left, right, .. } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 combine_min(da, ca, db, cb, eps)
             }
             BoundedCsg::Difference { left, right, .. } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 combine_max(da, ca, -db, cb, eps)
             }
             BoundedCsg::Intersection { left, right, .. } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 combine_max(da, ca, db, cb, eps)
             }
             BoundedCsg::SmoothUnion {
@@ -504,8 +552,8 @@ impl BoundedCsg {
                 mode: blend_mode,
                 ..
             } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 match mode {
                     EvalMode::Visual => {
                         let d = crate::csg::blend_min(da, db, *radius, *blend_mode);
@@ -523,8 +571,8 @@ impl BoundedCsg {
                 mode: blend_mode,
                 ..
             } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 match mode {
                     EvalMode::Visual => {
                         let d = -crate::csg::blend_min(-da, db, *radius, *blend_mode);
@@ -539,16 +587,16 @@ impl BoundedCsg {
                 let angle = *rate * p[1];
                 let (s, c) = angle.sin_cos();
                 let twisted = [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
-                inner.evaluate(twisted, eps, mode)
+                inner.evaluate_open(twisted, eps, mode, open)
             }
             BoundedCsg::Bend { inner, rate, .. } => {
                 let angle = *rate * p[0];
                 let (s, c) = angle.sin_cos();
                 let bent = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-                inner.evaluate(bent, eps, mode)
+                inner.evaluate_open(bent, eps, mode, open)
             }
             BoundedCsg::Displace { inner, depth, freq, .. } => {
-                let (d, c) = inner.evaluate(p, eps, mode);
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 let disp = *depth
                     * (p[0] * freq).sin()
                     * (p[1] * freq * 1.3).sin()
@@ -556,18 +604,23 @@ impl BoundedCsg {
                 (d - disp, c)
             }
             BoundedCsg::Shell { inner, thickness, open_faces, .. } => {
-                let (d, c) = inner.evaluate(p, eps, mode);
-                // Shell is `max(d, −(d + e))`: a hard combine_max of the outer
-                // surface (term `d`, outer contributors) against the inner wall
-                // (term `−(d + e)`, the *same* faces offset inward → inner-wall
-                // contributors, DL-75). Reusing combine_max gives the inner
-                // faces their own provenance and yields the dual-contributor
-                // band exactly at the opening rim where the two surfaces meet.
-                let e = open_shell_erosion(d, *thickness, open_faces, p);
-                combine_max(d, c, -(d + e), c.mapped_inner(), eps)
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
+                // Shell is `max(d, −(d_ret + t))`: a hard combine_max of the
+                // outer surface (term `d`, outer contributors) against the
+                // inner wall (the RETAINED faces offset inward → inner-wall
+                // contributors, DL-75). Opened faces never gain an inner wall;
+                // the band at the opening rim sees the outer face + the inner
+                // wall where the two surfaces meet.
+                let (d_ret, c_ret) = if open_faces.is_empty() {
+                    (d, c)
+                } else {
+                    let merged = OpenBranchSet::push(open, open_faces);
+                    inner.evaluate_open(p, eps, mode, &merged)
+                };
+                combine_max(d, c, -(d_ret + *thickness), c_ret.mapped_inner(), eps)
             }
             BoundedCsg::Offset { inner, delta, .. } => {
-                let (d, c) = inner.evaluate(p, eps, mode);
+                let (d, c) = inner.evaluate_open(p, eps, mode, open);
                 (d - delta, c)
             }
             BoundedCsg::MaskedBlend {
@@ -580,8 +633,8 @@ impl BoundedCsg {
                 is_difference,
                 ..
             } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db_raw, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db_raw, cb) = right.evaluate_open(p, eps, mode, open);
                 let db = if *is_difference { -db_raw } else { db_raw };
                 match mode {
                     EvalMode::Logical => {
@@ -627,11 +680,35 @@ impl BoundedCsg {
                 // colliding branches — uniform with the analytic half-space
                 // band, so the B-Rep both-branches gate needs no sweep
                 // special-case.
-                let band = sketch.sdf_with_edges([local[0], local[1]], eps);
-                let d =
-                    sdf_extrude(band.distance, local[2], *half_height) * world_transform.min_scale();
-                let c = extrude_contributors(id, &band, local[2], *half_height, eps);
-                (d, c)
+                if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    let band = sketch.sdf_with_edges_retained(
+                        [local[0], local[1]],
+                        eps,
+                        &mut |g| open.contains_sub(id, g),
+                    );
+                    let d = crate::csg::extrude_retained_combine(
+                        id,
+                        band.distance,
+                        local[2],
+                        *half_height,
+                        open,
+                    ) * world_transform.min_scale();
+                    let c = crate::csg::extrude_contributors_retained(
+                        id,
+                        &band,
+                        local[2],
+                        *half_height,
+                        eps,
+                        open,
+                    );
+                    (d, c)
+                } else {
+                    let band = sketch.sdf_with_edges([local[0], local[1]], eps);
+                    let d = sdf_extrude(band.distance, local[2], *half_height)
+                        * world_transform.min_scale();
+                    let c = extrude_contributors(id, &band, local[2], *half_height, eps);
+                    (d, c)
+                }
             }
             BoundedCsg::Revolve {
                 id,
@@ -641,14 +718,20 @@ impl BoundedCsg {
             } => {
                 let local = world_to_local(world_transform, p);
                 let r = (local[0] * local[0] + local[2] * local[2]).sqrt();
-                let band = sketch.sdf_with_edges([r, local[1]], eps);
+                let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_with_edges_retained([r, local[1]], eps, &mut |g| {
+                        open.contains_sub(id, g)
+                    })
+                } else {
+                    sketch.sdf_with_edges([r, local[1]], eps)
+                };
                 let d = band.distance * world_transform.min_scale();
                 let c = revolve_contributors(id, &band);
                 (d, c)
             }
             BoundedCsg::Morph { left, right, t, .. } => {
-                let (da, ca) = left.evaluate(p, eps, mode);
-                let (db, cb) = right.evaluate(p, eps, mode);
+                let (da, ca) = left.evaluate_open(p, eps, mode, open);
+                let (db, cb) = right.evaluate_open(p, eps, mode, open);
                 let d = (1.0 - t) * da + t * db;
                 let mut c = ca;
                 c.extend(cb);
@@ -812,6 +895,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             let open_faces = open_faces
                 .iter()
                 .map(|f| OpenSurface {
+                    branch: f.branch,
                     surface: f.surface.clone(),
                     placement: compose_transforms(carry, &f.placement),
                 })

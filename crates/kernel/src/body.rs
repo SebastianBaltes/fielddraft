@@ -718,10 +718,12 @@ fn hash_halfspace(hs: &HalfSpace, hasher: &mut DefaultHasher) {
             cell_size.to_bits().hash(hasher);
             thickness.to_bits().hash(hasher);
         }
-        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+        HalfSpace::RevolvedProfile { segments, ccw, offset, extend_start, extend_end } => {
             6u8.hash(hasher);
             ccw.hash(hasher);
             offset.to_bits().hash(hasher);
+            extend_start.hash(hasher);
+            extend_end.hash(hasher);
             segments.len().hash(hasher);
             for s in segments {
                 for p in [s.start_point(), s.end_point()] {
