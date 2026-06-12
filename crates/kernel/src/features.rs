@@ -7840,6 +7840,226 @@ mod tests {
         eprintln!("probe: finish_weave {:?} ({} faces)", t.elapsed(), brep.faces.len());
     }
 
+    /// Diagnostic dump for the degenerate vase B-Rep edges (figure-eight at
+    /// the neck, jittery rim/foot circles): weave the SHELLED vase exactly
+    /// like `Body::ensure_brep` and print every edge's branch signature,
+    /// sample count and geometric extents. Not a regression test.
+    #[test]
+    #[ignore = "manual diagnostic dump, run with --ignored --nocapture"]
+    fn vase_shelled_brep_edge_dump() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
+        registry
+            .regenerate(&mut ctx, &[sketch_call.clone(), revolve_call.clone()], None)
+            .unwrap();
+        let mut top_hash = None;
+        for (brep, _) in ctx.brep_cache.ensure(&ctx.features) {
+            for i in 0..brep.faces.len() {
+                let fid = crate::brep::FaceId(i as u32);
+                if let crate::brep::SurfaceGeometry::Analytic { surface, transform } =
+                    &brep.face(fid).surface
+                {
+                    if let fielddraft_protocol::HalfSpace::Plane { normal, .. } = surface {
+                        if normal[1] > 0.99 && (transform.translate[1] - 68.0).abs() < 1e-3 {
+                            top_hash =
+                                Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                        }
+                    }
+                }
+            }
+        }
+        let top_hash = top_hash.expect("top rim face");
+        let shell_call = FeatureCall::new(
+            "shell",
+            id(3),
+            json!({
+                "open_faces": format!("qFace({top_hash})"),
+                "thickness": { "value": 2.0, "unit": "mm" },
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call, shell_call], None)
+            .unwrap();
+
+        let solid = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let body = crate::bvh::BoundedCsg::from_csg(&solid);
+        let bb = body.aabb();
+        let size = bb.size();
+        let largest = size[0].max(size[1]).max(size[2]);
+        let min_cell = (largest / 32.0).clamp(1e-3, 10.0);
+        let octree = crate::brep::octree::Octree::build(&body, min_cell);
+        let wire = crate::brep::edge_walker::build_wireframe(&body, &octree);
+        eprintln!(
+            "dump: shelled vase wireframe {} edges, {} vertices",
+            wire.edges.len(),
+            wire.vertices.len()
+        );
+        for (i, e) in wire.edges.iter().enumerate() {
+            // Hermite tangent sanity: the NURBS fit scales each sample's
+            // tangent by the chord and trusts its SIGN. A tangent pointing
+            // against the direction of travel (dot(tangent, chord) < 0)
+            // makes the fitted Bézier loop backwards — count those.
+            if let crate::brep::EdgeGeometry::Hermite(s) = &e.geometry {
+                let mut backwards = 0usize;
+                for w in s.windows(2) {
+                    let chord = [
+                        w[1].point[0] - w[0].point[0],
+                        w[1].point[1] - w[0].point[1],
+                        w[1].point[2] - w[0].point[2],
+                    ];
+                    let d0 = w[0].tangent[0] * chord[0]
+                        + w[0].tangent[1] * chord[1]
+                        + w[0].tangent[2] * chord[2];
+                    if d0 < 0.0 {
+                        backwards += 1;
+                    }
+                }
+                eprintln!("dump: edge {i}: {} backwards tangents of {}", backwards, s.len());
+            }
+            let pts: Vec<[f64; 3]> = match &e.geometry {
+                crate::brep::EdgeGeometry::Hermite(s) => s.iter().map(|h| h.point).collect(),
+                crate::brep::EdgeGeometry::Nurbs(n) => n.control_points.clone(),
+                crate::brep::EdgeGeometry::Polyline(p) => p.clone(),
+            };
+            let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
+            let (mut rmin, mut rmax) = (f64::INFINITY, f64::NEG_INFINITY);
+            for p in &pts {
+                let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                ymin = ymin.min(p[1]);
+                ymax = ymax.max(p[1]);
+                rmin = rmin.min(r);
+                rmax = rmax.max(r);
+            }
+            let sig = e.signature;
+            // Chain-order quality: consecutive step lengths. A well-ordered
+            // closed rim chain steps ~2πr/n; long chords mean the greedy
+            // spatial chaining jumped across the loop (the on-screen
+            // "figure-eight").
+            let mut max_step = 0.0f64;
+            let mut long_steps = 0usize;
+            let nominal = if pts.len() > 1 {
+                let mut total = 0.0f64;
+                for w in pts.windows(2) {
+                    let d = ((w[1][0] - w[0][0]).powi(2)
+                        + (w[1][1] - w[0][1]).powi(2)
+                        + (w[1][2] - w[0][2]).powi(2))
+                    .sqrt();
+                    total += d;
+                    max_step = max_step.max(d);
+                }
+                total / (pts.len() - 1) as f64
+            } else {
+                0.0
+            };
+            for w in pts.windows(2) {
+                let d = ((w[1][0] - w[0][0]).powi(2)
+                    + (w[1][1] - w[0][1]).powi(2)
+                    + (w[1][2] - w[0][2]).powi(2))
+                .sqrt();
+                if d > 3.0 * nominal {
+                    long_steps += 1;
+                }
+            }
+            // Angular ordering: a clean closed rim walks the circle
+            // monotonically (|Σ dθ| ≈ 2π, no sign reversals). Reversals
+            // mean the greedy chain doubles back — the fitted NURBS then
+            // loops across the interior (the on-screen figure-eight).
+            let mut reversals = 0usize;
+            let mut total_dtheta = 0.0f64;
+            let mut prev_dtheta = 0.0f64;
+            for w in pts.windows(2) {
+                let t0 = w[0][2].atan2(w[0][0]);
+                let t1 = w[1][2].atan2(w[1][0]);
+                let mut dt = t1 - t0;
+                if dt > std::f64::consts::PI {
+                    dt -= std::f64::consts::TAU;
+                } else if dt < -std::f64::consts::PI {
+                    dt += std::f64::consts::TAU;
+                }
+                if prev_dtheta != 0.0 && dt != 0.0 && dt.signum() != prev_dtheta.signum() {
+                    reversals += 1;
+                }
+                if dt != 0.0 {
+                    prev_dtheta = dt;
+                }
+                total_dtheta += dt;
+            }
+            eprintln!(
+                "dump: edge {i}: sig=({}.{}, {}.{}) samples={} y=[{ymin:.2},{ymax:.2}] r=[{rmin:.2},{rmax:.2}] step_avg={nominal:.2} step_max={max_step:.2} long_steps={long_steps} dtheta_total={:.2} reversals={reversals} start={:?} end={:?}",
+                sig.0.feature_id(),
+                sig.0.sub(),
+                sig.1.feature_id(),
+                sig.1.sub(),
+                pts.len(),
+                total_dtheta,
+                e.start,
+                e.end,
+            );
+        }
+        let brep = crate::brep::weaving::finish_weave(wire, &body);
+        eprintln!("dump: finished brep: {} faces, {} edges", brep.faces.len(), brep.edges.len());
+        for (i, f) in brep.faces.iter().enumerate() {
+            let kind = match &f.surface {
+                crate::brep::SurfaceGeometry::Analytic { surface, .. } => format!("{surface:?}"),
+                crate::brep::SurfaceGeometry::Tessellated { .. } => "tessellated".to_string(),
+            };
+            let kind_short: String = kind.chars().take(60).collect();
+            eprintln!(
+                "dump: face {i}: branch={}.{} outer_loop={} inner={} surface={kind_short}",
+                f.branch_id.feature_id(),
+                f.branch_id.sub(),
+                f.outer.edges.len(),
+                f.inner.len(),
+            );
+        }
+
+        // The viewport rides `Body::ensure_brep` with parametric_weave=true —
+        // dump THAT route too (branch-seed weave with octree fallback), since
+        // it is what bodyBrepEdges actually shows.
+        match crate::brep::weaving::weave_parametric(&body) {
+            None => eprintln!("dump: weave_parametric returned None (octree fallback)"),
+            Some(pbrep) => {
+                eprintln!(
+                    "dump: PARAMETRIC brep: {} faces, {} edges, {} vertices",
+                    pbrep.faces.len(),
+                    pbrep.edges.len(),
+                    pbrep.vertices.len()
+                );
+                for (i, e) in pbrep.edges.iter().enumerate() {
+                    let pts: Vec<[f64; 3]> = match &e.geometry {
+                        crate::brep::EdgeGeometry::Hermite(s) => {
+                            s.iter().map(|h| h.point).collect()
+                        }
+                        crate::brep::EdgeGeometry::Nurbs(n) => n.control_points.clone(),
+                        crate::brep::EdgeGeometry::Polyline(p) => p.clone(),
+                    };
+                    let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
+                    let (mut rmin, mut rmax) = (f64::INFINITY, f64::NEG_INFINITY);
+                    for p in &pts {
+                        let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+                        ymin = ymin.min(p[1]);
+                        ymax = ymax.max(p[1]);
+                        rmin = rmin.min(r);
+                        rmax = rmax.max(r);
+                    }
+                    let sig = e.signature;
+                    eprintln!(
+                        "dump: P-edge {i}: sig=({}.{}, {}.{}) samples={} y=[{ymin:.2},{ymax:.2}] r=[{rmin:.2},{rmax:.2}] start={:?} end={:?}",
+                        sig.0.feature_id(),
+                        sig.0.sub(),
+                        sig.1.feature_id(),
+                        sig.1.sub(),
+                        pts.len(),
+                        e.start,
+                        e.end,
+                    );
+                }
+            }
+        }
+    }
+
     /// The vase exercise's sketch + revolve calls, shared by the E2E test and
     /// the timing probe.
     fn vase_sketch_and_revolve_calls() -> (FeatureCall, FeatureCall) {
