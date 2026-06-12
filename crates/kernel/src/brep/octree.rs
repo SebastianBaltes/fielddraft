@@ -213,7 +213,13 @@ impl Octree {
         let largest = size[0].max(size[1]).max(size[2]).max(1.0);
         let root = aabb.expanded(largest * cfg.root_margin_factor);
 
-        recurse(body, &cfg, root, 0, &mut leaves);
+        // Phase 4 (BREP-CLASSIFICATION-PLAN): cell classification counts
+        // *coincidence classes*, not raw branches — two stacked features
+        // whose walls share one carrier surface are ONE effective surface,
+        // so their shared wall classifies as Face instead of smearing into
+        // edge cells along the whole contact (the oa9h/vyee mechanic).
+        let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+        recurse(body, &cfg, &registry, root, 0, &mut leaves);
         Octree { leaves }
     }
 
@@ -271,11 +277,12 @@ struct Sample {
 fn recurse(
     body: &BoundedCsg,
     cfg: &OctreeConfig,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
     depth: u32,
     out: &mut Vec<OctreeCell>,
 ) {
-    let class = classify(body, cfg, cell);
+    let class = classify(body, cfg, registry, cell);
 
     let size = cell.size();
     let largest_edge = size[0].max(size[1]).max(size[2]);
@@ -300,7 +307,7 @@ fn recurse(
                     branches,
                 });
             } else {
-                subdivide(body, cfg, cell, depth, out);
+                subdivide(body, cfg, registry, cell, depth, out);
             }
         }
         Classification::Uncertain => {
@@ -311,7 +318,7 @@ fn recurse(
                 // ever bracketed a surface, so there is nothing to seed.
                 // Drop it (do not store an `Uncertain` leaf).
             } else {
-                subdivide(body, cfg, cell, depth, out);
+                subdivide(body, cfg, registry, cell, depth, out);
             }
         }
     }
@@ -321,6 +328,7 @@ fn recurse(
 fn subdivide(
     body: &BoundedCsg,
     cfg: &OctreeConfig,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
     cell: Aabb,
     depth: u32,
     out: &mut Vec<OctreeCell>,
@@ -350,12 +358,17 @@ fn subdivide(
             min: [lo_x, lo_y, lo_z],
             max: [hi_x, hi_y, hi_z],
         };
-        recurse(body, cfg, child, depth + 1, out);
+        recurse(body, cfg, registry, child, depth + 1, out);
     }
 }
 
 /// Classify `cell` from its 8 corner samples (plus centre).
-fn classify(body: &BoundedCsg, cfg: &OctreeConfig, cell: Aabb) -> Classification {
+fn classify(
+    body: &BoundedCsg,
+    cfg: &OctreeConfig,
+    registry: &crate::brep::coincidence::CoincidenceRegistry,
+    cell: Aabb,
+) -> Classification {
     let size = cell.size();
     let diag = (size[0] * size[0] + size[1] * size[1] + size[2] * size[2]).sqrt();
     let eps = diag * cfg.eps_factor;
@@ -388,6 +401,35 @@ fn classify(body: &BoundedCsg, cfg: &OctreeConfig, cell: Aabb) -> Classification
         }
     }
     branches.sort_unstable_by_key(|b| b.as_u32());
+
+    // Phase 4: members of one coincidence class share a single carrier
+    // surface — for cell classification they are ONE effective surface,
+    // collapsed onto the class's smallest branch id present (the
+    // representative). This covers both lattice entries: ON-same walls
+    // (stacked features' shared wall → Face cells instead of an edge smear
+    // along the whole contact) AND ON-opposite membranes (the flush contact
+    // plane → Face cells whose cull the canonicalisation owns). The seam
+    // rim then counts exactly two carriers (wall class ∩ cap class) and
+    // classifies as Edge. Downstream pairing sees the representatives;
+    // `both_branches_active_classed` matches a representative against any
+    // member of its class.
+    if !registry.is_empty() {
+        let mut reps: Vec<BranchId> = Vec::with_capacity(branches.len());
+        for &b in &branches {
+            let rep = match registry.class_of(b) {
+                Some((cls, _)) => branches
+                    .iter()
+                    .copied()
+                    .find(|&o| matches!(registry.class_of(o), Some((c, _)) if c == cls))
+                    .unwrap_or(b),
+                None => b,
+            };
+            if !reps.contains(&rep) {
+                reps.push(rep);
+            }
+        }
+        branches = reps;
+    }
     let n_branches = branches.len();
 
     // Sign change & f_min over the corner samples (not the centre — the

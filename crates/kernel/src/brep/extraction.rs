@@ -595,6 +595,25 @@ pub(crate) fn both_branches_active(
     bb: BranchId,
     eps: f32,
 ) -> bool {
+    both_branches_active_classed(body, p, ba, bb, eps, None)
+}
+
+/// Class-aware variant of [`both_branches_active`] (plan Phase 4): with a
+/// coincidence registry, a required branch also counts as active when any
+/// member of its coincidence class (same carrier surface) is in the
+/// contributor set —
+/// the octree route's edge cells carry class *representatives*, but at a
+/// concrete point the evaluator may report the other member of the shared
+/// carrier. Pass `None` to keep the exact branch-identity semantics (the
+/// seed route, which gates coincident pairs at `seed_branch_pairs` instead).
+pub(crate) fn both_branches_active_classed(
+    body: &BoundedCsg,
+    p: [f32; 3],
+    ba: BranchId,
+    bb: BranchId,
+    eps: f32,
+    registry: Option<&crate::brep::coincidence::CoincidenceRegistry>,
+) -> bool {
     let (f, contributors) = body.evaluate(p, eps, EvalMode::Logical);
     // On-boundary gate (ticket o2j9, deep stacks): the contributor set alone
     // is necessary but NOT sufficient. Far outside the body, on the extension
@@ -611,7 +630,17 @@ pub(crate) fn both_branches_active(
         return false;
     }
     let slice = contributors.as_slice();
-    slice.contains(&ba) && slice.contains(&bb)
+    let active = |needed: BranchId| -> bool {
+        if slice.contains(&needed) {
+            return true;
+        }
+        let Some(reg) = registry else { return false };
+        let Some((cls, _)) = reg.class_of(needed) else { return false };
+        slice
+            .iter()
+            .any(|&c| matches!(reg.class_of(c), Some((o, _)) if o == cls))
+    };
+    active(ba) && active(bb)
 }
 
 /// Cell diagonal length (f32).
@@ -685,6 +714,7 @@ pub fn extract_edge_point(
     body: &BoundedCsg,
     cell: &OctreeCell,
     halfspaces: &BranchSurfaceMap,
+    registry: Option<&crate::brep::coincidence::CoincidenceRegistry>,
 ) -> Option<EdgePoint> {
     if cell.class != CellClass::Edge || cell.branches.len() != 2 {
         return None;
@@ -771,7 +801,14 @@ pub fn extract_edge_point(
     // phantom seam that has slid onto one branch's free surface, where the
     // other branch never reaches zero. A genuine intersection curve has both
     // branches tie at zero here, so both appear in the contributor set.
-    if !both_branches_active(body, p_edge, ba, bb, diag * BOTH_ACTIVE_EPS_FACTOR) {
+    if !both_branches_active_classed(
+        body,
+        p_edge,
+        ba,
+        bb,
+        diag * BOTH_ACTIVE_EPS_FACTOR,
+        registry,
+    ) {
         return None;
     }
 
@@ -971,9 +1008,13 @@ pub fn extract_features_with(
     } else {
         BranchSurfaceMap::new()
     };
+    // Phase 4: the octree's edge cells carry coincidence-class
+    // representatives; resolve them against the same registry.
+    let registry = crate::brep::coincidence::CoincidenceRegistry::build(body);
+    let registry = (!registry.is_empty()).then_some(&registry);
     let edges = octree
         .edge_cells()
-        .filter_map(|cell| extract_edge_point(body, cell, &halfspaces))
+        .filter_map(|cell| extract_edge_point(body, cell, &halfspaces, registry))
         .collect();
     let vertices = octree
         .vertex_cells()
@@ -1022,7 +1063,7 @@ mod tests {
         let mut count = 0;
         let mut signatures = HashSet::new();
         for cell in octree.edge_cells() {
-            if let Some(ep) = extract_edge_point(&body, cell, &BranchSurfaceMap::new()) {
+            if let Some(ep) = extract_edge_point(&body, cell, &BranchSurfaceMap::new(), None) {
                 count += 1;
                 // On the surface.
                 let p = [
@@ -1149,7 +1190,7 @@ mod tests {
             class: CellClass::Face,
             branches: vec![BranchId(1 << 4)],
         };
-        assert!(extract_edge_point(&body, &face_cell, &BranchSurfaceMap::new()).is_none());
+        assert!(extract_edge_point(&body, &face_cell, &BranchSurfaceMap::new(), None).is_none());
         assert!(extract_vertex(&body, &face_cell, &BranchSurfaceMap::new()).is_none());
     }
 

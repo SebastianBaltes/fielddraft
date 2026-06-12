@@ -371,7 +371,7 @@ Linie + Kreisbogen. Koinzidenz auf NURBS-Trägerflächen ist deklarierte
 Limitation — ausdrücklich **ohne** Octree-Fallback-Versprechen, denn der
 Octree löst Koinzidenz ebenfalls nicht (s. Fundamentalanalyse).
 
-### Phase 4 (nachgelagert) — Koinzidenz-bewusste Octree-Route
+### Phase 4 (nachgelagert) — Koinzidenz-bewusste Octree-Route — UMGESETZT
 
 Kontributor-/Aktivitätslogik (`both_branches_active`, Zell-Klassifikation)
 auf Klassen statt Branches umstellen: eine koinzidente Wand hat **eine**
@@ -379,6 +379,20 @@ Klasse → Face-Zelle statt geschmierter Edge-Zellen. Behebt die
 oa9h/vyee-Mechanik an der Wurzel. Nachgelagert, weil die Seed-Route nach
 Phase 3 den Normalfall trägt und die Octree-Route über das gemeinsame
 `finish_weave` bereits von Phase 1–3 profitiert.
+
+**Umsetzung (v0.6.80):** `Octree::build_with` baut die
+`CoincidenceRegistry` einmal pro Body und `classify` kollabiert das
+Branch-Set pro **Carrier-Klasse** auf den kleinsten anwesenden Branch
+(Repräsentant) — bewusst orientierungs-agnostisch: ON-same-Wände werden
+EIN Carrier (Face-Zellen statt Kanten-Schmiere), ON-opposite-Membranen
+ebenfalls (Face-Zellen, deren Cull der Kanonikalisierung gehört). Der
+Saum-Rim zählt damit exakt zwei Carrier (Wand-Klasse ∩ Kappen-Klasse) und
+klassifiziert als Edge. `both_branches_active_classed` (extraction.rs)
+matcht einen Repräsentanten gegen jedes Klassen-Mitglied im
+Kontributor-Set; die Seed-Route behält über die alte Signatur die exakte
+Branch-Identität (sie gated Koinzidenz bereits in `seed_branch_pairs`).
+Gate `gate_union_coaxial_cylinder_stack_octree_route` entignoriert und
+grün; volle Suite 857 Tests grün, verbleibend ignoriert nur F0-1-Familie.
 
 ### Phase 5 — Refactoring & Aufräumen (Code und Konzepte konsolidieren) — UMGESETZT
 

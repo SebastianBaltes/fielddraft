@@ -301,13 +301,14 @@ fn gate_union_coaxial_cylinder_stack_seed_route() {
 }
 
 #[test]
-#[ignore = "BREP-CLASSIFICATION-PLAN Phase 4 — Octree-Kontributoren schmieren am koinzidenten Zylinder-Saum, bekannt rot"]
 fn gate_union_coaxial_cylinder_stack_octree_route() {
-    // The octree route fragments the coincident seam rim into short arcs
-    // (the oa9h/vyee contributor smear — plane seams are saved by the DL-75
-    // analytic fast-path, cylinder seams are not). Root fix: Phase 4,
-    // contributor logic on coincidence classes. Includes the toggle-
-    // invariance assert, which equally needs Phase 4.
+    // Phase 4 regression guard (green since the class-aware octree
+    // classification): the octree route used to fragment the coincident
+    // seam rim into short arcs (the oa9h/vyee contributor smear — plane
+    // seams were saved by the DL-75 analytic fast-path, cylinder seams were
+    // not). Cell classification now counts coincidence CLASSES, so the
+    // shared wall is one carrier (Face cells) and the rim counts exactly
+    // two carriers (Edge cells).
     let body = union(
         cylinder_leaf(1, [0.0, 0.0, 0.0], 5.0, 4.0),
         cylinder_leaf(2, [0.0, 8.0, 0.0], 5.0, 4.0),
