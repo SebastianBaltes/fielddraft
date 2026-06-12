@@ -1736,20 +1736,31 @@ pub fn group_signed_distance_and_normal(
     let mut best_cp = p;
     let mut best_tan = [1.0f32, 0.0];
 
-    let mut consider = |cp: [f32; 2], tan: [f32; 2]| {
-        let dx = p[0] - cp[0];
-        let dy = p[1] - cp[1];
-        let d2 = dx * dx + dy * dy;
-        if d2 < best_d2 {
-            best_d2 = d2;
-            best_cp = cp;
-            best_tan = tan;
-        }
-    };
+    macro_rules! consider {
+        ($cp:expr, $tan:expr) => {{
+            let cp = $cp;
+            let dx = p[0] - cp[0];
+            let dy = p[1] - cp[1];
+            let d2 = dx * dx + dy * dy;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best_cp = cp;
+                best_tan = $tan;
+            }
+        }};
+    }
 
     for s in segments {
+        // Same lower-bound prune as `path_min_distance`: skip the exact
+        // closest-point solve when the segment's conservative bound cannot
+        // beat the running best (adaptive spline lowering emits dozens of
+        // short segments; this is the hot call of the octree edge route).
+        let lb = s.distance_lower_bound(p);
+        if lb * lb >= best_d2 {
+            continue;
+        }
         let (cp, tan) = s.closest_point_and_tangent(p);
-        consider(cp, tan);
+        consider!(cp, tan);
     }
 
     // Tangent-ray extensions. The traversal direction stays path-forward on
@@ -1760,7 +1771,7 @@ pub fn group_signed_distance_and_normal(
         let ta = first.tangent_at_start();
         let u = -((p[0] - a[0]) * ta[0] + (p[1] - a[1]) * ta[1]);
         if u > 0.0 {
-            consider([a[0] - u * ta[0], a[1] - u * ta[1]], ta);
+            consider!([a[0] - u * ta[0], a[1] - u * ta[1]], ta);
         }
     }
     if let (true, Some(last)) = (extend_end, segments.last()) {
@@ -1768,7 +1779,7 @@ pub fn group_signed_distance_and_normal(
         let tb = last.tangent_at_end();
         let v = (p[0] - b[0]) * tb[0] + (p[1] - b[1]) * tb[1];
         if v > 0.0 {
-            consider([b[0] + v * tb[0], b[1] + v * tb[1]], tb);
+            consider!([b[0] + v * tb[0], b[1] + v * tb[1]], tb);
         }
     }
 
