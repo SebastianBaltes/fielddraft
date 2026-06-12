@@ -113,8 +113,314 @@ pub fn ssi_seeds(
         _ => {}
     }
 
+    // Coaxial revolution pair: both surfaces revolve about the same world
+    // axis → every intersection component is a CIRCLE, found as a root of
+    // the two profile curves in the shared (r, y) half-plane. This is the
+    // only route that can intersect `RevolvedProfile` carriers (spline
+    // revolve walls and their shell inner walls).
+    if let Some(res) = coaxial_revolution(a, ta, b, tb, overlap) {
+        return res;
+    }
+
+    // The general scan cannot parametrise a revolved profile group; a
+    // non-coaxial pair involving one is unresolved → octree.
+    if matches!(a, HalfSpace::RevolvedProfile { .. })
+        || matches!(b, HalfSpace::RevolvedProfile { .. })
+    {
+        return SsiResult::Unsupported;
+    }
+
     // General 2D-parameter-domain scan.
     scan_components(a, ta, b, tb, overlap)
+}
+
+// ─── coaxial revolution pairs ────────────────────────────────────────────────
+
+/// A world-space revolution axis (point + unit direction).
+struct RevAxis {
+    origin: [f32; 3],
+    dir: [f32; 3],
+}
+
+/// Length tolerance for the coaxiality test (axis anchors / sphere centres off
+/// the shared axis). Pairs from one revolve feature share a transform exactly;
+/// this absolute slack only decides whether *cross-feature* pairs may take the
+/// coaxial route — drifted ones fall back to the scan, which is correct either
+/// way, so the tolerance is not load-bearing for correctness.
+const COAX_TOL: f32 = 1e-3;
+
+/// The intrinsic revolution axis of `h`, if it has one (local +Y mapped to
+/// world). Planes and spheres adapt to any axis and return `None`.
+fn axis_of(h: &HalfSpace, t: &Transform) -> Option<RevAxis> {
+    match h {
+        HalfSpace::InfiniteCylinder { .. }
+        | HalfSpace::Cone { .. }
+        | HalfSpace::Torus { .. }
+        | HalfSpace::RevolvedProfile { .. } => Some(RevAxis {
+            origin: local_to_world(t, [0.0, 0.0, 0.0]),
+            dir: vnorm(quat_rotate(t.rotation, [0.0, 1.0, 0.0])),
+        }),
+        _ => None,
+    }
+}
+
+/// Distance of world point `p` from the axis line.
+fn dist_to_axis(p: [f32; 3], axis: &RevAxis) -> f32 {
+    let d = vsub(p, axis.origin);
+    let along = vdot(d, axis.dir);
+    vlen(vsub(d, vscale(axis.dir, along)))
+}
+
+/// Whether `h` is a revolution surface about `axis` (within tolerance).
+fn coaxial_with(h: &HalfSpace, t: &Transform, axis: &RevAxis) -> bool {
+    match h {
+        HalfSpace::Plane { normal, .. } => {
+            vlen(vcross(plane_world_normal(*normal, t), axis.dir)) < PARALLEL_EPS
+        }
+        HalfSpace::Sphere { .. } => dist_to_axis(local_to_world(t, [0.0, 0.0, 0.0]), axis) < COAX_TOL,
+        HalfSpace::InfiniteCylinder { .. }
+        | HalfSpace::Cone { .. }
+        | HalfSpace::RevolvedProfile { .. } => match axis_of(h, t) {
+            Some(own) => {
+                vlen(vcross(own.dir, axis.dir)) < PARALLEL_EPS
+                    && dist_to_axis(own.origin, axis) < COAX_TOL
+            }
+            None => false,
+        },
+        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => false,
+    }
+}
+
+/// Curve-A preference: the most structured profile is sampled, the other
+/// operand is evaluated implicitly along it.
+fn profile_rank(h: &HalfSpace) -> u8 {
+    match h {
+        HalfSpace::RevolvedProfile { .. } => 0,
+        HalfSpace::Cone { .. } => 1,
+        HalfSpace::InfiniteCylinder { .. } => 2,
+        HalfSpace::Sphere { .. } => 3,
+        _ => 9,
+    }
+}
+
+/// One contiguous, monotone-parameter piece of operand A's profile curve:
+/// `eval(t ∈ [0,1])` returns a WORLD point on A's surface (the φ=0 meridian
+/// of A's local frame), `samples` is the sign-scan density along the piece.
+struct ProfilePiece<'a> {
+    samples: usize,
+    eval: Box<dyn Fn(f32) -> [f32; 3] + 'a>,
+}
+
+/// Decompose operand A's profile into sampleable pieces, bounded by the
+/// overlap box (transformed into A's local frame, generously padded). The
+/// RevolvedProfile pieces include the two tangent-extension rays past the
+/// chain ends: that is where shared-corner roots with adjacent groups live
+/// (the carriers cross transversally there), and an inner-wall corner's foot
+/// can sit far beyond the group end at shallow knick angles (`offset/tanθ`).
+fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option<Vec<ProfilePiece<'a>>> {
+    // Overlap corners in A's local frame → y-range + a local length scale.
+    let corners = box_corners(overlap);
+    let local: Vec<[f32; 3]> = corners.iter().map(|&c| world_to_local(t, c)).collect();
+    let (ymin, ymax) = {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for c in &local {
+            lo = lo.min(c[1]);
+            hi = hi.max(c[1]);
+        }
+        let padd = 0.05 * (hi - lo).max(1e-3);
+        (lo - padd, hi + padd)
+    };
+    let local_diag = {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for c in &local {
+            for k in 0..3 {
+                lo[k] = lo[k].min(c[k]);
+                hi[k] = hi[k].max(c[k]);
+            }
+        }
+        let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3)
+    };
+
+    let to_world = move |q: [f32; 2]| local_to_world(t, [q[0], q[1], 0.0]);
+    let mut pieces: Vec<ProfilePiece<'a>> = Vec::new();
+    match h {
+        HalfSpace::InfiniteCylinder { radius } => {
+            let r = *radius;
+            pieces.push(ProfilePiece {
+                samples: 256,
+                eval: Box::new(move |s| to_world([r, ymin + s * (ymax - ymin)])),
+            });
+        }
+        HalfSpace::Cone { half_angle } => {
+            let tan_a = half_angle.tan();
+            pieces.push(ProfilePiece {
+                samples: 256,
+                eval: Box::new(move |s| {
+                    let y = ymin + s * (ymax - ymin);
+                    to_world([y.abs() * tan_a, y])
+                }),
+            });
+        }
+        HalfSpace::Sphere { radius } => {
+            let r = *radius;
+            pieces.push(ProfilePiece {
+                samples: 256,
+                eval: Box::new(move |s| {
+                    let phi = std::f32::consts::PI * s;
+                    to_world([r * phi.sin(), r * phi.cos()])
+                }),
+            });
+        }
+        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+            let (off, ccw) = (*offset, *ccw);
+            // Offset-corrected point on one segment: p(t) − offset·n_out(t),
+            // with the tangent from a central difference (robust for every
+            // segment kind; the exact derivative is not exposed).
+            let offset_pt = move |seg: &'a fielddraft_protocol::sketch2d::SketchSegment,
+                                  tt: f32|
+                  -> [f32; 2] {
+                let p = seg.point_at(tt);
+                let h = 1e-3f32;
+                let p0 = seg.point_at((tt - h).max(0.0));
+                let p1 = seg.point_at((tt + h).min(1.0));
+                let (dx, dy) = (p1[0] - p0[0], p1[1] - p0[1]);
+                let len = (dx * dx + dy * dy).sqrt().max(1e-12);
+                let tan = [dx / len, dy / len];
+                let n = if ccw { [tan[1], -tan[0]] } else { [-tan[1], tan[0]] };
+                [p[0] - off * n[0], p[1] - off * n[1]]
+            };
+            for seg in segments.iter() {
+                pieces.push(ProfilePiece {
+                    samples: 32,
+                    eval: Box::new(move |s| to_world(offset_pt(seg, s))),
+                });
+            }
+            // Tangent-extension rays (path-backward from the first point,
+            // path-forward from the last), offset applied with the ray's
+            // constant normal. Length = the local overlap diagonal.
+            if let (Some(first), Some(last)) = (segments.first(), segments.last()) {
+                let pad = local_diag + 4.0 * off.abs();
+                let a0 = first.start_point();
+                let ta0 = first.tangent_at_start();
+                let n0 = if ccw { [ta0[1], -ta0[0]] } else { [-ta0[1], ta0[0]] };
+                pieces.push(ProfilePiece {
+                    samples: 96,
+                    eval: Box::new(move |s| {
+                        let u = s * pad;
+                        to_world([
+                            a0[0] - u * ta0[0] - off * n0[0],
+                            a0[1] - u * ta0[1] - off * n0[1],
+                        ])
+                    }),
+                });
+                let b0 = last.end_point();
+                let tb0 = last.tangent_at_end();
+                let n1 = if ccw { [tb0[1], -tb0[0]] } else { [-tb0[1], tb0[0]] };
+                pieces.push(ProfilePiece {
+                    samples: 96,
+                    eval: Box::new(move |s| {
+                        let u = s * pad;
+                        to_world([
+                            b0[0] + u * tb0[0] - off * n1[0],
+                            b0[1] + u * tb0[1] - off * n1[1],
+                        ])
+                    }),
+                });
+            }
+        }
+        _ => return None,
+    }
+    Some(pieces)
+}
+
+/// Try the coaxial-revolution short-circuit. `None` = the pair is not coaxial
+/// (caller continues with the general machinery); `Some` = handled, every
+/// intersection component is a circle about the shared axis.
+fn coaxial_revolution(
+    a: &HalfSpace,
+    ta: &Transform,
+    b: &HalfSpace,
+    tb: &Transform,
+    overlap: &Aabb,
+) -> Option<SsiResult> {
+    let axis = axis_of(a, ta).or_else(|| axis_of(b, tb))?;
+    if !(coaxial_with(a, ta, &axis) && coaxial_with(b, tb, &axis)) {
+        return None;
+    }
+    // Torus profiles are circles in (r,y) — representable, but the torus
+    // operand is bailed before this point (`is_unsupported`); keep the rank
+    // gate honest anyway.
+    let (ca, cta, cb, ctb) = if profile_rank(a) <= profile_rank(b) {
+        (a, ta, b, tb)
+    } else {
+        (b, tb, a, ta)
+    };
+    let pieces = profile_pieces(ca, cta, overlap)?;
+
+    // Walk every piece of A's profile, find sign changes of B's implicit and
+    // bisect them down. Each root is one circle about the shared axis.
+    let mut roots: Vec<[f32; 3]> = Vec::new();
+    for piece in &pieces {
+        let f = |s: f32| implicit_world(cb, ctb, (piece.eval)(s));
+        let n = piece.samples;
+        let mut prev_s = 0.0f32;
+        let mut prev_v = f(0.0);
+        for i in 1..=n {
+            let s = i as f32 / n as f32;
+            let v = f(s);
+            if prev_v == 0.0 {
+                roots.push((piece.eval)(prev_s));
+            } else if prev_v * v < 0.0 {
+                let (mut lo, mut hi, mut flo) = (prev_s, s, prev_v);
+                for _ in 0..BISECT_STEPS {
+                    let mid = 0.5 * (lo + hi);
+                    let fm = f(mid);
+                    if flo * fm <= 0.0 {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                        flo = fm;
+                    }
+                }
+                roots.push((piece.eval)(0.5 * (lo + hi)));
+            }
+            prev_s = s;
+            prev_v = v;
+        }
+    }
+
+    // Dedup roots: same circle found from two adjacent pieces (e.g. a corner
+    // shared by a segment end and the extension ray) collapses to one.
+    let mut kept: Vec<[f32; 3]> = Vec::new();
+    'outer: for r in roots {
+        for k in &kept {
+            // Compare in (radius, height) — azimuth is irrelevant for circles.
+            let (ra, ha) = (dist_to_axis(r, &axis), vdot(vsub(r, axis.origin), axis.dir));
+            let (rb, hb) = (dist_to_axis(*k, &axis), vdot(vsub(*k, axis.origin), axis.dir));
+            if (ra - rb).abs() < 1e-3 && (ha - hb).abs() < 1e-3 {
+                continue 'outer;
+            }
+        }
+        kept.push(r);
+    }
+
+    let mut comps: Vec<Vec<[f32; 3]>> = Vec::new();
+    for w in kept {
+        let along = vdot(vsub(w, axis.origin), axis.dir);
+        let center = vadd(axis.origin, vscale(axis.dir, along));
+        let radius = vlen(vsub(w, center));
+        if radius < 1e-4 {
+            continue; // pole touch — a point, not an edge circle
+        }
+        if let SsiResult::Components(mut cs) = seed_from_circle(center, axis.dir, radius, overlap)
+        {
+            comps.append(&mut cs);
+        }
+    }
+    Some(SsiResult::Components(comps))
 }
 
 // ─── world-space helpers ─────────────────────────────────────────────────────

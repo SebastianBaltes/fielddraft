@@ -1021,6 +1021,52 @@ mod tests {
     }
 
     #[test]
+    fn seed_revolve_rectangle_matches_octree() {
+        // A rectangle profile at r ∈ [3, 7], y ∈ [−10, 10] revolved about Y: a
+        // genus-1 tube. All four wall groups lift analytically (two coaxial
+        // cylinders + two annulus planes); the four rim circles come from the
+        // new coaxial SSI route. Handles must match the octree weave exactly.
+        let sketch = Sketch2d::Prim(Sketch2dPrimitive::Rectangle {
+            center: [5.0, 0.0],
+            half_extents: [2.0, 10.0],
+        });
+        let body = BoundedCsg::from_csg(&CsgNode::Revolve {
+            id: FeatureId::from_u32(3),
+            sketch: Box::new(sketch),
+        });
+        assert_seed_matches_octree(&body, 0.5);
+    }
+
+    #[test]
+    fn seed_revolve_bezier_profile_matches_octree() {
+        // A closed path profile with a quadratic-Bézier outer wall: the curved
+        // group carries a RevolvedProfile carrier (no Plane/Cyl/Cone lift), so
+        // this exercises the coaxial SSI route against a sampled carrier. The
+        // four corner circles bound four faces; the Bézier wall's circles meet
+        // the two annulus planes at (≈6.x, ±5).
+        use fielddraft_protocol::SketchSegment;
+        let seg_line = |a: [f32; 2], b: [f32; 2]| SketchSegment::Line { start: a, end: b };
+        let profile = Sketch2d::Prim(Sketch2dPrimitive::Path {
+            segments: vec![
+                seg_line([1.0, -5.0], [6.0, -5.0]),
+                SketchSegment::QuadBezier {
+                    p0: [6.0, -5.0],
+                    p1: [8.0, 0.0],
+                    p2: [6.0, 5.0],
+                },
+                seg_line([6.0, 5.0], [1.0, 5.0]),
+                seg_line([1.0, 5.0], [1.0, -5.0]),
+            ],
+            closed: true,
+        });
+        let body = BoundedCsg::from_csg(&CsgNode::Revolve {
+            id: FeatureId::from_u32(4),
+            sketch: Box::new(profile),
+        });
+        assert_seed_matches_octree(&body, 0.25);
+    }
+
+    #[test]
     fn weave_branch_seeds_returns_none_for_unresolvable() {
         // A domain warp is out of analytic scope: the half-space map describes the
         // un-warped box, so seeding is invalid. `scope_supported` gates it before
