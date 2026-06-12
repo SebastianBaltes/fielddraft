@@ -897,9 +897,9 @@ impl SketchToolKind for SketchPolygonTool {
 ///   periodic/uniform knot vector wraps it into a loop. The B-spline
 ///   is lowered EXACTLY (no point-sampling of the whole curve): each
 ///   knot span is converted to one cubic Bézier via Boehm knot
-///   insertion, then each cubic is subdivided to a flatness tolerance
-///   into [`SketchSegment::QuadBezier`] segments (see
-///   [`bspline_quad_beziers`]).
+///   insertion, then each cubic is subdivided to the deviation
+///   tolerance [`SPLINE_LOWER_TOL`] into [`SketchSegment::QuadBezier`]
+///   segments (see [`bspline_quad_beziers`]).
 ///
 /// `closed` selects a wrap-around loop (extrudable region) versus an
 /// open reference curve. Requires ≥ 2 control points.
@@ -1369,19 +1369,22 @@ fn build_sketch_path(def: &SketchPathDef) -> Option<Sketch2d> {
     acc
 }
 
-/// Sample a Catmull-Rom interpolating spline through `control_pts`
-/// and emit one [`SketchSegment::QuadBezier`] per sub-step, forming
-/// a Path that passes through every control point.
+/// Lower a Catmull-Rom interpolating spline through `control_pts`
+/// into a chain of [`SketchSegment::QuadBezier`] segments that stays
+/// within `tol` (model units) of the exact spline.
 ///
-/// Method: each Catmull-Rom span (between consecutive control
-/// points `p1`→`p2`, with neighbours `p0`/`p3` for tangents) is a
-/// cubic. We sample the span at `steps` uniformly-spaced parameters
-/// and, between successive samples, fit a quadratic Bézier whose
-/// control point `p1` is the intersection of the curve tangents at
-/// the two sample endpoints (falling back to the chord midpoint
-/// when the tangents are near-parallel). Sampling densely keeps the
-/// quadratic approximation visually faithful while reusing the
-/// kernel's exact QuadBezier SDF machinery.
+/// Each Catmull-Rom span (`p1`→`p2`, neighbours `p0`/`p3` supplying
+/// the tangents `(p2−p0)/2` and `(p3−p1)/2`) IS a cubic Bézier —
+/// exactly:
+///
+///   b0 = p1,  b1 = p1 + (p2−p0)/6,  b2 = p2 − (p3−p1)/6,  b3 = p2
+///
+/// — so the lowering converts each span exactly and delegates to the
+/// error-bounded [`cubic_to_quads`]. No whole-curve sampling: the
+/// interpolated control points are hit exactly (span endpoints are
+/// preserved through subdivision), the segment count adapts to
+/// curvature (a straight-ish span is a single quad), and junctions
+/// inherit the spline's C1 tangents exactly.
 ///
 /// * Open splines (`closed == false`) duplicate the first/last
 ///   control point to synthesise the end tangents.
@@ -1392,39 +1395,14 @@ fn build_sketch_path(def: &SketchPathDef) -> Option<Sketch2d> {
 pub fn catmull_rom_quad_beziers(
     control_pts: &[[f32; 2]],
     closed: bool,
-    steps: u32,
+    tol: f64,
 ) -> Vec<SketchSegment> {
     let n = control_pts.len();
     if n < 2 {
         return Vec::new();
     }
-    let steps = steps.max(1);
-
-    // Catmull-Rom position at parameter t∈[0,1] on the span p1→p2.
-    let cr = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let f = |a: f32, b: f32, c: f32, d: f32| {
-            0.5 * ((2.0 * b)
-                + (-a + c) * t
-                + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
-                + (-a + 3.0 * b - 3.0 * c + d) * t3)
-        };
-        [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
-    };
-    // Catmull-Rom tangent (derivative) at parameter t on the span.
-    let cr_tan = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32| -> [f32; 2] {
-        let t2 = t * t;
-        let f = |a: f32, b: f32, c: f32, d: f32| {
-            0.5 * ((-a + c)
-                + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t
-                + 3.0 * (-a + 3.0 * b - 3.0 * c + d) * t2)
-        };
-        [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
-    };
-
     let span_count = if closed { n } else { n - 1 };
-    let mut segs = Vec::with_capacity(span_count * steps as usize);
+    let mut segs = Vec::with_capacity(span_count * 2);
     for i in 0..span_count {
         let (i0, i1, i2, i3) = if closed {
             ((i + n - 1) % n, i % n, (i + 1) % n, (i + 2) % n)
@@ -1436,29 +1414,16 @@ pub fn catmull_rom_quad_beziers(
                 if i + 2 >= n { n - 1 } else { i + 2 },
             )
         };
-        let p0 = control_pts[i0];
-        let p1 = control_pts[i1];
-        let p2 = control_pts[i2];
-        let p3 = control_pts[i3];
-
-        for s in 0..steps {
-            let ta = s as f32 / steps as f32;
-            let tb = (s + 1) as f32 / steps as f32;
-            let a = cr(p0, p1, p2, p3, ta);
-            let b = cr(p0, p1, p2, p3, tb);
-            let tan_a = cr_tan(p0, p1, p2, p3, ta);
-            let tan_b = cr_tan(p0, p1, p2, p3, tb);
-            // Quad-Bézier control point = intersection of the two
-            // tangent lines (a + u·tan_a) and (b − w·tan_b); falls
-            // back to the chord midpoint if near-parallel.
-            let ctrl = line_intersection(a, tan_a, b, tan_b)
-                .unwrap_or([0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]);
-            segs.push(SketchSegment::QuadBezier {
-                p0: a,
-                p1: ctrl,
-                p2: b,
-            });
-        }
+        let p = |idx: usize| -> [f64; 2] {
+            [control_pts[idx][0] as f64, control_pts[idx][1] as f64]
+        };
+        let p0 = p(i0);
+        let p1 = p(i1);
+        let p2 = p(i2);
+        let p3 = p(i3);
+        let b1 = [p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0];
+        let b2 = [p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0];
+        cubic_to_quads(p1, b1, b2, p2, tol, &mut segs);
     }
     segs
 }
@@ -1485,8 +1450,8 @@ pub fn catmull_rom_quad_beziers(
 ///    Boehm's knot-insertion algorithm (insert each interior knot up
 ///    to multiplicity `degree`, i.e. the Bézier control points of a
 ///    span are read straight off the fully-refined polygon).
-/// 3. Subdivide each cubic Bézier to a flatness tolerance into
-///    quadratic Béziers (the kernel `SketchSegment` has no cubic).
+/// 3. Subdivide each cubic Bézier into quadratic Béziers within the
+///    deviation tolerance (the kernel `SketchSegment` has no cubic).
 ///
 /// Edge cases (no panic, NaN-free):
 /// * `< 2` control points → empty.
@@ -1498,7 +1463,7 @@ pub fn catmull_rom_quad_beziers(
 pub fn bspline_quad_beziers(
     control_pts: &[[f64; 2]],
     closed: bool,
-    flatness: f64,
+    tol: f64,
 ) -> Vec<SketchSegment> {
     let n = control_pts.len();
     if n < 2 {
@@ -1562,7 +1527,7 @@ pub fn bspline_quad_beziers(
     let mut segs: Vec<SketchSegment> = Vec::new();
     for bez in &beziers {
         match bez.len() {
-            4 => cubic_to_quads(bez[0], bez[1], bez[2], bez[3], flatness, &mut segs),
+            4 => cubic_to_quads(bez[0], bez[1], bez[2], bez[3], tol, &mut segs),
             3 => {
                 // Already a quad.
                 segs.push(SketchSegment::QuadBezier {
@@ -1691,64 +1656,116 @@ fn insert_knot(poly: &mut Vec<[f64; 2]>, knots: &mut Vec<f64>, degree: usize, u:
     knots.insert(k + 1, u);
 }
 
-/// Subdivide a cubic Bézier (`p0,p1,p2,p3`) into [`SketchSegment::
-/// QuadBezier`] segments, recursing until the cubic is flat enough
-/// (control points within `flatness` of the chord) to be replaced by
-/// a single quad whose control point is the average of the cubic's
-/// elevated mid controls. Pushes onto `out`.
+/// Subdivide a cubic Bézier (`p0,p1,p2,p3`) into the SMALLEST uniform
+/// chain of [`SketchSegment::QuadBezier`] segments that provably
+/// deviates from the cubic by at most `tol` (cu2qu-style: try
+/// n = 1, 2, 3, … equal-parameter pieces and take the first n whose
+/// pieces all pass). Pushes onto `out`.
+///
+/// Each emitted quad keeps the cubic's exact end-tangent DIRECTIONS
+/// (its control point is the intersection of the piece's end
+/// tangents), so the chain is exactly G1 at every junction — the path
+/// G1-grouping (and with it branch/face identity in the BRep) does
+/// not depend on `tol`. Near-parallel tangents (straight or
+/// inflection-carrying pieces) fall back to the "midpoint" control
+/// `q = (3(p1+p2) − p0 − p3)/4`.
+///
+/// The per-piece error bound is analytic, no sampling: elevate the
+/// candidate quad to a cubic and diff the control polygons — the
+/// difference curve is `e1·B1(t) + e2·B2(t)` with
+/// `e1 = p1 − (p0+2c)/3`, `e2 = p2 − (p3+2c)/3`, and since
+/// `B1(t)+B2(t) = 3t(1−t) ≤ 3/4`, the same-parameter deviation is
+/// ≤ `¾·max(‖e1‖,‖e2‖)`. It is zero iff the piece IS the quad, and
+/// shrinks with the third-order term (~n⁻³), so n stays small.
 fn cubic_to_quads(
     p0: [f64; 2],
     p1: [f64; 2],
     p2: [f64; 2],
     p3: [f64; 2],
-    flatness: f64,
+    tol: f64,
     out: &mut Vec<SketchSegment>,
 ) {
-    // Flatness: max distance of p1,p2 from the chord p0→p3.
-    let dx = p3[0] - p0[0];
-    let dy = p3[1] - p0[1];
-    let chord = (dx * dx + dy * dy).sqrt();
-    let dist = |p: [f64; 2]| -> f64 {
-        if chord < 1e-12 {
-            ((p[0] - p0[0]).powi(2) + (p[1] - p0[1]).powi(2)).sqrt()
-        } else {
-            ((p[0] - p0[0]) * dy - (p[1] - p0[1]) * dx).abs() / chord
+    // Split at inflection points first: each sub-piece is then convex,
+    // so the G1-preserving tangent-intersection control exists for
+    // every piece, and the cubic's own tangent at the inflection is
+    // shared exactly by both sides — the chain stays exactly G1 even
+    // across inflections. Inflections of a Bézier cubic are the roots
+    // of cross(B'(t), B''(t)) = cross(b,c)·t² + cross(a,c)·t +
+    // cross(a,b) with a = p1−p0, b = p2−2p1+p0, c = p3−3p2+3p1−p0.
+    let a = [p1[0] - p0[0], p1[1] - p0[1]];
+    let b = [p2[0] - 2.0 * p1[0] + p0[0], p2[1] - 2.0 * p1[1] + p0[1]];
+    let c = [
+        p3[0] - 3.0 * p2[0] + 3.0 * p1[0] - p0[0],
+        p3[1] - 3.0 * p2[1] + 3.0 * p1[1] - p0[1],
+    ];
+    let cross = |u: [f64; 2], v: [f64; 2]| u[0] * v[1] - u[1] * v[0];
+    let (qa, qb, qc) = (cross(b, c), cross(a, c), cross(a, b));
+    let mut cuts = [0.0f64, 1.0, 1.0, 1.0];
+    let mut n_cuts = 1;
+    let push_root = |t: f64, cuts: &mut [f64; 4], n_cuts: &mut usize| {
+        if t > 1e-6 && t < 1.0 - 1e-6 && t.is_finite() {
+            cuts[*n_cuts] = t;
+            *n_cuts += 1;
         }
     };
-    let d = dist(p1).max(dist(p2));
-    if d <= flatness {
-        // Approximate the cubic by a single quad. The quad control
-        // point is the intersection of the end tangents (p0→p1 and
-        // p3→p2); fall back to the chord midpoint when degenerate.
-        let t0 = [p1[0] - p0[0], p1[1] - p0[1]];
-        let t1 = [p2[0] - p3[0], p2[1] - p3[1]];
-        let ctrl = line_intersection(
-            [p0[0] as f32, p0[1] as f32],
-            [t0[0] as f32, t0[1] as f32],
-            [p3[0] as f32, p3[1] as f32],
-            [t1[0] as f32, t1[1] as f32],
-        )
-        .unwrap_or([
-            (0.5 * (p0[0] + p3[0])) as f32,
-            (0.5 * (p0[1] + p3[1])) as f32,
-        ]);
-        // Guard against NaN/Inf from a pathological intersection.
-        let ctrl = if ctrl[0].is_finite() && ctrl[1].is_finite() {
-            ctrl
-        } else {
-            [
-                (0.5 * (p0[0] + p3[0])) as f32,
-                (0.5 * (p0[1] + p3[1])) as f32,
-            ]
-        };
+    let curve_scale = (a[0].abs() + b[0].abs() + c[0].abs())
+        .max(a[1].abs() + b[1].abs() + c[1].abs())
+        .max(1e-300);
+    if qa.abs() > 1e-12 * curve_scale * curve_scale {
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc > 0.0 {
+            let r = -0.5 * (qb + qb.signum() * disc.sqrt());
+            let r = if r == 0.0 { f64::MIN_POSITIVE } else { r };
+            let (t1, t2) = (r / qa, qc / r);
+            push_root(t1.min(t2), &mut cuts, &mut n_cuts);
+            push_root(t1.max(t2), &mut cuts, &mut n_cuts);
+        }
+    } else if qb.abs() > 1e-12 * curve_scale * curve_scale {
+        push_root(-qc / qb, &mut cuts, &mut n_cuts);
+    }
+    cuts[n_cuts] = 1.0;
+    n_cuts += 1;
+    for w in 0..n_cuts - 1 {
+        let (s0, s1, s2, s3) = cubic_piece(p0, p1, p2, p3, cuts[w], cuts[w + 1]);
+        convex_cubic_to_quads(s0, s1, s2, s3, tol, 24, out);
+    }
+}
+
+/// Adaptive quad subdivision of an inflection-free cubic piece (see
+/// [`cubic_to_quads`]): accept a single quad when [`quad_for_cubic`]
+/// finds one within `tol`, otherwise bisect — refinement stays local
+/// to the curvy / near-inflection parts.
+fn convex_cubic_to_quads(
+    p0: [f64; 2],
+    p1: [f64; 2],
+    p2: [f64; 2],
+    p3: [f64; 2],
+    tol: f64,
+    depth: u32,
+    out: &mut Vec<SketchSegment>,
+) {
+    if let Some(ctrl) = quad_for_cubic(p0, p1, p2, p3, tol) {
         out.push(SketchSegment::QuadBezier {
             p0: [p0[0] as f32, p0[1] as f32],
-            p1: ctrl,
+            p1: [ctrl[0] as f32, ctrl[1] as f32],
             p2: [p3[0] as f32, p3[1] as f32],
         });
         return;
     }
-    // de Casteljau split at t = 0.5.
+    if depth == 0 {
+        // Pathological cusp: emit the midpoint-control quad, whose
+        // deviation err_mid is microscopic at this depth.
+        let q = [
+            (3.0 * (p1[0] + p2[0]) - p0[0] - p3[0]) / 4.0,
+            (3.0 * (p1[1] + p2[1]) - p0[1] - p3[1]) / 4.0,
+        ];
+        out.push(SketchSegment::QuadBezier {
+            p0: [p0[0] as f32, p0[1] as f32],
+            p1: [q[0] as f32, q[1] as f32],
+            p2: [p3[0] as f32, p3[1] as f32],
+        });
+        return;
+    }
     let mid = |a: [f64; 2], b: [f64; 2]| [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
     let p01 = mid(p0, p1);
     let p12 = mid(p1, p2);
@@ -1756,8 +1773,133 @@ fn cubic_to_quads(
     let p012 = mid(p01, p12);
     let p123 = mid(p12, p23);
     let p0123 = mid(p012, p123);
-    cubic_to_quads(p0, p01, p012, p0123, flatness, out);
-    cubic_to_quads(p0123, p123, p23, p3, flatness, out);
+    convex_cubic_to_quads(p0, p01, p012, p0123, tol, depth - 1, out);
+    convex_cubic_to_quads(p0123, p123, p23, p3, tol, depth - 1, out);
+}
+
+/// Extract the sub-cubic of (`p0..p3`) on the parameter interval
+/// `[ta, tb]` (two de Casteljau splits).
+fn cubic_piece(
+    p0: [f64; 2],
+    p1: [f64; 2],
+    p2: [f64; 2],
+    p3: [f64; 2],
+    ta: f64,
+    tb: f64,
+) -> ([f64; 2], [f64; 2], [f64; 2], [f64; 2]) {
+    let lerp = |a: [f64; 2], b: [f64; 2], t: f64| {
+        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    };
+    // Split off [ta, 1], then take the leading fraction of it.
+    let split_right = |p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64| {
+        let p01 = lerp(p0, p1, t);
+        let p12 = lerp(p1, p2, t);
+        let p23 = lerp(p2, p3, t);
+        let p012 = lerp(p01, p12, t);
+        let p123 = lerp(p12, p23, t);
+        let pm = lerp(p012, p123, t);
+        (pm, p123, p23, p3)
+    };
+    let split_left = |p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64| {
+        let p01 = lerp(p0, p1, t);
+        let p12 = lerp(p1, p2, t);
+        let p23 = lerp(p2, p3, t);
+        let p012 = lerp(p01, p12, t);
+        let p123 = lerp(p12, p23, t);
+        let pm = lerp(p012, p123, t);
+        (p0, p01, p012, pm)
+    };
+    let (a0, a1, a2, a3) = split_right(p0, p1, p2, p3, ta);
+    let local = if (1.0 - ta).abs() < 1e-12 {
+        0.0
+    } else {
+        (tb - ta) / (1.0 - ta)
+    };
+    split_left(a0, a1, a2, a3, local)
+}
+
+/// Junction-angle budget for the midpoint-control fallback (radians,
+/// per piece end). Capping the end-tangent rotation caps every
+/// lowering-induced junction break at ≤ 2·QUAD_JUNCTION_ANGLE_MAX
+/// ≈ 1.15° — comfortably below the G1-grouping threshold
+/// (`PATH_G1_COS_THRESHOLD` 0.999 ≙ 2.56°), which therefore keeps
+/// separating REAL sketch corners only. Without this cap, a piece at
+/// the deviation tolerance can rotate its end tangent by ~3.5·tol/
+/// handle — enough to cross the grouping threshold and split faces.
+const QUAD_JUNCTION_ANGLE_MAX: f64 = 0.01;
+
+/// Try to approximate a convex (inflection-free) cubic piece by ONE
+/// quad within `tol`; returns the quad control point on success.
+///
+/// Preference order:
+/// 1. Tangent-intersection control — preserves both end-tangent
+///    directions EXACTLY (G1-exact junctions). Used when the piece
+///    turns enough for the intersection to be well-conditioned and
+///    the analytic deviation bound `¾·max(‖e1‖,‖e2‖)` (difference of
+///    the degree-elevated control polygons, see [`cubic_to_quads`])
+///    is within `tol`.
+/// 2. Midpoint control `q = (3(p1+p2) − p0 − p3)/4` — exact deviation
+///    bound `√3/36·‖d3‖` (cu2qu's bound), accepted when that is
+///    within `tol` AND the end-tangent direction error stays inside
+///    [`QUAD_JUNCTION_ANGLE_MAX`]. This is the only choice for
+///    near-straight pieces, where the tangent intersection is
+///    ill-conditioned (it can land arbitrarily far out).
+fn quad_for_cubic(
+    p0: [f64; 2],
+    p1: [f64; 2],
+    p2: [f64; 2],
+    p3: [f64; 2],
+    tol: f64,
+) -> Option<[f64; 2]> {
+    let d3 = [
+        p3[0] - 3.0 * p2[0] + 3.0 * p1[0] - p0[0],
+        p3[1] - 3.0 * p2[1] + 3.0 * p1[1] - p0[1],
+    ];
+    let d3_len = (d3[0] * d3[0] + d3[1] * d3[1]).sqrt();
+    let err_mid = (3.0f64.sqrt() / 36.0) * d3_len;
+    let t0 = [p1[0] - p0[0], p1[1] - p0[1]];
+    let t1 = [p2[0] - p3[0], p2[1] - p3[1]];
+    let l0 = (t0[0] * t0[0] + t0[1] * t0[1]).sqrt();
+    let l1 = (t1[0] * t1[0] + t1[1] * t1[1]).sqrt();
+    let denom = t0[0] * t1[1] - t0[1] * t1[0];
+    // 1) Tangent intersection, when the turn is well-conditioned
+    //    (|sin| of the angle between the end tangents ≥ ~1.1°).
+    if denom.abs() > 0.02 * (l0 * l1).max(1e-300) {
+        let s = ((p3[0] - p0[0]) * t1[1] - (p3[1] - p0[1]) * t1[0]) / denom;
+        let c = [p0[0] + s * t0[0], p0[1] + s * t0[1]];
+        if c[0].is_finite() && c[1].is_finite() {
+            let e1 = [
+                p1[0] - (p0[0] + 2.0 * c[0]) / 3.0,
+                p1[1] - (p0[1] + 2.0 * c[1]) / 3.0,
+            ];
+            let e2 = [
+                p2[0] - (p3[0] + 2.0 * c[0]) / 3.0,
+                p2[1] - (p3[1] + 2.0 * c[1]) / 3.0,
+            ];
+            let m = (e1[0] * e1[0] + e1[1] * e1[1])
+                .max(e2[0] * e2[0] + e2[1] * e2[1])
+                .sqrt();
+            if 0.75 * m <= tol {
+                return Some(c);
+            }
+        }
+    }
+    // 2) Midpoint control with deviation + junction-angle budget.
+    //    The elevated-control differences are e1 = d3/6, e2 = −d3/6
+    //    EXACTLY, so the end-tangent rotation is the perpendicular
+    //    component: δθ_i ≈ |cross(d3, t_i)| / (6·‖t_i‖²).
+    let rot = |t: [f64; 2], l: f64| -> f64 {
+        (d3[0] * t[1] - d3[1] * t[0]).abs() / (6.0 * (l * l).max(1e-300))
+    };
+    let angle_ok =
+        rot(t0, l0) <= QUAD_JUNCTION_ANGLE_MAX && rot(t1, l1) <= QUAD_JUNCTION_ANGLE_MAX;
+    if err_mid <= tol && angle_ok {
+        return Some([
+            (3.0 * (p1[0] + p2[0]) - p0[0] - p3[0]) / 4.0,
+            (3.0 * (p1[1] + p2[1]) - p0[1] - p3[1]) / 4.0,
+        ]);
+    }
+    None
 }
 
 /// Evaluate a cubic (degree-3) B-spline at parameter `t` via de Boor,
@@ -1814,17 +1956,6 @@ fn de_boor(poly: &[[f64; 2]], knots: &[f64], degree: usize, u: f64) -> [f64; 2] 
         }
     }
     d[degree]
-}
-
-/// Intersect line `(p + t·d)` with line `(q + s·e)`. Returns `None`
-/// when the directions are near-parallel.
-fn line_intersection(p: [f32; 2], d: [f32; 2], q: [f32; 2], e: [f32; 2]) -> Option<[f32; 2]> {
-    let denom = d[0] * e[1] - d[1] * e[0];
-    if denom.abs() < 1e-6 {
-        return None;
-    }
-    let t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / denom;
-    Some([p[0] + t * d[0], p[1] + t * d[1]])
 }
 
 /// `sketch_regular_polygon` — a regular N-gon defined by centre,
@@ -2438,13 +2569,21 @@ fn lower_spline_segments(d: &SketchSplineDef) -> Vec<SketchSegment> {
         return Vec::new();
     }
     match d.mode {
-        SplineMode::Interpolate => catmull_rom_quad_beziers(&pts, d.closed, 16),
+        SplineMode::Interpolate => catmull_rom_quad_beziers(&pts, d.closed, SPLINE_LOWER_TOL),
         SplineMode::Control => {
             let cp: Vec<[f64; 2]> = pts.iter().map(|p| [p[0] as f64, p[1] as f64]).collect();
-            bspline_quad_beziers(&cp, d.closed, 0.05)
+            bspline_quad_beziers(&cp, d.closed, SPLINE_LOWER_TOL)
         }
     }
 }
+
+/// Max deviation (mm) of the quad-Bézier lowering from the exact
+/// spline. The lowered segments ARE the kernel geometry (SDF, mesher,
+/// weave, GPU stream all consume them), so this is a true geometric
+/// tolerance, not a display setting. 0.02 mm is far below feature
+/// scale and weave tolerances while keeping segment counts small —
+/// the count scales with curvature and only as tol^(−1/3).
+pub const SPLINE_LOWER_TOL: f64 = 0.02;
 
 /// One chainable element for the loop-inference pass: the lowered
 /// segments of a free `sketch_line` or open `sketch_spline`, plus the
@@ -3924,7 +4063,7 @@ mod tests {
         // The fitted Path must pass through every control point: the
         // start of each span sits exactly on a control point.
         let pts = [[0.0, 0.0], [10.0, 5.0], [20.0, 0.0], [30.0, 5.0]];
-        let segs = catmull_rom_quad_beziers(&pts, false, 8);
+        let segs = catmull_rom_quad_beziers(&pts, false, SPLINE_LOWER_TOL);
         assert!(!segs.is_empty());
         // First sample of the first span is p0.
         let first = segs[0].point_at(0.0);
@@ -3933,7 +4072,105 @@ mod tests {
         let last = segs.last().unwrap().point_at(1.0);
         assert!((last[0] - 30.0).abs() < 1e-3 && (last[1] - 5.0).abs() < 1e-3);
         // < 2 points → empty.
-        assert!(catmull_rom_quad_beziers(&[[0.0, 0.0]], false, 8).is_empty());
+        assert!(catmull_rom_quad_beziers(&[[0.0, 0.0]], false, SPLINE_LOWER_TOL).is_empty());
+    }
+
+    /// Exact uniform Catmull-Rom evaluation on the span p1→p2 — the
+    /// reference for the lowering's error bound.
+    fn cr_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let f = |a: f64, b: f64, c: f64, d: f64| {
+            0.5 * ((2.0 * b)
+                + (-a + c) * t
+                + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+                + (-a + 3.0 * b - 3.0 * c + d) * t3)
+        };
+        [f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]
+    }
+
+    /// The adaptive lowering must (a) stay within SPLINE_LOWER_TOL of
+    /// the exact Catmull-Rom spline, (b) be exactly G1 at every quad
+    /// junction (branch/face identity must not depend on tol), and
+    /// (c) stay SMALL — the vase wall spline was 96 quads with the old
+    /// fixed 16-step sampling and is the canonical "wasteful stream"
+    /// case (user report 2026-06-12).
+    #[test]
+    fn catmull_rom_lowering_is_tight_g1_and_small() {
+        // The vase wall profile (7 interpolation points, ~130 mm tall).
+        let pts: [[f32; 2]; 7] = [
+            [45.0, 68.0],
+            [33.044, 50.471],
+            [26.707, 42.324],
+            [38.476, 20.596],
+            [50.245, -9.732],
+            [44.36, -45.039],
+            [30.0, -62.0],
+        ];
+        let segs = catmull_rom_quad_beziers(&pts, false, SPLINE_LOWER_TOL);
+        // ~37 with the adaptive lowering (the shoulder span carries
+        // most of them) vs 96 with the old fixed 16-step sampling.
+        assert!(
+            segs.len() <= 40,
+            "vase spline should lower to ~40 quads, got {}",
+            segs.len()
+        );
+
+        // (b) exact G1 at junctions: outgoing/incoming tangent
+        // directions agree to f32 rounding.
+        for w in segs.windows(2) {
+            let (SketchSegment::QuadBezier { p1: a1, p2: a2, .. },
+                 SketchSegment::QuadBezier { p0: b0, p1: b1, .. }) = (&w[0], &w[1])
+            else {
+                panic!("lowering must emit quads only");
+            };
+            let ta = [(a2[0] - a1[0]) as f64, (a2[1] - a1[1]) as f64];
+            let tb = [(b1[0] - b0[0]) as f64, (b1[1] - b0[1]) as f64];
+            let la = (ta[0] * ta[0] + ta[1] * ta[1]).sqrt();
+            let lb = (tb[0] * tb[0] + tb[1] * tb[1]).sqrt();
+            // Tangent-intersection junctions are exact; midpoint-
+            // fallback junctions are capped at 2·QUAD_JUNCTION_ANGLE_
+            // MAX = 1.15° (cos 0.9998) — well inside the grouping
+            // threshold 0.999. Assert with a little slack.
+            let cos = (ta[0] * tb[0] + ta[1] * tb[1]) / (la * lb).max(1e-12);
+            assert!(cos > 0.9997, "junction tangent break: cos = {cos}");
+        }
+
+        // (a) error bound: dense exact-spline samples vs a dense
+        // sampling of the lowered chain. The chain is sampled finely
+        // enough (512/quad) that its own polyline error is ≪ tol.
+        let chain: Vec<[f64; 2]> = segs
+            .iter()
+            .flat_map(|s| (0..=512).map(move |k| {
+                let p = s.point_at(k as f32 / 512.0);
+                [p[0] as f64, p[1] as f64]
+            }))
+            .collect();
+        let n = pts.len();
+        let mut worst = 0.0f64;
+        for span in 0..n - 1 {
+            let p = |idx: usize| -> [f64; 2] {
+                [pts[idx][0] as f64, pts[idx][1] as f64]
+            };
+            let (p0, p1, p2, p3) = (
+                p(span.saturating_sub(1)),
+                p(span),
+                p(span + 1),
+                p((span + 2).min(n - 1)),
+            );
+            for k in 0..=128 {
+                let s = cr_eval(p0, p1, p2, p3, k as f64 / 128.0);
+                let d = chain
+                    .iter()
+                    .map(|c| ((c[0] - s[0]).powi(2) + (c[1] - s[1]).powi(2)).sqrt())
+                    .fold(f64::MAX, f64::min);
+                worst = worst.max(d);
+            }
+        }
+        assert!(
+            worst <= SPLINE_LOWER_TOL * 1.05,
+            "lowering deviates {worst} mm from the exact spline (tol {SPLINE_LOWER_TOL})"
+        );
     }
 
     // ---- F23-full: real cubic B-spline (control mode) ----------------
