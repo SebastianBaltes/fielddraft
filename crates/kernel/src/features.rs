@@ -8313,6 +8313,96 @@ mod tests {
         );
     }
 
+    /// The Option-(c) target (project_vase_brep_edge_degeneration): the
+    /// CLOSED-shelled vase weaves over the analytic branch-seed path, and
+    /// every B-Rep edge is an exact circle — constant radius and height along
+    /// the whole ring. The octree route's rim jitter (r wandering 44.1…45
+    /// through the blind `edge_residual`) cannot pass the 0.05 mm bound here.
+    ///
+    /// The OPENED vase (taper erosion at the mouth) is gated to the octree
+    /// for now — asserted at the end — because the constant-offset inner-wall
+    /// carrier does not model the flare wedge near the opening.
+    #[test]
+    fn vase_seed_weave_yields_exact_circle_edges() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
+            .unwrap();
+        // The shell FEATURE refuses to run without picked open faces (the
+        // dialog-in-progress contract), so the closed shell is wrapped at CSG
+        // level — the same node the feature would emit, minus the openings.
+        let solid = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let shelled = crate::csg::CsgNode::Shell(Box::new(solid), 2.0, vec![]);
+        let bounded = crate::bvh::BoundedCsg::from_csg(&shelled);
+
+        let brep = crate::brep::seed_weaver::weave_branch_seeds(&bounded)
+            .expect("the closed-shelled vase must weave via the analytic seed path");
+        assert!(brep.validate().is_ok(), "vase B-Rep must be well-formed");
+        assert!(
+            brep.shells.iter().any(|s| s.is_closed),
+            "vase seed weave must be watertight"
+        );
+
+        // Every edge is a closed ring of constant (radius, height).
+        let mut rings: Vec<(f32, f32)> = Vec::new(); // (y, r)
+        for e in &brep.edges {
+            assert!(
+                e.start.is_none() && e.end.is_none(),
+                "a coaxial body has only closed ring edges"
+            );
+            let samples = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            assert!(samples.len() >= 8, "ring edge has a dense sampling");
+            let (mut rmin, mut rmax) = (f32::INFINITY, f32::NEG_INFINITY);
+            let (mut ymin, mut ymax) = (f32::INFINITY, f32::NEG_INFINITY);
+            for p in &samples {
+                let r = ((p[0] * p[0] + p[2] * p[2]) as f32).sqrt();
+                rmin = rmin.min(r);
+                rmax = rmax.max(r);
+                ymin = ymin.min(p[1] as f32);
+                ymax = ymax.max(p[1] as f32);
+            }
+            assert!(
+                rmax - rmin < 0.05 && ymax - ymin < 0.05,
+                "edge is not a clean circle: r ∈ [{rmin}, {rmax}], y ∈ [{ymin}, {ymax}]"
+            );
+            rings.push((0.5 * (ymin + ymax), 0.5 * (rmin + rmax)));
+        }
+
+        let has_ring = |y: f32, r: f32, tol: f32| {
+            rings.iter().any(|&(ry, rr)| (ry - y).abs() < tol && (rr - r).abs() < tol)
+        };
+        // Outer rim circle at exactly (y=68, r=45) — THE jitter regression
+        // bound — plus the foot ring and the spline∩cone knick ring.
+        assert!(has_ring(68.0, 45.0, 0.05), "outer rim circle r=45 missing: {rings:?}");
+        assert!(has_ring(-70.0, 26.0, 0.05), "foot circle r=26 missing: {rings:?}");
+        assert!(has_ring(-62.0, 30.0, 0.05), "knick ring r=30 missing: {rings:?}");
+        // Cavity rings of the closed shell: the ceiling corner at y=66 (2 mm
+        // below the top) and the floor corner at y=−68.
+        assert!(
+            rings.iter().any(|&(ry, rr)| (ry - 66.0).abs() < 0.1 && (38.0..45.0).contains(&rr)),
+            "cavity ceiling ring near y=66 missing: {rings:?}"
+        );
+        assert!(
+            rings.iter().any(|&(ry, rr)| (ry + 68.0).abs() < 0.1 && (20.0..29.0).contains(&rr)),
+            "cavity floor ring near y=−68 missing: {rings:?}"
+        );
+
+        // The OPENED vase falls back to the octree (taper carrier missing).
+        let mut doc2 = empty_ctx();
+        let mut ctx2 = Context::new(&mut doc2);
+        regen_shelled_vase(&registry, &mut ctx2);
+        let parts2 = crate::body::partition(&ctx2.features);
+        let bounded2 =
+            crate::body::build_bounded_for_body(&ctx2.features, &parts2[0].feature_indices);
+        assert!(
+            crate::brep::seed_weaver::weave_branch_seeds(&bounded2).is_none(),
+            "the opened vase must take the octree route until taper carriers exist"
+        );
+    }
+
     #[test]
     fn vase_from_free_lines_and_spline_revolves_and_shells() {
         let registry = FeatureRegistry::with_builtins();

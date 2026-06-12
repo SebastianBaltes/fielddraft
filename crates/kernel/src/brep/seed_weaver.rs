@@ -86,7 +86,40 @@ fn scope_supported(body: &BoundedCsg) -> bool {
     if !non_lipschitz.is_empty() {
         return false;
     }
+    if has_open_shell(body) {
+        return false;
+    }
     true
+}
+
+/// `true` if any Shell in the tree has OPEN faces. Near an open face the
+/// cavity erosion TAPERS (`open_shell_erosion`: `e = clamp(d − g, 0, t)`), so
+/// the true inner wall is a flared wedge that meets the outer surface in a
+/// knife edge AT the opening — not the constant-offset carrier the half-space
+/// map registers. Seeds near the mouth then die inactive and the weave comes
+/// out watertight but cavity-less (silently wrong). Until a taper-aware
+/// carrier exists, opened shells take the octree route.
+fn has_open_shell(node: &BoundedCsg) -> bool {
+    match node {
+        BoundedCsg::Shell { inner, open_faces, .. } => {
+            !open_faces.is_empty() || has_open_shell(inner)
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => has_open_shell(left) || has_open_shell(right),
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => has_open_shell(inner),
+        BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Revolve { .. }
+        | BoundedCsg::Empty => false,
+    }
 }
 
 // Curvature-adaptive trace fractions — shared with the octree route via
@@ -1064,6 +1097,21 @@ mod tests {
             sketch: Box::new(profile),
         });
         assert_seed_matches_octree(&body, 0.25);
+    }
+
+    #[test]
+    fn seed_shelled_box_matches_octree() {
+        // Shell duplicates every branch as its inward-offset inner wall. Before
+        // the Shell-aware pair enumeration the seed path silently wove a
+        // 6-face SOLID box for this body (no cavity at all — no inner-wall
+        // branches were ever paired); the octree weaves the true 12 faces.
+        let csg = CsgNode::Shell(
+            Box::new(box_leaf(1, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0])),
+            2.0,
+            vec![],
+        );
+        let body = BoundedCsg::from_csg(&csg);
+        assert_seed_matches_octree(&body, 0.5);
     }
 
     #[test]

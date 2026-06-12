@@ -244,15 +244,30 @@ fn walk(node: &BoundedCsg, out: &mut Vec<Branch>) {
             walk(right, out);
         }
 
+        // A Shell duplicates every wrapped branch as its inward-offset inner
+        // wall (the cavity boundary, [`BranchId::inner_wall`]) — the same ids
+        // the registry's DL-75 entries and the SDF contributor tagging use.
+        // Inner walls of opened faces (and of zero-area carriers like a
+        // revolve's on-axis group) have no real surface; their seeds simply
+        // land inactive and are dropped, so enumerating them is sound.
+        BoundedCsg::Shell { inner, .. } => {
+            let before = out.len();
+            walk(inner, out);
+            let walls: Vec<Branch> = out[before..]
+                .iter()
+                .map(|b| Branch { id: b.id.inner_wall(), ..*b })
+                .collect();
+            out.extend(walls);
+        }
+
         // Single-child carriers: recurse the inner subtree. Twist/Bend/Displace
         // are out-of-scope warps (their *own* surface is non-analytic), but the
-        // branches of the wrapped geometry must still be enumerated; Shell and
-        // Offset preserve their inner branches' identity (DL-25 / Offset folds
-        // analytic carriers back into a shifted half-space downstream).
+        // branches of the wrapped geometry must still be enumerated; Offset
+        // preserves its inner branches' identity (DL-25 folds analytic carriers
+        // back into a shifted half-space downstream).
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Shell { inner, .. }
         | BoundedCsg::Offset { inner, .. } => walk(inner, out),
     }
 }
@@ -345,12 +360,49 @@ fn collect_pairs(node: &BoundedCsg, out: &mut Vec<BranchPair>) -> Vec<Branch> {
             all
         }
 
+        // A Shell adds the cavity's candidate edges: inner-wall × inner-wall
+        // (the cavity's own corners — e.g. the vase's cavity-floor ring) and
+        // outer × inner-wall (rim circles where a surviving outer face's
+        // annulus meets the cavity wall). A branch paired with its OWN inner
+        // wall is a constant-offset pair with no intersection; SSI rejects it
+        // with zero components, so it is not special-cased here.
+        BoundedCsg::Shell { inner, .. } => {
+            let bs = collect_pairs(inner, out);
+            let walls: Vec<Branch> = bs
+                .iter()
+                .map(|b| Branch { id: b.id.inner_wall(), ..*b })
+                .collect();
+            let origin = |x: &Branch, y: &Branch| {
+                if x.id.feature_id() == y.id.feature_id() {
+                    PairOrigin::Intrinsic
+                } else {
+                    PairOrigin::Cross
+                }
+            };
+            for i in 0..walls.len() {
+                for j in (i + 1)..walls.len() {
+                    if let Some(overlap) = aabb_overlap(&walls[i].aabb, &walls[j].aabb) {
+                        out.push(make_pair(&walls[i], &walls[j], overlap, origin(&walls[i], &walls[j])));
+                    }
+                }
+            }
+            for a in &bs {
+                for w in &walls {
+                    if let Some(overlap) = aabb_overlap(&a.aabb, &w.aabb) {
+                        out.push(make_pair(a, w, overlap, origin(a, w)));
+                    }
+                }
+            }
+            let mut all = bs;
+            all.extend(walls);
+            all
+        }
+
         // Single-child carriers: pass through the inner branch list, no pair at
-        // this node (the warp surface is non-analytic / shell handled downstream).
+        // this node (the warp surface is non-analytic / offset folds downstream).
         BoundedCsg::Twist { inner, .. }
         | BoundedCsg::Bend { inner, .. }
         | BoundedCsg::Displace { inner, .. }
-        | BoundedCsg::Shell { inner, .. }
         | BoundedCsg::Offset { inner, .. } => collect_pairs(inner, out),
     }
 }

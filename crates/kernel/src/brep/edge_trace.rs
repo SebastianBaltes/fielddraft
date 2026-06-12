@@ -84,6 +84,23 @@ impl Field<'_> {
             Field::ExtrudeWall { sketch, xf } => extrude_wall_value_grad(sketch, xf, p),
         }
     }
+
+    /// The field's intrinsic VALUE noise floor at `p`. The classic analytic
+    /// half-spaces evaluate from exact f32 parameters in f64 and reach the
+    /// frozen `PROJECT_TOL = 1e-9`; a [`HalfSpace::RevolvedProfile`] carrier
+    /// runs its closest-point solve in f32, so its value carries
+    /// ~ε_f32 · |coordinate| of quantisation noise that NO Newton iteration
+    /// can push below. Projection acceptance uses `max(PROJECT_TOL, floor)`.
+    #[inline]
+    fn noise_floor(&self, p: [f64; 3]) -> f64 {
+        match self {
+            Field::Analytic { hs: HalfSpace::RevolvedProfile { .. }, .. } => {
+                let linf = p[0].abs().max(p[1].abs()).max(p[2].abs());
+                64.0 * (f32::EPSILON as f64) * (1.0 + linf)
+            }
+            _ => 0.0,
+        }
+    }
 }
 
 /// Newton iteration cap. With quadratic convergence 8 is generous; a sample
@@ -118,7 +135,8 @@ pub(crate) fn project_to_edge(fa: &Field, fb: &Field, p0: [f64; 3]) -> Option<[f
     for _ in 0..PROJECT_MAX_ITER {
         let (va, ga) = fa.value_grad(p);
         let (vb, gb) = fb.value_grad(p);
-        if va.abs().max(vb.abs()) < PROJECT_TOL {
+        let tol = PROJECT_TOL.max(fa.noise_floor(p)).max(fb.noise_floor(p));
+        if va.abs().max(vb.abs()) < tol {
             return Some(p);
         }
         if !va.is_finite() || !vb.is_finite() {
@@ -153,7 +171,8 @@ pub(crate) fn project_to_edge(fa: &Field, fb: &Field, p0: [f64; 3]) -> Option<[f
     // Final acceptance check after the last step.
     let (va, _) = fa.value_grad(p);
     let (vb, _) = fb.value_grad(p);
-    (va.abs().max(vb.abs()) < PROJECT_TOL).then_some(p)
+    let tol = PROJECT_TOL.max(fa.noise_floor(p)).max(fb.noise_floor(p));
+    (va.abs().max(vb.abs()) < tol).then_some(p)
 }
 
 /// Unit edge tangent at a point assumed to lie on the edge: `∇f_a × ∇f_b`,

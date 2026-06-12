@@ -81,6 +81,17 @@ pub fn seed_branch_pairs(body: &BoundedCsg) -> SeedResult {
             continue;
         }
 
+        // A pair of two branches with the SAME id is the same surface seen
+        // through two occurrences of its subtree in the CSG (a feature reused
+        // across a boolean, a shell wrapping a union of itself, …). Identical
+        // carriers are coincident by construction — no transversal curve —
+        // and the coincidence registry cannot gate them for carrier kinds it
+        // does not model (RevolvedProfile): without this skip such a pair
+        // floods SSI with `implicit ≡ 0` pseudo-roots (a circle per sample).
+        if pair.a.as_u32() == pair.b.as_u32() {
+            continue;
+        }
+
         let (Some((ha, ta)), Some((hb, tb))) =
             (map.get(&pair.a.as_u32()), map.get(&pair.b.as_u32()))
         else {

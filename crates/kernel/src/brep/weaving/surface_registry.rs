@@ -99,10 +99,41 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             // walls (radius/minor ≤ thickness), which fall back to tessellated.
             let mut sub = HashMap::new();
             collect_halfspaces(inner, &mut sub);
+            // Revolve path groups can ALWAYS offset: their level-set carrier
+            // (`RevolvedProfile`) shifts by a pure `offset` bump even where
+            // the in-family parameter shift fails — the cone wall of an
+            // oblique profile line, the r≈0 cylinder of an on-axis segment.
+            // Without this fallback those inner-wall branches stay out of the
+            // map and every pair touching them bails the body to the octree.
+            let mut profiles = HashMap::new();
+            collect_revolve_profile_carriers(inner, &mut profiles);
             for (key, (hs, xf)) in &sub {
-                if let Some(inner_hs) = offset_halfspace_inward(hs, *thickness) {
-                    out.entry(BranchId(*key).inner_wall().as_u32())
-                        .or_insert((inner_hs, *xf));
+                // CAREFUL with frames: a lifted entry's transform can carry a
+                // folded local pre-translation (the cone's apex shift, a
+                // plane's y offset) — the profile segments are authored in
+                // the REVOLVE's frame, so a fallback entry must pair them
+                // with the revolve's transform, not the lifted face's.
+                let inner_entry = match offset_halfspace_inward(hs, *thickness) {
+                    Some(inner_hs) => Some((inner_hs, *xf)),
+                    None => profiles.get(key).map(|(p, profile_xf)| {
+                        let fielddraft_protocol::HalfSpace::RevolvedProfile {
+                            segments, ccw, ..
+                        } = p
+                        else {
+                            unreachable!("profile carriers are RevolvedProfile");
+                        };
+                        (
+                            fielddraft_protocol::HalfSpace::RevolvedProfile {
+                                segments: segments.clone(),
+                                ccw: *ccw,
+                                offset: *thickness,
+                            },
+                            *profile_xf,
+                        )
+                    }),
+                };
+                if let Some(entry) = inner_entry {
+                    out.entry(BranchId(*key).inner_wall().as_u32()).or_insert(entry);
                 }
             }
             out.extend(sub);
@@ -121,6 +152,48 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             ..
         } => collect_revolve_halfspaces(id, sketch, world_transform, out),
         BoundedCsg::Empty => {}
+    }
+}
+
+/// `RevolvedProfile` carriers (offset 0) for EVERY path group of every
+/// [`BoundedCsg::Revolve`] under `node`, keyed by branch id — including the
+/// groups whose main map entry is a lifted Plane/Cylinder/Cone. Used by the
+/// Shell arm as the inner-wall offset fallback (see above).
+fn collect_revolve_profile_carriers(
+    node: &BoundedCsg,
+    out: &mut HashMap<u32, (fielddraft_protocol::HalfSpace, Transform)>,
+) {
+    match node {
+        BoundedCsg::Revolve { id, sketch, world_transform, .. } => {
+            let mut groups = Vec::new();
+            collect_path_group_segments(sketch, 0, &mut groups);
+            for (g, segments, ccw) in groups {
+                out.entry(BranchId::from_feature_sub(id, g).as_u32()).or_insert((
+                    fielddraft_protocol::HalfSpace::RevolvedProfile {
+                        segments,
+                        ccw,
+                        offset: 0.0,
+                    },
+                    *world_transform,
+                ));
+            }
+        }
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => {
+            collect_revolve_profile_carriers(left, out);
+            collect_revolve_profile_carriers(right, out);
+        }
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => collect_revolve_profile_carriers(inner, out),
+        BoundedCsg::Leaf { .. } | BoundedCsg::Extrude { .. } | BoundedCsg::Empty => {}
     }
 }
 
