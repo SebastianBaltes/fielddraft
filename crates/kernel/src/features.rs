@@ -8325,6 +8325,103 @@ mod tests {
         );
     }
 
+    /// User-reported regression (2026-06-12): face-extruding the opened
+    /// vase's rim annulus froze the app for ~30 s (the combined body bailed
+    /// to the octree over non-coaxial RevolvedProfile × extrude-cylinder
+    /// pairs — the circle-wall carrier was emitted as a SIDEWAYS cylinder,
+    /// `InfiniteCylinder`'s axis is local Y, the extrusion runs along local
+    /// Z) and the extruded face's B-Rep collapsed to a point through that
+    /// same broken carrier. With the axis folded into the face frame the
+    /// body weaves analytically: every edge an exact ring, including the
+    /// tube's top rim circles.
+    #[test]
+    fn vase_face_extrude_on_rim_weaves_analytically_with_exact_rings() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        regen_shelled_vase(&registry, &mut ctx);
+
+        // The rim annulus face (plane +Y at y = 68) — the face the user picked.
+        let mut top_hash = None;
+        for (brep, _) in ctx.brep_cache.ensure(&ctx.features) {
+            for i in 0..brep.faces.len() {
+                let fid = crate::brep::FaceId(i as u32);
+                if let crate::brep::SurfaceGeometry::Analytic { surface, transform } =
+                    &brep.face(fid).surface
+                {
+                    if let fielddraft_protocol::HalfSpace::Plane { normal, .. } = surface {
+                        if normal[1] > 0.99 && (transform.translate[1] - 68.0).abs() < 1e-3 {
+                            top_hash =
+                                Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                        }
+                    }
+                }
+            }
+        }
+        let top_hash = top_hash.expect("rim annulus face present");
+
+        let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
+        let calls = vec![
+            sketch_call,
+            revolve_call,
+            FeatureCall::new(
+                "shell",
+                id(3),
+                json!({
+                    "open_faces": format!("qFace({top_hash})"),
+                    "thickness": { "value": 2.0, "unit": "mm" },
+                }),
+            ),
+            FeatureCall::new(
+                "extrude",
+                id(4),
+                json!({
+                    "profiles": "",
+                    "faces": format!("qFace({top_hash})"),
+                    "depth": { "value": 10.0, "unit": "mm" },
+                    "symmetric": false,
+                }),
+            ),
+        ];
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+        let parts = crate::body::partition(&ctx.features);
+        assert_eq!(parts.len(), 1, "extrude docks onto the vase body");
+        let bounded =
+            crate::body::build_bounded_for_body(&ctx.features, &parts[0].feature_indices);
+        let brep = crate::brep::seed_weaver::weave_branch_seeds(&bounded)
+            .expect("vase + rim-tube must weave via the analytic seed path (octree took >70 s)");
+        assert!(brep.validate().is_ok(), "combined B-Rep must be well-formed");
+
+        let mut rings: Vec<(f32, f32)> = Vec::new();
+        for e in &brep.edges {
+            let samples = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            let (mut rmin, mut rmax) = (f32::INFINITY, f32::NEG_INFINITY);
+            let (mut ymin, mut ymax) = (f32::INFINITY, f32::NEG_INFINITY);
+            for p in &samples {
+                let r = ((p[0] * p[0] + p[2] * p[2]) as f32).sqrt();
+                rmin = rmin.min(r);
+                rmax = rmax.max(r);
+                ymin = ymin.min(p[1] as f32);
+                ymax = ymax.max(p[1] as f32);
+            }
+            assert!(
+                rmax - rmin < 0.05 && ymax - ymin < 0.05,
+                "edge is not a clean ring: r ∈ [{rmin}, {rmax}], y ∈ [{ymin}, {ymax}]"
+            );
+            rings.push((0.5 * (ymin + ymax), 0.5 * (rmin + rmax)));
+        }
+        let has_ring = |y: f32, r: f32| {
+            rings.iter().any(|&(ry, rr)| (ry - y).abs() < 0.05 && (rr - r).abs() < 0.05)
+        };
+        // Tube top rim (the face the user saw collapse to a point).
+        assert!(has_ring(78.0, 45.0), "tube outer top rim missing: {rings:?}");
+        assert!(has_ring(78.0, 42.58), "tube inner top rim missing: {rings:?}");
+        // Vase rim circles survive at the joint.
+        assert!(has_ring(68.0, 45.0), "vase outer rim missing: {rings:?}");
+        assert!(has_ring(68.0, 42.58), "vase inner rim missing: {rings:?}");
+    }
+
     /// The Option-(c) target (project_vase_brep_edge_degeneration): the
     /// CLOSED-shelled vase weaves over the analytic branch-seed path, and
     /// every B-Rep edge is an exact circle — constant radius and height along

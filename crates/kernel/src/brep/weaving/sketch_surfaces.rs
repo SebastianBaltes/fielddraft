@@ -287,13 +287,22 @@ pub(super) fn collect_extrude_halfspaces(
                 );
             }
             SketchWall::Circle { center, radius } => {
-                // Wall is an infinite cylinder about the local z-axis. The
-                // 2D circle centre folds into the face transform as a
-                // local pre-translation (x,y), exactly like DL-20.
+                // Wall is an infinite cylinder about the local z-axis — but
+                // `HalfSpace::InfiniteCylinder`'s SDF (and every consumer of
+                // its placement: SSI axis detection, surface queries, STEP)
+                // puts the axis along the face frame's local Y. Fold a +90°
+                // X-rotation into the face transform so local Y lands on the
+                // extrusion axis; the 2D circle centre folds in as a local
+                // pre-translation (x,y), exactly like DL-20. (Without the
+                // rotation the carrier was a sideways cylinder: projections
+                // collapsed the rim edges to a point and the coaxial SSI
+                // route never engaged.)
+                const FRAC_1_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
                 let center_xf = compose_transforms(
                     &xf,
                     &Transform {
                         translate: [center[0], center[1], 0.0],
+                        rotation: [FRAC_1_SQRT_2, 0.0, 0.0, FRAC_1_SQRT_2],
                         ..Transform::IDENTITY
                     },
                 );
