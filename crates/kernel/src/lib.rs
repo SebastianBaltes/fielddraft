@@ -1899,11 +1899,20 @@ impl Kernel {
     /// stable so the outliner row doesn't jump, and re-runs
     /// the registry so downstream cached state (body meshes,
     /// packed buffer) reflects the new values.
+    ///
+    /// `coalesce` skips the undo snapshot: a throttled drag
+    /// (live extrude) replaces the same call dozens of times
+    /// per second — the caller snapshots once via the FIRST,
+    /// non-coalesced replace and the whole drag stays a single
+    /// undo step (mirrors `apply_gizmo_feature`'s merge). On
+    /// regeneration failure a coalesced replace restores the
+    /// previous params in place instead of popping undo.
     #[wasm_bindgen(js_name = replaceFeatureCallParams)]
     pub fn replace_feature_call_params(
         &mut self,
         id: u32,
         params_json: &str,
+        coalesce: bool,
     ) -> Result<(), JsError> {
         let target = FeatureId::from_u32(id);
         let new_params: serde_json::Value =
@@ -1917,13 +1926,16 @@ impl Kernel {
             .position(|c| c.id == target)
             .ok_or_else(|| JsError::new(&format!("feature {id} not found")))?;
 
-        self.snapshot();
+        if !coalesce {
+            self.snapshot();
+        }
         // K8.7: preserve the call's suppressed flag across a
         // params replace — otherwise toggling suppression off by
         // renaming or editing any other field would resurrect it.
         let old = &self.document.feature_calls[idx];
         let type_name = old.type_name.clone();
         let suppressed = old.suppressed;
+        let old_params = old.params.clone();
         self.document.feature_calls[idx] = fielddraft_protocol::FeatureCall {
             type_name,
             id: target,
@@ -1931,7 +1943,13 @@ impl Kernel {
             suppressed,
         };
         if let Err(err) = self.bootstrap_features_from_calls() {
-            self.undo();
+            if coalesce {
+                self.document.feature_calls[idx].params = old_params;
+                let _ = self.bootstrap_features_from_calls();
+                self.rebuild_packed();
+            } else {
+                self.undo();
+            }
             return Err(JsError::new(&format!(
                 "feature regeneration failed: {err}"
             )));
@@ -3996,7 +4014,7 @@ mod tests {
             "scale": 1.0,
             "op": "new",
         });
-        k.replace_feature_call_params(id, &new_params.to_string())
+        k.replace_feature_call_params(id, &new_params.to_string(), false)
             .unwrap();
 
         // The spine feature must carry the new extents, and the
@@ -4018,6 +4036,62 @@ mod tests {
         let after_val: serde_json::Value = serde_json::from_str(&after).unwrap();
         let after_arr = after_val["half_extents"].as_array().unwrap();
         assert!((after_arr[0].as_f64().unwrap() - 25.0).abs() < 1e-5);
+    }
+
+    /// A throttled live drag replaces the same call dozens of times with
+    /// `coalesce=true` after one initial `coalesce=false` — undo must
+    /// treat the whole sequence as a SINGLE step that restores the
+    /// pre-drag value.
+    #[test]
+    fn coalesced_replace_is_one_undo_step() {
+        let mut k = Kernel::new();
+        let id = k
+            .add_primitive(
+                Primitive::KIND_BOX,
+                BoolOp::TAG_NEW,
+                0.0,
+                0.0,
+                0.0,
+                10.0,
+                10.0,
+                10.0,
+            )
+            .unwrap();
+        let depth_before = k.undo_depth();
+
+        let params_with = |x: f64| {
+            serde_json::json!({
+                "half_extents": [x, 10.0, 10.0],
+                "center": [0.0, 0.0, 0.0],
+                "translate": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 1.0],
+                "scale": 1.0,
+                "op": "new",
+            })
+        };
+        // Drag: first commit snapshots, the rest coalesce.
+        k.replace_feature_call_params(id, &params_with(12.0).to_string(), false)
+            .unwrap();
+        for x in [14.0, 16.0, 18.0, 20.0] {
+            k.replace_feature_call_params(id, &params_with(x).to_string(), true)
+                .unwrap();
+        }
+        assert_eq!(
+            k.undo_depth(),
+            depth_before + 1,
+            "the whole drag must be exactly one undo step"
+        );
+
+        // Undo rolls the param all the way back to the pre-drag value.
+        assert!(k.undo());
+        let after = k.get_feature_call_params(id).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&after).unwrap();
+        let arr = val["half_extents"].as_array().unwrap();
+        assert!(
+            (arr[0].as_f64().unwrap() - 10.0).abs() < 1e-5,
+            "undo must restore the pre-drag half extent, got {}",
+            arr[0]
+        );
     }
 
     #[test]
@@ -4042,7 +4116,7 @@ mod tests {
             "blend_radius": 5.0,
             "twist_rate": 0.3,
         });
-        k.replace_feature_call_params(id, &new_params.to_string())
+        k.replace_feature_call_params(id, &new_params.to_string(), false)
             .unwrap();
 
         let after = k.get_feature_call_params(id).unwrap();
@@ -5694,7 +5768,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
         // box2 should now be Difference
         assert_eq!(k.decoded[0].op, BoolOp::New, "box1 stays Union");
         assert_eq!(k.decoded[1].op, BoolOp::Remove, "box2 is Difference after Subtract");
@@ -5706,7 +5780,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
         assert_eq!(k.decoded[1].op, BoolOp::New, "box2 reverts to Union");
 
         // Switch tab to Intersect
@@ -5716,7 +5790,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
         assert_eq!(k.decoded[1].op, BoolOp::Intersect, "box2 is Intersect");
     }
 
@@ -5741,7 +5815,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
 
         // The boolean routes the second tool into the first tool's body.
         assert_eq!(k.decoded[0].op, BoolOp::New);
@@ -5792,7 +5866,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(b1, &p1.to_string()).unwrap();
+        k.replace_feature_call_params(b1, &p1.to_string(), false).unwrap();
 
         // Op 2: box_b ∪ sphere — sphere is spine-earlier than box_b, so it
         // is op2's seed.
@@ -5803,7 +5877,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(b2, &p2.to_string()).unwrap();
+        k.replace_feature_call_params(b2, &p2.to_string(), false).unwrap();
 
         assert_eq!(
             k.body_count(), 1,
@@ -5846,7 +5920,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(b1, &p1.to_string()).unwrap();
+        k.replace_feature_call_params(b1, &p1.to_string(), false).unwrap();
 
         // Operation 2: right ∪ sphere — shares the sphere with op 1.
         let b2 = k.add_boolean().unwrap();
@@ -5856,7 +5930,7 @@ mod tests {
             "targets": "",
             "keep_tools": false,
         });
-        k.replace_feature_call_params(b2, &p2.to_string()).unwrap();
+        k.replace_feature_call_params(b2, &p2.to_string(), false).unwrap();
 
         // The sphere accumulates BOTH seed links (left + right), not just
         // the most recent one.
@@ -5902,7 +5976,7 @@ mod tests {
             "tools": format!("qCreatedBy({}), qCreatedBy({})", box1, sph),
             "targets": "", "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
         assert_eq!(k.body_count(), 1, "the explicit union is one body");
 
         let tree = csg::CsgNode::from_decoded(&k.decoded);
@@ -5941,7 +6015,7 @@ mod tests {
             "targets": format!("qCreatedBy({})", box1),
             "keep_tools": false,
         });
-        k.replace_feature_call_params(bool_id, &params.to_string()).unwrap();
+        k.replace_feature_call_params(bool_id, &params.to_string(), false).unwrap();
 
         assert_eq!(k.decoded[1].op, BoolOp::Remove);
         assert_eq!(k.body_count(), 1, "box and sphere-diff share one body");

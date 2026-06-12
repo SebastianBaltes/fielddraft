@@ -20,6 +20,7 @@ const LS_MESH_ALGORITHM = "fielddraft.meshAlgorithm";
 const LS_FRAME_LOOP = "fielddraft.frameLoop";
 const LS_PARAMETRIC_WEAVE = "fielddraft.parametricWeave";
 const LS_DRAG_BREP_RECOMPUTE = "fielddraft.dragBrepRecompute";
+const LS_LIVE_EXTRUDE_DRAG = "fielddraft.liveExtrudeDrag";
 const LS_SHOW_EDGE_POINTS = "fielddraft.showEdgePoints";
 const LS_SHOW_OCTREE_CELLS = "fielddraft.showOctreeCells";
 const LS_CONTROLS_PRESET = "fielddraft.controlsPreset";
@@ -216,6 +217,11 @@ export interface SettingsState {
    * and the weave runs exactly once on release — keeps weave-heavy drags
    * (booleans against spline-revolves) fluid. */
   dragBrepRecompute: boolean;
+  /** Commit the extrude depth live WHILE the gizmo drag runs (throttled),
+   * so the renderer shows the real body instead of an approximate preview
+   * prism. On by default — the heavy B-Rep weave stays deferred to the
+   * drag's end via the same suppression the transform gizmo uses. */
+  liveExtrudeDrag: boolean;
   /** Debug overlay: render each B-Rep edge's individual sample points as
    * markers, so a NURBS edge's tessellation density (many points vs. few) is
    * visible at a glance. */
@@ -281,6 +287,7 @@ export function loadSettings(): SettingsState {
   let frameLoop: FrameLoopMode = "demand";
   let parametricWeave = true;
   let dragBrepRecompute = false;
+  let liveExtrudeDrag = true;
   let showEdgePoints = false;
   const showOctreeCells = false;
   let controlsPreset: ControlsPresetId = DEFAULT_CONTROLS_PRESET;
@@ -304,6 +311,7 @@ export function loadSettings(): SettingsState {
     const rawParametric = localStorage.getItem(LS_PARAMETRIC_WEAVE);
     if (rawParametric !== null) parametricWeave = rawParametric === "true";
     dragBrepRecompute = localStorage.getItem(LS_DRAG_BREP_RECOMPUTE) === "true";
+    liveExtrudeDrag = localStorage.getItem(LS_LIVE_EXTRUDE_DRAG) !== "false";
     showEdgePoints = localStorage.getItem(LS_SHOW_EDGE_POINTS) === "true";
     // showOctreeCells is deliberately NOT read back — drop any stale key so a
     // tab frozen by the overlay recovers on reload.
@@ -313,7 +321,7 @@ export function loadSettings(): SettingsState {
   } catch {
     // localStorage may be unavailable
   }
-  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, showEdgePoints, showOctreeCells, controlsPreset };
+  return { compact, units, theme, renderMode, meshAlgorithm, brepEdgeMode, frameLoop, parametricWeave, dragBrepRecompute, liveExtrudeDrag, showEdgePoints, showOctreeCells, controlsPreset };
 }
 
 function saveSetting(key: string, value: string): void {
@@ -905,6 +913,12 @@ function SettingsDialog({
     onSettingsChange(next);
   };
 
+  const toggleLiveExtrudeDrag = () => {
+    const next = { ...settings, liveExtrudeDrag: !settings.liveExtrudeDrag };
+    saveSetting(LS_LIVE_EXTRUDE_DRAG, String(next.liveExtrudeDrag));
+    onSettingsChange(next);
+  };
+
   const toggleShowEdgePoints = () => {
     const next = { ...settings, showEdgePoints: !settings.showEdgePoints };
     saveSetting(LS_SHOW_EDGE_POINTS, String(next.showEdgePoints));
@@ -1126,6 +1140,22 @@ function SettingsDialog({
                   onClick={toggleDragBrepRecompute}
                 >
                   {settings.dragBrepRecompute ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div className="setting-row" data-testid="setting-live-extrude">
+                <span className="setting-label" title="Commit the extrude depth live while the arrow drag runs — the renderer shows the real body instead of an approximate preview prism. The exact B-Rep still weaves once on release (see 'B-Rep rebuild while dragging').">
+                  Live extrude drag
+                </span>
+                <button
+                  type="button"
+                  className={"toggle" + (settings.liveExtrudeDrag ? " is-on" : "")}
+                  role="switch"
+                  aria-checked={settings.liveExtrudeDrag}
+                  data-testid="setting-live-extrude-toggle"
+                  onClick={toggleLiveExtrudeDrag}
+                >
+                  {settings.liveExtrudeDrag ? "On" : "Off"}
                 </button>
               </div>
 

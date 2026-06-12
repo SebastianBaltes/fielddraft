@@ -789,6 +789,21 @@ export class KernelStore {
     }
   }
 
+  /** Setting "Live extrude drag" (default true): the extrude depth gizmo
+   * commits the depth throttled WHILE the pointer is down — the renderer
+   * shows the real body live instead of an approximate preview prism.
+   * The B-Rep weave stays governed by `dragBrepRecompute` via
+   * begin/endGizmoDrag, exactly like the transform gizmo. */
+  private liveExtrudeDrag = true;
+
+  setLiveExtrudeDrag(enabled: boolean): void {
+    this.liveExtrudeDrag = enabled;
+  }
+
+  isLiveExtrudeDrag(): boolean {
+    return this.liveExtrudeDrag;
+  }
+
   /** Called by the transform gizmo when a drag starts (dragging-changed).
    * Besides suppressing the kernel weave, `gizmoDragSuppressed` hides all
    * B-Rep overlays — even cached (pure-move) edges only refresh at the
@@ -3525,10 +3540,15 @@ export class KernelStore {
 
   /** Replace a feature's wire-form params and commit. Used
    *  by the Outliner FeatureDialog's onChange to round-trip
-   *  edits back into the kernel. */
-  updateFeatureParams(id: number, params: Record<string, unknown>): boolean {
+   *  edits back into the kernel. `coalesce` folds the replace
+   *  into the previous undo step (throttled live drags). */
+  updateFeatureParams(
+    id: number,
+    params: Record<string, unknown>,
+    coalesce = false,
+  ): boolean {
     try {
-      this.kernel.replaceFeatureCallParams(id, params);
+      this.kernel.replaceFeatureCallParams(id, params, coalesce);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: replaceFeatureCallParams failed", err);

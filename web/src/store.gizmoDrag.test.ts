@@ -119,6 +119,14 @@ describe("KernelStore — gizmo-drag B-Rep suppression", () => {
     expect(store.getState().gizmoDragSuppressed).toBe(false);
   });
 
+  it("live extrude drag defaults ON and follows its setter", () => {
+    expect(store.isLiveExtrudeDrag()).toBe(true);
+    store.setLiveExtrudeDrag(false);
+    expect(store.isLiveExtrudeDrag()).toBe(false);
+    store.setLiveExtrudeDrag(true);
+    expect(store.isLiveExtrudeDrag()).toBe(true);
+  });
+
   it("flipping the setting ON mid-drag lifts the active suppression", () => {
     store.beginGizmoDrag();
     expect(store.getState().gizmoDragSuppressed).toBe(true);

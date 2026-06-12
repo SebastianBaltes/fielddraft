@@ -7,12 +7,17 @@
  *     swept back by the current depth) so the affected region reads
  *     at a glance;
  *   - dragging the arrow adjusts the `depth` param strictly along the
- *     normal. NOTHING is committed while the drag runs — the arrow and
- *     a local preview prism follow the pointer every frame (the kernel
- *     recompute would otherwise stall the gizmo), and the new depth is
- *     committed ONCE on pointerup. Delta bands tint what gets added
- *     blue and what gets removed red; since the body stays frozen at
- *     its drag-start shape, the grown region is genuinely see-through.
+ *     normal. With the "Live extrude drag" setting ON (default), the
+ *     depth commits throttled (50ms, like the transform gizmo) WHILE
+ *     the pointer is down — the renderer shows the real body live, no
+ *     preview prism, and the heavy B-Rep weave is suppressed for the
+ *     drag via begin/endGizmoDrag. With the setting OFF (and always
+ *     for a PENDING ghost, whose kernel body excludes the extrude),
+ *     nothing commits during the drag: the arrow and a local preview
+ *     prism follow the pointer every frame and the new depth commits
+ *     ONCE on pointerup. Delta bands tint what gets added blue and
+ *     what gets removed red; since the body stays frozen at its
+ *     drag-start shape, the grown region is genuinely see-through.
  *   - the arrow itself is black-and-white (white fill, dark outline),
  *     matching Onshape; grow/shrink is signalled by the bands only.
  *
@@ -59,6 +64,9 @@ const scratchCam = new THREE.Vector3();
 interface DragPreview {
   depthMm: number;
   startDepthMm: number;
+  /** Live drag: the kernel body follows the pointer, so no preview
+   *  bands render — the real geometry IS the preview. */
+  live: boolean;
 }
 
 export function ExtrudeDepthGizmo() {
@@ -84,10 +92,11 @@ export function ExtrudeDepthGizmo() {
   // mirrors it into React for the band meshes.
   const dragRef = useRef<{
     active: boolean;
+    live: boolean;
     startDepth: number;
     startT: number;
     lastDepth: number;
-  }>({ active: false, startDepth: 0, startT: 0, lastDepth: 0 });
+  }>({ active: false, live: false, startDepth: 0, startT: 0, lastDepth: 0 });
   const [preview, setPreview] = useState<DragPreview | null>(null);
   // Tip travel (mm along the normal) during a drag — read by useFrame
   // so the arrow glues to the pointer without waiting for React.
@@ -131,7 +140,15 @@ export function ExtrudeDepthGizmo() {
   // zzl1) — see pickTipFace. A PENDING ghost contributes no faces of its
   // own, so its anchor derives from the PROFILE faces on the unextruded
   // body instead (ticket x7af) — that body is the depth's true reference.
+  // During a LIVE drag the anchor is frozen at its drag-start value:
+  // the throttled commits notify per 50ms, but the B-Rep is suppressed
+  // then — re-resolving against it would lose the anchor (and the
+  // arrow) mid-drag. Cleared on pointerup, so the next state change
+  // re-resolves against the freshly woven B-Rep.
+  const frozenAnchorRef = useRef<ExtrudeAnchor | null>(null);
+
   const anchor = useMemo<ExtrudeAnchor | null>(() => {
+    if (frozenAnchorRef.current) return frozenAnchorRef.current;
     if (!store || extrudeId === null) return null;
     try {
       if (pending) {
@@ -157,6 +174,9 @@ export function ExtrudeDepthGizmo() {
     Array<{ geom: THREE.BufferGeometry; color: number; opacity: number }>
   >(() => {
     if (!anchor || !depthInfo || anchor.outline.length === 0) return [];
+    // Live drag: the kernel body itself follows the pointer — bands
+    // would just smear stale outlines over the real geometry.
+    if (preview?.live) return [];
     const out: Array<{ geom: THREE.BufferGeometry; color: number; opacity: number }> = [];
     const push = (a: number, b: number, color: number, opacity: number) => {
       if (Math.abs(a - b) < 1e-6) return;
@@ -238,9 +258,19 @@ export function ExtrudeDepthGizmo() {
     raycaster.layers.enable(OVERLAY_LAYER);
     const drag = dragRef.current;
     // Axis frozen at drag start — robust against any anchor churn while
-    // the pointer is down.
+    // the pointer is down. `axisSign` maps the tip-out extent back onto
+    // the signed wire depth; frozen too, because live commits flip the
+    // re-derived sign the moment a drag crosses the base plane.
     let axisOrigin: [number, number, number] = [0, 0, 0];
     let axisNormal: [number, number, number] = [0, 0, 1];
+    let axisSign: 1 | -1 = 1;
+    // Live-drag commit throttle (50ms, mirrors SelectionTransformGizmo).
+    let liveTimer: ReturnType<typeof setTimeout> | undefined;
+    let livePending = false;
+    let lastCommitted = Number.NaN;
+    // The FIRST commit of a live drag snapshots undo; every further one
+    // coalesces into it, so the whole drag is a single undo step.
+    let liveSnapshotTaken = false;
 
     const rayFromEvent = (e: PointerEvent) => {
       const rect = dom.getBoundingClientRect();
@@ -260,20 +290,42 @@ export function ExtrudeDepthGizmo() {
         [ray.direction.x, ray.direction.y, ray.direction.z],
       );
 
-    const commitDepth = (mm: number) => {
+    const commitDepth = (mm: number, coalesce = false): boolean => {
+      lastCommitted = mm;
       try {
         const params = store.getFeatureParams(extrudeId);
-        // `mm` is signed along the TIP-OUT axis; `sign` maps it back to the
-        // wire depth along the profile normal. Crossing the base plane
-        // (negative `mm`) flips the extrude direction (ticket x7af).
-        const sign = depthInfoRef.current?.sign ?? 1;
-        store.updateFeatureParams(extrudeId, {
-          ...params,
-          depth: lengthParamWithMm(params.depth, sign * mm),
-        });
+        // `mm` is signed along the TIP-OUT axis; `axisSign` maps it back
+        // to the wire depth along the profile normal. Crossing the base
+        // plane (negative `mm`) flips the extrude direction (ticket x7af).
+        return store.updateFeatureParams(
+          extrudeId,
+          { ...params, depth: lengthParamWithMm(params.depth, axisSign * mm) },
+          coalesce,
+        );
       } catch {
         // kernel rejected — the preview collapses back to the old depth
+        return false;
       }
+    };
+
+    // Throttled live commit: first move commits immediately, then at
+    // most one commit per 50ms window, trailing-edge flushed.
+    const liveCommit = () => {
+      livePending = false;
+      if (drag.lastDepth !== lastCommitted) {
+        if (commitDepth(drag.lastDepth, liveSnapshotTaken)) {
+          liveSnapshotTaken = true;
+        }
+      }
+    };
+    const scheduleLiveCommit = () => {
+      livePending = true;
+      if (liveTimer !== undefined) return;
+      liveCommit();
+      liveTimer = setTimeout(() => {
+        liveTimer = undefined;
+        if (livePending && drag.active) liveCommit();
+      }, 50);
     };
 
     const onDown = (e: PointerEvent) => {
@@ -288,14 +340,24 @@ export function ExtrudeDepthGizmo() {
       if (hits.length === 0) return;
       axisOrigin = [...a.origin] as [number, number, number];
       axisNormal = [...a.normal] as [number, number, number];
+      axisSign = di.sign;
       const t0 = axisParam(ray);
       if (t0 === null) return;
       drag.active = true;
+      // Live drag commits into the kernel — impossible for a PENDING
+      // ghost, whose body excludes the suppressed extrude entirely.
+      drag.live = store.isLiveExtrudeDrag() && !store.isPendingFeature(extrudeId);
       drag.startDepth = di.depthMm;
       drag.startT = t0;
       drag.lastDepth = di.depthMm;
+      lastCommitted = di.depthMm;
+      liveSnapshotTaken = false;
       dragTipOffRef.current = 0;
-      setPreview({ depthMm: di.depthMm, startDepthMm: di.depthMm });
+      if (drag.live) {
+        frozenAnchorRef.current = a;
+        store.beginGizmoDrag();
+      }
+      setPreview({ depthMm: di.depthMm, startDepthMm: di.depthMm, live: drag.live });
       if (defaultControls) defaultControls.enabled = false;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -321,7 +383,8 @@ export function ExtrudeDepthGizmo() {
       }
       drag.lastDepth = next;
       dragTipOffRef.current = (next - drag.startDepth) / factor;
-      setPreview({ depthMm: next, startDepthMm: drag.startDepth });
+      if (drag.live) scheduleLiveCommit();
+      setPreview({ depthMm: next, startDepthMm: drag.startDepth, live: drag.live });
       invalidate();
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -337,10 +400,21 @@ export function ExtrudeDepthGizmo() {
       if (!drag.active) return;
       drag.active = false;
       suppressNextClick = true;
-      // Single commit at drag end — the anchor jumps to the new tip in
-      // the same flush that resets the local offset, so the arrow does
-      // not move visually.
-      if (Math.abs(drag.lastDepth - drag.startDepth) > 1e-6) {
+      if (drag.live) {
+        // Flush the trailing live commit while the weave is still
+        // suppressed, then lift the suppression — the kernel weaves the
+        // final shape exactly once and the overlays refetch.
+        clearTimeout(liveTimer);
+        liveTimer = undefined;
+        if (drag.lastDepth !== lastCommitted) {
+          commitDepth(drag.lastDepth, liveSnapshotTaken);
+        }
+        frozenAnchorRef.current = null;
+        store.endGizmoDrag();
+      } else if (Math.abs(drag.lastDepth - drag.startDepth) > 1e-6) {
+        // Single commit at drag end — the anchor jumps to the new tip in
+        // the same flush that resets the local offset, so the arrow does
+        // not move visually.
         commitDepth(drag.lastDepth);
       }
       dragTipOffRef.current = 0;
@@ -368,7 +442,13 @@ export function ExtrudeDepthGizmo() {
       window.removeEventListener("pointerup", onUp, { capture: true });
       dom.removeEventListener("click", onClick, { capture: true });
       if (drag.active && defaultControls) defaultControls.enabled = true;
+      // Unmounting mid-LIVE-drag (feature deselected/deleted) must lift
+      // an active B-Rep suppression; a no-op otherwise (idempotent).
+      clearTimeout(liveTimer);
+      frozenAnchorRef.current = null;
+      if (drag.active && drag.live) store.endGizmoDrag();
       drag.active = false;
+      drag.live = false;
       dragTipOffRef.current = 0;
     };
   }, [store, extrudeId, gl, camera, defaultControls, invalidate]);

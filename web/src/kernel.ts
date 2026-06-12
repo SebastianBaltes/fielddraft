@@ -775,12 +775,15 @@ export class Kernel {
   }
 
   /** K7.5: replace the wire-form params of a feature call in
-   *  place and regenerate. Keeps the feature id stable. */
+   *  place and regenerate. Keeps the feature id stable.
+   *  `coalesce` skips the undo snapshot so a throttled drag
+   *  stays one undo step (see kernel doc). */
   replaceFeatureCallParams(
     id: number,
     params: Record<string, unknown>,
+    coalesce = false,
   ): void {
-    this.inner.replaceFeatureCallParams(id, JSON.stringify(params));
+    this.inner.replaceFeatureCallParams(id, JSON.stringify(params), coalesce);
   }
 
   /** K8.0: append a linear_pattern feature that replicates

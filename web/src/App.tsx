@@ -43,6 +43,10 @@ export function App() {
     if (store) store.setDragBrepRecompute(settings.dragBrepRecompute);
   }, [store, settings.dragBrepRecompute]);
 
+  useEffect(() => {
+    if (store) store.setLiveExtrudeDrag(settings.liveExtrudeDrag);
+  }, [store, settings.liveExtrudeDrag]);
+
   // Global keyboard shortcuts: Del = remove selection, Ctrl+Z = undo,
   // Ctrl+Shift+Z (or Ctrl+Y) = redo. Skipped if focus is in an input.
   useEffect(() => {
