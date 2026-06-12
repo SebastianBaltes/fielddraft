@@ -7800,6 +7800,74 @@ mod tests {
     /// the top rim face. Before loop inference this produced a footless
     /// cup (the open spline was implicitly chord-closed and all lines
     /// were dropped).
+    /// Timing probe for the vase weave hang (not a regression test): stage
+    /// breakdown of octree build vs. wireframe extraction vs. finish, printed
+    /// with `--nocapture`. Mirrors `Body::ensure_brep`'s min_cell derivation.
+    #[test]
+    #[ignore = "manual timing probe, run with --ignored --nocapture"]
+    fn vase_weave_timing_probe() {
+        use std::time::Instant;
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
+            .unwrap();
+        let solid = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let body = crate::bvh::BoundedCsg::from_csg(&solid);
+        let bb = body.aabb();
+        let size = bb.size();
+        let largest = size[0].max(size[1]).max(size[2]);
+        let min_cell = (largest / 32.0).clamp(1e-3, 10.0);
+        eprintln!("probe: aabb {:?} min_cell {min_cell}", (bb.min, bb.max));
+
+        let t = Instant::now();
+        let octree = crate::brep::octree::Octree::build(&body, min_cell);
+        eprintln!("probe: octree build {:?} ({} leaves)", t.elapsed(), octree.leaves().len());
+
+        let t = Instant::now();
+        let wire = crate::brep::edge_walker::build_wireframe(&body, &octree);
+        eprintln!(
+            "probe: wireframe {:?} ({} edges, {} vertices)",
+            t.elapsed(),
+            wire.edges.len(),
+            wire.vertices.len()
+        );
+
+        let t = Instant::now();
+        let brep = crate::brep::weaving::finish_weave(wire, &body);
+        eprintln!("probe: finish_weave {:?} ({} faces)", t.elapsed(), brep.faces.len());
+    }
+
+    /// The vase exercise's sketch + revolve calls, shared by the E2E test and
+    /// the timing probe.
+    fn vase_sketch_and_revolve_calls() -> (FeatureCall, FeatureCall) {
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            id(1),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_point", "id": "p1", "params": { "at": [0.0, -70.0] } },
+                    { "type": "sketch_point", "id": "p2", "params": { "at": [0.0, 68.0] } },
+                    { "type": "sketch_point", "id": "p3", "params": { "at": [45.0, 68.0] } },
+                    { "type": "sketch_point", "id": "p4", "params": { "at": [30.0, -62.0] } },
+                    { "type": "sketch_point", "id": "p5", "params": { "at": [26.0, -70.0] } },
+                    { "type": "sketch_line", "id": "l1", "params": { "start": [0.0, -70.0], "end": [0.0, 68.0] } },
+                    { "type": "sketch_line", "id": "l2", "params": { "start": [0.0, 68.0], "end": [45.0, 68.0] } },
+                    { "type": "sketch_line", "id": "l3", "params": { "start": [30.0, -62.0], "end": [26.0, -70.0] } },
+                    { "type": "sketch_line", "id": "l4", "params": { "start": [26.0, -70.0], "end": [0.0, -70.0] } },
+                    { "type": "sketch_spline", "id": "s1", "params": {
+                        "points": [45.0, 68.0, 33.044, 50.471, 26.707, 42.324, 38.476, 20.596, 50.245, -9.732, 44.360, -45.039, 30.0, -62.0],
+                        "closed": false, "mode": "interpolate" } }
+                ]
+            }),
+        );
+        let revolve_call = FeatureCall::new("revolve", id(2), json!({ "profiles": "qCreatedBy(1)" }));
+        (sketch_call, revolve_call)
+    }
+
     #[test]
     fn vase_from_free_lines_and_spline_revolves_and_shells() {
         let registry = FeatureRegistry::with_builtins();

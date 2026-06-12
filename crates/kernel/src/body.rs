@@ -446,8 +446,19 @@ pub fn weave_all(features: &[DecodedFeature]) -> Vec<(BRep, Transform)> {
 /// implementation, one invalidation rule.
 #[derive(Debug, Default)]
 pub struct BrepCache {
-    cached: Option<(u64, Vec<(BRep, Transform)>)>,
+    /// Insertion-ordered (key → woven breps) entries, oldest first. A small
+    /// keyed cache instead of a single slot: one regeneration can `ensure`
+    /// at several feature prefixes (every weave-needing query feature hits
+    /// it with the features decoded *so far*), and the kernel re-installs
+    /// the cache across regenerations — a single slot would thrash between
+    /// those prefixes and re-weave on every regen.
+    entries: Vec<(u64, Vec<(BRep, Transform)>)>,
 }
+
+/// Max retained [`BrepCache`] entries. Generous for the handful of distinct
+/// feature prefixes a document's queries resolve against, small enough that
+/// stale geometry never accumulates meaningfully.
+const BREP_CACHE_CAPACITY: usize = 8;
 
 impl BrepCache {
     pub fn new() -> Self {
@@ -456,15 +467,21 @@ impl BrepCache {
 
     /// Weave (or reuse) the B-Reps for the current `features` spine and
     /// return them paired with their world placements. Re-weaves only
-    /// when the content key changes.
+    /// when the content key is not cached.
     pub fn ensure(&mut self, features: &[DecodedFeature]) -> &[(BRep, Transform)] {
         let all: Vec<usize> = (0..features.len()).collect();
         let key = hash_body_payload(features, &all);
-        let fresh = !matches!(&self.cached, Some((k, _)) if *k == key);
-        if fresh {
-            self.cached = Some((key, weave_all(features)));
+        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
+            // Refresh recency so repeatedly-used prefixes outlive one-offs.
+            let entry = self.entries.remove(i);
+            self.entries.push(entry);
+        } else {
+            if self.entries.len() >= BREP_CACHE_CAPACITY {
+                self.entries.remove(0);
+            }
+            self.entries.push((key, weave_all(features)));
         }
-        &self.cached.as_ref().unwrap().1
+        &self.entries.last().unwrap().1
     }
 
     /// Drop the cache, forcing the next [`ensure`](BrepCache::ensure) to
@@ -472,7 +489,7 @@ impl BrepCache {
     /// clearing is a belt-and-braces hook for callers (e.g. a commit) that
     /// prefer eager invalidation.
     pub fn clear(&mut self) {
-        self.cached = None;
+        self.entries.clear();
     }
 }
 

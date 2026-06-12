@@ -491,6 +491,32 @@ export class KernelStore {
     this.kernel = kernel;
     this.autosave = autosave;
 
+    // Bring up the mesher worker BEFORE the initial document load: with the
+    // worker available, sync meshing is disabled first, so `loadJson` below
+    // neither runs the Dual-Contouring pass on the main thread nor enters
+    // the kernel's mesh face-tagging loop — which would weave every body's
+    // B-Rep synchronously and freeze the tab for minutes on weave-heavy
+    // projects (spline-revolve + shell). On failure, sync meshing stays on
+    // (functionally correct, just blocks the UI on every mesh rebuild).
+    try {
+      this.worker = new Worker(
+        new URL("./mesher.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+      this.worker.addEventListener("message", (event) => {
+        this.handleWorkerMessage(event);
+      });
+      this.workerAvailable = true;
+      this.kernel.setSyncMeshing(false);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "fielddraft: could not start mesher worker, falling back to sync meshing on the main thread",
+        err,
+      );
+      this.workerAvailable = false;
+    }
+
     // ── MT-A: build the project + load the active/first part into the
     //   kernel before reading the initial feature list. ──────────────
     const project = parseProject(persistedProjectJson ?? "") ?? createDefaultProject();
@@ -572,33 +598,13 @@ export class KernelStore {
       scriptTypes: this.snapshotScriptTypes(),
     };
 
-    // Bring up the mesher worker. On success, disable sync meshing
-    // on the main-thread kernel so every mutation goes straight
-    // through to document + partition without the DC pass. On
-    // failure (Vite didn't emit the worker, CSP blocked it,
-    // whatever), fall back to sync meshing and read body buffers
-    // from the main-thread kernel directly — functionally correct,
-    // just blocks the UI on every mesh rebuild.
-    try {
-      this.worker = new Worker(
-        new URL("./mesher.worker.ts", import.meta.url),
-        { type: "module" },
-      );
-      this.worker.addEventListener("message", (event) => {
-        this.handleWorkerMessage(event);
-      });
-      this.workerAvailable = true;
-      this.kernel.setSyncMeshing(false);
+    if (this.workerAvailable) {
       // Kick off the first worker rebuild so the initial document
       // (possibly rehydrated from localStorage) becomes visible.
       this.scheduleWorkerRebuild();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "fielddraft: could not start mesher worker, falling back to sync meshing on the main thread",
-        err,
-      );
-      this.workerAvailable = false;
+    } else {
+      // Sync-meshing fallback: read body buffers from the main-thread
+      // kernel directly (the loadJson above already meshed them).
       this.state = {
         ...this.state,
         meshedBodies: this.snapshotMainThreadBodies(),

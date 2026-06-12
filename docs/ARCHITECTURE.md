@@ -261,7 +261,13 @@ debt list is in `docs/ARCHITECTURE-ROADMAP.md` (tangential contact,
 provenance-based naming, kissing-contact policy, C⁰ gradient caveats).
 
 Query resolution (`body.rs::weave_all`, the base of `qFace`/`qEdge`
-handle lookup and the face-extrude profile) rides the parametric
+handle lookup and the face-extrude profile) is cached ACROSS
+regenerations: the kernel owns a content-hash-keyed `BrepCache`
+(`regen_brep_cache`) that it installs into every regenerate `Context`
+and takes back afterwards, so a mid-loop element query (shell's
+`qFace` open faces) only pays the octree weave when the upstream
+features actually changed — not on every regen or document load.
+Mechanically it rides the parametric
 branch-seed weave with octree fallback — the same route as the renderer
 (tickets oa9h/vyee: the pure octree route collapses on stacked coplanar
 extrudes at ≳100 mm scale; `id_hash`es are toggle-invariant, so handles
@@ -362,7 +368,7 @@ Mesh data is exposed as **zero-copy typed array views** into WASM linear memory 
 **`kernel.ts`** — TypeScript wrapper around the Rust WASM kernel.
 
 **Worker architecture** (`mesher.worker.ts`):
-- Main thread kernel: document state + undo history + picking (sync meshing disabled)
+- Main thread kernel: document state + undo history + picking (sync meshing disabled — the worker is brought up BEFORE the initial document load, so booting a persisted project never runs the DC pass or the mesh face-tagging weave on the main thread)
 - Worker kernel: independent copy with Dual Contouring enabled
 - Communication: `{type: "rebuild", documentJson, resolutions, activeBodyId}` → `{type: "bodies", bodies: [{id, positions, normals, indices, ...}]}`
 - TypedArrays transferred (zero-copy) via structured clone

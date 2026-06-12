@@ -344,17 +344,21 @@ impl Sketch2dPrimitive {
                 // break to the lower segment index (DL-32 arena
                 // order) so classification is deterministic on the
                 // medial axis between two groups.
-                let mut best_i = 0usize;
-                let mut best_d = f32::INFINITY;
-                for (i, seg) in segments.iter().enumerate() {
-                    let d = seg.unsigned_distance(p);
-                    if d < best_d {
-                        best_d = d;
-                        best_i = i;
+                let (best_d, best_i) = path_min_distance(p, segments);
+                // G1 group of the winner, counted incrementally — no
+                // per-eval `g1_group_segments` allocation.
+                let mut group = 0u32;
+                for i in 1..=best_i {
+                    if !g1_continuous(&segments[i - 1], &segments[i], PATH_G1_COS_THRESHOLD) {
+                        group += 1;
                     }
                 }
-                let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
-                (sdf_path(p, segments, *closed), groups[best_i])
+                let signed = if *closed && path_is_inside(p, segments) {
+                    -best_d
+                } else {
+                    best_d
+                };
+                (signed, group)
             }
         }
     }
@@ -415,18 +419,50 @@ impl Sketch2dPrimitive {
             // Sector keeps the single-group simplification of `sdf_with_edge`.
             Self::Sector { .. } => SketchEdgeBand::single(self.sdf(p), 0),
             Self::Path { segments, closed } => {
-                if segments.is_empty() {
+                let n = segments.len();
+                if n == 0 {
                     return SketchEdgeBand::new(f32::INFINITY);
                 }
-                let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+                // Single exact pass: store each segment's distance once (the
+                // old code solved every closest-point three times per eval).
+                // Segments whose lower bound cannot land within `eps` of the
+                // running minimum are skipped and keep +∞ — they can never
+                // enter the band.
+                let mut stack = [f32::INFINITY; PATH_STACK_SEGMENTS];
+                let mut heap: Vec<f32>;
+                let dists: &mut [f32] = if n <= PATH_STACK_SEGMENTS {
+                    &mut stack[..n]
+                } else {
+                    heap = vec![f32::INFINITY; n];
+                    &mut heap[..]
+                };
                 let mut min_d = f32::INFINITY;
-                for seg in segments {
-                    min_d = min_d.min(seg.unsigned_distance(p));
-                }
-                let mut band = SketchEdgeBand::new(sdf_path(p, segments, *closed));
                 for (i, seg) in segments.iter().enumerate() {
-                    if (seg.unsigned_distance(p) - min_d).abs() <= eps {
-                        band.push(groups[i]);
+                    if seg.distance_lower_bound(p) > min_d + eps {
+                        continue;
+                    }
+                    let d = seg.unsigned_distance(p);
+                    dists[i] = d;
+                    if d < min_d {
+                        min_d = d;
+                    }
+                }
+                let signed = if *closed && path_is_inside(p, segments) {
+                    -min_d
+                } else {
+                    min_d
+                };
+                let mut band = SketchEdgeBand::new(signed);
+                // G1 group ids derived incrementally — no per-eval allocation.
+                let mut group = 0u32;
+                for i in 0..n {
+                    if i > 0
+                        && !g1_continuous(&segments[i - 1], &segments[i], PATH_G1_COS_THRESHOLD)
+                    {
+                        group += 1;
+                    }
+                    if dists[i] - min_d <= eps {
+                        band.push(group);
                     }
                 }
                 band
@@ -489,18 +525,50 @@ fn sdf_path(p: [f32; 2], segments: &[SketchSegment], closed: bool) -> f32 {
     if segments.is_empty() {
         return f32::INFINITY;
     }
-    let mut unsigned = f32::INFINITY;
-    for seg in segments {
-        unsigned = unsigned.min(seg.unsigned_distance(p));
-    }
+    let (unsigned, _) = path_min_distance(p, segments);
     if !closed {
         return unsigned;
     }
-    // Even-odd crossing test over the flattened contour. Curved
-    // segments contribute PATH_FLATTEN_SAMPLES sub-segments;
-    // lines just their two endpoints.
+    if path_is_inside(p, segments) {
+        -unsigned
+    } else {
+        unsigned
+    }
+}
+
+/// Exact minimum unsigned distance over all segments, plus the index of the
+/// analytically-closest one (ties break to the lower index, DL-32). Segments
+/// whose [`SketchSegment::distance_lower_bound`] cannot beat the running
+/// minimum skip the exact closest-point solve. Public so the kernel's
+/// dual-number mirror shares the same pruned argmin.
+pub fn path_min_distance(p: [f32; 2], segments: &[SketchSegment]) -> (f32, usize) {
+    let mut best = f32::INFINITY;
+    let mut best_i = 0usize;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.distance_lower_bound(p) >= best {
+            continue;
+        }
+        let d = seg.unsigned_distance(p);
+        if d < best {
+            best = d;
+            best_i = i;
+        }
+    }
+    (best, best_i)
+}
+
+/// Even-odd crossing test over the flattened contour. Curved segments
+/// contribute [`PATH_FLATTEN_SAMPLES`] sub-segments, lines just their two
+/// endpoints. Segments whose conservative y-span does not straddle `p.y`
+/// cannot toggle the parity and are skipped without flattening. Public so
+/// the kernel's dual-number mirror shares the same sign test.
+pub fn path_is_inside(p: [f32; 2], segments: &[SketchSegment]) -> bool {
     let mut inside = false;
     for seg in segments {
+        let (y_min, y_max) = seg.y_span_conservative();
+        if p[1] < y_min || p[1] > y_max {
+            continue;
+        }
         let steps = match seg {
             SketchSegment::Line { .. } => 1,
             _ => PATH_FLATTEN_SAMPLES,
@@ -519,12 +587,35 @@ fn sdf_path(p: [f32; 2], segments: &[SketchSegment], closed: bool) -> f32 {
             a = b;
         }
     }
-    if inside {
-        -unsigned
-    } else {
-        unsigned
-    }
+    inside
 }
+
+/// Are `prev → cur` G1-continuous (shared endpoint, aligned tangents)? The
+/// pairwise predicate behind [`g1_group_segments`], usable incrementally so
+/// the SDF hot path can derive group ids without allocating the full vec.
+fn g1_continuous(prev: &SketchSegment, cur: &SketchSegment, cos_threshold: f32) -> bool {
+    let prev_end = prev.end_point();
+    let cur_start = cur.start_point();
+    let dx = cur_start[0] - prev_end[0];
+    let dy = cur_start[1] - prev_end[1];
+    if dx * dx + dy * dy >= 1e-6 {
+        return false;
+    }
+    let t_prev = prev.tangent_at_end();
+    let t_cur = cur.tangent_at_start();
+    t_prev[0] * t_cur[0] + t_prev[1] * t_cur[1] > cos_threshold
+}
+
+/// Distance from `p` to the axis-aligned box `[lo, hi]` (zero inside).
+fn aabb2_distance(p: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> f32 {
+    let dx = (lo[0] - p[0]).max(p[0] - hi[0]).max(0.0);
+    let dy = (lo[1] - p[1]).max(p[1] - hi[1]).max(0.0);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Stack capacity for per-segment distance buffers on the SDF hot path —
+/// real sketch paths are far smaller; larger ones fall back to a heap vec.
+const PATH_STACK_SEGMENTS: usize = 64;
 
 /// Signed distance to a simple polygon (Inigo Quilez, 2D
 /// Sector (pie wedge) SDF. The sector spans from `start` over
@@ -1013,6 +1104,54 @@ impl SketchSegment {
         }
     }
 
+    /// Cheap lower bound on [`Self::unsigned_distance`] (always ≤ the true
+    /// value). Lets a multi-segment query skip the exact closest-point solve
+    /// for segments that provably cannot beat the running minimum — the
+    /// B-Rep octree fires millions of path SDF evals, and without this every
+    /// one of them paid a full cubic solve per Bézier segment.
+    pub fn distance_lower_bound(&self, p: [f32; 2]) -> f32 {
+        match self {
+            Self::Line { start, end } => aabb2_distance(
+                p,
+                [start[0].min(end[0]), start[1].min(end[1])],
+                [start[0].max(end[0]), start[1].max(end[1])],
+            ),
+            // The curve lies inside its control-point hull, so the
+            // control-point AABB distance is a valid lower bound.
+            Self::QuadBezier { p0, p1, p2 } => aabb2_distance(
+                p,
+                [
+                    p0[0].min(p1[0]).min(p2[0]),
+                    p0[1].min(p1[1]).min(p2[1]),
+                ],
+                [
+                    p0[0].max(p1[0]).max(p2[0]),
+                    p0[1].max(p1[1]).max(p2[1]),
+                ],
+            ),
+            // Distance to the full circle bounds the distance to any arc of it.
+            Self::Arc { center, radius, .. } => {
+                let dx = p[0] - center[0];
+                let dy = p[1] - center[1];
+                ((dx * dx + dy * dy).sqrt() - radius).abs()
+            }
+        }
+    }
+
+    /// Conservative `[y_min, y_max]` containing the whole curve (control-point
+    /// hull for Béziers, full circle for arcs). Used to skip segments that
+    /// cannot straddle a horizontal ray in the even-odd sign test.
+    fn y_span_conservative(&self) -> (f32, f32) {
+        match self {
+            Self::Line { start, end } => (start[1].min(end[1]), start[1].max(end[1])),
+            Self::QuadBezier { p0, p1, p2 } => (
+                p0[1].min(p1[1]).min(p2[1]),
+                p0[1].max(p1[1]).max(p2[1]),
+            ),
+            Self::Arc { center, radius, .. } => (center[1] - radius, center[1] + radius),
+        }
+    }
+
     /// Unit tangent at t=0 (start of the curve).
     pub fn tangent_at_start(&self) -> [f32; 2] {
         let raw = match self {
@@ -1074,20 +1213,7 @@ pub fn g1_group_segments(segments: &[SketchSegment], cos_threshold: f32) -> Vec<
     let mut current_group = 0u32;
     group[0] = current_group;
     for i in 1..n {
-        let prev_end = segments[i - 1].end_point();
-        let cur_start = segments[i].start_point();
-        let dx = cur_start[0] - prev_end[0];
-        let dy = cur_start[1] - prev_end[1];
-        let positional_match = dx * dx + dy * dy < 1e-6;
-        let tangent_match = if positional_match {
-            let t_prev = segments[i - 1].tangent_at_end();
-            let t_cur = segments[i].tangent_at_start();
-            let dot = t_prev[0] * t_cur[0] + t_prev[1] * t_cur[1];
-            dot > cos_threshold
-        } else {
-            false
-        };
-        if !tangent_match {
+        if !g1_continuous(&segments[i - 1], &segments[i], cos_threshold) {
             current_group += 1;
         }
         group[i] = current_group;

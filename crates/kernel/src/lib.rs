@@ -480,6 +480,14 @@ pub struct Kernel {
     /// Rollback bar position: if set, features at index >= this value
     /// are skipped during regeneration (but stay in the document).
     rollback_after: Option<usize>,
+    /// Regen-loop weave cache carried ACROSS regenerations. Installed into
+    /// each regenerate `Context` and taken back afterwards, so a feature
+    /// that resolves element queries mid-loop (shell's `qFace` open faces)
+    /// only pays the octree weave when the upstream features actually
+    /// changed — not on every regen/load. Keyed by content hash, so a stale
+    /// hit is impossible; without it, loading a weave-heavy document
+    /// (spline-revolve + shell) re-wove from scratch every time.
+    regen_brep_cache: body::BrepCache,
 }
 
 impl Kernel {
@@ -592,6 +600,14 @@ impl Kernel {
                     .iter()
                     .map(|&i| self.decoded[i].transform)
                     .collect();
+                // Keep the woven B-Rep across geometry-preserving remeshes
+                // (LOD switch, transform change): `ensure_brep` revalidates
+                // against its own placement-invariant content key anyway,
+                // and re-weaving a weave-heavy body on every active-body
+                // switch froze the UI for the whole octree pass.
+                if prev.geometry_hash != geometry_hash {
+                    prev.brep = None;
+                }
                 prev.feature_indices = part.feature_indices;
                 prev.aabb = part.aabb;
                 prev.payload_hash = payload_hash;
@@ -603,7 +619,6 @@ impl Kernel {
                 prev.version = prev.version.wrapping_add(1);
                 prev.transform_delta = None;
                 prev.last_mesh_transforms = transforms;
-                prev.brep = None;
                 new_bodies.push(prev);
             } else {
                 let mesh = self.build_mesh_for(&part.feature_indices, target_resolution);
@@ -987,6 +1002,7 @@ impl Kernel {
             mate_connectors: Vec::new(),
             feature_errors: std::collections::HashMap::new(),
             rollback_after: None,
+            regen_brep_cache: body::BrepCache::new(),
         };
         // Seed the mesh buffer (empty document → empty mesh, but we
         // still want the version counter and buffers initialised).
@@ -1069,7 +1085,12 @@ impl Kernel {
         // render what regenerated before the failing call.
         let (errors, spine) = {
             let mut ctx = features::Context::new(&mut self.document);
+            // Install the cross-regen weave cache so mid-loop element
+            // queries (shell qFace) reuse prior weaves instead of paying
+            // the octree on every regenerate; taken back below.
+            ctx.brep_cache = std::mem::take(&mut self.regen_brep_cache);
             let errs = registry.regenerate(&mut ctx, &calls, rollback);
+            self.regen_brep_cache = std::mem::take(&mut ctx.brep_cache);
             // K10.4: capture edge fillets collected during regen.
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
             // C2: capture resolved mate-connector CSYS for the viewport.

@@ -849,43 +849,16 @@ fn sdf_path2d_generic<T: DualNum<f64> + Copy + PartialOrd>(
     }
     let pr = [p[0].re() as f32, p[1].re() as f32];
 
-    // Argmin segment on real parts.
-    let mut best_i = 0usize;
-    let mut best_d = f32::INFINITY;
-    for (i, seg) in segments.iter().enumerate() {
-        let d = seg.unsigned_distance(pr);
-        if d < best_d {
-            best_d = d;
-            best_i = i;
-        }
-    }
+    // Argmin segment on real parts — shared pruned scan with the f32 path.
+    let (_, best_i) = fielddraft_protocol::sketch2d::path_min_distance(pr, segments);
     let unsigned = sketch_segment_distance_generic(&segments[best_i], p);
 
     if !closed {
         return unsigned;
     }
 
-    // Even-odd crossing test over the flattened contour (real parts).
-    let mut inside = false;
-    for seg in segments {
-        let steps = match seg {
-            fielddraft_protocol::sketch2d::SketchSegment::Line { .. } => 1,
-            _ => fielddraft_protocol::sketch2d::PATH_FLATTEN_SAMPLES,
-        };
-        let mut a = seg.point_at(0.0);
-        for k in 1..=steps {
-            let t = k as f32 / steps as f32;
-            let b = seg.point_at(t);
-            if (a[1] > pr[1]) != (b[1] > pr[1]) {
-                let x_cross = a[0] + (pr[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
-                if pr[0] < x_cross {
-                    inside = !inside;
-                }
-            }
-            a = b;
-        }
-    }
-    if inside {
+    // Even-odd sign on real parts — shared straddle-filtered test.
+    if fielddraft_protocol::sketch2d::path_is_inside(pr, segments) {
         -unsigned
     } else {
         unsigned
