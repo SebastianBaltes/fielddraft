@@ -1,21 +1,18 @@
-/* F18: live numeric input shown while a LINE is being drawn.
+/* F18 (reworked): click-to-edit dimension on the most recently drawn
+ * LINE.
  *
- * Root: .fd-sketch-live-input — a small floating overlay positioned at
- * the line midpoint (left/top set inline as dynamic values). Holds a
- * single LENGTH field; the user types an exact value and presses Enter to
- * commit a precise, parametric line (the angle follows the cursor).
- *
- * Styled as the ONE compact blue length pill (ticket c2ox): it replaces
- * the canvas-drawn distance label while a pending line is in flight, so
- * the length never shows twice. Mirrors the canvas label's look — white
- * pill, accent border, accent text. */
+ * Root: .fd-sketch-live-input — a small floating input positioned at
+ * the dimension readout's anchor (left/top set inline as dynamic
+ * values). While drawing, the canvas shows only an unobtrusive number;
+ * clicking that number after the line is placed opens this field.
+ * Enter applies the exact length, Esc / click-away dismisses. Compact
+ * blue pill mirroring the readout's accent colour. */
 
 .fd-sketch-live-input {
   position: absolute;
   z-index: 20;
-  /* Anchor at the supplied midpoint, then lift the pill above the line
-   * so it doesn't sit on top of the cursor. */
-  transform: translate(-50%, calc(-100% - var(--space-3)));
+  /* Centre the pill on the readout it replaces. */
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   padding: 0 var(--space-1);

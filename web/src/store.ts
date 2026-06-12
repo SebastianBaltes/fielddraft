@@ -44,6 +44,7 @@ import {
   entityOwnerSubCalls,
 } from "./sketchSession";
 import { buildConstraintCall } from "./sketchConstraints";
+import { buildLineLengthEdit } from "./sketchLiveInput";
 import {
   computeTrim,
   curveOfSubCall,
@@ -2474,6 +2475,32 @@ export class KernelStore {
       },
     };
     this.notify();
+  }
+
+  /**
+   * F18 (click-to-edit dimension): set the committed line at spine
+   * `index` to exactly `lengthMm`. The line keeps its start point and
+   * direction; the typed value also lands in a DRIVEN distance
+   * constraint between the line's endpoints (replacing an existing one
+   * from a prior edit) so the dimension stays attached. Re-solves.
+   * Returns false when the edit is degenerate (see buildLineLengthEdit).
+   */
+  setSketchLineLength(index: number, lengthMm: number): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active) return false;
+    const edit = buildLineLengthEdit(session.subCalls, index, lengthMm);
+    if (!edit) return false;
+    let next = reduceReplaceAt(session, index, [edit.line]);
+    if (edit.existingConstraintIndex !== null) {
+      next = reduceReplaceAt(next, edit.existingConstraintIndex, [
+        edit.constraint,
+      ]);
+    } else {
+      next = { ...next, subCalls: [...next.subCalls, edit.constraint] };
+    }
+    this.updateSketch(next);
+    void solveAndReplace(this);
+    return true;
   }
 
   /**

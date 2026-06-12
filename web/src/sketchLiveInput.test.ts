@@ -1,147 +1,120 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildTypedLineBundle,
-  lineFromLengthAngle,
-  measuredAngleDeg,
+  buildLineLengthEdit,
   measuredLength,
   parseField,
-  resolveLengthAngle,
 } from "./sketchLiveInput";
-import { predictNextLineIds } from "./sketchSession";
+import { idsOfSubCall } from "./sketchSession";
 
-describe("lineFromLengthAngle", () => {
-  it("length 10 angle 0 from origin → (10, 0)", () => {
-    const [x, y] = lineFromLengthAngle([0, 0], 10, 0);
-    expect(x).toBeCloseTo(10, 9);
-    expect(y).toBeCloseTo(0, 9);
-  });
-
-  it("length 10 angle 90 from origin → (0, 10)", () => {
-    const [x, y] = lineFromLengthAngle([0, 0], 10, 90);
-    expect(x).toBeCloseTo(0, 9);
-    expect(y).toBeCloseTo(10, 9);
-  });
-
-  it("angle 180 flips along −X", () => {
-    const [x, y] = lineFromLengthAngle([5, 5], 4, 180);
-    expect(x).toBeCloseTo(1, 9);
-    expect(y).toBeCloseTo(5, 9);
-  });
-
-  it("respects a non-origin start", () => {
-    const [x, y] = lineFromLengthAngle([3, 7], 5, 0);
-    expect(x).toBeCloseTo(8, 9);
-    expect(y).toBeCloseTo(7, 9);
-  });
-});
-
-describe("measuredLength / measuredAngleDeg", () => {
+describe("measuredLength", () => {
   it("measures a horizontal segment", () => {
     expect(measuredLength([0, 0], [10, 0])).toBeCloseTo(10, 9);
-    expect(measuredAngleDeg([0, 0], [10, 0])).toBeCloseTo(0, 9);
   });
 
-  it("measures a vertical segment", () => {
-    expect(measuredLength([0, 0], [0, 7])).toBeCloseTo(7, 9);
-    expect(measuredAngleDeg([0, 0], [0, 7])).toBeCloseTo(90, 9);
-  });
-
-  it("round-trips through lineFromLengthAngle", () => {
-    const end = lineFromLengthAngle([1, 2], 13, 37);
-    expect(measuredLength([1, 2], end)).toBeCloseTo(13, 9);
-    expect(measuredAngleDeg([1, 2], end)).toBeCloseTo(37, 9);
+  it("measures a diagonal segment", () => {
+    expect(measuredLength([1, 2], [4, 6])).toBeCloseTo(5, 9);
   });
 });
 
 describe("parseField", () => {
-  it("blank → null (no override)", () => {
+  it("blank → null (no value)", () => {
     expect(parseField("")).toBeNull();
     expect(parseField("   ")).toBeNull();
   });
+
   it("parses finite numbers incl. negatives + decimals", () => {
-    expect(parseField("10")).toBe(10);
-    expect(parseField(" -2.5 ")).toBe(-2.5);
+    expect(parseField("42")).toBe(42);
+    expect(parseField(" 3.5 ")).toBe(3.5);
+    expect(parseField("-1.25")).toBe(-1.25);
   });
+
   it("garbage → null", () => {
     expect(parseField("abc")).toBeNull();
     expect(parseField("Infinity")).toBeNull();
   });
 });
 
-describe("resolveLengthAngle", () => {
-  it("typed length + typed angle override the live values", () => {
-    expect(resolveLengthAngle("50", "30", 12, 99)).toEqual({
-      length: 50,
-      angleDeg: 30,
-    });
-  });
-  it("blank length falls back to the live length; typed angle wins", () => {
-    expect(resolveLengthAngle("", "45", 17, 99)).toEqual({
-      length: 17,
-      angleDeg: 45,
-    });
-  });
-  it("blank angle falls back to the live angle; typed length wins", () => {
-    expect(resolveLengthAngle("20", "", 17, 88)).toEqual({
-      length: 20,
-      angleDeg: 88,
-    });
-  });
-  it("both blank → both live values", () => {
-    expect(resolveLengthAngle("", "", 5, 5)).toEqual({
-      length: 5,
-      angleDeg: 5,
-    });
-  });
-});
-
-describe("buildTypedLineBundle", () => {
-  it("emits a sketch_line + a DRIVEN distance referencing the predicted endpoints", () => {
-    const subCalls: { type: string; params: Record<string, unknown> }[] = [];
-    const ids = predictNextLineIds(subCalls);
-    const bundle = buildTypedLineBundle(subCalls, [0, 0], 10, 0);
-    expect(bundle).not.toBeNull();
-    const [line, dist] = bundle!;
-
-    expect(line.type).toBe("sketch_line");
-    expect(line.params.start).toEqual([0, 0]);
-    const end = line.params.end as [number, number];
-    expect(end[0]).toBeCloseTo(10, 9);
-    expect(end[1]).toBeCloseTo(0, 9);
-
-    expect(dist.type).toBe("sketch_constraint_distance");
-    expect(dist.params.entity_a).toBe(ids.start);
-    expect(dist.params.entity_b).toBe(ids.end);
-    expect(dist.params.value_mm).toBe(10);
-    expect(dist.params.driven).toBe(true);
+describe("buildLineLengthEdit", () => {
+  const line = (
+    start: [number, number],
+    end: [number, number],
+  ): { type: string; params: Record<string, unknown> } => ({
+    type: "sketch_line",
+    params: { start, end },
   });
 
-  it("predicts ids relative to the existing spine", () => {
-    const subCalls = [
-      { type: "sketch_line", params: { start: [0, 0], end: [1, 0] } },
+  it("moves the end point to exactly the typed length, keeping direction", () => {
+    const subCalls = [line([0, 0], [3, 4])]; // length 5 toward (0.6, 0.8)
+    const edit = buildLineLengthEdit(subCalls, 0, 10);
+    expect(edit).not.toBeNull();
+    expect(edit!.line.type).toBe("sketch_line");
+    expect(edit!.line.params.start).toEqual([0, 0]);
+    const end = edit!.line.params.end as [number, number];
+    expect(end[0]).toBeCloseTo(6, 9);
+    expect(end[1]).toBeCloseTo(8, 9);
+  });
+
+  it("emits a DRIVEN distance constraint between the line's own ids", () => {
+    const subCalls = [line([0, 0], [1, 0]), line([2, 2], [5, 2])];
+    const edit = buildLineLengthEdit(subCalls, 1, 7)!;
+    const [startId, endId] = idsOfSubCall(subCalls, 1);
+    expect(edit.constraint.type).toBe("sketch_constraint_distance");
+    expect(edit.constraint.params.entity_a).toBe(startId);
+    expect(edit.constraint.params.entity_b).toBe(endId);
+    expect(edit.constraint.params.value_mm).toBe(7);
+    expect(edit.constraint.params.driven).toBe(true);
+    expect(edit.existingConstraintIndex).toBeNull();
+  });
+
+  it("updates an existing distance constraint instead of appending", () => {
+    const subCalls = [line([0, 0], [4, 0])];
+    const [startId, endId] = idsOfSubCall(subCalls, 0);
+    const spine = [
+      ...subCalls,
+      {
+        type: "sketch_constraint_distance",
+        params: { entity_a: endId, entity_b: startId, value_mm: 4, driven: true },
+      },
     ];
-    const ids = predictNextLineIds(subCalls);
-    const bundle = buildTypedLineBundle(subCalls, [2, 2], 5, 90)!;
-    expect(bundle[1].params.entity_a).toBe(ids.start);
-    expect(bundle[1].params.entity_b).toBe(ids.end);
-    // The second line's endpoint ids must sit above the first line's.
-    expect(ids.start).toBeGreaterThan(0);
+    const edit = buildLineLengthEdit(spine, 0, 9)!;
+    expect(edit.existingConstraintIndex).toBe(1);
+    expect(edit.constraint.params.value_mm).toBe(9);
+    // The existing call's other params survive (incl. reversed id order).
+    expect(edit.constraint.params.entity_a).toBe(endId);
+    expect(edit.constraint.params.entity_b).toBe(startId);
+    expect(edit.constraint.params.driven).toBe(true);
   });
 
-  it("length 0 → no commit (null)", () => {
-    expect(buildTypedLineBundle([], [0, 0], 0, 0)).toBeNull();
+  it("ignores a distance constraint between other entities", () => {
+    const subCalls = [
+      line([0, 0], [1, 0]),
+      line([2, 0], [3, 0]),
+      {
+        type: "sketch_constraint_distance",
+        params: { entity_a: 99, entity_b: 100, value_mm: 1, driven: true },
+      },
+    ];
+    const edit = buildLineLengthEdit(subCalls, 0, 5)!;
+    expect(edit.existingConstraintIndex).toBeNull();
   });
 
-  it("negative length → no commit (null)", () => {
-    expect(buildTypedLineBundle([], [0, 0], -5, 0)).toBeNull();
+  it("rejects a non-line index", () => {
+    const subCalls = [{ type: "sketch_point", params: { at: [0, 0] } }];
+    expect(buildLineLengthEdit(subCalls, 0, 5)).toBeNull();
+    expect(buildLineLengthEdit(subCalls, 3, 5)).toBeNull();
   });
 
-  it("non-finite length → no commit (null)", () => {
-    expect(buildTypedLineBundle([], [0, 0], Number.NaN, 0)).toBeNull();
-    expect(buildTypedLineBundle([], [0, 0], Number.POSITIVE_INFINITY, 0)).toBeNull();
+  it("rejects a zero-length line (no direction)", () => {
+    expect(buildLineLengthEdit([line([1, 1], [1, 1])], 0, 5)).toBeNull();
   });
 
-  it("non-finite angle → no commit (null)", () => {
-    expect(buildTypedLineBundle([], [0, 0], 10, Number.NaN)).toBeNull();
+  it("rejects a non-positive or non-finite typed length", () => {
+    const subCalls = [line([0, 0], [1, 0])];
+    expect(buildLineLengthEdit(subCalls, 0, 0)).toBeNull();
+    expect(buildLineLengthEdit(subCalls, 0, -2)).toBeNull();
+    expect(buildLineLengthEdit(subCalls, 0, Number.NaN)).toBeNull();
+    expect(
+      buildLineLengthEdit(subCalls, 0, Number.POSITIVE_INFINITY),
+    ).toBeNull();
   });
 });

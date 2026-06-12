@@ -48,12 +48,7 @@ import {
   predictNextLineIds,
   regularPolygonVertices,
 } from "./sketchSession";
-import {
-  buildTypedLineBundle,
-  measuredAngleDeg,
-  measuredLength,
-  resolveLengthAngle,
-} from "./sketchLiveInput";
+import { measuredLength, parseField } from "./sketchLiveInput";
 import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
 import { gripsForSelection, type Grip } from "./sketchGrips";
 import {
@@ -111,11 +106,14 @@ function dofColor(dof: number): string {
 const COLOR_SNAP = "#f59e0b";
 const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
 const LABEL_BG = "rgba(246, 246, 244, 0.92)";
-const LABEL_FG = "#1e3a8a";
-const LABEL_PADDING = 6;
-/** Label offset in CSS pixels, along the line's left-normal
- *  (≈ 2 rem given the default 16 px root font size). */
-const LABEL_OFFSET_PX = 32;
+/** Dimension readouts: unobtrusive plain text in the accent blue —
+ *  no box, so the numbers never compete with the geometry. */
+const LABEL_DIM = "#3b82f6";
+/** Label offset in CSS pixels, along the line's left-normal. */
+const LABEL_OFFSET_PX = 18;
+/** Click radius (CSS px) around the dimension readout that opens the
+ *  exact-length editor on the most recently placed line. */
+const DIM_LABEL_HIT_PX = 24;
 /** Snap radius in sketch-plane millimetres. Generous enough to
  *  catch ordinary cursor jitter but tight enough that the user
  *  can still place free points near a committed entity without
@@ -748,21 +746,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastDist: 0,
   });
 
-  // F18: live-numeric-input HUD shown while a click-started line is
-  // rubber-banding (kind: "pending_line"). `hud` is null when no pending
-  // line is in flight. `left`/`top` position it at the line midpoint in
-  // client pixels; `length` is the editable field string, refreshed from
-  // the live measurement on every move UNLESS the user has typed into it
-  // (tracked by `lengthDirty`). The line's angle follows the cursor — only
-  // the length is typeable (the on-canvas label already shows the length).
-  const [hud, setHud] = useState<{
+  // F18 (reworked): click-to-edit dimension. While drawing, the canvas
+  // shows only the unobtrusive numeric readout; once a line is placed,
+  // its sub-call index lands in `recentLineRef` and the readout stays
+  // visible at the committed line. Clicking the readout opens `editor`
+  // — a small input at the label anchor; Enter applies the exact length
+  // via store.setSketchLineLength, Esc / click-away dismisses.
+  const recentLineRef = useRef<number | null>(null);
+  const [editor, setEditor] = useState<{
+    index: number;
     left: number;
     top: number;
     length: string;
   } | null>(null);
-  // The user's typed-override flag, kept in a ref so the imperative
-  // pointermove handler can read it without a re-render dependency.
-  const lengthDirtyRef = useRef(false);
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
 
   // Tickets yx6a/bxoo: resolve the session's plane query to its world
@@ -830,6 +826,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const onWheel = (e: WheelEvent) => {
       const s = sessionRef.current;
       if (!s.active) return;
+      // Zooming moves the label under an open dimension editor — the
+      // DOM field can't follow the canvas transform, so dismiss it.
+      setEditor(null);
       const target = viewportCanvas(canvas);
       if (!target) return;
       target.dispatchEvent(
@@ -859,13 +858,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       dragRef.current = { kind: "idle" };
       lastCamVersionRef.current = -1;
     }
-    // F18: drop an in-flight pending line + its HUD when leaving the tool.
+    // F18: drop an in-flight pending line when leaving the tool.
     if (k === "pending_line") {
       dragRef.current = { kind: "idle" };
-      lengthDirtyRef.current = false;
-      setHud(null);
       lastCamVersionRef.current = -1;
     }
+    // The click-to-edit dimension belongs to the line tool — drop it
+    // (and any open editor) on tool change.
+    recentLineRef.current = null;
+    setEditor(null);
     // F10: drop a pending first fillet pick when leaving the tool.
     filletFirstRef.current = null;
     // F17: drop a pending Move / Copy base point when leaving the tool.
@@ -910,6 +911,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
       }
@@ -1154,22 +1156,58 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     if (session.selectedTool === "sketch_line") {
       // F18: a second click while a pending (click-started) line is in
-      // flight commits it — at the typed exact length/angle if the HUD
-      // carries an override, otherwise as a free line to the click point.
+      // flight commits it as a free line to the click point.
       if (dragRef.current.kind === "pending_line") {
         const pending: Extract<DragState, { kind: "pending_line" }> = {
           ...dragRef.current,
           current: [su, sv],
         };
-        const committed = commitPendingLine(pending, hud);
+        const committed = commitPendingLine(pending);
         if (!committed) {
-          // Degenerate (e.g. clicked the start again with no typed value):
-          // keep the pending line alive rather than dropping it silently.
+          // Degenerate (clicked the start again): keep the pending line
+          // alive rather than dropping it silently.
           dragRef.current = pending;
         }
         lastCamVersionRef.current = -1;
         return;
       }
+      // Click on the recent line's dimension readout → open the editor
+      // instead of starting a new line. A click anywhere else while the
+      // editor is open only dismisses it.
+      const canvas = e.currentTarget as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      const clickPx: [number, number] = [
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+      ];
+      if (editor !== null) {
+        setEditor(null);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+      const recent = recentLineGeometry();
+      if (recent !== null) {
+        const anchor = distanceLabelAnchorPx(recent.start, recent.end, cam);
+        if (
+          anchor !== null &&
+          Math.hypot(clickPx[0] - anchor[0], clickPx[1] - anchor[1]) <=
+            DIM_LABEL_HIT_PX
+        ) {
+          setEditor({
+            index: recentLineRef.current!,
+            left: anchor[0],
+            top: anchor[1],
+            length: measuredLength(recent.start, recent.end).toFixed(2),
+          });
+          requestAnimationFrame(() => {
+            lengthInputRef.current?.focus();
+            lengthInputRef.current?.select();
+          });
+          return;
+        }
+      }
+      // Starting a new line retires the previous line's readout.
+      recentLineRef.current = null;
       dragRef.current = {
         kind: "line",
         start: [su, sv],
@@ -1552,6 +1590,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         hoverRef.current,
         snapRef.current,
         projectedEdgesRef.current,
+        recentLineGeometry(),
       );
       return;
     }
@@ -1578,7 +1617,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       dragRef.current = { ...dragRef.current, current: snap.snapped };
     } else if (dragRef.current.kind === "pending_line") {
       // F18: rubber-band the click-started line to the cursor (no button
-      // held) and refresh the HUD's live length/angle + position.
+      // held). The length readout is canvas-drawn (drawDistanceLabel).
       const snap = resolveSnap(
         [u, v],
         session,
@@ -1588,7 +1627,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       );
       snapRef.current = snap;
       dragRef.current = { ...dragRef.current, current: snap.snapped };
-      updateHudFromPending(dragRef.current.start, snap.snapped);
     } else if (dragRef.current.kind === "rectangle") {
       // Rectangles don't run inference at the drag endpoint —
       // the H/V constraints are implicit in the tool itself, so
@@ -1680,6 +1718,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         hoverRef.current,
         snapRef.current,
         projectedEdgesRef.current,
+        recentLineGeometry(),
       );
     }
   };
@@ -1689,90 +1728,42 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     void solveAndReplace(store);
   };
 
-  // F18: refresh the HUD position + (non-dirty) field values from a
-  // pending line. Position is the line midpoint in client pixels;
-  // dirty fields keep the user's typed text.
-  const updateHudFromPending = (
-    start: [number, number],
-    current: [number, number],
-  ) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const cam = readCamForCanvas(canvas);
-    const mid: [number, number] = [
-      (start[0] + current[0]) / 2,
-      (start[1] + current[1]) / 2,
-    ];
-    const [mx, my] = sketchToScreen(mid[0], mid[1], cam);
-    const len = measuredLength(start, current);
-    setHud((prev) => ({
-      left: mx,
-      top: my,
-      length: lengthDirtyRef.current
-        ? (prev?.length ?? "")
-        : len > 1e-6
-          ? len.toFixed(2)
-          : "",
-    }));
-  };
-
-  // F18: tear down the pending-line draft + HUD without committing.
+  // F18: tear down the pending-line draft without committing.
   const cancelPendingLine = () => {
     dragRef.current = { kind: "idle" };
-    lengthDirtyRef.current = false;
-    setHud(null);
     lastCamVersionRef.current = -1;
   };
 
-  // F18: commit the in-flight pending line. When the HUD carries a typed
-  // length override we emit the line + a DRIVEN distance bundle so the line
-  // stays parametric (the angle follows the cursor); a plain commit (no
-  // typed value) emits a free line, identical to the drag path. Returns
-  // true when something was committed. `fields` is the latest HUD text
-  // (Enter passes its own closure-fresh copy; the second-click path reads
-  // current `hud`).
+  // The committed geometry of the most recently placed line, for the
+  // click-to-edit dimension readout. Reads the (post-solve) sub-call
+  // params, so it tracks solver rewrites. Clears a stale index.
+  const recentLineGeometry = (): {
+    start: [number, number];
+    end: [number, number];
+  } | null => {
+    const index = recentLineRef.current;
+    if (index === null) return null;
+    const call = session.subCalls[index];
+    if (!call || call.type !== "sketch_line") {
+      recentLineRef.current = null;
+      return null;
+    }
+    const start = toXy(call.params.start);
+    const end = toXy(call.params.end);
+    if (!start || !end) return null;
+    return { start, end };
+  };
+
+  // F18: commit the in-flight pending line as a free line. Returns true
+  // when something was committed. The placed line becomes the
+  // click-to-edit dimension target.
   const commitPendingLine = (
     drag: Extract<DragState, { kind: "pending_line" }>,
-    fields: { length: string } | null,
   ): boolean => {
     if (!store) return false;
     const { start, current, startAnchorId } = drag;
-    const liveLen = measuredLength(start, current);
-    const liveAng = measuredAngleDeg(start, current);
-    const typed = fields !== null && lengthDirtyRef.current;
-
-    if (typed) {
-      const resolved = resolveLengthAngle(
-        fields.length,
-        "",
-        liveLen,
-        liveAng,
-      );
-      if (!resolved) return false;
-      const bundle = buildTypedLineBundle(
-        session.subCalls,
-        start,
-        resolved.length,
-        resolved.angleDeg,
-      );
-      if (!bundle) return false;
-      // A coincident start anchor still applies to the typed line.
-      if (startAnchorId !== null) {
-        const ids = predictNextLineIds(session.subCalls);
-        bundle.push({
-          type: "sketch_constraint_coincident",
-          params: { a: ids.start, b: startAnchorId },
-        });
-      }
-      store.pushSketchSubCalls(bundle);
-      cancelPendingLine();
-      scheduleSolverReplay();
-      return true;
-    }
-
-    // No typed value → commit a free line (no forced dimension). Reject a
-    // degenerate zero-length line.
-    if (liveLen < 1e-3) return false;
+    // Reject a degenerate zero-length line.
+    if (measuredLength(start, current) < 1e-3) return false;
     const ids = predictNextLineIds(session.subCalls);
     const calls: Array<{ type: string; params: Record<string, unknown> }> = [
       {
@@ -1789,6 +1780,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         params: { a: ids.start, b: startAnchorId },
       });
     }
+    recentLineRef.current = session.subCalls.length;
     store.pushSketchSubCalls(calls);
     cancelPendingLine();
     scheduleSolverReplay();
@@ -1866,6 +1858,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -1902,6 +1895,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -1941,6 +1935,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -1978,6 +1973,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -2011,6 +2007,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -2044,6 +2041,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             hoverRef.current,
             snapRef.current,
             projectedEdgesRef.current,
+            recentLineGeometry(),
           );
         }
         return;
@@ -2077,11 +2075,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     dragRef.current = { kind: "idle" };
     const [su, sv] = snap.snapped;
     // F18: a click-without-drag (the pointer barely moved between down and
-    // up) is the entry point for the type-while-drawing path. Instead of
-    // dropping it as a degenerate line, start a PENDING line that
-    // rubber-bands to the cursor and shows the live numeric HUD; a second
-    // click OR Enter commits, Esc cancels. A real drag (moved past the
-    // pixel threshold) commits a free line below, exactly as before.
+    // up) starts a PENDING line that rubber-bands to the cursor; a second
+    // click commits, Esc cancels. A real drag (moved past the pixel
+    // threshold) commits a free line below, exactly as before.
     const [sx0, sy0] = sketchToScreen(start[0], start[1], cam);
     const [sx1, sy1] = sketchToScreen(su, sv, cam);
     const movedPx = Math.hypot(sx1 - sx0, sy1 - sy0);
@@ -2092,10 +2088,6 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         current: [start[0], start[1]],
         startAnchorId,
       };
-      lengthDirtyRef.current = false;
-      updateHudFromPending(start, start);
-      // Focus the length field so the user can type immediately.
-      requestAnimationFrame(() => lengthInputRef.current?.focus());
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2151,6 +2143,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       }
     }
 
+    // The placed line becomes the click-to-edit dimension target.
+    recentLineRef.current = session.subCalls.length;
     store.pushSketchSubCalls(newCalls);
     scheduleSolverReplay();
   };
@@ -2184,22 +2178,26 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
-  // F18: Esc cancels an in-flight pending line from anywhere (canvas or
-  // the HUD input), Enter commits. A window-level listener catches Esc
-  // even when the canvas has focus; the HUD inputs also wire their own
-  // key handlers (so Enter in a field commits without losing the typed
-  // value to a stale closure).
+  // F18: Esc dismisses an open dimension editor, else cancels an
+  // in-flight pending line. Window-level so it works even when the
+  // canvas has focus; the editor input wires its own key handler too.
   useEffect(() => {
-    if (hud === null) return;
+    if (!session.active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key !== "Escape") return;
+      if (editor !== null) {
+        e.preventDefault();
+        setEditor(null);
+        return;
+      }
+      if (dragRef.current.kind === "pending_line") {
         e.preventDefault();
         cancelPendingLine();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [hud === null]);
+  }, [session.active, editor]);
 
   // F23: keyboard finish for the spline gesture — Enter commits the
   // in-progress spline (open, needs ≥ 2 control points); Escape cancels
@@ -2248,12 +2246,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     () => false,
   );
 
-  // F18: commit the pending line from the HUD using the latest field
-  // strings (closure-fresh on every render, so the typed value is never
-  // stale).
-  const commitFromHud = () => {
-    if (dragRef.current.kind !== "pending_line" || hud === null) return;
-    commitPendingLine(dragRef.current, { length: hud.length });
+  // F18: apply the typed exact length from the dimension editor to the
+  // committed line. Blank / invalid input just dismisses.
+  const commitEditor = () => {
+    if (editor === null || !store) return;
+    const len = parseField(editor.length);
+    if (len !== null && len > 0) {
+      store.setSketchLineLength(editor.index, len);
+    }
+    setEditor(null);
+    lastCamVersionRef.current = -1;
   };
 
   return (
@@ -2273,10 +2275,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         onPointerLeave={onPointerLeave}
         onContextMenu={(e) => e.preventDefault()}
       />
-      {hud !== null && (
+      {editor !== null && (
         <div
           className="fd-sketch-live-input"
-          style={{ left: `${hud.left}px`, top: `${hud.top}px` }}
+          style={{ left: `${editor.left}px`, top: `${editor.top}px` }}
         >
           <label className="field">
             <input
@@ -2284,20 +2286,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
               data-testid="sketch-live-length"
               type="text"
               inputMode="decimal"
-              value={hud.length}
+              value={editor.length}
               onChange={(e) => {
-                lengthDirtyRef.current = true;
-                setHud((prev) =>
+                setEditor((prev) =>
                   prev === null ? prev : { ...prev, length: e.target.value },
                 );
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  commitFromHud();
+                  commitEditor();
                 } else if (e.key === "Escape") {
                   e.preventDefault();
-                  cancelPendingLine();
+                  setEditor(null);
                 }
               }}
             />
@@ -2330,6 +2331,10 @@ function drawOverlay(
   hover: [number, number] | null,
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[] | null = null,
+  recentLine: {
+    start: [number, number];
+    end: [number, number];
+  } | null = null,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -2747,15 +2752,20 @@ function drawOverlay(
     }
   }
 
+  // F18: dimension readout on the most recently placed line — clicking
+  // it opens the exact-length editor (hit-tested in onPointerDown).
+  if (recentLine !== null && drag.kind === "idle") {
+    drawDistanceLabel(ctx, recentLine.start, recentLine.end, cam);
+  }
+
   if (drag.kind === "line" || drag.kind === "pending_line") {
     const { start, current } = drag;
+    // Label first so the line draws over it — the readout stays behind
+    // the geometry, unobtrusive by design.
+    drawDistanceLabel(ctx, start, current, cam);
     drawLine(ctx, start, current, cam, COLOR_PREVIEW, STROKE_PX);
     drawPoint(ctx, start, cam, COLOR_PREVIEW);
     drawPoint(ctx, current, cam, COLOR_PREVIEW);
-    // A pending (click-started) line shows the EDITABLE live-input field
-    // instead — drawing the canvas label too doubled the length readout
-    // (ticket c2ox).
-    if (drag.kind === "line") drawDistanceLabel(ctx, start, current, cam);
   } else if (drag.kind === "rectangle") {
     const { start, current } = drag;
     drawRectangle(ctx, start, current, cam, COLOR_PREVIEW);
@@ -3252,32 +3262,12 @@ function drawRadiusLabel(
   const [cx, cy] = sketchToScreen(center[0], center[1], cam);
   // Anchor the label slightly above-right of the centre so it
   // doesn't clash with the centre-point indicator.
-  const anchorX = cx + LABEL_OFFSET_PX / 2;
-  const anchorY = cy - LABEL_OFFSET_PX / 2;
-  const text = `R ${radiusMm.toFixed(2)} mm`;
-  ctx.save();
-  ctx.font = LABEL_FONT;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
-  const metrics = ctx.measureText(text);
-  const textW = metrics.width;
-  const textH = 16;
-  ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_UNDER;
-  ctx.lineWidth = 1;
-  roundRect(
+  drawDimensionText(
     ctx,
-    anchorX - textW / 2 - LABEL_PADDING,
-    anchorY - textH / 2 - LABEL_PADDING / 2,
-    textW + LABEL_PADDING * 2,
-    textH + LABEL_PADDING,
-    4,
+    `R ${radiusMm.toFixed(2)}`,
+    cx + LABEL_OFFSET_PX,
+    cy - LABEL_OFFSET_PX,
   );
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = LABEL_FG;
-  ctx.fillText(text, anchorX, anchorY);
-  ctx.restore();
 }
 
 function drawRectangle(
@@ -3347,32 +3337,7 @@ function drawSizeLabel(
   if (w < 1e-4 && h < 1e-4) return;
   const centre: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const [px, py] = sketchToScreen(centre[0], centre[1], cam);
-  const text = `${w.toFixed(2)} × ${h.toFixed(2)} mm`;
-  ctx.save();
-  ctx.font = LABEL_FONT;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
-  const metrics = ctx.measureText(text);
-  const textW = metrics.width;
-  const textH = 16;
-  const boxX = px - textW / 2 - LABEL_PADDING;
-  const boxY = py - textH / 2 - LABEL_PADDING / 2;
-  ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_UNDER;
-  ctx.lineWidth = 1;
-  roundRect(
-    ctx,
-    boxX,
-    boxY,
-    textW + LABEL_PADDING * 2,
-    textH + LABEL_PADDING,
-    4,
-  );
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = LABEL_FG;
-  ctx.fillText(text, px, py);
-  ctx.restore();
+  drawDimensionText(ctx, `${w.toFixed(2)} × ${h.toFixed(2)}`, px, py);
 }
 
 function drawPoint(
@@ -3408,25 +3373,23 @@ function drawControlHandle(
   ctx.restore();
 }
 
-function drawDistanceLabel(
-  ctx: CanvasRenderingContext2D,
+/**
+ * Anchor (canvas CSS px) of a line's dimension readout: the midpoint,
+ * pushed `LABEL_OFFSET_PX` along the line's visual left-normal. Shared
+ * by the label renderer and the click-to-edit hit test so the two can
+ * never disagree. `null` for a (near) zero-length screen segment.
+ */
+function distanceLabelAnchorPx(
   start: [number, number],
   end: [number, number],
   cam: Readonly<SketchCameraState>,
-): void {
+): [number, number] | null {
   const [sx, sy] = sketchToScreen(start[0], start[1], cam);
   const [ex, ey] = sketchToScreen(end[0], end[1], cam);
   const dxScreen = ex - sx;
   const dyScreen = ey - sy;
   const lenScreen = Math.hypot(dxScreen, dyScreen);
-  if (lenScreen < 1) return;
-
-  // Distance is measured in sketch-plane units (mm).
-  const dxSketch = end[0] - start[0];
-  const dySketch = end[1] - start[1];
-  const distMm = Math.hypot(dxSketch, dySketch);
-  const text = `${distMm.toFixed(2)} mm`;
-
+  if (lenScreen < 1) return null;
   // Left-normal in screen space: rotate the direction 90° CCW.
   // Canvas has screen-Y pointing *down*, so "left as you face
   // from start to end" maps to rotating the direction vector
@@ -3435,31 +3398,49 @@ function drawDistanceLabel(
   // Y-down canvas — so we negate to get visual left.
   const nx = dyScreen / lenScreen;
   const ny = -dxScreen / lenScreen;
+  return [
+    (sx + ex) / 2 + nx * LABEL_OFFSET_PX,
+    (sy + ey) / 2 + ny * LABEL_OFFSET_PX,
+  ];
+}
 
-  const midX = (sx + ex) / 2;
-  const midY = (sy + ey) / 2;
-  const anchorX = midX + nx * LABEL_OFFSET_PX;
-  const anchorY = midY + ny * LABEL_OFFSET_PX;
+/**
+ * Unobtrusive dimension readout beside a line: plain accent-coloured
+ * number, no box, no unit — it must never compete with the geometry.
+ * Used both for the in-flight preview and for the click-to-edit
+ * readout on the most recently placed line.
+ */
+function drawDistanceLabel(
+  ctx: CanvasRenderingContext2D,
+  start: [number, number],
+  end: [number, number],
+  cam: Readonly<SketchCameraState>,
+): void {
+  const anchor = distanceLabelAnchorPx(start, end, cam);
+  if (anchor === null) return;
+  // Distance is measured in sketch-plane units (mm).
+  const distMm = Math.hypot(end[0] - start[0], end[1] - start[1]);
+  drawDimensionText(ctx, distMm.toFixed(2), anchor[0], anchor[1]);
+}
 
+/** Shared renderer for the subtle drag-preview dimension readouts. */
+function drawDimensionText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+): void {
   ctx.save();
   ctx.font = LABEL_FONT;
   ctx.textBaseline = "middle";
   ctx.textAlign = "center";
-  const metrics = ctx.measureText(text);
-  const textW = metrics.width;
-  const textH = 16;
-  const boxX = anchorX - textW / 2 - LABEL_PADDING;
-  const boxY = anchorY - textH / 2 - LABEL_PADDING / 2;
-  const boxW = textW + LABEL_PADDING * 2;
-  const boxH = textH + LABEL_PADDING;
-  ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_UNDER;
-  ctx.lineWidth = 1;
-  roundRect(ctx, boxX, boxY, boxW, boxH, 4);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = LABEL_FG;
-  ctx.fillText(text, anchorX, anchorY);
+  // Thin halo so the number stays legible over the grid without
+  // needing a boxed background.
+  ctx.strokeStyle = LABEL_BG;
+  ctx.lineWidth = 3;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = LABEL_DIM;
+  ctx.fillText(text, x, y);
   ctx.restore();
 }
 
