@@ -244,8 +244,7 @@ export function buildVmSdfEvalFn(
         const dSq = float(1e30).toVar();
         const wSign = float(1).toVar();
         const ii = int(0).toVar();
-        Loop(int(32), () => {
-          If(ii.greaterThanEqual(nInt), () => { Break(); });
+        Loop(nInt, () => {
           const jj = ii.add(nInt).sub(1).mod(nInt);
           const vix = opBuf.element(vertStart.add(ii.mul(2)));
           const viy = opBuf.element(vertStart.add(ii.mul(2)).add(1));
@@ -312,8 +311,7 @@ export function buildVmSdfEvalFn(
         // thickness (a closed shell).
         const g = float(-1e30).toVar();
         const ii = int(0).toVar();
-        Loop(int(32), () => {
-          If(ii.greaterThanEqual(nInt), () => { Break(); });
+        Loop(nInt, () => {
           const base = recStart.add(ii.mul(REC));
           const kind = opBuf.element(base);
           const translate = vec3(
