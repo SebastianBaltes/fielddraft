@@ -316,7 +316,20 @@ erst für Fälle gebraucht, in denen koinzidente Regionen NICHT durch
 transversale Dritt-Flächen berandet sind. Sollte so ein Fall auftauchen,
 ist der ursprüngliche Text unten die Referenz.
 
-Bekannte Restlücken: F0-1 (Face-pro-Region, Plus-Familie), Phase 4
+Bekannte Restlücken: ~~F0-1 (Face-pro-Region, Plus-Familie)~~ —
+**UMGESETZT (v0.6.100)**: `materialize_faces` erzeugt pro
+zusammenhängender Grenzregion eines Branches eine Face
+(`order_loop_groups` + `group_rings_planar`: Even-Odd-Containment-
+Nesting der Ringe in der Tangentialebene, Mehrheitsvotum über die
+Boundary-Samples des Rings — robust gegen konzentrische Ringe wie das
+Bohrloch —, Löcher hängen am unmittelbaren Container; `spatial_index`
+disambiguiert die Namen). Das transversale Plus-Gate ist entignoriert
+und grün; Multi-Region auf GEKRÜMMTEN Carriern bleibt dokumentierte
+Limitation (eine Face, periodische uv-Domain hat keine globale
+Containment-Ordnung). Das Kombi-Gate koplanarer Deckel
+(`gate_union_crossing_boxes_coplanar_tops`) bleibt rot — es braucht
+Naht-Kanten-Erzeugung auf koinzidenten Wänden (eigenes Arbeitspaket).
+Phase 4
 (Octree-Route auf den Ticket-Bodies degeneriert weiter an rotierten/
 gekrümmten koinzidenten Wänden — Produktion nimmt die Seed-Route),
 nichtdeterministische qFace-Auflösung auf degenerierten Zwischenständen ist

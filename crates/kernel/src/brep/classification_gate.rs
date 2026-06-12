@@ -207,7 +207,6 @@ fn gate_remove_through_hole_genus1() {
 // ─── F0-1: multi-region branches — known red, NOT coincidence ────────────────
 
 #[test]
-#[ignore = "Gate-Befund F0-1 — Branch mit getrennten Grenzregionen wird als EINE Face materialisiert, bekannt rot"]
 fn gate_union_crossing_boxes_transversal() {
     // A plus sign with DIFFERENT heights: fully transversal, no coplanarity
     // anywhere — and still non-manifold on both routes (Euler 0, 12

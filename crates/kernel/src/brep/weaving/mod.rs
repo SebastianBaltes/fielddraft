@@ -321,7 +321,8 @@ fn materialize_faces(
         }
     }
 
-    // Build one face per branch — skipping membrane branches culled in (1b).
+    // Build one face per CONNECTED REGION of each branch (F0-1) — skipping
+    // membrane branches culled in (1b).
     let mut face_ids = Vec::with_capacity(branch_order.len());
     for &branch_u32 in &branch_order {
         if culled.contains(&branch_u32) {
@@ -342,30 +343,38 @@ fn materialize_faces(
             },
         };
 
-        // Order the boundary into an outer ring + inner (hole) rings, reflex-
-        // correct, with outer/inner classification (DL-58). If ordering fails
-        // for a degenerate face, fall back to the unordered forward list ONLY
-        // as a last resort (kept so the face is still recorded) — this never
-        // happens on a watertight body, which is asserted via the connectivity
-        // check below.
-        let (outer, inner) = match order_loops(
+        // Order the boundary into FACE GROUPS (F0-1): one outer ring + inner
+        // (hole) rings PER CONNECTED REGION of the branch's kept surface,
+        // reflex-correct, with outer/inner classification (DL-58). A branch
+        // split into disjoint regions (transversal plus) materialises one
+        // face per region — the naming layer's spatial_index disambiguates
+        // their otherwise identical signatures. If ordering fails for a
+        // degenerate face, fall back to ONE face with the unordered forward
+        // list as a last resort (kept so the face is still recorded) — this
+        // never happens on a watertight body, which is asserted via the
+        // connectivity check below.
+        let groups = match order_loop_groups(
             brep,
             edge_ids,
             &surface,
             branch_is_complemented(branch_id, complemented),
         ) {
-            Some(loops) => {
-                let outer = Loop::new(loops.outer);
-                let inner: Vec<Loop> = loops.inner.into_iter().map(Loop::new).collect();
-                // Connectivity guarantee: a successfully-ordered face must be
-                // made of connected rings, otherwise we'd emit invalid STEP.
-                debug_assert!(
-                    outer.is_connected_ring(&brep.edges)
-                        && inner.iter().all(|lp| lp.is_connected_ring(&brep.edges)),
-                    "ordered face loops for branch {branch_u32} must be connected rings"
-                );
-                (outer, inner)
-            }
+            Some(groups) => groups
+                .into_iter()
+                .map(|loops| {
+                    let outer = Loop::new(loops.outer);
+                    let inner: Vec<Loop> =
+                        loops.inner.into_iter().map(Loop::new).collect();
+                    // Connectivity guarantee: a successfully-ordered face must
+                    // be made of connected rings, else we'd emit invalid STEP.
+                    debug_assert!(
+                        outer.is_connected_ring(&brep.edges)
+                            && inner.iter().all(|lp| lp.is_connected_ring(&brep.edges)),
+                        "ordered face loops for branch {branch_u32} must be connected rings"
+                    );
+                    (outer, inner)
+                })
+                .collect::<Vec<_>>(),
             None => {
                 // Last-resort fallback for degenerate topology (e.g. a face
                 // whose boundary is incomplete because Phase-3 extraction
@@ -377,20 +386,22 @@ fn materialize_faces(
                      {branch_u32}; emitting unordered fallback loop (degenerate \
                      topology)"
                 );
-                (
+                vec![(
                     Loop::new(edge_ids.iter().map(|&e| (e, false)).collect()),
                     Vec::new(),
-                )
+                )]
             }
         };
 
-        let fid = brep.add_face(Face {
-            branch_id,
-            surface,
-            outer,
-            inner,
-        });
-        face_ids.push(fid);
+        for (outer, inner) in groups {
+            let fid = brep.add_face(Face {
+                branch_id,
+                surface: surface.clone(),
+                outer,
+                inner,
+            });
+            face_ids.push(fid);
+        }
     }
 
     // (2b) Edgeless closed analytic faces (SA-6). A *lone* closed analytic

@@ -392,6 +392,160 @@ pub(super) fn order_loops(
     Some(classify_rings_curved(brep, rings, surface, s))
 }
 
+/// F0-1: order a branch's edges into one [`FaceLoops`] PER CONNECTED
+/// BOUNDARY REGION. A branch whose kept surface splits into several
+/// disjoint regions (the transversal plus: the taller box cuts the
+/// flatter one's wall into two separate rectangles) must materialise one
+/// face per region — "one face per branch" packs disjoint rings into a
+/// single invalid face. Containment decides the grouping, NOT mere edge
+/// connectivity: an annulus's hole rim is disconnected from its outer rim
+/// yet belongs to the same face.
+///
+/// Planar surfaces nest rings by even-odd containment depth in the
+/// tangent plane (even depth = a region's outer ring, odd depth = hole of
+/// its immediate container — smallest containing ring). Curved surfaces
+/// keep the single-face classification of [`order_loops`] (multi-region
+/// on curved carriers is a documented limitation; the periodic uv domain
+/// has no global containment order).
+pub(super) fn order_loop_groups(
+    brep: &BRep,
+    edge_ids: &[EdgeId],
+    surface: &SurfaceGeometry,
+    complemented: bool,
+) -> Option<Vec<FaceLoops>> {
+    let rings = assemble_rings(brep, edge_ids, surface)?;
+    let s = if complemented { -1.0 } else { 1.0 };
+
+    let is_planar = matches!(
+        surface,
+        SurfaceGeometry::Analytic { surface: HalfSpace::Plane { .. }, .. }
+    );
+    if is_planar {
+        if let Some(groups) = group_rings_planar(brep, &rings, surface, s) {
+            return Some(groups);
+        }
+        // No usable normal: fall through to the curved-path extent rules.
+    }
+    Some(vec![classify_rings_curved(brep, rings, surface, s)])
+}
+
+/// Even-odd (ray-casting) point-in-polygon test in 2D.
+fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > p.1) != (yj > p.1) {
+            let x_int = xi + (p.1 - yi) * (xj - xi) / (yj - yi);
+            if p.0 < x_int {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Planar multi-region grouping (F0-1): nest the assembled rings by
+/// even-odd containment depth in the face's tangent plane and emit one
+/// [`FaceLoops`] per even-depth ring, with its odd-depth children as
+/// holes. Winding per group follows the planar convention of
+/// [`classify_rings_planar`]: outer CCW w.r.t. the body-outward normal
+/// (`area · s > 0`), holes the opposite way. `None` if no usable normal
+/// can be evaluated (caller falls through to the curved rules).
+fn group_rings_planar(
+    brep: &BRep,
+    rings: &[Ring],
+    surface: &SurfaceGeometry,
+    s: f64,
+) -> Option<Vec<FaceLoops>> {
+    let rep_pos = rings
+        .iter()
+        .flat_map(|ring| ring.iter())
+        .find_map(|&(eid, _)| brep.edge(eid).start.map(|v| brep.vertex(v).position))
+        .or_else(|| ring_sample_points(brep, &rings[0]).first().copied())?;
+    let n = surface_normal_at(surface, rep_pos)?;
+    let (bu, bv) = plane_basis(n);
+    let project = |p: [f64; 3]| -> (f64, f64) {
+        (
+            p[0] * bu[0] + p[1] * bu[1] + p[2] * bu[2],
+            p[0] * bv[0] + p[1] * bv[1] + p[2] * bv[2],
+        )
+    };
+    let polys: Vec<Vec<(f64, f64)>> = rings
+        .iter()
+        .map(|r| ring_sample_points(brep, r).into_iter().map(project).collect())
+        .collect();
+    if polys.iter().any(|p| p.len() < 3) {
+        return None;
+    }
+    let mut areas: Vec<f64> = polys.iter().map(|p| shoelace_area(p)).collect();
+
+    // Containment by majority vote over ring i's OWN boundary samples
+    // (NOT its centroid — concentric rings like a bore hole in a box face
+    // share their centroid, which would make each "contain" the other).
+    // Samples exactly on the other ring's outline (shared seam vertices)
+    // vote arbitrarily but are outnumbered by the clear interior/exterior
+    // majority.
+    let ring_inside = |i: usize, j: usize| -> bool {
+        let inside = polys[i]
+            .iter()
+            .filter(|&&p| point_in_polygon(p, &polys[j]))
+            .count();
+        inside * 2 > polys[i].len()
+    };
+    let mut parent: Vec<Option<usize>> = vec![None; rings.len()];
+    let mut depth: Vec<usize> = vec![0; rings.len()];
+    for i in 0..rings.len() {
+        let mut containers: Vec<usize> = (0..rings.len())
+            .filter(|&j| j != i && ring_inside(i, j))
+            .collect();
+        depth[i] = containers.len();
+        // Immediate parent = smallest containing ring by |area|.
+        containers.sort_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()));
+        parent[i] = containers.first().copied();
+    }
+
+    // One face per even-depth ring; odd-depth rings are holes of their
+    // immediate (even-depth) container.
+    let enforce = |ring: &mut Ring, area: &mut f64, want_positive: bool| {
+        if (*area * s > 0.0) != want_positive {
+            ring.reverse();
+            flip_orientations(ring);
+            *area = -*area;
+        }
+    };
+    let mut groups: Vec<(usize, FaceLoops)> = Vec::new();
+    for i in 0..rings.len() {
+        if depth[i] % 2 != 0 {
+            continue;
+        }
+        let mut outer = rings[i].clone();
+        enforce(&mut outer, &mut areas[i], true);
+        groups.push((i, FaceLoops { outer, inner: Vec::new() }));
+    }
+    for i in 0..rings.len() {
+        if depth[i] % 2 == 0 {
+            continue;
+        }
+        let Some(p) = parent[i] else { continue };
+        let mut hole = rings[i].clone();
+        enforce(&mut hole, &mut areas[i], false);
+        if let Some((_, group)) = groups.iter_mut().find(|(outer_i, _)| *outer_i == p) {
+            group.inner.push(hole);
+        } else {
+            // Parent isn't an even-depth ring (numerically degenerate
+            // nesting) — refuse rather than emit an orphan hole.
+            return None;
+        }
+    }
+    if groups.is_empty() {
+        return None;
+    }
+    Some(groups.into_iter().map(|(_, g)| g).collect())
+}
+
 /// Assemble a face's edges into closed rings: self-closing circle edges (no
 /// bounding vertices) each form their own ring — a face can be bounded by
 /// one or more such circles (a cylinder wall between two trim circles) — and

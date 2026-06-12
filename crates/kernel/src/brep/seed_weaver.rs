@@ -894,9 +894,14 @@ mod tests {
             seed.shells[0].is_closed,
             "seed weave of the grazing-sphere union must be watertight"
         );
-        // 7 faces (6 box + sphere). Every Euler/topology slot must be consistent;
-        // a watertight closed shell with this face count is the correctness gate.
-        assert_eq!(seed.faces.len(), 7, "6 box faces + 1 sphere face");
+        // 8 faces: 6 box + sphere, PLUS the corner sliver (F0-1 per-region
+        // materialisation): the circle crosses both adjacent box edges twice,
+        // so the grazed -x wall keeps TWO disjoint regions — the main face
+        // (rect edges + arc) and a tiny corner triangle between the two
+        // triple-point pairs. Pre-F0-1 the sliver was packed into the main
+        // face as a fake "hole"; now it is its own face (spatial_index
+        // disambiguates). Watertightness is the correctness gate.
+        assert_eq!(seed.faces.len(), 8, "6 box faces + sphere + corner sliver");
     }
 
     #[test]

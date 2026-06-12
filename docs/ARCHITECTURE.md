@@ -256,11 +256,18 @@ covers revolved spline walls (`HalfSpace::RevolvedProfile`) both coaxially
 2D-parameter scan: the profile carrier is a signed implicit under any
 parametrised partner, and parametrises itself over (θ, profile pieces)
 against another revolved wall) — so cutaway booleans against revolve
-bodies stay on the seed route. Honestly open (documented
-red in the gate, plan): the pure octree fallback still degenerates on
-rotated coincident walls (plan Phase 4), and a fully transversal plus of
-two boxes still materialises one face per branch instead of one per
-boundary region (finding F0-1). Tolerances of the topic live centrally
+bodies stay on the seed route. Face materialisation is per CONNECTED
+BOUNDARY REGION (finding F0-1, resolved): a branch whose kept surface
+splits into disjoint regions (the transversal plus) yields one face per
+region — planar rings nest by even-odd containment (majority vote over
+boundary samples, robust against concentric rings), holes attach to
+their immediate container, and the naming layer's `spatial_index`
+disambiguates the identical signatures. Curved-carrier multi-region
+remains a documented limitation (single face, periodic uv domain has no
+global containment order). Honestly open (documented red in the gate,
+plan): the pure octree fallback still degenerates on rotated coincident
+walls (plan Phase 4), and coplanar ON-same walls joined by seam edges
+(the equal-height plus, Phase-3-Kombi gate) stay red. Tolerances of the topic live centrally
 in `brep/tol.rs` (one scale-relative policy, frozen-absolute legacy
 constants carry a conversion mandate). The remaining geometric-kernel
 debt list is in `docs/ARCHITECTURE-ROADMAP.md` (tangential contact,
