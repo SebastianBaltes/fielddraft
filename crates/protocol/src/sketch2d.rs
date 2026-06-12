@@ -518,10 +518,11 @@ impl Sketch2dPrimitive {
 
 /// Signed distance to a [`Sketch2dPrimitive::Path`]. The distance
 /// magnitude is the exact analytical minimum over all segments;
-/// for a `closed` path the sign comes from an even-odd crossing
-/// test against the contour flattened into a polyline (the only
-/// place the CPU path samples a curve).
-fn sdf_path(p: [f32; 2], segments: &[SketchSegment], closed: bool) -> f32 {
+/// for a `closed` path the sign comes from the exact even-odd
+/// crossing test [`path_is_inside`] — fully analytic, no sampling.
+/// Public so the kernel's CPU opcode interpreter evaluates path
+/// records through the very same code as the logical CSG SDF.
+pub fn sdf_path(p: [f32; 2], segments: &[SketchSegment], closed: bool) -> f32 {
     if segments.is_empty() {
         return f32::INFINITY;
     }
@@ -557,37 +558,250 @@ pub fn path_min_distance(p: [f32; 2], segments: &[SketchSegment]) -> (f32, usize
     (best, best_i)
 }
 
-/// Even-odd crossing test over the flattened contour. Curved segments
-/// contribute [`PATH_FLATTEN_SAMPLES`] sub-segments, lines just their two
-/// endpoints. Segments whose conservative y-span does not straddle `p.y`
-/// cannot toggle the parity and are skipped without flattening. Public so
-/// the kernel's dual-number mirror shares the same sign test.
+/// Even-odd crossing test over the **exact** contour — no flattening. Each
+/// segment is decomposed into y-monotone pieces (a quadratic Bézier splits at
+/// its single y-extremum, an arc at the cardinal angles `π/2 + kπ`); on a
+/// monotone piece the polygon half-open rule `(ya > py) != (yb > py)`
+/// transfers verbatim and the crossing parameter is the unique root of
+/// `y(t) = py`, solved in closed form. Segments whose conservative y-span
+/// does not straddle `p.y` cannot toggle the parity and are skipped. Public
+/// so the kernel's dual-number mirror and the GPU SDF-VM (which ports this
+/// per-record) share the same sign test.
 pub fn path_is_inside(p: [f32; 2], segments: &[SketchSegment]) -> bool {
-    let mut inside = false;
+    let mut crossings = 0u32;
     for seg in segments {
         let (y_min, y_max) = seg.y_span_conservative();
         if p[1] < y_min || p[1] > y_max {
             continue;
         }
-        let steps = match seg {
-            SketchSegment::Line { .. } => 1,
-            _ => PATH_FLATTEN_SAMPLES,
+        crossings += match seg {
+            SketchSegment::Line { start, end } => line_crossings(p, *start, *end),
+            SketchSegment::QuadBezier { p0, p1, p2 } => quad_crossings(p, *p0, *p1, *p2),
+            SketchSegment::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => arc_crossings(p, *center, *radius, *start_angle, *sweep_angle),
         };
-        let mut a = seg.point_at(0.0);
-        for k in 1..=steps {
-            let t = k as f32 / steps as f32;
-            let b = seg.point_at(t);
-            // Ray cast along +x: toggle when the edge straddles p.y.
-            if (a[1] > p[1]) != (b[1] > p[1]) {
-                let x_cross = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
-                if p[0] < x_cross {
-                    inside = !inside;
-                }
-            }
-            a = b;
+    }
+    crossings % 2 == 1
+}
+
+/// +x-ray crossing count (0 or 1) of a straight edge — the classic polygon
+/// half-open rule.
+fn line_crossings(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> u32 {
+    if (a[1] > p[1]) != (b[1] > p[1]) {
+        let x_cross = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+        if p[0] < x_cross {
+            return 1;
         }
     }
-    inside
+    0
+}
+
+/// +x-ray crossing count of a quadratic Bézier, exact. The curve's y is a
+/// parabola in `t` with at most one interior extremum; splitting there gives
+/// y-monotone pieces on which the half-open endpoint rule applies and the
+/// crossing root is unique.
+fn quad_crossings(p: [f32; 2], p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> u32 {
+    let ay = (p0[1] - 2.0 * p1[1] + p2[1]) as f64;
+    let by = 2.0 * (p1[1] - p0[1]) as f64;
+    let cy = p0[1] as f64;
+    let py = p[1] as f64;
+
+    let y_at = |t: f64| (ay * t + by) * t + cy;
+    let x_at = |t: f64| {
+        let ax = (p0[0] - 2.0 * p1[0] + p2[0]) as f64;
+        let bx = 2.0 * (p1[0] - p0[0]) as f64;
+        (ax * t + bx) * t + p0[0] as f64
+    };
+
+    // Piece boundaries: [0, t_extremum, 1] when the parabola's apex falls
+    // strictly inside the parameter range, [0, 1] otherwise.
+    let mut bounds = [0.0_f64, 1.0, 1.0];
+    let mut nb = 2;
+    if ay.abs() > 1e-12 {
+        let t_ext = -by / (2.0 * ay);
+        if t_ext > 0.0 && t_ext < 1.0 {
+            bounds[1] = t_ext;
+            bounds[2] = 1.0;
+            nb = 3;
+        }
+    }
+
+    let mut count = 0u32;
+    for w in bounds[..nb].windows(2) {
+        let (ta, tb) = (w[0], w[1]);
+        // Exact endpoint y for the outer boundaries so chained segments see
+        // bitwise-identical junction values (the half-open rule depends on it).
+        let ya = if ta == 0.0 { p0[1] as f64 } else { y_at(ta) };
+        let yb = if tb == 1.0 { p2[1] as f64 } else { y_at(tb) };
+        if (ya > py) == (yb > py) {
+            continue;
+        }
+        let t = monotone_quad_root(ay, by, cy - py, ta, tb);
+        if (p[0] as f64) < x_at(t) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// The unique root of `ay·t² + by·t + c0 = 0` inside the y-monotone piece
+/// `[ta, tb]` whose endpoint values straddle zero (callers guarantee this).
+fn monotone_quad_root(ay: f64, by: f64, c0: f64, ta: f64, tb: f64) -> f64 {
+    if ay.abs() < 1e-12 {
+        return (-c0 / by).clamp(ta, tb);
+    }
+    let disc = (by * by - 4.0 * ay * c0).max(0.0);
+    // Citardauq pairing avoids cancellation: q = −(b + sign(b)·√disc)/2,
+    // roots are q/a and c/q.
+    let q = -0.5 * (by + by.signum() * disc.sqrt());
+    let r0 = q / ay;
+    let r1 = if q.abs() > 1e-300 { c0 / q } else { r0 };
+    let eps = 1e-9;
+    if r0 >= ta - eps && r0 <= tb + eps {
+        r0.clamp(ta, tb)
+    } else {
+        r1.clamp(ta, tb)
+    }
+}
+
+/// +x-ray crossing count of a circular arc, exact. The swept angular
+/// interval is split at the y-extrema `π/2 + kπ` into monotone pieces; the
+/// sweep direction is irrelevant for parity, so the interval is walked in
+/// ascending angle.
+fn arc_crossings(p: [f32; 2], center: [f32; 2], radius: f32, start: f32, sweep: f32) -> u32 {
+    let cx = center[0] as f64;
+    let cy = center[1] as f64;
+    let r = radius as f64;
+    let py = p[1] as f64;
+    let px = p[0] as f64;
+
+    // Full circle: the two horizontal-line intersections, counted directly
+    // (strict comparison ⇒ a tangent ray crosses zero times, matching the
+    // monotone half-open rule).
+    if (sweep as f64).abs() >= std::f64::consts::TAU {
+        let dy = py - cy;
+        if dy.abs() >= r {
+            return 0;
+        }
+        let half = (r * r - dy * dy).sqrt();
+        return u32::from(px < cx + half) + u32::from(px < cx - half);
+    }
+
+    let s0 = start as f64;
+    let s1 = start as f64 + sweep as f64;
+    let lo = s0.min(s1);
+    let hi = s0.max(s1);
+    let y_at = |th: f64| cy + r * th.sin();
+    let x_at = |th: f64| cx + r * th.cos();
+
+    let mut count = 0u32;
+    let mut ta = lo;
+    // First y-extremum angle strictly above `lo`.
+    let mut k = ((lo - std::f64::consts::FRAC_PI_2) / std::f64::consts::PI).floor() + 1.0;
+    loop {
+        let bp = std::f64::consts::FRAC_PI_2 + k * std::f64::consts::PI;
+        let tb = bp.min(hi);
+        let ya = y_at(ta);
+        let yb = y_at(tb);
+        if (ya > py) != (yb > py) {
+            // sin(θ*) = (py−cy)/r has two branches per period; the piece lies
+            // between adjacent extrema, so its midpoint's cos sign picks one.
+            let v = ((py - cy) / r).clamp(-1.0, 1.0);
+            let base = v.asin();
+            let mid = 0.5 * (ta + tb);
+            let mut th = if mid.cos() >= 0.0 {
+                base
+            } else {
+                std::f64::consts::PI - base
+            };
+            th += ((ta - th) / std::f64::consts::TAU).ceil() * std::f64::consts::TAU;
+            if px < x_at(th) {
+                count += 1;
+            }
+        }
+        if tb >= hi {
+            break;
+        }
+        ta = tb;
+        k += 1.0;
+    }
+    count
+}
+
+/// Split a segment into y-monotone pieces: a quadratic Bézier at its single
+/// y-apex (exact de Casteljau subdivision), an arc at the cardinal angles
+/// `π/2 + kπ` it sweeps across; lines are already monotone. The union of the
+/// pieces is the original curve, so distance is unaffected. The GPU SDF-VM
+/// stores path records pre-split this way, so its per-record crossing test
+/// is the plain half-open endpoint rule with one closed-form root — no inner
+/// subdivision loop in the shader.
+pub fn split_y_monotone(seg: &SketchSegment) -> Vec<SketchSegment> {
+    match seg {
+        SketchSegment::Line { .. } => vec![*seg],
+        SketchSegment::QuadBezier { p0, p1, p2 } => {
+            let ay = (p0[1] - 2.0 * p1[1] + p2[1]) as f64;
+            if ay.abs() < 1e-12 {
+                return vec![*seg];
+            }
+            let t = (p0[1] - p1[1]) as f64 / ay;
+            if !(1e-6..=1.0 - 1e-6).contains(&t) {
+                return vec![*seg];
+            }
+            // De Casteljau at t — exact subdivision in f64.
+            let lerp = |a: [f32; 2], b: [f32; 2]| {
+                [
+                    (a[0] as f64 + (b[0] as f64 - a[0] as f64) * t) as f32,
+                    (a[1] as f64 + (b[1] as f64 - a[1] as f64) * t) as f32,
+                ]
+            };
+            let q0 = lerp(*p0, *p1);
+            let q1 = lerp(*p1, *p2);
+            let m = lerp(q0, q1);
+            vec![
+                SketchSegment::QuadBezier { p0: *p0, p1: q0, p2: m },
+                SketchSegment::QuadBezier { p0: m, p1: q1, p2: *p2 },
+            ]
+        }
+        SketchSegment::Arc {
+            center,
+            radius,
+            start_angle,
+            sweep_angle,
+        } => {
+            // Walk the swept interval in ascending angle (parity and distance
+            // are direction-free) and cut at every y-extremum strictly inside.
+            let s0 = *start_angle as f64;
+            let s1 = s0 + *sweep_angle as f64;
+            let lo = s0.min(s1);
+            let hi = s0.max(s1).min(lo + std::f64::consts::TAU);
+            let mut pieces = Vec::new();
+            let mut ta = lo;
+            let mut k =
+                ((lo - std::f64::consts::FRAC_PI_2) / std::f64::consts::PI).floor() + 1.0;
+            loop {
+                let bp = std::f64::consts::FRAC_PI_2 + k * std::f64::consts::PI;
+                let tb = bp.min(hi);
+                if tb - ta > 1e-9 {
+                    pieces.push(SketchSegment::Arc {
+                        center: *center,
+                        radius: *radius,
+                        start_angle: ta as f32,
+                        sweep_angle: (tb - ta) as f32,
+                    });
+                }
+                if tb >= hi {
+                    break;
+                }
+                ta = tb;
+                k += 1.0;
+            }
+            pieces
+        }
+    }
 }
 
 /// Are `prev → cur` G1-continuous (shared endpoint, aligned tangents)? The
@@ -1633,6 +1847,119 @@ mod path_tests {
             ],
             closed,
         }
+    }
+
+    /// Dense-flattening reference for the even-odd parity (the algorithm the
+    /// analytic [`path_is_inside`] replaced, at a much higher sample count).
+    fn flattened_is_inside(p: [f32; 2], segments: &[SketchSegment], steps: usize) -> bool {
+        let mut inside = false;
+        for seg in segments {
+            let n = match seg {
+                SketchSegment::Line { .. } => 1,
+                _ => steps,
+            };
+            let mut a = seg.point_at(0.0);
+            for k in 1..=n {
+                let b = seg.point_at(k as f32 / n as f32);
+                if (a[1] > p[1]) != (b[1] > p[1]) {
+                    let x_cross = a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]);
+                    if p[0] < x_cross {
+                        inside = !inside;
+                    }
+                }
+                a = b;
+            }
+        }
+        inside
+    }
+
+    /// Grid-parity harness: the analytic crossing test must agree with the
+    /// dense reference everywhere except within `guard` of the contour
+    /// (where the flattened reference itself is wrong by the chord error).
+    fn assert_inside_parity(segments: &[SketchSegment], lo: [f32; 2], hi: [f32; 2], guard: f32) {
+        let n = 64;
+        for iy in 0..=n {
+            for ix in 0..=n {
+                let p = [
+                    lo[0] + (hi[0] - lo[0]) * ix as f32 / n as f32,
+                    lo[1] + (hi[1] - lo[1]) * iy as f32 / n as f32,
+                ];
+                if path_min_distance(p, segments).0 < guard {
+                    continue;
+                }
+                assert_eq!(
+                    path_is_inside(p, segments),
+                    flattened_is_inside(p, segments, 512),
+                    "parity mismatch at {p:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn analytic_inside_matches_flattened_reference_on_quad_contour() {
+        // A wavy closed blob of quadratic Béziers — apexes both inside and
+        // outside the parameter range, so the monotone split is exercised.
+        let segments = vec![
+            SketchSegment::QuadBezier { p0: [-2.0, 0.0], p1: [-2.5, 2.5], p2: [0.0, 2.0] },
+            SketchSegment::QuadBezier { p0: [0.0, 2.0], p1: [2.5, 1.5], p2: [2.0, 0.0] },
+            SketchSegment::QuadBezier { p0: [2.0, 0.0], p1: [1.5, -2.5], p2: [0.0, -2.0] },
+            SketchSegment::QuadBezier { p0: [0.0, -2.0], p1: [-2.0, -1.5], p2: [-2.0, 0.0] },
+        ];
+        assert_inside_parity(&segments, [-3.5, -3.5], [3.5, 3.5], 0.02);
+    }
+
+    #[test]
+    fn analytic_inside_matches_flattened_reference_on_arc_contour() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        // Stadium: two horizontal lines capped by semicircular arcs, the
+        // right one swept CCW, the left one CW (negative sweep) — parity
+        // must not care about traversal direction.
+        let segments = vec![
+            SketchSegment::Line { start: [-1.0, -1.0], end: [1.0, -1.0] },
+            SketchSegment::Arc {
+                center: [1.0, 0.0],
+                radius: 1.0,
+                start_angle: -FRAC_PI_2,
+                sweep_angle: PI,
+            },
+            SketchSegment::Line { start: [1.0, 1.0], end: [-1.0, 1.0] },
+            SketchSegment::Arc {
+                center: [-1.0, 0.0],
+                radius: 1.0,
+                start_angle: FRAC_PI_2,
+                sweep_angle: -PI,
+            },
+        ];
+        assert_inside_parity(&segments, [-3.0, -2.0], [3.0, 2.0], 0.02);
+    }
+
+    #[test]
+    fn analytic_inside_full_circle_arc() {
+        let segments = vec![SketchSegment::Arc {
+            center: [0.5, -0.25],
+            radius: 1.5,
+            start_angle: 0.3,
+            sweep_angle: std::f32::consts::TAU,
+        }];
+        assert_inside_parity(&segments, [-2.0, -2.5], [3.0, 2.0], 0.02);
+    }
+
+    /// The axis-stripped revolve profile: an OPEN chain whose implicit
+    /// closure would run along x = 0. Every revolved sample has x ≥ 0, and
+    /// the +x ray test never needs the missing on-axis edge — interior
+    /// points (between the chain and the axis) must read inside.
+    #[test]
+    fn open_axis_stripped_profile_parity() {
+        let segments = vec![
+            SketchSegment::Line { start: [0.0, 2.0], end: [1.5, 2.0] },
+            SketchSegment::QuadBezier { p0: [1.5, 2.0], p1: [2.5, 0.0], p2: [1.5, -2.0] },
+            SketchSegment::Line { start: [1.5, -2.0], end: [0.0, -2.0] },
+        ];
+        assert!(path_is_inside([0.5, 0.0], &segments), "interior near axis");
+        assert!(path_is_inside([1.9, 0.0], &segments), "interior at belly");
+        assert!(!path_is_inside([2.6, 0.0], &segments), "outside the belly");
+        assert!(!path_is_inside([0.5, 2.5], &segments), "above the rim");
     }
 
     #[test]

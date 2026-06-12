@@ -34,6 +34,7 @@ import {
   OP_PRIM_CONE, OP_PRIM_CAPSULE, OP_PRIM_HEX_PRISM, OP_PRIM_ELLIPSOID,
   OP_PRIM_CONST, OP_PRIM_GYROID, OP_PRIM_THREAD, OP_PRIM_TEX3D,
   OP_PRIM2D_CIRCLE, OP_PRIM2D_RECT, OP_PRIM2D_POLY, OP_PRIM2D_SECTOR,
+  OP_PRIM2D_PATH,
   OP_UNION, OP_DIFFERENCE, OP_INTERSECT, OP_SMOOTH_UNION, OP_SMOOTH_DIFF,
   OP_SHELL, OP_MORPH, OP_DISPLACE_VAL, OP_EXTRUDE, OP_REVOLVE_SCALE,
   OP_OFFSET_2D,
@@ -45,6 +46,8 @@ import {
   sdfEllipsoidFn, sdfGyroidFn, sdfThreadFn,
   blendMinFn, sdfCapsule3dFn, sdfExtrudeFn,
   sdfRect2dFn, sdfCircle2dFn, sdfSector2dFn,
+  pathSegDistSqFn, pathSegCrossingFn, pathQuadDistSqFn, pathQuadCrossingFn,
+  pathArcDistSqFn, pathArcCrossingFn,
 } from "./sdfRenderer";
 
 export const VM_MAX_OPCODES = 512;
@@ -275,6 +278,55 @@ export function buildVmSdfEvalFn(
         const cx = rd(), cy = rd(), r = rd();
         const start_angle = rd(), sweep_angle = rd();
         pushV(sdfSector2dFn({ p: vec2(ptx, pty), cx, cy, r, start_angle, sweep_angle }));
+      }).ElseIf(tag.equal(int(OP_PRIM2D_PATH)), () => {
+        // Analytic path records — exact distance + exact even-odd parity,
+        // mirroring `fielddraft_protocol::sketch2d::{sdf_path,
+        // path_is_inside}`. Each record is a fixed 7-float, y-MONOTONE
+        // piece: kind(1) + payload(6), kind 0 = line(start, end), 1 = quad
+        // Bézier(p0, ctrl, p2), 2 = arc(center, r, start, sweep). An OPEN
+        // chain (closed == 0) stays unsigned, like the CPU — crucially the
+        // contour is NOT closed with a synthetic edge: an axis-stripped
+        // revolve profile must not grow a membrane on the axis.
+        const REC = 7;
+        const nRaw = rd();
+        const closedFlag = rd();
+        const nInt = floatToIntFn({ v: nRaw });
+        const recStart = pc.toVar();
+        pc.addAssign(nInt.mul(REC));
+
+        const p2d = vec2(ptx, pty).toVar();
+        const dSq = float(1e30).toVar();
+        const crossings = int(0).toVar();
+        const ii = int(0).toVar();
+        Loop(nInt, () => {
+          const base = recStart.add(ii.mul(REC));
+          const kind = floatToIntFn({ v: opBuf.element(base) });
+          const f0 = opBuf.element(base.add(1)).toVar();
+          const f1 = opBuf.element(base.add(2)).toVar();
+          const f2 = opBuf.element(base.add(3)).toVar();
+          const f3 = opBuf.element(base.add(4)).toVar();
+          const f4 = opBuf.element(base.add(5)).toVar();
+          If(kind.equal(int(0)), () => {
+            const a = vec2(f0, f1), b = vec2(f2, f3);
+            dSq.assign(min(dSq, pathSegDistSqFn({ p: p2d, a, b })));
+            crossings.addAssign(pathSegCrossingFn({ p: p2d, a, b }));
+          }).ElseIf(kind.equal(int(1)), () => {
+            const f5 = opBuf.element(base.add(6));
+            const a = vec2(f0, f1), b = vec2(f2, f3), c = vec2(f4, f5);
+            dSq.assign(pathQuadDistSqFn({ p: p2d, a, b, c, best_in: dSq }));
+            crossings.addAssign(pathQuadCrossingFn({ p: p2d, a, b, c }));
+          }).Else(() => {
+            const c = vec2(f0, f1);
+            dSq.assign(min(dSq, pathArcDistSqFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 })));
+            crossings.addAssign(pathArcCrossingFn({ p: p2d, c, r: f2, a0: f3, sweep: f4 }));
+          });
+          ii.addAssign(1);
+        });
+        const dist = sqrt(dSq).toVar();
+        If(closedFlag.greaterThan(float(0.5)).and(crossings.bitAnd(int(1)).equal(int(1))), () => {
+          dist.assign(dist.negate());
+        });
+        pushV(dist);
 
       }).ElseIf(tag.equal(int(OP_UNION)), () => {
         const b = popV(), a = popV();

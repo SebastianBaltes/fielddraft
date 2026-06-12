@@ -10,6 +10,7 @@ import {
   compileVmPipeline,
   renderVmFrame,
   disposeVmPipeline,
+  probeVmSdf,
   type VmPipelineState,
 } from "./sdfVmRenderer";
 import {
@@ -217,6 +218,14 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
     if (!readyRef.current || compilingRef.current) return;
 
     const wgpuRenderer = renderer as unknown as WebGPURenderer;
+
+    // Dev/E2E parity hook: evaluate the live GPU interpreter at world points
+    // and compare against the CPU mirror (`eval_opcodes`). See probeVmSdf.
+    (window as unknown as Record<string, unknown>).__fdSdfVmProbe = (
+      points: [number, number, number][],
+      bodyIndex = 0,
+    ) => probeVmSdf(pipeline, wgpuRenderer, points, bodyIndex);
+
     try {
       renderOverlayLayer(wgpuRenderer, scene, camera, () =>
         renderVmFrame(pipeline, wgpuRenderer, camera),

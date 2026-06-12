@@ -8088,6 +8088,110 @@ mod tests {
         (sketch_call, revolve_call)
     }
 
+    /// Regenerates the canonical shelled vase (sketch + revolve + 2 mm shell
+    /// opened on the planar top rim face) into `ctx`. The shell needs the
+    /// woven top face's stable hash, so this pays one full weave.
+    fn regen_shelled_vase(registry: &FeatureRegistry, ctx: &mut Context<'_>) {
+        let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
+        registry
+            .regenerate(ctx, &[sketch_call.clone(), revolve_call.clone()], None)
+            .unwrap();
+        let mut top_hash = None;
+        for (brep, _) in ctx.brep_cache.ensure(&ctx.features) {
+            for i in 0..brep.faces.len() {
+                let fid = crate::brep::FaceId(i as u32);
+                if let crate::brep::SurfaceGeometry::Analytic { surface, transform } =
+                    &brep.face(fid).surface
+                {
+                    if let fielddraft_protocol::HalfSpace::Plane { normal, .. } = surface {
+                        if normal[1] > 0.99 && (transform.translate[1] - 68.0).abs() < 1e-3 {
+                            top_hash =
+                                Some(crate::brep::naming::TopoRef::from_face(brep, fid).id_hash);
+                        }
+                    }
+                }
+            }
+        }
+        let top_hash = top_hash.expect("weave exposes the planar top rim face");
+        let shell_call = FeatureCall::new(
+            "shell",
+            id(3),
+            json!({
+                "open_faces": format!("qFace({top_hash})"),
+                "thickness": { "value": 2.0, "unit": "mm" },
+            }),
+        );
+        registry
+            .regenerate(ctx, &[sketch_call, revolve_call, shell_call], None)
+            .unwrap();
+    }
+
+    /// The GPU SDF-VM consumes the body's compiled opcode stream. This walks
+    /// the exact same path (partition → build_bounded_for_body → compile_body)
+    /// and probes the CPU-mirror interpreter `eval_opcodes`: the shell opening
+    /// and cavity must survive compilation into the stream the raymarcher
+    /// sees, the stream must match the logical SDF, and it must stay small
+    /// enough to raymarch interactively.
+    #[test]
+    fn vase_sdf_vm_opcode_stream_keeps_shell_open() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        regen_shelled_vase(&registry, &mut ctx);
+
+        let parts = crate::body::partition(&ctx.features);
+        assert_eq!(parts.len(), 1, "one vase body");
+        let bounded =
+            crate::body::build_bounded_for_body(&ctx.features, &parts[0].feature_indices);
+        let compiled = crate::sdf_compiler::compile_body(&bounded);
+        let d = |p: [f32; 3]| crate::sdf_compiler::eval_opcodes(&compiled.opcodes, p);
+
+        // Shape probes: the shell opening, cavity and walls must survive
+        // compilation into the stream the raymarcher sees. (Before
+        // OP_PRIM2D_PATH the flattened profile polygon closed itself with a
+        // synthetic edge ON the revolve axis, which Shell inflated into a
+        // phantom 2 mm rod: d(1,0,0) was −1.0.)
+        assert!(d([0.0, 0.0, 0.0]) > 0.0, "cavity carved out: {}", d([0.0, 0.0, 0.0]));
+        assert!(d([1.0, 0.0, 0.0]) > 0.0, "no phantom axis rod: {}", d([1.0, 0.0, 0.0]));
+        assert!(d([0.0, 67.0, 0.0]) > 0.0, "top rim open: {}", d([0.0, 67.0, 0.0]));
+        assert!(d([49.0, -10.0, 0.0]) < 0.0, "belly wall solid: {}", d([49.0, -10.0, 0.0]));
+        assert!(d([0.0, -69.0, 0.0]) < 0.0, "bottom closed: {}", d([0.0, -69.0, 0.0]));
+        assert!(d([60.0, 0.0, 0.0]) > 0.0, "outside: {}", d([60.0, 0.0, 0.0]));
+
+        // Full parity with the logical CSG SDF over a deterministic grid of
+        // the body AABB — opcode stream and kernel evaluation must be the
+        // same field, not approximations of each other.
+        let logical = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let (lo, hi) = (compiled.aabb.min, compiled.aabb.max);
+        let n = 16;
+        for iz in 0..=n {
+            for iy in 0..=n {
+                for ix in 0..=n {
+                    let p = [
+                        lo[0] + (hi[0] - lo[0]) * ix as f32 / n as f32,
+                        lo[1] + (hi[1] - lo[1]) * iy as f32 / n as f32,
+                        lo[2] + (hi[2] - lo[2]) * iz as f32 / n as f32,
+                    ];
+                    let dv = d(p);
+                    let lv = logical.sdf(p, crate::csg::EvalMode::Logical);
+                    assert!(
+                        (dv - lv).abs() < 1e-3,
+                        "opcode/logical SDF diverge at {p:?}: {dv} vs {lv}",
+                    );
+                }
+            }
+        }
+
+        // Interactivity budget: the analytic path records keep the stream
+        // small (the flattened polyline was ~4650 floats and raymarched at
+        // ~2 FPS).
+        assert!(
+            compiled.opcodes.len() < 2048,
+            "opcode stream too large: {} floats",
+            compiled.opcodes.len(),
+        );
+    }
+
     #[test]
     fn vase_from_free_lines_and_spline_revolves_and_shells() {
         let registry = FeatureRegistry::with_builtins();

@@ -17,6 +17,7 @@ import {
   Loop,
   depth,
   float,
+  instanceIndex,
   int,
   max,
   normalize,
@@ -292,6 +293,69 @@ function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): voi
   state.viewMatU.value.copy(cam.matrixWorldInverse);
   state.nearU.value = cam.near;
   state.farU.value = cam.far;
+}
+
+// ── GPU probe (dev / parity testing) ────────────────────────────────
+//
+// Evaluates the SAME TSL interpreter the raymarcher uses, in a compute
+// pass, at arbitrary world points. This is the bridge for GPU↔CPU parity
+// checks (exposed as `window.__fdSdfVmProbe`): the CPU mirror
+// `eval_opcodes` is the reference, so any disagreement here is a GPU-side
+// interpreter bug — the 32-iteration loop cap was exactly this class and
+// only visible as a wrongly-rendered body before this hook existed.
+
+const PROBE_CAP = 256;
+
+interface VmProbe {
+  ptsData: Float32Array;
+  ptsAttr: StorageBufferAttribute;
+  outAttr: StorageBufferAttribute;
+  kernel: any;
+}
+
+function getProbe(state: VmPipelineState): VmProbe {
+  const cached = (state as any)._probe as VmProbe | undefined;
+  if (cached) return cached;
+  const ptsData = new Float32Array(PROBE_CAP * 4);
+  const ptsAttr = new StorageBufferAttribute(ptsData, 4);
+  const outAttr = new StorageBufferAttribute(new Float32Array(PROBE_CAP), 1);
+  const ptsBuf = storage(ptsAttr, "vec4", PROBE_CAP);
+  const outBuf = storage(outAttr, "float", PROBE_CAP);
+  const evalFn = buildVmSdfEvalFn(state.opcodeBuf, {
+    withBaseOffset: true,
+    volumeTextures: state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
+    withVolumeBaseIdx: state.volumeTextures.length > 0,
+  });
+  const kernel = Fn(() => {
+    // Each point carries its body's opcode base offset in .w.
+    const pt = ptsBuf.element(instanceIndex);
+    const d = evalFn({ p: pt.xyz, baseOffset: int(pt.w), volumeBaseIdx: int(0) });
+    outBuf.element(instanceIndex).assign(d);
+  })().compute(PROBE_CAP);
+  const probe: VmProbe = { ptsData, ptsAttr, outAttr, kernel };
+  (state as any)._probe = probe;
+  return probe;
+}
+
+export async function probeVmSdf(
+  state: VmPipelineState,
+  renderer: THREE.WebGPURenderer,
+  points: [number, number, number][],
+  bodyIndex = 0,
+): Promise<number[]> {
+  const probe = getProbe(state);
+  const base = state.offsetData[bodyIndex * 2];
+  const out: number[] = [];
+  for (let off = 0; off < points.length; off += PROBE_CAP) {
+    const chunk = points.slice(off, off + PROBE_CAP);
+    probe.ptsData.fill(0);
+    chunk.forEach((p, i) => probe.ptsData.set([p[0], p[1], p[2], base], i * 4));
+    probe.ptsAttr.needsUpdate = true;
+    await renderer.computeAsync(probe.kernel);
+    const buf = await renderer.getArrayBufferAsync(probe.outAttr);
+    out.push(...Array.from(new Float32Array(buf)).slice(0, chunk.length));
+  }
+  return out;
 }
 
 // ── Dispose ─────────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ pub const OP_PRIM2D_CIRCLE: u32  = 0x10; // +3: center(2) + radius(1)
 pub const OP_PRIM2D_RECT: u32    = 0x11; // +4: center(2) + half_extents(2)
 pub const OP_PRIM2D_POLY: u32    = 0x12; // +1+2N: vertex_count(1) + vertices(2*N)
 pub const OP_PRIM2D_SECTOR: u32  = 0x13; // +5: center(2) + radius(1) + start(1) + sweep(1)
+pub const OP_PRIM2D_PATH: u32    = 0x14; // +2+7N: seg_count(1) + closed(1) + records(7*N), record = kind(1) + payload(6); every record is y-monotone
 
 // Binary operators — pop 2, push 1.
 pub const OP_UNION: u32          = 0x20; // +0
@@ -613,52 +614,52 @@ fn emit_sketch_primitive(prim: &Sketch2dPrimitive, out: &mut Vec<f32>) {
             out.push(*start_angle);
             out.push(*sweep_angle);
         }
-        Sketch2dPrimitive::Path { segments, .. } => {
-            // DL-46 / DL-45: the GPU opcode stream stays curve-free.
-            // A Path is flattened into a polyline and emitted as
-            // OP_PRIM2D_POLY — the analytic segments are CPU/B-Rep
-            // only. The even-odd polygon SDF then signs the outline.
-            let verts = flatten_path_to_polyline(segments);
-            out.push(op(OP_PRIM2D_POLY));
-            out.push(verts.len() as f32);
-            for v in &verts {
-                out.extend_from_slice(v);
+        Sketch2dPrimitive::Path { segments, closed } => {
+            // The stream carries the analytic segments themselves — exact
+            // distance and exact even-odd parity on the GPU. (The former
+            // polyline flattening closed the contour with a synthetic edge;
+            // for an axis-stripped revolve profile that edge lay ON the
+            // axis and Shell inflated it into a phantom 2 mm rod.) Records
+            // are pre-split y-monotone so the shader's crossing test is the
+            // plain half-open endpoint rule with one closed-form root.
+            let records: Vec<SketchSegment> = segments
+                .iter()
+                .flat_map(fielddraft_protocol::sketch2d::split_y_monotone)
+                .collect();
+            out.push(op(OP_PRIM2D_PATH));
+            out.push(records.len() as f32);
+            out.push(if *closed { 1.0 } else { 0.0 });
+            for seg in &records {
+                match seg {
+                    SketchSegment::Line { start, end } => {
+                        out.push(0.0);
+                        out.extend_from_slice(start);
+                        out.extend_from_slice(end);
+                        out.extend_from_slice(&[0.0, 0.0]);
+                    }
+                    SketchSegment::QuadBezier { p0, p1, p2 } => {
+                        out.push(1.0);
+                        out.extend_from_slice(p0);
+                        out.extend_from_slice(p1);
+                        out.extend_from_slice(p2);
+                    }
+                    SketchSegment::Arc {
+                        center,
+                        radius,
+                        start_angle,
+                        sweep_angle,
+                    } => {
+                        out.push(2.0);
+                        out.extend_from_slice(center);
+                        out.push(*radius);
+                        out.push(*start_angle);
+                        out.push(*sweep_angle);
+                        out.push(0.0);
+                    }
+                }
             }
         }
     }
-}
-
-/// Flatten a [`SketchSegment`] chain into a closed polyline (no
-/// duplicated shared vertices) for the curve-free GPU opcode path.
-/// Lines contribute their start vertex; curves are sampled at
-/// [`PATH_FLATTEN_SAMPLES`] steps.
-fn flatten_path_to_polyline(segments: &[SketchSegment]) -> Vec<[f32; 2]> {
-    use fielddraft_protocol::sketch2d::PATH_FLATTEN_SAMPLES;
-    let mut verts = Vec::new();
-    for seg in segments {
-        let steps = match seg {
-            SketchSegment::Line { .. } => 1,
-            _ => PATH_FLATTEN_SAMPLES,
-        };
-        for k in 0..steps {
-            let t = k as f32 / steps as f32;
-            verts.push(seg.point_at(t));
-        }
-    }
-    // Each segment contributed its start vertex only (the next segment's
-    // start doubles as its end). For a chain whose last end does NOT meet
-    // the first start — e.g. a revolve profile whose on-axis run was
-    // stripped (`strip_revolve_axis_segments`) — the polygon's implicit
-    // last→first closure must run along the REAL gap, so the end vertex
-    // has to be emitted; otherwise the closure cuts a diagonal chord
-    // through the region.
-    if let (Some(last), Some(&first)) = (segments.last(), verts.first()) {
-        let end = last.end_point();
-        if (end[0] - first[0]).abs() > 1e-6 || (end[1] - first[1]).abs() > 1e-6 {
-            verts.push(end);
-        }
-    }
-    verts
 }
 
 // ── CPU interpreter (test mirror of the GPU shader) ────────────────
@@ -822,6 +823,35 @@ pub fn eval_opcodes_with_volumes(
                 let start = rd!();
                 let sweep = rd!();
                 push_v!(sdf_sector_2d([pt[0], pt[1]], [cx, cy], r, start, sweep));
+            }
+            OP_PRIM2D_PATH => {
+                let n = rd!() as usize;
+                let closed = rd!() != 0.0;
+                let mut segs = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kind = rd!();
+                    let a = rd!();
+                    let b = rd!();
+                    let c = rd!();
+                    let d = rd!();
+                    let e = rd!();
+                    let f = rd!();
+                    segs.push(match kind as u32 {
+                        0 => SketchSegment::Line { start: [a, b], end: [c, d] },
+                        1 => SketchSegment::QuadBezier { p0: [a, b], p1: [c, d], p2: [e, f] },
+                        _ => SketchSegment::Arc {
+                            center: [a, b],
+                            radius: c,
+                            start_angle: d,
+                            sweep_angle: e,
+                        },
+                    });
+                }
+                push_v!(fielddraft_protocol::sketch2d::sdf_path(
+                    [pt[0], pt[1]],
+                    &segs,
+                    closed,
+                ));
             }
 
             // ── Binary operators ───────────────────────────────

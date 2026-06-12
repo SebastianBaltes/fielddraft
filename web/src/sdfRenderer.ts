@@ -31,6 +31,7 @@ export const OP_PRIM2D_CIRCLE  = 0x10;
 export const OP_PRIM2D_RECT    = 0x11;
 export const OP_PRIM2D_POLY    = 0x12;
 export const OP_PRIM2D_SECTOR  = 0x13;
+export const OP_PRIM2D_PATH    = 0x14;
 
 export const OP_UNION          = 0x20;
 export const OP_DIFFERENCE     = 0x21;
@@ -304,6 +305,194 @@ export const sdfSector2dFn = wgslFn(`
     let ey = cy + r * sin(ea);
     let to_edge = sqrt((p.x - ex) * (p.x - ex) + (p.y - ey) * (p.y - ey));
     return min(max(d_circ, 0.0), min(to_edge, dist));
+  }
+`);
+
+// ── OP_PRIM2D_PATH segment helpers ──────────────────────────────────
+//
+// GPU ports of the analytic path machinery in
+// `fielddraft_protocol::sketch2d` (`sdf_path` / `path_is_inside`). Each
+// record in the opcode stream is a y-MONOTONE piece (the kernel pre-splits
+// quads at their y-apex and arcs at the cardinal angles), so every crossing
+// helper is the plain polygon half-open endpoint rule plus one closed-form
+// root — no subdivision loops in the shader.
+
+export const pathSegDistSqFn = wgslFn(`
+  fn fd_path_seg_dist_sq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let e = b - a;
+    let w = p - a;
+    let t = clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
+    let d = w - e * t;
+    return dot(d, d);
+  }
+`);
+
+export const pathSegCrossingFn = wgslFn(`
+  fn fd_path_seg_crossing(p: vec2f, a: vec2f, b: vec2f) -> i32 {
+    if ((a.y > p.y) == (b.y > p.y)) { return 0; }
+    let x_cross = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+    return select(0, 1, p.x < x_cross);
+  }
+`);
+
+// Closest distance² to a quadratic Bézier via the closed-form
+// depressed-cubic root method (Quilez/Cardano) — mirrors
+// `closest_on_quad_bezier` + `solve_cubic_real` in f32. Takes the running
+// minimum and returns the (possibly improved) minimum so a convex-hull
+// lower bound can skip the cubic entirely (the GPU twin of
+// `SketchSegment::distance_lower_bound` on the CPU hot path). Every root
+// candidate is Newton-polished once and evaluated ON the curve, so f32
+// Cardano noise can only overestimate, never underestimate — sphere
+// tracing stays safe.
+export const pathQuadDistSqFn = wgslFn(`
+  fn fd_path_quad_dist_sq(p: vec2f, a: vec2f, b: vec2f, c: vec2f, best_in: f32) -> f32 {
+    let lo = min(min(a, b), c);
+    let hi = max(max(a, b), c);
+    let dv = max(max(lo - p, p - hi), vec2f(0.0));
+    if (dot(dv, dv) >= best_in) { return best_in; }
+    let M = a - 2.0 * b + c;
+    let L = 2.0 * (b - a);
+    let W = p - a;
+    let mm = dot(M, M);
+    let lm = dot(L, M);
+    let ll = dot(L, L);
+    let wm = dot(W, M);
+    let wl = dot(W, L);
+    // d/dt|p−B(t)|² = 0 → 2mm·t³ + 3lm·t² + (ll − 2wm)·t − wl = 0
+    let A = 2.0 * mm;
+    let B = 3.0 * lm;
+    let C = ll - 2.0 * wm;
+    let D = -wl;
+    var roots = vec3f(0.0);
+    if (abs(A) < 1e-9) {
+      if (abs(B) < 1e-9) {
+        if (abs(C) >= 1e-9) {
+          roots.x = -D / C;
+        }
+      } else {
+        let disc = C * C - 4.0 * B * D;
+        if (disc >= 0.0) {
+          let sq = sqrt(disc);
+          roots = vec3f((-C + sq) / (2.0 * B), (-C - sq) / (2.0 * B), 0.0);
+        }
+      }
+    } else {
+      let b1 = B / A;
+      let c1 = C / A;
+      let d1 = D / A;
+      let pp = c1 - b1 * b1 / 3.0;
+      let qq = d1 - b1 * c1 / 3.0 + 2.0 * b1 * b1 * b1 / 27.0;
+      let off = -b1 / 3.0;
+      let disc = -4.0 * pp * pp * pp - 27.0 * qq * qq;
+      if (disc > 0.0) {
+        let r = sqrt(-pp / 3.0);
+        let cosArg = clamp(-qq / (2.0 * r * r * r), -1.0, 1.0);
+        let theta = acos(cosArg) / 3.0;
+        let tau3 = 2.0943951023931953;
+        roots = vec3f(
+          2.0 * r * cos(theta),
+          2.0 * r * cos(theta - tau3),
+          2.0 * r * cos(theta + tau3),
+        ) + vec3f(off);
+      } else {
+        let s = max(qq * qq / 4.0 + pp * pp * pp / 27.0, 0.0);
+        let sq = sqrt(s);
+        let u0 = -qq / 2.0 + sq;
+        let v0 = -qq / 2.0 - sq;
+        let u = sign(u0) * pow(abs(u0), 1.0 / 3.0);
+        let v = sign(v0) * pow(abs(v0), 1.0 / 3.0);
+        roots = vec3f(u + v + off, 0.0, 0.0);
+      }
+    }
+    let da = p - a;
+    let dc = p - c;
+    var best = min(dot(da, da), dot(dc, dc));
+    // Unused root slots are 0 -> they re-evaluate the t=0 endpoint, which
+    // is already in best. Harmless, and skipping branches keeps the loop flat.
+    for (var i = 0; i < 3; i = i + 1) {
+      var t = roots[i];
+      let g = ((A * t + B) * t + C) * t + D;
+      let gp = (3.0 * A * t + 2.0 * B) * t + C;
+      if (abs(gp) > 1e-12) { t = t - g / gp; }
+      t = clamp(t, 0.0, 1.0);
+      let s1 = 1.0 - t;
+      let bt = a * s1 * s1 + b * 2.0 * s1 * t + c * t * t;
+      let d = p - bt;
+      best = min(best, dot(d, d));
+    }
+    return min(best_in, best);
+  }
+`);
+
+// +x-ray crossing count (0/1) of a y-monotone quadratic Bézier piece —
+// mirrors `quad_crossings`/`monotone_quad_root` for pre-split records.
+export const pathQuadCrossingFn = wgslFn(`
+  fn fd_path_quad_crossing(p: vec2f, a: vec2f, b: vec2f, c: vec2f) -> i32 {
+    if ((a.y > p.y) == (c.y > p.y)) { return 0; }
+    let ay = a.y - 2.0 * b.y + c.y;
+    let by = 2.0 * (b.y - a.y);
+    let c0 = a.y - p.y;
+    var t: f32;
+    if (abs(ay) < 1e-9) {
+      t = -c0 / by;
+    } else {
+      let disc = max(by * by - 4.0 * ay * c0, 0.0);
+      var sgn = sign(by);
+      if (sgn == 0.0) { sgn = 1.0; }
+      let q = -0.5 * (by + sgn * sqrt(disc));
+      let r0 = q / ay;
+      var r1 = r0;
+      if (abs(q) > 1e-30) { r1 = c0 / q; }
+      t = select(r1, r0, r0 >= -1e-4 && r0 <= 1.0 + 1e-4);
+    }
+    t = clamp(t, 0.0, 1.0);
+    let s = 1.0 - t;
+    let x = s * s * a.x + 2.0 * s * t * b.x + t * t * c.x;
+    return select(0, 1, p.x < x);
+  }
+`);
+
+// Distance² to a circular arc — radial projection if the angle falls inside
+// the sweep, else the nearer endpoint (mirrors `closest_on_arc`).
+export const pathArcDistSqFn = wgslFn(`
+  fn fd_path_arc_dist_sq(p: vec2f, c: vec2f, r: f32, a0: f32, sweep: f32) -> f32 {
+    let TAU = 6.283185307179586;
+    let d = p - c;
+    let theta = atan2(d.y, d.x);
+    var ccw = (theta - a0) % TAU;
+    if (ccw < 0.0) { ccw += TAU; }
+    var in_arc = abs(sweep) >= TAU;
+    if (sweep > 0.0) { in_arc = in_arc || ccw <= sweep; }
+    else { in_arc = in_arc || (TAU - ccw) <= -sweep; }
+    if (in_arc && dot(d, d) > 1e-24) {
+      let dd = length(d) - r;
+      return dd * dd;
+    }
+    let ps = c + r * vec2f(cos(a0), sin(a0));
+    let pe = c + r * vec2f(cos(a0 + sweep), sin(a0 + sweep));
+    let ws = p - ps;
+    let we = p - pe;
+    return min(dot(ws, ws), dot(we, we));
+  }
+`);
+
+// +x-ray crossing count (0/1) of a y-monotone arc piece — mirrors
+// `arc_crossings` for pre-split records: half-open endpoint rule, then the
+// unique sin-branch picked by the piece midpoint's cos sign.
+export const pathArcCrossingFn = wgslFn(`
+  fn fd_path_arc_crossing(p: vec2f, c: vec2f, r: f32, a0: f32, sweep: f32) -> i32 {
+    let PI = 3.141592653589793;
+    let TAU = 6.283185307179586;
+    let ta = min(a0, a0 + sweep);
+    let tb = max(a0, a0 + sweep);
+    let ya = c.y + r * sin(ta);
+    let yb = c.y + r * sin(tb);
+    if ((ya > p.y) == (yb > p.y)) { return 0; }
+    let v = clamp((p.y - c.y) / r, -1.0, 1.0);
+    var th = asin(v);
+    if (cos(0.5 * (ta + tb)) < 0.0) { th = PI - th; }
+    th += ceil((ta - th) / TAU) * TAU;
+    return select(0, 1, p.x < c.x + r * cos(th));
   }
 `);
 
