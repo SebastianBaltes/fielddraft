@@ -240,15 +240,16 @@ pub fn helix_profile_point(
     taper: f32,
     y_anchor: f32,
     r_inner: f32,
+    start_angle: f32,
 ) -> ([f32; 2], f32, f32) {
     use std::f32::consts::{PI, TAU};
     let pitch = pitch.max(1e-3);
     let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
     let theta = p[2].atan2(p[0]);
     let hand = if left_handed { -1.0 } else { 1.0 };
-    // Handed sweep angle of the query, and the sweep parameter of the
-    // nearest helix pass at that angular position.
-    let th = hand * theta;
+    // Handed sweep angle of the query relative to the start angle, and
+    // the sweep parameter of the nearest helix pass at that position.
+    let th = hand * theta - start_angle;
     let n = ((p[1] - y_anchor) / pitch - th / TAU).round();
     let t_n = th + TAU * n;
     let t_end = TAU * turns.max(0.0);
@@ -342,7 +343,9 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
         // Helical sweep: unwrap into the profile's (r, w) frame and
         // evaluate the 2D sketch SDF, Lipschitz-normalised. Mirrors
         // `CsgNode::Helix`'s tree eval for the non-tree (picking) path.
-        Primitive::Helix { sketch, center, pitch, turns, left_handed, taper } => {
+        Primitive::Helix {
+            sketch, center, pitch, turns, left_handed, taper, start_angle,
+        } => {
             let (y_anchor, r_inner) = helix_profile_anchor(sketch);
             let local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
             let (q, ell, scale) = helix_profile_point(
@@ -353,6 +356,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
                 *taper,
                 y_anchor,
                 r_inner,
+                *start_angle,
             );
             helix_compose(sketch.sdf(q), ell) * scale
         }
@@ -4338,6 +4342,123 @@ mod tests {
             .unwrap()
             .iter()
             .any(|f| f["kind"] == "helix"));
+    }
+
+    /// vfqh: the Onshape-style input modes derive the third quantity —
+    /// `turns_height` (turns 8, height 16) must resolve to pitch 2 and
+    /// produce the exact same field as the canonical pitch+turns form.
+    #[test]
+    fn helix_height_input_modes_resolve() {
+        let mut k = Kernel::new();
+        let _cyl = k
+            .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
+            .unwrap();
+        let sub_calls = r#"[
+            {
+                "type": "sketch_polygon",
+                "id": "100",
+                "params": { "vertices": [8.0, -9.0, 9.4, -8.2, 8.0, -7.4] }
+            }
+        ]"#;
+        let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+        let params = format!(
+            r#"{{
+                "profiles": "qCreatedBy({sketch_id})",
+                "input": "turns_height",
+                "turns": 8.0,
+                "height": {{ "value": 16.0, "unit": "mm" }},
+                "operation": "add"
+            }}"#
+        );
+        k.add_feature_call("helix", &params).unwrap();
+        assert_eq!(k.body_count(), 1);
+        let d = |x: f32, y: f32, z: f32| k.body_sdf_eval(0, x, y, z);
+        // Same probes as helix_feature_threads_a_cylinder (pitch resolves
+        // to 16/8 = 2): quarter-turn ridge inside, groove outside.
+        assert!(d(0.0, -7.7, 8.5) < 0.0, "derived-pitch ridge must be inside");
+        assert!(d(0.0, -6.7, 8.5) > 0.0, "derived-pitch groove must stay open");
+
+        // pitch_height: pitch 2 + height 16 → 8 turns, identical field.
+        let mut k2 = Kernel::new();
+        let _cyl2 = k2
+            .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
+            .unwrap();
+        let sketch2 = k2.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+        let params2 = format!(
+            r#"{{
+                "profiles": "qCreatedBy({sketch2})",
+                "input": "pitch_height",
+                "pitch": {{ "value": 2.0, "unit": "mm" }},
+                "height": {{ "value": 16.0, "unit": "mm" }},
+                "operation": "add"
+            }}"#
+        );
+        k2.add_feature_call("helix", &params2).unwrap();
+        let d2 = |x: f32, y: f32, z: f32| k2.body_sdf_eval(0, x, y, z);
+        assert!((d(0.0, -7.7, 8.5) - d2(0.0, -7.7, 8.5)).abs() < 1e-5);
+        // Past the derived extent (8 turns × 2mm from −8.2): no ridge.
+        assert!(d2(8.5, 9.5, 0.0) > 0.0);
+    }
+
+    /// Ticket 15f5 (merge scope): an explicit `targets` query docks the
+    /// helix onto the NAMED body it touches — without it, an Add that
+    /// touches several bodies bridges them all. Two cylinders close
+    /// enough that the thread touches both; the helix targets only the
+    /// second: the bodies stay separate, the thread lands in cylinder
+    /// 2's body, and cylinder 1's body stays bare.
+    #[test]
+    fn helix_merge_scope_targets_named_body() {
+        let mut k = Kernel::new();
+        let cyl1 = k
+            .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
+            .unwrap();
+        // Close enough that the thread crest (r ≤ 9.4 around the origin
+        // axis) cuts into this cylinder's space — contact with BOTH.
+        let cyl2 = k
+            .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 17.0, 0.0, 0.0, 8.2, 10.0, 0.0)
+            .unwrap();
+        let sub_calls = r#"[
+            {
+                "type": "sketch_polygon",
+                "id": "100",
+                "params": { "vertices": [8.0, -9.0, 9.4, -8.2, 8.0, -7.4] }
+            }
+        ]"#;
+        let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
+        let params = format!(
+            r#"{{
+                "profiles": "qCreatedBy({sketch_id})",
+                "pitch": {{ "value": 2.0, "unit": "mm" }},
+                "turns": 8.0,
+                "operation": "add",
+                "targets": "qCreatedBy({cyl2})"
+            }}"#
+        );
+        k.add_feature_call("helix", &params).unwrap();
+        assert_eq!(k.body_count(), 2);
+
+        // Find each cylinder's body by probing its centre.
+        let body_of = |x: f32| -> usize {
+            (0..k.body_count())
+                .find(|&b| k.body_sdf_eval(b, x, 0.0, 0.0) < 0.0)
+                .expect("cylinder centre must be inside one body")
+        };
+        let b1 = body_of(0.0);
+        let b2 = body_of(17.0);
+        assert_ne!(b1, b2);
+        // The thread ridge (quarter turn in, around the ORIGIN axis)
+        // belongs to cylinder 2's body — the explicit merge scope —
+        // and must NOT be part of cylinder 1's body.
+        let ridge = (0.0, -7.7, 8.5);
+        assert!(
+            k.body_sdf_eval(b2, ridge.0, ridge.1, ridge.2) < 0.0,
+            "targeted body must carry the thread"
+        );
+        assert!(
+            k.body_sdf_eval(b1, ridge.0, ridge.1, ridge.2) > 0.0,
+            "overlapped-but-untargeted body must stay bare"
+        );
+        let _ = cyl1;
     }
 
     #[test]

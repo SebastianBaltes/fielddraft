@@ -656,6 +656,7 @@ fn eval_bounded_d3_open(
             turns,
             left_handed,
             taper,
+            start_angle,
             y_anchor,
             r_inner,
             world_transform,
@@ -675,7 +676,7 @@ fn eval_bounded_d3_open(
             let theta = local[2].atan2(local[0]);
             let hand = if *left_handed { -1.0 } else { 1.0 };
             let y_anchor_f = *y_anchor as f64;
-            let th = theta * D3::from(hand);
+            let th = theta * D3::from(hand) - D3::from(*start_angle as f64);
             let n = ((local[1].re - y_anchor_f) / pitch_f - th.re / tau).round();
             let t_n = th + D3::from(tau * n);
             let t_end = tau * (*turns).max(0.0) as f64;

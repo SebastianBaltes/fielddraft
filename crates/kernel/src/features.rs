@@ -2415,15 +2415,7 @@ impl FeatureKind for GyroidFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
-        let target_ids: Vec<_> = d
-            .targets
-            .queries()
-            .iter()
-            .filter_map(|q| {
-                let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
-                inner.parse::<FeatureId>().ok()
-            })
-            .collect();
+        let target_ids = target_ids_from_queries(&d.targets);
 
         ctx.features.push(DecodedFeature::from_parts(
             id.child("0"),
@@ -2673,6 +2665,12 @@ pub struct ExtrudeDef {
     /// makes a pure blind extrude.
     #[param(name = "Back depth", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub depth_back: ::fielddraft_protocol::Length,
+
+    /// Merge scope (ticket 15f5): explicit target bodies for the
+    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
+    /// face-owner docking (face extrudes) resp. AABB-overlap docking.
+    #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
 }
 
 pub struct ExtrudeFeature;
@@ -2760,7 +2758,11 @@ impl FeatureKind for ExtrudeFeature {
             // Dock into the body that owns the picked face: an Add grows that
             // body (Onshape semantics), and the explicit target keeps the prism
             // from fusing with an unrelated AABB-overlapping body (ticket px2o).
-            let target_ids = ctx.face_owner_target_ids(&face_queries);
+            // An explicit merge scope (ticket 15f5) overrides the face owner.
+            let mut target_ids = target_ids_from_queries(&d.targets);
+            if target_ids.is_empty() {
+                target_ids = ctx.face_owner_target_ids(&face_queries);
+            }
             ctx.features.push(DecodedFeature::from_parts(
                 id.clone(),
                 name,
@@ -2872,7 +2874,7 @@ impl FeatureKind for ExtrudeFeature {
             primitive,
             transform,
             mods,
-            vec![],
+            target_ids_from_queries(&d.targets),
         ));
         Ok(())
     }
@@ -3080,6 +3082,12 @@ pub struct RevolveDef {
     /// [`PrimitiveModifiers`], producing a thin-walled closed shell.
     #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub shell_thickness: ::fielddraft_protocol::Length,
+
+    /// Merge scope (ticket 15f5): explicit target bodies for the
+    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
+    /// legacy AABB-overlap docking.
+    #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
 }
 
 pub struct RevolveFeature;
@@ -3158,7 +3166,7 @@ impl FeatureKind for RevolveFeature {
                 shell_thickness: d.shell_thickness.to_mm().max(0.0),
                 ..PrimitiveModifiers::NONE
             },
-            vec![],
+            target_ids_from_queries(&d.targets),
         ));
         Ok(())
     }
@@ -3180,13 +3188,33 @@ pub struct HelixDef {
     /// is the only query variant honoured today.
     pub profiles: ::fielddraft_protocol::Query,
 
-    /// Axial advance per revolution.
+    /// Which two parameters define the sweep (Onshape's "Input type"
+    /// + height end condition): the third is derived at regen time —
+    /// `pitch_height` derives turns, `turns_height` derives pitch.
+    #[param(
+        name = "Input",
+        default = ::std::string::String::from("pitch_turns"),
+        variants = "pitch_turns=Pitch + Turns,pitch_height=Pitch + Height,turns_height=Turns + Height"
+    )]
+    pub input: String,
+
+    /// Axial advance per revolution (used unless input = Turns + Height).
     #[param(name = "Pitch", default = ::fielddraft_protocol::Length::mm(2.0))]
     pub pitch: ::fielddraft_protocol::Length,
 
-    /// Number of revolutions (fractional turns allowed).
+    /// Number of revolutions, fractional turns allowed (used unless
+    /// input = Pitch + Height).
     #[param(name = "Turns", default = 8.0)]
     pub turns: f32,
+
+    /// Total axial height of the sweep (used by the *_height inputs).
+    #[param(name = "Height", default = ::fielddraft_protocol::Length::mm(16.0))]
+    pub height: ::fielddraft_protocol::Length,
+
+    /// Angle (degrees) around the axis where the sweep starts,
+    /// measured in the winding direction.
+    #[param(name = "Start angle", default = 0.0)]
+    pub start_angle: f32,
 
     /// Winding direction — `true` for a left-hand thread.
     #[param(name = "Left-handed", default = false)]
@@ -3201,6 +3229,12 @@ pub struct HelixDef {
     /// feature spine. Defaults to [`BoolOp::Add`].
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
+
+    /// Merge scope (ticket 15f5): explicit target bodies for the
+    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
+    /// legacy AABB-overlap docking.
+    #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
 
     /// Override for the helix axis centre in world space.
     #[param(default = [0.0, 0.0, 0.0])]
@@ -3264,6 +3298,21 @@ impl FeatureKind for HelixFeature {
             },
         );
 
+        // Resolve the (pitch, turns) pair from the chosen input mode —
+        // the height variants derive the third quantity Onshape-style.
+        let height = d.height.to_mm().max(0.001);
+        let (pitch, turns) = match d.input.as_str() {
+            "pitch_height" => {
+                let p = d.pitch.to_mm().max(0.001);
+                (p, (height / p).max(0.0))
+            }
+            "turns_height" => {
+                let t = d.turns.max(0.001);
+                ((height / t).max(0.001), t)
+            }
+            _ => (d.pitch.to_mm().max(0.001), d.turns.max(0.0)),
+        };
+
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -3271,14 +3320,15 @@ impl FeatureKind for HelixFeature {
             Primitive::Helix {
                 sketch,
                 center: d.center,
-                pitch: d.pitch.to_mm().max(0.001),
-                turns: d.turns.max(0.0),
+                pitch,
+                turns,
                 left_handed: d.left_handed,
                 taper: d.taper_angle.to_radians().tan(),
+                start_angle: d.start_angle.to_radians(),
             },
             transform,
             PrimitiveModifiers::NONE,
-            vec![],
+            target_ids_from_queries(&d.targets),
         ));
         Ok(())
     }
@@ -3732,6 +3782,24 @@ impl FeatureKind for MirrorFeature {
 
 // ─── parameter helpers for the K1 primitives ─────────────────────
 
+/// Resolve a "Merge scope" `targets` multi-query into explicit
+/// `target_ids` (ticket 15f5): each `qCreatedBy(<feature_id>)` entry
+/// names a seed feature whose body the boolean op folds into. An empty
+/// list keeps the legacy AABB-overlap docking. Shared by every
+/// boolean-capable feature (gyroid, helix, extrude, revolve).
+fn target_ids_from_queries(
+    targets: &::fielddraft_protocol::MultiQuery,
+) -> Vec<FeatureId> {
+    targets
+        .queries()
+        .iter()
+        .filter_map(|q| {
+            let inner = q.strip_prefix("qCreatedBy(")?.strip_suffix(')')?;
+            inner.parse::<FeatureId>().ok()
+        })
+        .collect()
+}
+
 /// Extract an optional `"name"` string parameter from the
 /// definition JSON, falling back to a runtime-derived label that
 /// depends on the `FeatureId` being passed into `execute`. The
@@ -4094,7 +4162,7 @@ mod tests {
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
         let params = extrude_schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 10);
+        assert_eq!(params.len(), 11);
     }
 
     #[test]
@@ -4986,7 +5054,7 @@ mod tests {
         let schema = ExtrudeDef::schema_json();
         assert_eq!(schema["type"], json!("extrude"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 10);
+        assert_eq!(params.len(), 11);
 
         // Each key / type pair documents the K4.5.4f vocabulary
         // demonstrated in a single definition.
@@ -5023,6 +5091,10 @@ mod tests {
         assert_eq!(map["symmetric"]["required"], json!(false));
         assert_eq!(map["depth_back"]["type"], json!("length"));
         assert_eq!(map["depth_back"]["required"], json!(false));
+        // Ticket 15f5: optional merge scope (explicit target bodies).
+        assert_eq!(map["targets"]["type"], json!("multi_query"));
+        assert_eq!(map["targets"]["required"], json!(false));
+        assert_eq!(map["targets"]["entityFilter"], json!("BODY"));
     }
 
     #[test]

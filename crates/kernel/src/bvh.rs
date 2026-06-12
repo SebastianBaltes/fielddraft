@@ -178,6 +178,7 @@ pub enum BoundedCsg {
         turns: f32,
         left_handed: bool,
         taper: f32,
+        start_angle: f32,
         y_anchor: f32,
         r_inner: f32,
         world_transform: Transform,
@@ -507,6 +508,7 @@ impl BoundedCsg {
                 turns,
                 left_handed,
                 taper,
+                start_angle,
                 y_anchor,
                 r_inner,
                 world_transform,
@@ -515,6 +517,7 @@ impl BoundedCsg {
                 let local = world_to_local(world_transform, p);
                 let (q, ell, scale) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                    *start_angle,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                     sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
@@ -776,6 +779,7 @@ impl BoundedCsg {
                 turns,
                 left_handed,
                 taper,
+                start_angle,
                 y_anchor,
                 r_inner,
                 world_transform,
@@ -784,6 +788,7 @@ impl BoundedCsg {
                 let local = world_to_local(world_transform, p);
                 let (q, ell, scale) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                    *start_angle,
                 );
                 // Widen the edge band by the inverse Lipschitz scale so
                 // profile-space matching stays comparable to world eps.
@@ -1066,7 +1071,8 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
             }
         }
         CsgNode::Helix {
-            id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+            id, sketch, pitch, turns, left_handed, taper, start_angle,
+            y_anchor, r_inner,
         } => {
             let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
             let s2 = bounded_sketch.aabb();
@@ -1089,6 +1095,7 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 turns: *turns,
                 left_handed: *left_handed,
                 taper: *taper,
+                start_angle: *start_angle,
                 y_anchor: *y_anchor,
                 r_inner: *r_inner,
                 world_transform: *carry,

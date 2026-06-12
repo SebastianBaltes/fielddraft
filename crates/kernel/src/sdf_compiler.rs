@@ -68,7 +68,7 @@ pub const OP_WARP_TWIST: u32     = 0x32; // +1: rate — rotate XZ by rate*y
 pub const OP_WARP_BEND: u32      = 0x33; // +1: rate — rotate XY by rate*x
 pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(3)
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
-pub const OP_WARP_HELIX: u32     = 0x36; // +6: pitch + hand + turns + y_anchor + taper + r_inner — point ← (r−taper·(y−y0), w, ell)
+pub const OP_WARP_HELIX: u32     = 0x36; // +7: pitch + hand + turns + y_anchor + taper + r_inner + start_angle — point ← (r−taper·(y−y0), w, ell)
 pub const OP_HELIX_SCALE: u32    = 0x37; // +1: scale (world·lipschitz, baked at emission) — pops d2d, composes with point.z (end caps), multiplies
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
@@ -332,6 +332,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             turns,
             left_handed,
             taper,
+            start_angle,
             y_anchor,
             r_inner,
             world_transform,
@@ -353,6 +354,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(*y_anchor);
             out.push(*taper);
             out.push(*r_inner);
+            out.push(*start_angle);
             emit_sketch(sketch, out, 0, excl);
             // Lipschitz scale is a per-feature constant (see
             // `helix_profile_point`) — bake it into the multiplier.
@@ -1131,6 +1133,7 @@ pub fn eval_opcodes_with_volumes(
                 let y_anchor = rd!();
                 let taper = rd!();
                 let r_inner = rd!();
+                let start_angle = rd!();
                 // Mirrors `crate::helix_profile_point` — continuous
                 // sweep-parameter clamp; the signed end-overshoot chord
                 // rides along in pt[2] (2D sketch ops ignore z) until
@@ -1138,7 +1141,7 @@ pub fn eval_opcodes_with_volumes(
                 let tau = std::f32::consts::TAU;
                 let r = (pt[0] * pt[0] + pt[2] * pt[2]).sqrt();
                 let theta = pt[2].atan2(pt[0]);
-                let th = hand * theta;
+                let th = hand * theta - start_angle;
                 let n = ((pt[1] - y_anchor) / pitch - th / tau).round();
                 let t_n = th + tau * n;
                 let t_end = tau * turns;
@@ -1530,6 +1533,9 @@ mod tests {
                     turns: 5.0,
                     left_handed: false,
                     taper: 0.0,
+                    // Non-zero so the parity check exercises the
+                    // start-angle path of the opcode stream too.
+                    start_angle: 0.6,
                 },
                 Transform::IDENTITY,
                 PrimitiveModifiers::NONE,
@@ -1548,6 +1554,11 @@ mod tests {
             [0.0, 0.0, 0.0],
             [4.0, 3.3, 4.0],
             [-9.0, 5.1, 0.2],
+            // End-region seam pairs (the vtyh fix lives here).
+            [-9.0, -1.0, 0.05],
+            [-9.0, -1.0, -0.05],
+            [-9.0, 11.0, 0.05],
+            [-9.0, 11.0, -0.05],
         ];
         assert_sdf_match(&bvh, &compiled, &points, 1e-4);
     }

@@ -955,7 +955,9 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             }
             hash_sketch2d(sketch, hasher);
         }
-        Primitive::Helix { sketch, center, pitch, turns, left_handed, taper } => {
+        Primitive::Helix {
+            sketch, center, pitch, turns, left_handed, taper, start_angle,
+        } => {
             16u8.hash(hasher);
             for v in center {
                 v.to_bits().hash(hasher);
@@ -964,6 +966,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut DefaultHasher) {
             turns.to_bits().hash(hasher);
             left_handed.hash(hasher);
             taper.to_bits().hash(hasher);
+            start_angle.to_bits().hash(hasher);
             hash_sketch2d(sketch, hasher);
         }
         Primitive::Torus { center, major_radius, minor_radius } => {

@@ -290,6 +290,12 @@ struct ParamInfo {
     /// viewport element-picker narrows to the right entity kind
     /// (Brocken B/C — e.g. a sketch plane or mate-connector face).
     entity_filter: Option<String>,
+    /// Optional `#[param(variants = "key=Label,key=Label")]` list for
+    /// String-typed fields: the schema reports `type: "enum"` with the
+    /// given variants so the TS dialog renders a dropdown (or tabs via
+    /// `ui_hint = "horizontal_enum"`); the wire value stays the plain
+    /// key string.
+    variants: Option<String>,
 }
 
 impl ParamInfo {
@@ -304,6 +310,7 @@ impl ParamInfo {
         let mut ui_hint: Option<String> = None;
         let mut unit: Option<String> = None;
         let mut entity_filter: Option<String> = None;
+        let mut variants: Option<String> = None;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("param") {
@@ -335,10 +342,15 @@ impl ParamInfo {
                     let lit: syn::LitStr = value.parse()?;
                     entity_filter = Some(lit.value());
                     Ok(())
+                } else if meta.path.is_ident("variants") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    variants = Some(lit.value());
+                    Ok(())
                 } else {
                     Err(meta.error(
                         "unknown #[param(...)] key \
-                         (supported: name, default, ui_hint, unit, entity_filter)",
+                         (supported: name, default, ui_hint, unit, entity_filter, variants)",
                     ))
                 }
             })?;
@@ -354,13 +366,20 @@ impl ParamInfo {
             ui_hint,
             unit,
             entity_filter,
+            variants,
         })
     }
 
     fn emit_schema_entry(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.display_name;
-        let type_name = self.ty.json_type_name();
+        // Explicit `variants = "…"` upgrades the wire type to "enum"
+        // regardless of the Rust field type (String in practice).
+        let type_name = if self.variants.is_some() {
+            "enum"
+        } else {
+            self.ty.json_type_name()
+        };
         let required = self.default.is_none();
 
         // Default ui_hint. BoolOp (and any future enum that the
@@ -376,13 +395,25 @@ impl ParamInfo {
             None => quote! {},
         };
 
-        // Typed enums emit their variants alongside `type: "enum"`.
-        // Right now only `BoolOp` lands here; once the K6a.1
-        // vocabulary grows more kernel-side enums, each gets its
-        // own arm in `ParamType::variants_json`.
-        let variants_entry = match self.ty.variants_json() {
-            Some(tokens) => quote! { "variants": #tokens, },
-            None => quote! {},
+        // Typed enums emit their variants alongside `type: "enum"` —
+        // either the per-type list (`BoolOp`) or an explicit
+        // `#[param(variants = "key=Label,…")]` attribute.
+        let variants_entry = if let Some(spec) = &self.variants {
+            let entries: Vec<TokenStream2> = spec
+                .split(',')
+                .map(|pair| {
+                    let mut it = pair.splitn(2, '=');
+                    let k = it.next().unwrap_or("").trim().to_string();
+                    let l = it.next().unwrap_or(&k).trim().to_string();
+                    quote! { { "key": #k, "label": #l } }
+                })
+                .collect();
+            quote! { "variants": ::serde_json::json!([ #(#entries),* ]), }
+        } else {
+            match self.ty.variants_json() {
+                Some(tokens) => quote! { "variants": #tokens, },
+                None => quote! {},
+            }
         };
 
         let unit_entry = match &self.unit {
@@ -395,12 +426,24 @@ impl ParamInfo {
             None => quote! {},
         };
 
-        // BoolOp defaults differ per feature (primitives seed a New
-        // body, extrude-likes Add into the touching one), so the wire
-        // key is emitted into the schema; BoolOp is Serialize, json!
-        // interpolation lowers the expression to its snake_case name.
+        // Defaults are emitted into the schema for every Serialize-able
+        // param type so the TS dialog can seed its fields with the same
+        // values the Rust parse fallback uses (BoolOp lowers to its
+        // snake_case name, Length/Angle to their {value, unit} wire
+        // form). Query types stay schema-silent — their empty default
+        // is the natural widget state anyway.
         let default_entry = match (&self.ty, &self.default) {
-            (ParamType::BoolOp, Some(expr)) => quote! { "default": #expr, },
+            (
+                ParamType::BoolOp
+                | ParamType::F32
+                | ParamType::Bool
+                | ParamType::String
+                | ParamType::Length
+                | ParamType::Angle
+                | ParamType::Vec2
+                | ParamType::Vec3,
+                Some(expr),
+            ) => quote! { "default": #expr, },
             _ => quote! {},
         };
 

@@ -333,8 +333,10 @@ pub enum Primitive {
     /// `turns` revolutions total. `left_handed` flips the winding.
     /// `taper` is the tangent of the taper half-angle — the radius
     /// shrinks by `taper · Δy` along +y (NPT-style tapered threads).
-    /// The profile's axial extent should stay ≤ `pitch` (adjacent turns
-    /// must not overlap; standard thread forms satisfy this).
+    /// `start_angle` (radians) rotates the sweep start around the axis,
+    /// measured in the winding direction. The profile's axial extent
+    /// should stay ≤ `pitch` (adjacent turns must not overlap; standard
+    /// thread forms satisfy this).
     Helix {
         sketch: Sketch2d,
         center: [f32; 3],
@@ -342,6 +344,8 @@ pub enum Primitive {
         turns: f32,
         left_handed: bool,
         taper: f32,
+        #[serde(default)]
+        start_angle: f32,
     },
 }
 

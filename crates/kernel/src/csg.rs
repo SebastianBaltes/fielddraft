@@ -789,6 +789,7 @@ pub enum CsgNode {
         turns: f32,
         left_handed: bool,
         taper: f32,
+        start_angle: f32,
         y_anchor: f32,
         r_inner: f32,
     },
@@ -925,7 +926,9 @@ impl DecodedFeature {
                     )
                 }
             }
-            Primitive::Helix { ref sketch, center, pitch, turns, left_handed, taper } => {
+            Primitive::Helix {
+                ref sketch, center, pitch, turns, left_handed, taper, start_angle,
+            } => {
                 let (y_anchor, r_inner) = crate::helix_profile_anchor(sketch);
                 let centered = CsgNode::Helix {
                     id: id.clone(),
@@ -934,6 +937,7 @@ impl DecodedFeature {
                     turns,
                     left_handed,
                     taper,
+                    start_angle,
                     y_anchor,
                     r_inner,
                 };
@@ -1037,7 +1041,9 @@ impl DecodedFeature {
                         center: [0.0, 0.0, 0.0],
                     })
                 }
-                CsgNode::Helix { sketch, pitch, turns, left_handed, taper, .. } => {
+                CsgNode::Helix {
+                    sketch, pitch, turns, left_handed, taper, start_angle, ..
+                } => {
                     return Some(Primitive::Helix {
                         sketch: (**sketch).clone(),
                         center: [0.0, 0.0, 0.0],
@@ -1045,6 +1051,7 @@ impl DecodedFeature {
                         turns: *turns,
                         left_handed: *left_handed,
                         taper: *taper,
+                        start_angle: *start_angle,
                     })
                 }
                 // The extrude/revolve self-centering Transform: restore
@@ -1067,7 +1074,9 @@ impl DecodedFeature {
                             center: t.translate,
                         })
                     }
-                    CsgNode::Helix { sketch, pitch, turns, left_handed, taper, .. } => {
+                    CsgNode::Helix {
+                        sketch, pitch, turns, left_handed, taper, start_angle, ..
+                    } => {
                         return Some(Primitive::Helix {
                             sketch: (**sketch).clone(),
                             center: t.translate,
@@ -1075,6 +1084,7 @@ impl DecodedFeature {
                             turns: *turns,
                             left_handed: *left_handed,
                             taper: *taper,
+                            start_angle: *start_angle,
                         })
                     }
                     _ => cur = inner,
@@ -1429,10 +1439,12 @@ impl CsgNode {
                 }
             }
             CsgNode::Helix {
-                id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+                id, sketch, pitch, turns, left_handed, taper, start_angle,
+                y_anchor, r_inner,
             } => {
                 let (q, ell, scale) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                    *start_angle,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                     sketch.sdf_retained(q, &mut |g| open.contains_sub(id, g))
@@ -1673,10 +1685,12 @@ impl CsgNode {
                 (band.distance, c)
             }
             CsgNode::Helix {
-                id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
+                id, sketch, pitch, turns, left_handed, taper, start_angle,
+                y_anchor, r_inner,
             } => {
                 let (q, ell, scale) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
+                    *start_angle,
                 );
                 // The contributor band epsilon lives in WORLD units; widen
                 // it by the inverse Lipschitz scale so profile-space edge
@@ -3308,6 +3322,7 @@ mod tests {
             turns: 5.0,
             left_handed: false,
             taper: 0.0,
+            start_angle: 0.0,
             y_anchor: 0.0,
             r_inner: 8.0,
         }
@@ -3373,6 +3388,23 @@ mod tests {
         assert!(d([9.0, 0.0, -0.5]) > 0.0, "behind the start cap must be open");
         // Just past the start cap (θ slightly positive): inside.
         assert!(d([9.0, 0.05, 0.5]) < 0.0, "past the start cap must be solid");
+    }
+
+    /// vfqh: `start_angle` rotates the whole sweep around the axis —
+    /// the start cap moves to the given angle (measured in the winding
+    /// direction) and the ridge follows.
+    #[test]
+    fn helix_start_angle_rotates_the_sweep() {
+        let mut h = test_helix();
+        if let CsgNode::Helix { start_angle, .. } = &mut h {
+            *start_angle = std::f32::consts::FRAC_PI_2;
+        }
+        let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
+        // A quarter turn AFTER the rotated start (θ=π, axial advance
+        // pitch/4): on the ridge.
+        assert!(d([-9.0, 0.5, 0.0]) < 0.0, "rotated ridge must be inside");
+        // A quarter turn BEFORE the rotated start (θ=0): off the sweep.
+        assert!(d([9.0, 0.0, 0.0]) > 0.0, "before the rotated start must be open");
     }
 
     #[test]

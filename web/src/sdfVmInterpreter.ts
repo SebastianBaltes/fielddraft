@@ -467,11 +467,12 @@ export function buildVmSdfEvalFn(
         const yAnchor = rd().toVar();
         const taper = rd().toVar();
         const rInner = rd().toVar();
+        const startAngle = rd().toVar();
         const tau = float(6.2831853);
         const pi = float(3.14159265);
         const r = ptx.mul(ptx).add(ptz.mul(ptz)).sqrt().toVar();
         const theta = atan(ptz, ptx).toVar();
-        const th = hand.mul(theta).toVar();
+        const th = hand.mul(theta).sub(startAngle).toVar();
         const n = round(pty.sub(yAnchor).div(pitch).sub(th.div(tau))).toVar();
         const tN = th.add(tau.mul(n)).toVar();
         const tEnd = tau.mul(turns).toVar();
