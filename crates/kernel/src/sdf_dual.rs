@@ -247,6 +247,25 @@ pub(crate) fn sdf_halfspace_generic<T: DualNum<f64> + Copy + PartialOrd>(
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             (f.abs() - T::from(*thickness as f64)) * s * T::from(0.2887)
         }
+        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+            // First-order lift: the profile's signed distance and (r,y)-normal
+            // are evaluated at the PRIMAL point (the closest-point solve has no
+            // generic dual form), then linearised as d ≈ d0 + n·((r,y)−(r0,y0)).
+            // A distance field is exactly first-order along its normal, which is
+            // all the dual consumers read (value + gradient); curvature terms
+            // beyond that are dropped.
+            let r_t = safe_sqrt(p[0] * p[0] + p[2] * p[2]);
+            let r0 = r_t.re();
+            let y0 = p[1].re();
+            let (d0, n2) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
+                segments,
+                *ccw,
+                [r0 as f32, y0 as f32],
+            );
+            T::from(d0 as f64 + *offset as f64)
+                + (r_t - T::from(r0)) * T::from(n2[0] as f64)
+                + (p[1] - T::from(y0)) * T::from(n2[1] as f64)
+        }
     }
 }
 

@@ -40,6 +40,7 @@ pub fn surface_kind(surface: &SurfaceGeometry) -> &'static str {
             HalfSpace::Cone { .. } => "cone",
             HalfSpace::Torus { .. } => "torus",
             HalfSpace::Gyroid { .. } => "tessellated",
+            HalfSpace::RevolvedProfile { .. } => "revolved_profile",
         },
         SurfaceGeometry::Tessellated { .. } => "tessellated",
     }

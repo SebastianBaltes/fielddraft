@@ -2193,6 +2193,15 @@ pub(crate) fn sdf_halfspace(hs: &HalfSpace, p: [f32; 3]) -> f32 {
             let f = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
             (f.abs() - thickness) * s * 0.2887
         }
+        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let (d, _) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
+                segments,
+                *ccw,
+                [r, p[1]],
+            );
+            d + offset
+        }
     }
 }
 
@@ -2241,6 +2250,19 @@ pub(crate) fn grad_halfspace(hs: &HalfSpace, p: [f32; 3]) -> [f32; 3] {
             }
         }
         HalfSpace::Gyroid { .. } => [0.0, 0.0, 0.0],
+        HalfSpace::RevolvedProfile { segments, ccw, .. } => {
+            let rho = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            let (_, g2) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
+                segments,
+                *ccw,
+                [rho, p[1]],
+            );
+            if rho > 1e-9 {
+                [g2[0] * p[0] / rho, g2[1], g2[0] * p[2] / rho]
+            } else {
+                [0.0, g2[1], 0.0]
+            }
+        }
     }
 }
 
@@ -2281,6 +2303,18 @@ pub fn offset_halfspace_inward(hs: &HalfSpace, thickness: f32) -> Option<HalfSpa
         }
         // Cone nappes separate under offset; Gyroid/TPMS have no analytic offset.
         HalfSpace::Cone { .. } | HalfSpace::Gyroid { .. } => None,
+        // The inner wall of a revolved profile group is the SAME carrier with a
+        // shifted level (`g = signed_profile_distance + offset`). No degeneracy
+        // gate is computable cheaply here (it would need the profile's minimum
+        // curvature radius); an over-thick wall yields an empty active set and
+        // is pruned by the activity tests downstream.
+        HalfSpace::RevolvedProfile { segments, ccw, offset } => {
+            Some(HalfSpace::RevolvedProfile {
+                segments: segments.clone(),
+                ccw: *ccw,
+                offset: offset + thickness,
+            })
+        }
     }
 }
 

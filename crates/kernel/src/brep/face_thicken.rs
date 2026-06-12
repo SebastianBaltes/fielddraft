@@ -196,6 +196,11 @@ pub fn thicken_face(
         HalfSpace::Gyroid { .. } => {
             return Err("gyroid / TPMS face cannot be thickened analytically".to_string());
         }
+        // The thicken result must be a Primitive pair; a revolved profile
+        // group has no primitive counterpart (yet).
+        HalfSpace::RevolvedProfile { .. } => {
+            return Err("revolved profile face cannot be thickened analytically".to_string());
+        }
     };
     Ok(ThickenSolid { outer, inner, world })
 }

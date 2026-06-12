@@ -74,6 +74,25 @@ pub(super) fn surface_normal_at(surface: &SurfaceGeometry, p: [f64; 3]) -> Optio
             }
             Some(rot_to_world(dir))
         }
+        HalfSpace::RevolvedProfile { segments, ccw, .. } => {
+            // Profile-plane gradient lifted radially, like the cone/cylinder.
+            let l = to_local(p);
+            let r_xz = norm([l[0], 0.0, l[2]]);
+            let (_, g2) = fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
+                segments,
+                *ccw,
+                [r_xz as f32, l[1] as f32],
+            );
+            let dir = if r_xz > 1e-9 {
+                [g2[0] as f64 * l[0] / r_xz, g2[1] as f64, g2[0] as f64 * l[2] / r_xz]
+            } else {
+                [0.0, g2[1] as f64, 0.0]
+            };
+            if norm(dir) < 1e-9 {
+                return None;
+            }
+            Some(rot_to_world(dir))
+        }
         HalfSpace::Gyroid { .. } => None,
     }
 }
@@ -100,7 +119,9 @@ pub(super) fn surface_uv(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<(f64,
     let l = [l[0] as f64, l[1] as f64, l[2] as f64];
     let r_xz = norm([l[0], 0.0, l[2]]);
     match surface {
-        HalfSpace::InfiniteCylinder { .. } | HalfSpace::Cone { .. } => {
+        HalfSpace::InfiniteCylinder { .. }
+        | HalfSpace::Cone { .. }
+        | HalfSpace::RevolvedProfile { .. } => {
             if r_xz < 1e-9 {
                 return None;
             }

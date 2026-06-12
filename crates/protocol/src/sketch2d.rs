@@ -1435,6 +1435,95 @@ pub fn g1_group_segments(segments: &[SketchSegment], cos_threshold: f32) -> Vec<
     group
 }
 
+/// Signed distance (and its 2D gradient) from `p` to the **carrier** of one
+/// G1 path group: the group's segments, extended past both chain ends along
+/// their end tangents so the field stays smooth where the neighbouring
+/// groups take over. Without the extension the signed distance flips
+/// erratically beyond the chain ends (the closest point clamps to an
+/// endpoint and the side classification degenerates) — exactly where the
+/// edges to the adjacent groups live.
+///
+/// Sign convention: negative on the **material** side of the owning closed
+/// path (`ccw` = its winding, material left of the traversal direction —
+/// the same convention as `collect_sketch_walls`' outward normals). The
+/// gradient is the outward unit normal at the foot point.
+///
+/// `segments` must be in path order (the order `g1_group_segments` sees).
+/// For a group that wraps a closed path's seam the two extension rays sit
+/// at the wrap joint instead of the geometric ends; distances *on* the
+/// group are unaffected, only the carrier's far extension differs.
+pub fn group_signed_distance_and_normal(
+    segments: &[SketchSegment],
+    ccw: bool,
+    p: [f32; 2],
+) -> (f32, [f32; 2]) {
+    debug_assert!(!segments.is_empty());
+    let mut best_d2 = f32::INFINITY;
+    let mut best_cp = p;
+    let mut best_tan = [1.0f32, 0.0];
+
+    let mut consider = |cp: [f32; 2], tan: [f32; 2]| {
+        let dx = p[0] - cp[0];
+        let dy = p[1] - cp[1];
+        let d2 = dx * dx + dy * dy;
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best_cp = cp;
+            best_tan = tan;
+        }
+    };
+
+    for s in segments {
+        let (cp, tan) = s.closest_point_and_tangent(p);
+        consider(cp, tan);
+    }
+
+    // Tangent-ray extensions. The traversal direction stays path-forward on
+    // both rays (start ray runs BACKWARD from the first point), so the
+    // outward-normal sign convention is seamless across the chain ends.
+    if let (Some(first), Some(last)) = (segments.first(), segments.last()) {
+        let a = first.start_point();
+        let ta = first.tangent_at_start();
+        let u = -((p[0] - a[0]) * ta[0] + (p[1] - a[1]) * ta[1]);
+        if u > 0.0 {
+            consider([a[0] - u * ta[0], a[1] - u * ta[1]], ta);
+        }
+        let b = last.end_point();
+        let tb = last.tangent_at_end();
+        let v = (p[0] - b[0]) * tb[0] + (p[1] - b[1]) * tb[1];
+        if v > 0.0 {
+            consider([b[0] + v * tb[0], b[1] + v * tb[1]], tb);
+        }
+    }
+
+    // Outward normal from the foot-point tangent: rotate −90° for CCW
+    // (material on the left), +90° for CW.
+    let n_out = if ccw {
+        [best_tan[1], -best_tan[0]]
+    } else {
+        [-best_tan[1], best_tan[0]]
+    };
+    let dist = best_d2.sqrt();
+    // The per-segment closed-form foot points carry ~1e-5 absolute error
+    // (f32 cubic solve); any closer than that the direction `p − cp` is pure
+    // float noise, so the tangent-derived normal takes over — it is the
+    // exact gradient ON the curve and first-order correct beside it. The
+    // signed value is the projection onto that normal (≈ ±dist, exact for
+    // true normal feet).
+    let near = 1e-4_f32.max(1e-6 * (p[0].abs() + p[1].abs()));
+    if dist < near {
+        let d = (p[0] - best_cp[0]) * n_out[0] + (p[1] - best_cp[1]) * n_out[1];
+        return (d, n_out);
+    }
+    let dir = [(p[0] - best_cp[0]) / dist, (p[1] - best_cp[1]) / dist];
+    let sign = if dir[0] * n_out[0] + dir[1] * n_out[1] >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    (sign * dist, [sign * dir[0], sign * dir[1]])
+}
+
 // ── Ellipse decomposition (DL-49 Option B) ──────────────────────────
 
 /// Decompose an ellipse — or an elliptic arc — into a chain of

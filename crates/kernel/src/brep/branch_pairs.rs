@@ -136,6 +136,10 @@ fn kind_of_halfspace(hs: &HalfSpace) -> SurfaceKind {
         HalfSpace::Sphere { .. } => SurfaceKind::Sphere,
         HalfSpace::Torus { .. } => SurfaceKind::Torus,
         HalfSpace::Gyroid { .. } => SurfaceKind::Tessellated,
+        // Cannot reach here either (primitives never emit profile carriers;
+        // revolve walls are enumerated via `push_sketch_walls`), but the
+        // honest kind for totality is the revolve wall.
+        HalfSpace::RevolvedProfile { .. } => SurfaceKind::RevolveWall,
     }
 }
 

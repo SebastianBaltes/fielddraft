@@ -538,6 +538,10 @@ fn emit_surface(
             // the face's mean-point plane so the file stays structurally valid
             // (DL-43).
             HalfSpace::Gyroid { .. } => fallback_plane(w, g, brep, placement, face),
+            // A revolved profile group is a SURFACE_OF_REVOLUTION in STEP terms;
+            // emitting the swept profile curve is future work — fall back to the
+            // mean-point plane like other unmapped surfaces (DL-43).
+            HalfSpace::RevolvedProfile { .. } => fallback_plane(w, g, brep, placement, face),
             }
         }
         // Tessellated (Gyroid/TPMS) faces have no closed-form surface; emit a

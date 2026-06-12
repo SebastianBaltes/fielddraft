@@ -407,7 +407,9 @@ impl ParamA<'_> {
                     foot[2] + e1[2] * u + e2[2] * v,
                 ]
             }
-            HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => unreachable!("filtered earlier"),
+            HalfSpace::Torus { .. }
+            | HalfSpace::Gyroid { .. }
+            | HalfSpace::RevolvedProfile { .. } => unreachable!("filtered earlier"),
         };
         local_to_world(self.t, local)
     }
@@ -504,7 +506,9 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
                 u_periodic: false,
             })
         }
-        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => None,
+        HalfSpace::Torus { .. }
+        | HalfSpace::Gyroid { .. }
+        | HalfSpace::RevolvedProfile { .. } => None,
     }
 }
 

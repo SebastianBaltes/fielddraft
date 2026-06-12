@@ -179,6 +179,52 @@ pub(super) fn lift_path_group(segs: &[&SketchSegment], ccw: bool) -> Option<Sket
     None
 }
 
+/// Walk a [`BoundedSketch2d`] tree and emit `(group_sub, segments, ccw)` for
+/// **every** G1 boundary group of every closed `Path` primitive, in the same
+/// global group-index convention as [`collect_sketch_walls`]. Unlike the wall
+/// collection this keeps the raw segments, so callers can carry curved groups
+/// (Bézier / mixed / arc) as [`HalfSpace::RevolvedProfile`] instead of
+/// dropping them to tessellated faces. Liftable groups are emitted too —
+/// callers that already lifted them skip by sub-id.
+pub(super) fn collect_path_group_segments(
+    sketch: &BoundedSketch2d,
+    base: u32,
+    out: &mut Vec<(u32, Vec<SketchSegment>, bool)>,
+) {
+    match sketch {
+        BoundedSketch2d::Empty => {}
+        BoundedSketch2d::Prim { primitive, .. } => {
+            let Sketch2dPrimitive::Path { segments, closed } = primitive else {
+                return;
+            };
+            if !*closed || segments.is_empty() {
+                return;
+            }
+            let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+            let ccw = path_chord_signed_area(segments) > 0.0;
+            let n_groups = groups.iter().copied().max().unwrap_or(0) + 1;
+            for g in 0..n_groups {
+                let segs: Vec<SketchSegment> = segments
+                    .iter()
+                    .zip(&groups)
+                    .filter(|&(_, &gi)| gi == g)
+                    .map(|(s, _)| *s)
+                    .collect();
+                if !segs.is_empty() {
+                    out.push((base + g, segs, ccw));
+                }
+            }
+        }
+        BoundedSketch2d::Union { left, right, .. }
+        | BoundedSketch2d::Difference { left, right, .. }
+        | BoundedSketch2d::Intersection { left, right, .. } => {
+            collect_path_group_segments(left, base, out);
+            collect_path_group_segments(right, base + left.edge_count(), out);
+        }
+        BoundedSketch2d::Offset { .. } => {}
+    }
+}
+
 /// Winding sign of a closed path via the shoelace area of its segment-endpoint
 /// chords. Arc bulges shift the area but not its sign for any sane (simple,
 /// non-self-intersecting) profile, which is all the outward-normal choice needs.
@@ -332,6 +378,21 @@ pub(super) fn collect_revolve_halfspaces(
                 (HalfSpace::Cone { half_angle }, center_xf),
             );
         }
+    }
+
+    // Groups with no Plane/Cylinder/Cone lift (Bézier / mixed / arc profile
+    // groups) carry their raw (r, y) segments as a RevolvedProfile carrier, so
+    // the branch-seed path can treat the revolved surface analytically (2D in
+    // the profile plane). Lifted groups already hold their exact entry —
+    // `or_insert` leaves those untouched.
+    let mut groups = Vec::new();
+    collect_path_group_segments(sketch, 0, &mut groups);
+    for (group, segments, ccw) in groups {
+        let branch = BranchId::from_feature_sub(id, group);
+        out.entry(branch.as_u32()).or_insert((
+            HalfSpace::RevolvedProfile { segments, ccw, offset: 0.0 },
+            xf,
+        ));
     }
 }
 

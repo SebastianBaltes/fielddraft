@@ -355,7 +355,10 @@ pub(super) fn snap_to_carrier(surface: &SurfaceGeometry, p: [f64; 3]) -> Option<
             let k = *radius as f64 / r;
             Some(scale(l, k))
         }
-        HalfSpace::Cone { .. } | HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => None,
+        HalfSpace::Cone { .. }
+        | HalfSpace::Torus { .. }
+        | HalfSpace::Gyroid { .. }
+        | HalfSpace::RevolvedProfile { .. } => None,
     }?;
     Some(xf_point(
         transform,

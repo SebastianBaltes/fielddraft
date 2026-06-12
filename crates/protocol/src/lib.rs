@@ -341,6 +341,18 @@ pub enum HalfSpace {
     Cone { half_angle: f32 },
     Torus { major_radius: f32, minor_radius: f32 },
     Gyroid { cell_size: f32, thickness: f32 },
+    /// One G1 group of a revolved sketch-path profile: `segments` live in the
+    /// profile's `(r, y)` half-plane and are revolved about the local y-axis.
+    /// The carrier extends past the chain ends along the end tangents (see
+    /// [`sketch2d::group_signed_distance_and_normal`]). The surface is the
+    /// zero set of `signed_profile_distance + offset` — the Shell inner wall
+    /// reuses the same segments with `offset = thickness`. `ccw` is the
+    /// owning closed path's winding (fixes the material side of the sign).
+    RevolvedProfile {
+        segments: Vec<sketch2d::SketchSegment>,
+        ccw: bool,
+        offset: f32,
+    },
 }
 
 impl Primitive {

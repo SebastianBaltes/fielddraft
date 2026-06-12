@@ -435,13 +435,16 @@ impl<'a> Context<'a> {
                         if TopoRef::from_face(brep, fid).id_hash == hash {
                             let face = brep.face(fid);
                             match &face.surface {
-                                SurfaceGeometry::Analytic { .. } => {
-                                    let s = crate::brep::face_thicken::thicken_face(
-                                        brep, fid, placement, outer_off, inner_off,
-                                    )?;
-                                    walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
+                                // A revolved-profile carrier is analytic for the
+                                // weaver but has no parameter-shift offset, so it
+                                // thickens via the general field-offset band —
+                                // the same route these faces took when they were
+                                // still tessellated.
+                                SurfaceGeometry::Analytic {
+                                    surface: fielddraft_protocol::HalfSpace::RevolvedProfile { .. },
+                                    ..
                                 }
-                                SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
+                                | SurfaceGeometry::Tessellated { .. } => bands.push(BandReq {
                                     qi,
                                     feature_id: face.branch_id.feature_id(),
                                     placement: *placement,
@@ -449,6 +452,12 @@ impl<'a> Context<'a> {
                                         brep, fid,
                                     ),
                                 }),
+                                SurfaceGeometry::Analytic { .. } => {
+                                    let s = crate::brep::face_thicken::thicken_face(
+                                        brep, fid, placement, outer_off, inner_off,
+                                    )?;
+                                    walls.push((qi, thicken_diff_node(id, qi, &s), s.world));
+                                }
                             }
                             found = true;
                             break 'scan;
@@ -7304,12 +7313,21 @@ mod tests {
     }
 
     /// Find a non-analytic (`Tessellated`) face's id_hash.
+    /// A face WITHOUT a parameter-shift analytic offset: tessellated, or a
+    /// revolved-profile carrier (analytic for the weaver, but thickened via the
+    /// general field-offset band like the tessellated faces it used to be).
     fn tessellated_face_hash(brep: &crate::brep::BRep) -> Option<u64> {
         use crate::brep::{FaceId, SurfaceGeometry};
         (0..brep.face_count()).find_map(|i| {
             let fid = FaceId(i as u32);
-            matches!(brep.face(fid).surface, SurfaceGeometry::Tessellated { .. })
-                .then(|| crate::brep::naming::TopoRef::from_face(brep, fid).id_hash)
+            let band_route = match &brep.face(fid).surface {
+                SurfaceGeometry::Tessellated { .. } => true,
+                SurfaceGeometry::Analytic { surface, .. } => matches!(
+                    surface,
+                    fielddraft_protocol::HalfSpace::RevolvedProfile { .. }
+                ),
+            };
+            band_route.then(|| crate::brep::naming::TopoRef::from_face(brep, fid).id_hash)
         })
     }
 
@@ -7357,12 +7375,15 @@ mod tests {
             brep.shells.iter().any(|s| s.is_closed),
             "thickened wall must weave a closed (watertight) shell"
         );
+        // The curved walls now carry RevolvedProfile carriers (analytic for the
+        // weaver, still band-thickened); before that they were Tessellated.
         let tess: Vec<_> = (0..brep.face_count())
-            .filter(|&i| {
-                matches!(
-                    brep.face(crate::brep::FaceId(i as u32)).surface,
-                    crate::brep::SurfaceGeometry::Tessellated { .. }
-                )
+            .filter(|&i| match &brep.face(crate::brep::FaceId(i as u32)).surface {
+                crate::brep::SurfaceGeometry::Tessellated { .. } => true,
+                crate::brep::SurfaceGeometry::Analytic { surface, .. } => matches!(
+                    surface,
+                    fielddraft_protocol::HalfSpace::RevolvedProfile { .. }
+                ),
             })
             .collect();
         assert!(
@@ -8189,6 +8210,106 @@ mod tests {
             compiled.opcodes.len() < 2048,
             "opcode stream too large: {} floats",
             compiled.opcodes.len(),
+        );
+    }
+
+    /// Stage A of the revolve seed-weave (Parametric-Weaving rebuild): every
+    /// wall group of the shelled vase's revolve — including the curved spline
+    /// groups that previously fell out of the map entirely — carries an
+    /// analytic half-space, and the new `RevolvedProfile` carriers' zero set
+    /// lies ON the body surface (outer wall) resp. exactly `thickness` inside
+    /// it (shell inner wall).
+    #[test]
+    fn vase_revolve_branch_map_covers_every_wall_group() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        regen_shelled_vase(&registry, &mut ctx);
+
+        let parts = crate::body::partition(&ctx.features);
+        assert_eq!(parts.len(), 1, "one vase body");
+        let bounded =
+            crate::body::build_bounded_for_body(&ctx.features, &parts[0].feature_indices);
+
+        let map = crate::brep::weaving::branch_halfspace_map(&bounded);
+        let branches = crate::brep::branch_pairs::enumerate_branches(&bounded);
+        assert!(!branches.is_empty(), "vase enumerates revolve wall branches");
+        for b in &branches {
+            assert!(
+                map.contains_key(&b.id.as_u32()),
+                "branch {} ({:?}) missing from the half-space map",
+                b.id.as_u32(),
+                b.kind
+            );
+        }
+
+        // The spline wall groups must be present as RevolvedProfile carriers
+        // (offset 0 = the outer surface), and the shell must have registered
+        // their inner walls (same segments, offset = 2 mm).
+        let logical = crate::csg::CsgNode::from_decoded(&ctx.features);
+        let mut profile_carriers = 0;
+        let mut inner_profile_carriers = 0;
+        for (key, (hs, xf)) in map.iter() {
+            let fielddraft_protocol::HalfSpace::RevolvedProfile { segments, ccw, offset } = hs
+            else {
+                continue;
+            };
+            let is_inner = crate::csg::BranchId(*key).is_inner_wall();
+            if is_inner {
+                assert!((offset - 2.0).abs() < 1e-6, "inner wall offset is the shell thickness");
+                inner_profile_carriers += 1;
+            } else {
+                assert_eq!(*offset, 0.0, "outer wall carrier has no offset");
+                profile_carriers += 1;
+            }
+
+            for seg in segments {
+                for t in [0.15f32, 0.5, 0.85] {
+                    let p2 = seg.point_at(t);
+                    // Inner-wall sample: step `offset` along the material-side
+                    // normal so the point sits on the offset surface.
+                    let (_, n2) =
+                        fielddraft_protocol::sketch2d::group_signed_distance_and_normal(
+                            segments, *ccw, p2,
+                        );
+                    let q2 = [p2[0] - offset * n2[0], p2[1] - offset * n2[1]];
+                    for theta in [0.0f32, 1.3, 2.9] {
+                        let (s, c) = theta.sin_cos();
+                        let local = [q2[0] * c, q2[1], q2[0] * s];
+                        let carrier = crate::csg::sdf_halfspace(hs, local);
+                        assert!(
+                            carrier.abs() < 1e-3,
+                            "carrier {key} not zero on its own surface: {carrier} at {local:?} \
+                             (p2={p2:?} n2={n2:?} q2={q2:?} seg={seg:?} ccw={ccw} offset={offset})"
+                        );
+                        if !is_inner {
+                            let r = crate::quat_rotate(xf.rotation, [
+                                local[0] * xf.scale[0],
+                                local[1] * xf.scale[1],
+                                local[2] * xf.scale[2],
+                            ]);
+                            let world = [
+                                r[0] + xf.translate[0],
+                                r[1] + xf.translate[1],
+                                r[2] + xf.translate[2],
+                            ];
+                            let body = logical.sdf(world, crate::csg::EvalMode::Logical);
+                            assert!(
+                                body.abs() < 1e-2,
+                                "outer carrier {key} point not on body surface: {body} at {world:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            profile_carriers >= 1,
+            "the spline wall groups must yield RevolvedProfile carriers"
+        );
+        assert!(
+            inner_profile_carriers >= 1,
+            "the shell must register inner-wall RevolvedProfile carriers"
         );
     }
 

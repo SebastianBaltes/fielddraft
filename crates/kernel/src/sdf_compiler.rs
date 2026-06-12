@@ -346,6 +346,9 @@ fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
         HalfSpace::Cone { .. } => OPEN_KIND_CONE,
         HalfSpace::Torus { .. } => OPEN_KIND_TORUS,
         HalfSpace::Gyroid { .. } => OPEN_KIND_NEVER,
+        // No fixed-stride GPU record can carry profile segments; the gate
+        // stays closed (conservative — the wall is rendered solid).
+        HalfSpace::RevolvedProfile { .. } => OPEN_KIND_NEVER,
     };
     out.push(kind);
     out.extend_from_slice(&f.placement.translate);
@@ -361,7 +364,7 @@ fn emit_open_surface(f: &OpenSurface, out: &mut Vec<f32>) {
         HalfSpace::Torus { major_radius, minor_radius } => {
             [*major_radius, *minor_radius, 0.0, 0.0]
         }
-        HalfSpace::Gyroid { .. } => [0.0; 4],
+        HalfSpace::Gyroid { .. } | HalfSpace::RevolvedProfile { .. } => [0.0; 4],
     };
     out.extend_from_slice(&params);
 }
