@@ -645,6 +645,19 @@ fn flatten_path_to_polyline(segments: &[SketchSegment]) -> Vec<[f32; 2]> {
             verts.push(seg.point_at(t));
         }
     }
+    // Each segment contributed its start vertex only (the next segment's
+    // start doubles as its end). For a chain whose last end does NOT meet
+    // the first start — e.g. a revolve profile whose on-axis run was
+    // stripped (`strip_revolve_axis_segments`) — the polygon's implicit
+    // last→first closure must run along the REAL gap, so the end vertex
+    // has to be emitted; otherwise the closure cuts a diagonal chord
+    // through the region.
+    if let (Some(last), Some(&first)) = (segments.last(), verts.first()) {
+        let end = last.end_point();
+        if (end[0] - first[0]).abs() > 1e-6 || (end[1] - first[1]).abs() > 1e-6 {
+            verts.push(end);
+        }
+    }
     verts
 }
 
