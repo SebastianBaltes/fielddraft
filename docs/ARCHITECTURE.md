@@ -250,7 +250,13 @@ canonicalisation pass in `finish_weave` (`brep/weaving/canonicalize.rs`,
 plan Phases 2+3) welds seam vertices, merges duplicate seam edges per
 class, culls membrane faces and drops fins (ticket o2j9, closed). The
 invariant gate (`brep/classification_gate.rs`) pins Euler-Poincaré and
-manifold orientation on the scenario matrix. Honestly open (documented
+manifold orientation on the scenario matrix. The SSI core (`brep/ssi.rs`)
+covers revolved spline walls (`HalfSpace::RevolvedProfile`) both coaxially
+(2D profile-curve roots → exact circles) and non-coaxially (the general
+2D-parameter scan: the profile carrier is a signed implicit under any
+parametrised partner, and parametrises itself over (θ, profile pieces)
+against another revolved wall) — so cutaway booleans against revolve
+bodies stay on the seed route. Honestly open (documented
 red in the gate, plan): the pure octree fallback still degenerates on
 rotated coincident walls (plan Phase 4), and a fully transversal plus of
 two boxes still materialises one face per branch instead of one per

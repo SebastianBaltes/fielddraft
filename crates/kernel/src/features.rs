@@ -8114,9 +8114,11 @@ mod tests {
     }
 
     /// Regenerates the canonical shelled vase (sketch + revolve + 2 mm shell
-    /// opened on the planar top rim face) into `ctx`. The shell needs the
-    /// woven top face's stable hash, so this pays one full weave.
-    fn regen_shelled_vase(registry: &FeatureRegistry, ctx: &mut Context<'_>) {
+    /// opened on the planar top rim face) into `ctx` and returns the three
+    /// feature calls (so follow-up tests can append to the timeline). The
+    /// shell needs the woven top face's stable hash, so this pays one full
+    /// weave.
+    fn regen_shelled_vase(registry: &FeatureRegistry, ctx: &mut Context<'_>) -> Vec<FeatureCall> {
         let (sketch_call, revolve_call) = vase_sketch_and_revolve_calls();
         registry
             .regenerate(ctx, &[sketch_call.clone(), revolve_call.clone()], None)
@@ -8146,9 +8148,9 @@ mod tests {
                 "thickness": { "value": 2.0, "unit": "mm" },
             }),
         );
-        registry
-            .regenerate(ctx, &[sketch_call, revolve_call, shell_call], None)
-            .unwrap();
+        let calls = vec![sketch_call, revolve_call, shell_call];
+        registry.regenerate(ctx, &calls, None).unwrap();
+        calls
     }
 
     /// The GPU SDF-VM consumes the body's compiled opcode stream. This walks
@@ -8545,6 +8547,78 @@ mod tests {
         assert!(
             rings2.iter().any(|&(ry, rr)| (ry + 68.0).abs() < 0.1 && (20.0..29.0).contains(&rr)),
             "cavity floor ring near y=−68 missing: {rings2:?}"
+        );
+    }
+
+    /// The user's cutaway: the opened, shelled vase MINUS a box exposing the
+    /// cavity. Every box plane is non-coaxial with the revolve axis, so the
+    /// plane×RevolvedProfile pairs run the general SSI scan with the profile
+    /// as the implicit operand — before that scan arm existed, ANY such pair
+    /// reported `Unsupported` and the whole body bailed to the ~25 s octree
+    /// route (all-or-nothing contract).
+    #[test]
+    fn vase_cutaway_with_box_weaves_via_seed_path() {
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let mut calls = regen_shelled_vase(&registry, &mut ctx);
+        // Box buried into the +X side: covers x ∈ [18, 102], well past the
+        // belly (r_max ≈ 50.2) and both rims, |z| ≤ 42, full height.
+        calls.push(FeatureCall::new(
+            "box",
+            id(4),
+            json!({
+                "half_extents": [42.0, 85.0, 42.0],
+                "translate": [60.0, 0.0, 0.0],
+                "op": "remove",
+            }),
+        ));
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+        let parts = crate::body::partition(&ctx.features);
+        assert_eq!(parts.len(), 1, "one cutaway body");
+        let bounded =
+            crate::body::build_bounded_for_body(&ctx.features, &parts[0].feature_indices);
+        let brep = crate::brep::seed_weaver::weave_branch_seeds(&bounded)
+            .expect("the box-cutaway vase must weave via the analytic seed path");
+        assert!(brep.validate().is_ok(), "cutaway B-Rep must be well-formed");
+
+        // The cut plane x=18 slices the (revolved) walls: the seam edges live
+        // ON that plane, are non-circular, and are TRIMMED arcs (the box cut
+        // opens every former ring) — so both open edges with endpoints and
+        // edges pinned to the cut plane must exist.
+        let mut has_open_edge = false;
+        let mut has_cut_plane_edge = false;
+        let mut has_trimmed_rim_arc = false;
+        for e in &brep.edges {
+            let samples = crate::brep::edge_sampling::sample_edge(&e.geometry);
+            if samples.is_empty() {
+                continue;
+            }
+            if e.start.is_some() || e.end.is_some() {
+                has_open_edge = true;
+            }
+            let on_cut = samples.iter().all(|p| (p[0] - 18.0).abs() < 0.05);
+            if on_cut && samples.len() >= 8 {
+                has_cut_plane_edge = true;
+            }
+            // The outer rim circle (y=68, r=45) survives as a trimmed arc.
+            let on_rim = samples.iter().all(|p| {
+                let r = ((p[0] * p[0] + p[2] * p[2]) as f32).sqrt();
+                (p[1] as f32 - 68.0).abs() < 0.05 && (r - 45.0).abs() < 0.05
+            });
+            if on_rim && (e.start.is_some() || e.end.is_some()) {
+                has_trimmed_rim_arc = true;
+            }
+        }
+        assert!(has_open_edge, "box cut must trim former rings into open arcs");
+        assert!(
+            has_cut_plane_edge,
+            "a seam edge on the cut plane x=18 (plane × revolved wall) is missing"
+        );
+        assert!(
+            has_trimmed_rim_arc,
+            "the outer rim r=45 must survive as a trimmed arc at y=68"
         );
     }
 

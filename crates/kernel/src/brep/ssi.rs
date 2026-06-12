@@ -21,7 +21,8 @@
 //! - **Closed-form short-circuits** for the cheap, exactly-knowable cases:
 //!   plane∩plane, plane∩sphere, sphere∩sphere.
 //! - **General 2D-parameter scan** for everything else (plane∩cylinder/cone,
-//!   cylinder∩cylinder, cone∩anything, sphere∩cylinder/cone, …): parametrise
+//!   cylinder∩cylinder, cone∩anything, sphere∩cylinder/cone, non-coaxial
+//!   revolved-profile pairs, …): parametrise
 //!   one surface `A` over a `(u,v)` rectangle derived from the overlap box,
 //!   sample `g(u,v) = implicit_B(A(u,v))` on a grid, mask to in-box cells,
 //!   march the zero-contour, union-find the contour cells into connected
@@ -115,22 +116,17 @@ pub fn ssi_seeds(
 
     // Coaxial revolution pair: both surfaces revolve about the same world
     // axis → every intersection component is a CIRCLE, found as a root of
-    // the two profile curves in the shared (r, y) half-plane. This is the
-    // only route that can intersect `RevolvedProfile` carriers (spline
-    // revolve walls and their shell inner walls).
+    // the two profile curves in the shared (r, y) half-plane. Cheap and
+    // exact, so it short-circuits before the scan for `RevolvedProfile`
+    // carriers (spline revolve walls and their shell inner walls).
     if let Some(res) = coaxial_revolution(a, ta, b, tb, overlap) {
         return res;
     }
 
-    // The general scan cannot parametrise a revolved profile group; a
-    // non-coaxial pair involving one is unresolved → octree.
-    if matches!(a, HalfSpace::RevolvedProfile { .. })
-        || matches!(b, HalfSpace::RevolvedProfile { .. })
-    {
-        return SsiResult::Unsupported;
-    }
-
-    // General 2D-parameter-domain scan.
+    // General 2D-parameter-domain scan. Non-coaxial pairs involving a
+    // `RevolvedProfile` land here too: the profile carrier is a signed
+    // implicit (`sdf_halfspace`), so it works as operand B under any
+    // parametrised A, and as A it parametrises over (θ, profile pieces).
     scan_components(a, ta, b, tb, overlap)
 }
 
@@ -204,11 +200,15 @@ fn profile_rank(h: &HalfSpace) -> u8 {
 }
 
 /// One contiguous, monotone-parameter piece of operand A's profile curve:
-/// `eval(t ∈ [0,1])` returns a WORLD point on A's surface (the φ=0 meridian
-/// of A's local frame), `samples` is the sign-scan density along the piece.
+/// `eval(t ∈ [0,1])` returns a LOCAL `(r, y)` profile point in A's centred
+/// frame (the φ=0 meridian is `[r, y, 0]`), `samples` is the sign-scan
+/// density along the piece. Pieces are emitted in CONTINUOUS chain order
+/// (start end-piece reversed, segments, end end-piece), so concatenating
+/// them yields a continuous curve parametrisation — the property the
+/// revolved-surface arm of [`ParamA::point`] relies on.
 struct ProfilePiece<'a> {
     samples: usize,
-    eval: Box<dyn Fn(f32) -> [f32; 3] + 'a>,
+    eval: Box<dyn Fn(f32) -> [f32; 2] + 'a>,
 }
 
 /// Decompose operand A's profile into sampleable pieces, bounded by the
@@ -244,14 +244,13 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
         (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3)
     };
 
-    let to_world = move |q: [f32; 2]| local_to_world(t, [q[0], q[1], 0.0]);
     let mut pieces: Vec<ProfilePiece<'a>> = Vec::new();
     match h {
         HalfSpace::InfiniteCylinder { radius } => {
             let r = *radius;
             pieces.push(ProfilePiece {
                 samples: 256,
-                eval: Box::new(move |s| to_world([r, ymin + s * (ymax - ymin)])),
+                eval: Box::new(move |s| [r, ymin + s * (ymax - ymin)]),
             });
         }
         HalfSpace::Cone { half_angle } => {
@@ -260,7 +259,7 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                 samples: 256,
                 eval: Box::new(move |s| {
                     let y = ymin + s * (ymax - ymin);
-                    to_world([y.abs() * tan_a, y])
+                    [y.abs() * tan_a, y]
                 }),
             });
         }
@@ -270,7 +269,7 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                 samples: 256,
                 eval: Box::new(move |s| {
                     let phi = std::f32::consts::PI * s;
-                    to_world([r * phi.sin(), r * phi.cos()])
+                    [r * phi.sin(), r * phi.cos()]
                 }),
             });
         }
@@ -290,21 +289,22 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                 let n = if ccw { [tan[1], -tan[0]] } else { [-tan[1], tan[0]] };
                 [p[0] - off * n[0], p[1] - off * n[1]]
             };
-            for seg in segments.iter() {
-                pieces.push(ProfilePiece {
-                    samples: 32,
-                    eval: Box::new(move |s| to_world(offset_pt(seg, s))),
-                });
-            }
-            // Chain-end pieces. An EXTENDED end contributes its tangent ray
-            // (path-backward from the first point, path-forward from the
-            // last), offset applied with the ray's constant normal; length =
-            // the local overlap diagonal. A STADIUM end (adjacent group
-            // opened) contributes the endpoint ARC instead: the offset level
-            // set rounds the chain end at radius |off| — that arc is where
-            // the opened face's rim root lives.
-            if let (Some(first), Some(last)) = (segments.first(), segments.last()) {
-                let pad = local_diag + 4.0 * off.abs();
+            // Chain-end pieces flank the segment run so the concatenated
+            // piece list is one CONTINUOUS curve (start piece runs param-
+            // reversed: s=1 lands exactly on the chain start). An EXTENDED
+            // end contributes its tangent ray (path-backward from the first
+            // point, path-forward from the last), offset applied with the
+            // ray's constant normal; length = the local overlap diagonal. A
+            // STADIUM end (adjacent group opened) contributes the endpoint
+            // ARC instead: the offset level set rounds the chain end at
+            // radius |off| — that arc is where the opened face's rim root
+            // lives.
+            let ends = match (segments.first(), segments.last()) {
+                (Some(first), Some(last)) => Some((first, last)),
+                _ => None,
+            };
+            let pad = local_diag + 4.0 * off.abs();
+            if let Some((first, _)) = ends {
                 let a0 = first.start_point();
                 let ta0 = first.tangent_at_start();
                 let n0 = if ccw { [ta0[1], -ta0[0]] } else { [-ta0[1], ta0[0]] };
@@ -312,31 +312,39 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                     pieces.push(ProfilePiece {
                         samples: 96,
                         eval: Box::new(move |s| {
-                            let u = s * pad;
-                            to_world([
+                            let u = (1.0 - s) * pad;
+                            [
                                 a0[0] - u * ta0[0] - off * n0[0],
                                 a0[1] - u * ta0[1] - off * n0[1],
-                            ])
+                            ]
                         }),
                     });
                 } else if off.abs() > 1e-6 {
-                    // Stadium cap arc, quarter sweep: φ=0 → the offset
-                    // curve's own start (−n0), φ=π/2 → the backward cap apex
-                    // (−ta0). Beyond π/2 the closest-point sign flips and the
+                    // Stadium cap arc, quarter sweep: φ=π/2 → the backward
+                    // cap apex (−ta0), φ=0 → the offset curve's own start
+                    // (−n0). Beyond π/2 the closest-point sign flips and the
                     // carrier has no surface, so sampling further would
                     // manufacture phantom roots.
                     pieces.push(ProfilePiece {
                         samples: 96,
                         eval: Box::new(move |s| {
-                            let phi = s * std::f32::consts::FRAC_PI_2;
+                            let phi = (1.0 - s) * std::f32::consts::FRAC_PI_2;
                             let (sin_p, cos_p) = phi.sin_cos();
-                            to_world([
+                            [
                                 a0[0] + off * (-n0[0] * cos_p - ta0[0] * sin_p),
                                 a0[1] + off * (-n0[1] * cos_p - ta0[1] * sin_p),
-                            ])
+                            ]
                         }),
                     });
                 }
+            }
+            for seg in segments.iter() {
+                pieces.push(ProfilePiece {
+                    samples: 32,
+                    eval: Box::new(move |s| offset_pt(seg, s)),
+                });
+            }
+            if let Some((_, last)) = ends {
                 let b0 = last.end_point();
                 let tb0 = last.tangent_at_end();
                 let n1 = if ccw { [tb0[1], -tb0[0]] } else { [-tb0[1], tb0[0]] };
@@ -345,10 +353,10 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                         samples: 96,
                         eval: Box::new(move |s| {
                             let u = s * pad;
-                            to_world([
+                            [
                                 b0[0] + u * tb0[0] - off * n1[0],
                                 b0[1] + u * tb0[1] - off * n1[1],
-                            ])
+                            ]
                         }),
                     });
                 } else if off.abs() > 1e-6 {
@@ -357,10 +365,10 @@ fn profile_pieces<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Opt
                         eval: Box::new(move |s| {
                             let phi = s * std::f32::consts::FRAC_PI_2;
                             let (sin_p, cos_p) = phi.sin_cos();
-                            to_world([
+                            [
                                 b0[0] + off * (-n1[0] * cos_p + tb0[0] * sin_p),
                                 b0[1] + off * (-n1[1] * cos_p + tb0[1] * sin_p),
-                            ])
+                            ]
                         }),
                     });
                 }
@@ -394,12 +402,15 @@ fn coaxial_revolution(
         (b, tb, a, ta)
     };
     let pieces = profile_pieces(ca, cta, overlap)?;
+    // Pieces evaluate in A's local (r, y) profile plane; lift the φ=0
+    // meridian point to world for the implicit probe and the root itself.
+    let to_world = |q: [f32; 2]| local_to_world(cta, [q[0], q[1], 0.0]);
 
     // Walk every piece of A's profile, find sign changes of B's implicit and
     // bisect them down. Each root is one circle about the shared axis.
     let mut roots: Vec<[f32; 3]> = Vec::new();
     for piece in &pieces {
-        let f = |s: f32| implicit_world(cb, ctb, (piece.eval)(s));
+        let f = |s: f32| implicit_world(cb, ctb, to_world((piece.eval)(s)));
         let n = piece.samples;
         let mut prev_s = 0.0f32;
         let mut prev_v = f(0.0);
@@ -407,7 +418,7 @@ fn coaxial_revolution(
             let s = i as f32 / n as f32;
             let v = f(s);
             if prev_v == 0.0 {
-                roots.push((piece.eval)(prev_s));
+                roots.push(to_world((piece.eval)(prev_s)));
             } else if prev_v * v < 0.0 {
                 let (mut lo, mut hi, mut flo) = (prev_s, s, prev_v);
                 for _ in 0..BISECT_STEPS {
@@ -420,7 +431,7 @@ fn coaxial_revolution(
                         flo = fm;
                     }
                 }
-                roots.push((piece.eval)(0.5 * (lo + hi)));
+                roots.push(to_world((piece.eval)(0.5 * (lo + hi))));
             }
             prev_s = s;
             prev_v = v;
@@ -718,9 +729,25 @@ struct ParamA<'a> {
     u_range: (f32, f32),
     v_range: (f32, f32),
     u_periodic: bool,
+    /// `RevolvedProfile` only: the profile pieces in continuous chain order;
+    /// `v` walks them concatenated (piece `⌊v⌋` at local parameter `v−⌊v⌋`),
+    /// `u` is the revolution angle θ.
+    pieces: Option<Vec<ProfilePiece<'a>>>,
 }
 
 impl ParamA<'_> {
+    /// Grid resolution for the scan over this parametrisation. The flat
+    /// `SCAN_RES` is enough for the closed-form primitives; a revolved
+    /// profile chain needs the v-axis to resolve EVERY piece (a ~40-piece
+    /// adaptive spline at 64 rows is < 2 samples per segment), so it scales
+    /// with the piece count, capped to keep the grid `O(100k)` samples.
+    fn grid_res(&self) -> usize {
+        match &self.pieces {
+            Some(ps) => (8 * ps.len()).clamp(SCAN_RES, 384),
+            None => SCAN_RES,
+        }
+    }
+
     fn point(&self, u: f32, v: f32) -> [f32; 3] {
         let local = match self.h {
             HalfSpace::InfiniteCylinder { radius } => {
@@ -748,9 +775,17 @@ impl ParamA<'_> {
                     foot[2] + e1[2] * u + e2[2] * v,
                 ]
             }
-            HalfSpace::Torus { .. }
-            | HalfSpace::Gyroid { .. }
-            | HalfSpace::RevolvedProfile { .. } => unreachable!("filtered earlier"),
+            HalfSpace::RevolvedProfile { .. } => {
+                // u = θ around local Y, v = concatenated piece parameter.
+                let pieces = self.pieces.as_ref().expect("revolved param carries pieces");
+                let k = (v.floor().max(0.0) as usize).min(pieces.len() - 1);
+                let s = (v - k as f32).clamp(0.0, 1.0);
+                let q = (pieces[k].eval)(s);
+                [q[0] * u.cos(), q[1], q[0] * u.sin()]
+            }
+            HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => {
+                unreachable!("filtered earlier")
+            }
         };
         local_to_world(self.t, local)
     }
@@ -772,6 +807,10 @@ fn choose_param<'a>(
             HalfSpace::InfiniteCylinder { .. } => 1,
             HalfSpace::Sphere { .. } => 2,
             HalfSpace::Plane { .. } => 3,
+            // Worst SUPPORTED rank: a revolved profile is parametrised only
+            // when the other operand cannot be (revolved × revolved) — its
+            // implicit (`sdf_halfspace`) is cheap, its parametrisation isn't.
+            HalfSpace::RevolvedProfile { .. } => 4,
             _ => 9,
         }
     }
@@ -801,6 +840,7 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
                 u_range: (0.0, std::f32::consts::TAU),
                 v_range: pad(vmin, vmax),
                 u_periodic: true,
+                pieces: None,
             })
         }
         HalfSpace::Cone { .. } => {
@@ -811,6 +851,7 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
                 u_range: (0.0, std::f32::consts::TAU),
                 v_range: pad(vmin, vmax),
                 u_periodic: true,
+                pieces: None,
             })
         }
         HalfSpace::Sphere { .. } => Some(ParamA {
@@ -820,7 +861,26 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
             // Full polar sweep [0,π]; θ periodic.
             v_range: (0.0, std::f32::consts::PI),
             u_periodic: true,
+            pieces: None,
         }),
+        HalfSpace::RevolvedProfile { .. } => {
+            // v concatenates the profile pieces (continuous chain order, one
+            // unit each — adaptive lowering makes segments roughly equal-
+            // curvature, so uniform-per-piece is well-matched); θ periodic.
+            let pieces = profile_pieces(h, t, overlap)?;
+            if pieces.is_empty() {
+                return None;
+            }
+            let v_max = pieces.len() as f32;
+            Some(ParamA {
+                h,
+                t,
+                u_range: (0.0, std::f32::consts::TAU),
+                v_range: (0.0, v_max),
+                u_periodic: true,
+                pieces: Some(pieces),
+            })
+        }
         HalfSpace::Plane { normal, offset } => {
             let n = vnorm(*normal);
             let (e1, e2) = ortho_basis(n);
@@ -845,11 +905,10 @@ fn build_param<'a>(h: &'a HalfSpace, t: &'a Transform, overlap: &Aabb) -> Option
                 u_range: pad(umin, umax),
                 v_range: pad(vmin, vmax),
                 u_periodic: false,
+                pieces: None,
             })
         }
-        HalfSpace::Torus { .. }
-        | HalfSpace::Gyroid { .. }
-        | HalfSpace::RevolvedProfile { .. } => None,
+        HalfSpace::Torus { .. } | HalfSpace::Gyroid { .. } => None,
     }
 }
 
@@ -911,7 +970,14 @@ fn scan_components(
         return SsiResult::Unsupported;
     };
 
-    let n = SCAN_RES;
+    // Base resolution from A's parametrisation; when the IMPLICIT operand is
+    // a revolved profile chain its zero set can wiggle at the profile's
+    // segment scale across A's domain, so the grid scales with that segment
+    // count too (capped — the implicit prunes, so this stays cheap).
+    let mut n = param.grid_res();
+    if let HalfSpace::RevolvedProfile { segments, .. } = other {
+        n = n.max((4 * segments.len()).clamp(SCAN_RES, 256));
+    }
     let (u0, u1) = param.u_range;
     let (v0, v1) = param.v_range;
     let du = (u1 - u0) / (n as f32 - 1.0);
@@ -1338,5 +1404,82 @@ mod tests {
         let box_ = aabb([-3.0, -3.0, -3.0], [3.0, 3.0, 3.0]);
         let r = ssi_seeds(&tor, &id, &pl, &id, &box_);
         assert_eq!(r, SsiResult::Unsupported);
+    }
+
+    /// A cylinder-of-revolution as a `RevolvedProfile` carrier: one vertical
+    /// line segment at r = `radius`, y ∈ [−h, h], outward normal +r (ccw).
+    fn revolved_cylinder(radius: f32, h: f32) -> HalfSpace {
+        HalfSpace::RevolvedProfile {
+            segments: vec![fielddraft_protocol::sketch2d::SketchSegment::Line {
+                start: [radius, -h],
+                end: [radius, h],
+            }],
+            ccw: true,
+            offset: 0.0,
+            extend_start: false,
+            extend_end: false,
+        }
+    }
+
+    #[test]
+    fn revolved_profile_meets_non_coaxial_plane_two_lines() {
+        // The cutaway case: a vertical plane (normal ⊥ revolve axis) cutting
+        // through a revolved wall. Mirror of
+        // `plane_parallel_cylinder_axis_offset_two_lines` with the wall
+        // expressed as a RevolvedProfile — previously bailed `Unsupported`.
+        let wall = revolved_cylinder(1.0, 1.8);
+        let pl = HalfSpace::Plane { normal: [1.0, 0.0, 0.0], offset: 0.5 };
+        let id = Transform::IDENTITY;
+        let box_ = aabb([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]);
+        let r = ssi_seeds(&wall, &id, &pl, &id, &box_);
+        assert_eq!(count(&r), 2, "plane through revolved wall = 2 lines");
+        if let SsiResult::Components(v) = &r {
+            assert_seeds_on_both(v, &wall, &id, &pl, &id);
+        }
+    }
+
+    #[test]
+    fn revolved_profile_meets_tilted_plane_one_ellipse() {
+        // 45°-tilted plane (normal (1,1,0)/√2) through the revolved wall:
+        // NOT coaxial, NOT axis-parallel → one ellipse. Exercises the scan
+        // with the profile as the IMPLICIT operand under a plane param.
+        let wall = revolved_cylinder(1.0, 1.8);
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let pl = HalfSpace::Plane { normal: [s, s, 0.0], offset: 0.0 };
+        let id = Transform::IDENTITY;
+        let box_ = aabb([-1.6, -1.6, -1.6], [1.6, 1.6, 1.6]);
+        let r = ssi_seeds(&wall, &id, &pl, &id, &box_);
+        assert_eq!(count(&r), 1, "tilted plane through revolved wall = 1 ellipse");
+        if let SsiResult::Components(v) = &r {
+            assert_seeds_on_both(v, &wall, &id, &pl, &id);
+        }
+    }
+
+    #[test]
+    fn two_revolved_profiles_perpendicular_axes_two_components() {
+        // Revolved×revolved, non-coaxial: a thin revolved wall (r=0.5) punches
+        // through a fat one (r=1) at perpendicular axes → 2 closed seam
+        // curves. Exercises the RevolvedProfile PARAMETRISATION arm (both
+        // operands are profiles, so one must become surface A).
+        let fat = revolved_cylinder(1.0, 1.8);
+        let thin = revolved_cylinder(0.5, 1.8);
+        let id = Transform::IDENTITY;
+        // Rotate +90° about Z maps local Y (revolve axis) to world X.
+        let rot_z90 = Transform {
+            translate: [0.0, 0.0, 0.0],
+            rotation: [
+                0.0,
+                0.0,
+                (std::f32::consts::FRAC_PI_4).sin(),
+                (std::f32::consts::FRAC_PI_4).cos(),
+            ],
+            scale: [1.0, 1.0, 1.0],
+        };
+        let box_ = aabb([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]);
+        let r = ssi_seeds(&fat, &id, &thin, &rot_z90, &box_);
+        assert_eq!(count(&r), 2, "thin revolved wall through fat one = 2 seams");
+        if let SsiResult::Components(v) = &r {
+            assert_seeds_on_both(v, &fat, &id, &thin, &rot_z90);
+        }
     }
 }

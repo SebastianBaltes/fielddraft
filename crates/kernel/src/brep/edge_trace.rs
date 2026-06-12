@@ -303,7 +303,11 @@ enum MarchEnd {
 }
 
 /// A forward march must leave the seed's neighbourhood before it may close a
-/// loop, else it would "close" on step one.
+/// loop, else it would "close" on step one. Counted in ACCEPTED points, not
+/// loop iterations: the adaptive sagitta retries consume iterations without
+/// emitting a point, so an iteration count lets a march "close" a couple of
+/// real chords from the seed (a seed at the very end of its active interval
+/// strides off at near `max_step`, and `close_tol` follows the stride).
 const MIN_LOOP_STEPS: usize = 4;
 
 /// Adaptive-step floor: when a nominal predictor step stalls, the march halves
@@ -331,6 +335,16 @@ fn step_once(
 ) -> Option<([f64; 3], [f64; 3])> {
     let q = add(cur, scale(t_prev, step));
     let np = project_to_edge(fa, fb, q)?;
+    // Forward-progress guard: a predictor that overshoots a high-curvature
+    // stretch (e.g. a 2 mm stadium-cap arc rounding a revolved wall's chain
+    // end) can be pulled by the Newton corrector to a curve point BEHIND
+    // `cur`. Accepting it reverses the march direction and the polyline
+    // zigzags around the turn instead of walking through it. Rejecting here
+    // sends `advance` down its refinement halvings, whose shorter predictors
+    // stay on the near branch of the curve.
+    if dot(sub(np, cur), t_prev) <= 0.0 {
+        return None;
+    }
     let mut t = edge_tangent(fa, fb, np)?;
     if dot(t, t_prev) < 0.0 {
         t = scale(t, -1.0);
@@ -522,7 +536,7 @@ fn march(
         }
 
         // Loop closure: back near the seed after genuinely leaving it.
-        if step_i + 1 >= MIN_LOOP_STEPS && dist(np, seed) < close_tol {
+        if pts.len() + 1 >= MIN_LOOP_STEPS && dist(np, seed) < close_tol {
             return (pts, MarchEnd::Loop);
         }
 
