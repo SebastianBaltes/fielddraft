@@ -68,8 +68,8 @@ pub const OP_WARP_TWIST: u32     = 0x32; // +1: rate — rotate XZ by rate*y
 pub const OP_WARP_BEND: u32      = 0x33; // +1: rate — rotate XY by rate*x
 pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(3)
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
-pub const OP_WARP_HELIX: u32     = 0x36; // +5: pitch + hand + k_max + y_anchor + taper — point ← (r−taper·(y−y0), w, 0)
-pub const OP_HELIX_SCALE: u32    = 0x37; // +4: scale + pitch + taper + r_inner — pops d2d, multiplies by scale·lipschitz(point.x)
+pub const OP_WARP_HELIX: u32     = 0x36; // +6: pitch + hand + turns + y_anchor + taper + r_inner — point ← (r−taper·(y−y0), w, ell)
+pub const OP_HELIX_SCALE: u32    = 0x37; // +1: scale (world·lipschitz, baked at emission) — pops d2d, composes with point.z (end caps), multiplies
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
@@ -349,15 +349,20 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(op(OP_WARP_HELIX));
             out.push(pitch.max(1e-3));
             out.push(if *left_handed { -1.0 } else { 1.0 });
-            out.push((turns.ceil() - 1.0).max(0.0));
+            out.push(turns.max(0.0));
             out.push(*y_anchor);
             out.push(*taper);
-            emit_sketch(sketch, out, 0, excl);
-            out.push(op(OP_HELIX_SCALE));
-            out.push(world_transform.min_scale());
-            out.push(pitch.max(1e-3));
-            out.push(*taper);
             out.push(*r_inner);
+            emit_sketch(sketch, out, 0, excl);
+            // Lipschitz scale is a per-feature constant (see
+            // `helix_profile_point`) — bake it into the multiplier.
+            let tau = std::f32::consts::TAU;
+            let p_eff = pitch.max(1e-3);
+            let rr = r_inner.max(p_eff / tau * 0.25).max(1e-3);
+            let q = p_eff / (tau * rr);
+            let lip = 1.0 / (2.25 + q * q + taper * taper).sqrt();
+            out.push(op(OP_HELIX_SCALE));
+            out.push(world_transform.min_scale() * lip);
             out.push(op(OP_WARP_POP));
         }
     }
@@ -1066,17 +1071,13 @@ pub fn eval_opcodes_with_volumes(
             }
             OP_HELIX_SCALE => {
                 let scale = rd!();
-                let pitch = rd!();
-                let taper = rd!();
-                let r_inner = rd!();
-                let tau = std::f32::consts::TAU;
-                // The current point is still the WARPED profile point —
-                // its x is the (tapered) radial coordinate.
-                let rr = pt[0].max(r_inner).max(pitch / tau * 0.25).max(1e-3);
-                let q = pitch / (tau * rr);
-                let lip = 1.0 / (1.0 + q * q + taper * taper).sqrt();
-                let d = pop_v!();
-                push_v!(d * scale * lip);
+                // pt[2] carries the signed end-overshoot chord stashed
+                // by OP_WARP_HELIX; compose like `crate::helix_compose`.
+                let d2 = pop_v!();
+                let ell = pt[2];
+                let outside = (d2.max(0.0)).hypot(ell.max(0.0));
+                let inside = d2.max(ell).min(0.0);
+                push_v!((outside + inside) * scale);
             }
             OP_OFFSET_2D => {
                 let dist = rd!();
@@ -1126,17 +1127,30 @@ pub fn eval_opcodes_with_volumes(
             OP_WARP_HELIX => {
                 let pitch = rd!();
                 let hand = rd!();
-                let k_max = rd!();
+                let turns = rd!();
                 let y_anchor = rd!();
                 let taper = rd!();
+                let r_inner = rd!();
+                // Mirrors `crate::helix_profile_point` — continuous
+                // sweep-parameter clamp; the signed end-overshoot chord
+                // rides along in pt[2] (2D sketch ops ignore z) until
+                // OP_HELIX_SCALE composes it in.
                 let tau = std::f32::consts::TAU;
                 let r = (pt[0] * pt[0] + pt[2] * pt[2]).sqrt();
                 let theta = pt[2].atan2(pt[0]);
-                let w_base = pt[1] - hand * pitch * theta / tau;
-                let k = ((w_base - y_anchor) / pitch).round().clamp(0.0, k_max);
-                let w = w_base - k * pitch;
+                let th = hand * theta;
+                let n = ((pt[1] - y_anchor) / pitch - th / tau).round();
+                let t_n = th + tau * n;
+                let t_end = tau * turns;
+                let t_c = t_n.clamp(0.0, t_end);
+                let w = pt[1] - pitch * t_c / tau;
                 let rp = r - taper * (pt[1] - y_anchor);
-                pt = [rp, w, 0.0];
+                let rr = r_inner.max(pitch / tau * 0.25).max(1e-3);
+                let l_t = (t_n - t_end * 0.5).abs() - t_end * 0.5;
+                let ell = l_t.signum()
+                    * r.min(rr)
+                    * (l_t.abs().min(std::f32::consts::PI) * 0.5).sin();
+                pt = [rp, w, ell];
             }
 
             // ── Masked blend ───────────────────────────────────

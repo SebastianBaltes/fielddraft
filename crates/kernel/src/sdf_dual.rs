@@ -663,33 +663,64 @@ fn eval_bounded_d3_open(
         } => {
             // Dual mirror of `crate::helix_profile_point`: r and the
             // unwrap angle stay dual (smooth away from the axis); the
-            // turn index k and the Lipschitz scale are frozen on the
-            // real parts (piecewise-constant resp. a conservative
-            // normalisation factor, not part of the surface gradient).
+            // pass index n, the end-clamp branch, and the Lipschitz
+            // scale are frozen on the real parts (piecewise-constant
+            // resp. a conservative normalisation factor, not part of
+            // the surface gradient).
             let tau = std::f64::consts::TAU;
+            let pi = std::f64::consts::PI;
             let pitch_f = (*pitch).max(1e-3) as f64;
             let local = world_to_local_d3(world_transform, p);
             let r = safe_sqrt(local[0] * local[0] + local[2] * local[2]);
             let theta = local[2].atan2(local[0]);
             let hand = if *left_handed { -1.0 } else { 1.0 };
-            let w_base = local[1] - theta * D3::from(hand * pitch_f / tau);
-            let k_max = ((*turns).ceil() as f64 - 1.0).max(0.0);
-            let k = ((w_base.re - *y_anchor as f64) / pitch_f).round().clamp(0.0, k_max);
-            let w = w_base - D3::from(k * pitch_f);
-            let rp = r - (local[1] - D3::from(*y_anchor as f64)) * D3::from(*taper as f64);
-            let rr = r.re.max(*r_inner as f64).max(pitch_f / tau * 0.25).max(1e-3);
+            let y_anchor_f = *y_anchor as f64;
+            let th = theta * D3::from(hand);
+            let n = ((local[1].re - y_anchor_f) / pitch_f - th.re / tau).round();
+            let t_n = th + D3::from(tau * n);
+            let t_end = tau * (*turns).max(0.0) as f64;
+            // Clamp on the real part; in the clamped branch the pass
+            // parameter is a constant, so its dual part drops.
+            let t_c = if t_n.re < 0.0 {
+                D3::from(0.0)
+            } else if t_n.re > t_end {
+                D3::from(t_end)
+            } else {
+                t_n
+            };
+            let w = local[1] - t_c * D3::from(pitch_f / tau);
+            let rp = r - (local[1] - D3::from(y_anchor_f)) * D3::from(*taper as f64);
+            let rr = (*r_inner as f64).max(pitch_f / tau * 0.25).max(1e-3);
+            // Signed end-overshoot chord (zero with zero gradient while
+            // the pass is interior — the abs/min/select branches are
+            // frozen on real parts).
+            let dt = t_n - D3::from(t_end * 0.5);
+            let dt_abs = if dt.re >= 0.0 { dt } else { -dt };
+            let l_t = dt_abs - D3::from(t_end * 0.5);
+            let sign = if l_t.re >= 0.0 { 1.0 } else { -1.0 };
+            let l_t_abs = if l_t.re >= 0.0 { l_t } else { -l_t };
+            let r_chord = if r.re < rr { r } else { D3::from(rr) };
+            let half_angle = if l_t_abs.re < pi { l_t_abs } else { D3::from(pi) };
+            let ell = r_chord * (half_angle * D3::from(0.5)).sin() * D3::from(sign);
             let q = pitch_f / (tau * rr);
             let taper_f = *taper as f64;
-            let scale = 1.0 / (1.0 + q * q + taper_f * taper_f).sqrt();
+            let scale = 1.0 / (2.25 + q * q + taper_f * taper_f).sqrt();
             let sketch_ref: &crate::sketch2d::BoundedSketch2d = sketch;
-            let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+            let d2 = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
                 eval_sketch_retained_d3(sketch_ref, [rp, w], 0, &mut |g| {
                     open.contains_sub(id, g)
                 })
             } else {
                 eval_sketch_generic(sketch_ref, [rp, w])
             };
-            d * D3::from(scale * world_transform.min_scale() as f64)
+            // helix_compose, dual: branch selections frozen on reals.
+            let zero = D3::from(0.0);
+            let d2_pos = if d2.re > 0.0 { d2 } else { zero };
+            let ell_pos = if ell.re > 0.0 { ell } else { zero };
+            let outside = safe_sqrt(d2_pos * d2_pos + ell_pos * ell_pos);
+            let max_de = if d2.re >= ell.re { d2 } else { ell };
+            let inside = if max_de.re < 0.0 { max_de } else { zero };
+            (outside + inside) * D3::from(scale * world_transform.min_scale() as f64)
         }
     }
 }

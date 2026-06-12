@@ -513,7 +513,7 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let (q, scale) = crate::helix_profile_point(
+                let (q, ell, scale) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
@@ -521,7 +521,7 @@ impl BoundedCsg {
                 } else {
                     sketch.sdf(q)
                 };
-                d * scale * world_transform.min_scale()
+                crate::helix_compose(d, ell) * scale * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let da = left.sdf_open(p, mode, open);
@@ -782,7 +782,7 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let (q, scale) = crate::helix_profile_point(
+                let (q, ell, scale) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                 );
                 // Widen the edge band by the inverse Lipschitz scale so
@@ -794,7 +794,9 @@ impl BoundedCsg {
                 } else {
                     sketch.sdf_with_edges(q, eps / scale.max(1e-6))
                 };
-                let d = band.distance * scale * world_transform.min_scale();
+                let d = crate::helix_compose(band.distance, ell)
+                    * scale
+                    * world_transform.min_scale();
                 let c = revolve_contributors(id, &band);
                 (d, c)
             }

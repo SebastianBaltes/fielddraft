@@ -20,6 +20,7 @@ import {
   max,
   min,
   round,
+  sign,
   sqrt,
   step,
   texture3D,
@@ -390,17 +391,17 @@ export function buildVmSdfEvalFn(
         const s = rd();
         pushV(popV().mul(s));
       }).ElseIf(tag.equal(int(OP_HELIX_SCALE)), () => {
-        // The current point is still the WARPED profile point — its x
-        // is the (tapered) radial coordinate the bound depends on.
+        // pt.z carries the signed end-overshoot chord stashed by
+        // OP_WARP_HELIX; compose like the kernel's `helix_compose`
+        // (IQ extrude box), then apply the baked world·Lipschitz scale.
         const s = rd().toVar();
-        const pitch = rd().toVar();
-        const taper = rd().toVar();
-        const rInner = rd().toVar();
-        const tau = float(6.2831853);
-        const rr = max(max(ptx, rInner), max(pitch.div(tau).mul(0.25), float(1e-3))).toVar();
-        const q = pitch.div(rr.mul(tau)).toVar();
-        const lip = float(1).div(q.mul(q).add(taper.mul(taper)).add(1).sqrt());
-        pushV(popV().mul(s).mul(lip));
+        const d2 = popV().toVar();
+        const ell = ptz.toVar();
+        const dPos = max(d2, 0).toVar();
+        const ellPos = max(ell, 0).toVar();
+        const outside = dPos.mul(dPos).add(ellPos.mul(ellPos)).sqrt();
+        const inside = min(max(d2, ell), 0);
+        pushV(outside.add(inside).mul(s));
       }).ElseIf(tag.equal(int(OP_OFFSET_2D)), () => {
         const dist = rd();
         pushV(popV().sub(dist));
@@ -453,24 +454,39 @@ export function buildVmSdfEvalFn(
 
       }).ElseIf(tag.equal(int(OP_WARP_HELIX)), () => {
         // Helical unwrap into the profile's (r', w) frame — the GPU
-        // mirror of the kernel's `helix_profile_point` (OP_HELIX_SCALE
-        // below applies the matching Lipschitz normalisation). Nearest
-        // turn instance by rounding, clamped to the finite sweep.
+        // mirror of the kernel's `helix_profile_point`. The nearest
+        // pass is found by rounding, then its CONTINUOUS sweep
+        // parameter is clamped to [0, 2π·turns] (ticket vtyh: clamping
+        // a per-winding integer index instead jumped `w` across the
+        // atan2 seam at the ends). The signed end-overshoot chord
+        // rides along in pt.z (2D sketch ops ignore z) until
+        // OP_HELIX_SCALE composes it in.
         const pitch = rd().toVar();
         const hand = rd().toVar();
-        const kMax = rd().toVar();
+        const turns = rd().toVar();
         const yAnchor = rd().toVar();
         const taper = rd().toVar();
+        const rInner = rd().toVar();
         const tau = float(6.2831853);
+        const pi = float(3.14159265);
         const r = ptx.mul(ptx).add(ptz.mul(ptz)).sqrt().toVar();
         const theta = atan(ptz, ptx).toVar();
-        const wBase = pty.sub(hand.mul(pitch).mul(theta).div(tau)).toVar();
-        const k = clamp(round(wBase.sub(yAnchor).div(pitch)), float(0), kMax).toVar();
-        const w = wBase.sub(k.mul(pitch)).toVar();
+        const th = hand.mul(theta).toVar();
+        const n = round(pty.sub(yAnchor).div(pitch).sub(th.div(tau))).toVar();
+        const tN = th.add(tau.mul(n)).toVar();
+        const tEnd = tau.mul(turns).toVar();
+        const tC = clamp(tN, float(0), tEnd).toVar();
+        const w = pty.sub(pitch.mul(tC).div(tau)).toVar();
         const rp = r.sub(taper.mul(pty.sub(yAnchor))).toVar();
+        const rr = max(rInner, max(pitch.div(tau).mul(0.25), float(1e-3))).toVar();
+        const lT = tN.sub(tEnd.mul(0.5)).abs().sub(tEnd.mul(0.5)).toVar();
+        const ell = sign(lT)
+          .mul(min(r, rr))
+          .mul(min(lT.abs(), pi).mul(0.5).sin())
+          .toVar();
         ptx.assign(rp);
         pty.assign(w);
-        ptz.assign(0);
+        ptz.assign(ell);
 
       }).ElseIf(tag.equal(int(OP_MASKED_BLEND)), () => {
         // DL-61: count-prefixed polyline tube. Read `n` points, then the

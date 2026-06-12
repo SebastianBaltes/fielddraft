@@ -1431,7 +1431,7 @@ impl CsgNode {
             CsgNode::Helix {
                 id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
             } => {
-                let (q, scale) = crate::helix_profile_point(
+                let (q, ell, scale) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                 );
                 let d = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
@@ -1439,7 +1439,7 @@ impl CsgNode {
                 } else {
                     sketch.sdf(q)
                 };
-                d * scale
+                crate::helix_compose(d, ell) * scale
             }
         }
     }
@@ -1675,7 +1675,7 @@ impl CsgNode {
             CsgNode::Helix {
                 id, sketch, pitch, turns, left_handed, taper, y_anchor, r_inner,
             } => {
-                let (q, scale) = crate::helix_profile_point(
+                let (q, ell, scale) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                 );
                 // The contributor band epsilon lives in WORLD units; widen
@@ -1689,7 +1689,7 @@ impl CsgNode {
                     sketch.sdf_with_edges(q, eps / scale.max(1e-6))
                 };
                 let c = revolve_contributors(id, &band);
-                (band.distance * scale, c)
+                (crate::helix_compose(band.distance, ell) * scale, c)
             }
         }
     }
@@ -3318,29 +3318,61 @@ mod tests {
         let h = test_helix();
         let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
 
-        // Turn 0 ridge at θ=0: inside.
-        assert!(d([9.0, 0.0, 0.0]) < 0.0, "ridge centre must be inside");
+        // The sweep starts AT t=0 (θ=0, y=0) — the ridge centre there
+        // lies ON the start cap (d ≈ 0). Probe a quarter turn in
+        // (t = π/2, y advanced by pitch/4): solidly inside.
+        assert!(d([0.0, 0.5, 9.0]) < 0.0, "ridge centre must be inside");
         // Half a pitch later at the same angle: the groove between turns.
-        assert!(d([9.0, 1.0, 0.0]) > 0.0, "between turns must be outside");
-        // Helical invariance: a quarter turn advances y by pitch/4.
-        let d0 = d([9.0, 0.0, 0.0]);
+        assert!(d([0.0, 1.5, 9.0]) > 0.0, "between turns must be outside");
+        // Helical invariance away from the ends: a quarter turn (t=π/2)
+        // vs half a turn (t=π) sit at the same profile depth.
         let d90 = d([0.0, 0.5, 9.0]);
+        let d180 = d([-9.0, 1.0, 0.0]);
         assert!(
-            (d0 - d90).abs() < 1e-4,
-            "helical invariance violated: {d0} vs {d90}"
+            (d90 - d180).abs() < 1e-4,
+            "helical invariance violated: {d90} vs {d180}"
         );
         // Without the y-advance the quarter-turn point is off the ridge.
-        assert!(d([0.0, 0.0, 9.0]) > d0 + 0.1);
-        // Turn 1 instance exists one pitch up.
+        assert!(d([0.0, 0.0, 9.0]) > d90 + 0.1);
+        // Turn 1 instance exists one pitch up (t=2π, interior).
         assert!(d([9.0, 2.0, 0.0]) < 0.0);
-        // Beyond the last turn (k clamps to 4 → w = 12 − 8 = 4): outside.
+        // Beyond the last turn: outside.
         assert!(d([9.0, 12.0, 0.0]) > 0.0);
         // Radially off the profile: outside on both sides.
-        assert!(d([11.5, 0.0, 0.0]) > 0.0);
-        assert!(d([6.5, 0.0, 0.0]) > 0.0);
+        assert!(d([11.5, 1.0, 0.0]) > 0.0);
+        assert!(d([6.5, 1.0, 0.0]) > 0.0);
         // On the axis: well outside (bore), field positive and finite.
         let axis = d([0.0, 0.0, 0.0]);
         assert!(axis > 0.0 && axis.is_finite());
+    }
+
+    /// Ticket vtyh: the finite sweep must stay CONTINUOUS across the
+    /// `atan2` branch seam (θ = ±π) in the end regions — the old
+    /// per-winding clamp jumped `w` by a full pitch there, conjuring a
+    /// phantom ribbon below the first winding (negative field where the
+    /// real solid has ended).
+    #[test]
+    fn helix_ends_are_continuous_across_the_seam() {
+        let h = test_helix();
+        let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
+        let eps = 1e-3;
+        // Pairs straddling the seam (z → ±0 at x < 0), below the start
+        // (y = −1) and beyond the end (y = 11) at the profile radius.
+        for y in [-1.0_f32, 11.0] {
+            let a = d([-9.0, y, eps]);
+            let b = d([-9.0, y, -eps]);
+            assert!(
+                (a - b).abs() < 1e-2,
+                "seam discontinuity at y={y}: {a} vs {b}"
+            );
+            // …and both sides are OUTSIDE (no phantom material).
+            assert!(a > 0.0 && b > 0.0, "phantom material at y={y}: {a}/{b}");
+        }
+        // Just behind the start cap (θ slightly negative, profile-deep
+        // point): a thin positive gap, not phantom-inside.
+        assert!(d([9.0, 0.0, -0.5]) > 0.0, "behind the start cap must be open");
+        // Just past the start cap (θ slightly positive): inside.
+        assert!(d([9.0, 0.05, 0.5]) < 0.0, "past the start cap must be solid");
     }
 
     #[test]
@@ -3350,10 +3382,12 @@ mod tests {
             *left_handed = true;
         }
         let d = |p: [f32; 3]| h.sdf(p, EvalMode::Visual);
-        // The right-handed invariance point is now off the ridge…
+        // The right-handed quarter-turn ridge point is now off the
+        // sweep entirely (its handed angle sits before the start)…
         assert!(d([0.0, 0.5, 9.0]) > 0.0);
-        // …and the mirrored advance is on it.
-        assert!(d([0.0, -0.5, 9.0]) < 0.0);
+        // …and the mirrored quarter turn (θ = −π/2 → handed t = π/2,
+        // same +pitch/4 axial advance) is on the ridge.
+        assert!(d([0.0, 0.5, -9.0]) < 0.0);
     }
 
     #[test]

@@ -203,17 +203,33 @@ pub fn helix_profile_anchor(sketch: &fielddraft_protocol::Sketch2d) -> (f32, f32
     }
 }
 
-/// Map a helix-LOCAL point into the swept profile's 2D `(r, w)` frame and
-/// return the conservative Lipschitz scale of the unwrap. The helix winds
-/// about the local Y axis; the profile instance index per turn is chosen
-/// by nearest-rounding (exact while the profile's axial extent stays ≤
-/// `pitch`) and clamped to `[0, ceil(turns)−1]` for the finite sweep.
-/// `taper` shears the radial coordinate along +y. The scale bounds
-/// `‖J‖_F` of the map: `|∇w|² = 1 + (pitch/(2πr))²` (the tangential
-/// unwrap), `|∇r'|² ≤ 1 + taper²` — dividing the profile distance by the
-/// combined bound keeps the field ≤ true distance (sphere-march safe),
-/// the same self-normalisation idea as `Primitive::Thread` / Gyroid.
-/// `r` is clamped below by `r_inner` (and a pitch-derived floor) so the
+/// Map a helix-LOCAL point into the swept profile's 2D `(r, w)` frame
+/// and return `(q, ell, scale)`: the profile point, the signed
+/// end-overshoot coordinate, and the conservative Lipschitz scale of
+/// the unwrap. The helix winds about the local Y axis.
+///
+/// The finite sweep runs over the CONTINUOUS parameter `t ∈ [0,
+/// 2π·turns]` (fractional turns end mid-winding). The nearest pass for
+/// the query's angular position is found by rounding, then its
+/// parameter is clamped to the sweep span — clamping `t` (not an
+/// integer winding index) keeps the field continuous across the
+/// `atan2` branch seam at the helix ends (ticket vtyh: the per-winding
+/// clamp jumped `w` by a full pitch there, flipping signs → phantom
+/// ribbon + checkerboard marching artifacts).
+///
+/// `ell` is the angular distance to the sweep span mapped to a chord
+/// length at the clamped radius (≤ 0 inside the span, > 0 beyond an
+/// end, halved as a safety margin — the zero crossing, i.e. the end-cap
+/// surface, is unaffected). Callers combine it with the profile
+/// distance via [`helix_compose`].
+///
+/// `taper` shears the radial coordinate along +y. The scale bounds the
+/// composed map: `|∇w|² ≤ 1 + (pitch/(2πr))²` (tangential unwrap),
+/// `|∇r'|² ≤ 1 + taper²`, `|∇ell|² ≤ 1.25` — the constant 2.25 covers
+/// the `ell` component within the square root so the composed field
+/// stays ≤ true distance (sphere-march safe), the same
+/// self-normalisation idea as `Primitive::Thread` / Gyroid. `r` is
+/// clamped below by `r_inner` (and a pitch-derived floor) so the
 /// near-axis bound does not collapse the field to zero inside the bore.
 /// Mirrored in the web GPU interpreter (`OP_WARP_HELIX`/`OP_HELIX_SCALE`).
 pub fn helix_profile_point(
@@ -224,21 +240,44 @@ pub fn helix_profile_point(
     taper: f32,
     y_anchor: f32,
     r_inner: f32,
-) -> ([f32; 2], f32) {
-    use std::f32::consts::TAU;
+) -> ([f32; 2], f32, f32) {
+    use std::f32::consts::{PI, TAU};
     let pitch = pitch.max(1e-3);
     let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
     let theta = p[2].atan2(p[0]);
     let hand = if left_handed { -1.0 } else { 1.0 };
-    let w_base = p[1] - hand * pitch * theta / TAU;
-    let k_max = (turns.ceil() - 1.0).max(0.0);
-    let k = ((w_base - y_anchor) / pitch).round().clamp(0.0, k_max);
-    let w = w_base - k * pitch;
+    // Handed sweep angle of the query, and the sweep parameter of the
+    // nearest helix pass at that angular position.
+    let th = hand * theta;
+    let n = ((p[1] - y_anchor) / pitch - th / TAU).round();
+    let t_n = th + TAU * n;
+    let t_end = TAU * turns.max(0.0);
+    let t_c = t_n.clamp(0.0, t_end);
+    // Profile frame at the (possibly end-clamped) pass.
+    let w = p[1] - pitch * t_c / TAU;
     let rp = r - taper * (p[1] - y_anchor);
-    let rr = r.max(r_inner).max(pitch / TAU * 0.25).max(1e-3);
+    // Per-feature constant clamp radius: dropping the per-point `r`
+    // only ever increases `q`, i.e. damps more — still conservative,
+    // and it makes the Lipschitz scale a constant the opcode stream
+    // can bake in at emission time (exact CPU/GPU parity).
+    let rr = r_inner.max(pitch / TAU * 0.25).max(1e-3);
+    // Signed angular distance to the sweep span, as a chord at the
+    // query's radius (capped at the clamp radius, halved for safety).
+    let l_t = (t_n - t_end * 0.5).abs() - t_end * 0.5;
+    let ell = l_t.signum() * r.min(rr) * (l_t.abs().min(PI) * 0.5).sin();
     let q = pitch / (TAU * rr);
-    let scale = 1.0 / (1.0 + q * q + taper * taper).sqrt();
-    ([rp, w], scale)
+    let scale = 1.0 / (2.25 + q * q + taper * taper).sqrt();
+    ([rp, w], ell, scale)
+}
+
+/// Combine a helix profile distance with the signed end-overshoot
+/// coordinate from [`helix_profile_point`] — IQ's extrude composition
+/// (`(d2, ell)` as a 2D box SDF), so the finite sweep ends with clean
+/// cap cross-sections instead of a discontinuity.
+pub fn helix_compose(d2: f32, ell: f32) -> f32 {
+    let outside = (d2.max(0.0)).hypot(ell.max(0.0));
+    let inside = d2.max(ell).min(0.0);
+    outside + inside
 }
 
 /// SDF of a single primitive at world point `p`.
@@ -306,7 +345,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
         Primitive::Helix { sketch, center, pitch, turns, left_handed, taper } => {
             let (y_anchor, r_inner) = helix_profile_anchor(sketch);
             let local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
-            let (q, scale) = helix_profile_point(
+            let (q, ell, scale) = helix_profile_point(
                 local,
                 *pitch,
                 *turns,
@@ -315,7 +354,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
                 y_anchor,
                 r_inner,
             );
-            sketch.sdf(q) * scale
+            helix_compose(sketch.sdf(q), ell) * scale
         }
         Primitive::Torus { center, major_radius, minor_radius } => {
             let dx = p[0] - center[0];
@@ -4277,10 +4316,12 @@ mod tests {
 
         // Inside the core.
         assert!(d(0.0, 0.0, 0.0) < 0.0);
-        // On the thread ridge at θ=0 (outside the bare core radius!).
-        assert!(d(8.5, -8.2, 0.0) < 0.0, "ridge must fuse onto the core");
-        // In the groove between turns at the same radius.
-        assert!(d(8.5, -7.0, 0.0) > 0.0, "groove must stay open");
+        // On the thread ridge a quarter turn in (the sweep starts AT
+        // θ=0, so the t=0 cross-section is the start cap itself):
+        // outside the bare core radius!
+        assert!(d(0.0, -7.7, 8.5) < 0.0, "ridge must fuse onto the core");
+        // In the groove between turns at the same angle and radius.
+        assert!(d(0.0, -6.7, 8.5) > 0.0, "groove must stay open");
         // Helical invariance: half a turn advances y by pitch/2.
         assert!(d(-8.5, -7.2, 0.0) < 0.0, "thread must wind with the pitch");
         // The un-advanced half-turn point sits in the groove.
