@@ -286,6 +286,94 @@ skaliert. Die Telemetrie-Tier steuert weiterhin den Startwert.
 5. **LOD/Toleranz** bildschirmraum-adaptiv; Telemetrie loggt den raymarchten
    Pixelanteil (Wirksamkeitsmaß).
 
+## Achse 3: WebGL-Pfad + Screenspace-CSG (Experiment, für schwache Rechner)
+
+Ziel: ein Renderpfad, der **ganz ohne WebGPU** auskommt (Intel-iGPUs, kein
+Vulkan/Adapter, ältere Browser). Begründung: praktisch alle Körper sind 2D-
+Sketch → Extrude/Revolve/Helix/Twist + Booleans; das lässt sich mit parametri-
+schen Meshes + einem allgemeinen Boolean-Compositor in WebGL rastern. Nur der
+echte implizite Rest (Gyroid, weiche Fillets) braucht ein SDF-Meshing-Verfahren.
+
+### Drei Render-Strategien, komplementär (nicht „entweder/oder")
+
+| Strategie | Wofür | Eigenschaften |
+|---|---|---|
+| **B-Rep-Tessellation** (Achse 2) | analytische Körper, **statisch** | exakt, scharf, billig; braucht eine B-Rep |
+| **Screenspace-CSG** | **allgemeine Booleans**, Drag-Preview | view-abhängig, kein Geometrie-Output, funktioniert OHNE B-Rep (auch `gyroid − cylinder`) |
+| **CPU-DC/MDC-Mesh** (`mesh`-Modus) | impliziter Rest, statisch | verlustbehaftet (Speckles), CPU, WebGL-fähig |
+
+Wichtig (korrigiert ggü. erster Einschätzung):
+
+- **Screenspace-CSG ist NICHT redundant zur B-Rep-Tessellation.** Es ist das
+  WebGL-Äquivalent der SDF-Raymarch-CSG: ein allgemeiner Boolean-Compositor auf
+  gerenderten Tiefenflächen, der **keine** B-Rep des Ergebnisses braucht. Genau
+  dort wertvoll, wo die B-Rep fehlt (Subtraktion aus einem Gyroid, Blends) und
+  für **Drag-Preview** (teurer B-Rep-Weave aus → Hüllmeshes + Screenspace-CSG
+  liefern sofortiges Boolean-Feedback, bevor neu gewebt wird).
+- **Parametrische Helix/Twist-Meshes braucht der SDF-Deferred ohnehin**: er
+  bound `needs_full_sdf`-Körper heute mit einer losen AABB; eine enge
+  parametrische Hülle (Helix-Sweep, getwistetes Extrude-Mesh) verkleinert das
+  Raymarch-Volumen → schneller auch in der WebGPU-Welt. Also kein WebGL-
+  Sonderaufwand.
+
+### Was es konkret braucht
+
+1. **WebGL-Render-Pfad** (Fundament, unabhängig von Screenspace-CSG nützlich):
+   `THREE.WebGLRenderer` statt WebGPU; rendert die vorhandenen parametrischen
+   Hüllmeshes (`createPrimitiveGeometry`: box/sphere/cylinder/cone/torus/
+   capsule/**extrude**/**revolve**) + die B-Rep-Tessellation (Achse 2) +
+   DC-Meshes (impliziter Rest). **Hauptaufwand = Material-/Linien-Parität**: die
+   node-basierten WebGPU-Materialien (SDF-Pässe, fat lines `Line2NodeMaterial`,
+   Label-Sprites `SpriteNodeMaterial`) laufen in WebGL nicht → klassische
+   Äquivalente (`MeshStandardMaterial`, `LineSegments2`-WebGL-Variante, HTML-
+   oder Sprite-Labels). Dieser Pfad bedient zugleich die „kein WebGPU-Adapter"-
+   Maschinen (vgl. WebGPU-Gate) und umgeht das WebGPU-Capture-Problem der
+   Browser-Automation.
+2. **Parametrische Helix/Twist-Meshes** (`createPrimitiveGeometry` erweitern):
+   Helix = Profil-Sweep entlang Helixpfad; Twist = getwistetes Extrude (CPU-Warp
+   oder Vertex-Shader). Nutzt Deferred + WebGL.
+3. **Screenspace-CSG (das Experiment):** als Boolean-Compositor in einem
+   WebGL2-Fragmentshader.
+
+### Screenspace-CSG — Technik & ehrliche Hürden
+
+Klassische Verfahren (OpenCSG-Stil): Tiefenflächen rendern, per Pixel die
+CSG-Klassifikation gegen die Tiefenintervalle auswerten.
+
+- **Experiment-Stufe 1 (klein, vergleichbar):** **einstufige Subtraktion `A − B`**
+  ohne Depth-Peeling: Minuend-Oberfläche rendern; Subtrahend Front-/Back-Tiefe in
+  Texturen (MRT/WebGL2); liegt der Minuend-Pixel im `[front,back]`-Intervall des
+  Subtrahenden, ersetze ihn durch die Subtrahend-Backface (die Schnittfläche).
+  Deckt `box − cylinder`, `gyroid − cylinder` (Gyroid als DC-Mesh/Tiefenfläche)
+  ab — der Vergleichsfall gegen B-Rep-Tessellation und SDF-Raymarch.
+- **Stufe 2 (später):** allgemeiner CSG-Baum via Depth-Peeling (k Layer),
+  Goldfeather/SCS.
+- **Harte Punkte:** Tiefenkomplexität (poröser Gyroid → viele Layer → teuer);
+  koinzidente Flächen / Z-Fighting an Schnitträndern (dieselben Naht-Probleme wie
+  im Kernel); nicht-konvexe Extrudes brauchen ggf. Konvex-Zerlegung für Stufe 2;
+  WebGL2 hat keine Storage Buffers → MRT + Ping-Pong statt Fragment-Listen. Der
+  Deferred-Renderer nutzt bewusst Raymarch statt Mesh-CSG, *weil* Letzteres für
+  beliebige Booleans fragiler ist — das ist beim Experiment einzukalkulieren.
+
+### Vergleichsmetriken (das Experiment soll messen)
+
+- FPS auf einer schwachen iGPU (Intel UHD 630) vs. SDF-Deferred (WebGPU) und
+  B-Rep-Tessellation.
+- Korrektheit der Schnittflächen ggü. B-Rep-Referenz (Z-Fighting, fehlende
+  Schnittkanten).
+- Drag-Preview-Latenz (B-Rep aus) ggü. „erst weben, dann tessellieren".
+- Läuft es überhaupt ohne WebGPU-Adapter? (Hauptziel.)
+
+### Phasenplan (WebGL / Screenspace-CSG)
+
+1. **WebGL-Baseline**: `WebGLRenderer`-Pfad, der die parametrischen Hüllmeshes +
+   B-Rep-Tessellation + DC-Meshes mit klassischen Materialien rastert (noch ohne
+   Booleans-Compositing — Körper einzeln). Material-/Linien-Parität. Schon hier
+   messbar: „läuft ohne WebGPU", FPS auf iGPU.
+2. **Helix/Twist parametrisch** (`createPrimitiveGeometry`).
+3. **Screenspace-CSG Stufe 1** (einstufige `A − B`) als Experiment + Vergleich.
+4. **Stufe 2** (Depth-Peeling, allgemeiner CSG-Baum) nur bei positivem Vergleich.
+
 ## Phasenplan (adaptive Qualität)
 
 1. **Mess- & Regelgerüst**: Quality-Scalar-Bridge + Regler-Hook auf
