@@ -3399,7 +3399,7 @@ impl Kernel {
     /// body `placement` (`bodyPlacement`) in for world coordinates.
     #[wasm_bindgen(js_name = bodyBrepFaces)]
     pub fn body_brep_faces(&mut self, i: usize) -> String {
-        use crate::brep::face_export::{face_centroid_normal_local, surface_kind};
+        use crate::brep::face_export::{face_centroid_normal_local, surface_kind, surface_params};
         use crate::brep::naming::TopoRef;
         use crate::brep::FaceId;
 
@@ -3419,6 +3419,7 @@ impl Kernel {
                 "branchId": face.branch_id.as_u32(),
                 "featureId": face.branch_id.feature_id(),
                 "surfaceKind": surface_kind(&face.surface),
+                "surfaceParams": surface_params(&face.surface),
                 "centroidLocal": centroid,
                 "normalLocal": normal,
             }));

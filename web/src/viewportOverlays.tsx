@@ -28,7 +28,7 @@ import {
   createPrimitiveGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
-import { collectPlanarBodyMeshes, type BrepMeshKernel } from "./brepMesh";
+import { collectAnalyticBodyMeshes, type BrepMeshKernel } from "./brepMesh";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 // Extracted to sketchOutline.ts (DOM-free) — shared with the extrude
 // gizmo's pending-sketch-extrude anchor.
@@ -2725,7 +2725,7 @@ export function BRepMeshPreview() {
     if (!store) return [] as { bodyIndex: number; geometry: THREE.BufferGeometry }[];
     let meshes;
     try {
-      meshes = collectPlanarBodyMeshes(store.kernel as unknown as BrepMeshKernel);
+      meshes = collectAnalyticBodyMeshes(store.kernel as unknown as BrepMeshKernel);
     } catch {
       return [];
     }

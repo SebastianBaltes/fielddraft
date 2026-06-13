@@ -46,6 +46,57 @@ pub fn surface_kind(surface: &SurfaceGeometry) -> &'static str {
     }
 }
 
+/// Rotate a vector by a unit quaternion `(x, y, z, w)`.
+fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let [qx, qy, qz, qw] = q;
+    let tx = 2.0 * (qy * v[2] - qz * v[1]);
+    let ty = 2.0 * (qz * v[0] - qx * v[2]);
+    let tz = 2.0 * (qx * v[1] - qy * v[0]);
+    [
+        v[0] + qw * tx + qy * tz - qz * ty,
+        v[1] + qw * ty + qz * tx - qx * tz,
+        v[2] + qw * tz + qx * ty - qy * tx,
+    ]
+}
+
+/// Body-LOCAL analytic parameters of a curved face's surface, for the hybrid
+/// renderer's parametric tessellation (`bodyBrepFaces`' `surfaceParams`). `None`
+/// for planar (uses centroid/normal) and tessellated (gyroid/revolved) surfaces.
+///
+/// The surface transform is body-local — the caller folds the body placement in,
+/// exactly like `centroidLocal`/`normalLocal`. The axis of every analytic
+/// primitive is local +Y (the primitive convention); the origin is the
+/// transform's translation.
+pub fn surface_params(surface: &SurfaceGeometry) -> Option<serde_json::Value> {
+    let SurfaceGeometry::Analytic { surface, transform } = surface else {
+        return None;
+    };
+    let origin = transform.translate;
+    let axis = {
+        let r = quat_rotate(transform.rotation, [0.0, 1.0, 0.0]);
+        let n = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+        if n < 1e-12 { r } else { [r[0] / n, r[1] / n, r[2] / n] }
+    };
+    match surface {
+        HalfSpace::InfiniteCylinder { radius } => Some(serde_json::json!({
+            "kind": "cylinder", "origin": origin, "axis": axis, "radius": radius,
+        })),
+        HalfSpace::Sphere { radius } => Some(serde_json::json!({
+            "kind": "sphere", "origin": origin, "radius": radius,
+        })),
+        HalfSpace::Cone { half_angle } => Some(serde_json::json!({
+            "kind": "cone", "origin": origin, "axis": axis, "halfAngle": half_angle,
+        })),
+        HalfSpace::Torus { major_radius, minor_radius } => Some(serde_json::json!({
+            "kind": "torus", "origin": origin, "axis": axis,
+            "majorRadius": major_radius, "minorRadius": minor_radius,
+        })),
+        HalfSpace::Plane { .. }
+        | HalfSpace::Gyroid { .. }
+        | HalfSpace::RevolvedProfile { .. } => None,
+    }
+}
+
 /// A representative body-LOCAL centroid + outward unit normal for `face`.
 ///
 /// The centroid is the mean of the face's outer-loop edge sample points

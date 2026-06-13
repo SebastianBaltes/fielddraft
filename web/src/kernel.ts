@@ -123,9 +123,21 @@ export interface BRepFace {
   /** Flat feature id (sub stripped). */
   featureId: number;
   surfaceKind: "plane" | "cylinder" | "sphere" | "cone" | "torus" | "tessellated";
+  /** Body-local analytic surface parameters for the hybrid renderer's
+   *  parametric tessellation; absent (`null`) for planar (uses
+   *  centroid/normal) and tessellated (gyroid/revolved) faces. The axis of
+   *  every analytic primitive is its local +Y; the caller folds the body
+   *  placement in, like {@link centroidLocal}/{@link normalLocal}. */
+  surfaceParams?: SurfaceParams | null;
   centroidLocal: [number, number, number];
   normalLocal: [number, number, number];
 }
+
+export type SurfaceParams =
+  | { kind: "cylinder"; origin: [number, number, number]; axis: [number, number, number]; radius: number }
+  | { kind: "sphere"; origin: [number, number, number]; radius: number }
+  | { kind: "cone"; origin: [number, number, number]; axis: [number, number, number]; halfAngle: number }
+  | { kind: "torus"; origin: [number, number, number]; axis: [number, number, number]; majorRadius: number; minorRadius: number };
 
 /** One selectable B-Rep vertex of a body, in the body-LOCAL frame. `idHash` is
  *  the stable `TopoRef` vertex id as a decimal string. */
