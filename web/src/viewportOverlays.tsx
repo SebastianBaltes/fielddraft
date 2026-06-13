@@ -42,6 +42,12 @@ import type { SketchState } from "./solver/types";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { gripsForSelection } from "./sketchGrips";
 import { planeToWorld, type PlaneFrame } from "./sketchPlaneFrame";
+import { getSketchPlaneFrame } from "./sketchCameraBridge";
+import {
+  readSketchHud,
+  setHudInvalidate,
+  clearSketchHud,
+} from "./sketchHudBridge";
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -395,6 +401,127 @@ export function SketchSession3D() {
       ))}
     </group>
   );
+}
+
+const SKETCH_PREVIEW_COLOR = 0x93c5fd; // COLOR_PREVIEW
+const SKETCH_SNAP_COLOR = 0xf59e0b; // COLOR_SNAP
+
+/**
+ * Transient sketch HUD GEOMETRY (drag/rubber-band previews, hover point,
+ * snap ring, projected B-Rep edge guides) as real 3D scene geometry,
+ * rebuilt imperatively from `sketchHudBridge` whenever its version changes.
+ * Published by `SketchCanvas2d`; the overlay itself draws only the text
+ * labels + marquee now. Lives apart from `SketchSession3D` so the per-pointer
+ * churn here never re-runs the committed-geometry memos.
+ */
+export function SketchHud3D() {
+  const invalidate = useThree((s) => s.invalidate);
+  const groupRef = useRef<THREE.Group>(null);
+  const lastVer = useRef(-1);
+  const objsRef = useRef<THREE.Object3D[]>([]);
+
+  const matsRef = useRef<{
+    line: Line2NodeMaterial;
+    guide: Line2NodeMaterial;
+    projected: Line2NodeMaterial;
+    point: PointsNodeMaterial;
+    snap: PointsNodeMaterial;
+  } | null>(null);
+  if (!matsRef.current) {
+    const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+      new Line2NodeMaterial({
+        color: c, linewidth: lw, worldUnits: false,
+        depthTest: false, depthWrite: false, transparent: true, ...extra,
+      });
+    matsRef.current = {
+      line: fatLine(SKETCH_PREVIEW_COLOR, 2),
+      guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
+      projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
+      point: new PointsNodeMaterial({
+        color: SKETCH_PREVIEW_COLOR, size: 7, sizeAttenuation: false,
+        depthTest: false, depthWrite: false, transparent: true,
+      }),
+      snap: new PointsNodeMaterial({
+        color: SKETCH_SNAP_COLOR, size: 13, sizeAttenuation: false,
+        depthTest: false, depthWrite: false, transparent: true,
+      }),
+    };
+  }
+  const M = matsRef.current;
+
+  useEffect(() => {
+    setHudInvalidate(invalidate);
+    return () => {
+      setHudInvalidate(null);
+      clearSketchHud();
+    };
+  }, [invalidate]);
+
+  useFrame(() => {
+    const hud = readSketchHud();
+    if (hud.version === lastVer.current) return;
+    lastVer.current = hud.version;
+    const group = groupRef.current;
+    if (!group) return;
+    for (const o of objsRef.current) {
+      group.remove(o);
+      (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
+    }
+    objsRef.current = [];
+
+    const frame = getSketchPlaneFrame();
+    const w = (uv: [number, number]) => planeToWorld(uv[0], uv[1], frame);
+    const addLines = (pos: number[], mat: Line2NodeMaterial, order: number, dashed: boolean) => {
+      if (pos.length === 0) return;
+      const g = new LineSegmentsGeometry();
+      g.setPositions(new Float32Array(pos));
+      const o = new LineSegments2(g, mat);
+      if (dashed) o.computeLineDistances();
+      o.frustumCulled = false;
+      o.renderOrder = order;
+      o.layers.enable(OVERLAY_LAYER);
+      group.add(o);
+      objsRef.current.push(o);
+    };
+    const addPoints = (pos: number[], mat: PointsNodeMaterial, order: number) => {
+      if (pos.length === 0) return;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      const o = new THREE.Points(g, mat);
+      o.frustumCulled = false;
+      o.renderOrder = order;
+      o.layers.enable(OVERLAY_LAYER);
+      group.add(o);
+      objsRef.current.push(o);
+    };
+
+    // Projected B-Rep edge guides (dashed, behind everything).
+    const proj: number[] = [];
+    for (const [a, b] of hud.projected) proj.push(...w(a), ...w(b));
+    addLines(proj, M.projected, 993, true);
+
+    // Drag preview shapes (via the shared flattener) + extra segments.
+    const prev = collectSketchSessionGeometry(hud.previewCalls as SketchSubCall[], frame);
+    const lines = [...prev.solid, ...prev.legs];
+    for (const [a, b] of hud.previewLines) lines.push(...w(a), ...w(b));
+    addLines(lines, M.line, 996, false);
+    const guides: number[] = [];
+    for (const [a, b] of hud.previewGuides) guides.push(...w(a), ...w(b));
+    addLines(guides, M.guide, 996, true);
+
+    // Preview marker points + hover.
+    const pts = [...prev.points];
+    for (const p of hud.previewPoints) pts.push(...w(p));
+    if (hud.hover) pts.push(...w(hud.hover));
+    addPoints(pts, M.point, 997);
+
+    // Snap ring (on top).
+    if (hud.snap) addPoints([...w(hud.snap)], M.snap, 1001);
+
+    invalidate();
+  });
+
+  return <group ref={groupRef} />;
 }
 
 const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([

@@ -54,7 +54,6 @@ import { gripsForSelection, type Grip } from "./sketchGrips";
 import {
   angleAbout,
   buildArcSubCall,
-  sampleArc,
   unwrapSweep,
 } from "./sketchArc";
 import {
@@ -62,8 +61,8 @@ import {
   rectCenterCorners,
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
-import { slotOutline } from "./sketchSlot";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
+import { publishSketchHud, type SketchHudGeometry } from "./sketchHudBridge";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -83,15 +82,12 @@ interface Props {
 
 /** Visual tokens. Keep in sync with `styles/tokens.css` if we
  *  ever add sketch colours there. */
-const STROKE_PX = 1.5;
-const POINT_PX = 3;
 // K6b.6: 3-color DOF status.
 // Blue = underconstrained (default), Green = fully constrained,
 // Red = overconstrained.
 const COLOR_UNDER = "#2563eb";
 const COLOR_FULL = "#16a34a";
 const COLOR_OVER = "#dc2626";
-const COLOR_PREVIEW = "#93c5fd";
 
 function dofColor(dof: number): string {
   if (dof > 0) return COLOR_UNDER;
@@ -119,10 +115,6 @@ const SNAP_RADIUS_MM = 10;
  *  around the snap anchor. */
 const SNAP_RING_PX = 8;
 
-const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
-/** F23-full: dashed control-polygon guide for a control-point
- *  B-spline (lines between consecutive control points). */
-const COLOR_GUIDE = "rgba(100, 116, 139, 0.6)";
 /** F4 marquee: enclosing ("window", left→right) = solid blue border;
  *  crossing (right→left) = dashed green border. Translucent fills. */
 const COLOR_MARQUEE_ENCLOSING = "#2563eb";
@@ -2335,6 +2327,171 @@ function resizeToContainer(canvas: HTMLCanvasElement): void {
   }
 }
 
+/**
+ * Transient sketch HUD GEOMETRY (preview shapes, hover/snap markers,
+ * projected-edge guides) in sketch (u,v) space, mirroring drawOverlay's
+ * drag switch but as primitives instead of canvas strokes — published to
+ * `sketchHudBridge` and rendered as real 3D geometry by `SketchHud3D`.
+ * Text labels (dimensions, glyphs, snap label) stay on the overlay.
+ */
+function buildSketchHudUv(
+  drag: DragState,
+  session: SketchSessionState,
+  hover: [number, number] | null,
+  snap: SnapResolution,
+  projectedEdges: ProjectedEdge[],
+): Omit<SketchHudGeometry, "version"> {
+  const previewCalls: Array<{ type: string; params: Record<string, unknown> }> = [];
+  const previewLines: Array<[[number, number], [number, number]]> = [];
+  const previewPoints: Array<[number, number]> = [];
+  const previewGuides: Array<[[number, number], [number, number]]> = [];
+  const C = (type: string, params: Record<string, unknown>) =>
+    previewCalls.push({ type, params });
+
+  switch (drag.kind) {
+    case "line":
+    case "pending_line":
+      C("sketch_line", { start: drag.start, end: drag.current });
+      break;
+    case "rectangle":
+      C("sketch_rectangle", { corner_a: drag.start, corner_b: drag.current });
+      break;
+    case "circle": {
+      const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+      C("sketch_circle", { center: drag.center, radius: r });
+      break;
+    }
+    case "ellipse": {
+      const rx = Math.abs(drag.current[0] - drag.center[0]);
+      const ry = Math.abs(drag.current[1] - drag.center[1]);
+      C("sketch_ellipse", {
+        center: drag.center,
+        radius_x: rx,
+        radius_y: ry,
+        rotation: Number(session.toolDraft?.rotation) || 0,
+      });
+      break;
+    }
+    case "slot": {
+      const radius = Number(session.toolDraft?.radius) || 8;
+      C("sketch_slot", { center_a: drag.center_a, center_b: drag.current, radius });
+      break;
+    }
+    case "rect_center": {
+      const opp: [number, number] = [
+        2 * drag.center[0] - drag.current[0],
+        2 * drag.center[1] - drag.current[1],
+      ];
+      C("sketch_rectangle", { corner_a: opp, corner_b: drag.current });
+      previewPoints.push(drag.center);
+      break;
+    }
+    case "circle_3p": {
+      previewPoints.push(drag.p1);
+      if (drag.p2 === null) {
+        previewLines.push([drag.p1, drag.current]);
+      } else {
+        previewPoints.push(drag.p2, drag.current);
+        const res = circleThrough3(drag.p1, drag.p2, drag.current);
+        if (res) C("sketch_circle", { center: res.center, radius: res.radius });
+      }
+      break;
+    }
+    case "rect_3p": {
+      previewPoints.push(drag.p1);
+      if (drag.p2 === null) {
+        previewLines.push([drag.p1, drag.current]);
+      } else {
+        previewPoints.push(drag.p2);
+        const corners = rect3pCorners(drag.p1, drag.p2, drag.current);
+        if (corners) {
+          for (let i = 0; i < 4; i++) {
+            previewLines.push([corners[i], corners[(i + 1) % 4]]);
+            previewPoints.push(corners[i]);
+          }
+        } else {
+          previewLines.push([drag.p1, drag.p2]);
+        }
+      }
+      break;
+    }
+    case "regular_polygon": {
+      const radius = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+      const verts = regularPolygonVertices(
+        drag.center,
+        radius,
+        Number(session.toolDraft?.sides) || 6,
+        session.toolDraft?.inscribed !== false,
+      );
+      if (verts.length >= 3) {
+        C("sketch_polygon", { vertices: verts.flatMap((v) => [v[0], v[1]]) });
+        previewPoints.push(drag.center);
+      }
+      break;
+    }
+    case "polygon": {
+      const { vertices, current } = drag;
+      if (vertices.length > 0) {
+        for (let i = 0; i + 1 < vertices.length; i++) {
+          previewLines.push([vertices[i], vertices[i + 1]]);
+        }
+        previewLines.push([vertices[vertices.length - 1], current]);
+        previewGuides.push([current, vertices[0]]);
+        for (const v of vertices) previewPoints.push(v);
+      }
+      break;
+    }
+    case "spline": {
+      const { points, current, mode } = drag;
+      if (points.length > 0) {
+        const ctrl: Vec2[] = [...points, current];
+        const isControl = mode === "control";
+        if (isControl) {
+          for (let i = 0; i + 1 < ctrl.length; i++) {
+            previewGuides.push([ctrl[i], ctrl[i + 1]]);
+          }
+        }
+        const sampled = isControl
+          ? bsplinePoints(ctrl, 3, false, 48)
+          : catmullRomPoints(ctrl, false, 16);
+        for (let i = 0; i + 1 < sampled.length; i++) {
+          previewLines.push([sampled[i], sampled[i + 1]]);
+        }
+        for (const p of points) previewPoints.push(p);
+      }
+      break;
+    }
+    case "arc": {
+      const { center, start, current, startAngle, sweep } = drag;
+      if (start === null) {
+        const r = Math.hypot(current[0] - center[0], current[1] - center[1]);
+        C("sketch_circle", { center, radius: r });
+        previewLines.push([center, current]);
+        previewPoints.push(center);
+      } else {
+        const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
+        C("sketch_arc", { center, radius: r, start_angle: startAngle, sweep_angle: sweep });
+        previewLines.push([center, start]);
+        previewPoints.push(center, start);
+      }
+      break;
+    }
+    default:
+      // idle / grip / marquee: no 3D preview shapes.
+      break;
+  }
+
+  return {
+    previewCalls,
+    previewLines,
+    previewPoints,
+    previewGuides,
+    hover: drag.kind === "idle" ? hover : null,
+    snap: snap.anchor && snap.candidate ? snap.anchor : null,
+    projected: projectedEdges.map((e) => [e.p0, e.p1] as [[number, number], [number, number]]),
+  };
+}
+
 function drawOverlay(
   canvas: HTMLCanvasElement,
   session: SketchSessionState,
@@ -2348,6 +2505,11 @@ function drawOverlay(
     end: [number, number];
   } | null = null,
 ): void {
+  // Publish the transient HUD GEOMETRY (previews/hover/snap-ring/projected)
+  // for the 3D layer (SketchHud3D); this overlay draws only text + marquee.
+  publishSketchHud(
+    buildSketchHudUv(drag, session, hover, snap, projectedEdges ?? []),
+  );
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = cam.devicePixelRatio || window.devicePixelRatio || 1;
@@ -2364,29 +2526,14 @@ function drawOverlay(
   // Bail with a cleared canvas rather than freezing the tab.
   if (!(cam.zoom > 0)) return;
 
-  // K6b: draw projected B-Rep edges as faint guide lines.
-  if (projectedEdges && projectedEdges.length > 0) {
-    ctx.strokeStyle = COLOR_EDGE_GUIDE;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    for (const edge of projectedEdges) {
-      const [x0, y0] = sketchToScreen(edge.p0[0], edge.p0[1], cam);
-      const [x1, y1] = sketchToScreen(edge.p1[0], edge.p1[1], cam);
-      ctx.moveTo(x0, y0);
-      ctx.lineTo(x1, y1);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
+  // Projected B-Rep edge guides, drag previews, the hover point and the
+  // snap RING now render as 3D scene geometry (SketchHud3D); committed
+  // geometry + selection are 3D too (SketchSession3D). drawOverlay keeps
+  // only the screen-space TEXT/marquee HUD: constraint glyphs, dimension
+  // readouts, the snap label and the marquee box.
 
-  // skState (solved entities) feeds constraint-glyph placement and the
-  // selection highlight below. Committed GEOMETRY now renders in 3D
-  // (SketchSession3D); drawOverlay no longer strokes it here — only the
-  // transient HUD (selection highlight, grips, constraint glyphs, drag
-  // previews, snap/hover) remains on the overlay.
+  // Solved state + DOF colour for the constraint glyphs.
   const skState = buildDraftSketchState(session.subCalls);
-  // DOF status colour, still used to tint the constraint glyphs.
   let committedColor = COLOR_UNDER;
   try {
     const over =
@@ -2398,12 +2545,7 @@ function drawOverlay(
     // Solver not available — fall back to the underconstrained color.
   }
 
-  // Selection highlight + grips now render as 3D scene geometry
-  // (SketchSession3D) from session.selection — no longer stroked here.
-
-  // K6b.6: draw constraint glyphs anchored to the constrained geometry.
-  // Resolve entity ids against the already-built solved state (skState)
-  // rather than guessing from sub-call ordering.
+  // Constraint glyphs (text) anchored to the constrained geometry.
   {
     const entityPos = (entityId: number): [number, number] | null => {
       const e = skState.entities.find((x) => x.id === entityId);
@@ -2444,222 +2586,43 @@ function drawOverlay(
     }
   }
 
-  // F18: dimension readout on the most recently placed line — clicking
-  // it opens the exact-length editor (hit-tested in onPointerDown).
+  // Dimension readouts (text). The recent-line readout is click-to-edit
+  // (hit-tested in onPointerDown); the others track the live drag.
   if (recentLine !== null && drag.kind === "idle") {
     drawDistanceLabel(ctx, recentLine.start, recentLine.end, cam);
   }
-
   if (drag.kind === "line" || drag.kind === "pending_line") {
-    const { start, current } = drag;
-    // Label first so the line draws over it — the readout stays behind
-    // the geometry, unobtrusive by design.
-    drawDistanceLabel(ctx, start, current, cam);
-    drawLine(ctx, start, current, cam, COLOR_PREVIEW, STROKE_PX);
-    drawPoint(ctx, start, cam, COLOR_PREVIEW);
-    drawPoint(ctx, current, cam, COLOR_PREVIEW);
+    drawDistanceLabel(ctx, drag.start, drag.current, cam);
   } else if (drag.kind === "rectangle") {
-    const { start, current } = drag;
-    drawRectangle(ctx, start, current, cam, COLOR_PREVIEW);
-    drawSizeLabel(ctx, start, current, cam);
+    drawSizeLabel(ctx, drag.start, drag.current, cam);
   } else if (drag.kind === "circle") {
-    const { center, current } = drag;
-    const dx = current[0] - center[0];
-    const dy = current[1] - center[1];
-    const radius = Math.hypot(dx, dy);
-    drawCircle(ctx, center, radius, cam, COLOR_PREVIEW);
-    drawPoint(ctx, center, cam, COLOR_PREVIEW);
-    drawRadiusLabel(ctx, center, radius, cam);
-  } else if (drag.kind === "ellipse") {
-    const { center, current } = drag;
-    const radiusX = Math.abs(current[0] - center[0]);
-    const radiusY = Math.abs(current[1] - center[1]);
-    const rotation = Number(session.toolDraft?.rotation) || 0;
-    drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, COLOR_PREVIEW);
-    drawPoint(ctx, center, cam, COLOR_PREVIEW);
-  } else if (drag.kind === "slot") {
-    const { center_a, current } = drag;
-    const radius = Number(session.toolDraft?.radius) || 8;
-    drawSlot(ctx, center_a, current, radius, cam, COLOR_PREVIEW);
-    drawPoint(ctx, center_a, cam, COLOR_PREVIEW);
-    drawPoint(ctx, current, cam, COLOR_PREVIEW);
+    const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+    drawRadiusLabel(ctx, drag.center, r, cam);
   } else if (drag.kind === "rect_center") {
-    // Mirror the cursor about the centre to ghost the axis-aligned box.
-    const { center, current } = drag;
     const opp: [number, number] = [
-      2 * center[0] - current[0],
-      2 * center[1] - current[1],
+      2 * drag.center[0] - drag.current[0],
+      2 * drag.center[1] - drag.current[1],
     ];
-    drawRectangle(ctx, opp, current, cam, COLOR_PREVIEW);
-    drawPoint(ctx, center, cam, COLOR_PREVIEW);
-    drawSizeLabel(ctx, opp, current, cam);
+    drawSizeLabel(ctx, opp, drag.current, cam);
   } else if (drag.kind === "circle_3p") {
-    const { p1, p2, current } = drag;
-    drawPoint(ctx, p1, cam, COLOR_PREVIEW);
-    if (p2 === null) {
-      // Stage 1: rubber-band chord from p1 to the cursor.
-      drawLine(ctx, p1, current, cam, COLOR_PREVIEW, STROKE_PX);
-    } else {
-      // Stage 2: ghost the circumcircle through the three current points.
-      drawPoint(ctx, p2, cam, COLOR_PREVIEW);
-      const res = circleThrough3(p1, p2, current);
-      if (res) {
-        drawCircle(ctx, res.center, res.radius, cam, COLOR_PREVIEW);
-        drawRadiusLabel(ctx, res.center, res.radius, cam);
-      }
-      drawPoint(ctx, current, cam, COLOR_PREVIEW);
-    }
-  } else if (drag.kind === "rect_3p") {
-    const { p1, p2, current } = drag;
-    drawPoint(ctx, p1, cam, COLOR_PREVIEW);
-    if (p2 === null) {
-      // Stage 1: rubber-band the first edge.
-      drawLine(ctx, p1, current, cam, COLOR_PREVIEW, STROKE_PX);
-    } else {
-      // Stage 2: ghost the rotated rectangle through the width point.
-      drawPoint(ctx, p2, cam, COLOR_PREVIEW);
-      const corners = rect3pCorners(p1, p2, current);
-      if (corners) {
-        for (let i = 0; i < 4; i++) {
-          drawLine(
-            ctx,
-            corners[i],
-            corners[(i + 1) % 4],
-            cam,
-            COLOR_PREVIEW,
-            STROKE_PX,
-          );
-          drawPoint(ctx, corners[i], cam, COLOR_PREVIEW);
-        }
-      } else {
-        drawLine(ctx, p1, p2, cam, COLOR_PREVIEW, STROKE_PX);
-      }
+    if (drag.p2 !== null) {
+      const res = circleThrough3(drag.p1, drag.p2, drag.current);
+      if (res) drawRadiusLabel(ctx, res.center, res.radius, cam);
     }
   } else if (drag.kind === "regular_polygon") {
-    const { center, current } = drag;
-    const radius = Math.hypot(current[0] - center[0], current[1] - center[1]);
-    const verts = regularPolygonVertices(
-      center,
-      radius,
-      Number(session.toolDraft?.sides) || 6,
-      session.toolDraft?.inscribed !== false,
-    );
-    if (verts.length >= 3) {
-      ctx.strokeStyle = COLOR_PREVIEW;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      const [px0, py0] = sketchToScreen(verts[0][0], verts[0][1], cam);
-      ctx.moveTo(px0, py0);
-      for (let i = 1; i < verts.length; i++) {
-        const [px, py] = sketchToScreen(verts[i][0], verts[i][1], cam);
-        ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.stroke();
-      for (const v of verts) {
-        drawPoint(ctx, v, cam, COLOR_PREVIEW);
-      }
-      drawPoint(ctx, center, cam, COLOR_PREVIEW);
-      drawRadiusLabel(ctx, center, radius, cam);
-    }
-  } else if (drag.kind === "polygon") {
-    const { vertices, current } = drag;
-    if (vertices.length > 0) {
-      ctx.strokeStyle = COLOR_PREVIEW;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      const [px0, py0] = sketchToScreen(vertices[0][0], vertices[0][1], cam);
-      ctx.moveTo(px0, py0);
-      for (let i = 1; i < vertices.length; i++) {
-        const [px, py] = sketchToScreen(vertices[i][0], vertices[i][1], cam);
-        ctx.lineTo(px, py);
-      }
-      const [cx, cy] = sketchToScreen(current[0], current[1], cam);
-      ctx.lineTo(cx, cy);
-      // Close back to first vertex as a dashed ghost.
-      ctx.stroke();
-      ctx.setLineDash([4, 4]);
-      ctx.lineTo(px0, py0);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // Draw vertex dots.
-      for (const v of vertices) {
-        drawPoint(ctx, v, cam, COLOR_PREVIEW);
-      }
-    }
-  } else if (drag.kind === "spline") {
-    const { points, current, mode } = drag;
-    if (points.length > 0) {
-      // Live curve through the placed points plus the cursor. F23-full:
-      // in control mode use de Boor (B-spline) + a dashed control
-      // polygon guide; otherwise Catmull-Rom interpolation.
-      const ctrl: Vec2[] = [...points, current];
-      const isControl = mode === "control";
-      if (isControl) {
-        ctx.save();
-        ctx.setLineDash([6, 4]);
-        ctx.strokeStyle = COLOR_GUIDE;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        const [gx0, gy0] = sketchToScreen(ctrl[0][0], ctrl[0][1], cam);
-        ctx.moveTo(gx0, gy0);
-        for (let i = 1; i < ctrl.length; i++) {
-          const [px, py] = sketchToScreen(ctrl[i][0], ctrl[i][1], cam);
-          ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-        ctx.restore();
-      }
-      const sampled = isControl
-        ? bsplinePoints(ctrl, 3, false, 48)
-        : catmullRomPoints(ctrl, false, 16);
-      if (sampled.length >= 2) {
-        ctx.strokeStyle = COLOR_PREVIEW;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        const [sx0, sy0] = sketchToScreen(sampled[0][0], sampled[0][1], cam);
-        ctx.moveTo(sx0, sy0);
-        for (let i = 1; i < sampled.length; i++) {
-          const [px, py] = sketchToScreen(sampled[i][0], sampled[i][1], cam);
-          ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-      }
-      // Control-point dots (the placed ones, not the cursor).
-      for (const p of points) {
-        drawPoint(ctx, p, cam, COLOR_PREVIEW);
-      }
-    }
+    const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+    drawRadiusLabel(ctx, drag.center, r, cam);
   } else if (drag.kind === "arc") {
-    const { center, start, current, startAngle, sweep } = drag;
-    if (start === null) {
-      // Stage 1: picking radius/start — ghost full circle + radius spoke.
-      const r = Math.hypot(current[0] - center[0], current[1] - center[1]);
-      drawCircle(ctx, center, r, cam, COLOR_PREVIEW);
-      drawLine(ctx, center, current, cam, COLOR_PREVIEW, STROKE_PX);
-      drawPoint(ctx, center, cam, COLOR_PREVIEW);
-      drawRadiusLabel(ctx, center, r, cam);
-    } else {
-      // Stage 2: sweeping — the arc itself plus the start spoke.
-      const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
-      drawArc(ctx, center, r, startAngle, sweep, cam, COLOR_PREVIEW, STROKE_PX);
-      drawLine(ctx, center, start, cam, COLOR_PREVIEW, 1);
-      drawPoint(ctx, center, cam, COLOR_PREVIEW);
-      drawPoint(ctx, start, cam, COLOR_PREVIEW);
-      drawRadiusLabel(ctx, center, r, cam);
-    }
+    const r =
+      drag.start === null
+        ? Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1])
+        : Math.hypot(drag.start[0] - drag.center[0], drag.start[1] - drag.center[1]);
+    drawRadiusLabel(ctx, drag.center, r, cam);
   } else if (drag.kind === "marquee") {
     drawMarquee(ctx, drag.start, drag.current, cam);
-  } else if (hover) {
-    // Hover preview outside of a drag — shows where a click
-    // would land, which is crucial to see the snap magnetism
-    // before committing.
-    drawPoint(ctx, hover, cam, COLOR_PREVIEW);
   }
 
-  // Snap indicator is drawn last so it sits on top of the
-  // preview geometry. The anchor is `null` when no snap
-  // candidate was selected.
+  // Snap label (text). The ring renders in 3D (SketchHud3D).
   if (snap.anchor && snap.candidate) {
     drawSnapIndicator(ctx, snap.anchor, snap.candidate.label, cam);
   }
@@ -2672,13 +2635,10 @@ function drawSnapIndicator(
   label: string,
   cam: Readonly<SketchCameraState>,
 ): void {
+  // The snap RING renders as 3D scene geometry (SketchHud3D); here we draw
+  // only the text label pill (screen-space HUD).
   const [px, py] = sketchToScreen(anchor[0], anchor[1], cam);
   ctx.save();
-  ctx.strokeStyle = COLOR_SNAP;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(px, py, SNAP_RING_PX, 0, Math.PI * 2);
-  ctx.stroke();
   // Label — small pill just above and right of the anchor.
   ctx.font = LABEL_FONT;
   ctx.textBaseline = "middle";
@@ -2701,169 +2661,6 @@ function drawSnapIndicator(
   ctx.restore();
 }
 
-function drawLine(
-  ctx: CanvasRenderingContext2D,
-  a: [number, number],
-  b: [number, number],
-  cam: Readonly<SketchCameraState>,
-  color: string,
-  widthPx: number,
-): void {
-  const [ax, ay] = sketchToScreen(a[0], a[1], cam);
-  const [bx, by] = sketchToScreen(b[0], b[1], cam);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = widthPx;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.lineTo(bx, by);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawCircle(
-  ctx: CanvasRenderingContext2D,
-  center: [number, number],
-  radiusMm: number,
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  // Tickets yx6a/bxoo: sample in sketch space and project each point —
-  // under a tilted camera the circle is an ellipse on screen, which
-  // `ctx.arc` can't draw.
-  if (radiusMm * cam.zoom < 0.5) return;
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = STROKE_PX;
-  ctx.beginPath();
-  const steps = 64;
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * Math.PI * 2;
-    const [px, py] = sketchToScreen(
-      center[0] + radiusMm * Math.cos(t),
-      center[1] + radiusMm * Math.sin(t),
-      cam,
-    );
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-/**
- * Draw an axis-aligned (optionally rotated) ellipse via `ctx.ellipse`
- * in SCREEN space. radius_x/radius_y are sketch-space lengths scaled by
- * the camera zoom. Sketch space is Y-up but the canvas is Y-down, so the
- * rotation is negated to keep the on-screen tilt matching the kernel's
- * CCW convention (no-op at rotation 0). Skips degenerate ellipses.
- */
-function drawEllipse(
-  ctx: CanvasRenderingContext2D,
-  center: [number, number],
-  radiusXMm: number,
-  radiusYMm: number,
-  rotation: number,
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  if (radiusXMm * cam.zoom < 0.5 || radiusYMm * cam.zoom < 0.5) return;
-  // Tickets yx6a/bxoo: sample the rotated ellipse in sketch space and
-  // project each point (see drawCircle).
-  const cosR = Math.cos(rotation);
-  const sinR = Math.sin(rotation);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = STROKE_PX;
-  ctx.beginPath();
-  const steps = 64;
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * Math.PI * 2;
-    const ex = radiusXMm * Math.cos(t);
-    const ey = radiusYMm * Math.sin(t);
-    const [px, py] = sketchToScreen(
-      center[0] + ex * cosR - ey * sinR,
-      center[1] + ex * sinR + ey * cosR,
-      cam,
-    );
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-/**
- * Draw a centre-to-centre slot (stadium) outline: two straight edges
- * joined by two outward-bulging semicircle caps. The boundary geometry
- * comes from {@link slotOutline} (the same math the kernel lowers to),
- * and the caps are sampled in sketch space via {@link sampleArc} so the
- * ±π sweeps render correctly on the Y-down canvas (`ctx.arc` would
- * misinterpret the sketch-space angles). Skips degenerate slots.
- */
-function drawSlot(
-  ctx: CanvasRenderingContext2D,
-  a: [number, number],
-  b: [number, number],
-  radiusMm: number,
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  const o = slotOutline(a, b, radiusMm);
-  if (!o || radiusMm * cam.zoom < 0.5) return;
-  // One continuous loop: A+r·n → B+r·n, cap B, B−r·n → A−r·n, cap A.
-  const loop: [number, number][] = [o.aPlus, o.bPlus];
-  loop.push(...sampleArc(o.centerB, o.radius, o.capBStart, -Math.PI));
-  loop.push(o.aMinus);
-  loop.push(...sampleArc(o.centerA, o.radius, o.capAStart, -Math.PI));
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = STROKE_PX;
-  ctx.lineJoin = "round";
-  ctx.beginPath();
-  for (let i = 0; i < loop.length; i++) {
-    const [px, py] = sketchToScreen(loop[i][0], loop[i][1], cam);
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.closePath();
-  ctx.stroke();
-  ctx.restore();
-}
-
-/**
- * Draw an arc by sampling it in sketch space and projecting each point
- * through `sketchToScreen`. Going via `ctx.arc` would feed sketch-space
- * angles into the Y-down canvas convention and mirror the arc relative to
- * its grips; the sampler keeps drawing, grips and the kernel in agreement.
- */
-function drawArc(
-  ctx: CanvasRenderingContext2D,
-  center: [number, number],
-  radiusMm: number,
-  startAngle: number,
-  sweep: number,
-  cam: Readonly<SketchCameraState>,
-  color: string,
-  widthPx: number,
-): void {
-  if (radiusMm * cam.zoom < 0.5 || Math.abs(sweep) < 1e-4) return;
-  const pts = sampleArc(center, radiusMm, startAngle, sweep);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = widthPx;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  for (let i = 0; i < pts.length; i++) {
-    const [px, py] = sketchToScreen(pts[i][0], pts[i][1], cam);
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
 function drawRadiusLabel(
   ctx: CanvasRenderingContext2D,
   center: [number, number],
@@ -2880,31 +2677,6 @@ function drawRadiusLabel(
     cx + LABEL_OFFSET_PX,
     cy - LABEL_OFFSET_PX,
   );
-}
-
-function drawRectangle(
-  ctx: CanvasRenderingContext2D,
-  a: [number, number],
-  b: [number, number],
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  const minX = Math.min(a[0], b[0]);
-  const maxX = Math.max(a[0], b[0]);
-  const minY = Math.min(a[1], b[1]);
-  const maxY = Math.max(a[1], b[1]);
-  const bl: [number, number] = [minX, minY];
-  const br: [number, number] = [maxX, minY];
-  const tr: [number, number] = [maxX, maxY];
-  const tl: [number, number] = [minX, maxY];
-  drawLine(ctx, bl, br, cam, color, STROKE_PX);
-  drawLine(ctx, br, tr, cam, color, STROKE_PX);
-  drawLine(ctx, tr, tl, cam, color, STROKE_PX);
-  drawLine(ctx, tl, bl, cam, color, STROKE_PX);
-  drawPoint(ctx, bl, cam, color);
-  drawPoint(ctx, br, cam, color);
-  drawPoint(ctx, tr, cam, color);
-  drawPoint(ctx, tl, cam, color);
 }
 
 /**
@@ -2950,21 +2722,6 @@ function drawSizeLabel(
   const centre: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const [px, py] = sketchToScreen(centre[0], centre[1], cam);
   drawDimensionText(ctx, `${w.toFixed(2)} × ${h.toFixed(2)}`, px, py);
-}
-
-function drawPoint(
-  ctx: CanvasRenderingContext2D,
-  at: [number, number],
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  const [px, py] = sketchToScreen(at[0], at[1], cam);
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(px, py, POINT_PX, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
 }
 
 /**
