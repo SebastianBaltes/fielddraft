@@ -33,6 +33,7 @@ import {
   SketchOverlay3D,
   SketchSession3D,
   SketchHud3D,
+  SketchLabels3D,
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
@@ -116,6 +117,7 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       <SketchOverlay3D />
       <SketchSession3D />
       <SketchHud3D />
+      <SketchLabels3D />
       <DatumOverlay />
       <Invalidator ndc={ndc} />
       <PerfProbe renderMode={renderMode} />

@@ -3,7 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial, PointsNodeMaterial, MeshBasicNodeMaterial } from "three/webgpu";
+import { Line2NodeMaterial, PointsNodeMaterial, MeshBasicNodeMaterial, SpriteNodeMaterial } from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -48,6 +48,12 @@ import {
   setHudInvalidate,
   clearSketchHud,
 } from "./sketchHudBridge";
+import {
+  readSketchLabels,
+  setLabelInvalidate,
+  clearSketchLabels,
+  type SketchLabel,
+} from "./sketchLabelBridge";
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -519,6 +525,221 @@ export function SketchHud3D() {
     if (hud.snap) addPoints([...w(hud.snap)], M.snap, 1001);
 
     invalidate();
+  });
+
+  return <group ref={groupRef} />;
+}
+
+// Mirror SketchCanvas2d's overlay text tokens so the 3D labels read
+// identically to the old canvas readouts.
+const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
+const LABEL_BG = "rgba(246, 246, 244, 0.92)";
+const CONSTRAINT_FONT = "bold 11px sans-serif";
+const LABEL_FONT_PX = 14;
+const CONSTRAINT_FONT_PX = 11;
+// Supersample the label canvas so the billboard texture stays crisp on
+// hi-dpi displays (the sprite is drawn at a constant CSS-pixel size).
+const LABEL_SUPERSAMPLE = 2;
+
+let labelMeasureCtx: CanvasRenderingContext2D | null = null;
+function measureLabelWidth(text: string, font: string): number {
+  if (!labelMeasureCtx) {
+    labelMeasureCtx = document.createElement("canvas").getContext("2d");
+  }
+  if (!labelMeasureCtx) return text.length * 8;
+  labelMeasureCtx.font = font;
+  return labelMeasureCtx.measureText(text).width;
+}
+
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number, r: number,
+): void {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+/**
+ * Rasterise one label into an offscreen canvas. The canvas holds the world
+ * anchor at its CENTRE plus the text box placed `offsetPx` away (+x right,
+ * +y up), so a centred sprite pins the anchor to the geometry while the
+ * screen nudge is baked into the texture (constant pixels, never zoom-scaled).
+ * Returns the canvas and its CSS-pixel size (sprite scale source).
+ */
+function renderLabelCanvas(label: SketchLabel): {
+  canvas: HTMLCanvasElement;
+  cssW: number;
+  cssH: number;
+} {
+  const ss = LABEL_SUPERSAMPLE;
+  const font = label.style === "constraint" ? CONSTRAINT_FONT : LABEL_FONT;
+  const fontPx = label.style === "constraint" ? CONSTRAINT_FONT_PX : LABEL_FONT_PX;
+  const textW = measureLabelWidth(label.text, font);
+
+  let boxW: number;
+  let boxH: number;
+  let pillR = 0;
+  if (label.style === "snap") {
+    boxW = textW + 14;
+    boxH = fontPx + 12;
+    pillR = 5;
+  } else if (label.style === "constraint") {
+    boxW = textW + 6;
+    boxH = fontPx + 6;
+  } else {
+    // dimension: extra room for the legibility halo stroke.
+    boxW = textW + 8;
+    boxH = fontPx + 8;
+  }
+
+  const [dx, dy] = label.offsetPx;
+  const cssW = boxW + 2 * Math.abs(dx);
+  const cssH = boxH + 2 * Math.abs(dy);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(cssW * ss));
+  canvas.height = Math.max(1, Math.ceil(cssH * ss));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { canvas, cssW, cssH };
+  ctx.scale(ss, ss);
+
+  // Box centre: dx right, dy up (canvas Y points down → subtract dy).
+  const bcx = cssW / 2 + dx;
+  const bcy = cssH / 2 - dy;
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  if (label.style === "snap") {
+    const x = bcx - boxW / 2;
+    const y = bcy - boxH / 2;
+    ctx.fillStyle = LABEL_BG;
+    ctx.strokeStyle = label.color;
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, x + 0.5, y + 0.5, boxW - 1, boxH - 1, pillR);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = label.color;
+    ctx.fillText(label.text, bcx, bcy);
+  } else if (label.style === "dimension") {
+    // Thin halo so the number stays legible over the grid (no box).
+    ctx.strokeStyle = LABEL_BG;
+    ctx.lineWidth = 3;
+    ctx.strokeText(label.text, bcx, bcy);
+    ctx.fillStyle = label.color;
+    ctx.fillText(label.text, bcx, bcy);
+  } else {
+    ctx.fillStyle = label.color;
+    ctx.fillText(label.text, bcx, bcy);
+  }
+  return { canvas, cssW, cssH };
+}
+
+interface LabelSprite {
+  sprite: THREE.Sprite;
+  tex: THREE.CanvasTexture;
+  mat: SpriteNodeMaterial;
+  anchorUv: [number, number];
+  cssW: number;
+  cssH: number;
+}
+
+/**
+ * Sketch TEXT LABELS (dimension readouts, constraint glyphs, the snap label)
+ * as camera-facing billboard sprites, rebuilt from `sketchLabelBridge` on a
+ * version change. Each label is rasterised into a small canvas texture and
+ * drawn at a CONSTANT pixel size (`sizeAttenuation: false`) so it reads the
+ * same at any zoom while staying pinned to its sketch-plane anchor — no more
+ * lagging behind the model on a camera move (the old 2D-overlay text bug).
+ * The marquee stays on the overlay: it's a pure screen-space selection box,
+ * not anchored to the sketch.
+ */
+export function SketchLabels3D() {
+  const invalidate = useThree((s) => s.invalidate);
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const groupRef = useRef<THREE.Group>(null);
+  const lastVer = useRef(-1);
+  const itemsRef = useRef<LabelSprite[]>([]);
+
+  useEffect(() => {
+    setLabelInvalidate(invalidate);
+    return () => {
+      setLabelInvalidate(null);
+      clearSketchLabels();
+    };
+  }, [invalidate]);
+
+  // Dispose on unmount (session closed).
+  useEffect(() => {
+    const items = itemsRef.current;
+    const group = groupRef.current;
+    return () => {
+      for (const it of items) {
+        group?.remove(it.sprite);
+        it.tex.dispose();
+        it.mat.dispose();
+      }
+    };
+  }, []);
+
+  useFrame(() => {
+    const set = readSketchLabels();
+    const group = groupRef.current;
+    if (!group) return;
+
+    // Rebuild sprite set only when the labels actually changed.
+    if (set.version !== lastVer.current) {
+      lastVer.current = set.version;
+      for (const it of itemsRef.current) {
+        group.remove(it.sprite);
+        it.tex.dispose();
+        it.mat.dispose();
+      }
+      itemsRef.current = [];
+      for (const label of set.labels) {
+        const { canvas, cssW, cssH } = renderLabelCanvas(label);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        const mat = new SpriteNodeMaterial();
+        mat.map = tex;
+        mat.transparent = true;
+        mat.depthTest = false;
+        mat.depthWrite = false;
+        mat.sizeAttenuation = false; // constant pixel size, depth-independent
+        const sprite = new THREE.Sprite(mat);
+        sprite.frustumCulled = false;
+        sprite.renderOrder = 1002; // above the snap ring (1001)
+        sprite.layers.enable(OVERLAY_LAYER);
+        group.add(sprite);
+        itemsRef.current.push({ sprite, tex, mat, anchorUv: label.anchorUv, cssW, cssH });
+      }
+      invalidate();
+    }
+
+    if (itemsRef.current.length === 0) return;
+    // Constant pixel size with `sizeAttenuation: false`: a perspective
+    // camera's NDC offset per geometry unit equals the sprite's object
+    // scale, so 1 CSS px maps to `2·tan(fov/2)/viewportHeightPx` world-scale
+    // units. (Runs every rendered frame so a camera move keeps the labels
+    // sharp; cheap — only a handful of sprites.)
+    const persp = camera as THREE.PerspectiveCamera;
+    const k = persp.isPerspectiveCamera
+      ? (2 * Math.tan(persp.fov * 0.5 * THREE.MathUtils.DEG2RAD)) / size.height
+      : 1 / size.height;
+    const frame = getSketchPlaneFrame();
+    for (const it of itemsRef.current) {
+      const w = planeToWorld(it.anchorUv[0], it.anchorUv[1], frame);
+      it.sprite.position.set(w[0], w[1], w[2]);
+      it.sprite.scale.set(it.cssW * k, it.cssH * k, 1);
+    }
   });
 
   return <group ref={groupRef} />;

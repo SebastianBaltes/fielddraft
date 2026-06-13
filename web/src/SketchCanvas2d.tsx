@@ -63,6 +63,11 @@ import {
 } from "./sketchPrimitiveVariants";
 import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { publishSketchHud, type SketchHudGeometry } from "./sketchHudBridge";
+import {
+  publishSketchLabels,
+  clearSketchLabels,
+  type SketchLabel,
+} from "./sketchLabelBridge";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -96,8 +101,6 @@ function dofColor(dof: number): string {
 }
 
 const COLOR_SNAP = "#f59e0b";
-const LABEL_FONT = "600 14px system-ui, -apple-system, sans-serif";
-const LABEL_BG = "rgba(246, 246, 244, 0.92)";
 /** Dimension readouts: unobtrusive plain text in the accent blue —
  *  no box, so the numbers never compete with the geometry. */
 const LABEL_DIM = "#3b82f6";
@@ -764,6 +767,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     );
     return () => setSketchPlaneFrame(null);
   }, [store, session.active, session.planeQuery]);
+
+  // Clear the published 3D text labels when the sketch session ends (this
+  // component unmounts) — unlike the HUD they are non-empty at idle (constraint
+  // glyphs, recent-line readout), so they would otherwise linger in the scene.
+  useEffect(() => () => clearSketchLabels(), []);
 
   // K6b: project analytic B-Rep edges onto the sketch plane for snap targets.
   useEffect(() => {
@@ -2545,7 +2553,64 @@ function drawOverlay(
     // Solver not available — fall back to the underconstrained color.
   }
 
-  // Constraint glyphs (text) anchored to the constrained geometry.
+  // Text labels — constraint glyphs, dimension readouts, the snap label —
+  // render as 3D billboard sprites (SketchLabels3D): collected here in plane
+  // (u, v) space and published, drawn in-scene so they ride the camera in
+  // lockstep with the geometry instead of lagging on this 2D canvas. The
+  // marquee (below) stays here — it's a pure screen-space selection box.
+  const labels: SketchLabel[] = [];
+
+  // Screen-space perpendicular nudge (px, +x right +y up) that pushes a line's
+  // dimension readout off the line — the old canvas left-normal, recomputed in
+  // the same camera so the 3D label lands exactly where the readout used to.
+  const lineOffsetPx = (
+    a: [number, number],
+    b: [number, number],
+  ): [number, number] => {
+    const [sx, sy] = sketchToScreen(a[0], a[1], cam);
+    const [ex, ey] = sketchToScreen(b[0], b[1], cam);
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return [0, LABEL_OFFSET_PX];
+    // Canvas left-normal (y-down); flip y for the sprite's y-up offset.
+    return [(dy / len) * LABEL_OFFSET_PX, (dx / len) * LABEL_OFFSET_PX];
+  };
+  const pushDistance = (a: [number, number], b: [number, number]) => {
+    const dist = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (dist < 1e-4) return;
+    labels.push({
+      anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+      text: dist.toFixed(2),
+      style: "dimension",
+      color: LABEL_DIM,
+      offsetPx: lineOffsetPx(a, b),
+    });
+  };
+  const pushSize = (a: [number, number], b: [number, number]) => {
+    const w = Math.abs(b[0] - a[0]);
+    const h = Math.abs(b[1] - a[1]);
+    if (w < 1e-4 && h < 1e-4) return;
+    labels.push({
+      anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+      text: `${w.toFixed(2)} × ${h.toFixed(2)}`,
+      style: "dimension",
+      color: LABEL_DIM,
+      offsetPx: [0, 0],
+    });
+  };
+  const pushRadius = (center: [number, number], r: number) => {
+    if (r < 1e-4) return;
+    labels.push({
+      anchorUv: center,
+      text: `R ${r.toFixed(2)}`,
+      style: "dimension",
+      color: LABEL_DIM,
+      offsetPx: [LABEL_OFFSET_PX, LABEL_OFFSET_PX],
+    });
+  };
+
+  // Constraint glyphs anchored to the constrained geometry.
   {
     const entityPos = (entityId: number): [number, number] | null => {
       const e = skState.entities.find((x) => x.id === entityId);
@@ -2562,11 +2627,6 @@ function drawOverlay(
       if (!s || !en) return null;
       return [(s[0] + en[0]) / 2, (s[1] + en[1]) / 2];
     };
-
-    ctx.font = "bold 11px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = committedColor;
     for (const c of skState.constraints) {
       let anchor: [number, number] | null = null;
       let label = "C";
@@ -2581,103 +2641,67 @@ function drawOverlay(
         label = "⊙";
       }
       if (!anchor) continue;
-      const [px, py] = sketchToScreen(anchor[0], anchor[1], cam);
-      ctx.fillText(label, px, py - 10);
+      labels.push({
+        anchorUv: anchor,
+        text: label,
+        style: "constraint",
+        color: committedColor,
+        offsetPx: [0, 10],
+      });
     }
   }
 
-  // Dimension readouts (text). The recent-line readout is click-to-edit
-  // (hit-tested in onPointerDown); the others track the live drag.
+  // Dimension readouts. The recent-line readout is click-to-edit (hit-tested
+  // in onPointerDown); the others track the live drag.
   if (recentLine !== null && drag.kind === "idle") {
-    drawDistanceLabel(ctx, recentLine.start, recentLine.end, cam);
+    pushDistance(recentLine.start, recentLine.end);
   }
   if (drag.kind === "line" || drag.kind === "pending_line") {
-    drawDistanceLabel(ctx, drag.start, drag.current, cam);
+    pushDistance(drag.start, drag.current);
   } else if (drag.kind === "rectangle") {
-    drawSizeLabel(ctx, drag.start, drag.current, cam);
+    pushSize(drag.start, drag.current);
   } else if (drag.kind === "circle") {
     const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
-    drawRadiusLabel(ctx, drag.center, r, cam);
+    pushRadius(drag.center, r);
   } else if (drag.kind === "rect_center") {
     const opp: [number, number] = [
       2 * drag.center[0] - drag.current[0],
       2 * drag.center[1] - drag.current[1],
     ];
-    drawSizeLabel(ctx, opp, drag.current, cam);
+    pushSize(opp, drag.current);
   } else if (drag.kind === "circle_3p") {
     if (drag.p2 !== null) {
       const res = circleThrough3(drag.p1, drag.p2, drag.current);
-      if (res) drawRadiusLabel(ctx, res.center, res.radius, cam);
+      if (res) pushRadius(res.center, res.radius);
     }
   } else if (drag.kind === "regular_polygon") {
     const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
-    drawRadiusLabel(ctx, drag.center, r, cam);
+    pushRadius(drag.center, r);
   } else if (drag.kind === "arc") {
     const r =
       drag.start === null
         ? Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1])
         : Math.hypot(drag.start[0] - drag.center[0], drag.start[1] - drag.center[1]);
-    drawRadiusLabel(ctx, drag.center, r, cam);
+    pushRadius(drag.center, r);
   } else if (drag.kind === "marquee") {
     drawMarquee(ctx, drag.start, drag.current, cam);
   }
 
-  // Snap label (text). The ring renders in 3D (SketchHud3D).
+  // Snap label — a small pill up-and-right of the snap ring (the ring renders
+  // in 3D via SketchHud3D).
   if (snap.anchor && snap.candidate) {
-    drawSnapIndicator(ctx, snap.anchor, snap.candidate.label, cam);
+    labels.push({
+      anchorUv: snap.anchor,
+      text: snap.candidate.label,
+      style: "snap",
+      color: COLOR_SNAP,
+      offsetPx: [SNAP_RING_PX + 6, SNAP_RING_PX + 6],
+    });
   }
+
+  publishSketchLabels(labels);
 }
 
-
-function drawSnapIndicator(
-  ctx: CanvasRenderingContext2D,
-  anchor: [number, number],
-  label: string,
-  cam: Readonly<SketchCameraState>,
-): void {
-  // The snap RING renders as 3D scene geometry (SketchHud3D); here we draw
-  // only the text label pill (screen-space HUD).
-  const [px, py] = sketchToScreen(anchor[0], anchor[1], cam);
-  ctx.save();
-  // Label — small pill just above and right of the anchor.
-  ctx.font = LABEL_FONT;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  const textX = px + SNAP_RING_PX + 6;
-  const textY = py - SNAP_RING_PX - 6;
-  const metrics = ctx.measureText(label);
-  const boxX = textX - 4;
-  const boxY = textY - 10;
-  const boxW = metrics.width + 8;
-  const boxH = 20;
-  ctx.fillStyle = LABEL_BG;
-  ctx.strokeStyle = COLOR_SNAP;
-  ctx.lineWidth = 1;
-  roundRect(ctx, boxX, boxY, boxW, boxH, 4);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = COLOR_SNAP;
-  ctx.fillText(label, textX, textY);
-  ctx.restore();
-}
-
-function drawRadiusLabel(
-  ctx: CanvasRenderingContext2D,
-  center: [number, number],
-  radiusMm: number,
-  cam: Readonly<SketchCameraState>,
-): void {
-  if (radiusMm < 1e-4) return;
-  const [cx, cy] = sketchToScreen(center[0], center[1], cam);
-  // Anchor the label slightly above-right of the centre so it
-  // doesn't clash with the centre-point indicator.
-  drawDimensionText(
-    ctx,
-    `R ${radiusMm.toFixed(2)}`,
-    cx + LABEL_OFFSET_PX,
-    cy - LABEL_OFFSET_PX,
-  );
-}
 
 /**
  * F4: draw the box-select marquee. The drag direction decides the
@@ -2710,25 +2734,12 @@ function drawMarquee(
   ctx.restore();
 }
 
-function drawSizeLabel(
-  ctx: CanvasRenderingContext2D,
-  a: [number, number],
-  b: [number, number],
-  cam: Readonly<SketchCameraState>,
-): void {
-  const w = Math.abs(b[0] - a[0]);
-  const h = Math.abs(b[1] - a[1]);
-  if (w < 1e-4 && h < 1e-4) return;
-  const centre: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  const [px, py] = sketchToScreen(centre[0], centre[1], cam);
-  drawDimensionText(ctx, `${w.toFixed(2)} × ${h.toFixed(2)}`, px, py);
-}
-
 /**
  * Anchor (canvas CSS px) of a line's dimension readout: the midpoint,
- * pushed `LABEL_OFFSET_PX` along the line's visual left-normal. Shared
- * by the label renderer and the click-to-edit hit test so the two can
- * never disagree. `null` for a (near) zero-length screen segment.
+ * pushed `LABEL_OFFSET_PX` along the line's visual left-normal. Used by the
+ * click-to-edit hit test and to place the floating value-input pill (the 3D
+ * label sprite mirrors the same offset). `null` for a (near) zero-length
+ * screen segment.
  */
 function distanceLabelAnchorPx(
   start: [number, number],
@@ -2753,68 +2764,6 @@ function distanceLabelAnchorPx(
     (sx + ex) / 2 + nx * LABEL_OFFSET_PX,
     (sy + ey) / 2 + ny * LABEL_OFFSET_PX,
   ];
-}
-
-/**
- * Unobtrusive dimension readout beside a line: plain accent-coloured
- * number, no box, no unit — it must never compete with the geometry.
- * Used both for the in-flight preview and for the click-to-edit
- * readout on the most recently placed line.
- */
-function drawDistanceLabel(
-  ctx: CanvasRenderingContext2D,
-  start: [number, number],
-  end: [number, number],
-  cam: Readonly<SketchCameraState>,
-): void {
-  const anchor = distanceLabelAnchorPx(start, end, cam);
-  if (anchor === null) return;
-  // Distance is measured in sketch-plane units (mm).
-  const distMm = Math.hypot(end[0] - start[0], end[1] - start[1]);
-  drawDimensionText(ctx, distMm.toFixed(2), anchor[0], anchor[1]);
-}
-
-/** Shared renderer for the subtle drag-preview dimension readouts. */
-function drawDimensionText(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  x: number,
-  y: number,
-): void {
-  ctx.save();
-  ctx.font = LABEL_FONT;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
-  // Thin halo so the number stays legible over the grid without
-  // needing a boxed background.
-  ctx.strokeStyle = LABEL_BG;
-  ctx.lineWidth = 3;
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = LABEL_DIM;
-  ctx.fillText(text, x, y);
-  ctx.restore();
-}
-
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-): void {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.lineTo(x + w - rr, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
-  ctx.lineTo(x + w, y + h - rr);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
-  ctx.lineTo(x + rr, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
-  ctx.lineTo(x, y + rr);
-  ctx.quadraticCurveTo(x, y, x + rr, y);
-  ctx.closePath();
 }
 
 // ─── helpers ────────────────────────────────────────────────────
