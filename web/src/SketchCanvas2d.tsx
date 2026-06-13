@@ -63,8 +63,6 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
-import { SESSION_3D_TYPES } from "./sketchOutline";
-import { closedRegionsCached } from "./sketchRegions";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -93,10 +91,6 @@ const COLOR_UNDER = "#2563eb";
 const COLOR_FULL = "#16a34a";
 const COLOR_OVER = "#dc2626";
 const COLOR_PREVIEW = "#93c5fd";
-// Construction (reference) geometry — muted amber, drawn dashed. Matches
-// the --color-construction token; the canvas needs a literal string.
-const COLOR_CONSTRUCTION = "#b07820";
-const CONSTRUCTION_DASH = [6, 4];
 
 function dofColor(dof: number): string {
   if (dof > 0) return COLOR_UNDER;
@@ -128,20 +122,12 @@ const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
 /** F23-full: dashed control-polygon guide for a control-point
  *  B-spline (lines between consecutive control points). */
 const COLOR_GUIDE = "rgba(100, 116, 139, 0.6)";
-/** F23 endpoint tangent: the first/last control-polygon edges of an
- *  open control-mode B-spline are real `line` entities ("tangent
- *  legs") that the user can select and constrain. Draw them distinctly
- *  from the rest of the dashed guide so they read as tangent handles. */
-const COLOR_TANGENT_LEG = "#7c3aed";
 /** Highlight colour for entities picked in select mode. */
 const COLOR_SELECTED = "#f97316";
 /** F4 marquee: enclosing ("window", left→right) = solid blue border;
  *  crossing (right→left) = dashed green border. Translucent fills. */
 const COLOR_MARQUEE_ENCLOSING = "#2563eb";
 const COLOR_MARQUEE_CROSSING = "#16a34a";
-/** Ticket 7x4v: translucent shading for closed sketch regions —
- *  Onshape's light gray face fill. */
-const COLOR_REGION_FILL = "rgba(148, 163, 184, 0.18)";
 const FILL_MARQUEE_ENCLOSING = "rgba(37, 99, 235, 0.12)";
 const FILL_MARQUEE_CROSSING = "rgba(22, 163, 74, 0.12)";
 const MARQUEE_CROSSING_DASH = [6, 4];
@@ -2353,71 +2339,6 @@ function drawOverlay(
   // Bail with a cleared canvas rather than freezing the tab.
   if (!(cam.zoom > 0)) return;
 
-  // Origin axes: the sketch plane shows NO coordinate grid (ticket g5km),
-  // only the two darker axis lines through the origin for orientation.
-  // Each is a straight sketch-space segment projected through the camera,
-  // so it tilts with the plane in the 3D view (tickets yx6a/bxoo).
-  {
-    // Visible (u, v) range: unproject the canvas corners onto the
-    // plane and take the bounding box. Under a tilted perspective view
-    // the corners can land far out (near the horizon) — clamp the span
-    // so the axis lines stay bounded.
-    const corners = [
-      screenToSketch(0, 0, cam),
-      screenToSketch(cam.width, 0, cam),
-      screenToSketch(0, cam.height, cam),
-      screenToSketch(cam.width, cam.height, cam),
-    ];
-    const [cu, cv] = screenToSketch(cam.width / 2, cam.height / 2, cam);
-    const maxSpan = (Math.hypot(cam.width, cam.height) / cam.zoom) * 3;
-    const clamp = (x: number, c: number) =>
-      Math.min(c + maxSpan, Math.max(c - maxSpan, x));
-    let left = Infinity, right = -Infinity, bottom = Infinity, top = -Infinity;
-    for (const [u, v] of corners) {
-      left = Math.min(left, clamp(u, cu));
-      right = Math.max(right, clamp(u, cu));
-      bottom = Math.min(bottom, clamp(v, cv));
-      top = Math.max(top, clamp(v, cv));
-    }
-    if (!Number.isFinite(left) || !Number.isFinite(bottom)) return;
-
-    const line = (a: [number, number], b: [number, number]) => {
-      const [ax, ay] = sketchToScreen(a[0], a[1], cam);
-      const [bx, by] = sketchToScreen(b[0], b[1], cam);
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-    };
-
-    // Origin axes (thicker, darker).
-    ctx.strokeStyle = "rgba(0,0,0,0.25)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    line([0, bottom], [0, top]);
-    line([left, 0], [right, 0]);
-    ctx.stroke();
-  }
-
-  // Ticket 7x4v: shade closed regions (Onshape-style) so loops that will
-  // extrude read as faces. ONE fill call with the nonzero rule —
-  // overlapping loops (a circle inside a rectangle extrudes as their
-  // union) must shade uniformly, not double-darken or punch holes.
-  {
-    const regions = closedRegionsCached(session.subCalls);
-    if (regions.length > 0) {
-      ctx.fillStyle = COLOR_REGION_FILL;
-      ctx.beginPath();
-      for (const poly of regions) {
-        for (let i = 0; i < poly.length; i++) {
-          const [px, py] = sketchToScreen(poly[i][0], poly[i][1], cam);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-      }
-      ctx.fill("nonzero");
-    }
-  }
-
   // K6b: draw projected B-Rep edges as faint guide lines.
   if (projectedEdges && projectedEdges.length > 0) {
     ctx.strokeStyle = COLOR_EDGE_GUIDE;
@@ -2434,9 +2355,13 @@ function drawOverlay(
     ctx.setLineDash([]);
   }
 
-  // K6b.6: compute DOF to pick the 3-color status. skState is reused below
-  // for constraint-glyph placement.
+  // skState (solved entities) feeds constraint-glyph placement and the
+  // selection highlight below. Committed GEOMETRY now renders in 3D
+  // (SketchSession3D); drawOverlay no longer strokes it here — only the
+  // transient HUD (selection highlight, grips, constraint glyphs, drag
+  // previews, snap/hover) remains on the overlay.
   const skState = buildDraftSketchState(session.subCalls);
+  // DOF status colour, still used to tint the constraint glyphs.
   let committedColor = COLOR_UNDER;
   try {
     const over =
@@ -2446,265 +2371,6 @@ function drawOverlay(
     committedColor = over ? COLOR_OVER : dofColor(dof);
   } catch {
     // Solver not available — fall back to the underconstrained color.
-  }
-
-  // Draw committed geometry first (darker), then the drag preview
-  // on top (lighter) so the preview always reads as "unfinished".
-  for (const call of session.subCalls) {
-    // Construction geometry renders muted + dashed: it constrains but
-    // is never extruded (the kernel drops it from the region).
-    const isConstruction = Boolean(call.params.construction);
-    // Core primitives' committed outline + vertex dots now render as real
-    // 3D geometry (SketchSession3D) so they no longer reproject on this
-    // overlay's separate rAF loop, which lagged a frame behind the
-    // demand-mode WebGPU render during a camera pan/orbit. Construction
-    // geometry (dashed) and the richer types (spline/path/point) stay here.
-    if (!isConstruction && SESSION_3D_TYPES.has(call.type)) continue;
-    const color = isConstruction ? COLOR_CONSTRUCTION : committedColor;
-    if (isConstruction) ctx.setLineDash(CONSTRUCTION_DASH);
-    if (call.type === "sketch_line") {
-      const start = toXy(call.params.start);
-      const end = toXy(call.params.end);
-      if (start && end) {
-        drawLine(ctx, start, end, cam, color, STROKE_PX);
-        drawPoint(ctx, start, cam, color);
-        drawPoint(ctx, end, cam, color);
-      }
-    } else if (call.type === "sketch_point") {
-      const at = toXy(call.params.at);
-      if (at) drawPoint(ctx, at, cam, color);
-    } else if (call.type === "sketch_rectangle") {
-      const a = toXy(call.params.corner_a);
-      const b = toXy(call.params.corner_b);
-      if (a && b) drawRectangle(ctx, a, b, cam, color);
-    } else if (call.type === "sketch_circle") {
-      const center = toXy(call.params.center);
-      const radius = Number(call.params.radius);
-      if (center && Number.isFinite(radius) && radius > 0) {
-        drawCircle(ctx, center, radius, cam, color);
-        drawPoint(ctx, center, cam, color);
-      }
-    } else if (call.type === "sketch_ellipse") {
-      // The ellipse outline isn't a SketchState entity (only its centre
-      // point is), so it's stroked here directly from the sub-call params
-      // — otherwise it'd be invisible in the sketcher despite extruding.
-      const center = toXy(call.params.center);
-      const radiusX = Number(call.params.radius_x);
-      const radiusY = Number(call.params.radius_y);
-      const rotation = Number(call.params.rotation) || 0;
-      if (
-        center &&
-        Number.isFinite(radiusX) &&
-        Number.isFinite(radiusY) &&
-        radiusX > 0 &&
-        radiusY > 0
-      ) {
-        drawEllipse(ctx, center, radiusX, radiusY, rotation, cam, color);
-        drawPoint(ctx, center, cam, color);
-      }
-    } else if (call.type === "sketch_slot") {
-      // The slot outline isn't made of SketchState entities (only the
-      // two cap centres are), so it's stroked here directly from the
-      // sub-call params — otherwise it'd be invisible in the sketcher
-      // despite extruding.
-      const a = toXy(call.params.center_a);
-      const b = toXy(call.params.center_b);
-      const radius = Number(call.params.radius);
-      if (a && b && Number.isFinite(radius) && radius > 0) {
-        drawSlot(ctx, a, b, radius, cam, color);
-        drawPoint(ctx, a, cam, color);
-        drawPoint(ctx, b, cam, color);
-      }
-    } else if (call.type === "sketch_polygon") {
-      const verts = call.params.vertices;
-      if (Array.isArray(verts) && verts.length >= 4) {
-        const points: [number, number][] = [];
-        for (let i = 0; i + 1 < verts.length; i += 2) {
-          points.push([Number(verts[i]), Number(verts[i + 1])]);
-        }
-        for (let i = 0; i < points.length; i++) {
-          const a = points[i];
-          const b = points[(i + 1) % points.length];
-          drawLine(ctx, a, b, cam, color, STROKE_PX);
-        }
-        for (const p of points) {
-          drawPoint(ctx, p, cam, color);
-        }
-      }
-    } else if (call.type === "sketch_spline") {
-      // The smooth curve isn't made of SketchState entities (only the
-      // control/interpolation points are), so it's stroked here
-      // directly from the sub-call params — otherwise it'd be invisible
-      // despite extruding. F23-full: dispatch on `mode`.
-      const raw = call.params.points;
-      const closed = call.params.closed === true;
-      const isControl = call.params.mode === "control";
-      if (Array.isArray(raw) && raw.length >= 4) {
-        const ctrl: Vec2[] = [];
-        for (let i = 0; i + 1 < raw.length; i += 2) {
-          ctrl.push([Number(raw[i]), Number(raw[i + 1])]);
-        }
-        // F23 endpoint tangent: for an OPEN spline (BOTH modes) the
-        // first/last polygon edges are real `line` entities ("tangent
-        // legs") the user can select + constrain — drawn distinctly
-        // (solid, accent colour, thicker) so they're discoverable as
-        // handles. Indices of the leg edges (edge i = ctrl[i]→ctrl[i+1]).
-        const n = ctrl.length;
-        const legSet = new Set<number>();
-        if (!closed && n >= 2) {
-          legSet.add(0); // start leg = edge cp0→cp1
-          if (n >= 3) legSet.add(n - 2); // end leg = edge cp[N-2]→cp[N-1]
-        }
-        const drawLeg = (i: number) =>
-          drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_TANGENT_LEG, 2);
-        if (isControl) {
-          // F23-full: control mode draws the full control polygon as a
-          // dashed guide, with the endpoint legs overlaid solid.
-          ctx.save();
-          for (let i = 0; i + 1 < n; i++) {
-            if (legSet.has(i)) {
-              ctx.setLineDash([]);
-              drawLeg(i);
-            } else {
-              ctx.setLineDash([6, 4]);
-              drawLine(ctx, ctrl[i], ctrl[i + 1], cam, COLOR_GUIDE, 1);
-            }
-          }
-          if (closed && n >= 2) {
-            ctx.setLineDash([6, 4]);
-            drawLine(ctx, ctrl[n - 1], ctrl[0], cam, COLOR_GUIDE, 1);
-          }
-          ctx.restore();
-        } else {
-          // Interpolation mode has NO control polygon to show, so draw
-          // ONLY the endpoint legs (solid accent) — they're the only
-          // selectable line entities the user can constrain.
-          for (const i of legSet) drawLeg(i);
-        }
-        const sampled = isControl
-          ? bsplinePoints(ctrl, 3, closed, 64)
-          : catmullRomPoints(ctrl, closed, 16);
-        for (let i = 0; i + 1 < sampled.length; i++) {
-          drawLine(ctx, sampled[i], sampled[i + 1], cam, color, STROKE_PX);
-        }
-        // Catmull-Rom needs an explicit closing stroke; bspline's
-        // periodic sampling already returns to the start.
-        if (!isControl && closed && sampled.length >= 2) {
-          drawLine(
-            ctx,
-            sampled[sampled.length - 1],
-            sampled[0],
-            cam,
-            color,
-            STROKE_PX,
-          );
-        }
-        for (const p of ctrl) {
-          drawPoint(ctx, p, cam, color);
-        }
-      }
-    } else if (call.type === "sketch_path") {
-      // An imported analytic path: one or more contours of explicit
-      // line + quadratic-Bézier segments. Every on-/off-curve vertex is
-      // a SketchState point entity (so it's pickable + grip-draggable),
-      // but the smooth outline itself is lowered kernel-side from the
-      // sub-call params, so it's stroked here directly from them. Quads
-      // are sampled into short line segments for the 2D stroke (the
-      // kernel keeps them as EXACT QuadBezier for SDF/extrude).
-      const contours = call.params.contours;
-      if (Array.isArray(contours)) {
-        for (const c of contours) {
-          const cc = c as {
-            start?: unknown;
-            segments?: unknown;
-            closed?: unknown;
-          };
-          const start = cc.start;
-          const segs = cc.segments;
-          if (
-            !Array.isArray(start) ||
-            start.length !== 2 ||
-            !Array.isArray(segs)
-          ) {
-            continue;
-          }
-          let prev: [number, number] = [Number(start[0]), Number(start[1])];
-          const first = prev;
-          // Collect on-curve anchors (start + each segment `to`) and
-          // quad control handles so they render AFTER the stroke as
-          // discoverable, grip-draggable vertices.
-          const anchors: [number, number][] = [first];
-          const ctrls: {
-            cp: [number, number];
-            a: [number, number];
-            b: [number, number];
-          }[] = [];
-          for (const s of segs) {
-            const seg = s as { kind?: unknown; to?: unknown; ctrl?: unknown };
-            const to = seg.to;
-            if (!Array.isArray(to) || to.length !== 2) continue;
-            const end: [number, number] = [Number(to[0]), Number(to[1])];
-            if (seg.kind === "quad" && Array.isArray(seg.ctrl)) {
-              const cp: [number, number] = [
-                Number(seg.ctrl[0]),
-                Number(seg.ctrl[1]),
-              ];
-              ctrls.push({ cp, a: prev, b: end });
-              const STEPS = 16;
-              let a = prev;
-              for (let k = 1; k <= STEPS; k++) {
-                const t = k / STEPS;
-                const mt = 1 - t;
-                const b: [number, number] = [
-                  mt * mt * prev[0] + 2 * mt * t * cp[0] + t * t * end[0],
-                  mt * mt * prev[1] + 2 * mt * t * cp[1] + t * t * end[1],
-                ];
-                drawLine(ctx, a, b, cam, color, STROKE_PX);
-                a = b;
-              }
-            } else {
-              drawLine(ctx, prev, end, cam, color, STROKE_PX);
-            }
-            anchors.push(end);
-            prev = end;
-          }
-          if (cc.closed === true) {
-            drawLine(ctx, prev, first, cam, color, STROKE_PX);
-          }
-          // Off-curve quad control handles: thin dashed connectors to
-          // both anchors + a hollow marker, so they read as off-curve
-          // handles (analogous to the spline control polygon).
-          for (const { cp, a, b } of ctrls) {
-            ctx.save();
-            ctx.setLineDash([4, 3]);
-            drawLine(ctx, a, cp, cam, COLOR_GUIDE, 1);
-            drawLine(ctx, cp, b, cam, COLOR_GUIDE, 1);
-            ctx.restore();
-            drawControlHandle(ctx, cp, cam, color);
-          }
-          // On-curve vertices: filled dots at start + each segment end.
-          for (const p of anchors) {
-            drawPoint(ctx, p, cam, color);
-          }
-        }
-      }
-    } else if (call.type === "sketch_arc") {
-      const center = toXy(call.params.center);
-      const radius = Number(call.params.radius);
-      const a0 = Number(call.params.start_angle);
-      const sweep = Number(call.params.sweep_angle);
-      if (
-        center &&
-        Number.isFinite(radius) &&
-        radius > 0 &&
-        Number.isFinite(a0) &&
-        Number.isFinite(sweep)
-      ) {
-        drawArc(ctx, center, radius, a0, sweep, cam, color, STROKE_PX);
-        drawPoint(ctx, center, cam, color);
-      }
-    }
-    if (isConstruction) ctx.setLineDash([]);
   }
 
   // Select mode: highlight the picked entities on top of the
@@ -3359,24 +3025,6 @@ function drawPoint(
   ctx.beginPath();
   ctx.arc(px, py, POINT_PX, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();
-}
-
-/** A hollow, smaller marker for an off-curve handle (e.g. a quad
- *  control point) — distinct from filled on-curve vertex dots. */
-function drawControlHandle(
-  ctx: CanvasRenderingContext2D,
-  at: [number, number],
-  cam: Readonly<SketchCameraState>,
-  color: string,
-): void {
-  const [px, py] = sketchToScreen(at[0], at[1], cam);
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(px, py, POINT_PX - 1, 0, Math.PI * 2);
-  ctx.stroke();
   ctx.restore();
 }
 

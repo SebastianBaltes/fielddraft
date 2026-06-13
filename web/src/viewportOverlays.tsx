@@ -3,7 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial, PointsNodeMaterial } from "three/webgpu";
+import { Line2NodeMaterial, PointsNodeMaterial, MeshBasicNodeMaterial } from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -34,10 +34,12 @@ import { resolvePlaneFrame } from "./sketchPlaneFrame";
 import {
   collectSketchLineSegments,
   collectSketchSessionGeometry,
+  collectSketchRegionFill,
   type SketchSubCall,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
+import { planeToWorld } from "./sketchPlaneFrame";
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -118,19 +120,28 @@ export function SketchOverlay3D() {
 const SKETCH_COLOR_UNDER = 0x2563eb;
 const SKETCH_COLOR_FULL = 0x16a34a;
 const SKETCH_COLOR_OVER = 0xdc2626;
+// Fixed (non-DOF) sketch colours, mirroring the canvas tokens in SketchCanvas2d.
+const SKETCH_CONSTRUCTION_COLOR = 0xb07820; // COLOR_CONSTRUCTION
+const SKETCH_GUIDE_COLOR = 0x64748b; // COLOR_GUIDE (rgba .6)
+const SKETCH_LEG_COLOR = 0x7c3aed; // COLOR_TANGENT_LEG
+const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL (rgba .18)
+const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
 
 /**
- * Committed geometry of the ACTIVE sketch session, rendered as real 3D
- * geometry on the sketch plane (fat lines + vertex points) — not the 2D
- * overlay's per-frame CPU reprojection. The GPU transforms it with the
- * same camera matrix as the rest of the scene, so it no longer lags
- * behind / desyncs from the model during a camera pan or orbit (the
- * overlay's separate rAF loop was a frame behind the demand-mode WebGPU
- * render).
+ * ALL committed geometry of the active sketch session, rendered as real 3D
+ * scene geometry on the sketch plane — fat lines, vertex points, the
+ * closed-region fill and the origin axes. The GPU transforms everything
+ * with the same camera matrix as the rest of the scene in the same frame,
+ * so nothing lags behind / desyncs from the model during a camera pan or
+ * orbit (the 2D overlay's separate rAF loop ran a frame behind the
+ * demand-mode WebGPU render — the original "ruckelt nach" bug).
  *
- * Covers the core primitives ({@link collectSketchSessionGeometry}); the
- * 2D overlay still owns construction geometry, splines/paths, the closed-
- * region fill and all transient HUD (hover/snap/drag/selection/dimensions).
+ * `collectSketchSessionGeometry` splits the geometry into the categories
+ * each material draws (solid / construction-dashed / guide-dashed / tangent
+ * legs / points / off-curve handles); `drawOverlay` no longer strokes ANY
+ * committed geometry — it owns only the transient HUD (hover/snap/drag
+ * previews, selection highlight + grips, dimension/constraint text labels,
+ * marquee), which appear during pointer interaction, not camera motion.
  */
 export function SketchSession3D() {
   const { store, state } = useKernelStore();
@@ -172,74 +183,135 @@ export function SketchSession3D() {
     return collectSketchSessionGeometry(session.subCalls as SketchSubCall[], frame);
   }, [active, frame, session?.subCalls]);
 
-  // Materials persist across rebuilds (only the colour mutates); the WebGPU
-  // backend handles a material colour change fine, but never a geometry
-  // mutation — so the objects below are rebuilt fresh on every change.
-  const lineMatRef = useRef(
-    new Line2NodeMaterial({
-      color,
-      linewidth: 2,
-      worldUnits: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-    }),
-  );
-  const pointMatRef = useRef(
-    new PointsNodeMaterial({
-      color,
-      size: 2 * 3 + 1, // overlay POINT_PX radius 3 → ~7px diameter dot
-      sizeAttenuation: false,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-    }),
-  );
-  useEffect(() => {
-    lineMatRef.current.color.setHex(color);
-    pointMatRef.current.color.setHex(color);
-    invalidate();
-  }, [color, invalidate]);
+  const fill = useMemo(() => {
+    if (!active || !frame || !session) return null;
+    const tri = (poly: [number, number][]): number[][] => {
+      const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
+      return THREE.ShapeUtils.triangulateShape(contour, []);
+    };
+    const pos = collectSketchRegionFill(session.subCalls as SketchSubCall[], frame, tri);
+    return pos.length ? pos : null;
+  }, [active, frame, session?.subCalls]);
 
-  const [lineObj, setLineObj] = useState<LineSegments2 | null>(null);
-  useEffect(() => {
-    if (!geom || geom.outline.length === 0) {
-      setLineObj(null);
-      return;
-    }
-    const g = new LineSegmentsGeometry();
-    g.setPositions(new Float32Array(geom.outline));
-    const obj = new LineSegments2(g, lineMatRef.current);
-    obj.frustumCulled = false;
-    obj.renderOrder = 996;
-    obj.layers.enable(OVERLAY_LAYER);
-    setLineObj(obj);
-    invalidate();
-    return () => g.dispose();
-  }, [geom, invalidate]);
+  const axes = useMemo(() => {
+    if (!active || !frame) return null;
+    const L = 1e5; // long enough to cross the viewport at any usable zoom
+    return [
+      ...planeToWorld(-L, 0, frame), ...planeToWorld(L, 0, frame),
+      ...planeToWorld(0, -L, frame), ...planeToWorld(0, L, frame),
+    ];
+  }, [active, frame]);
 
-  const [pointObj, setPointObj] = useState<THREE.Points | null>(null);
+  // Materials persist across rebuilds (only the DOF-driven colours mutate);
+  // the WebGPU backend handles a material colour change fine but never a
+  // geometry mutation, so the objects are rebuilt fresh on every change.
+  const matsRef = useRef<{
+    solid: Line2NodeMaterial;
+    construction: Line2NodeMaterial;
+    guide: Line2NodeMaterial;
+    leg: Line2NodeMaterial;
+    axis: Line2NodeMaterial;
+    point: PointsNodeMaterial;
+    handle: PointsNodeMaterial;
+    fill: MeshBasicNodeMaterial;
+  } | null>(null);
+  if (!matsRef.current) {
+    const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+      new Line2NodeMaterial({
+        color: c, linewidth: lw, worldUnits: false,
+        depthTest: false, depthWrite: false, transparent: true, ...extra,
+      });
+    const dots = (c: number, size: number) =>
+      new PointsNodeMaterial({
+        color: c, size, sizeAttenuation: false,
+        depthTest: false, depthWrite: false, transparent: true,
+      });
+    matsRef.current = {
+      solid: fatLine(color, 2),
+      construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
+      guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
+      leg: fatLine(SKETCH_LEG_COLOR, 2),
+      axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
+      point: dots(color, 7), // overlay POINT_PX radius 3 → ~7px dot
+      handle: dots(color, 6),
+      fill: new MeshBasicNodeMaterial({
+        color: SKETCH_FILL_COLOR, transparent: true, opacity: 0.18,
+        depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+      }),
+    };
+  }
+  const M = matsRef.current;
   useEffect(() => {
-    if (!geom || geom.points.length === 0) {
-      setPointObj(null);
-      return;
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(geom.points, 3));
-    const obj = new THREE.Points(g, pointMatRef.current);
-    obj.frustumCulled = false;
-    obj.renderOrder = 997;
-    obj.layers.enable(OVERLAY_LAYER);
-    setPointObj(obj);
+    M.solid.color.setHex(color);
+    M.point.color.setHex(color);
+    M.handle.color.setHex(color);
     invalidate();
-    return () => g.dispose();
-  }, [geom, invalidate]);
+  }, [color, invalidate, M]);
+  // Dispose materials when the component unmounts (session closed).
+  useEffect(() => () => { for (const m of Object.values(M)) m.dispose(); }, [M]);
+
+  const objects = useMemo(() => {
+    const objs: THREE.Object3D[] = [];
+    const addLines = (
+      pos: number[] | null,
+      mat: Line2NodeMaterial,
+      order: number,
+      dashed: boolean,
+    ) => {
+      if (!pos || pos.length === 0) return;
+      const g = new LineSegmentsGeometry();
+      g.setPositions(new Float32Array(pos));
+      const o = new LineSegments2(g, mat);
+      if (dashed) o.computeLineDistances();
+      o.frustumCulled = false;
+      o.renderOrder = order;
+      o.layers.enable(OVERLAY_LAYER);
+      objs.push(o);
+    };
+    const addPoints = (pos: number[] | null, mat: PointsNodeMaterial, order: number) => {
+      if (!pos || pos.length === 0) return;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      const o = new THREE.Points(g, mat);
+      o.frustumCulled = false;
+      o.renderOrder = order;
+      o.layers.enable(OVERLAY_LAYER);
+      objs.push(o);
+    };
+    addLines(axes, M.axis, 994, false);
+    if (fill) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(fill, 3));
+      const o = new THREE.Mesh(g, M.fill);
+      o.frustumCulled = false;
+      o.renderOrder = 995;
+      o.layers.enable(OVERLAY_LAYER);
+      objs.push(o);
+    }
+    if (geom) {
+      addLines(geom.construction, M.construction, 996, true);
+      addLines(geom.guide, M.guide, 996, true);
+      addLines(geom.legs, M.leg, 996, false);
+      addLines(geom.solid, M.solid, 997, false);
+      addPoints(geom.points, M.point, 998);
+      addPoints(geom.handles, M.handle, 998);
+    }
+    return objs;
+  }, [geom, fill, axes, M]);
+
+  useEffect(() => {
+    invalidate();
+    return () => {
+      for (const o of objects) (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
+    };
+  }, [objects, invalidate]);
 
   if (!active) return null;
   return (
     <group>
-      {lineObj && <primitive object={lineObj} dispose={null} />}
-      {pointObj && <primitive object={pointObj} dispose={null} />}
+      {objects.map((o, i) => (
+        <primitive key={i} object={o} dispose={null} />
+      ))}
     </group>
   );
 }
