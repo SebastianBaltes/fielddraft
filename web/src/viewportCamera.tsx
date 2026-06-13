@@ -3,6 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { publishSketchCamera } from "./sketchCameraBridge";
+import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import {
   consumeViewCommand,
   peekViewCommand,
@@ -31,11 +32,21 @@ export function CameraBridgePublisher() {
   }, [camera]);
 
   useFrame(() => {
+    // Bring the camera's world/inverse matrices up to date for THIS frame
+    // before anything projects through it. In useFrame these still reflect
+    // the previous render until the renderer recomputes them, so the
+    // overlay's `camera.project()` would otherwise lag one frame behind.
+    camera.updateMatrixWorld();
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
     publishSketchCamera({
       width: size.width,
       height: size.height,
       devicePixelRatio: (gl as unknown as { getPixelRatio?: () => number }).getPixelRatio?.() ?? window.devicePixelRatio ?? 1,
     });
+    // Redraw the 2D sketch overlay in lockstep with this frame's WebGPU
+    // render so its HUD (hover/snap/grips/selection/dimensions) tracks the
+    // camera without the one-frame lag of its own rAF loop.
+    requestOverlayRedraw();
   });
   return null;
 }

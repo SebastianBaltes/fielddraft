@@ -63,6 +63,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
+import { setOverlayRedraw } from "./sketchOverlayBridge";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
 import { nearestProjectedEdge } from "./sketchProject";
@@ -717,6 +718,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // like the native wheel handler below.
   const sessionRef = useRef<SketchSessionState>(session);
   sessionRef.current = session;
+
+  // Overlay redraw, driven from the R3F render frame (CameraBridgePublisher)
+  // so the HUD tracks the camera in lockstep with the WebGPU render instead
+  // of lagging a frame behind on this component's own rAF. `redrawRef` is
+  // refreshed each render below with a closure over the current helpers.
+  const redrawRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    setOverlayRedraw(() => redrawRef.current?.());
+    return () => setOverlayRedraw(null);
+  }, []);
 
   // Touch pinch-to-zoom — a two-finger gesture layered ON TOP of the
   // single-finger sketch interaction. We track live touch pointers; once a
@@ -1739,6 +1750,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const end = toXy(call.params.end);
     if (!start || !end) return null;
     return { start, end };
+  };
+
+  // Refreshed every render: the redraw the R3F frame calls (via
+  // sketchOverlayBridge) to keep the HUD in lockstep with the camera.
+  redrawRef.current = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    drawOverlay(
+      canvas,
+      sessionRef.current,
+      readCamForCanvas(canvas),
+      dragRef.current,
+      hoverRef.current,
+      snapRef.current,
+      projectedEdgesRef.current,
+      recentLineGeometry(),
+    );
   };
 
   // F18: commit the in-flight pending line as a free line. Returns true
