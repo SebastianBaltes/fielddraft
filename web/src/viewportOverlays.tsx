@@ -28,6 +28,7 @@ import {
   createPrimitiveGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
+import { collectPlanarBodyMeshes, type BrepMeshKernel } from "./brepMesh";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 // Extracted to sketchOutline.ts (DOM-free) — shared with the extrude
 // gizmo's pending-sketch-extrude anchor.
@@ -2699,6 +2700,63 @@ export function MeshPreview() {
       <directionalLight position={[-100, 200, -200]} intensity={0.3} />
       {bodies.map((body, i) => (
         <MeshPreviewBody key={body.id} body={body} mat={materials.get(i)} bodyIndex={i} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Hybrid-Renderer, Phase 1 (`brep` render mode; docs/ADAPTIVE-RENDERING-PLAN.md
+ * Achse 2): render every body whose analytic B-Rep surface is fully PLANAR
+ * (boxes, prisms, planar boolean results) as an exact rasterized mesh — sharp
+ * edges, exact normals, ZERO raymarching. Bodies with curved/implicit faces are
+ * omitted here (they still show their analytic wireframe via BRepEdgeOverlay);
+ * curved-face tessellation + SDF-residual compositing are the next phases.
+ *
+ * The triangulation is pure + unit-tested (`brepMesh.ts`); this component only
+ * lifts it onto the GPU, rebuilding on the body fingerprint like the other
+ * B-Rep overlays.
+ */
+export function BRepMeshPreview() {
+  const { store } = useKernelStore();
+  const fingerprint = useBodyFingerprint();
+
+  const geometries = useMemo(() => {
+    if (!store) return [] as { bodyIndex: number; geometry: THREE.BufferGeometry }[];
+    let meshes;
+    try {
+      meshes = collectPlanarBodyMeshes(store.kernel as unknown as BrepMeshKernel);
+    } catch {
+      return [];
+    }
+    return meshes.map((m) => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
+      geometry.setAttribute("normal", new THREE.BufferAttribute(m.normals, 3));
+      geometry.computeBoundingSphere();
+      return { bodyIndex: m.bodyIndex, geometry };
+    });
+    // fingerprint drives the rebuild; store identity is stable within a session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, fingerprint]);
+
+  useEffect(() => {
+    return () => {
+      for (const g of geometries) g.geometry.dispose();
+    };
+  }, [geometries]);
+
+  if (geometries.length === 0) return null;
+
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[200, 400, 300]} intensity={0.8} />
+      <directionalLight position={[-100, 200, -200]} intensity={0.3} />
+      {geometries.map(({ bodyIndex, geometry }) => (
+        <mesh key={bodyIndex} geometry={geometry}>
+          <meshStandardMaterial color="#94a3b8" side={THREE.DoubleSide} />
+        </mesh>
       ))}
     </>
   );

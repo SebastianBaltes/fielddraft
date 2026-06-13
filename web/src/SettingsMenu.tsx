@@ -178,7 +178,7 @@ export function useWorkspaceUnits(): WorkspaceUnits {
 }
 
 export type ThemeChoice = "light" | "dark";
-export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh";
+export type RenderMode = "sdf-vm" | "sdf-deferred" | "mesh" | "brep";
 export type MeshAlgorithm = "mdc" | "rfta" | "mt";
 /** R3F render scheduling:
  *   - "demand": render only when something invalidates the canvas (default,
@@ -193,7 +193,7 @@ export type FrameLoopMode = "demand" | "always";
  *   - "none":    don't draw the B-Rep wireframe at all */
 export type BRepEdgeMode = "xray" | "visible" | "none";
 
-const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh"];
+const VALID_RENDER_MODES: RenderMode[] = ["sdf-vm", "sdf-deferred", "mesh", "brep"];
 const VALID_MESH_ALGORITHMS: MeshAlgorithm[] = ["mdc", "rfta", "mt"];
 const VALID_BREP_EDGE_MODES: BRepEdgeMode[] = ["xray", "visible", "none"];
 
@@ -1054,6 +1054,7 @@ function SettingsDialog({
                   <option value="sdf-vm">SDF VM</option>
                   <option value="sdf-deferred">SDF Deferred</option>
                   <option value="mesh">Mesh</option>
+                  <option value="brep">B-Rep (exp., planar)</option>
                 </select>
               </div>
 

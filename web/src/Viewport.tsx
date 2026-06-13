@@ -34,6 +34,7 @@ import {
   SketchSession3D,
   SketchHud3D,
   SketchLabels3D,
+  BRepMeshPreview,
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
@@ -111,6 +112,7 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       {renderMode === "sdf-vm" && <SdfVmOverlay brepEdgeMode={brepEdgeMode} />}
       {renderMode === "sdf-deferred" && <SdfDeferredOverlay brepEdgeMode={brepEdgeMode} />}
       {renderMode === "mesh" && <MeshPreview />}
+      {renderMode === "brep" && <BRepMeshPreview />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
       <SelectionTransformGizmo />
