@@ -31,6 +31,7 @@ import {
 import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import {
   SketchOverlay3D,
+  SketchSession3D,
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
@@ -112,6 +113,7 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       <SelectionTransformGizmo />
       <ExtrudeDepthGizmo />
       <SketchOverlay3D />
+      <SketchSession3D />
       <DatumOverlay />
       <Invalidator ndc={ndc} />
       <PerfProbe renderMode={renderMode} />

@@ -63,6 +63,7 @@ import {
   rect3pCorners,
 } from "./sketchPrimitiveVariants";
 import { slotOutline } from "./sketchSlot";
+import { SESSION_3D_TYPES } from "./sketchOutline";
 import { closedRegionsCached } from "./sketchRegions";
 import { bsplinePoints, catmullRomPoints, type Vec2 } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, nearestTrimTarget } from "./sketchTrim";
@@ -2453,6 +2454,12 @@ function drawOverlay(
     // Construction geometry renders muted + dashed: it constrains but
     // is never extruded (the kernel drops it from the region).
     const isConstruction = Boolean(call.params.construction);
+    // Core primitives' committed outline + vertex dots now render as real
+    // 3D geometry (SketchSession3D) so they no longer reproject on this
+    // overlay's separate rAF loop, which lagged a frame behind the
+    // demand-mode WebGPU render during a camera pan/orbit. Construction
+    // geometry (dashed) and the richer types (spline/path/point) stay here.
+    if (!isConstruction && SESSION_3D_TYPES.has(call.type)) continue;
     const color = isConstruction ? COLOR_CONSTRUCTION : committedColor;
     if (isConstruction) ctx.setLineDash(CONSTRUCTION_DASH);
     if (call.type === "sketch_line") {

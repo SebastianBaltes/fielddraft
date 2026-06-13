@@ -3,7 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial } from "three/webgpu";
+import { Line2NodeMaterial, PointsNodeMaterial } from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -31,7 +31,13 @@ import { triangulatePlanarFace } from "./faceFill";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
 // Extracted to sketchOutline.ts (DOM-free) — shared with the extrude
 // gizmo's pending-sketch-extrude anchor.
-import { collectSketchLineSegments } from "./sketchOutline";
+import {
+  collectSketchLineSegments,
+  collectSketchSessionGeometry,
+  type SketchSubCall,
+} from "./sketchOutline";
+import { buildDraftSketchState } from "./sketchSession";
+import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -103,6 +109,137 @@ export function SketchOverlay3D() {
           <lineBasicMaterial color="#2563eb" linewidth={2} />
         </lineSegments>
       ))}
+    </group>
+  );
+}
+
+// DOF status colours (mirror SketchCanvas2d's COLOR_UNDER/FULL/OVER): blue =
+// underconstrained, green = fully constrained, red = over/conflicting.
+const SKETCH_COLOR_UNDER = 0x2563eb;
+const SKETCH_COLOR_FULL = 0x16a34a;
+const SKETCH_COLOR_OVER = 0xdc2626;
+
+/**
+ * Committed geometry of the ACTIVE sketch session, rendered as real 3D
+ * geometry on the sketch plane (fat lines + vertex points) — not the 2D
+ * overlay's per-frame CPU reprojection. The GPU transforms it with the
+ * same camera matrix as the rest of the scene, so it no longer lags
+ * behind / desyncs from the model during a camera pan or orbit (the
+ * overlay's separate rAF loop was a frame behind the demand-mode WebGPU
+ * render).
+ *
+ * Covers the core primitives ({@link collectSketchSessionGeometry}); the
+ * 2D overlay still owns construction geometry, splines/paths, the closed-
+ * region fill and all transient HUD (hover/snap/drag/selection/dimensions).
+ */
+export function SketchSession3D() {
+  const { store, state } = useKernelStore();
+  const invalidate = useThree((s) => s.invalidate);
+  const session = state?.sketchSession;
+  const active = session?.active ?? false;
+
+  // Resolve the plane frame from the session's own plane query rather than
+  // reading the camera bridge — avoids a one-frame race with the overlay's
+  // resolve effect on a plane change.
+  const frame = useMemo(() => {
+    if (!store || !active || !session) return null;
+    return (
+      resolvePlaneFrame(session.planeQuery ?? "qCreatedBy(origin_plane_xy)", store.kernel) ??
+      resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)
+    );
+  }, [store, active, session?.planeQuery]);
+
+  // 3-colour DOF status — same derivation as drawOverlay's committedColor.
+  const color = useMemo(() => {
+    if (!active || !session) return SKETCH_COLOR_UNDER;
+    try {
+      if (
+        session.diagnostics.conflicting.length > 0 ||
+        session.diagnostics.malformed.length > 0
+      ) {
+        return SKETCH_COLOR_OVER;
+      }
+      const sk = buildDraftSketchState(session.subCalls);
+      const dof = displayDegreesOfFreedom(sk, session.diagnostics);
+      return dof > 0 ? SKETCH_COLOR_UNDER : dof === 0 ? SKETCH_COLOR_FULL : SKETCH_COLOR_OVER;
+    } catch {
+      return SKETCH_COLOR_UNDER;
+    }
+  }, [active, session?.subCalls, session?.diagnostics]);
+
+  const geom = useMemo(() => {
+    if (!active || !frame || !session) return null;
+    return collectSketchSessionGeometry(session.subCalls as SketchSubCall[], frame);
+  }, [active, frame, session?.subCalls]);
+
+  // Materials persist across rebuilds (only the colour mutates); the WebGPU
+  // backend handles a material colour change fine, but never a geometry
+  // mutation — so the objects below are rebuilt fresh on every change.
+  const lineMatRef = useRef(
+    new Line2NodeMaterial({
+      color,
+      linewidth: 2,
+      worldUnits: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  const pointMatRef = useRef(
+    new PointsNodeMaterial({
+      color,
+      size: 2 * 3 + 1, // overlay POINT_PX radius 3 → ~7px diameter dot
+      sizeAttenuation: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  useEffect(() => {
+    lineMatRef.current.color.setHex(color);
+    pointMatRef.current.color.setHex(color);
+    invalidate();
+  }, [color, invalidate]);
+
+  const [lineObj, setLineObj] = useState<LineSegments2 | null>(null);
+  useEffect(() => {
+    if (!geom || geom.outline.length === 0) {
+      setLineObj(null);
+      return;
+    }
+    const g = new LineSegmentsGeometry();
+    g.setPositions(new Float32Array(geom.outline));
+    const obj = new LineSegments2(g, lineMatRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 996;
+    obj.layers.enable(OVERLAY_LAYER);
+    setLineObj(obj);
+    invalidate();
+    return () => g.dispose();
+  }, [geom, invalidate]);
+
+  const [pointObj, setPointObj] = useState<THREE.Points | null>(null);
+  useEffect(() => {
+    if (!geom || geom.points.length === 0) {
+      setPointObj(null);
+      return;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(geom.points, 3));
+    const obj = new THREE.Points(g, pointMatRef.current);
+    obj.frustumCulled = false;
+    obj.renderOrder = 997;
+    obj.layers.enable(OVERLAY_LAYER);
+    setPointObj(obj);
+    invalidate();
+    return () => g.dispose();
+  }, [geom, invalidate]);
+
+  if (!active) return null;
+  return (
+    <group>
+      {lineObj && <primitive object={lineObj} dispose={null} />}
+      {pointObj && <primitive object={pointObj} dispose={null} />}
     </group>
   );
 }
@@ -282,6 +419,7 @@ export function Invalidator({ ndc }: { ndc: { x: number; y: number; active: bool
   const { state } = useKernelStore();
   const meshedBodies = state?.meshedBodies;
   const sketchActive = state?.sketchSession.active ?? false;
+  const sketchSubCalls = state?.sketchSession.subCalls;
   const selection = state?.selection;
   const features = state?.features;
   const visibleSketches = state?.visibleSketches;
@@ -292,6 +430,7 @@ export function Invalidator({ ndc }: { ndc: { x: number; y: number; active: bool
     invalidate,
     meshedBodies,
     sketchActive,
+    sketchSubCalls,
     selection,
     features,
     visibleSketches,
