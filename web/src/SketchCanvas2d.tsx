@@ -123,8 +123,6 @@ const COLOR_EDGE_GUIDE = "rgba(100, 116, 139, 0.25)";
 /** F23-full: dashed control-polygon guide for a control-point
  *  B-spline (lines between consecutive control points). */
 const COLOR_GUIDE = "rgba(100, 116, 139, 0.6)";
-/** Highlight colour for entities picked in select mode. */
-const COLOR_SELECTED = "#f97316";
 /** F4 marquee: enclosing ("window", left→right) = solid blue border;
  *  crossing (right→left) = dashed green border. Translucent fills. */
 const COLOR_MARQUEE_ENCLOSING = "#2563eb";
@@ -162,7 +160,6 @@ function nearestLineSubCall(
 }
 
 /** Grip handle half-size (drawn as a filled square) in CSS pixels. */
-const GRIP_PX = 4;
 /** Grip pick radius in CSS pixels — generous so the small handles
  *  are easy to grab. Beats the entity hit-test, so grabbing a grip
  *  starts a drag rather than re-toggling the selection. */
@@ -2401,14 +2398,8 @@ function drawOverlay(
     // Solver not available — fall back to the underconstrained color.
   }
 
-  // Select mode: highlight the picked entities on top of the
-  // committed geometry so the constraint palette's target is
-  // obvious. Resolved against skState (same id space as selection).
-  if (session.selection.length > 0) {
-    drawSelectionHighlight(ctx, skState, session.selection, cam);
-    // P0.3: draggable grip handles on the selected entities.
-    drawGrips(ctx, gripsForSelection(session.subCalls, session.selection), cam);
-  }
+  // Selection highlight + grips now render as 3D scene geometry
+  // (SketchSession3D) from session.selection — no longer stroked here.
 
   // K6b.6: draw constraint glyphs anchored to the constrained geometry.
   // Resolve entity ids against the already-built solved state (skState)
@@ -2674,86 +2665,6 @@ function drawOverlay(
   }
 }
 
-/**
- * Overdraw the selected entities in the highlight colour: points get
- * an open ring, lines a thicker stroke, circles/arcs a thicker rim.
- * Resolved against the rebuilt solver state so the id space matches
- * the session's `selection`.
- */
-/**
- * P0.3: draw the draggable grip handles for the current selection as
- * small white-bordered squares in the highlight colour, so the user
- * sees exactly where the geometry can be grabbed and dragged.
- */
-function drawGrips(
-  ctx: CanvasRenderingContext2D,
-  grips: ReadonlyArray<Grip>,
-  cam: Readonly<SketchCameraState>,
-): void {
-  if (grips.length === 0) return;
-  ctx.save();
-  ctx.fillStyle = COLOR_SELECTED;
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = 1;
-  for (const g of grips) {
-    const [px, py] = sketchToScreen(g.pos[0], g.pos[1], cam);
-    ctx.beginPath();
-    ctx.rect(px - GRIP_PX, py - GRIP_PX, GRIP_PX * 2, GRIP_PX * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawSelectionHighlight(
-  ctx: CanvasRenderingContext2D,
-  state: SketchState,
-  selection: ReadonlyArray<number>,
-  cam: Readonly<SketchCameraState>,
-): void {
-  const pointAt = (id: number): [number, number] | null => {
-    const e = state.entities.find((x) => x.id === id);
-    if (!e) return null;
-    if (e.kind === "point") return [e.at.x, e.at.y];
-    if (e.kind === "origin") return [0, 0];
-    return null;
-  };
-  ctx.save();
-  ctx.strokeStyle = COLOR_SELECTED;
-  ctx.fillStyle = COLOR_SELECTED;
-  for (const id of selection) {
-    const e = state.entities.find((x) => x.id === id);
-    if (!e) continue;
-    if (e.kind === "point" || e.kind === "origin") {
-      const at =
-        e.kind === "origin"
-          ? ([0, 0] as [number, number])
-          : ([e.at.x, e.at.y] as [number, number]);
-      const [px, py] = sketchToScreen(at[0], at[1], cam);
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(px, py, POINT_PX + 3, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (e.kind === "line") {
-      const a = pointAt(e.start);
-      const b = pointAt(e.end);
-      if (a && b) drawLine(ctx, a, b, cam, COLOR_SELECTED, STROKE_PX + 2);
-    } else if (e.kind === "circle" || e.kind === "arc") {
-      const c = pointAt(e.center);
-      if (c) {
-        const [cx, cy] = sketchToScreen(c[0], c[1], cam);
-        const rPx = e.radius * cam.zoom;
-        if (rPx >= 0.5) {
-          ctx.lineWidth = STROKE_PX + 2;
-          ctx.beginPath();
-          ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      }
-    }
-  }
-  ctx.restore();
-}
 
 function drawSnapIndicator(
   ctx: CanvasRenderingContext2D,

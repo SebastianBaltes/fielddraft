@@ -38,8 +38,10 @@ import {
   type SketchSubCall,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
+import type { SketchState } from "./solver/types";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
-import { planeToWorld } from "./sketchPlaneFrame";
+import { gripsForSelection } from "./sketchGrips";
+import { planeToWorld, type PlaneFrame } from "./sketchPlaneFrame";
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
@@ -126,6 +128,58 @@ const SKETCH_GUIDE_COLOR = 0x64748b; // COLOR_GUIDE (rgba .6)
 const SKETCH_LEG_COLOR = 0x7c3aed; // COLOR_TANGENT_LEG
 const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL (rgba .18)
 const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
+const SKETCH_SELECTED_COLOR = 0xf97316; // COLOR_SELECTED
+
+/** Selection highlight + grip markers (world-space) for the picked sketch
+ *  entities, mirroring drawOverlay's `drawSelectionHighlight` + `drawGrips`.
+ *  Lines/circles/arcs become thick outline segments; points/origin and the
+ *  drag grips become marker dots. */
+function collectSelectionGeometry(
+  state: SketchState,
+  selection: ReadonlyArray<number>,
+  subCalls: ReadonlyArray<{ type: string; params: Record<string, unknown> }>,
+  frame: PlaneFrame,
+): { highlight: number[]; markers: number[] } {
+  const highlight: number[] = [];
+  const markers: number[] = [];
+  const w = (x: number, y: number) => planeToWorld(x, y, frame);
+  const pointAt = (id: number): [number, number] | null => {
+    const e = state.entities.find((x) => x.id === id);
+    if (!e) return null;
+    if (e.kind === "point") return [e.at.x, e.at.y];
+    if (e.kind === "origin") return [0, 0];
+    return null;
+  };
+  for (const id of selection) {
+    const e = state.entities.find((x) => x.id === id);
+    if (!e) continue;
+    if (e.kind === "point" || e.kind === "origin") {
+      const at = e.kind === "origin" ? [0, 0] : [e.at.x, e.at.y];
+      markers.push(...w(at[0], at[1]));
+    } else if (e.kind === "line") {
+      const a = pointAt(e.start);
+      const b = pointAt(e.end);
+      if (a && b) highlight.push(...w(a[0], a[1]), ...w(b[0], b[1]));
+    } else if (e.kind === "circle" || e.kind === "arc") {
+      const c = pointAt(e.center);
+      const r = (e as { radius?: number }).radius;
+      if (c && typeof r === "number" && r > 0) {
+        const steps = 64;
+        let prev: [number, number] = [c[0] + r, c[1]];
+        for (let i = 1; i <= steps; i++) {
+          const t = (i / steps) * Math.PI * 2;
+          const next: [number, number] = [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)];
+          highlight.push(...w(prev[0], prev[1]), ...w(next[0], next[1]));
+          prev = next;
+        }
+      }
+    }
+  }
+  for (const g of gripsForSelection(subCalls, selection)) {
+    markers.push(...w(g.pos[0], g.pos[1]));
+  }
+  return { highlight, markers };
+}
 
 /**
  * ALL committed geometry of the active sketch session, rendered as real 3D
@@ -160,6 +214,17 @@ export function SketchSession3D() {
     );
   }, [store, active, session?.planeQuery]);
 
+  // Solved entity state — shared by the DOF colour and the selection
+  // highlight (same id space as session.selection).
+  const skState = useMemo(() => {
+    if (!active || !session) return null;
+    try {
+      return buildDraftSketchState(session.subCalls);
+    } catch {
+      return null;
+    }
+  }, [active, session?.subCalls]);
+
   // 3-colour DOF status — same derivation as drawOverlay's committedColor.
   const color = useMemo(() => {
     if (!active || !session) return SKETCH_COLOR_UNDER;
@@ -170,18 +235,26 @@ export function SketchSession3D() {
       ) {
         return SKETCH_COLOR_OVER;
       }
-      const sk = buildDraftSketchState(session.subCalls);
-      const dof = displayDegreesOfFreedom(sk, session.diagnostics);
+      if (!skState) return SKETCH_COLOR_UNDER;
+      const dof = displayDegreesOfFreedom(skState, session.diagnostics);
       return dof > 0 ? SKETCH_COLOR_UNDER : dof === 0 ? SKETCH_COLOR_FULL : SKETCH_COLOR_OVER;
     } catch {
       return SKETCH_COLOR_UNDER;
     }
-  }, [active, session?.subCalls, session?.diagnostics]);
+  }, [active, skState, session?.diagnostics]);
 
   const geom = useMemo(() => {
     if (!active || !frame || !session) return null;
     return collectSketchSessionGeometry(session.subCalls as SketchSubCall[], frame);
   }, [active, frame, session?.subCalls]);
+
+  const selection = useMemo(() => {
+    if (!active || !frame || !session || !skState || session.selection.length === 0) {
+      return null;
+    }
+    const g = collectSelectionGeometry(skState, session.selection, session.subCalls, frame);
+    return g.highlight.length || g.markers.length ? g : null;
+  }, [active, frame, skState, session?.selection, session?.subCalls]);
 
   const fill = useMemo(() => {
     if (!active || !frame || !session) return null;
@@ -213,6 +286,8 @@ export function SketchSession3D() {
     axis: Line2NodeMaterial;
     point: PointsNodeMaterial;
     handle: PointsNodeMaterial;
+    selLine: Line2NodeMaterial;
+    selPoint: PointsNodeMaterial;
     fill: MeshBasicNodeMaterial;
   } | null>(null);
   if (!matsRef.current) {
@@ -234,6 +309,8 @@ export function SketchSession3D() {
       axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
       point: dots(color, 7), // overlay POINT_PX radius 3 → ~7px dot
       handle: dots(color, 6),
+      selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
+      selPoint: dots(SKETCH_SELECTED_COLOR, 10),
       fill: new MeshBasicNodeMaterial({
         color: SKETCH_FILL_COLOR, transparent: true, opacity: 0.18,
         depthTest: false, depthWrite: false, side: THREE.DoubleSide,
@@ -296,8 +373,12 @@ export function SketchSession3D() {
       addPoints(geom.points, M.point, 998);
       addPoints(geom.handles, M.handle, 998);
     }
+    if (selection) {
+      addLines(selection.highlight, M.selLine, 999, false);
+      addPoints(selection.markers, M.selPoint, 1000);
+    }
     return objs;
-  }, [geom, fill, axes, M]);
+  }, [geom, fill, axes, selection, M]);
 
   useEffect(() => {
     invalidate();
