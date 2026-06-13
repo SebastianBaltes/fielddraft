@@ -1,10 +1,15 @@
-# Adaptive Rendering — Auflösungsskalierung & dynamisches March-Step-Budget
+# Rendering-Performance — adaptive Qualität & Hybrid-Renderer
 
-Stand: 2026-06-13. Konzept (noch nicht implementiert) für eine adaptive
-Qualitätssteuerung des SDF-Raymarchers, damit FieldDraft die 30-fps-Schwelle
-auf deutlich mehr Client-Hardware erreicht — ohne Renderer-Rewrite, ohne
-WebGL-Fallback. Gegen den echten Code (`sdfVmRenderer.ts`,
-`sdfDeferredRenderer.ts`, `perfMonitor.tsx`, `telemetry.ts`) verifiziert.
+Stand: 2026-06-13. Konzept (noch nicht implementiert), um die Renderlast des
+SDF-Raymarchers an die Hardware anzupassen und FieldDraft die 30-fps-Schwelle
+auf deutlich mehr Client-Hardware erreichen zu lassen — ohne Renderer-Rewrite,
+ohne WebGL-Fallback. **Zwei komplementäre Achsen:** (1) adaptive Qualität
+(Auflösung/March-Steps) auf der bestehenden Pipeline; (2) ein **Hybrid-Renderer**,
+der exakte analytische B-Rep-Flächen **rastert** und nur die implizite Restmenge
+raymarcht. Achse 2 ist für typische CAD-Szenen oft der größere Hebel. Gegen den
+echten Code (`sdfVmRenderer.ts`, `sdfDeferredRenderer.ts`, `bvh.rs`
+`classify_for_hybrid`, `kernel.ts` `bodyBrepFaces`, `faceFill.ts`,
+`perfMonitor.tsx`, `telemetry.ts`) verifiziert.
 
 ## Motivation
 
@@ -170,7 +175,118 @@ Renderer-Module, damit beide Modi denselben Regler teilen.
   als „zu langsam" werten (Ausreißer per p95 statt max filtern, oder Frames
   unmittelbar nach einem Pipeline-Build überspringen).
 
-## Phasenplan
+## Achse 2: Hybrid-Renderer (exakte B-Rep-Flächen rastern, nur Implizites raymarchen)
+
+Orthogonal zur Qualitätsskalierung steht ein zweiter, oft größerer Hebel: nicht
+*wie fein* raymarchen, sondern *was überhaupt*. Die meisten CAD-Szenen sind
+überwiegend analytisch (Primitive + Booleans + konstante Fillets); deren exakte
+Oberfläche ist eine **analytische B-Rep**, die sich billig und scharf **rastern**
+lässt. Der Raymarcher wird dann nur noch für die echte implizite Restmenge
+bemüht (Gyroid/TPMS, Twist/Bend/Displace, variable Fillets/Blends,
+Weaver-Fallback). Für typische Szenen sinkt der raymarchte Pixelanteil gegen
+null → reines Raster, exakt und schnell, weitgehend unabhängig von der
+Szenengröße.
+
+### Die Klassifikation existiert schon
+
+Der Kernel liefert die Trennung bereits — auf zwei Ebenen:
+
+- **Körper-Ebene**: `classify_for_hybrid()` → `HybridInfo` (`bvh.rs`) mit
+  `needs_full_sdf`, `is_union_only`, `leaves` (parametrische Primitive) und
+  `sdf_regions` (Boolean-Overlap-/Blend-Zonen). Der Deferred-Renderer nutzt das
+  schon: Union-only-Körper bekommen Hüllmeshes (`createPrimitiveGeometry`,
+  box→BoxGeometry …); `needs_full_sdf`-Features (Twist/Bend/Displace/Shell/
+  Offset/Morph/Helix/Gyroid) gehen voll in den Raymarch.
+- **Flächen-Ebene (genauer)**: `bodyBrepFaces()` liefert pro Fläche
+  `surfaceKind ∈ {plane, cylinder, sphere, cone, torus, revolved_profile,
+  tessellated}` — **inklusive der durch Booleans getrimmten Ränder** (Kanten
+  `BRepEdge.faces[]` binden je zwei Flächen). Das ist die eigentliche
+  Entscheidungsgröße: `surfaceKind ≠ "tessellated"` → **analytisch → rastern**;
+  `"tessellated"` → **raymarchen**.
+
+Wichtig gegen zwei naheliegende Irrtümer:
+
+- Ein `box − cylinder` (Bohrung) ist **kein** „nicht-parametrischer" Körper —
+  der Weaver erzeugt dafür eine exakte analytische B-Rep (Ebenen + eine
+  getrimmte Zylinderfläche).
+- Ein **konstanter Kantenfillet** ist ein Torus-/Zylinder-Patch und kommt als
+  `surfaceKind: torus/cylinder` zurück. „Fillet" pauschal dem Raymarcher
+  zuzuschlagen wäre falsch — nur Fillets/Blends, die der Weaver *nicht*
+  analytisch fassen kann, fallen auf `tessellated`. Die Klassifikation per
+  `surfaceKind` entscheidet das automatisch und korrekt.
+
+### Was neu gebaut werden muss
+
+Heute rastert der Deferred-Pfad nur **Box exakt** (flache Faces); gekrümmte
+Primitive (Sphere/Cylinder/Torus) laufen über eine inflationierte Hülle
+(`HULL_INFLATE`, „opaque + transparent") in den **Raymarch**, um exakt zu
+bleiben. `triangulatePlanarFace` (`faceFill.ts`) trianguliert zudem heute **nur
+planare** Faces. Der Hybrid-Renderer braucht:
+
+1. **Getrimmte Tessellation gekrümmter analytischer Faces.** Pro `surfaceKind`
+   die Fläche analytisch in (u,v) parametrisieren und innerhalb ihrer
+   Kanten-Loops (aus `BRepEdge.points`/`controlPoints`) bis zu einer Toleranz
+   vernetzen — cylinder/sphere/cone/torus/revolved_profile. **Exakte Normalen
+   direkt aus der analytischen Fläche** (scharfe Schattierung, keine
+   Mesh-Speckles). Erweitert `faceFill.ts` über den planaren Fall hinaus.
+2. **Raster-Shading-Pfad** für analytische Faces im Deferred-Renderer: ihren
+   G-Buffer (worldPos + exakte Normale) nicht mehr nur als Raymarch-Seed nutzen,
+   sondern **direkt schattieren** — kein Sphere-Trace für analytische Pixel.
+3. **Residual-Raymarch nur** für `tessellated`-Faces, `needs_full_sdf`-Körper
+   und `sdf_regions`, komponiert über denselben Tiefen-/worldPos-RT wie heute
+   (die 3-Pass-Pipeline bleibt). Die Naht analytisch↔implizit liegt **auf einer
+   gemeinsamen B-Rep-Kante** (sie begrenzt beide Faces) → geometrisch
+   konsistent, keine Risse, wenn beide Seiten zur selben Kantenpolylinie
+   vernetzen bzw. marchen.
+
+### Abgrenzung zum `mesh`-Modus
+
+Der bestehende `mesh`-Modus ist eine **verlustbehaftete** globale DC/MDC-Abtastung
+der SDF (Marching-artig, „Mesh-Speckles", gerundete Kanten). Der Hybrid-Renderer
+ist das Gegenteil: **exakte** Tessellation der analytischen Faces mit **scharfen
+Kanten** (den B-Rep-Kanten), plus Raymarch nur fürs Implizite. Er ist damit ein
+**eigener, vierter Modus** (`brep` / `hybrid`) — schneller als die Raymarch-Modi
+und schärfer als `mesh`.
+
+### Komposition mit der Qualitätsskalierung
+
+Beide Achsen multiplizieren sich: Der Hybrid-Renderer **verkleinert die
+raymarchte Fläche** (nur Implizites), die adaptive Skalierung **verbilligt den
+verbleibenden Raymarch**. Analytische Szene → reiner Raster (60 fps auch auf
+schwacher GPU); Gyroid-Szene → kleiner Raymarch-Anteil, der zusätzlich adaptiv
+skaliert. Die Telemetrie-Tier steuert weiterhin den Startwert.
+
+### Risiken & offene Fragen (Hybrid)
+
+- **Getrimmte gekrümmte Tessellation** ist die eigentliche Arbeit: Robustheit
+  bei engen Trims, mehreren Kanten-Loops (Löcher), tangentialen Übergängen;
+  torus/revolved_profile an Naht-Kanten sauber schließen.
+- **Tessellations-Toleranz vs. Zoom (LOD):** feste Sehnen-Toleranz zeigt beim
+  Hineinzoomen Facetten → bildschirmraum-adaptive Toleranz oder Re-Tessellation
+  bei großem Zoomwechsel (analog der Kanten-Dezimierung in `polylineToSegments`).
+- **Shading-Parität** zwischen Raster-Face und Raymarch-Residual: gleiche
+  Material-/Normalen-Konvention, sonst sichtbare Naht trotz Geometrie-Konsistenz.
+- **Weaver-Abhängigkeit:** ohne saubere B-Rep (Klassifikationslücken, vgl.
+  brep_classification) muss der Körper sicher auf Voll-Raymarch zurückfallen —
+  `surfaceKind: tessellated` ist genau dieses Signal.
+- **`tessellated`-Faces (Gyroid)** brauchen weiter ihren AABB-/Region-Raymarch;
+  der Hybrid spart sie nicht ein, sondern isoliert sie sauber.
+
+### Phasenplan (Hybrid)
+
+1. **Planar-only zuerst:** Körper, deren Faces alle `plane` (oder Box) sind, voll
+   rastern (kein Raymarch) — kleiner, sicherer Schritt auf bestehendem
+   `triangulatePlanarFace` + `surfaceKind`-Gate.
+2. **Gekrümmte Face-Tessellation** getrimmt: cylinder/sphere/cone, danach
+   torus/revolved_profile.
+3. **Deferred-Shading-Pfad** für analytische Faces (direkt schattieren statt
+   seed); Residual-Raymarch nur für `tessellated`/`needs_full_sdf`/`sdf_regions`.
+4. **Modus `brep`** in `SettingsMenu` + Default-Strategie; Komposition mit der
+   adaptiven Skalierung auf dem Residual.
+5. **LOD/Toleranz** bildschirmraum-adaptiv; Telemetrie loggt den raymarchten
+   Pixelanteil (Wirksamkeitsmaß).
+
+## Phasenplan (adaptive Qualität)
 
 1. **Mess- & Regelgerüst**: Quality-Scalar-Bridge + Regler-Hook auf
    `perfMonitor`-p95; vorerst nur Logging (kein visueller Effekt), gegen die
