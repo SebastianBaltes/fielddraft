@@ -1,6 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useKernelStore } from "./store";
+import {
+  buildTelemetryRecord,
+  recordTelemetry,
+  getGpuInfo,
+  getLastRecord,
+} from "./telemetry";
 
 export interface PerfSnapshot {
   frameTimeMs: number;
@@ -108,9 +114,23 @@ if (typeof window !== "undefined" && import.meta.env.DEV) {
     perfMonitor;
 }
 
+/** A frame within this gap belongs to a CONTINUOUS render run (camera motion /
+ *  always-mode); only true demand-mode idle gaps (seconds apart) exceed it.
+ *  Deliberately generous — 250 ms ≈ 4 fps — so a slow-but-rendering low-end GPU
+ *  is still measured (and tiered "low"), not mistaken for idle and skipped. */
+const ACTIVE_FRAME_MS = 250;
+/** Window of recent frames inspected for an active run. */
+const ACTIVE_WINDOW = 90;
+/** Min active frames in the window before a telemetry record is trustworthy. */
+const ACTIVE_MIN = 30;
+/** Throttle between persisted telemetry records (ms). */
+const TELEMETRY_INTERVAL_MS = 2000;
+
 export function PerfProbe({ renderMode }: { renderMode: string }) {
   const { size, gl } = useThree();
   const { store } = useKernelStore();
+  const activeRef = useRef<number[]>([]);
+  const lastTelemetryRef = useRef(0);
 
   useFrame((_, delta) => {
     const frameTimeMs = delta * 1000;
@@ -131,6 +151,39 @@ export function PerfProbe({ renderMode }: { renderMode: string }) {
       resolution,
       timestamp: performance.now(),
     });
+
+    // Telemetry: only sample FPS during a sustained run of continuous frames
+    // over a non-empty scene — that is the one window where frame time
+    // reflects real raymarch throughput. perfMonitor.avgFps() can't be used
+    // here: its ring mixes in demand-mode idle gaps and would read near-zero.
+    const win = activeRef.current;
+    win.push(frameTimeMs);
+    if (win.length > ACTIVE_WINDOW) win.shift();
+    const active = win.filter((ms) => ms < ACTIVE_FRAME_MS);
+    const now = performance.now();
+    if (
+      active.length >= ACTIVE_MIN &&
+      bodyCount > 0 &&
+      now - lastTelemetryRef.current > TELEMETRY_INTERVAL_MS
+    ) {
+      lastTelemetryRef.current = now;
+      const sorted = [...active].sort((a, b) => a - b);
+      const mean = active.reduce((a, b) => a + b, 0) / active.length;
+      const pct = (p: number) =>
+        sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((sorted.length * p) / 100) - 1))] ?? 0;
+      recordTelemetry(
+        buildTelemetryRecord({
+          renderMode,
+          resolution,
+          devicePixelRatio: dpr,
+          bodyCount,
+          avgFps: mean > 0 ? 1000 / mean : 0,
+          p50Ms: pct(50),
+          p95Ms: pct(95),
+          timestamp: now,
+        }),
+      );
+    }
   });
 
   return null;
@@ -235,13 +288,25 @@ export function PerfHud({ renderMode }: { renderMode: string }) {
   const latest = perfMonitor.latest();
   const fps = perfMonitor.avgFps();
   const p95 = perfMonitor.p95();
+  const gpu = getGpuInfo();
+  const telemetry = getLastRecord();
+  const gpuLabel = gpu
+    ? [gpu.vendor, gpu.architecture].filter(Boolean).join(" ") || "unknown"
+    : "—";
 
   return (
     <div className="fd-perf-hud" data-testid="perf-hud">
-      FPS: {fps.toFixed(0)} | Frame:{" "}
-      {latest?.frameTimeMs.toFixed(1) ?? "—"}ms | p95:{" "}
-      {p95.toFixed(1)}ms | Mode: {renderMode} | Bodies:{" "}
-      {latest?.bodyCount ?? 0}
+      <div>
+        FPS: {fps.toFixed(0)} | Frame:{" "}
+        {latest?.frameTimeMs.toFixed(1) ?? "—"}ms | p95:{" "}
+        {p95.toFixed(1)}ms | Mode: {renderMode} | Bodies:{" "}
+        {latest?.bodyCount ?? 0}
+      </div>
+      <div>
+        GPU: {gpuLabel}
+        {gpu?.isFallback ? " (software)" : ""} | Tier:{" "}
+        {telemetry ? `${telemetry.tier} @ ${telemetry.avgFps.toFixed(0)}fps` : "—"}
+      </div>
     </div>
   );
 }

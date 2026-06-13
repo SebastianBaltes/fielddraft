@@ -61,6 +61,7 @@ import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
 import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
+import { setGpuInfo, type GpuInfo } from "./telemetry";
 import { bodiesInRect, elementsInRect, type NdcRect, type ProjectFn } from "./boxSelect";
 
 const BUILD_VOLUME_SIZE = 600;
@@ -770,6 +771,24 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
             if (!adapter) {
               setWebgpuError(WEBGPU_NO_ADAPTER);
               throw new Error("WebGPU unavailable: no adapter (navigator.gpu.requestAdapter returned null)");
+            }
+
+            // Telemetry: capture the GPU identity (vendor/architecture) and a
+            // couple of limits so a session can be bucketed into a hardware
+            // tier. Best-effort — never let it block renderer creation.
+            try {
+              const info = (adapter as unknown as { info?: Partial<GpuInfo> }).info;
+              setGpuInfo({
+                vendor: info?.vendor ?? "",
+                architecture: info?.architecture ?? "",
+                device: info?.device ?? "",
+                description: info?.description ?? "",
+                isFallback: (adapter as unknown as { isFallbackAdapter?: boolean }).isFallbackAdapter ?? false,
+                maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                maxComputeInvocationsPerWorkgroup: adapter.limits.maxComputeInvocationsPerWorkgroup,
+              });
+            } catch {
+              // adapter.info / limits unavailable on this implementation.
             }
 
             const renderer = new WebGPURenderer({
