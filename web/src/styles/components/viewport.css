@@ -41,6 +41,25 @@
     font-size: var(--fs-base);
     padding: var(--space-4);
     text-align: center;
+
+    /* Structured WebGPU-unavailable notice: a headline plus a wrapped,
+     * actionable hint. Constrained width so the hint stays readable. */
+    & .webgpu-error {
+      max-width: 52ch;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+
+      & strong {
+        font-size: var(--fs-lg);
+      }
+
+      & p {
+        margin: 0;
+        color: var(--color-text);
+        line-height: 1.5;
+      }
+    }
   }
 
   & > .fd-sketch-canvas {

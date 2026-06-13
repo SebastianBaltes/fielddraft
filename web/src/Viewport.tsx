@@ -367,12 +367,39 @@ function handleSelectionClick(
   invalidateCanvas();
 }
 
+/** A reason the WebGPU viewport could not start, shown to the user instead of
+ *  a broken canvas. `title` is the headline, `detail` the actionable hint. */
+interface WebGpuError {
+  title: string;
+  detail: string;
+}
+
+// Linux is where WebGPU most often fails despite capable hardware: the API is
+// gated behind a flag and needs a Vulkan driver under a Wayland session.
+const WEBGPU_HINT_LINUX =
+  "On Linux: enable chrome://flags/#enable-unsafe-webgpu, use a Wayland session, and install a Vulkan driver (verify with `vulkaninfo`).";
+
+const WEBGPU_NO_API: WebGpuError = {
+  title: "This browser doesn’t support WebGPU.",
+  detail:
+    "FieldDraft needs a WebGPU-capable browser (current Chrome or Edge, or Safari 17+) served over a secure context (HTTPS or localhost).",
+};
+
+// The API exists but no usable GPU adapter could be acquired — or three fell
+// back to WebGL2, which can’t run FieldDraft’s compute/storage-buffer SDF
+// pipeline. Same user-facing remedy for both.
+const WEBGPU_NO_ADAPTER: WebGpuError = {
+  title: "No WebGPU graphics adapter is available on this system.",
+  detail:
+    `Your browser exposes WebGPU but couldn’t initialize a GPU, and FieldDraft has no WebGL fallback. ${WEBGPU_HINT_LINUX}`,
+};
+
 export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
   const { store, state } = useKernelStore();
   const suppressBrepOverlays = state?.gizmoDragSuppressed ?? false;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<{ dispose(): void } | null>(null);
-  const [webgpuError, setWebgpuError] = useState(false);
+  const [webgpuError, setWebgpuError] = useState<WebGpuError | null>(null);
   const [canvasReady, setCanvasReady] = useState(false);
 
   // Free the WebGPU renderer (device, swapchain, all pipelines) when the page
@@ -689,7 +716,14 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
       onDragOver={webgpuError ? undefined : handleDragOver}
       onDrop={webgpuError ? undefined : handleDrop}
     >
-      {webgpuError && <div className="error">WebGPU is not available. A secure context (HTTPS or localhost) is required.</div>}
+      {webgpuError && (
+        <div className="error">
+          <div className="webgpu-error">
+            <strong>{webgpuError.title}</strong>
+            <p>{webgpuError.detail}</p>
+          </div>
+        </div>
+      )}
       {boxRect && (
         <div
           className={
@@ -715,12 +749,27 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           gl={async (props) => {
             const { WebGPURenderer } = await import("three/webgpu");
 
+            // WebGPU capability gate. `navigator.gpu` only proves the *API*
+            // exists; a machine can expose it yet have no usable adapter
+            // (WebGPU disabled by flag, missing Vulkan driver, blocklisted
+            // GPU). In that case WebGPURenderer.init() silently falls back to a
+            // WebGL2 backend that can't run our compute/storage-buffer SDF
+            // pipeline — the user then sees a storm of shader errors instead of
+            // a clear message. So we probe for an adapter up front and, belt
+            // and braces, verify the live backend after init.
             if (!navigator.gpu) {
-              // Surface the error UI and bail before constructing the renderer —
-              // WebGPURenderer.init() would otherwise reject and the rejection
-              // would escape the async factory unhandled.
-              setWebgpuError(true);
+              setWebgpuError(WEBGPU_NO_API);
               throw new Error("WebGPU unavailable: navigator.gpu is undefined");
+            }
+            let adapter: Awaited<ReturnType<typeof navigator.gpu.requestAdapter>> = null;
+            try {
+              adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+            } catch {
+              adapter = null;
+            }
+            if (!adapter) {
+              setWebgpuError(WEBGPU_NO_ADAPTER);
+              throw new Error("WebGPU unavailable: no adapter (navigator.gpu.requestAdapter returned null)");
             }
 
             const renderer = new WebGPURenderer({
@@ -728,6 +777,17 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
               antialias: true,
             });
             await renderer.init();
+
+            // Guard against three's silent WebGL2 fallback: if the live backend
+            // isn't WebGPU, our SDF pipeline can't run — surface the same
+            // message rather than render a broken scene.
+            const backend = (renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend;
+            if (backend?.isWebGPUBackend !== true) {
+              renderer.dispose();
+              setWebgpuError(WEBGPU_NO_ADAPTER);
+              throw new Error("WebGPU unavailable: backend fell back to WebGL");
+            }
+
             (window as any).__threeRenderer = renderer;
             rendererRef.current = renderer;
 
