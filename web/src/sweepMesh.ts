@@ -111,15 +111,33 @@ function rmFrames(path: V3[], T: V3[]): { N: V3[]; B: V3[] } {
 export function buildSweepGeometry(
   path: V3[],
   contour: ContourData,
-  opts: { closed?: boolean } = {},
+  opts: { closed?: boolean; twist?: number } = {},
 ): THREE.BufferGeometry | null {
   if (!contour || contour.outer.length < 3) return null;
   const n = path.length;
   if (n < 2) return null;
 
   const closed = opts.closed ?? false;
+  const twist = opts.twist ?? 0;
   const T = computeTangents(path, closed);
   const { N, B } = rmFrames(path, T);
+
+  // Cumulative arclength per sample → the twist angle θ(s) = twist·s/L.
+  const arclen = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const a = path[i];
+    const b = path[i - 1];
+    arclen[i] = arclen[i - 1] + Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  }
+  const totalLen =
+    arclen[n - 1] +
+    (closed
+      ? Math.hypot(
+          path[0][0] - path[n - 1][0],
+          path[0][1] - path[n - 1][1],
+          path[0][2] - path[n - 1][2],
+        )
+      : 0);
 
   const flat2d = [contour.outer, ...contour.holes].flat();
   const { pointsPerRing } = contourLoopRanges(contour);
@@ -128,10 +146,17 @@ export function buildSweepGeometry(
     const p = path[i];
     const ni = N[i];
     const bi = B[i];
+    // Rotate the profile by +θ so it lands twisted in the RMF frame (the
+    // SDF un-rotates by −θ; see SweepPath::cross_section).
+    const theta = twist && totalLen > 1e-6 ? (twist * arclen[i]) / totalLen : 0;
+    const cs = Math.cos(theta);
+    const sn = Math.sin(theta);
     const base = i * pointsPerRing;
     for (let j = 0; j < pointsPerRing; j++) {
-      const u = flat2d[j][0];
-      const v = flat2d[j][1];
+      const u0 = flat2d[j][0];
+      const v0 = flat2d[j][1];
+      const u = cs * u0 - sn * v0;
+      const v = sn * u0 + cs * v0;
       const o = (base + j) * 3;
       positions[o] = p[0] + u * ni[0] + v * bi[0];
       positions[o + 1] = p[1] + u * ni[1] + v * bi[1];

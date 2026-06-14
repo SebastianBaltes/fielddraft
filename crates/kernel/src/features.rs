@@ -1646,6 +1646,9 @@ pub struct SweepDef {
     pub profiles: ::fielddraft_protocol::Query,
     /// Modular path source (Gizmo3d control points or a 2D sketch curve).
     pub path: PathSourceDef,
+    /// Total profile twist along the spine, in degrees (0 = no twist).
+    #[param(default = 0.0)]
+    pub twist_deg: f32,
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 }
@@ -1766,6 +1769,7 @@ impl FeatureKind for SweepFeature {
                 sketch: Box::new(sketch),
                 path: sampled.points,
                 closed: sampled.closed,
+                twist: d.twist_deg.to_radians(),
             },
         });
         Ok(())

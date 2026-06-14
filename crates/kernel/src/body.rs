@@ -902,10 +902,11 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             taper.to_bits().hash(hasher);
             hash_sketch2d(sketch, hasher);
         }
-        CsgNode::Sweep { id, sketch, path, closed } => {
+        CsgNode::Sweep { id, sketch, path, closed, twist } => {
             18u8.hash(hasher);
             id.hash(hasher);
             closed.hash(hasher);
+            twist.to_bits().hash(hasher);
             for q in path {
                 for c in q {
                     c.to_bits().hash(hasher);

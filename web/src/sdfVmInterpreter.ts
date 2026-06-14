@@ -497,6 +497,7 @@ export function buildVmSdfEvalFn(
         const nInt = floatToIntFn({ v: rd() }).toVar();
         const closed = rd().toVar();
         const totalLen = rd().toVar();
+        const twist = rd().toVar();
         const dataStart = pc.toVar();
         pc.addAssign(nInt.mul(10));
 
@@ -540,11 +541,20 @@ export function buildVmSdfEvalFn(
         const nf = sample(i0, 3).add(sample(i1, 3).sub(sample(i0, 3)).mul(bestT)).normalize();
         const bf = sample(i0, 6).add(sample(i1, 6).sub(sample(i0, 6)).mul(bestT)).normalize();
         const d = p.sub(foot);
-        const u = d.dot(nf);
-        const v = d.dot(bf);
+        const u = d.dot(nf).toVar();
+        const v = d.dot(bf).toVar();
         const arc0 = opBuf.element(dataStart.add(i0.mul(10)).add(9));
         const arc1 = opBuf.element(dataStart.add(i1.mul(10)).add(9));
         const arcFoot = arc0.add(arc1.sub(arc0).mul(bestT));
+
+        // Twist: un-rotate (u, v) by θ = twist·s/L (mirror of cross_section).
+        const theta = twist.mul(arcFoot).div(max(totalLen, float(1e-6))).negate();
+        const cs = theta.cos();
+        const sn = theta.sin();
+        const ur = cs.mul(u).sub(sn.mul(v));
+        const vr = sn.mul(u).add(cs.mul(v));
+        u.assign(ur);
+        v.assign(vr);
 
         const w = float(-1e30).toVar();
         If(closed.lessThan(0.5), () => {

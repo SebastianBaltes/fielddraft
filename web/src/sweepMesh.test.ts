@@ -92,6 +92,23 @@ describe("buildSweepGeometry", () => {
     expect(closedTris).toBe(4 * 4 * 2); // 4 ring spans (wrap), no caps
   });
 
+  it("twist rotates the cross-section along the path", () => {
+    // Asymmetric profile (point at u=4,v=0) swept straight along X with a 90°
+    // total twist. At ring 0 the point sits at +N(=+Y); at the last ring it
+    // has rotated ~90° toward +B(=+Z).
+    const prof: ContourData = { outer: [[4, 0], [4, 2], [-4, 2], [-4, -2], [4, -2]], holes: [] };
+    const geo = buildSweepGeometry(straightX, prof, { twist: Math.PI / 2 })!;
+    const pos = geo.getAttribute("position");
+    const ppr = 5; // 5 outer points
+    // Ring 0, point 0 (u=4,v=0) → P0 + 4·N(=+Y): (0, 4, 0).
+    expect(pos.getY(0)).toBeCloseTo(4, 3);
+    expect(pos.getZ(0)).toBeCloseTo(0, 3);
+    // Last ring, point 0: rotated ~90° → mostly +Z, little +Y.
+    const last = (straightX.length - 1) * ppr;
+    expect(Math.abs(pos.getZ(last))).toBeGreaterThan(3.5);
+    expect(Math.abs(pos.getY(last))).toBeLessThan(1);
+  });
+
   it("produces finite vertex normals", () => {
     const geo = buildSweepGeometry(
       [

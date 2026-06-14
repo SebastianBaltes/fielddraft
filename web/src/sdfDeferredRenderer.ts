@@ -160,6 +160,7 @@ function createSweepGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null 
   if (!leaf.contour || !leaf.sweep) return null;
   return buildSweepGeometry(leaf.sweep.points, leaf.contour, {
     closed: leaf.sweep.closed,
+    twist: leaf.sweep.twist,
   });
 }
 

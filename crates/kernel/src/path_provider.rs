@@ -40,7 +40,7 @@ impl SampledPath {
     /// Build the shared [`SweepPath`] (frames + arclength + BVH). `None` for
     /// fewer than two points.
     pub fn into_sweep_path(self) -> Option<SweepPath> {
-        SweepPath::new(self.points, self.closed)
+        SweepPath::new(self.points, self.closed, 0.0)
     }
 }
 

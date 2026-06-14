@@ -70,7 +70,7 @@ pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
 pub const OP_WARP_HELIX: u32     = 0x36; // +7: pitch + hand + turns + y_anchor + taper + r_inner + start_angle — point ← (r−taper·(y−y0), w, ell)
 pub const OP_HELIX_SCALE: u32    = 0x37; // +1: scale (world·lipschitz, baked at emission) — pops d2d, composes with point.z (end caps), multiplies
-pub const OP_WARP_SWEEP: u32     = 0x38; // +3 header (N, closed, total_len) + N×10 (point3, n3, b3, arclen); nearest spine point → point ← (u, v, w_cap); compose via OP_HELIX_SCALE
+pub const OP_WARP_SWEEP: u32     = 0x38; // +4 header (N, closed, total_len, twist) + N×10 (point3, n3, b3, arclen); nearest spine point → point ← (twist-rotated u, v, w_cap); compose via OP_HELIX_SCALE
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
@@ -382,6 +382,7 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(path.points.len() as f32);
             out.push(if path.closed { 1.0 } else { 0.0 });
             out.push(path.total_len);
+            out.push(path.twist);
             for i in 0..path.points.len() {
                 let p = path.points[i];
                 let f = &path.frames[i];
@@ -1191,6 +1192,7 @@ pub fn eval_opcodes_with_volumes(
                 let n = rd!() as usize;
                 let closed = rd!() > 0.5;
                 let total_len = rd!();
+                let twist = rd!();
                 let mut pts = Vec::with_capacity(n);
                 let mut nrm = Vec::with_capacity(n);
                 let mut bnm = Vec::with_capacity(n);
@@ -1242,8 +1244,9 @@ pub fn eval_opcodes_with_volumes(
                 let nf = lerp(nrm[i0], nrm[i1]);
                 let bf = lerp(bnm[i0], bnm[i1]);
                 let d = sub(pt, foot);
-                let u = dot(d, nf);
-                let v = dot(d, bf);
+                let mut u = dot(d, nf);
+                let mut v = dot(d, bf);
+                let s_foot = arc[i0] + (arc[i1] - arc[i0]) * best_t;
                 let w = if closed {
                     f32::NEG_INFINITY
                 } else {
@@ -1253,10 +1256,18 @@ pub fn eval_opcodes_with_volumes(
                         let taxis = normalize(cross(nf, bf));
                         dot(d, taxis).abs()
                     } else {
-                        let s = arc[i0] + (arc[i1] - arc[i0]) * best_t;
-                        -s.min(total_len - s)
+                        -s_foot.min(total_len - s_foot)
                     }
                 };
+                // Twist: un-rotate (u, v) by θ = twist · s/L (mirror of
+                // SweepPath::cross_section).
+                if twist != 0.0 && total_len > 1e-6 {
+                    let theta = -twist * s_foot / total_len;
+                    let (sn, cs) = theta.sin_cos();
+                    let (nu, nv) = (cs * u - sn * v, sn * u + cs * v);
+                    u = nu;
+                    v = nv;
+                }
                 pt = [u, v, w];
             }
 
@@ -1688,6 +1699,8 @@ mod tests {
             )),
             path,
             closed: false,
+            // Non-zero twist so the parity check exercises the rotation path.
+            twist: 1.5,
         };
         let bvh = BoundedCsg::from_csg(&node);
         let compiled = compile_body(&bvh);

@@ -804,6 +804,8 @@ pub enum CsgNode {
         sketch: Box<Sketch2d>,
         path: Vec<[f32; 3]>,
         closed: bool,
+        /// Total profile twist (radians) about the spine, linear in arclength.
+        twist: f32,
     },
 }
 
@@ -1465,11 +1467,11 @@ impl CsgNode {
                 };
                 crate::helix_compose(d, ell) * scale
             }
-            CsgNode::Sweep { sketch, path, closed, .. } => {
+            CsgNode::Sweep { sketch, path, closed, twist, .. } => {
                 // Unbounded picking-path eval: build the SweepPath on the fly
                 // (the hot render path uses BoundedCsg::Sweep's cached one).
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
-                crate::sweep_path::SweepPath::new(path.clone(), *closed)
+                crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist)
                     .map(|sp| sp.sdf(&bounded, p))
                     .unwrap_or(f32::INFINITY)
             }
@@ -1725,9 +1727,9 @@ impl CsgNode {
                 let c = revolve_contributors(id, &band);
                 (crate::helix_compose(band.distance, ell) * scale, c)
             }
-            CsgNode::Sweep { id, sketch, path, closed, .. } => {
+            CsgNode::Sweep { id, sketch, path, closed, twist, .. } => {
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
-                match crate::sweep_path::SweepPath::new(path.clone(), *closed) {
+                match crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist) {
                     Some(sp) => {
                         let cs = sp.cross_section(p);
                         let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
@@ -3396,6 +3398,7 @@ mod tests {
             sketch: Box::new(circle_sketch(0.0, 0.0, 5.0)),
             path,
             closed: false,
+            twist: 0.0,
         };
         let info = crate::bvh::BoundedCsg::from_csg(&node).classify_for_hybrid();
         let leaf = info
@@ -3425,6 +3428,7 @@ mod tests {
             sketch: Box::new(circle_sketch(0.0, 0.0, 0.5)),
             path,
             closed: true,
+            twist: 0.0,
         };
         let info = crate::bvh::BoundedCsg::from_csg(&node).classify_for_hybrid();
         assert!(
@@ -3443,6 +3447,7 @@ mod tests {
             sketch: Box::new(circle_sketch(0.0, 0.0, 5.0)),
             path,
             closed: false,
+            twist: 0.0,
         };
         // Unbounded (picking) eval — builds the SweepPath on the fly.
         let d = |p: [f32; 3]| node.sdf(p, EvalMode::Visual);

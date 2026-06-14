@@ -261,6 +261,8 @@ export type LeafWarp =
 export interface SweepLeafData {
   points: [number, number, number][];
   closed: boolean;
+  /** Total profile twist (radians), distributed by arclength. */
+  twist: number;
 }
 
 export interface HybridLeafInfo {

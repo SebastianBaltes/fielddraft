@@ -181,10 +181,10 @@ mod tests {
         SweepGateConfig::default()
     }
     fn open(pts: Vec<V3>) -> SweepPath {
-        SweepPath::new(pts, false).unwrap()
+        SweepPath::new(pts, false, 0.0).unwrap()
     }
     fn closed(pts: Vec<V3>) -> SweepPath {
-        SweepPath::new(pts, true).unwrap()
+        SweepPath::new(pts, true, 0.0).unwrap()
     }
 
     #[test]

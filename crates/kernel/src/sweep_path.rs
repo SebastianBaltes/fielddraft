@@ -324,14 +324,19 @@ pub struct SweepPath {
     pub arclen: Vec<f32>,
     pub closed: bool,
     pub total_len: f32,
+    /// Total twist (radians) of the profile about the spine, distributed
+    /// linearly by arclength: the placement frame at arclength `s` is the RMF
+    /// frame rotated by `twist · s/total_len`. 0 = no twist.
+    pub twist: f32,
     pub(crate) segs: Vec<Segment>,
     bvh: Bvh,
 }
 
 impl SweepPath {
     /// Sample a spine and precompute frames, arclength and the segment BVH.
-    /// Returns `None` for fewer than two points.
-    pub fn new(points: Vec<V3>, closed: bool) -> Option<SweepPath> {
+    /// Returns `None` for fewer than two points. `twist` is the total
+    /// profile rotation (radians) distributed linearly along the arclength.
+    pub fn new(points: Vec<V3>, closed: bool, twist: f32) -> Option<SweepPath> {
         let n = points.len();
         if n < 2 {
             return None;
@@ -359,7 +364,7 @@ impl SweepPath {
         }
         let bvh = build_bvh(&segs, (0..segs.len()).collect());
 
-        Some(SweepPath { points, frames, arclen, closed, total_len, segs, bvh })
+        Some(SweepPath { points, frames, arclen, closed, total_len, twist, segs, bvh })
     }
 
     pub(crate) fn segments(&self) -> &[Segment] {
@@ -424,7 +429,18 @@ impl SweepPath {
             // are large-negative → caps ignored).
             -hit.arclength.min(self.total_len - hit.arclength)
         };
-        CrossSection { u: dot(d, hit.frame.n), v: dot(d, hit.frame.b), w }
+        let mut u = dot(d, hit.frame.n);
+        let mut v = dot(d, hit.frame.b);
+        // Twist: the placement frame at this arclength is the RMF frame rotated
+        // by θ = twist · s/L, so the query un-rotates by −θ into profile space.
+        if self.twist != 0.0 && self.total_len > 1e-6 {
+            let theta = -self.twist * hit.arclength / self.total_len;
+            let (sn, cs) = theta.sin_cos();
+            let (nu, nv) = (cs * u - sn * v, sn * u + cs * v);
+            u = nu;
+            v = nv;
+        }
+        CrossSection { u, v, w }
     }
 
     fn nearest_rec(&self, bvh: &Bvh, q: V3, best2: &mut f32, best_seg: &mut usize, best_t: &mut f32) {
@@ -488,7 +504,7 @@ mod tests {
     #[test]
     fn straight_path_has_constant_frame_and_arclength() {
         let pts: Vec<V3> = (0..6).map(|i| [i as f32 * 4.0, 0.0, 0.0]).collect();
-        let sp = SweepPath::new(pts, false).unwrap();
+        let sp = SweepPath::new(pts, false, 0.0).unwrap();
         for f in &sp.frames {
             assert!(approx(f.n[0], sp.frames[0].n[0], 1e-5));
             assert!(approx(f.n[1], sp.frames[0].n[1], 1e-5));
@@ -507,7 +523,7 @@ mod tests {
             [20.0, 10.0, 0.0],
             [20.0, 20.0, 5.0],
         ];
-        let sp = SweepPath::new(pts, false).unwrap();
+        let sp = SweepPath::new(pts, false, 0.0).unwrap();
         for f in &sp.frames {
             assert!(approx(norm(f.n), 1.0, 1e-4));
             assert!(approx(norm(f.b), 1.0, 1e-4));
@@ -520,7 +536,7 @@ mod tests {
     fn nearest_finds_the_closest_spine_point() {
         // Spine along X from 0..40; query above the middle.
         let pts: Vec<V3> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
-        let sp = SweepPath::new(pts, false).unwrap();
+        let sp = SweepPath::new(pts, false, 0.0).unwrap();
         let hit = sp.nearest([17.0, 6.0, 0.0]);
         assert!(approx(hit.point[0], 17.0, 1e-4));
         assert!(approx(hit.point[1], 0.0, 1e-4));
@@ -539,10 +555,26 @@ mod tests {
     }
 
     #[test]
+    fn twist_rotates_the_profile_along_the_path() {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        // Rectangle ±[4,2] swept straight along +X (frame n=+Y, b=+Z), total
+        // twist π/2. At s≈0 the rect extends ±2 in b(=Z); near s=L it has
+        // rotated ~90° → wide (±4) in b. So a point 3 mm out in +Z is OUTSIDE
+        // at the start but INSIDE near the end.
+        let pts: Vec<V3> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
+        let sp = SweepPath::new(pts, false, std::f32::consts::FRAC_PI_2).unwrap();
+        let rect = crate::sketch2d::BoundedSketch2d::from_sketch(&Sketch2d::Prim(
+            Sketch2dPrimitive::Rectangle { center: [0.0, 0.0], half_extents: [4.0, 2.0] },
+        ));
+        assert!(sp.sdf(&rect, [2.0, 0.0, 3.0]) > 0.0, "start: 3mm in b is outside ±2");
+        assert!(sp.sdf(&rect, [38.0, 0.0, 3.0]) < 0.0, "end: rotated → ±4, now inside");
+    }
+
+    #[test]
     fn straight_sweep_equals_a_capped_cylinder_sdf() {
         // Disk radius 5 swept along X from 0..40 → cylinder, capped.
         let pts: Vec<V3> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
-        let sp = SweepPath::new(pts, false).unwrap();
+        let sp = SweepPath::new(pts, false, 0.0).unwrap();
         let prof = disk(5.0);
         // Axis centre: nearest lateral surface at radius 5 → −5.
         assert!(approx(sp.sdf(&prof, [20.0, 0.0, 0.0]), -5.0, 1e-3));
@@ -565,7 +597,7 @@ mod tests {
                 [50.0 * a.cos(), 50.0 * a.sin(), 0.0]
             })
             .collect();
-        let sp = SweepPath::new(pts, false).unwrap();
+        let sp = SweepPath::new(pts, false, 0.0).unwrap();
         let prof = disk(3.0);
         // A point on the outer tube wall at the arc midpoint (radius 53).
         let mid = std::f32::consts::FRAC_PI_4;
@@ -587,7 +619,7 @@ mod tests {
                 [30.0 * a.cos(), 30.0 * a.sin(), 0.0]
             })
             .collect();
-        let sp = SweepPath::new(pts.clone(), false).unwrap();
+        let sp = SweepPath::new(pts.clone(), false, 0.0).unwrap();
         let q = [5.0, 5.0, 8.0];
         let hit = sp.nearest(q);
         // Brute force over all segments.

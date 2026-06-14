@@ -63,6 +63,8 @@ pub enum LeafWarp {
 pub struct SweepLeafData {
     pub points: Vec<[f32; 3]>,
     pub closed: bool,
+    /// Total profile twist (radians) the web mesher distributes by arclength.
+    pub twist: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1170,10 +1172,10 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
-        CsgNode::Sweep { id, sketch, path, closed } => {
+        CsgNode::Sweep { id, sketch, path, closed, twist } => {
             let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
             let s2 = bounded_sketch.aabb();
-            let sweep_path = crate::sweep_path::SweepPath::new(path.clone(), *closed);
+            let sweep_path = crate::sweep_path::SweepPath::new(path.clone(), *closed, *twist);
             match sweep_path {
                 Some(sp) if !s2.is_empty() => {
                     // Conservative hull: each spine sample ± the profile's
@@ -1421,6 +1423,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
                     sweep: Some(SweepLeafData {
                         points: path.points.clone(),
                         closed: path.closed,
+                        twist: path.twist,
                     }),
                 });
             }
