@@ -388,18 +388,8 @@ function WebGLViewport() {
     camera: THREE.Camera;
   } | null>(null);
 
-  // R3F's <Canvas> only creates its root once react-use-measure reports a
-  // non-zero container size. Under StrictMode the measure listeners attach on
-  // the final (re)mount and miss the initial size — so we nudge them with a few
-  // spaced window-resize events until the root spins up (then stop).
-  useEffect(() => {
-    let n = 0;
-    const id = setInterval(() => {
-      window.dispatchEvent(new Event("resize"));
-      if (++n >= 10 || stateRef.current) clearInterval(id);
-    }, 120);
-    return () => clearInterval(id);
-  }, []);
+  // (The react-use-measure resize nudge lives in the parent Viewport, keyed on
+  // render mode, so it covers both the WebGPU and this WebGL canvas.)
 
   // Drive rendering ourselves. R3F's shared global loop doesn't tick this
   // standalone second root (the WebGPU canvas owns the scheduler), so the Canvas
@@ -776,6 +766,21 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
 
   const isWebGL = renderMode === "webgl";
   const noHostPointer = webgpuError || isWebGL;
+
+  // Nudge R3F's react-use-measure. The <Canvas> (WebGPU OR WebGL) doesn't
+  // render until its ResizeObserver reports a non-zero container size, and that
+  // first measure is missed on mount here — leaving the canvas blank until a
+  // manual window resize (a known R3F issue; affects BOTH backends, not just
+  // StrictMode). A few spaced resize events on mount / render-mode change force
+  // the measure so the canvas comes up immediately.
+  useEffect(() => {
+    let n = 0;
+    const id = setInterval(() => {
+      window.dispatchEvent(new Event("resize"));
+      if (++n >= 8) clearInterval(id);
+    }, 120);
+    return () => clearInterval(id);
+  }, [renderMode]);
 
   return (
     <div

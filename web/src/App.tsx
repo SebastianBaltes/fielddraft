@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { Outliner } from "./Outliner";
 import { Toolbar } from "./Toolbar";
 import { Viewport } from "./Viewport";
@@ -246,6 +246,10 @@ export function App() {
   return (
     <WorkspaceUnitsContext.Provider value={settings.units}>
     <div className={"fd-shell" + (compact ? " fd-compact" : "")}>
+      {/* StrictMode wraps the UI chrome but NOT the 3D <Viewport> below — its
+          dev double-mount breaks the R3F canvas (blank-until-resize) and
+          double-inits the renderer. See main.tsx. */}
+      <StrictMode>
       <header className="topbar">
         <button
           type="button"
@@ -302,13 +306,18 @@ export function App() {
           )}
         </div>
       </header>
+      </StrictMode>
       {/* MT-A: both workspaces stay mounted; we toggle visibility with
           the `hidden` attr so the Viewport's GPU context and Monaco are
           never torn down on a tab switch. The active tab is derived from
           the project; part AND assembly both use the part workspace
           (Viewport + Outliner render the assembly when active). */}
       <div className="fd-workspace" hidden={activeProjectTab?.kind === "script"}>
-        {store && state ? <Toolbar store={store} state={state} /> : null}
+        {store && state ? (
+          <StrictMode>
+            <Toolbar store={store} state={state} />
+          </StrictMode>
+        ) : null}
         <main className="main">
           <Viewport renderMode={settings.renderMode} brepEdgeMode={settings.brepEdgeMode} frameLoop={settings.frameLoop} showEdgePoints={settings.showEdgePoints} showOctreeCells={settings.showOctreeCells} controlsPreset={settings.controlsPreset} />
           {mobileNavOpen ? (
@@ -319,10 +328,13 @@ export function App() {
             />
           ) : null}
           {store && state ? (
-            <Outliner store={store} state={state} mobileNavOpen={mobileNavOpen} />
+            <StrictMode>
+              <Outliner store={store} state={state} mobileNavOpen={mobileNavOpen} />
+            </StrictMode>
           ) : null}
         </main>
       </div>
+      <StrictMode>
       <div className="fd-workspace fd-script-workspace" hidden={activeProjectTab?.kind !== "script"}>
         {store && state && activeScriptTab ? (
           <FieldSkriptEditor
@@ -389,6 +401,7 @@ export function App() {
           </div>
         </div>
       ) : null}
+      </StrictMode>
     </div>
     </WorkspaceUnitsContext.Provider>
   );

@@ -1,4 +1,3 @@
-import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./styles/index.css";
@@ -19,8 +18,10 @@ console.warn = (...args: unknown[]) => {
 const container = document.getElementById("root");
 if (!container) throw new Error("#root not found");
 
-createRoot(container).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+// NOTE: StrictMode is applied per-region INSIDE App (around the UI chrome,
+// outliner, toolbar, script editor) — but NOT around the 3D <Viewport>. Its
+// dev double-mount (mount→unmount→mount) breaks the WebGPU/WebGL canvas: R3F's
+// react-use-measure ResizeObserver misses the re-observed initial size, so the
+// canvas stays blank until a manual window resize (a known R3F+StrictMode
+// issue), and the renderer/device init runs twice. See App.tsx.
+createRoot(container).render(<App />);
