@@ -70,6 +70,7 @@ pub const OP_WARP_TRANSFORM: u32 = 0x34; // +10: translate(3) + quat(4) + scale(
 pub const OP_WARP_REVOLVE: u32   = 0x35; // +0: point ← (√(x²+z²), y, 0)
 pub const OP_WARP_HELIX: u32     = 0x36; // +7: pitch + hand + turns + y_anchor + taper + r_inner + start_angle — point ← (r−taper·(y−y0), w, ell)
 pub const OP_HELIX_SCALE: u32    = 0x37; // +1: scale (world·lipschitz, baked at emission) — pops d2d, composes with point.z (end caps), multiplies
+pub const OP_WARP_SWEEP: u32     = 0x38; // +3 header (N, closed, total_len) + N×10 (point3, n3, b3, arclen); nearest spine point → point ← (u, v, w_cap); compose via OP_HELIX_SCALE
 
 // Masked blend — pops 2 (da, db), evaluates capsule mask, pushes 1.
 pub const OP_MASKED_BLEND: u32   = 0x40; // +var: n + n×point(3) + mask_r+blend_r+mode+is_diff
@@ -367,13 +368,32 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(world_transform.min_scale() * lip);
             out.push(op(OP_WARP_POP));
         }
-        BoundedCsg::Sweep { .. } => {
-            // GPU sweep opcodes are the next step (nearest-segment + RMF-frame
-            // profile eval over an uploaded path/frame buffer). Until then emit
-            // an empty SDF so the raymarcher ignores the sweep — it still
-            // renders in the CPU `mesh` mode via the DC mesher / `sdf_dual`.
-            out.push(op(OP_PRIM_CONST));
-            out.push(f32::MAX);
+        BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {
+            // Nearest-spine-point unwrap into the profile's (u, v) frame, the
+            // shared 2D sketch eval, then the IQ extrude cap-compose (reuses
+            // OP_HELIX_SCALE — point.z carries the cap coordinate w). Mirrors
+            // `crate::sweep_path::SweepPath::sdf`.
+            let excl = open
+                .has_feature(id.as_u32_or_root().unwrap_or(0))
+                .then_some((id, open));
+            out.push(op(OP_WARP_PUSH));
+            emit_warp_transform(world_transform, out);
+            out.push(op(OP_WARP_SWEEP));
+            out.push(path.points.len() as f32);
+            out.push(if path.closed { 1.0 } else { 0.0 });
+            out.push(path.total_len);
+            for i in 0..path.points.len() {
+                let p = path.points[i];
+                let f = &path.frames[i];
+                out.extend_from_slice(&[p[0], p[1], p[2]]);
+                out.extend_from_slice(&[f.n[0], f.n[1], f.n[2]]);
+                out.extend_from_slice(&[f.b[0], f.b[1], f.b[2]]);
+                out.push(path.arclen[i]);
+            }
+            emit_sketch(sketch, out, 0, excl);
+            out.push(op(OP_HELIX_SCALE));
+            out.push(world_transform.min_scale());
+            out.push(op(OP_WARP_POP));
         }
     }
 }
@@ -1163,6 +1183,82 @@ pub fn eval_opcodes_with_volumes(
                     * (l_t.abs().min(std::f32::consts::PI) * 0.5).sin();
                 pt = [rp, w, ell];
             }
+            OP_WARP_SWEEP => {
+                // Mirror of `SweepPath::cross_section`: nearest spine point,
+                // project into the interpolated (n, b) frame → (u, v); the cap
+                // coordinate w rides along in pt[2] until OP_HELIX_SCALE.
+                use crate::sweep_path::{cross, dot, normalize, sub};
+                let n = rd!() as usize;
+                let closed = rd!() > 0.5;
+                let total_len = rd!();
+                let mut pts = Vec::with_capacity(n);
+                let mut nrm = Vec::with_capacity(n);
+                let mut bnm = Vec::with_capacity(n);
+                let mut arc = Vec::with_capacity(n);
+                for _ in 0..n {
+                    pts.push(rd3!());
+                    nrm.push(rd3!());
+                    bnm.push(rd3!());
+                    arc.push(rd!());
+                }
+                let seg_count = if closed { n } else { n - 1 };
+                let mut best_d2 = f32::INFINITY;
+                let mut best_seg = 0usize;
+                let mut best_t = 0.0f32;
+                for si in 0..seg_count {
+                    let a = pts[si];
+                    let b = pts[(si + 1) % n];
+                    let ab = sub(b, a);
+                    let denom = dot(ab, ab);
+                    let t = if denom > 1e-12 {
+                        (dot(sub(pt, a), ab) / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let foot = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+                    let d = sub(pt, foot);
+                    let d2 = dot(d, d);
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        best_seg = si;
+                        best_t = t;
+                    }
+                }
+                let i0 = best_seg;
+                let i1 = (best_seg + 1) % n;
+                let ab = sub(pts[i1], pts[i0]);
+                let foot = [
+                    pts[i0][0] + ab[0] * best_t,
+                    pts[i0][1] + ab[1] * best_t,
+                    pts[i0][2] + ab[2] * best_t,
+                ];
+                let lerp = |a: [f32; 3], b: [f32; 3]| {
+                    normalize([
+                        a[0] + (b[0] - a[0]) * best_t,
+                        a[1] + (b[1] - a[1]) * best_t,
+                        a[2] + (b[2] - a[2]) * best_t,
+                    ])
+                };
+                let nf = lerp(nrm[i0], nrm[i1]);
+                let bf = lerp(bnm[i0], bnm[i1]);
+                let d = sub(pt, foot);
+                let u = dot(d, nf);
+                let v = dot(d, bf);
+                let w = if closed {
+                    f32::NEG_INFINITY
+                } else {
+                    let at_end = (best_seg == 0 && best_t <= 1e-6)
+                        || (best_seg == seg_count - 1 && best_t >= 1.0 - 1e-6);
+                    if at_end {
+                        let taxis = normalize(cross(nf, bf));
+                        dot(d, taxis).abs()
+                    } else {
+                        let s = arc[i0] + (arc[i1] - arc[i0]) * best_t;
+                        -s.min(total_len - s)
+                    }
+                };
+                pt = [u, v, w];
+            }
 
             // ── Masked blend ───────────────────────────────────
             OP_MASKED_BLEND => {
@@ -1569,6 +1665,42 @@ mod tests {
             [-9.0, 11.0, -0.05],
         ];
         assert_sdf_match(&bvh, &compiled, &points, 1e-4);
+    }
+
+    #[test]
+    fn sweep_opcode_stream_matches_tree_eval() {
+        // Disk r=5 swept along a gentle 3D wave — opcode VM (the GPU mirror)
+        // vs the BoundedCsg tree eval, exercising the nearest-segment unwrap,
+        // interpolated RMF frame, and the end-cap composition.
+        let path: Vec<[f32; 3]> = (0..=10)
+            .map(|i| {
+                let x = i as f32 * 5.0;
+                [x, (x * 0.03).sin() * 5.0, (x * 0.02).cos() * 3.0]
+            })
+            .collect();
+        let node = CsgNode::Sweep {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(fielddraft_protocol::Sketch2d::Prim(
+                fielddraft_protocol::Sketch2dPrimitive::Circle {
+                    center: [0.0, 0.0],
+                    radius: 5.0,
+                },
+            )),
+            path,
+            closed: false,
+        };
+        let bvh = BoundedCsg::from_csg(&node);
+        let compiled = compile_body(&bvh);
+        let points = [
+            [0.0, 0.0, 3.0],
+            [25.0, 0.0, 0.0],
+            [25.0, 10.0, 0.0],
+            [50.0, 0.0, 3.0],
+            [52.0, 0.0, 3.0],
+            [10.0, 8.0, 5.0],
+            [40.0, -6.0, -2.0],
+        ];
+        assert_sdf_match(&bvh, &compiled, &points, 1e-3);
     }
 
     #[test]

@@ -465,19 +465,18 @@ fn node_dist2(bvh: &Bvh, q: V3) -> f32 {
     }
 }
 
-/// Linear blend of two frames at parameter `t`, re-orthonormalised.
+/// Linear blend of two frames at parameter `t`. Interpolates the normal and
+/// binormal directly (`t = n × b`); kept deliberately simple so the GPU VM
+/// (`OP_WARP_SWEEP`) can mirror it byte-for-byte for CPU/GPU SDF parity.
 fn lerp_frame(f0: Frame, f1: Frame, t: f32) -> Frame {
     let lerp = |a: V3, b: V3| normalize([
         a[0] + (b[0] - a[0]) * t,
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
     ]);
-    let tg = lerp(f0.t, f1.t);
-    let mut n = lerp(f0.n, f1.n);
-    // Gram-Schmidt: keep n ⊥ t, then b = t × n.
-    let d = dot(n, tg);
-    n = normalize([n[0] - d * tg[0], n[1] - d * tg[1], n[2] - d * tg[2]]);
-    Frame { t: tg, n, b: cross(tg, n) }
+    let n = lerp(f0.n, f1.n);
+    let b = lerp(f0.b, f1.b);
+    Frame { t: normalize(cross(n, b)), n, b }
 }
 
 #[cfg(test)]

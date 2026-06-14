@@ -43,7 +43,7 @@ import {
   OP_OFFSET_2D, OP_NEG, OP_PRIM_HALFSPACE,
   OP_WARP_PUSH, OP_WARP_POP, OP_WARP_TWIST, OP_WARP_BEND,
   OP_WARP_TRANSFORM, OP_WARP_REVOLVE,
-  OP_WARP_HELIX, OP_HELIX_SCALE,
+  OP_WARP_HELIX, OP_HELIX_SCALE, OP_WARP_SWEEP,
   OP_MASKED_BLEND, OP_END,
   worldToLocalFn, halfspaceLocalFn, sdfBoxFn, sdfSphereFn, sdfCylinderFn,
   sdfTorusFn, sdfConeFn, sdfCapsuleFn, sdfHexPrismFn,
@@ -488,6 +488,78 @@ export function buildVmSdfEvalFn(
         ptx.assign(rp);
         pty.assign(w);
         ptz.assign(ell);
+
+      }).ElseIf(tag.equal(int(OP_WARP_SWEEP)), () => {
+        // Nearest spine point → project into the interpolated (n, b) frame =
+        // (u, v); the cap coordinate w rides in pt.z until OP_HELIX_SCALE.
+        // GPU mirror of `SweepPath::cross_section` (verified in Rust against
+        // the tree eval via `sweep_opcode_stream_matches_tree_eval`).
+        const nInt = floatToIntFn({ v: rd() }).toVar();
+        const closed = rd().toVar();
+        const totalLen = rd().toVar();
+        const dataStart = pc.toVar();
+        pc.addAssign(nInt.mul(10));
+
+        const p = vec3(ptx, pty, ptz).toVar();
+        const segCount = nInt.sub(1).toVar();
+        If(closed.greaterThan(0.5), () => { segCount.assign(nInt); });
+
+        const sample = (idx: ReturnType<typeof int>, off: number) =>
+          vec3(
+            opBuf.element(dataStart.add(idx.mul(10)).add(off)),
+            opBuf.element(dataStart.add(idx.mul(10)).add(off + 1)),
+            opBuf.element(dataStart.add(idx.mul(10)).add(off + 2)),
+          );
+
+        const bestD2 = float(1e30).toVar();
+        const bestSeg = int(0).toVar();
+        const bestT = float(0).toVar();
+        const si = int(0).toVar();
+        Loop(segCount, () => {
+          const i1 = si.add(1).mod(nInt);
+          const a = sample(si, 0);
+          const b = sample(i1, 0);
+          const ab = b.sub(a);
+          const denom = max(ab.dot(ab), float(1e-12));
+          const t = clamp(p.sub(a).dot(ab).div(denom), 0, 1).toVar();
+          const dd = p.sub(a.add(ab.mul(t)));
+          const d2 = dd.dot(dd);
+          If(d2.lessThan(bestD2), () => {
+            bestD2.assign(d2);
+            bestSeg.assign(si);
+            bestT.assign(t);
+          });
+          si.addAssign(1);
+        });
+
+        const i0 = bestSeg.toVar();
+        const i1 = bestSeg.add(1).mod(nInt).toVar();
+        const pa = sample(i0, 0);
+        const pb = sample(i1, 0);
+        const foot = pa.add(pb.sub(pa).mul(bestT));
+        const nf = sample(i0, 3).add(sample(i1, 3).sub(sample(i0, 3)).mul(bestT)).normalize();
+        const bf = sample(i0, 6).add(sample(i1, 6).sub(sample(i0, 6)).mul(bestT)).normalize();
+        const d = p.sub(foot);
+        const u = d.dot(nf);
+        const v = d.dot(bf);
+        const arc0 = opBuf.element(dataStart.add(i0.mul(10)).add(9));
+        const arc1 = opBuf.element(dataStart.add(i1.mul(10)).add(9));
+        const arcFoot = arc0.add(arc1.sub(arc0).mul(bestT));
+
+        const w = float(-1e30).toVar();
+        If(closed.lessThan(0.5), () => {
+          const atStart = bestSeg.equal(int(0)).and(bestT.lessThanEqual(float(1e-6)));
+          const atEnd = bestSeg.equal(segCount.sub(1))
+            .and(bestT.greaterThanEqual(float(1).sub(float(1e-6))));
+          If(atStart.or(atEnd), () => {
+            w.assign(d.dot(nf.cross(bf).normalize()).abs());
+          }).Else(() => {
+            w.assign(min(arcFoot, totalLen.sub(arcFoot)).negate());
+          });
+        });
+        ptx.assign(u);
+        pty.assign(v);
+        ptz.assign(w);
 
       }).ElseIf(tag.equal(int(OP_MASKED_BLEND)), () => {
         // DL-61: count-prefixed polyline tube. Read `n` points, then the

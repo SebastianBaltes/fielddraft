@@ -56,6 +56,7 @@ export const OP_WARP_TRANSFORM = 0x34;
 export const OP_WARP_REVOLVE   = 0x35;
 export const OP_WARP_HELIX     = 0x36;
 export const OP_HELIX_SCALE    = 0x37;
+export const OP_WARP_SWEEP     = 0x38;
 
 export const OP_MASKED_BLEND   = 0x40;
 
