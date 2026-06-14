@@ -43,6 +43,7 @@ use serde_json::Value;
 use fielddraft_protocol::{BoolOp, Document, FeatureId, MultiQuery, Primitive, Transform};
 
 use crate::csg::{CsgNode, DecodedFeature, PrimitiveModifiers};
+use crate::path_provider::PathProvider;
 
 /// Derive macro that generates `TYPE_NAME`, `type_name()`,
 /// `schema_json()` and `parse()` helpers on a feature definition
@@ -1612,25 +1613,25 @@ impl FeatureKind for HexPrismPrimitive {
     }
 }
 
-// ─── K13.2: Sweep Feature (straight-line v0) ────────────────────
+// ─── K13.2: Sweep Feature (curved path) ─────────────────────────
 //
-// V0 sweep: extrudes a sketch profile along an arbitrary 3D
-// direction vector. Internally lowers to Primitive::Extrude
-// with a rotation that aligns the local Z axis to the sweep
-// direction. Curved sweeps (arc/spline path) come in v1 via
-// mesh_sdf lofting.
+// Sweeps a 2D sketch profile along an arbitrary 3D spine, built as a
+// `CsgNode::Sweep`. The path source is decoupled behind the modular
+// `path_provider` layer; v1 uses the Gizmo3d provider (control points +
+// Catmull-Rom spline). The Gatekeeper (in classify) decides parametric
+// mesh vs. SDF fallback; the profile is carried in the profile's own frame.
 
-/// `sweep` — straight-line sweep along a direction vector.
+/// `sweep` — profile swept along a control-point spine (Gizmo3d v1).
 #[derive(FeatureSchema)]
 #[schema(type = "sweep")]
 pub struct SweepDef {
     pub profiles: ::fielddraft_protocol::Query,
-    pub direction: [f32; 3],
-    pub length: ::fielddraft_protocol::Length,
+    /// Spine control points routed in 3D space (Gizmo3d provider input).
+    pub path_nodes: Vec<[f32; 3]>,
+    #[param(default = false)]
+    pub closed: bool,
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
-    #[param(default = [0.0, 0.0, 0.0])]
-    pub center: [f32; 3],
 }
 
 pub struct SweepFeature;
@@ -1649,16 +1650,8 @@ impl FeatureKind for SweepFeature {
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = SweepDef::parse(def)?;
-        let length_mm = d.length.to_mm();
-        if length_mm <= 0.0 {
-            return Err(FeatureError::InvalidParameter {
-                feature: SweepDef::TYPE_NAME,
-                name: "length",
-                message: format!("must be > 0 mm, got {length_mm}"),
-            });
-        }
 
-        // Resolve the sketch profile.
+        // Resolve the sketch profile (same convention as extrude/revolve).
         let sketch = (|| -> Option<::fielddraft_protocol::Sketch2d> {
             let expr = crate::queries::parse_query(d.profiles.as_str()).ok()?;
             let crate::queries::QueryExpr::CreatedBy(sketch_id) = expr else {
@@ -1679,57 +1672,42 @@ impl FeatureKind for SweepFeature {
             name: "profiles",
         })?;
 
-        // Build rotation quaternion that maps Z → direction.
-        let dx = d.direction[0];
-        let dy = d.direction[1];
-        let dz = d.direction[2];
-        let dir_len = (dx * dx + dy * dy + dz * dz).sqrt();
-        if dir_len < 1e-6 {
-            return Err(FeatureError::InvalidParameter {
-                feature: SweepDef::TYPE_NAME,
-                name: "direction",
-                message: "must be a non-zero vector".to_string(),
-            });
+        // Resolve the spine through the modular path-provider layer (v1:
+        // Gizmo3d control points + Catmull-Rom). Consumers downstream see
+        // only the sampled `SweepPath` — never this source.
+        let sampled = crate::path_provider::Gizmo3dPath {
+            nodes: d.path_nodes.clone(),
+            closed: d.closed,
+            samples_per_span: 24,
         }
-        let dir = [dx / dir_len, dy / dir_len, dz / dir_len];
-
-        // Rotation from Z=(0,0,1) to dir via axis-angle.
-        let z = [0.0_f32, 0.0, 1.0];
-        let dot = z[2] * dir[2] + z[1] * dir[1] + z[0] * dir[0];
-        let rotation = if dot > 0.9999 {
-            [0.0, 0.0, 0.0, 1.0] // already aligned
-        } else if dot < -0.9999 {
-            [0.0, 1.0, 0.0, 0.0] // 180° around Y
-        } else {
-            // axis = cross(z, dir), angle = acos(dot)
-            let ax = z[1] * dir[2] - z[2] * dir[1];
-            let ay = z[2] * dir[0] - z[0] * dir[2];
-            let az = z[0] * dir[1] - z[1] * dir[0];
-            let axis_len = (ax * ax + ay * ay + az * az).sqrt();
-            let half = (dot.clamp(-1.0, 1.0)).acos() * 0.5;
-            let s = half.sin() / axis_len;
-            [ax * s, ay * s, az * s, half.cos()]
-        };
+        .sample()
+        .map_err(|_| FeatureError::InvalidParameter {
+            feature: SweepDef::TYPE_NAME,
+            name: "path_nodes",
+            message: "need at least two spine control points".to_string(),
+        })?;
 
         let name = optional_display_name(def, || format!("Sweep {id}"));
-
-        ctx.features.push(DecodedFeature::from_parts(
-            id.child("0"),
+        let node_id = id.child("0");
+        ctx.features.push(DecodedFeature {
+            id: node_id.clone(),
             name,
-            d.operation,
-            Primitive::Extrude {
-                sketch,
-                half_depth_z: length_mm / 2.0,
-                center: d.center,
-            },
-            Transform {
+            op: d.operation,
+            blend_radius: 0.0,
+            blend_mode: crate::csg::BlendMode::Fillet,
+            target_ids: vec![],
+            transform: Transform {
                 translate: [0.0, 0.0, 0.0],
-                rotation,
+                rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0, 1.0, 1.0],
             },
-            PrimitiveModifiers::NONE,
-            vec![],
-        ));
+            node: CsgNode::Sweep {
+                id: node_id,
+                sketch: Box::new(sketch),
+                path: sampled.points,
+                closed: sampled.closed,
+            },
+        });
         Ok(())
     }
 }
