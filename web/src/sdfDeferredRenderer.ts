@@ -52,6 +52,7 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
+import { buildSweepGeometry } from "./sweepMesh";
 import { subdivideAlongAxis, applyWarp, warpAxis, maxStepForWarp } from "./warpMesh";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
@@ -116,6 +117,8 @@ export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
       return createRevolveGeometry(leaf);
     case "helix":
       return createHelixGeometry(leaf);
+    case "sweep":
+      return createSweepGeometry(leaf);
     default:
       return null;
   }
@@ -151,6 +154,13 @@ function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | nul
 function createHelixGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
   if (!leaf.contour) return null;
   return buildHelixGeometry(leaf.contour, decodeHelixParams(leaf.params));
+}
+
+function createSweepGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  if (!leaf.contour || !leaf.sweep) return null;
+  return buildSweepGeometry(leaf.sweep.points, leaf.contour, {
+    closed: leaf.sweep.closed,
+  });
 }
 
 /** The leaf's local→world placement matrix (quat·scale + center offset). */

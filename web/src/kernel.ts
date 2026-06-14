@@ -255,6 +255,14 @@ export type LeafWarp =
   | { kind: "twist"; rate: number }
   | { kind: "bend"; rate: number };
 
+/** Spine payload for a parametric `"sweep"` leaf: `buildSweepGeometry` sweeps
+ *  the leaf's `contour` along these (local-space) points; `transform` places
+ *  it. The web mesher re-derives the same RMF frames the kernel SDF uses. */
+export interface SweepLeafData {
+  points: [number, number, number][];
+  closed: boolean;
+}
+
 export interface HybridLeafInfo {
   kind: string;
   aabb: [number, number, number, number, number, number];
@@ -263,6 +271,7 @@ export interface HybridLeafInfo {
   role: "mesh" | "skip";
   contour?: ContourData;
   warp?: LeafWarp;
+  sweep?: SweepLeafData;
 }
 
 export interface SdfRegionInfo {

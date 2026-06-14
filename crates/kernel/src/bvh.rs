@@ -56,6 +56,15 @@ pub enum LeafWarp {
     Bend { rate: f32 },
 }
 
+/// Spine payload for a parametric `"sweep"` leaf: the web mesher
+/// (`buildSweepGeometry`) sweeps the leaf's `contour` along these points
+/// (re-deriving the same RMF frames). Local-space; `transform` places it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SweepLeafData {
+    pub points: Vec<[f32; 3]>,
+    pub closed: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HybridLeafInfo {
     pub kind: String,
@@ -67,6 +76,8 @@ pub struct HybridLeafInfo {
     pub contour: Option<crate::sketch2d::ContourData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warp: Option<LeafWarp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sweep: Option<SweepLeafData>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1367,13 +1378,52 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
             info.is_union_only = false;
             info.needs_full_sdf = true;
         }
-        // The curved sweep evaluates via the CPU SDF (DC `mesh` mode) and,
-        // once wired, the GPU VM. The Gatekeeper-gated PARAMETRIC leaf
-        // (Pass → sweep leaf with path+frames, Fail → this SDF path) is the
-        // next step; for now every sweep takes the SDF route.
-        BoundedCsg::Sweep { .. } => {
+        // The curved sweep always evaluates via the CPU SDF (DC `mesh` mode)
+        // and, once wired, the GPU VM (needs_full_sdf). ADDITIONALLY, when the
+        // Gatekeeper passes (kink-free, curvature radius > profile radius, no
+        // self-intersection) we emit a parametric `"sweep"` leaf so the web
+        // mesher renders a tight RMF hull instead of the AABB box. On a Fail
+        // the SDF path alone covers it (it merges the self-overlap correctly).
+        BoundedCsg::Sweep { sketch, path, world_transform, aabb, .. } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;
+            let s2 = sketch.aabb();
+            if s2.is_empty() {
+                return;
+            }
+            let r_max = (s2.max[0].abs().max(s2.min[0].abs()))
+                .hypot(s2.max[1].abs().max(s2.min[1].abs()));
+            if !crate::sweep_gate::check_sweep(path, r_max, &Default::default()).is_pass() {
+                return;
+            }
+            let contours = crate::sketch2d::extract_contours(
+                sketch,
+                crate::sketch2d::CONTOUR_RESOLUTION,
+            );
+            let tf = [
+                world_transform.translate[0], world_transform.translate[1],
+                world_transform.translate[2],
+                world_transform.rotation[0], world_transform.rotation[1],
+                world_transform.rotation[2], world_transform.rotation[3],
+                world_transform.scale[0], world_transform.scale[1],
+                world_transform.scale[2],
+            ];
+            let flat_aabb = aabb_to_flat(*aabb);
+            for contour in contours {
+                info.leaves.push(HybridLeafInfo {
+                    kind: "sweep".into(),
+                    aabb: flat_aabb,
+                    transform: tf,
+                    params: vec![],
+                    role: role.into(),
+                    contour: Some(contour),
+                    warp: None,
+                    sweep: Some(SweepLeafData {
+                        points: path.points.clone(),
+                        closed: path.closed,
+                    }),
+                });
+            }
         }
         BoundedCsg::Extrude { sketch, half_height, world_transform, aabb, .. } => {
             let contours = crate::sketch2d::extract_contours(
@@ -1401,6 +1451,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
                         role: role.into(),
                         contour: Some(contour),
                         warp,
+                        sweep: None,
                     });
                 }
             }
@@ -1431,6 +1482,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
                         role: role.into(),
                         contour: Some(contour),
                         warp,
+                        sweep: None,
                     });
                 }
             }
@@ -1473,6 +1525,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
                     role: role.into(),
                     contour: Some(contour),
                     warp,
+                    sweep: None,
                 });
             }
         }
@@ -1495,34 +1548,34 @@ fn primitive_to_leaf_info(
     let c = None; // no contour for standard primitives
     match prim {
         Primitive::Box { center, half_extents } => Some(HybridLeafInfo {
-            kind: "box".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "box".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![
                 half_extents[0], half_extents[1], half_extents[2],
                 center[0], center[1], center[2],
             ],
         }),
         Primitive::Sphere { center, radius } => Some(HybridLeafInfo {
-            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*radius, center[0], center[1], center[2]],
         }),
         Primitive::Cylinder { center, radius, half_height } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*radius, *half_height, center[0], center[1], center[2]],
         }),
         Primitive::Torus { center, major_radius, minor_radius } => Some(HybridLeafInfo {
-            kind: "torus".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "torus".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*major_radius, *minor_radius, center[0], center[1], center[2]],
         }),
         Primitive::Cone { r_bottom, r_top, half_height } => Some(HybridLeafInfo {
-            kind: "cone".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "cone".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*r_bottom, *r_top, *half_height],
         }),
         Primitive::Capsule { radius, half_height } => Some(HybridLeafInfo {
-            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*radius, *half_height],
         }),
         Primitive::Thread { nominal_radius, half_height, .. } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None, sweep: None,
             params: vec![*nominal_radius, *half_height, 0.0, 0.0, 0.0],
         }),
         _ => None,

@@ -3388,6 +3388,53 @@ mod tests {
     }
 
     #[test]
+    fn sweep_gatekeeper_pass_emits_a_parametric_leaf() {
+        // A gentle straight sweep clears the Gatekeeper → parametric leaf.
+        let path: Vec<[f32; 3]> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
+        let node = CsgNode::Sweep {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(circle_sketch(0.0, 0.0, 5.0)),
+            path,
+            closed: false,
+        };
+        let info = crate::bvh::BoundedCsg::from_csg(&node).classify_for_hybrid();
+        let leaf = info
+            .leaves
+            .iter()
+            .find(|l| l.kind == "sweep")
+            .expect("a passing sweep must emit a sweep leaf");
+        let sweep = leaf.sweep.as_ref().expect("sweep leaf carries its spine");
+        assert_eq!(sweep.points.len(), 9);
+        assert!(!sweep.closed);
+        assert!(leaf.contour.is_some(), "leaf carries the profile contour");
+    }
+
+    #[test]
+    fn self_intersecting_sweep_fails_the_gate_and_emits_no_leaf() {
+        // Limaçon (inner loop crosses the origin) + thin profile → the
+        // Gatekeeper's global check fails → no parametric leaf, SDF only.
+        let path: Vec<[f32; 3]> = (0..120)
+            .map(|i| {
+                let th = i as f32 / 120.0 * std::f32::consts::TAU;
+                let r = 20.0 + 50.0 * th.cos();
+                [r * th.cos(), r * th.sin(), 0.0]
+            })
+            .collect();
+        let node = CsgNode::Sweep {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(circle_sketch(0.0, 0.0, 0.5)),
+            path,
+            closed: true,
+        };
+        let info = crate::bvh::BoundedCsg::from_csg(&node).classify_for_hybrid();
+        assert!(
+            info.leaves.iter().all(|l| l.kind != "sweep"),
+            "a self-intersecting sweep must NOT emit a parametric leaf"
+        );
+        assert!(info.needs_full_sdf, "it falls back to the SDF path");
+    }
+
+    #[test]
     fn sweep_along_a_straight_path_is_a_capped_cylinder() {
         // Disk radius 5 swept along X from 0..40 → a capped cylinder.
         let path: Vec<[f32; 3]> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
