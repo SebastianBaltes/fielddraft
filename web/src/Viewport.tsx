@@ -30,6 +30,7 @@ import {
   ClearColorSync,
 } from "./viewportCamera";
 import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
+import { SweepPathGizmo } from "./SweepGizmo";
 import {
   SketchOverlay3D,
   SketchSession3D,
@@ -119,6 +120,7 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       <PickProbe ndc={ndc} onPick={onPick} />
       <SelectionTransformGizmo />
       <ExtrudeDepthGizmo />
+      <SweepPathGizmo />
       <SketchOverlay3D />
       <SketchSession3D />
       <SketchHud3D />
