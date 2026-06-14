@@ -51,6 +51,7 @@ import {
 import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
+import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
@@ -112,6 +113,8 @@ export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
       return createExtrudeGeometry(leaf);
     case "revolve":
       return createRevolveGeometry(leaf);
+    case "helix":
+      return createHelixGeometry(leaf);
     default:
       return null;
   }
@@ -142,6 +145,11 @@ function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | nul
   if (!contour || contour.outer.length < 3) return null;
   const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
   return new THREE.LatheGeometry(points, 48);
+}
+
+function createHelixGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  if (!leaf.contour) return null;
+  return buildHelixGeometry(leaf.contour, decodeHelixParams(leaf.params));
 }
 
 export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {

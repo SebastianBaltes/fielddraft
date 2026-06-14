@@ -1309,11 +1309,45 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                 }
             }
         }
-        // A helical sweep has no hybrid raytracer mapping — the
-        // conservative SDF march covers it (non-Lipschitz family).
-        BoundedCsg::Helix { .. } => {
+        // A helical sweep has no hybrid raytracer mapping, so the
+        // conservative SDF march still covers it (non-Lipschitz family) —
+        // but we ALSO emit the swept profile as a parametric leaf so the
+        // WebGL path (no raymarcher) and the deferred hull get a tight
+        // solid mesh instead of an AABB box. `buildHelixGeometry` (web)
+        // sweeps this contour via the forward `helix_profile_point` map.
+        BoundedCsg::Helix {
+            sketch, pitch, turns, left_handed, taper, start_angle,
+            y_anchor, world_transform, aabb, ..
+        } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;
+            let contours = crate::sketch2d::extract_contours(
+                sketch,
+                crate::sketch2d::CONTOUR_RESOLUTION,
+            );
+            let tf = [
+                world_transform.translate[0], world_transform.translate[1],
+                world_transform.translate[2],
+                world_transform.rotation[0], world_transform.rotation[1],
+                world_transform.rotation[2], world_transform.rotation[3],
+                world_transform.scale[0], world_transform.scale[1],
+                world_transform.scale[2],
+            ];
+            let flat_aabb = aabb_to_flat(*aabb);
+            for contour in contours {
+                info.leaves.push(HybridLeafInfo {
+                    kind: "helix".into(),
+                    aabb: flat_aabb,
+                    transform: tf,
+                    params: vec![
+                        *pitch, *turns,
+                        if *left_handed { 1.0 } else { 0.0 },
+                        *taper, *start_angle, *y_anchor,
+                    ],
+                    role: role.into(),
+                    contour: Some(contour),
+                });
+            }
         }
     }
 }
