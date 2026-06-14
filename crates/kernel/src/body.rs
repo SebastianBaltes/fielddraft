@@ -307,6 +307,9 @@ fn bounded_contains_space_filling(node: &BoundedCsg) -> bool {
         // the thread surface would make the octree refine on thousands
         // of cells for non-Lipschitz seams the weaver discards anyway.
         BoundedCsg::Helix { .. } => true,
+        // A general sweep is weave-excluded for the same reason (non-analytic
+        // surface; the weaver would refine on it pointlessly).
+        BoundedCsg::Sweep { .. } => true,
         BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Empty => false,
     }
 }
@@ -897,6 +900,17 @@ fn hash_node(node: &CsgNode, hasher: &mut DefaultHasher) {
             turns.to_bits().hash(hasher);
             left_handed.hash(hasher);
             taper.to_bits().hash(hasher);
+            hash_sketch2d(sketch, hasher);
+        }
+        CsgNode::Sweep { id, sketch, path, closed } => {
+            18u8.hash(hasher);
+            id.hash(hasher);
+            closed.hash(hasher);
+            for q in path {
+                for c in q {
+                    c.to_bits().hash(hasher);
+                }
+            }
             hash_sketch2d(sketch, hasher);
         }
     }

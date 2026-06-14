@@ -187,6 +187,7 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
         // Helical sweeps are weave-excluded (non-Lipschitz, DL-71) —
         // they contribute no analytic carriers.
         BoundedCsg::Helix { .. } => {}
+        BoundedCsg::Sweep { .. } => {}
         BoundedCsg::Empty => {}
     }
 }
@@ -234,6 +235,7 @@ fn collect_revolve_profile_carriers(
         BoundedCsg::Leaf { .. }
         | BoundedCsg::Extrude { .. }
         | BoundedCsg::Helix { .. }
+        | BoundedCsg::Sweep { .. }
         | BoundedCsg::Empty => {}
     }
 }
@@ -267,7 +269,8 @@ pub(super) fn collect_parity(node: &BoundedCsg, flipped: bool, out: &mut std::co
         BoundedCsg::Leaf { id, .. }
         | BoundedCsg::Extrude { id, .. }
         | BoundedCsg::Revolve { id, .. }
-        | BoundedCsg::Helix { id, .. } => {
+        | BoundedCsg::Helix { id, .. }
+        | BoundedCsg::Sweep { id, .. } => {
             if flipped {
                 out.insert(id.as_u32_or_root().unwrap_or(0));
             }

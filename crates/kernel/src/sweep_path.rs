@@ -44,7 +44,7 @@ pub struct Frame {
 
 // ── AABB ────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Aabb {
     pub min: V3,
     pub max: V3,
@@ -95,6 +95,7 @@ impl Aabb {
 
 // ── Segments ────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Segment {
     pub a: V3,
     pub b: V3,
@@ -107,6 +108,7 @@ pub(crate) struct Segment {
 
 // ── Capsule/segment BVH (median split on segment-AABB centroids) ────
 
+#[derive(Debug)]
 enum Bvh {
     Leaf(Vec<usize>),
     Node { aabb: Aabb, left: Box<Bvh>, right: Box<Bvh> },
@@ -295,6 +297,26 @@ pub struct NearestHit {
     pub at_path_end: bool,
 }
 
+/// A query projected into the nearest sweep cross-section.
+#[derive(Debug, Clone, Copy)]
+pub struct CrossSection {
+    /// Profile-plane coordinate along the RMF normal.
+    pub u: f32,
+    /// Profile-plane coordinate along the RMF binormal.
+    pub v: f32,
+    /// Axial cap coordinate for [`sweep_compose`] (`-∞` for closed loops).
+    pub w: f32,
+}
+
+/// Compose a 2D cross-section distance `d2` with the open-end cap coordinate
+/// `w` (IQ's extrude composition). `w = -∞` (closed loop) reduces to `d2`.
+pub fn sweep_compose(d2: f32, w: f32) -> f32 {
+    let outside = d2.max(0.0).hypot(w.max(0.0));
+    let inside = d2.max(w).min(0.0);
+    outside + inside
+}
+
+#[derive(Debug)]
 pub struct SweepPath {
     pub points: Vec<V3>,
     pub frames: Vec<Frame>,
@@ -380,24 +402,29 @@ impl SweepPath {
     /// distance with the axial overshoot past the nearer end. Closed loops
     /// have no caps.
     pub fn sdf(&self, profile: &crate::sketch2d::BoundedSketch2d, p: V3) -> f32 {
+        let cs = self.cross_section(p);
+        sweep_compose(profile.sdf([cs.u, cs.v]), cs.w)
+    }
+
+    /// Project a query into the nearest cross-section: the profile-plane
+    /// coordinates `(u, v)` (along the RMF normal/binormal) plus the axial
+    /// cap coordinate `w` for [`sweep_compose`]. Callers that need the
+    /// profile's edge bands (BRep contributors) eval `(u, v)` themselves and
+    /// pass the resulting 2D distance through `sweep_compose(_, w)`.
+    pub fn cross_section(&self, p: V3) -> CrossSection {
         let hit = self.nearest(p);
         let d = sub(p, hit.point);
-        let u = dot(d, hit.frame.n);
-        let v = dot(d, hit.frame.b);
-        let d2 = profile.sdf([u, v]);
-        if self.closed {
-            return d2;
-        }
-        // Axial slab [0, total_len]: past an end → +overshoot; inside →
-        // −distance to the nearer cap plane (so deep interiors ignore caps).
-        let w = if hit.at_path_end {
+        let w = if self.closed {
+            f32::NEG_INFINITY // no caps → composition reduces to the profile
+        } else if hit.at_path_end {
+            // Past an end: the overshoot along the tangent is positive.
             dot(d, hit.frame.t).abs()
         } else {
+            // Inside the slab: −distance to the nearer cap (deep interiors
+            // are large-negative → caps ignored).
             -hit.arclength.min(self.total_len - hit.arclength)
         };
-        let outside = d2.max(0.0).hypot(w.max(0.0));
-        let inside = d2.max(w).min(0.0);
-        outside + inside
+        CrossSection { u: dot(d, hit.frame.n), v: dot(d, hit.frame.b), w }
     }
 
     fn nearest_rec(&self, bvh: &Bvh, q: V3, best2: &mut f32, best_seg: &mut usize, best_t: &mut f32) {

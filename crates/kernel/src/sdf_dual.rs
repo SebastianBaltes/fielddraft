@@ -723,6 +723,27 @@ fn eval_bounded_d3_open(
             let inside = if max_de.re < 0.0 { max_de } else { zero };
             (outside + inside) * D3::from(scale * world_transform.min_scale() as f64)
         }
+        BoundedCsg::Sweep { sketch, path, world_transform, .. } => {
+            // The general sweep's value/gradient have no closed dual form
+            // (nearest-point + RMF frame), so use the f32 SDF value with a
+            // central-difference gradient, repackaged as a dual. The chain
+            // rule to world space flows through `world_to_local_d3` (whose
+            // dual carries ∂local/∂p).
+            let local = world_to_local_d3(world_transform, p);
+            let lp = [local[0].re as f32, local[1].re as f32, local[2].re as f32];
+            let sketch_ref: &crate::sketch2d::BoundedSketch2d = sketch;
+            let f = |q: [f32; 3]| path.sdf(sketch_ref, q);
+            let h = 0.05f32;
+            let v = f(lp) as f64;
+            let gx = ((f([lp[0] + h, lp[1], lp[2]]) - f([lp[0] - h, lp[1], lp[2]])) / (2.0 * h)) as f64;
+            let gy = ((f([lp[0], lp[1] + h, lp[2]]) - f([lp[0], lp[1] - h, lp[2]])) / (2.0 * h)) as f64;
+            let gz = ((f([lp[0], lp[1], lp[2] + h]) - f([lp[0], lp[1], lp[2] - h])) / (2.0 * h)) as f64;
+            let dual = D3::from(v)
+                + D3::from(gx) * (local[0] - D3::from(local[0].re))
+                + D3::from(gy) * (local[1] - D3::from(local[1].re))
+                + D3::from(gz) * (local[2] - D3::from(local[2].re));
+            dual * D3::from(world_transform.min_scale() as f64)
+        }
     }
 }
 

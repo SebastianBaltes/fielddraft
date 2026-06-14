@@ -204,6 +204,17 @@ pub enum BoundedCsg {
         world_transform: Transform,
         aabb: Aabb,
     },
+    /// BVH-wrapped general sweep (see [`CsgNode::Sweep`]). The query is
+    /// mapped into the nearest spine point's rotation-minimizing frame via
+    /// the shared [`crate::sweep_path::SweepPath`], then hits the 2D tree.
+    /// `Arc` keeps `BoundedCsg` clones cheap (no deep BVH copy).
+    Sweep {
+        id: FeatureId,
+        sketch: Box<BoundedSketch2d>,
+        path: std::sync::Arc<crate::sweep_path::SweepPath>,
+        world_transform: Transform,
+        aabb: Aabb,
+    },
     /// K10.3: spatially-masked blend. BVH mirror of
     /// [`CsgNode::MaskedBlend`]. The AABB is the union of both
     /// children (same conservative bound as SmoothUnion).
@@ -265,6 +276,7 @@ impl BoundedCsg {
             | BoundedCsg::Extrude { aabb, .. }
             | BoundedCsg::Revolve { aabb, .. }
             | BoundedCsg::Helix { aabb, .. }
+            | BoundedCsg::Sweep { aabb, .. }
             | BoundedCsg::MaskedBlend { aabb, .. }
             | BoundedCsg::Morph { aabb, .. } => *aabb,
         }
@@ -305,7 +317,10 @@ impl BoundedCsg {
             | BoundedCsg::Shell { inner, .. } => {
                 inner.collect_leaf_transforms(out);
             }
-            BoundedCsg::Extrude { .. } | BoundedCsg::Revolve { .. } | BoundedCsg::Helix { .. } => {}
+            BoundedCsg::Extrude { .. }
+            | BoundedCsg::Revolve { .. }
+            | BoundedCsg::Helix { .. }
+            | BoundedCsg::Sweep { .. } => {}
         }
     }
 
@@ -545,6 +560,13 @@ impl BoundedCsg {
                     sketch.sdf(q)
                 };
                 crate::helix_compose(d, ell) * scale * world_transform.min_scale()
+            }
+            BoundedCsg::Sweep { sketch, path, world_transform, .. } => {
+                // The nearest-spine-point map + cap composition lives on the
+                // shared SweepPath; the gate guarantees the foot is unique.
+                // (Shell-retained eval on a sweep is not yet supported.)
+                let local = world_to_local(world_transform, p);
+                path.sdf(sketch, local) * world_transform.min_scale()
             }
             BoundedCsg::Morph { left, right, t, .. } => {
                 let da = left.sdf_open(p, mode, open);
@@ -821,6 +843,21 @@ impl BoundedCsg {
                 };
                 let d = crate::helix_compose(band.distance, ell)
                     * scale
+                    * world_transform.min_scale();
+                let c = revolve_contributors(id, &band);
+                (d, c)
+            }
+            BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {
+                let local = world_to_local(world_transform, p);
+                let cs = path.cross_section(local);
+                let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                    sketch.sdf_with_edges_retained([cs.u, cs.v], eps, &mut |g| {
+                        open.contains_sub(id, g)
+                    })
+                } else {
+                    sketch.sdf_with_edges([cs.u, cs.v], eps)
+                };
+                let d = crate::sweep_path::sweep_compose(band.distance, cs.w)
                     * world_transform.min_scale();
                 let c = revolve_contributors(id, &band);
                 (d, c)
@@ -1122,6 +1159,38 @@ fn build(csg: &CsgNode, carry: &Transform) -> BoundedCsg {
                 aabb,
             }
         }
+        CsgNode::Sweep { id, sketch, path, closed } => {
+            let bounded_sketch = BoundedSketch2d::from_sketch(sketch);
+            let s2 = bounded_sketch.aabb();
+            let sweep_path = crate::sweep_path::SweepPath::new(path.clone(), *closed);
+            match sweep_path {
+                Some(sp) if !s2.is_empty() => {
+                    // Conservative hull: each spine sample ± the profile's
+                    // bounding radius (covers the cross-section in any frame).
+                    let r_max = (s2.max[0].abs().max(s2.min[0].abs()))
+                        .hypot(s2.max[1].abs().max(s2.min[1].abs()));
+                    let mut local_aabb = Aabb::EMPTY;
+                    for p in &sp.points {
+                        local_aabb = Aabb::union(
+                            local_aabb,
+                            Aabb {
+                                min: [p[0] - r_max, p[1] - r_max, p[2] - r_max],
+                                max: [p[0] + r_max, p[1] + r_max, p[2] + r_max],
+                            },
+                        );
+                    }
+                    BoundedCsg::Sweep {
+                        id: id.clone(),
+                        sketch: Box::new(bounded_sketch),
+                        path: std::sync::Arc::new(sp),
+                        world_transform: *carry,
+                        aabb: local_aabb.transformed(carry),
+                    }
+                }
+                // Degenerate path (<2 points) or empty profile → nothing.
+                _ => BoundedCsg::Empty,
+            }
+        }
         CsgNode::Morph(a, b, t) => {
             let left = build(a, carry);
             let right = build(b, carry);
@@ -1295,6 +1364,14 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Opt
         | BoundedCsg::Shell { .. }
         | BoundedCsg::Offset { .. }
         | BoundedCsg::Morph { .. } => {
+            info.is_union_only = false;
+            info.needs_full_sdf = true;
+        }
+        // The curved sweep evaluates via the CPU SDF (DC `mesh` mode) and,
+        // once wired, the GPU VM. The Gatekeeper-gated PARAMETRIC leaf
+        // (Pass → sweep leaf with path+frames, Fail → this SDF path) is the
+        // next step; for now every sweep takes the SDF route.
+        BoundedCsg::Sweep { .. } => {
             info.is_union_only = false;
             info.needs_full_sdf = true;
         }

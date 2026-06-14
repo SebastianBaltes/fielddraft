@@ -793,6 +793,18 @@ pub enum CsgNode {
         y_anchor: f32,
         r_inner: f32,
     },
+    /// General sweep of a 2D sketch profile along an arbitrary spine
+    /// polyline. The path is pre-sampled (a
+    /// [`crate::path_provider::SampledPath`], source-agnostic); `build`
+    /// derives framing, arclength and the BVH into the shared
+    /// [`crate::sweep_path::SweepPath`]. Single [`FeatureId`] contributor,
+    /// same rationale as Extrude/Revolve/Helix.
+    Sweep {
+        id: FeatureId,
+        sketch: Box<Sketch2d>,
+        path: Vec<[f32; 3]>,
+        closed: bool,
+    },
 }
 
 /// DL-61 Stage B: the decoded runtime IR of one feature.
@@ -1241,14 +1253,14 @@ impl CsgNode {
                 a.collect_leaf_primitives(out);
                 b.collect_leaf_primitives(out);
             }
-            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Helix { .. } | CsgNode::Empty => {}
+            CsgNode::Extrude { .. } | CsgNode::Revolve { .. } | CsgNode::Helix { .. } | CsgNode::Sweep { .. } | CsgNode::Empty => {}
         }
     }
 
     /// Collect all leaf FeatureIds reachable from this node.
     fn contains_any_target(&self, target_ids: &[FeatureId]) -> bool {
         match self {
-            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } => {
+            CsgNode::Leaf { id, .. } | CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } => {
                 let root = id.root_ancestor();
                 target_ids.iter().any(|tid| root == tid)
             }
@@ -1301,7 +1313,7 @@ impl CsgNode {
                 a.collect_leaf_ids(out);
                 b.collect_leaf_ids(out);
             }
-            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } => {
+            CsgNode::Extrude { id, .. } | CsgNode::Revolve { id, .. } | CsgNode::Helix { id, .. } | CsgNode::Sweep { id, .. } => {
                 out.push(id.clone());
             }
             CsgNode::Empty => {}
@@ -1452,6 +1464,14 @@ impl CsgNode {
                     sketch.sdf(q)
                 };
                 crate::helix_compose(d, ell) * scale
+            }
+            CsgNode::Sweep { sketch, path, closed, .. } => {
+                // Unbounded picking-path eval: build the SweepPath on the fly
+                // (the hot render path uses BoundedCsg::Sweep's cached one).
+                let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
+                crate::sweep_path::SweepPath::new(path.clone(), *closed)
+                    .map(|sp| sp.sdf(&bounded, p))
+                    .unwrap_or(f32::INFINITY)
             }
         }
     }
@@ -1705,6 +1725,24 @@ impl CsgNode {
                 let c = revolve_contributors(id, &band);
                 (crate::helix_compose(band.distance, ell) * scale, c)
             }
+            CsgNode::Sweep { id, sketch, path, closed, .. } => {
+                let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(sketch);
+                match crate::sweep_path::SweepPath::new(path.clone(), *closed) {
+                    Some(sp) => {
+                        let cs = sp.cross_section(p);
+                        let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
+                            bounded.sdf_with_edges_retained([cs.u, cs.v], eps, &mut |g| {
+                                open.contains_sub(id, g)
+                            })
+                        } else {
+                            bounded.sdf_with_edges([cs.u, cs.v], eps)
+                        };
+                        let c = revolve_contributors(id, &band);
+                        (crate::sweep_path::sweep_compose(band.distance, cs.w), c)
+                    }
+                    None => (f32::INFINITY, Contributors::empty()),
+                }
+            }
         }
     }
 
@@ -1832,6 +1870,27 @@ impl CsgNode {
                         min: [-r_max, s.min[1] - pitch.max(0.0), -r_max],
                         max: [r_max, s.max[1] + axial, r_max],
                     }
+                }
+            }
+            CsgNode::Sweep { sketch, path, .. } => {
+                let s = sketch.aabb();
+                if s.is_empty() || path.len() < 2 {
+                    Aabb::EMPTY
+                } else {
+                    // Conservative: each spine sample ± the profile radius.
+                    let r_max = (s.max[0].abs().max(s.min[0].abs()))
+                        .hypot(s.max[1].abs().max(s.min[1].abs()));
+                    let mut bb = Aabb::EMPTY;
+                    for q in path {
+                        bb = Aabb::union(
+                            bb,
+                            Aabb {
+                                min: [q[0] - r_max, q[1] - r_max, q[2] - r_max],
+                                max: [q[0] + r_max, q[1] + r_max, q[2] + r_max],
+                            },
+                        );
+                    }
+                    bb
                 }
             }
         }
@@ -3326,6 +3385,31 @@ mod tests {
             y_anchor: 0.0,
             r_inner: 8.0,
         }
+    }
+
+    #[test]
+    fn sweep_along_a_straight_path_is_a_capped_cylinder() {
+        // Disk radius 5 swept along X from 0..40 → a capped cylinder.
+        let path: Vec<[f32; 3]> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
+        let node = CsgNode::Sweep {
+            id: FeatureId::from_u32(1),
+            sketch: Box::new(circle_sketch(0.0, 0.0, 5.0)),
+            path,
+            closed: false,
+        };
+        // Unbounded (picking) eval — builds the SweepPath on the fly.
+        let d = |p: [f32; 3]| node.sdf(p, EvalMode::Visual);
+        assert!((d([20.0, 0.0, 0.0]) - (-5.0)).abs() < 1e-2, "axis → -5");
+        assert!((d([20.0, 8.0, 0.0]) - 3.0).abs() < 1e-2, "3 outside the wall");
+        assert!((d([42.0, 0.0, 0.0]) - 2.0).abs() < 1e-2, "2 past the cap");
+        assert!(d([10.0, 5.0, 0.0]).abs() < 1e-2, "on the lateral surface");
+
+        // Bounded (render) eval — uses the cached SweepPath built in `build`.
+        let bounded = crate::bvh::BoundedCsg::from_csg(&node);
+        let db = |p: [f32; 3]| bounded.sdf(p, EvalMode::Visual);
+        assert!((db([20.0, 0.0, 0.0]) - (-5.0)).abs() < 1e-2);
+        assert!((db([20.0, 8.0, 0.0]) - 3.0).abs() < 1e-2);
+        assert!((db([42.0, 0.0, 0.0]) - 2.0).abs() < 1e-2);
     }
 
     #[test]

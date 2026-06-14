@@ -367,6 +367,14 @@ fn emit_node(node: &BoundedCsg, ctx: &mut CompileCtx, open: &crate::csg::OpenBra
             out.push(world_transform.min_scale() * lip);
             out.push(op(OP_WARP_POP));
         }
+        BoundedCsg::Sweep { .. } => {
+            // GPU sweep opcodes are the next step (nearest-segment + RMF-frame
+            // profile eval over an uploaded path/frame buffer). Until then emit
+            // an empty SDF so the raymarcher ignores the sweep — it still
+            // renders in the CPU `mesh` mode via the DC mesher / `sdf_dual`.
+            out.push(op(OP_PRIM_CONST));
+            out.push(f32::MAX);
+        }
     }
 }
 
