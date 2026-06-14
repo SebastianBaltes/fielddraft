@@ -28,6 +28,7 @@ pub mod step_commands;
 pub mod sdf_compiler;
 pub mod sketch2d;
 pub mod sketch_features;
+pub mod sweep_path;
 pub mod sweep_gate;
 pub mod script_runtime;
 
