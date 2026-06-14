@@ -2762,6 +2762,77 @@ export function BRepMeshPreview() {
   );
 }
 
+/**
+ * WebGL render path body meshes (mode `webgl`; docs/ADAPTIVE-RENDERING-PLAN.md
+ * Achse 3). Renders each body's PARAMETRIC hull meshes — box/sphere/cylinder/
+ * cone/torus/capsule + extrude/revolve via `createPrimitiveGeometry` — with
+ * classic `MeshStandardMaterial`, so the scene draws on a plain WebGLRenderer
+ * (no WebGPU, no node materials). Bodies are shown individually (no boolean
+ * compositing yet — that is the screen-space-CSG phase); helix/twist parametric
+ * meshes and the B-Rep tessellation slot in here later.
+ */
+export function WebGLBodies() {
+  const { store, state } = useKernelStore();
+  const fingerprint = useBodyFingerprint();
+  const matRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  if (!matRef.current) {
+    matRef.current = new THREE.MeshStandardMaterial({
+      color: "#94a3b8",
+      side: THREE.DoubleSide,
+      metalness: 0.1,
+      roughness: 0.7,
+    });
+  }
+
+  const meshes = useMemo(() => {
+    const out: THREE.Mesh[] = [];
+    if (!store) return out;
+    let count = 0;
+    try {
+      count = store.kernel.bodyCount();
+    } catch {
+      return out;
+    }
+    for (let i = 0; i < count; i++) {
+      let info: { leaves: HybridLeafInfo[] };
+      try {
+        info = store.kernel.bodyHybridInfo(i);
+      } catch {
+        continue;
+      }
+      for (const leaf of info.leaves) {
+        if (leaf.role === "skip") continue;
+        const geo = createPrimitiveGeometry(leaf);
+        if (!geo) continue;
+        const mesh = new THREE.Mesh(geo, matRef.current!);
+        applyLeafTransform(mesh, leaf);
+        out.push(mesh);
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, fingerprint, state?.features]);
+
+  useEffect(() => {
+    return () => {
+      for (const m of meshes) m.geometry.dispose();
+    };
+  }, [meshes]);
+  useEffect(() => () => matRef.current?.dispose(), []);
+
+  if (meshes.length === 0) return null;
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[200, 400, 300]} intensity={0.8} />
+      <directionalLight position={[-100, 200, -200]} intensity={0.3} />
+      {meshes.map((m, i) => (
+        <primitive key={i} object={m} dispose={null} />
+      ))}
+    </>
+  );
+}
+
 function AssemblyPartBody({ body, isSelected }: {
   body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
   isSelected: boolean;

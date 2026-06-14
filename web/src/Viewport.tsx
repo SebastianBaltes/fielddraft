@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
@@ -35,6 +36,7 @@ import {
   SketchHud3D,
   SketchLabels3D,
   BRepMeshPreview,
+  WebGLBodies,
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
@@ -368,6 +370,73 @@ function handleSelectionClick(
     }
   }
   invalidateCanvas();
+}
+
+/**
+ * Experimental WebGL render path (mode `webgl`; docs/ADAPTIVE-RENDERING-PLAN.md
+ * Achse 3). A SEPARATE R3F `<Canvas>` on the DEFAULT `THREE.WebGLRenderer` — no
+ * WebGPU, no node materials — for weak / no-WebGPU-adapter machines. The Canvas
+ * sits in an explicitly-sized wrapper: R3F only creates its root once the
+ * container measures width>0 && height>0 (react-three-fiber Canvas gate), so a
+ * 0×0 container silently renders nothing.
+ */
+function WebGLViewport() {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const stateRef = useRef<{
+    gl: THREE.WebGLRenderer;
+    scene: THREE.Scene;
+    camera: THREE.Camera;
+  } | null>(null);
+
+  // R3F's <Canvas> only creates its root once react-use-measure reports a
+  // non-zero container size. Under StrictMode the measure listeners attach on
+  // the final (re)mount and miss the initial size — so we nudge them with a few
+  // spaced window-resize events until the root spins up (then stop).
+  useEffect(() => {
+    let n = 0;
+    const id = setInterval(() => {
+      window.dispatchEvent(new Event("resize"));
+      if (++n >= 10 || stateRef.current) clearInterval(id);
+    }, 120);
+    return () => clearInterval(id);
+  }, []);
+
+  // Drive rendering ourselves. R3F's shared global loop doesn't tick this
+  // standalone second root (the WebGPU canvas owns the scheduler), so the Canvas
+  // runs `frameloop="never"` and we render the scene directly each animation
+  // frame. Bypasses R3F's loop entirely — meshes come from React state/useMemo
+  // and OrbitControls updates the camera on input, so a per-frame draw suffices.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const st = stateRef.current;
+      if (st) st.gl.render(st.scene, st.camera);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return (
+    <div ref={wrapRef} style={{ position: "absolute", inset: 0 }}>
+      <Canvas
+        frameloop="never"
+        camera={{ position: [200, 200, 200], fov: 45, near: 1, far: 4000 }}
+        onCreated={(st) => {
+          stateRef.current = {
+            gl: st.gl as unknown as THREE.WebGLRenderer,
+            scene: st.scene,
+            camera: st.camera,
+          };
+        }}
+      >
+        <color attach="background" args={["#f6f6f4"]} />
+        <WebGLBodies />
+        <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
+        <OrbitControls makeDefault enableDamping={false} />
+      </Canvas>
+    </div>
+  );
 }
 
 /** A reason the WebGPU viewport could not start, shown to the user instead of
@@ -705,18 +774,21 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     }
   };
 
+  const isWebGL = renderMode === "webgl";
+  const noHostPointer = webgpuError || isWebGL;
+
   return (
     <div
       ref={hostRef}
       className="fd-viewport"
       data-testid="fielddraft-canvas"
-      onPointerMove={webgpuError ? undefined : handlePointerMove}
-      onPointerLeave={webgpuError ? undefined : handlePointerLeave}
-      onPointerDown={webgpuError ? undefined : handlePointerDown}
-      onPointerUp={webgpuError ? undefined : handlePointerUp}
-      onPointerCancel={webgpuError ? undefined : handlePointerCancel}
-      onClick={webgpuError ? undefined : handleClick}
-      onDragOver={webgpuError ? undefined : handleDragOver}
+      onPointerMove={noHostPointer ? undefined : handlePointerMove}
+      onPointerLeave={noHostPointer ? undefined : handlePointerLeave}
+      onPointerDown={noHostPointer ? undefined : handlePointerDown}
+      onPointerUp={noHostPointer ? undefined : handlePointerUp}
+      onPointerCancel={noHostPointer ? undefined : handlePointerCancel}
+      onClick={noHostPointer ? undefined : handleClick}
+      onDragOver={noHostPointer ? undefined : handleDragOver}
       onDrop={webgpuError ? undefined : handleDrop}
     >
       {webgpuError && (
@@ -744,6 +816,8 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           }}
         />
       )}
+      {isWebGL && <WebGLViewport />}
+      {!isWebGL && (
       <CanvasErrorBoundary>
         <Canvas
           shadows={false}
@@ -861,6 +935,7 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           )}
         </Canvas>
       </CanvasErrorBoundary>
+      )}
       {/* The cube stays up during a sketch session — the camera is the
           normal 3D camera there too (sketch-in-3D), and "look straight at
           the plane" is the single most wanted view action while drawing. */}
