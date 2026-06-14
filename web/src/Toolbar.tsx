@@ -370,6 +370,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
     (dof !== null && dof < 0);
 
   const hasSketch = state.features.some((f) => f.kind === "sketch");
+  const hasTwoSketches =
+    state.features.filter((f) => f.kind === "sketch").length >= 2;
   const hasFeatures = state.features.length > 0;
   // Ticket 981k: Extrude works on the current face selection too — as long
   // as a face is selectable it is extrudable, sketch or not.
@@ -959,6 +961,17 @@ export function Toolbar({ store, state }: ToolbarProps) {
           testId="helix-latest-sketch"
           disabled={!hasFeatures && !hasSketch}
           onClick={() => store.addHelixFromLatestSketch()}
+        />
+        <FeatureButton
+          kind="sweep"
+          title={
+            hasTwoSketches
+              ? "Sweep the previous sketch (profile) along the latest sketch (path)"
+              : "Sweep — needs a profile sketch and a path sketch"
+          }
+          testId="sweep-latest-sketches"
+          disabled={!hasTwoSketches}
+          onClick={() => store.addSweepFromLatestSketches()}
         />
         <FeatureButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
         <FeatureButton kind="linear_pattern" title="Linear pattern (+X, 3x, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} label="Pattern" />

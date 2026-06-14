@@ -941,6 +941,18 @@ export class Kernel {
     return this.guardMut(() => this.inner.addHelix(sketchId, op, pitchMm, turns));
   }
 
+  /** Append a sweep: `profileSketchId` swept along `pathSketchId` (a planar
+   *  path sketch). Returns the new feature id. */
+  addSweep(
+    profileSketchId: number,
+    pathSketchId: number,
+    op: BoolOpTagValue,
+  ): number {
+    return this.guardMut(() =>
+      this.inner.addSweep(profileSketchId, pathSketchId, op),
+    );
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

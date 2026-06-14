@@ -1731,6 +1731,42 @@ impl Kernel {
         }))
     }
 
+    /// Append a `sweep` feature call: a profile sketch swept along a path
+    /// sketch (Sketch2d path source). Both ids must be existing sketches.
+    #[wasm_bindgen(js_name = addSweep)]
+    pub fn add_sweep(
+        &mut self,
+        profile_sketch_id: u32,
+        path_sketch_id: u32,
+        op: u32,
+    ) -> Result<u32, JsError> {
+        let op_wire = Self::op_wire_name(op)?;
+        for (sid, label) in [(profile_sketch_id, "profile"), (path_sketch_id, "path")] {
+            if sid == 0 {
+                return Err(JsError::new(&format!("sweep needs a {label} sketch")));
+            }
+            let fid = FeatureId::from_u32(sid);
+            let exists = self
+                .document
+                .feature_calls
+                .iter()
+                .any(|c| c.id == fid && c.type_name == "sketch");
+            if !exists {
+                return Err(JsError::new(&format!("feature {sid} is not a sketch")));
+            }
+        }
+        let profile_fid = FeatureId::from_u32(profile_sketch_id);
+        let path_fid = FeatureId::from_u32(path_sketch_id);
+        self.push_feature_call(
+            "sweep",
+            serde_json::json!({
+                "profiles": format!("qCreatedBy({profile_fid})"),
+                "path": { "kind": "sketch2d", "sketch": format!("qCreatedBy({path_fid})") },
+                "operation": op_wire,
+            }),
+        )
+    }
+
     /// K8.9: append a `hole` feature call. Thin convenience
     /// wrapper that serialises the typed diameter/depth/translate
     /// into a FeatureCall and bootstraps. Returns the new id.

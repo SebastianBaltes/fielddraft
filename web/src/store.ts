@@ -3818,6 +3818,29 @@ export class KernelStore {
     return id;
   }
 
+  /** Sweep the second-latest sketch (profile) along the latest sketch
+   *  (path). Convention: draw the profile first, then the path, then Sweep.
+   *  Returns null if fewer than two sketches exist. */
+  addSweepFromLatestSketches(): number | null {
+    const sketchIds = this.state.features
+      .filter((f) => f.kind === "sketch")
+      .map((f) => f.id)
+      .sort((a, b) => b - a);
+    if (sketchIds.length < 2) return null;
+    const pathId = sketchIds[0];
+    const profileId = sketchIds[1];
+    let id: number;
+    try {
+      id = this.kernel.addSweep(profileId, pathId, this.state.nextOp);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addSweep failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume or the
