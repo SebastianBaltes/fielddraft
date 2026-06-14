@@ -26,6 +26,7 @@ import {
   BODY_COLORS,
   applyLeafTransform,
   createPrimitiveGeometry,
+  buildWarpedLeafGeometry,
 } from "./sdfDeferredRenderer";
 import { triangulatePlanarFace } from "./faceFill";
 import { collectAnalyticBodyMeshes, type BrepMeshKernel } from "./brepMesh";
@@ -2581,10 +2582,11 @@ export function BodyHighlightOverlay() {
         const group = new THREE.Group();
         for (const leaf of hybrid.leaves) {
           if (leaf.role === "skip") continue;
-          const geo = createPrimitiveGeometry(leaf);
+          const warped = leaf.warp ? buildWarpedLeafGeometry(leaf) : null;
+          const geo = warped ?? createPrimitiveGeometry(leaf);
           if (!geo) continue;
           const mesh = new THREE.Mesh(geo, fillMatRef.current);
-          applyLeafTransform(mesh, leaf);
+          if (!warped) applyLeafTransform(mesh, leaf); // warped geo is world-space
           mesh.frustumCulled = false;
           mesh.renderOrder = 1001;
           mesh.layers.enable(OVERLAY_LAYER);
@@ -2802,6 +2804,13 @@ export function WebGLBodies() {
       }
       for (const leaf of info.leaves) {
         if (leaf.role === "skip") continue;
+        if (leaf.warp) {
+          // Twist/Bend: geometry is pre-warped into world space → identity.
+          const geo = buildWarpedLeafGeometry(leaf);
+          if (!geo) continue;
+          out.push(new THREE.Mesh(geo, matRef.current!));
+          continue;
+        }
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
         const mesh = new THREE.Mesh(geo, matRef.current!);

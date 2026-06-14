@@ -38,6 +38,24 @@ use crate::{compose_transforms, sdf_primitive, world_to_local};
 
 // ── Hybrid renderer classification ────────────────────────────────
 
+/// A non-rigid domain warp the web mesher applies to a leaf's geometry
+/// (in WORLD space — every BoundedCsg operator runs in world coords since
+/// transforms are baked into leaves). Twist/Bend wrap a child subtree, so
+/// `classify_walk` tags every descendant leaf with the warp; the mesher
+/// bakes the world transform, subdivides along the warp axis, then deforms
+/// the vertices. See [`CsgNode::Twist`] / [`CsgNode::Bend`].
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum LeafWarp {
+    /// Rotate XZ by `rate · y` around world Y. A diffeomorphism — never
+    /// self-intersects, so no validity gate (only adaptive subdivision).
+    Twist { rate: f32 },
+    /// Rotate XY by `rate · x` around world Z. Self-intersects once the
+    /// inner side wraps past the axis, so it is emitted ONLY when the
+    /// analytic gate `|rate| · y_extent < 1` holds (else SDF fallback).
+    Bend { rate: f32 },
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HybridLeafInfo {
     pub kind: String,
@@ -47,6 +65,8 @@ pub struct HybridLeafInfo {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contour: Option<crate::sketch2d::ContourData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warp: Option<LeafWarp>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,7 +319,7 @@ impl BoundedCsg {
             needs_full_sdf: false,
             is_union_only: true,
         };
-        classify_walk(self, &mut info, "mesh");
+        classify_walk(self, &mut info, "mesh", None);
         info
     }
 
@@ -1168,20 +1188,21 @@ fn combine_max(
     }
 }
 
-fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
+fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str, warp: Option<LeafWarp>) {
     match node {
         BoundedCsg::Empty => {}
         BoundedCsg::Leaf { primitive, world_transform, aabb, .. } => {
             if let Some(mut leaf) = primitive_to_leaf_info(primitive, world_transform, aabb) {
                 leaf.role = role.into();
+                leaf.warp = warp;
                 info.leaves.push(leaf);
             } else {
                 info.needs_full_sdf = true;
             }
         }
         BoundedCsg::Union { left, right, .. } => {
-            classify_walk(left, info, role);
-            classify_walk(right, info, role);
+            classify_walk(left, info, role, warp);
+            classify_walk(right, info, role, warp);
         }
         BoundedCsg::Difference { left, right, .. } => {
             info.is_union_only = false;
@@ -1191,8 +1212,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info, role);
-            classify_walk(right, info, "skip");
+            classify_walk(left, info, role, warp);
+            classify_walk(right, info, "skip", warp);
         }
         BoundedCsg::Intersection { left, right, .. } => {
             info.is_union_only = false;
@@ -1202,8 +1223,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info, "skip");
-            classify_walk(right, info, "skip");
+            classify_walk(left, info, "skip", warp);
+            classify_walk(right, info, "skip", warp);
         }
         BoundedCsg::SmoothUnion { left, right, radius, .. } => {
             info.is_union_only = false;
@@ -1213,8 +1234,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info, role);
-            classify_walk(right, info, role);
+            classify_walk(left, info, role, warp);
+            classify_walk(right, info, role, warp);
         }
         BoundedCsg::SmoothDifference { left, right, radius, .. } => {
             info.is_union_only = false;
@@ -1224,8 +1245,8 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info, role);
-            classify_walk(right, info, "skip");
+            classify_walk(left, info, role, warp);
+            classify_walk(right, info, "skip", warp);
         }
         BoundedCsg::MaskedBlend { left, right, mask_polyline, mask_radius, blend_radius, is_difference, .. } => {
             info.is_union_only = false;
@@ -1239,12 +1260,38 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     aabb: aabb_to_flat(overlap),
                 });
             }
-            classify_walk(left, info, role);
-            classify_walk(right, info, if *is_difference { "skip" } else { role });
+            classify_walk(left, info, role, warp);
+            classify_walk(right, info, if *is_difference { "skip" } else { role }, warp);
         }
-        BoundedCsg::Twist { .. }
-        | BoundedCsg::Bend { .. }
-        | BoundedCsg::Displace { .. }
+        // Domain warps: the SDF march stays the source of truth
+        // (needs_full_sdf), but we ALSO emit the child subtree's leaves
+        // tagged with the warp so the web mesher can deform them into a
+        // tight render hull (WebGL has no raymarcher). The warp is applied
+        // in WORLD space (every BoundedCsg op runs in world coords).
+        BoundedCsg::Twist { inner, rate, .. } => {
+            info.is_union_only = false;
+            info.needs_full_sdf = true;
+            // A pure XZ rotation about world Y is a diffeomorphism — never
+            // self-intersects, so no validity gate. Single warp only; a
+            // nested warp falls back to the SDF (no leaf emitted).
+            if warp.is_none() {
+                classify_walk(inner, info, role, Some(LeafWarp::Twist { rate: *rate }));
+            }
+        }
+        BoundedCsg::Bend { inner, rate, .. } => {
+            info.is_union_only = false;
+            info.needs_full_sdf = true;
+            // Bend self-intersects once the inner side wraps past the axis.
+            // Analytic gate: |rate| · y_extent < 1 (constant curvature). The
+            // same bound makes the mesher's fixed-point inverse a
+            // contraction. Outside the gate (or nested) → SDF fallback.
+            let bb = inner.aabb();
+            let y_extent = bb.max[1].abs().max(bb.min[1].abs());
+            if warp.is_none() && rate.abs() * y_extent < 1.0 {
+                classify_walk(inner, info, role, Some(LeafWarp::Bend { rate: *rate }));
+            }
+        }
+        BoundedCsg::Displace { .. }
         | BoundedCsg::Shell { .. }
         | BoundedCsg::Offset { .. }
         | BoundedCsg::Morph { .. } => {
@@ -1276,6 +1323,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                         params: vec![*half_height],
                         role: role.into(),
                         contour: Some(contour),
+                        warp,
                     });
                 }
             }
@@ -1305,6 +1353,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                         params: vec![],
                         role: role.into(),
                         contour: Some(contour),
+                        warp,
                     });
                 }
             }
@@ -1346,6 +1395,7 @@ fn classify_walk(node: &BoundedCsg, info: &mut HybridInfo, role: &str) {
                     ],
                     role: role.into(),
                     contour: Some(contour),
+                    warp,
                 });
             }
         }
@@ -1368,34 +1418,34 @@ fn primitive_to_leaf_info(
     let c = None; // no contour for standard primitives
     match prim {
         Primitive::Box { center, half_extents } => Some(HybridLeafInfo {
-            kind: "box".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "box".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![
                 half_extents[0], half_extents[1], half_extents[2],
                 center[0], center[1], center[2],
             ],
         }),
         Primitive::Sphere { center, radius } => Some(HybridLeafInfo {
-            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "sphere".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*radius, center[0], center[1], center[2]],
         }),
         Primitive::Cylinder { center, radius, half_height } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*radius, *half_height, center[0], center[1], center[2]],
         }),
         Primitive::Torus { center, major_radius, minor_radius } => Some(HybridLeafInfo {
-            kind: "torus".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "torus".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*major_radius, *minor_radius, center[0], center[1], center[2]],
         }),
         Primitive::Cone { r_bottom, r_top, half_height } => Some(HybridLeafInfo {
-            kind: "cone".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "cone".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*r_bottom, *r_top, *half_height],
         }),
         Primitive::Capsule { radius, half_height } => Some(HybridLeafInfo {
-            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "capsule".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*radius, *half_height],
         }),
         Primitive::Thread { nominal_radius, half_height, .. } => Some(HybridLeafInfo {
-            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c,
+            kind: "cylinder".into(), aabb: flat_aabb, transform: tf, role, contour: c, warp: None,
             params: vec![*nominal_radius, *half_height, 0.0, 0.0, 0.0],
         }),
         _ => None,

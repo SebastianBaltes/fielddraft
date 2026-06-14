@@ -248,6 +248,13 @@ export interface ContourData {
   holes: [number, number][][];
 }
 
+/** A non-rigid domain warp the web mesher applies to a leaf's WORLD-space
+ *  geometry (Twist about Y, Bend about Z). Emitted by the kernel on every
+ *  descendant leaf of a Twist/Bend node; see `bvh.rs` `LeafWarp`. */
+export type LeafWarp =
+  | { kind: "twist"; rate: number }
+  | { kind: "bend"; rate: number };
+
 export interface HybridLeafInfo {
   kind: string;
   aabb: [number, number, number, number, number, number];
@@ -255,6 +262,7 @@ export interface HybridLeafInfo {
   params: number[];
   role: "mesh" | "skip";
   contour?: ContourData;
+  warp?: LeafWarp;
 }
 
 export interface SdfRegionInfo {

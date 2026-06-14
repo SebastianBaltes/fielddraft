@@ -52,6 +52,7 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
+import { subdivideAlongAxis, applyWarp, warpAxis, maxStepForWarp } from "./warpMesh";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
@@ -152,24 +153,47 @@ function createHelixGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null 
   return buildHelixGeometry(leaf.contour, decodeHelixParams(leaf.params));
 }
 
-export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
+/** The leaf's local→world placement matrix (quat·scale + center offset). */
+export function leafWorldMatrix(leaf: HybridLeafInfo): THREE.Matrix4 {
   const t = leaf.transform;
   const translate = new THREE.Vector3(t[0], t[1], t[2]);
   const quat = new THREE.Quaternion(t[3], t[4], t[5], t[6]);
-  const scaleX = t[7], scaleY = t[8], scaleZ = t[9];
+  const scale = new THREE.Vector3(t[7], t[8], t[9]);
   const centerOffset = getCenterOffset(leaf);
   if (centerOffset) {
     const localOffset = new THREE.Vector3(
-      centerOffset[0] * scaleX,
-      centerOffset[1] * scaleY,
-      centerOffset[2] * scaleZ,
+      centerOffset[0] * scale.x,
+      centerOffset[1] * scale.y,
+      centerOffset[2] * scale.z,
     );
     localOffset.applyQuaternion(quat);
     translate.add(localOffset);
   }
+  return new THREE.Matrix4().compose(translate, quat, scale);
+}
+
+export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
   mesh.matrixAutoUpdate = false;
-  mesh.matrix.compose(translate, quat, new THREE.Vector3(scaleX, scaleY, scaleZ));
+  mesh.matrix.copy(leafWorldMatrix(leaf));
   mesh.matrixWorldNeedsUpdate = true;
+}
+
+/**
+ * Build a Twist/Bend leaf's geometry already in WORLD space and deformed:
+ * the primitive is baked through `leafWorldMatrix`, subdivided along the
+ * warp axis for smoothness, then warped per-vertex. The resulting mesh
+ * carries an IDENTITY transform (do NOT call applyLeafTransform on it).
+ * Returns null for a leaf with no warp or no meshable primitive.
+ */
+export function buildWarpedLeafGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+  if (!leaf.warp) return null;
+  const geo = createPrimitiveGeometry(leaf);
+  if (!geo) return null;
+  geo.applyMatrix4(leafWorldMatrix(leaf));
+  subdivideAlongAxis(geo, warpAxis(leaf.warp), maxStepForWarp(leaf.warp));
+  applyWarp(geo, leaf.warp);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
