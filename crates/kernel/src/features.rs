@@ -1621,15 +1621,31 @@ impl FeatureKind for HexPrismPrimitive {
 // Catmull-Rom spline). The Gatekeeper (in classify) decides parametric
 // mesh vs. SDF fallback; the profile is carried in the profile's own frame.
 
-/// `sweep` — profile swept along a control-point spine (Gizmo3d v1).
+/// The sweep's spine source — one tagged variant per modular path-provider
+/// method (see [`crate::path_provider`]). The consumer never branches on
+/// this; `execute` resolves it to a `SampledPath`.
+#[derive(Debug, Clone, ::serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PathSourceDef {
+    /// 3D control points routed in space + Catmull-Rom spline.
+    Gizmo3d {
+        nodes: Vec<[f32; 3]>,
+        #[serde(default)]
+        closed: bool,
+    },
+    /// Planar curve from a 2D sketch (`qCreatedBy(<sketch>)`).
+    Sketch2d {
+        sketch: ::fielddraft_protocol::Query,
+    },
+}
+
+/// `sweep` — profile swept along a spine resolved from a modular path source.
 #[derive(FeatureSchema)]
 #[schema(type = "sweep")]
 pub struct SweepDef {
     pub profiles: ::fielddraft_protocol::Query,
-    /// Spine control points routed in 3D space (Gizmo3d provider input).
-    pub path_nodes: Vec<[f32; 3]>,
-    #[param(default = false)]
-    pub closed: bool,
+    /// Modular path source (Gizmo3d control points or a 2D sketch curve).
+    pub path: PathSourceDef,
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 }
@@ -1672,20 +1688,64 @@ impl FeatureKind for SweepFeature {
             name: "profiles",
         })?;
 
-        // Resolve the spine through the modular path-provider layer (v1:
-        // Gizmo3d control points + Catmull-Rom). Consumers downstream see
-        // only the sampled `SweepPath` — never this source.
-        let sampled = crate::path_provider::Gizmo3dPath {
-            nodes: d.path_nodes.clone(),
-            closed: d.closed,
-            samples_per_span: 24,
-        }
-        .sample()
-        .map_err(|_| FeatureError::InvalidParameter {
+        // Resolve the spine through the modular path-provider layer — each
+        // source method dispatches to its provider; consumers downstream see
+        // only the sampled `SweepPath`, never this source.
+        let bad_path = |message: String| FeatureError::InvalidParameter {
             feature: SweepDef::TYPE_NAME,
-            name: "path_nodes",
-            message: "need at least two spine control points".to_string(),
-        })?;
+            name: "path",
+            message,
+        };
+        let sampled = match &d.path {
+            PathSourceDef::Gizmo3d { nodes, closed } => {
+                crate::path_provider::Gizmo3dPath {
+                    nodes: nodes.clone(),
+                    closed: *closed,
+                    samples_per_span: 24,
+                }
+                .sample()
+                .map_err(|_| bad_path("need at least two control points".to_string()))?
+            }
+            PathSourceDef::Sketch2d { sketch: path_q } => {
+                let path_id = match crate::queries::parse_query(path_q.as_str()) {
+                    Ok(crate::queries::QueryExpr::CreatedBy(s)) => s,
+                    _ => {
+                        return Err(bad_path(
+                            "sketch path must be qCreatedBy(<sketch>)".to_string(),
+                        ))
+                    }
+                };
+                let sk = ctx.sketches.get(&path_id).ok_or(
+                    FeatureError::MissingParameter {
+                        feature: SweepDef::TYPE_NAME,
+                        name: "path",
+                    },
+                )?;
+                let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
+                    &crate::sketch_features::build_sketch2d_from_sub_calls(&sk.sub_calls),
+                );
+                let curve = crate::sketch2d::extract_contours(
+                    &bounded,
+                    crate::sketch2d::CONTOUR_RESOLUTION,
+                )
+                .into_iter()
+                .next()
+                .map(|c| c.outer)
+                .filter(|o| o.len() >= 2)
+                .ok_or_else(|| {
+                    bad_path("sketch has no closed planar curve to sweep along".to_string())
+                })?;
+                crate::path_provider::Sketch2dPath {
+                    curve,
+                    origin: sk.frame.origin,
+                    x_axis: sk.frame.x_axis,
+                    y_axis: sk.frame.y_axis,
+                    closed: true,
+                }
+                .sample()
+                .map_err(|_| bad_path("degenerate sketch path".to_string()))?
+            }
+        };
 
         let name = optional_display_name(def, || format!("Sweep {id}"));
         let node_id = id.child("0");

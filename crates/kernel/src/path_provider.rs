@@ -107,6 +107,46 @@ impl PathProvider for Gizmo3dPath {
     }
 }
 
+// ── Provider: planar 2D sketch curve lifted into 3D ────────────────
+
+/// A planar curve from a 2D sketch, lifted into 3D via the sketch's plane
+/// frame. The feature resolves the sketch's ordered boundary curve and its
+/// frame (with context); this provider does the method-specific 2D→3D lift
+/// (`world = origin + x·x_axis + y·y_axis`). A closed loop sweeps around
+/// itself.
+pub struct Sketch2dPath {
+    /// Ordered 2D curve points in the sketch plane.
+    pub curve: Vec<[f32; 2]>,
+    pub origin: V3,
+    pub x_axis: V3,
+    pub y_axis: V3,
+    pub closed: bool,
+}
+
+impl PathProvider for Sketch2dPath {
+    fn method(&self) -> PathMethod {
+        PathMethod::Sketch2d
+    }
+
+    fn sample(&self) -> Result<SampledPath, PathError> {
+        if self.curve.len() < 2 {
+            return Err(PathError::Empty);
+        }
+        let points = self
+            .curve
+            .iter()
+            .map(|&[x, y]| {
+                [
+                    self.origin[0] + x * self.x_axis[0] + y * self.y_axis[0],
+                    self.origin[1] + x * self.x_axis[1] + y * self.y_axis[1],
+                    self.origin[2] + x * self.x_axis[2] + y * self.y_axis[2],
+                ]
+            })
+            .collect();
+        Ok(SampledPath { points, closed: self.closed })
+    }
+}
+
 /// Sample a uniform Catmull-Rom spline through `nodes`. Open ends use
 /// reflected phantom points so the curve still passes through the endpoints.
 fn catmull_rom(nodes: &[V3], closed: bool, sps: usize) -> Vec<V3> {
@@ -221,6 +261,24 @@ mod tests {
         for (s, node) in nodes.iter().enumerate() {
             assert!(approx_pt(sp.points[s * sps], *node, 1e-4), "node {s}");
         }
+    }
+
+    #[test]
+    fn sketch2d_provider_lifts_the_curve_onto_its_plane() {
+        // A curve on the XZ plane (x_axis=+X, y_axis=+Z): 2D (x,y) → 3D (x,0,y),
+        // shifted by the plane origin.
+        let g = Sketch2dPath {
+            curve: vec![[10.0, 0.0], [10.0, 20.0], [-10.0, 20.0]],
+            origin: [0.0, 5.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 0.0, 1.0],
+            closed: true,
+        };
+        let sp = g.sample().unwrap();
+        assert!(sp.closed);
+        assert!(approx_pt(sp.points[0], [10.0, 5.0, 0.0], 1e-5));
+        assert!(approx_pt(sp.points[1], [10.0, 5.0, 20.0], 1e-5));
+        assert!(approx_pt(sp.points[2], [-10.0, 5.0, 20.0], 1e-5));
     }
 
     #[test]
