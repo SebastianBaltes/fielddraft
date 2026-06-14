@@ -1727,23 +1727,34 @@ impl FeatureKind for SweepFeature {
                 let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
                     &crate::sketch_features::build_sketch2d_from_sub_calls(&sk.sub_calls),
                 );
-                let curve = crate::sketch2d::extract_contours(
+                // A closed loop sweeps around itself; otherwise fall back to
+                // the open drawn curve (a path from A to B).
+                let closed_loop = crate::sketch2d::extract_contours(
                     &bounded,
                     crate::sketch2d::CONTOUR_RESOLUTION,
                 )
                 .into_iter()
                 .next()
                 .map(|c| c.outer)
-                .filter(|o| o.len() >= 2)
-                .ok_or_else(|| {
-                    bad_path("sketch has no closed planar curve to sweep along".to_string())
-                })?;
+                .filter(|o| o.len() >= 2);
+                let (curve, closed) = match closed_loop {
+                    Some(loop_curve) => (loop_curve, true),
+                    None => {
+                        let open = crate::sketch_features::open_path_curve_from_sub_calls(
+                            &sk.sub_calls,
+                        )
+                        .ok_or_else(|| {
+                            bad_path("sketch has no usable planar curve to sweep along".to_string())
+                        })?;
+                        (open, false)
+                    }
+                };
                 crate::path_provider::Sketch2dPath {
                     curve,
                     origin: sk.frame.origin,
                     x_axis: sk.frame.x_axis,
                     y_axis: sk.frame.y_axis,
-                    closed: true,
+                    closed,
                 }
                 .sample()
                 .map_err(|_| bad_path("degenerate sketch path".to_string()))?

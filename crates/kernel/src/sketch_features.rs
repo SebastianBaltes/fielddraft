@@ -1231,6 +1231,47 @@ fn contour_polyline(segments: &[SketchSegment]) -> Vec<[f32; 2]> {
     pts
 }
 
+/// Sample an OPEN sketch curve as an ordered 2D polyline — the spine for a
+/// sweep along a non-closed path. Gathers the path-friendly entities
+/// (`sketch_line`, `sketch_spline`) in draw order and flattens them; assumes
+/// the user drew them sequentially (each entity continuing the previous).
+/// Construction geometry is skipped. Returns `None` for fewer than two points.
+pub fn open_path_curve_from_sub_calls(sub_calls: &[FeatureCall]) -> Option<Vec<[f32; 2]>> {
+    let mut segments: Vec<SketchSegment> = Vec::new();
+    for call in sub_calls {
+        if call
+            .params
+            .get("construction")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match call.type_name.as_str() {
+            "sketch_line" => {
+                if let Ok(d) = SketchLineDef::parse(&call.params) {
+                    segments.push(SketchSegment::Line { start: d.start, end: d.end });
+                }
+            }
+            "sketch_spline" => {
+                if let Ok(d) = SketchSplineDef::parse(&call.params) {
+                    segments.extend(lower_spline_segments(&d));
+                }
+            }
+            _ => {}
+        }
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    let pts = contour_polyline(&segments);
+    if pts.len() < 2 {
+        None
+    } else {
+        Some(pts)
+    }
+}
+
 /// Even-odd point-in-polygon test (ray casting).
 fn point_in_polyline(pt: [f32; 2], poly: &[[f32; 2]]) -> bool {
     let n = poly.len();
@@ -3174,6 +3215,25 @@ mod tests {
     use serde_json::json;
 
     use crate::features::{Context, FeatureError, FeatureRegistry};
+
+    #[test]
+    fn open_path_curve_chains_drawn_lines_in_order() {
+        // An L drawn as two connected lines → an ordered open polyline.
+        let sub_calls: Vec<FeatureCall> = serde_json::from_value(json!([
+            {"type":"sketch_line","id":"1","params":{"start":[0.0,0.0],"end":[10.0,0.0]}},
+            {"type":"sketch_line","id":"2","params":{"start":[10.0,0.0],"end":[10.0,8.0]}}
+        ]))
+        .unwrap();
+        let curve = open_path_curve_from_sub_calls(&sub_calls).unwrap();
+        assert!(curve.len() >= 3, "got {} points", curve.len());
+        assert_eq!(curve.first(), Some(&[0.0, 0.0]));
+        assert_eq!(curve.last(), Some(&[10.0, 8.0]));
+        // No closed loop here — extract_contours would yield nothing.
+        let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
+            &build_sketch2d_from_sub_calls(&sub_calls),
+        );
+        assert!(crate::sketch2d::extract_contours(&bounded, crate::sketch2d::CONTOUR_RESOLUTION).is_empty());
+    }
 
     fn id(n: u32) -> FeatureId {
         FeatureId::from_u32(n)
