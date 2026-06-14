@@ -27,7 +27,7 @@
 //!   * [`PathMethod::EquationDriven`]      — equation-driven space curve.
 //!   * [`PathMethod::AutoRoute`]           — Manhattan routing between points.
 
-use crate::sweep_path::{SweepPath, V3};
+use crate::sweep_path::{norm, sub, SweepPath, V3};
 
 /// The sole contract handed downstream: a sampled spine polyline.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +75,89 @@ pub enum PathError {
 pub trait PathProvider {
     fn method(&self) -> PathMethod;
     fn sample(&self) -> Result<SampledPath, PathError>;
+}
+
+// ── Provider: existing model edges (3D edge chain) ─────────────────
+
+/// Sweep along selected B-Rep edges. The feature resolves an edge query into
+/// world-space edge polylines (via `resolve_fillet_edges`); this provider
+/// greedily chains them end-to-end into one ordered spine (reversing pieces
+/// as needed) and detects a closed loop.
+pub struct EdgeChainPath {
+    pub polylines: Vec<Vec<V3>>,
+}
+
+const EDGE_JOIN_TOL: f32 = 1e-2;
+
+impl PathProvider for EdgeChainPath {
+    fn method(&self) -> PathMethod {
+        PathMethod::EdgeChain
+    }
+
+    fn sample(&self) -> Result<SampledPath, PathError> {
+        let mut remaining: Vec<Vec<V3>> =
+            self.polylines.iter().filter(|p| p.len() >= 2).cloned().collect();
+        if remaining.is_empty() {
+            return Err(PathError::Empty);
+        }
+        let near = |a: V3, b: V3| norm(sub(a, b)) < EDGE_JOIN_TOL;
+
+        let mut chain = remaining.remove(0);
+        loop {
+            let tail = *chain.last().unwrap();
+            let head = chain[0];
+            let mut extended = false;
+            for i in 0..remaining.len() {
+                let ps = remaining[i][0];
+                let pe = *remaining[i].last().unwrap();
+                if near(tail, ps) {
+                    let p = remaining.remove(i);
+                    chain.extend_from_slice(&p[1..]);
+                } else if near(tail, pe) {
+                    let mut p = remaining.remove(i);
+                    p.reverse();
+                    chain.extend_from_slice(&p[1..]);
+                } else if near(head, pe) {
+                    let p = remaining.remove(i);
+                    let mut joined = p;
+                    joined.extend_from_slice(&chain[1..]);
+                    chain = joined;
+                } else if near(head, ps) {
+                    let mut p = remaining.remove(i);
+                    p.reverse();
+                    p.extend_from_slice(&chain[1..]);
+                    chain = p;
+                } else {
+                    continue;
+                }
+                extended = true;
+                break;
+            }
+            if !extended {
+                break;
+            }
+        }
+
+        // Closed-loop detection: a closed model edge (a circular rim) is
+        // sampled WITHOUT repeating its closing vertex, so the ends sit one
+        // sampling step apart, not coincident. Treat the chain as closed when
+        // the end gap is within ~1.5× the local segment spacing.
+        let n = chain.len();
+        let last = chain[n - 1];
+        let end_gap = norm(sub(chain[0], last));
+        let step = norm(sub(chain[1], chain[0]))
+            .max(norm(sub(chain[n - 1], chain[n - 2])));
+        let closed = n > 3 && end_gap < (EDGE_JOIN_TOL).max(1.5 * step);
+        let points = if closed && near(chain[0], last) {
+            chain[..n - 1].to_vec() // drop the exactly-repeated closing point
+        } else {
+            chain
+        };
+        if points.len() < 2 {
+            return Err(PathError::Degenerate("edge chain too short"));
+        }
+        Ok(SampledPath { points, closed })
+    }
 }
 
 // ── Provider: 3D gizmo routing (control points + Catmull-Rom spline) ─
@@ -261,6 +344,57 @@ mod tests {
         for (s, node) in nodes.iter().enumerate() {
             assert!(approx_pt(sp.points[s * sps], *node, 1e-4), "node {s}");
         }
+    }
+
+    #[test]
+    fn edge_chain_joins_polylines_into_one_ordered_spine() {
+        // Three edges that meet end-to-end (one reversed) → a single chain.
+        let g = EdgeChainPath {
+            polylines: vec![
+                vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                vec![[20.0, 0.0, 0.0], [10.0, 0.0, 0.0]], // reversed orientation
+                vec![[20.0, 0.0, 0.0], [20.0, 10.0, 0.0]],
+            ],
+        };
+        let sp = g.sample().unwrap();
+        assert!(!sp.closed);
+        assert!(approx_pt(sp.points[0], [0.0, 0.0, 0.0], 1e-5));
+        assert!(approx_pt(*sp.points.last().unwrap(), [20.0, 10.0, 0.0], 1e-5));
+    }
+
+    #[test]
+    fn edge_chain_closes_a_sampled_circle_and_passes_the_gate() {
+        // A circular rim edge sampled as 32 points over 0..348.75° (the closing
+        // vertex is NOT repeated) — must be detected as CLOSED so the sweep
+        // gate doesn't see the near-touching ends as a self-intersection.
+        let n = 32;
+        let pts: Vec<V3> = (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                [40.0 * a.cos(), 0.0, 40.0 * a.sin()]
+            })
+            .collect();
+        let g = EdgeChainPath { polylines: vec![pts] };
+        let sp_sampled = g.sample().unwrap();
+        assert!(sp_sampled.closed, "a sampled full circle must be closed");
+
+        let path = sp_sampled.into_sweep_path().unwrap();
+        let v = crate::sweep_gate::check_sweep(&path, 5.66, &Default::default());
+        assert_eq!(v, crate::sweep_gate::SweepGateVerdict::Pass, "closed circle passes");
+    }
+
+    #[test]
+    fn edge_chain_detects_a_closed_loop() {
+        let g = EdgeChainPath {
+            polylines: vec![
+                vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+                vec![[10.0, 0.0, 0.0], [10.0, 10.0, 0.0]],
+                vec![[10.0, 10.0, 0.0], [0.0, 10.0, 0.0]],
+                vec![[0.0, 10.0, 0.0], [0.0, 0.0, 0.0]],
+            ],
+        };
+        let sp = g.sample().unwrap();
+        assert!(sp.closed, "four edges forming a square → closed");
     }
 
     #[test]

@@ -690,6 +690,51 @@ impl<'a> Context<'a> {
         }
         out
     }
+
+    /// Resolve an edge-yielding query into per-edge world-space SAMPLED curve
+    /// polylines (dense tessellation via [`sample_edge`], NOT the NURBS control
+    /// polygon `resolve_fillet_edges` uses) — the spine for an edge-chain sweep.
+    /// A circle's control polygon has sharp corners that would trip the sweep
+    /// Gatekeeper's kink check; the sampled curve is smooth.
+    pub fn resolve_edge_polylines(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Vec<Vec<[f32; 3]>> {
+        use crate::brep::naming::TopoRef;
+        use crate::brep::EdgeId;
+
+        let woven = self.brep_cache.ensure(&self.features);
+        let mut out = Vec::new();
+        for (brep, placement) in woven {
+            for i in 0..brep.edges.len() {
+                let id = EdgeId(i as u32);
+                let edge = brep.edge(id);
+                let hit = match expr {
+                    crate::queries::QueryExpr::Edge(hash) => {
+                        TopoRef::from_edge(brep, id).id_hash == *hash
+                    }
+                    crate::queries::QueryExpr::EdgeBetween(a, b) => {
+                        let s0 = edge.signature.0.feature_id();
+                        let s1 = edge.signature.1.feature_id();
+                        let fa = a.as_u32_or_root();
+                        let fb = b.as_u32_or_root();
+                        matches!((fa, fb), (Some(fa), Some(fb))
+                            if (s0 == fa && s1 == fb) || (s0 == fb && s1 == fa))
+                    }
+                    _ => false,
+                };
+                if !hit {
+                    continue;
+                }
+                let world: Vec<[f32; 3]> = crate::brep::edge_sampling::sample_edge(&edge.geometry)
+                    .iter()
+                    .map(|p| place_point(placement, [p[0] as f32, p[1] as f32, p[2] as f32]))
+                    .collect();
+                out.push(world);
+            }
+        }
+        out
+    }
 }
 
 /// Two world [`SketchFrame`](crate::sketch_features::SketchFrame)s are coplanar
@@ -1637,6 +1682,10 @@ pub enum PathSourceDef {
     Sketch2d {
         sketch: ::fielddraft_protocol::Query,
     },
+    /// Existing model edges selected by an edge query (`qEdge`/`qEdgeBetween`).
+    EdgeChain {
+        edges: ::fielddraft_protocol::Query,
+    },
 }
 
 /// `sweep` — profile swept along a spine resolved from a modular path source.
@@ -1758,6 +1807,17 @@ impl FeatureKind for SweepFeature {
                 }
                 .sample()
                 .map_err(|_| bad_path("degenerate sketch path".to_string()))?
+            }
+            PathSourceDef::EdgeChain { edges } => {
+                let expr = crate::queries::parse_query(edges.as_str())
+                    .map_err(|e| bad_path(format!("could not parse edge query: {e}")))?;
+                let polylines: Vec<Vec<[f32; 3]>> = ctx.resolve_edge_polylines(&expr);
+                if polylines.is_empty() {
+                    return Err(bad_path("edge query resolved to no edges".to_string()));
+                }
+                crate::path_provider::EdgeChainPath { polylines }
+                    .sample()
+                    .map_err(|_| bad_path("edges do not form a usable chain".to_string()))?
             }
         };
 
