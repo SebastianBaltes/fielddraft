@@ -1686,6 +1686,12 @@ pub enum PathSourceDef {
     EdgeChain {
         edges: ::fielddraft_protocol::Query,
     },
+    /// Two orthogonal sketches sharing an axis → a 3D space curve (two-view
+    /// wire). `sketch_a`/`sketch_b` are `qCreatedBy(<sketch>)` selections.
+    OrthogonalSketches {
+        sketch_a: ::fielddraft_protocol::Query,
+        sketch_b: ::fielddraft_protocol::Query,
+    },
 }
 
 /// `sweep` — profile swept along a spine resolved from a modular path source.
@@ -1700,6 +1706,51 @@ pub struct SweepDef {
     pub twist_deg: f32,
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
+}
+
+/// Resolve a `qCreatedBy(<sketch>)` query to its ordered 2D curve (closed
+/// loop if it bounds a region, else the open drawn curve) plus the sketch's
+/// plane frame. Shared by the Sketch2d and OrthogonalSketches path sources.
+fn resolve_sketch_curve_2d(
+    sketches: &std::collections::HashMap<FeatureId, crate::sketch_features::SketchData>,
+    query: &::fielddraft_protocol::Query,
+) -> Result<(Vec<[f32; 2]>, bool, crate::sketch_features::SketchFrame), FeatureError> {
+    let id = match crate::queries::parse_query(query.as_str()) {
+        Ok(crate::queries::QueryExpr::CreatedBy(s)) => s,
+        _ => {
+            return Err(FeatureError::InvalidParameter {
+                feature: SweepDef::TYPE_NAME,
+                name: "path",
+                message: "sketch query must be qCreatedBy(<sketch>)".to_string(),
+            })
+        }
+    };
+    let sk = sketches.get(&id).ok_or(FeatureError::MissingParameter {
+        feature: SweepDef::TYPE_NAME,
+        name: "path",
+    })?;
+    let bounded = crate::sketch2d::BoundedSketch2d::from_sketch(
+        &crate::sketch_features::build_sketch2d_from_sub_calls(&sk.sub_calls),
+    );
+    let closed_loop = crate::sketch2d::extract_contours(&bounded, crate::sketch2d::CONTOUR_RESOLUTION)
+        .into_iter()
+        .next()
+        .map(|c| c.outer)
+        .filter(|o| o.len() >= 2);
+    let (curve, closed) = match closed_loop {
+        Some(loop_curve) => (loop_curve, true),
+        None => (
+            crate::sketch_features::open_path_curve_from_sub_calls(&sk.sub_calls).ok_or(
+                FeatureError::InvalidParameter {
+                    feature: SweepDef::TYPE_NAME,
+                    name: "path",
+                    message: "sketch has no usable planar curve".to_string(),
+                },
+            )?,
+            false,
+        ),
+    };
+    Ok((curve, closed, sk.frame))
 }
 
 pub struct SweepFeature;
@@ -1818,6 +1869,31 @@ impl FeatureKind for SweepFeature {
                 crate::path_provider::EdgeChainPath { polylines }
                     .sample()
                     .map_err(|_| bad_path("edges do not form a usable chain".to_string()))?
+            }
+            PathSourceDef::OrthogonalSketches { sketch_a, sketch_b } => {
+                let (curve_a, _, fa) = resolve_sketch_curve_2d(&ctx.sketches, sketch_a)?;
+                let (curve_b, _, fb) = resolve_sketch_curve_2d(&ctx.sketches, sketch_b)?;
+                // The two sketch planes must share an axis (their x-axes are the
+                // common parameter direction of the two-view construction).
+                let dot = fa.x_axis[0] * fb.x_axis[0]
+                    + fa.x_axis[1] * fb.x_axis[1]
+                    + fa.x_axis[2] * fb.x_axis[2];
+                if dot.abs() < 0.999 {
+                    return Err(bad_path(
+                        "the two sketches must share an axis (orthogonal views)".to_string(),
+                    ));
+                }
+                crate::path_provider::OrthogonalSketchesPath {
+                    curve_a,
+                    curve_b,
+                    origin: fa.origin,
+                    shared_axis: fa.x_axis,
+                    dir_a: fa.y_axis,
+                    dir_b: fb.y_axis,
+                    samples: 96,
+                }
+                .sample()
+                .map_err(|_| bad_path("orthogonal sketches do not form a curve".to_string()))?
             }
         };
 

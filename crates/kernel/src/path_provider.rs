@@ -27,7 +27,7 @@
 //!   * [`PathMethod::EquationDriven`]      — equation-driven space curve.
 //!   * [`PathMethod::AutoRoute`]           — Manhattan routing between points.
 
-use crate::sweep_path::{norm, sub, SweepPath, V3};
+use crate::sweep_path::{add, norm, scale, sub, SweepPath, V3};
 
 /// The sole contract handed downstream: a sampled spine polyline.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +75,84 @@ pub enum PathError {
 pub trait PathProvider {
     fn method(&self) -> PathMethod;
     fn sample(&self) -> Result<SampledPath, PathError>;
+}
+
+// ── Provider: two orthogonal sketches → space curve ────────────────
+
+/// The classic two-view wire: sketch A on one plane and sketch B on an
+/// orthogonal plane that SHARE an axis each give the curve's offset in their
+/// own plane as a function of the shared-axis coordinate `u`. The 3D point at
+/// `u` is `origin + u·shared + v_a(u)·dir_a + v_b(u)·dir_b`. The feature
+/// supplies each curve as `(u, v)` 2D points plus the three world directions.
+pub struct OrthogonalSketchesPath {
+    pub curve_a: Vec<[f32; 2]>,
+    pub curve_b: Vec<[f32; 2]>,
+    pub origin: V3,
+    pub shared_axis: V3,
+    pub dir_a: V3,
+    pub dir_b: V3,
+    pub samples: usize,
+}
+
+/// Linear-interpolate `v` at shared coordinate `u` from a curve sorted by `u`.
+fn interp_v(sorted: &[[f32; 2]], u: f32) -> f32 {
+    if u <= sorted[0][0] {
+        return sorted[0][1];
+    }
+    let n = sorted.len();
+    if u >= sorted[n - 1][0] {
+        return sorted[n - 1][1];
+    }
+    for w in sorted.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if u >= a[0] && u <= b[0] {
+            let span = b[0] - a[0];
+            let t = if span > 1e-9 { (u - a[0]) / span } else { 0.0 };
+            return a[1] + (b[1] - a[1]) * t;
+        }
+    }
+    sorted[n - 1][1]
+}
+
+impl PathProvider for OrthogonalSketchesPath {
+    fn method(&self) -> PathMethod {
+        PathMethod::OrthogonalSketches
+    }
+
+    fn sample(&self) -> Result<SampledPath, PathError> {
+        if self.curve_a.len() < 2 || self.curve_b.len() < 2 {
+            return Err(PathError::Empty);
+        }
+        let mut a = self.curve_a.clone();
+        let mut b = self.curve_b.clone();
+        let by_u = |p: &[f32; 2], q: &[f32; 2]| {
+            p[0].partial_cmp(&q[0]).unwrap_or(std::cmp::Ordering::Equal)
+        };
+        a.sort_by(by_u);
+        b.sort_by(by_u);
+
+        // Curve along the SHARED u-range only (both views must overlap).
+        let lo = a[0][0].max(b[0][0]);
+        let hi = a[a.len() - 1][0].min(b[b.len() - 1][0]);
+        if !(hi > lo) {
+            return Err(PathError::Degenerate(
+                "the two sketches do not overlap along the shared axis",
+            ));
+        }
+        let n = self.samples.max(2);
+        let points: Vec<V3> = (0..n)
+            .map(|i| {
+                let u = lo + (hi - lo) * i as f32 / (n - 1) as f32;
+                let va = interp_v(&a, u);
+                let vb = interp_v(&b, u);
+                add(
+                    add(self.origin, scale(self.shared_axis, u)),
+                    add(scale(self.dir_a, va), scale(self.dir_b, vb)),
+                )
+            })
+            .collect();
+        Ok(SampledPath { points, closed: false })
+    }
 }
 
 // ── Provider: existing model edges (3D edge chain) ─────────────────
@@ -344,6 +422,41 @@ mod tests {
         for (s, node) in nodes.iter().enumerate() {
             assert!(approx_pt(sp.points[s * sps], *node, 1e-4), "node {s}");
         }
+    }
+
+    #[test]
+    fn orthogonal_sketches_combine_two_views_into_a_space_curve() {
+        // Top view (XY): v_a = 0.5·u; front view (XZ): v_b = 0.3·u, over u∈[0,100].
+        // 3D point at u = (u, 0.5u, 0.3u).
+        let g = OrthogonalSketchesPath {
+            curve_a: vec![[0.0, 0.0], [100.0, 50.0]],
+            curve_b: vec![[0.0, 0.0], [100.0, 30.0]],
+            origin: [0.0, 0.0, 0.0],
+            shared_axis: [1.0, 0.0, 0.0],
+            dir_a: [0.0, 1.0, 0.0],
+            dir_b: [0.0, 0.0, 1.0],
+            samples: 11,
+        };
+        let sp = g.sample().unwrap();
+        assert_eq!(sp.points.len(), 11);
+        assert!(!sp.closed);
+        assert!(approx_pt(sp.points[0], [0.0, 0.0, 0.0], 1e-4));
+        assert!(approx_pt(sp.points[5], [50.0, 25.0, 15.0], 1e-3)); // u=50
+        assert!(approx_pt(*sp.points.last().unwrap(), [100.0, 50.0, 30.0], 1e-3));
+    }
+
+    #[test]
+    fn orthogonal_sketches_need_overlap() {
+        let g = OrthogonalSketchesPath {
+            curve_a: vec![[0.0, 0.0], [40.0, 10.0]],
+            curve_b: vec![[60.0, 0.0], [100.0, 10.0]], // disjoint u-range
+            origin: [0.0, 0.0, 0.0],
+            shared_axis: [1.0, 0.0, 0.0],
+            dir_a: [0.0, 1.0, 0.0],
+            dir_b: [0.0, 0.0, 1.0],
+            samples: 5,
+        };
+        assert!(matches!(g.sample(), Err(PathError::Degenerate(_))));
     }
 
     #[test]
