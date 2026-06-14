@@ -955,6 +955,12 @@ export class Kernel {
     );
   }
 
+  /** Append a sweep along a default 3D control-point path (Gizmo3d); the
+   *  control points are then editable. Returns the new feature id. */
+  addSweepGizmo(profileSketchId: number, op: BoolOpTagValue): number {
+    return this.guardMut(() => this.inner.addSweepGizmo(profileSketchId, op));
+  }
+
   /** K7.4: append an extrude feature that consumes the
    *  sketch with id `sketchId`. `depthMm` is the total slab
    *  depth, `op` is a BoolOpTag and `tz` positions the

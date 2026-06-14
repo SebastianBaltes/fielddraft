@@ -3841,6 +3841,24 @@ export class KernelStore {
     return id;
   }
 
+  /** Sweep the latest sketch (profile) along a default 3D control-point path
+   *  (Gizmo3d); the user then routes the spine by editing the control points
+   *  in the Detail panel. Returns null without a sketch. */
+  addSweepGizmoFromLatestSketch(): number | null {
+    const sketchId = this.latestSketchId();
+    if (sketchId === null) return null;
+    let id: number;
+    try {
+      id = this.kernel.addSweepGizmo(sketchId, this.state.nextOp);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("fielddraft: addSweepGizmo failed", err);
+      return null;
+    }
+    this.commit(new Set([id]), id);
+    return id;
+  }
+
   /** Extrude the latest committed sketch with the given depth
    *  and the store's current `nextOp`. Returns the new feature
    *  id, or `null` when there's no sketch to consume or the

@@ -1767,6 +1767,42 @@ impl Kernel {
         )
     }
 
+    /// Append a `sweep` along a default 3D control-point path (Gizmo3d source).
+    /// The user then routes the spine by editing the control points. The
+    /// default is a gentle S so the sweep is visible immediately.
+    #[wasm_bindgen(js_name = addSweepGizmo)]
+    pub fn add_sweep_gizmo(
+        &mut self,
+        profile_sketch_id: u32,
+        op: u32,
+    ) -> Result<u32, JsError> {
+        let op_wire = Self::op_wire_name(op)?;
+        if profile_sketch_id == 0 {
+            return Err(JsError::new("sweep needs a profile sketch"));
+        }
+        let fid = FeatureId::from_u32(profile_sketch_id);
+        let exists = self
+            .document
+            .feature_calls
+            .iter()
+            .any(|c| c.id == fid && c.type_name == "sketch");
+        if !exists {
+            return Err(JsError::new(&format!("feature {profile_sketch_id} is not a sketch")));
+        }
+        self.push_feature_call(
+            "sweep",
+            serde_json::json!({
+                "profiles": format!("qCreatedBy({fid})"),
+                "path": {
+                    "kind": "gizmo3d",
+                    "nodes": [[0.0, 0.0, 0.0], [40.0, 25.0, 0.0], [80.0, 25.0, 20.0], [120.0, 0.0, 20.0]],
+                    "closed": false
+                },
+                "operation": op_wire,
+            }),
+        )
+    }
+
     /// K8.9: append a `hole` feature call. Thin convenience
     /// wrapper that serialises the typed diameter/depth/translate
     /// into a FeatureCall and bootstraps. Returns the new id.
