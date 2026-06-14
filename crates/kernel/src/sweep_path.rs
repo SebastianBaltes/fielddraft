@@ -290,6 +290,9 @@ pub struct NearestHit {
     pub point: V3,
     /// Frame interpolated to the closest point (renormalised).
     pub frame: Frame,
+    /// The query projected past an open path's first/last vertex (the foot
+    /// clamped to a true end) — used by the SDF for end-cap composition.
+    pub at_path_end: bool,
 }
 
 pub struct SweepPath {
@@ -361,7 +364,40 @@ impl SweepPath {
         let i1 = (best_seg + 1) % n;
         let frame = lerp_frame(self.frames[i0], self.frames[i1], best_t);
         let arclength = seg.s_mid - seg.half_len + best_t * (seg.half_len * 2.0);
-        NearestHit { arclength, dist2: best2, point, frame }
+        let at_path_end = !self.closed
+            && ((best_seg == 0 && best_t <= 1e-6)
+                || (best_seg == self.segs.len() - 1 && best_t >= 1.0 - 1e-6));
+        NearestHit { arclength, dist2: best2, point, frame, at_path_end }
+    }
+
+    /// Signed distance to the solid swept by `profile` (in the local
+    /// `(n, b)` cross-section frame) along this spine. Assumes the spine
+    /// passed the Gatekeeper (no self-intersection, curvature radius above
+    /// the profile radius) so the nearest-spine-point foot is unique.
+    ///
+    /// Lateral surface: the 2D profile distance in the RMF cross-section.
+    /// Open ends are capped via IQ's extrude composition of the profile
+    /// distance with the axial overshoot past the nearer end. Closed loops
+    /// have no caps.
+    pub fn sdf(&self, profile: &crate::sketch2d::BoundedSketch2d, p: V3) -> f32 {
+        let hit = self.nearest(p);
+        let d = sub(p, hit.point);
+        let u = dot(d, hit.frame.n);
+        let v = dot(d, hit.frame.b);
+        let d2 = profile.sdf([u, v]);
+        if self.closed {
+            return d2;
+        }
+        // Axial slab [0, total_len]: past an end → +overshoot; inside →
+        // −distance to the nearer cap plane (so deep interiors ignore caps).
+        let w = if hit.at_path_end {
+            dot(d, hit.frame.t).abs()
+        } else {
+            -hit.arclength.min(self.total_len - hit.arclength)
+        };
+        let outside = d2.max(0.0).hypot(w.max(0.0));
+        let inside = d2.max(w).min(0.0);
+        outside + inside
     }
 
     fn nearest_rec(&self, bvh: &Bvh, q: V3, best2: &mut f32, best_seg: &mut usize, best_t: &mut f32) {
@@ -467,6 +503,54 @@ mod tests {
         // Frame on a +X spine: t=+X, n=+Y, b=+Z.
         assert!(approx(hit.frame.t[0], 1.0, 1e-4));
         assert!(approx(hit.frame.n[1], 1.0, 1e-4));
+    }
+
+    fn disk(radius: f32) -> crate::sketch2d::BoundedSketch2d {
+        use fielddraft_protocol::{Sketch2d, Sketch2dPrimitive};
+        crate::sketch2d::BoundedSketch2d::from_sketch(&Sketch2d::Prim(
+            Sketch2dPrimitive::Circle { center: [0.0, 0.0], radius },
+        ))
+    }
+
+    #[test]
+    fn straight_sweep_equals_a_capped_cylinder_sdf() {
+        // Disk radius 5 swept along X from 0..40 → cylinder, capped.
+        let pts: Vec<V3> = (0..=8).map(|i| [i as f32 * 5.0, 0.0, 0.0]).collect();
+        let sp = SweepPath::new(pts, false).unwrap();
+        let prof = disk(5.0);
+        // Axis centre: nearest lateral surface at radius 5 → −5.
+        assert!(approx(sp.sdf(&prof, [20.0, 0.0, 0.0]), -5.0, 1e-3));
+        // 3mm outside the lateral wall.
+        assert!(approx(sp.sdf(&prof, [20.0, 8.0, 0.0]), 3.0, 1e-3));
+        // 2mm past the end cap, on the axis.
+        assert!(approx(sp.sdf(&prof, [42.0, 0.0, 0.0]), 2.0, 1e-3));
+        // Outside the cap edge corner: √(3² + 2²).
+        assert!(approx(sp.sdf(&prof, [42.0, 8.0, 0.0]), (13.0_f32).sqrt(), 1e-3));
+        // On the lateral surface → ~0.
+        assert!(sp.sdf(&prof, [10.0, 5.0, 0.0]).abs() < 1e-2);
+    }
+
+    #[test]
+    fn curved_sweep_surface_is_near_zero() {
+        // Quarter circle radius 50 (gentle), disk radius 3.
+        let pts: Vec<V3> = (0..=40)
+            .map(|i| {
+                let a = i as f32 / 40.0 * std::f32::consts::FRAC_PI_2;
+                [50.0 * a.cos(), 50.0 * a.sin(), 0.0]
+            })
+            .collect();
+        let sp = SweepPath::new(pts, false).unwrap();
+        let prof = disk(3.0);
+        // A point on the outer tube wall at the arc midpoint (radius 53).
+        let mid = std::f32::consts::FRAC_PI_4;
+        let outer = [53.0 * mid.cos(), 53.0 * mid.sin(), 0.0];
+        assert!(sp.sdf(&prof, outer).abs() < 0.2, "surface sdf {}", sp.sdf(&prof, outer));
+        // 4mm outside that wall (radius 57) → ≈ +4.
+        let off = [57.0 * mid.cos(), 57.0 * mid.sin(), 0.0];
+        assert!(approx(sp.sdf(&prof, off), 4.0, 0.2));
+        // Tube centre (on the spine) → ≈ −3.
+        let onaxis = [50.0 * mid.cos(), 50.0 * mid.sin(), 0.0];
+        assert!(approx(sp.sdf(&prof, onaxis), -3.0, 0.2));
     }
 
     #[test]
