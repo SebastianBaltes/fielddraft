@@ -6688,6 +6688,60 @@ mod tests {
     }
 
     #[test]
+    fn ticket_9wxs_subtract_cone_from_sphere() {
+        // Ticket 20260615-103929-9wxs ("Boolean funktioniert nicht mehr":
+        // Subtract Cone aus Sphere hat keinen Effekt). The cone tool was
+        // ordered AFTER the boolean in the tree — a forward reference. The
+        // boolean must now ERROR (red) instead of silently no-op'ing; in the
+        // correct order the subtract carves. The cone axis is +Y, so probe
+        // the axis centre [0,0,0] (inside cone radius 25 at y=0, inside the
+        // r=50 sphere).
+        let doc = |cone_after: bool| -> String {
+            let sphere = serde_json::json!({"type":"sphere","id":3,"params":{"op":"new","radius":50,"translate":[0,0,0]}});
+            let cone = serde_json::json!({"type":"cone","id":6,"params":{"half_height":60,"op":"new","r_bottom":40,"r_top":10,"translate":[0,0,0]}});
+            let boolean = serde_json::json!({"type":"boolean","id":5,"params":{"keep_tools":false,"operation":"Subtract","targets":"qCreatedBy(3)","tools":"qCreatedBy(6)"}});
+            let calls = if cone_after {
+                vec![sphere, boolean, cone]
+            } else {
+                vec![sphere, cone, boolean]
+            };
+            serde_json::json!({"schema_version":2,"name":"t","next_feature_id":7,"feature_calls":calls}).to_string()
+        };
+        let probe = [0.0, 0.0, 0.0];
+
+        // Correct order (cone before boolean) → the subtract carves the centre.
+        let mut kg = Kernel::new();
+        kg.load_json(&doc(false)).unwrap();
+        let tg = csg::CsgNode::from_decoded(&kg.decoded);
+        assert!(
+            tg.sdf(probe, csg::EvalMode::Logical) > 0.0,
+            "cone-before-boolean: subtract carves the sphere centre"
+        );
+
+        // Forward-referenced cone (the ticket) → the boolean errors, nothing
+        // is carved, and the error is surfaced for the red outliner row.
+        let mut kb = Kernel::new();
+        kb.load_json(&doc(true)).unwrap();
+        let tb = csg::CsgNode::from_decoded(&kb.decoded);
+        assert!(
+            tb.sdf(probe, csg::EvalMode::Logical) < 0.0,
+            "forward-referenced cone must not carve"
+        );
+        let feats: serde_json::Value =
+            serde_json::from_str(&kb.list_features().unwrap()).unwrap();
+        let bool_row = feats
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["kind"] == serde_json::json!("boolean"))
+            .expect("boolean row present");
+        assert!(
+            bool_row["error"].is_string(),
+            "a forward-referencing boolean must report an error: {bool_row}"
+        );
+    }
+
+    #[test]
     fn boolean_subtract_sdf_is_geometrically_correct() {
         let mut k = Kernel::new();
         let box1 = k.add_primitive(

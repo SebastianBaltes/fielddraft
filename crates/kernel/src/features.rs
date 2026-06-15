@@ -4287,6 +4287,34 @@ impl FeatureKind for BooleanFeature {
             return Ok(());
         }
 
+        // Snapshot semantics (ticket 9wxs): a Boolean may only reference
+        // features that PRECEDE it in the tree. A tool/target that isn't in
+        // the decoded prefix is a forward reference (or a deleted feature) —
+        // fail with a clear error instead of silently doing nothing (the
+        // "Subtract Cone aus Sphere hat keinen Effekt" regression). Match on
+        // the root ancestor so child-id features (e.g. sweep) still resolve.
+        let scope_target_ids = resolve_ids(&d.targets);
+        let present = |fid: &FeatureId| {
+            ctx.features
+                .iter()
+                .any(|f| f.id.root_ancestor() == fid.root_ancestor())
+        };
+        if let Some(missing) = tool_ids
+            .iter()
+            .chain(scope_target_ids.iter())
+            .find(|fid| !present(fid))
+        {
+            return Err(FeatureError::InvalidParameter {
+                feature: BooleanDef::TYPE_NAME,
+                name: "tools",
+                message: format!(
+                    "Referenz auf Feature {missing}, das vor diesem Boolean nicht existiert \
+                     (Vorwärts-Referenz oder gelöscht). Ein Boolean darf nur frühere Features \
+                     verwenden — verschiebe das Boolean hinter seine Operanden."
+                ),
+            });
+        }
+
         // The first tool in spine order keeps op=Union so it seeds a
         // BodyPartition. Subsequent tools attach to that body — a union
         // routes them in via an explicit `target_ids` link to the seed

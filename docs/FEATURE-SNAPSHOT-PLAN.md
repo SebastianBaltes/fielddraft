@@ -44,6 +44,20 @@ Status: **PHASE 1a UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierun
     (Phase 2) bzw. wenn das Boolean-Feature seinen Scope an die Tools
     weitergibt. Der Add-Fall (Screenshot) ist vollständig korrekt.
 
+- **Phase 1b — Boolean-Forward-Reference-Guard (v0.6.140, löst Ticket 9wxs):**
+  Das explizite Boolean-Feature lehnt jetzt Tools/Targets ab, die vor ihm im
+  Tree nicht existieren (Vorwärts-Referenz oder gelöscht) → klarer
+  `FeatureError` (rotes Outliner-Label + Tooltip) statt stillem No-op. Damit
+  ist „Subtract Cone aus Sphere hat keinen Effekt" erklärt: im Ticket stand
+  der Cone (id 6) NACH dem Boolean (id 5). Match über `root_ancestor`, damit
+  Child-ID-Features (Sweep) korrekt auflösen.
+  - Tests: `ticket_9wxs_subtract_cone_from_sphere` (gute Reihenfolge schneidet;
+    Forward-Ref → Error, kein Schnitt) — beantwortet „warum fangen Tests das
+    nicht?". Cone-Achse ist +Y; korrekte Probe `[0,0,0]`.
+  - OFFEN (Phase 1b-Rest/1c): prefix-skopierte Resolution auch für
+    `qFace`/`qCreatedBy` der übrigen Features; UI-Auswahlfilter
+    (`selectable_before`) + Reorder-Guard.
+
 ## 1. Anforderung (die eine Invariante)
 
 > **Jedes Feature wird gegen einen Snapshot des Szenenzustands ausgewertet, der genau
