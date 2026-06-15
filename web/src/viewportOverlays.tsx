@@ -22,6 +22,7 @@ import type { BRepEdgeMode } from "./SettingsMenu";
 import { PerfProbe } from "./perfMonitor";
 import { OVERLAY_LAYER } from "./viewportSdfOverlays";
 import { resolveMaterials, type MaterialProps } from "./materialBridge";
+import { DEFAULT_ROUGHNESS, DEFAULT_METALNESS } from "./pbrShading";
 import {
   BODY_COLORS,
   applyLeafTransform,
@@ -2767,6 +2768,32 @@ export function BodyHighlightOverlay() {
   return <primitive object={objRef.current} dispose={null} />;
 }
 
+// Material defaults for the classic-WebGL render paths (MeshPreview body fill +
+// WebGLBodies leaf hulls). Aligned to the WebGPU/SDF path so the look matches
+// across renderers (ticket gcvz): pbrShading.ts defaults roughness 0.35,
+// metalness 0.0. Only applied to bodies WITHOUT an explicit user material.
+const WEBGL_DEFAULT_ROUGHNESS = DEFAULT_ROUGHNESS;
+const WEBGL_DEFAULT_METALNESS = DEFAULT_METALNESS;
+
+/**
+ * Scene lighting for the classic-WebGL render paths, approximating the WebGPU
+ * SDF shader's 3-directional-light + 0.25 ambient setup (pbrShading.ts LIGHTS /
+ * AMBIENT) so materials read similarly across renderers (ticket gcvz). The SDF
+ * light dirs are view-space radiances; here we place equivalent world-space
+ * directionals (key/fill/rim) and scale the raw radiances down for Three.js's
+ * BRDF. Exact pixel parity isn't expected — only a close visual match.
+ */
+function WebGLSceneLights() {
+  return (
+    <>
+      <ambientLight intensity={0.25} />
+      <directionalLight position={[200, 300, 1000]} intensity={1.5} />
+      <directionalLight position={[-500, 100, 600]} intensity={0.45} />
+      <directionalLight position={[0, -200, -1000]} intensity={0.3} />
+    </>
+  );
+}
+
 function MeshPreviewBody({ body, mat, bodyIndex }: {
   body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
   mat: MaterialProps | undefined;
@@ -2797,8 +2824,8 @@ function MeshPreviewBody({ body, mat, bodyIndex }: {
     <mesh geometry={geometry}>
       <meshStandardMaterial
         color={color}
-        roughness={mat?.roughness ?? 0.6}
-        metalness={mat?.metalness ?? 0.0}
+        roughness={mat?.roughness ?? WEBGL_DEFAULT_ROUGHNESS}
+        metalness={mat?.metalness ?? WEBGL_DEFAULT_METALNESS}
         emissive={emissive}
         opacity={mat?.opacity ?? 1}
         transparent={mat != null && mat.opacity < 1}
@@ -2823,9 +2850,7 @@ export function MeshPreview() {
 
   return (
     <>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[200, 400, 300]} intensity={0.8} />
-      <directionalLight position={[-100, 200, -200]} intensity={0.3} />
+      <WebGLSceneLights />
       {bodies.map((body, i) => (
         <MeshPreviewBody key={body.id} body={body} mat={materials.get(i)} bodyIndex={i} />
       ))}
@@ -2927,8 +2952,8 @@ export function WebGLBodies() {
       const mat = new THREE.MeshStandardMaterial({
         color: new THREE.Color(r, g, b),
         side: THREE.DoubleSide,
-        metalness: um ? um.metalness : 0.1,
-        roughness: um ? um.roughness : 0.7,
+        metalness: um ? um.metalness : WEBGL_DEFAULT_METALNESS,
+        roughness: um ? um.roughness : WEBGL_DEFAULT_ROUGHNESS,
         emissive: um ? new THREE.Color(um.emissive[0], um.emissive[1], um.emissive[2]) : new THREE.Color(0, 0, 0),
         transparent: um ? um.opacity < 1 : false,
         opacity: um ? um.opacity : 1,
@@ -2977,9 +3002,7 @@ export function WebGLBodies() {
   if (meshes.length === 0) return null;
   return (
     <>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[200, 400, 300]} intensity={0.8} />
-      <directionalLight position={[-100, 200, -200]} intensity={0.3} />
+      <WebGLSceneLights />
       {meshes.map((m, i) => (
         <primitive key={i} object={m} dispose={null} />
       ))}

@@ -428,6 +428,12 @@ function handleSelectionClick(
  */
 function WebGLViewport() {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const { state } = useKernelStore();
+  // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
+  // body. When those are available we render them (booleans visible); until the
+  // async mesh arrives we fall back to the per-leaf parametric hulls so the view
+  // isn't blank (ticket gcvz). Never both at once — no double-draw.
+  const hasMeshes = (state?.meshedBodies?.length ?? 0) > 0;
   const stateRef = useRef<{
     gl: THREE.WebGLRenderer;
     scene: THREE.Scene;
@@ -472,7 +478,10 @@ function WebGLViewport() {
         }}
       >
         <color attach="background" args={["#f6f6f4"]} />
-        <WebGLBodies />
+        {/* Boolean-correct DC meshes once meshed; per-leaf hulls while the
+            async mesh is still pending (ticket gcvz). Both carry their own
+            lights, so exactly one renders at a time. */}
+        {hasMeshes ? <MeshPreview /> : <WebGLBodies />}
         {/* Default datum planes/origin (ticket 59c2) + committed sketches
             (ticket jjmv) — all plain-material meshes, so they render on the
             WebGL path just like in WebGPU. */}

@@ -31,9 +31,14 @@ export function App() {
   }, [settings.theme]);
 
   const isMeshMode = settings.renderMode === "mesh";
+  // The WebGL fallback (render mode "webgl") draws the kernel's Dual-Contouring
+  // meshes so booleans are visible — those only exist while DC meshing is on, so
+  // enable it for the WebGL path too (ticket gcvz).
+  const webGLFallbackActive = settings.renderMode === "webgl";
   useEffect(() => {
-    if (store) store.setDcMeshingEnabled(isMeshMode, settings.meshAlgorithm);
-  }, [store, isMeshMode, settings.meshAlgorithm]);
+    if (store)
+      store.setDcMeshingEnabled(isMeshMode || webGLFallbackActive, settings.meshAlgorithm);
+  }, [store, isMeshMode, webGLFallbackActive, settings.meshAlgorithm]);
 
   useEffect(() => {
     if (store) store.setParametricWeave(settings.parametricWeave);
