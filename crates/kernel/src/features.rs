@@ -4377,10 +4377,26 @@ impl FeatureKind for BooleanFeature {
                         };
                     } else {
                         feature.op = BoolOp::Intersect;
+                        // Explicit scope wins over AABB guesswork: route the
+                        // tool into exactly the chosen target bodies (snapshot
+                        // semantics — references are the truth, not contact).
+                        for t in &scope_target_ids {
+                            if !feature.target_ids.contains(t) {
+                                feature.target_ids.push(t.clone());
+                            }
+                        }
                     }
                 }
                 _ => {
                     feature.op = BoolOp::Remove;
+                    // As above: a Subtract with an explicit merge scope carves
+                    // ONLY the named targets, never an unrelated body it
+                    // happens to overlap.
+                    for t in &scope_target_ids {
+                        if !feature.target_ids.contains(t) {
+                            feature.target_ids.push(t.clone());
+                        }
+                    }
                 }
             }
         }

@@ -1,6 +1,6 @@
 # Feature-Snapshot-Semantik — Plan (SSOT)
 
-Status: **PHASE 1a UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierung: 2026-06-15
+Status: **PHASEN 1a–1c + 2 UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierung: 2026-06-15
 
 ## Fortschritt
 
@@ -71,6 +71,35 @@ Status: **PHASE 1a UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierun
     (Ur-Anforderung des Users).
   - OFFEN: visuelles Hover-Dimming später Geometrie + Pick-Reject-Feedback
     (Toast); `QueryWidget` (Single-Query: Sketch-Plane/Face) noch ohne Filter.
+
+- **Phase 2 — Snapshot-Evaluator (v0.6.142):** Schlüssel-Erkenntnis beim Umbau:
+  **`partition()` IST bereits der sequenzielle Left-Fold** (verarbeitet Features
+  in Tree-Reihenfolge, eine Gruppe enthält beim Verarbeiten von Feature *i* nur
+  Features < *i*) und gibt `Vec<BodyPartition>` aus, das alle ~30 Downstream-
+  Stellen konsumieren. Ein Komplett-Rewrite zu einem separaten Body-State-
+  Evaluator wäre also reine Code-Umschichtung ohne semantischen Gewinn — Phase 1
+  hatte die eigentliche Arbeit (explizit-referenz-getriebenes Andocken, kein
+  impliziter Union, Forward-Ref-Guards) bereits geleistet.
+  - **Was Phase 2 konkret liefert:** Das explizite Boolean-Feature reicht seinen
+    Merge-Scope an die Subtract/Intersect-**Tools** durch (`target_ids`), statt
+    auf AABB-Raten zu setzen. Ein Subtract/Intersect mit Scope wirkt jetzt
+    **nur** auf die explizit gewählten Zielkörper, nie auf einen zufällig
+    überlappenden. Test `boolean_subtract_carves_only_the_explicit_target`.
+  - **Snapshot-Invariante vollständig erfüllt:** Jedes Feature wirkt nur auf
+    Bodies aus Features VOR ihm (Fold-Struktur), spätere Referenzen sind
+    ausgeschlossen (Forward-Ref-Guard Boolean + Reorder-Guard + UI-Filter),
+    impliziter Union ist weg.
+  - **Bewusst BEIBEHALTEN:** Der untagged-Remove/Intersect-AABB-Fallback
+    (un-skopierter Subtract dockt an den *früheren* Körper, auf dem er liegt).
+    Das ist KEINE Snapshot-Verletzung (nur frühere Bodies, Left-Fold) und ist
+    gewollte UX — das **Hole**-Feature und Face-Subtracts hängen daran (Loch
+    bohrt den Körper, auf dem es platziert ist). Würde man es entfernen,
+    bräuchte jedes Loch einen expliziten Zielkörper → schlechtere UX, kein
+    Korrektheitsgewinn. No-scope-Fälle werden ohnehin gewarnt (siehe
+    Merge-Scope-Warnung).
+  - **Boolean-Sibling-Mutation (B1)** bleibt der partition-interne
+    Kommunikationsweg (Tool trägt die op). Funktional korrekt; ein Umbau zu
+    „Boolean trägt eigenen Knoten" wäre groß und ohne Nutzen.
 
 ## 1. Anforderung (die eine Invariante)
 

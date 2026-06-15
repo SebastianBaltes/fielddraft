@@ -6793,6 +6793,35 @@ mod tests {
     }
 
     #[test]
+    fn boolean_subtract_carves_only_the_explicit_target() {
+        // Snapshot semantics: a Subtract with an explicit merge scope carves
+        // ONLY the named target, never an unrelated body it happens to
+        // overlap. box1 is spine-EARLIER and also overlaps the tool sphere —
+        // the old AABB-fallback would have carved box1 (first overlap); the
+        // explicit scope (targets = box2) routes the cut to box2 alone.
+        let doc = serde_json::json!({
+            "schema_version":2,"name":"t","next_feature_id":9,
+            "feature_calls":[
+                {"type":"box","id":1,"params":{"op":"new","half_extents":[20,20,20],"translate":[40,0,0]}},
+                {"type":"box","id":2,"params":{"op":"new","half_extents":[20,20,20],"translate":[-15,0,0]}},
+                {"type":"sphere","id":3,"params":{"op":"new","radius":25,"translate":[10,0,0]}},
+                {"type":"boolean","id":4,"params":{"keep_tools":false,"operation":"Subtract","targets":"qCreatedBy(2)","tools":"qCreatedBy(3)"}},
+            ],
+        });
+        let mut k = Kernel::new();
+        k.load_json(&doc.to_string()).unwrap();
+        let t = csg::CsgNode::from_decoded(&k.decoded);
+        let sdf = |p: [f32; 3]| t.sdf(p, csg::EvalMode::Logical);
+        // box2 (target) carved where the sphere overlaps it.
+        assert!(sdf([0.0, 0.0, 0.0]) > 0.0, "target box2 is carved by the sphere");
+        // box1 (NOT a target) stays solid even though the sphere overlaps it.
+        assert!(
+            sdf([25.0, 0.0, 0.0]) < 0.0,
+            "non-target box1 must stay solid (explicit scope, no AABB spillover)"
+        );
+    }
+
+    #[test]
     fn reorder_rejected_when_it_creates_a_forward_reference() {
         // The tree is a program: a feature may only reference earlier
         // features. A drag that would push a boolean ahead of a tool it
