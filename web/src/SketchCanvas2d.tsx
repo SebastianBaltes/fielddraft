@@ -42,6 +42,7 @@ import {
   type SketchCameraState,
 } from "./sketchCameraBridge";
 import { resolvePlaneFrame } from "./sketchPlaneFrame";
+import { BUNDLED_FONTS, UPLOADED_FONT_PREFIX } from "./sketchTextFont";
 import {
   buildDraftSketchState,
   DRAFT_DRAG_START_ID,
@@ -246,6 +247,50 @@ function dispatchZoomWheel(
       cancelable: true,
     }),
   );
+}
+
+/** Ticket pqoe: the slice of store state the in-scene text editor reads. */
+interface TextParams {
+  value: string;
+  height: number;
+  fontId: string;
+  fontReady: boolean;
+}
+
+const EMPTY_TEXT_PARAMS: TextParams = {
+  value: "",
+  height: 10,
+  fontId: "",
+  fontReady: false,
+};
+
+/** No-op subscribe for `useSyncExternalStore` when the store is absent. */
+const NOOP_SUBSCRIBE = (): (() => void) => () => {};
+
+/**
+ * Cached `TextParams` snapshot keyed off the store's current values, so
+ * `useSyncExternalStore` gets a referentially-stable object while nothing
+ * the editor cares about changed (re-creating it every call would loop).
+ */
+let textParamsCache: TextParams = EMPTY_TEXT_PARAMS;
+function textParamsSnapshot(store: KernelStore): TextParams {
+  const s = store.getState();
+  const c = textParamsCache;
+  if (
+    c.value === s.sketchTextValue &&
+    c.height === s.sketchTextHeight &&
+    c.fontId === s.sketchTextFontId &&
+    c.fontReady === s.sketchTextFontReady
+  ) {
+    return c;
+  }
+  textParamsCache = {
+    value: s.sketchTextValue,
+    height: s.sketchTextHeight,
+    fontId: s.sketchTextFontId,
+    fontReady: s.sketchTextFontReady,
+  };
+  return textParamsCache;
 }
 
 interface ProjectedEdge {
@@ -751,6 +796,33 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   } | null>(null);
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Ticket pqoe: in-scene text editor. While the Text tool is active a
+  // click on empty canvas opens an input field + param popover positioned
+  // at the click point (screen px) anchored to the sketch-plane location
+  // `(u, v)` so it tracks pan/zoom on redraw. Typing drives the store's
+  // pending text value; Enter / blur commits a `sketch_text` placement at
+  // `(u, v)` via store.placeSketchText (the same path the toolbar drove
+  // before). Mirrors the line-length `editor` mechanism above.
+  const [textEditor, setTextEditor] = useState<{
+    left: number;
+    top: number;
+    u: number;
+    v: number;
+  } | null>(null);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
+  // The text params (value / height / font) live in top-level store state,
+  // not in `session`, so subscribe to the store to re-render the in-scene
+  // fields when the user types or switches fonts. Snapshot the slice the
+  // editor reads; identity-stable so React bails out when it's unchanged.
+  const textParams = useSyncExternalStore(
+    store ? store.subscribe : NOOP_SUBSCRIBE,
+    () =>
+      store
+        ? textParamsSnapshot(store)
+        : EMPTY_TEXT_PARAMS,
+    () => EMPTY_TEXT_PARAMS,
+  );
+
   // Tickets yx6a/bxoo: resolve the session's plane query to its world
   // frame and publish it to the camera bridge — sketchToScreen /
   // screenToSketch project through it with the live 3D camera.
@@ -824,6 +896,8 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // Zooming moves the label under an open dimension editor — the
       // DOM field can't follow the canvas transform, so dismiss it.
       setEditor(null);
+      // Same for the in-scene text editor (ticket pqoe).
+      setTextEditor(null);
       const target = viewportCanvas(canvas);
       if (!target) return;
       target.dispatchEvent(
@@ -862,6 +936,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // (and any open editor) on tool change.
     recentLineRef.current = null;
     setEditor(null);
+    // Ticket pqoe: the in-scene text editor belongs to the Text tool —
+    // drop it on any tool change.
+    setTextEditor(null);
     // F10: drop a pending first fillet pick when leaving the tool.
     filletFirstRef.current = null;
     // F17: drop a pending Move / Copy base point when leaving the tool.
@@ -1026,12 +1103,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
-    // Text: not a drawing tool — a single click places the current text
-    // value as single-stroke geometry with its lower-left at the click
-    // point. Mirrors the trim-style single-click editing branch (see
-    // store.placeSketchText / sketchText.ts).
+    // Text (ticket pqoe): not a drawing tool — a click opens an in-scene
+    // input field + param popover at the click point so the user types /
+    // tweaks the text right where it lands instead of in the toolbar.
+    // Enter / blur commits the placement via store.placeSketchText with the
+    // baseline-left at this sketch-plane location (see the JSX below and
+    // sketchText.ts). A second click while the editor is open just moves it
+    // to the new location.
     if (session.selectedTool === "sketch_text") {
-      store.placeSketchText([u, v]);
+      // A click while an editor is already open commits the current text
+      // first, then re-opens at the new location (Onshape-style).
+      if (textEditor !== null) {
+        store.placeSketchText([textEditor.u, textEditor.v]);
+      }
+      const canvas = e.currentTarget as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      setTextEditor({
+        left: e.clientX - rect.left,
+        top: e.clientY - rect.top,
+        u,
+        v,
+      });
+      requestAnimationFrame(() => {
+        textInputRef.current?.focus();
+        textInputRef.current?.select();
+      });
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2202,6 +2298,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         setEditor(null);
         return;
       }
+      // Ticket pqoe: Esc dismisses an open in-scene text editor first.
+      if (textEditor !== null) {
+        e.preventDefault();
+        setTextEditor(null);
+        return;
+      }
       if (dragRef.current.kind === "pending_line") {
         e.preventDefault();
         cancelPendingLine();
@@ -2209,7 +2311,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [session.active, editor]);
+  }, [session.active, editor, textEditor]);
 
   // F23: keyboard finish for the spline gesture — Enter commits the
   // in-progress spline (open, needs ≥ 2 control points); Escape cancels
@@ -2270,6 +2372,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
+  // Ticket pqoe: commit the in-scene text editor — place the current text
+  // value at the anchored sketch-plane location. Empty / geometry-less text
+  // is a no-op inside placeSketchText, so we just close the editor either
+  // way. Keeps the editor mechanism symmetric with commitEditor above.
+  const commitTextEditor = () => {
+    if (textEditor === null || !store) return;
+    store.placeSketchText([textEditor.u, textEditor.v]);
+    setTextEditor(null);
+    lastCamVersionRef.current = -1;
+  };
+
   return (
     <>
       <canvas
@@ -2316,6 +2429,93 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             />
             <span className="unit">mm</span>
           </label>
+        </div>
+      )}
+      {/* Ticket pqoe: in-scene text editor — the input field and its param
+          popover (height / font / upload) live HERE at the click location,
+          not in the toolbar, and are visible ONLY while a text is being
+          edited. The data-testids match the old toolbar fields so the
+          existing e2e selectors keep resolving. Enter / blur commits the
+          placement; Esc dismisses (handled in the window keydown effect). */}
+      {textEditor !== null && store && (
+        <div
+          className="fd-sketch-text-editor"
+          style={{ left: `${textEditor.left}px`, top: `${textEditor.top}px` }}
+        >
+          <input
+            ref={textInputRef}
+            className="text-value"
+            data-testid="sketch-text-value"
+            type="text"
+            value={textParams.value}
+            placeholder="Text"
+            onChange={(e) => store.setSketchTextValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitTextEditor();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setTextEditor(null);
+              }
+            }}
+          />
+          <div className="text-params" data-testid="sketch-text-params">
+            <label className="field" title="Text em height (mm)">
+              H
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                data-testid="sketch-text-height"
+                value={textParams.height}
+                onChange={(e) =>
+                  store.setSketchTextHeight(Number(e.currentTarget.value))
+                }
+              />
+            </label>
+            <label className="field" title="Text font">
+              F
+              <select
+                data-testid="sketch-text-font"
+                value={textParams.fontId}
+                onChange={(e) => store.setSketchTextFontId(e.currentTarget.value)}
+              >
+                {BUNDLED_FONTS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+                {textParams.fontId.startsWith(UPLOADED_FONT_PREFIX) && (
+                  <option value={textParams.fontId}>
+                    {textParams.fontId.slice(UPLOADED_FONT_PREFIX.length)}
+                  </option>
+                )}
+              </select>
+            </label>
+            <label className="field upload" title="Upload a .ttf/.otf font">
+              ⤓
+              <input
+                type="file"
+                accept=".ttf,.otf,font/ttf,font/otf"
+                data-testid="sketch-text-font-upload"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0];
+                  if (!file) return;
+                  void file.arrayBuffer().then((buf) => {
+                    store.loadUploadedTextFont(file.name, buf);
+                  });
+                  // Reset so re-selecting the same file fires onChange again.
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+            {!textParams.fontReady && (
+              <span className="hint" data-testid="sketch-text-font-loading">
+                Loading font…
+              </span>
+            )}
+          </div>
         </div>
       )}
     </>

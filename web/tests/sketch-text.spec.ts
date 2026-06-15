@@ -54,12 +54,9 @@ test.describe("Sketch text", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
 
-    // Set the string + em height.
-    await page.getByTestId("sketch-text-value").fill("ABc");
-    await page.getByTestId("sketch-text-height").fill("20");
-
-    // Pick the Text tool — this kicks off the async font load. Wait until the
-    // store reports the font is parsed and ready before placing.
+    // Ticket pqoe: text value + params no longer live in the toolbar. Pick
+    // the Text tool first — this kicks off the async font load. Wait until
+    // the store reports the font is parsed and ready before placing.
     await page.getByTestId("sketch-tool-sketch_text").click();
     await expect
       .poll(
@@ -75,7 +72,14 @@ test.describe("Sketch text", () => {
 
     await settleSketchCamera(page);
     const [cx, cy] = await canvasCentre(page);
+
+    // Click the canvas to open the IN-SCENE text input + param popover at the
+    // click location, then set the string + em height right there and press
+    // Enter to commit the placement.
     await page.mouse.click(cx, cy);
+    await page.getByTestId("sketch-text-value").fill("ABc");
+    await page.getByTestId("sketch-text-height").fill("20");
+    await page.getByTestId("sketch-text-value").press("Enter");
     await page.waitForTimeout(400);
 
     // One sketch_path per drawn glyph (A, B, c) and at least one glyph carries

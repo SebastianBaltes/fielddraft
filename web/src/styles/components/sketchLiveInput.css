@@ -48,3 +48,83 @@
     }
   }
 }
+
+/* Ticket pqoe: in-scene text editor — the Text tool's input field plus its
+ * param popover (height / font / upload), positioned at the click location
+ * over the sketch canvas and visible ONLY while a text is being edited.
+ *
+ * Root: .fd-sketch-text-editor — left/top set inline (dynamic). The text
+ * value input sits on top; the params row sits beneath it as a small
+ * popover, matching the editing-in-place model the line-length editor
+ * established. */
+.fd-sketch-text-editor {
+  position: absolute;
+  z-index: 20;
+  /* Anchor the baseline-left of the text at the click point. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+
+  & .text-value {
+    width: 12rem;
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--fs-base);
+    color: var(--color-text);
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+
+    &:focus {
+      outline: none;
+      border-color: var(--color-accent);
+    }
+  }
+
+  & .text-params {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+
+    & .field {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      font-size: var(--fs-base);
+      color: var(--color-text-muted);
+    }
+
+    & input[type="number"] {
+      width: 4rem;
+      font-size: var(--fs-base);
+      color: var(--color-text);
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+    }
+
+    & select {
+      font-size: var(--fs-base);
+      color: var(--color-text);
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+    }
+
+    & .upload input[type="file"] {
+      width: 8rem;
+      font-size: var(--fs-base);
+    }
+
+    & .hint {
+      font-size: var(--fs-base);
+      color: var(--color-text-subtle);
+    }
+  }
+}
