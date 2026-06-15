@@ -453,9 +453,11 @@ function WebGLViewport() {
       >
         <color attach="background" args={["#f6f6f4"]} />
         <WebGLBodies />
-        {/* Default datum planes/origin (ticket 59c2) — plain-material meshes,
-            so they render on the WebGL path just like in WebGPU. */}
+        {/* Default datum planes/origin (ticket 59c2) + committed sketches
+            (ticket jjmv) — all plain-material meshes, so they render on the
+            WebGL path just like in WebGPU. */}
         <DatumOverlay />
+        <SketchOverlay3D />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         <OrbitControls makeDefault enableDamping={false} />
       </Canvas>

@@ -82,7 +82,12 @@ export function SketchOverlay3D() {
     const out: {
       id: number;
       geometry: THREE.BufferGeometry;
+      fill: THREE.BufferGeometry | null;
     }[] = [];
+    const tri = (poly: [number, number][]): number[][] => {
+      const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
+      return THREE.ShapeUtils.triangulateShape(contour, []);
+    };
     for (const sketchId of visibleSketches) {
       try {
         const params = store.kernel.getFeatureCallParams(sketchId) as {
@@ -97,14 +102,23 @@ export function SketchOverlay3D() {
             params.plane ?? "qCreatedBy(origin_plane_xy)",
             store.kernel,
           ) ?? resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)!;
-        const points = collectSketchLineSegments(params.sub_calls ?? [], frame);
+        const subCalls = params.sub_calls ?? [];
+        const points = collectSketchLineSegments(subCalls, frame);
         if (points.length === 0) continue;
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute(
           "position",
           new THREE.Float32BufferAttribute(points, 3),
         );
-        out.push({ id: sketchId, geometry });
+        // Closed regions filled like in sketch mode (ticket jjmv) — so a
+        // region reads as a face and is a pickable profile target.
+        let fill: THREE.BufferGeometry | null = null;
+        const fillPos = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
+        if (fillPos.length) {
+          fill = new THREE.BufferGeometry();
+          fill.setAttribute("position", new THREE.Float32BufferAttribute(fillPos, 3));
+        }
+        out.push({ id: sketchId, geometry, fill });
       } catch {
         // Skip invalid sketches
       }
@@ -114,18 +128,46 @@ export function SketchOverlay3D() {
 
   useEffect(() => {
     return () => {
-      for (const g of geometries) g.geometry.dispose();
+      for (const g of geometries) {
+        g.geometry.dispose();
+        g.fill?.dispose();
+      }
     };
   }, [geometries]);
+
+  // A click on a filled region selects the whole sketch as a profile, but only
+  // when a profile-style picker (no filter, or one that accepts faces) is
+  // armed — a BODY/edge picker must ignore sketch regions (ticket jjmv).
+  const pickRegion = (sketchId: number) => (e: { stopPropagation: () => void }) => {
+    const picker = getActiveQueryPicker();
+    if (!picker) return;
+    if (picker.entityFilter && !filterAllows("face", picker.entityFilter)) return;
+    e.stopPropagation();
+    picker.onPick(`qCreatedBy(${sketchId})`);
+  };
 
   if (geometries.length === 0) return null;
 
   return (
     <group>
-      {geometries.map(({ id, geometry }) => (
-        <lineSegments key={id} geometry={geometry}>
-          <lineBasicMaterial color="#2563eb" linewidth={2} />
-        </lineSegments>
+      {geometries.map(({ id, geometry, fill }) => (
+        <group key={id}>
+          {fill && (
+            <mesh geometry={fill} renderOrder={-1} onClick={pickRegion(id)} onPointerDown={pickRegion(id)}>
+              <meshBasicMaterial
+                color={SKETCH_FILL_COLOR}
+                transparent
+                opacity={0.18}
+                side={THREE.DoubleSide}
+                depthTest={false}
+                depthWrite={false}
+              />
+            </mesh>
+          )}
+          <lineSegments geometry={geometry}>
+            <lineBasicMaterial color="#2563eb" linewidth={2} />
+          </lineSegments>
+        </group>
       ))}
     </group>
   );

@@ -122,4 +122,21 @@ describe("collectSketchRegionFill", () => {
     expect(pos.length).toBeGreaterThan(0);
     expect(pos.length % 9).toBe(0); // whole triangles (3 verts × 3 coords)
   });
+
+  it("fills a committed circle region (ticket jjmv)", () => {
+    // The committed-sketch sub_call shape (center array, numeric radius) — the
+    // same fields the outline renderer reads — must produce a filled region so
+    // a committed circle reads as a pickable face, not just an outline.
+    const calls: SketchSubCall[] = [
+      { type: "sketch_circle", params: { center: [0, 0], radius: 5 } },
+    ];
+    const tri = (poly: [number, number][]): number[][] => {
+      const out: number[][] = [];
+      for (let i = 1; i + 1 < poly.length; i++) out.push([0, i, i + 1]);
+      return out;
+    };
+    const pos = collectSketchRegionFill(calls, XY, tri);
+    expect(pos.length).toBeGreaterThan(0);
+    expect(pos.length % 9).toBe(0);
+  });
 });
