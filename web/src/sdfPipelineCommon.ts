@@ -61,6 +61,12 @@ export interface OpcodeBufferSet {
   volumeBaseData: Float32Array;
   volumeBaseAttr: StorageBufferAttribute;
   volumeBaseBuf: ReturnType<typeof storage>;
+  // Per-body conservative raymarch step factor (≤1), 1.0 = full step. The
+  // renderer does `t += max(minD · marchRelax[closestBody], ε)` so a thin-walled
+  // revolve/shell isn't overshot at grazing angles (Ticket 1wnm).
+  marchRelaxData: Float32Array;
+  marchRelaxAttr: StorageBufferAttribute;
+  marchRelaxBuf: ReturnType<typeof storage>;
   volumeTextures: THREE.Data3DTexture[];
 }
 
@@ -97,12 +103,31 @@ export function createOpcodeBuffers(maxOpcodes: number, maxBodies: number): Opco
   const volumeBaseData = volumeBaseAttr.array as Float32Array;
   const volumeBaseBuf = storage(volumeBaseAttr, "float", maxBodies).toReadOnly();
 
+  const marchRelaxAttr = new StorageBufferAttribute(maxBodies, 1);
+  const marchRelaxData = marchRelaxAttr.array as Float32Array;
+  marchRelaxData.fill(1); // full step until a body declares a conservative factor
+  const marchRelaxBuf = storage(marchRelaxAttr, "float", maxBodies).toReadOnly();
+
   return {
     opcodeData, opcodeAttr, opcodeBuf,
     offsetData, offsetAttr, offsetBuf,
     volumeBaseData, volumeBaseAttr, volumeBaseBuf,
+    marchRelaxData, marchRelaxAttr, marchRelaxBuf,
     volumeTextures: [],
   };
+}
+
+/** Write the per-body conservative raymarch step factors (default 1.0). */
+export function packMarchRelax(
+  marchRelaxData: Float32Array,
+  bodies: { bodyIndex: number; marchRelax?: number }[],
+  maxBodies: number,
+): void {
+  marchRelaxData.fill(1);
+  for (const { bodyIndex, marchRelax } of bodies) {
+    if (bodyIndex >= maxBodies) continue;
+    marchRelaxData[bodyIndex] = marchRelax ?? 1;
+  }
 }
 
 // ── Shared opcode packing ──────────────────────────────────────────

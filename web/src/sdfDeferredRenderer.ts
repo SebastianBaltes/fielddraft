@@ -59,6 +59,7 @@ import {
   createMaterialBuffers,
   createOpcodeBuffers,
   packOpcodes,
+  packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
@@ -345,6 +346,7 @@ function createShadeMaterial(
   materialBuf: any,
   selectionBuf: ReturnType<typeof uniformArray>,
   volumeBaseBuf: ReturnType<typeof storage>,
+  marchRelaxBuf: ReturnType<typeof storage>,
   camPosU: ReturnType<typeof uniform>,
   viewMatU: ReturnType<typeof uniform>,
   widthU: ReturnType<typeof uniform>,
@@ -448,7 +450,10 @@ function createShadeMaterial(
             hitBody.assign(closestBody);
             Break();
           });
-          t.addAssign(max(minD, float(SURFACE_EPS)));
+          // Per-body conservative step (Ticket 1wnm): a thin-walled
+          // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
+          // its wall at grazing angles; simple primitives keep 1.0.
+          t.addAssign(max(minD.mul(marchRelaxBuf.element(closestBody)), float(SURFACE_EPS)));
           If(t.greaterThan(tMax), () => { Break(); });
         });
 
@@ -593,6 +598,7 @@ export function initDeferredPipeline(
     matBufs.materialBuf,
     selectionBuf,
     opBufs.volumeBaseBuf,
+    opBufs.marchRelaxBuf,
     camPosUniform,
     viewMatU,
     widthU,
@@ -656,11 +662,14 @@ export function updateDeferredData(
     opcodes: Float32Array;
     aabb?: Float32Array;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
+    marchRelax?: number;
   }[],
 ): void {
   const ranges = packOpcodes(state.opcodeData, state.offsetData, bodies, DEFERRED_MAX_OPCODES, MAX_BODIES);
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
+  packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
+  state.marchRelaxAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
 
   for (const { bodyIndex, hybridInfo, aabb } of bodies) {
@@ -910,6 +919,7 @@ export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void
     state.materialBuf,
     state.selectionBuf,
     state.volumeBaseBuf,
+    state.marchRelaxBuf,
     state.camPosUniform,
     state.viewMatU,
     state.widthU,

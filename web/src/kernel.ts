@@ -514,6 +514,13 @@ export class Kernel {
     return new Float32Array(this.inner.bodySdfAabb(i));
   }
 
+  /** Conservative raymarch step factor (≤1) for this body — the SDF renderer
+   *  multiplies its march step by it so a thin-walled revolve/shell isn't
+   *  overshot at grazing angles (Ticket 1wnm). 1.0 = full step. */
+  bodySdfMarchRelax(i: number): number {
+    return this.inner.bodySdfMarchRelax(i);
+  }
+
   /** CPU-mirror eval of the body's compiled opcode stream — the parity
    *  reference for the GPU probe (`window.__fdSdfVmProbe`). */
   bodySdfEval(i: number, x: number, y: number, z: number): number {

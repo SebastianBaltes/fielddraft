@@ -85,6 +85,12 @@ pub struct CompiledSdf {
     pub opcodes: Vec<f32>,
     pub aabb: Aabb,
     pub volumes: Vec<BakedVolume>,
+    /// Conservative raymarch STEP factor (≤1) for this body — the renderer does
+    /// `t += max(minD · march_relax, ε)`. Geometry-safe: it scales the STEP,
+    /// never the field, so the zero-set / shell wall thickness stay exact
+    /// (a field scale, as gyroid/helix bake in, would corrupt a downstream
+    /// Shell's `−(d+t)`). The min over the body's features (Ticket 1wnm).
+    pub march_relax: f32,
 }
 
 impl CompiledSdf {
@@ -114,6 +120,42 @@ pub fn compile_body(node: &BoundedCsg) -> CompiledSdf {
         opcodes: ctx.opcodes,
         aabb: node.aabb(),
         volumes: ctx.volumes,
+        march_relax: march_relax(node),
+    }
+}
+
+/// Conservative raymarch STEP factor for a body's tree (see
+/// [`CompiledSdf::march_relax`]) — the min over its features. A feature whose
+/// SDF can locally over-estimate distance (sphere-march would overshoot a thin
+/// wall) declares a factor < 1.
+///
+/// Revolve is the case Ticket 1wnm needs: its (spline) profile field can be
+/// non-Lipschitz AND it is frequently shelled, so the gyroid/helix trick of
+/// baking the factor into the FIELD is unsafe (it would change the shell wall
+/// thickness). Gyroid and Helix already normalise their FIELD (gyroid ·0.2887,
+/// `OP_HELIX_SCALE`), so they need no step relax here (factor 1.0).
+const REVOLVE_MARCH_RELAX: f32 = 0.7;
+
+fn march_relax(node: &BoundedCsg) -> f32 {
+    match node {
+        BoundedCsg::Empty
+        | BoundedCsg::Leaf { .. }
+        | BoundedCsg::Extrude { .. }
+        | BoundedCsg::Helix { .. }
+        | BoundedCsg::Sweep { .. } => 1.0,
+        BoundedCsg::Revolve { .. } => REVOLVE_MARCH_RELAX,
+        BoundedCsg::Union { left, right, .. }
+        | BoundedCsg::Difference { left, right, .. }
+        | BoundedCsg::Intersection { left, right, .. }
+        | BoundedCsg::SmoothUnion { left, right, .. }
+        | BoundedCsg::SmoothDifference { left, right, .. }
+        | BoundedCsg::MaskedBlend { left, right, .. }
+        | BoundedCsg::Morph { left, right, .. } => march_relax(left).min(march_relax(right)),
+        BoundedCsg::Twist { inner, .. }
+        | BoundedCsg::Bend { inner, .. }
+        | BoundedCsg::Displace { inner, .. }
+        | BoundedCsg::Shell { inner, .. }
+        | BoundedCsg::Offset { inner, .. } => march_relax(inner),
     }
 }
 

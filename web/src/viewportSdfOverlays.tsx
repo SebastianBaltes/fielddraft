@@ -305,6 +305,7 @@ export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMod
           opcodes: copyOpcodes(k, i),
           aabb: k.bodySdfAabb(i),
           volumes: collectBodyVolumes(k, i),
+          marchRelax: k.bodySdfMarchRelax(i),
         });
       }
       return bodies;
