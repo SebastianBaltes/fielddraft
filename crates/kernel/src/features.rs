@@ -147,6 +147,12 @@ pub struct Context<'a> {
     /// Captured by the kernel after regeneration so the viewport can
     /// render datum triads without re-resolving the face query.
     pub mate_connectors: Vec<ResolvedMateConnector>,
+    /// Per-feature merge-scope warnings (non-fatal). A feature-implicit
+    /// boolean (Add/Remove/Intersect) whose merge scope resolves to no
+    /// target body records a warning here — geometry still regenerates (the
+    /// body shows as a red translucent preview), but the UI flags the
+    /// feature so the user picks a scope or "Merge with all".
+    pub feature_warnings: Vec<(FeatureId, String)>,
 }
 
 impl<'a> Context<'a> {
@@ -158,6 +164,7 @@ impl<'a> Context<'a> {
             edge_fillets: Vec::new(),
             brep_cache: crate::body::BrepCache::new(),
             mate_connectors: Vec::new(),
+            feature_warnings: Vec::new(),
         }
     }
 
@@ -171,6 +178,23 @@ impl<'a> Context<'a> {
         let woven = self.brep_cache.ensure(&self.features);
         let breps: Vec<crate::brep::BRep> = woven.iter().map(|(b, _)| b.clone()).collect();
         crate::queries::resolve_query_topo(&breps, expr)
+    }
+
+    /// Seed feature id of every body partitioned from the features decoded so
+    /// far — i.e. the bodies that exist *before* the feature currently being
+    /// executed. This is the "all bodies" set a "Merge with all" boolean
+    /// folds into (see [`resolve_merge_scope`]).
+    pub fn current_body_seed_ids(&self) -> Vec<FeatureId> {
+        crate::body::partition(&self.features)
+            .iter()
+            .map(|p| p.seed_id(&self.features))
+            .collect()
+    }
+
+    /// Record a non-fatal merge-scope warning for `id` (see
+    /// [`Context::feature_warnings`]).
+    pub fn warn_feature(&mut self, id: &FeatureId, message: String) {
+        self.feature_warnings.push((id.clone(), message));
     }
 
     /// C0/C1: resolve a face-yielding query to the first matching face,
@@ -1706,6 +1730,18 @@ pub struct SweepDef {
     pub twist_deg: f32,
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
+
+    /// Merge scope: explicit target bodies for the boolean op, as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty + `merge_with_all` off =
+    /// no merge (standalone body; warned for Add/Remove/Intersect).
+    #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
+
+    /// Merge with all (Onshape): fold the body into EVERY body it touches
+    /// instead of an explicit scope. Off by default — touching solids never
+    /// merge implicitly; opt in here or name targets above.
+    #[param(name = "Merge with all", default = false)]
+    pub merge_with_all: bool,
 }
 
 /// Resolve a `qCreatedBy(<sketch>)` query to its ordered 2D curve (closed
@@ -1899,13 +1935,21 @@ impl FeatureKind for SweepFeature {
 
         let name = optional_display_name(def, || format!("Sweep {id}"));
         let node_id = id.child("0");
+        let target_ids = resolve_merge_scope(
+            ctx,
+            target_ids_from_queries(&d.targets),
+            d.merge_with_all,
+        );
+        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
         ctx.features.push(DecodedFeature {
             id: node_id.clone(),
             name,
             op: d.operation,
             blend_radius: 0.0,
             blend_mode: crate::csg::BlendMode::Fillet,
-            target_ids: vec![],
+            target_ids,
             transform: Transform {
                 translate: [0.0, 0.0, 0.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
@@ -2855,11 +2899,18 @@ pub struct ExtrudeDef {
     #[param(name = "Back depth", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub depth_back: ::fielddraft_protocol::Length,
 
-    /// Merge scope (ticket 15f5): explicit target bodies for the
-    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
-    /// face-owner docking (face extrudes) resp. AABB-overlap docking.
+    /// Merge scope: explicit target bodies for the boolean op, as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty falls back to face-owner
+    /// docking (face extrudes); otherwise + `merge_with_all` off = no merge
+    /// (standalone body; warned for Add/Remove/Intersect).
     #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: ::fielddraft_protocol::MultiQuery,
+
+    /// Merge with all (Onshape): fold the body into EVERY body it touches
+    /// instead of an explicit scope. Off by default — touching solids never
+    /// merge implicitly; opt in here or name targets above.
+    #[param(name = "Merge with all", default = false)]
+    pub merge_with_all: bool,
 }
 
 pub struct ExtrudeFeature;
@@ -2951,6 +3002,12 @@ impl FeatureKind for ExtrudeFeature {
             let mut target_ids = target_ids_from_queries(&d.targets);
             if target_ids.is_empty() {
                 target_ids = ctx.face_owner_target_ids(&face_queries);
+            }
+            if target_ids.is_empty() && d.merge_with_all {
+                target_ids = ctx.current_body_seed_ids();
+            }
+            if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+                ctx.warn_feature(id, w);
             }
             ctx.features.push(DecodedFeature::from_parts(
                 id.clone(),
@@ -3056,6 +3113,14 @@ impl FeatureKind for ExtrudeFeature {
             },
         );
 
+        let target_ids = resolve_merge_scope(
+            ctx,
+            target_ids_from_queries(&d.targets),
+            d.merge_with_all,
+        );
+        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -3063,7 +3128,7 @@ impl FeatureKind for ExtrudeFeature {
             primitive,
             transform,
             mods,
-            target_ids_from_queries(&d.targets),
+            target_ids,
         ));
         Ok(())
     }
@@ -3272,11 +3337,17 @@ pub struct RevolveDef {
     #[param(name = "Shell thickness", default = ::fielddraft_protocol::Length::mm(0.0))]
     pub shell_thickness: ::fielddraft_protocol::Length,
 
-    /// Merge scope (ticket 15f5): explicit target bodies for the
-    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
-    /// legacy AABB-overlap docking.
+    /// Merge scope: explicit target bodies for the boolean op, as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty + `merge_with_all` off =
+    /// no merge (standalone body; warned for Add/Remove/Intersect).
     #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: ::fielddraft_protocol::MultiQuery,
+
+    /// Merge with all (Onshape): fold the body into EVERY body it touches
+    /// instead of an explicit scope. Off by default — touching solids never
+    /// merge implicitly; opt in here or name targets above.
+    #[param(name = "Merge with all", default = false)]
+    pub merge_with_all: bool,
 }
 
 pub struct RevolveFeature;
@@ -3342,6 +3413,14 @@ impl FeatureKind for RevolveFeature {
             },
         );
 
+        let target_ids = resolve_merge_scope(
+            ctx,
+            target_ids_from_queries(&d.targets),
+            d.merge_with_all,
+        );
+        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -3355,7 +3434,7 @@ impl FeatureKind for RevolveFeature {
                 shell_thickness: d.shell_thickness.to_mm().max(0.0),
                 ..PrimitiveModifiers::NONE
             },
-            target_ids_from_queries(&d.targets),
+            target_ids,
         ));
         Ok(())
     }
@@ -3419,11 +3498,17 @@ pub struct HelixDef {
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 
-    /// Merge scope (ticket 15f5): explicit target bodies for the
-    /// boolean op, as `qCreatedBy(<seed_feature>)` queries. Empty =
-    /// legacy AABB-overlap docking.
+    /// Merge scope: explicit target bodies for the boolean op, as
+    /// `qCreatedBy(<seed_feature>)` queries. Empty + `merge_with_all` off =
+    /// no merge (standalone body; warned for Add/Remove/Intersect).
     #[param(name = "Merge scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
     pub targets: ::fielddraft_protocol::MultiQuery,
+
+    /// Merge with all (Onshape): fold the body into EVERY body it touches
+    /// instead of an explicit scope. Off by default — touching solids never
+    /// merge implicitly; opt in here or name targets above.
+    #[param(name = "Merge with all", default = false)]
+    pub merge_with_all: bool,
 
     /// Override for the helix axis centre in world space.
     #[param(default = [0.0, 0.0, 0.0])]
@@ -3502,6 +3587,14 @@ impl FeatureKind for HelixFeature {
             _ => (d.pitch.to_mm().max(0.001), d.turns.max(0.0)),
         };
 
+        let target_ids = resolve_merge_scope(
+            ctx,
+            target_ids_from_queries(&d.targets),
+            d.merge_with_all,
+        );
+        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
         ctx.features.push(DecodedFeature::from_parts(
             id.clone(),
             name,
@@ -3517,7 +3610,7 @@ impl FeatureKind for HelixFeature {
             },
             transform,
             PrimitiveModifiers::NONE,
-            target_ids_from_queries(&d.targets),
+            target_ids,
         ));
         Ok(())
     }
@@ -3989,6 +4082,43 @@ fn target_ids_from_queries(
         .collect()
 }
 
+/// Resolve the effective merge-scope `target_ids` of a feature-implicit
+/// boolean. `explicit` are the targets parsed from the "Merge scope" query
+/// (may be empty); `merge_with_all` expands an empty scope into the seed id
+/// of every body that exists *before* this feature in the spine. A resolved
+/// scope routes the body through the explicit targeted-dock path in
+/// [`crate::body::partition`] — touching solids never merge implicitly.
+fn resolve_merge_scope(
+    ctx: &Context<'_>,
+    explicit: Vec<FeatureId>,
+    merge_with_all: bool,
+) -> Vec<FeatureId> {
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    if merge_with_all {
+        return ctx.current_body_seed_ids();
+    }
+    Vec::new()
+}
+
+/// Non-fatal warning for a feature-implicit boolean whose merge scope is
+/// empty: `Add`/`Remove`/`Intersect` need a target body (an explicit scope
+/// or "Merge with all"), otherwise the operation has nothing to act on and
+/// the body shows as a red translucent preview. `New` (a standalone body) is
+/// always fine.
+fn merge_scope_warning(op: BoolOp, resolved_targets: &[FeatureId]) -> Option<String> {
+    if op == BoolOp::New || !resolved_targets.is_empty() {
+        return None;
+    }
+    Some(
+        "Kein Merge-Scope gewählt — Add/Remove/Intersect braucht einen Zielkörper. \
+         Aktiviere „Merge with all“ oder wähle einen oder mehrere Zielkörper, \
+         sonst bleibt der Körper unverbunden."
+            .to_string(),
+    )
+}
+
 /// Extract an optional `"name"` string parameter from the
 /// definition JSON, falling back to a runtime-derived label that
 /// depends on the `FeatureId` being passed into `execute`. The
@@ -4351,7 +4481,7 @@ mod tests {
             .expect("extrude schema");
         assert_eq!(extrude_schema["type"], json!("extrude"));
         let params = extrude_schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 11);
+        assert_eq!(params.len(), 12);
     }
 
     #[test]
@@ -5243,7 +5373,7 @@ mod tests {
         let schema = ExtrudeDef::schema_json();
         assert_eq!(schema["type"], json!("extrude"));
         let params = schema["params"].as_array().unwrap();
-        assert_eq!(params.len(), 11);
+        assert_eq!(params.len(), 12);
 
         // Each key / type pair documents the K4.5.4f vocabulary
         // demonstrated in a single definition.

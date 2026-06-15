@@ -517,6 +517,11 @@ struct FeatureSummary {
     /// outliner paints the row red and exposes this as the tooltip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Non-fatal merge-scope warning — the outliner paints the row in the
+    /// warning colour and exposes this as the tooltip; the body renders as a
+    /// red translucent preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 /// Owned by the JS side. Holds the canonical document and the
@@ -598,6 +603,12 @@ pub struct Kernel {
     /// document, contributes no geometry, and carries its message here —
     /// `listFeatures` exports it so the UI can paint the row red.
     feature_errors: std::collections::HashMap<FeatureId, String>,
+    /// Per-feature NON-fatal merge-scope warnings from the last regen: a
+    /// feature-implicit boolean (Add/Remove/Intersect) with no resolved merge
+    /// scope. Geometry still regenerates (the body shows as a red translucent
+    /// preview); `listFeatures` exports the message so the UI paints the row
+    /// in the warning colour with this tooltip.
+    feature_warnings: std::collections::HashMap<FeatureId, String>,
     /// Rollback bar position: if set, features at index >= this value
     /// are skipped during regeneration (but stay in the document).
     rollback_after: Option<usize>,
@@ -1134,6 +1145,7 @@ impl Kernel {
             edge_fillets: Vec::new(),
             mate_connectors: Vec::new(),
             feature_errors: std::collections::HashMap::new(),
+            feature_warnings: std::collections::HashMap::new(),
             rollback_after: None,
             regen_brep_cache: body::BrepCache::new(),
         };
@@ -1228,6 +1240,11 @@ impl Kernel {
             self.edge_fillets = std::mem::take(&mut ctx.edge_fillets);
             // C2: capture resolved mate-connector CSYS for the viewport.
             self.mate_connectors = std::mem::take(&mut ctx.mate_connectors);
+            // Merge-scope warnings collected during regen (non-fatal).
+            self.feature_warnings = std::mem::take(&mut ctx.feature_warnings)
+                .into_iter()
+                .map(|(id, w)| (id.root_ancestor().clone(), w))
+                .collect();
             (errs, std::mem::take(&mut ctx.features))
         };
         self.document.feature_calls = calls;
@@ -1417,6 +1434,7 @@ impl Kernel {
                     suppressed: call.suppressed,
                     rolled_back: rb,
                     error: self.feature_errors.get(&call.id).cloned(),
+                    warning: self.feature_warnings.get(&call.id).cloned(),
                 });
             } else {
                 // K8.9: hole pushes its spine entry under a
@@ -1481,6 +1499,7 @@ impl Kernel {
                     suppressed: call.suppressed,
                     rolled_back: rb,
                     error: self.feature_errors.get(&call.id).cloned(),
+                    warning: self.feature_warnings.get(&call.id).cloned(),
                 });
             }
         }
@@ -6622,6 +6641,49 @@ mod tests {
         assert!(
             tb.sdf(probe, csg::EvalMode::Logical) < 0.0,
             "forward-referenced tool must NOT carve (snapshot semantics)"
+        );
+    }
+
+    #[test]
+    fn add_feature_without_merge_scope_warns() {
+        // A feature-implicit boolean (extrude Add) with no merge scope must
+        // warn — touching solids never merge implicitly, so the user has to
+        // pick a scope or "Merge with all". With either, the warning clears;
+        // a plain "New" body never warns.
+        let warning_for = |params: &str| -> Option<String> {
+            let mut k = Kernel::new();
+            // A body exists so "Merge with all" has something to target.
+            let _base = k
+                .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0)
+                .unwrap();
+            let sub = r#"[{"type":"sketch_polygon","id":"100","params":{"vertices":[-5,-5,5,-5,0,5]}}]"#;
+            let sketch = k.add_sketch("qCreatedBy(origin_plane_xy)", sub).unwrap();
+            let full = params.replace("SKETCH", &sketch.to_string());
+            k.add_feature_call("extrude", &full).unwrap();
+            let feats: serde_json::Value =
+                serde_json::from_str(&k.list_features().unwrap()).unwrap();
+            feats
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["kind"] == serde_json::json!("extrude"))
+                .and_then(|f| f["warning"].as_str().map(|s| s.to_string()))
+        };
+
+        assert!(
+            warning_for(r#"{"profiles":"qCreatedBy(SKETCH)","operation":"add","depth":{"value":20,"unit":"mm"}}"#)
+                .is_some(),
+            "Add without a merge scope must warn"
+        );
+        assert!(
+            warning_for(r#"{"profiles":"qCreatedBy(SKETCH)","operation":"add","merge_with_all":true,"depth":{"value":20,"unit":"mm"}}"#)
+                .is_none(),
+            "Add + Merge with all (a body exists) must not warn"
+        );
+        assert!(
+            warning_for(r#"{"profiles":"qCreatedBy(SKETCH)","operation":"new","depth":{"value":20,"unit":"mm"}}"#)
+                .is_none(),
+            "New (standalone) never warns"
         );
     }
 

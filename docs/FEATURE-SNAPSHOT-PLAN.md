@@ -22,6 +22,28 @@ Status: **PHASE 1a UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierun
   in korrekter Reihenfolge nicht (Box+Sphere-Subtract dagegen funktioniert). Nicht
   Teil der Merge/Snapshot-Arbeit — separat verifizieren.
 
+- **Merge-Scope-Warnung (v0.6.139):** Feature-implizite Booleans
+  (Extrude/Revolve/Helix/Sweep mit op=Add/Remove/Intersect) ohne gültigen
+  Merge-Scope werden sichtbar gewarnt — analog Onshape.
+  - „Gültiger Scope" = explizite Körperliste (`targets`) **oder** neue
+    Checkbox **„Merge with all"** (`merge_with_all`, neuer Param an allen vier
+    Features; Sweep bekam zusätzlich `targets`). „Merge with all" expandiert im
+    `execute` zu expliziten target_ids = alle aktuellen Body-Seeds (kein
+    Struct-/Partition-Umbau nötig; nutzt den targeted-dock-Pfad).
+  - Kernel: `Context::feature_warnings` → `Kernel::feature_warnings` →
+    `listFeatures.warning` (parallel zum bestehenden `error`-Plumbing). Helper
+    `resolve_merge_scope` + `merge_scope_warning` in features.rs.
+  - Web: Outliner-Label in `--color-warning` + Tooltip (`.row.has-warning`);
+    `materialBridge` weist Warn-Körpern ein halbtransparentes rotes
+    `WARNING_MATERIAL` zu (überschreibt User-Material). Checkbox erscheint
+    automatisch über den schema-getriebenen Dialog.
+  - Test: `add_feature_without_merge_scope_warns` (lib.rs).
+  - OFFEN: no-scope **Remove/Intersect** dockt in `partition` noch per
+    AABB-Fallback (geteilt mit dem expliziten Boolean-Feature) statt als
+    eigenständiges rotes Preview — sauber erst mit dem Snapshot-Evaluator
+    (Phase 2) bzw. wenn das Boolean-Feature seinen Scope an die Tools
+    weitergibt. Der Add-Fall (Screenshot) ist vollständig korrekt.
+
 ## 1. Anforderung (die eine Invariante)
 
 > **Jedes Feature wird gegen einen Snapshot des Szenenzustands ausgewertet, der genau

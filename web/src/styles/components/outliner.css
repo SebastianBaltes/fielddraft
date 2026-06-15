@@ -568,6 +568,16 @@
     }
   }
 
+  /* Feature-implizites Boolean ohne gueltigen Merge-Scope: Titel in der
+     Warnfarbe, die Warnmeldung haengt als title-Attribut an der Zeile;
+     der Koerper wird im Viewport halbtransparent rot dargestellt. */
+  & .row.has-warning {
+    & .feature-name,
+    & .kind {
+      color: var(--color-warning);
+    }
+  }
+
   & .row.is-rolled-back {
     opacity: 0.45;
 

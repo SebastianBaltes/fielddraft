@@ -32,6 +32,20 @@ const DEFAULTS: MaterialProps = {
   displaceFreq: 0,
 };
 
+/// Translucent red preview for a body whose feature-implicit boolean has no
+/// valid merge scope (see the kernel `feature_warnings`). Overrides any user
+/// material so the unconnected body is unmistakable, mirroring Onshape.
+const WARNING_MATERIAL: MaterialProps = {
+  color: [0.78, 0.12, 0.12],
+  roughness: 0.5,
+  metalness: 0,
+  emissive: [0.12, 0.0, 0.0],
+  opacity: 0.45,
+  wireframe: false,
+  displaceDepth: 0,
+  displaceFreq: 0,
+};
+
 export function resolveMaterials(
   kernel: Kernel,
   features: FeatureSummary[],
@@ -39,7 +53,8 @@ export function resolveMaterials(
   const result = new Map<number, MaterialProps>();
 
   const materialFeatures = features.filter((f) => f.kind === "material");
-  if (materialFeatures.length === 0) return result;
+  const warningFeatures = features.filter((f) => f.warning && !f.suppressed);
+  if (materialFeatures.length === 0 && warningFeatures.length === 0) return result;
 
   const bodyCount = kernel.bodyCount();
   const seedToBody = new Map<number, number>();
@@ -97,6 +112,13 @@ export function resolveMaterials(
     for (const bi of targetBodyIndices) {
       result.set(bi, mat);
     }
+  }
+
+  // Merge-scope warnings win over any user material: paint the unconnected
+  // body translucent red so the missing scope is obvious in the viewport.
+  for (const wf of warningFeatures) {
+    const bodyIdx = seedToBody.get(wf.id);
+    if (bodyIdx !== undefined) result.set(bodyIdx, WARNING_MATERIAL);
   }
 
   return result;

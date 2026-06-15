@@ -307,6 +307,12 @@ export interface FeatureSummary {
    *  outliner paints it red and shows this message as the tooltip.
    *  Omitted from the JSON when the feature regenerated cleanly. */
   error?: string;
+  /** Non-fatal merge-scope warning: a feature-implicit boolean
+   *  (Add/Remove/Intersect) with no resolved merge scope. Geometry still
+   *  regenerates (the body shows as a translucent red preview); the outliner
+   *  paints the row in the warning colour and shows this as the tooltip.
+   *  Omitted when the feature has a valid scope. */
+  warning?: string;
 }
 
 let wasmInitPromise: Promise<WasmExports> | null = null;
