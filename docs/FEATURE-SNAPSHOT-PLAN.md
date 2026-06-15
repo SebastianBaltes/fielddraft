@@ -69,8 +69,17 @@ Status: **PHASEN 1a–1c + 2 UMGESETZT** · Owner: Kernel/Pipeline · Letzte Akt
     lehnt qCreatedBy-Picks außerhalb ab (+ qFace via Contributor-Check). Damit
     bietet ein Boolean spätere Features gar nicht erst zur Auswahl an
     (Ur-Anforderung des Users).
-  - OFFEN: visuelles Hover-Dimming später Geometrie + Pick-Reject-Feedback
-    (Toast); `QueryWidget` (Single-Query: Sketch-Plane/Face) noch ohne Filter.
+  - **Polish (v0.6.143):** Hover-Dimming — `viewportOverlays` highlightet
+    Faces späterer Features nicht mehr, wenn ein Picker mit
+    `selectableFeatureIds` aktiv ist (`faceAllowed` über `BRepFace.featureId`).
+    Pick-Reject-Feedback — `Viewport.tryQueryPick` ruft bei einem abgelehnten
+    Klick `store.showTransientError` (Top-Guard `anyContributorAllowed`).
+  - **Bewusst NICHT:** `QueryWidget` (Single-Query: Sketch-Plane/Einzel-Face)
+    bleibt ungefiltert — niedriges Snapshot-Risiko (referenziert Datums/frühere
+    Faces), und ein `useKernelStore` dort zöge die async-Store-Resolution in
+    jeden Dialog-Widget (verursachte `window is not defined` nach Test-Teardown).
+    Der snapshot-kritische Body-Pfad (Boolean-Tools/Targets, Merge-scope) IST
+    über `MultiQueryWidget` gefiltert.
 
 - **Phase 2 — Snapshot-Evaluator (v0.6.142):** Schlüssel-Erkenntnis beim Umbau:
   **`partition()` IST bereits der sequenzielle Left-Fold** (verarbeitet Features

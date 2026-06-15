@@ -869,6 +869,12 @@ export function QueryWidget({
   deactivateOnPick,
 }: WidgetProps<string> & { entityFilter?: string; deactivateOnPick?: boolean }) {
   const id = useId();
+  // NB: the single-query picker is intentionally NOT scoped to
+  // `selectableFeatureIds` (unlike MultiQueryWidget). It drives sketch-plane
+  // / single-face selection, which references datums or earlier faces anyway,
+  // so the snapshot risk is low — and subscribing here (useKernelStore) would
+  // pull the async store into every dialog widget. The body-selection path
+  // (Boolean tools/targets, merge scope) IS scoped via MultiQueryWidget.
   const [text, setText] = useState<string>(value);
   const [focused, setFocused] = useState(false);
 

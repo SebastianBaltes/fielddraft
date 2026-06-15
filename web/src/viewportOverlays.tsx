@@ -1979,6 +1979,11 @@ export function BRepSelectionOverlay({
       return;
     }
     const filter = picker?.entityFilter;
+    // Snapshot semantics: while a picker is active, faces of features that
+    // come AFTER the one being edited are not selectable — don't light them on
+    // hover (the click handler also rejects them with a message).
+    const faceAllowed = (featureId: number): boolean =>
+      !picker?.selectableFeatureIds || picker.selectableFeatureIds.has(featureId);
     // An edge inside its pick band beats the face it bounds — the bridge
     // merge already resolves clicks that way (vertex > edge > face), so the
     // visuals must agree: with the face outline now drawn in the same hover
@@ -2011,6 +2016,7 @@ export function BRepSelectionOverlay({
           if (arena === undefined || arena === FACE_INDEX_SENTINEL) continue;
           const face = body.faces.find((f) => f.faceIndex === arena);
           if (!face) continue;
+          if (!faceAllowed(face.featureId)) continue;
           if (!resolvedFace || h.distance < resolvedFace.dist) {
             resolvedFace = { body, arena, branchId: face.branchId, idHash: face.idHash, dist: h.distance };
           }
@@ -2025,6 +2031,7 @@ export function BRepSelectionOverlay({
           outer: for (const body of bodies) {
             for (const face of body.faces) {
               if (!hit.branches.includes(face.branchId)) continue;
+              if (!faceAllowed(face.featureId)) continue;
               resolvedFace = { body, arena: null, branchId: face.branchId, idHash: face.idHash, dist: hit.t };
               break outer;
             }

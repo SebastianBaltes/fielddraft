@@ -222,10 +222,14 @@ function pickAtMouse(
  * an empty project has nothing pickable at all and the sketch-plane
  * field's picker can never complete.
  */
+const SNAPSHOT_PICK_REJECT_MSG =
+  "Nur Körper aus früheren Features sind auswählbar — ein Feature darf nichts referenzieren, das später im Baum kommt.";
+
 function tryQueryPick(
   click: PickResult | null,
   store: { kernel: { bodyCount(): number; bodyBrepFaces(i: number): { branchId: number; idHash: string }[] } } | null,
   datumAtRay?: () => string | null,
+  onReject?: (msg: string) => void,
 ): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
@@ -233,14 +237,21 @@ function tryQueryPick(
   // Snapshot semantics: only geometry from features BEFORE the one being
   // edited may be picked — you cannot reference a feature that comes later in
   // the tree. `selectableFeatureIds` (undefined = no restriction) holds the
-  // allowed owner features; reject picks of any later geometry.
-  const ownerAllowed = (fid: number): boolean =>
-    !picker.selectableFeatureIds || picker.selectableFeatureIds.has(fid);
+  // allowed owner features; reject picks of any later geometry (and tell the
+  // user why, so a dead click isn't silent).
   const anyContributorAllowed = (): boolean => {
     if (!picker.selectableFeatureIds) return true;
     if (!click || !click.hit) return false;
     return click.contributors.some((c: number) => picker.selectableFeatureIds!.has(c));
   };
+
+  // Single snapshot gate: a click on geometry whose features are ALL later
+  // than the edited one is rejected up front with a visible reason (the hover
+  // overlay already dims such geometry, so this catches the stray click).
+  if (click?.hit && picker.selectableFeatureIds && !anyContributorAllowed()) {
+    onReject?.(SNAPSHOT_PICK_REJECT_MSG);
+    return false;
+  }
 
   const hovered = getHoveredElement();
   if (hovered) {
@@ -253,7 +264,7 @@ function tryQueryPick(
   // between the pointer move and this click (demand frameloop, fast
   // clicks, automation). Resolve the face directly from the click's
   // analytic hit instead of dropping the pick.
-  if (click?.hit && store && filterAllows("face", picker.entityFilter) && anyContributorAllowed()) {
+  if (click?.hit && store && filterAllows("face", picker.entityFilter)) {
     try {
       const count = store.kernel.bodyCount();
       outer: for (let i = 0; i < count; i++) {
@@ -291,8 +302,6 @@ function tryQueryPick(
   if (!click?.hit || click.contributors.length === 0) return false;
   const contributor = click.contributors[0];
   if (contributor <= 0) return false;
-  // Reject a body that belongs to a later feature than the one being edited.
-  if (!ownerAllowed(contributor)) return false;
   return picker.onPick(`qCreatedBy(${contributor})`);
 }
 
@@ -651,7 +660,7 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
         state?.hiddenDatums ?? new Set<string>(),
       );
     };
-    if (tryQueryPick(click, store, datumAtClick)) return;
+    if (tryQueryPick(click, store, datumAtClick, (msg) => store.showTransientError(msg))) return;
     if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
     if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
     if (state?.filletMode) { handleFilletClick(store, click); return; }
