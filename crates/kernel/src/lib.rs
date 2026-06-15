@@ -3216,6 +3216,17 @@ impl Kernel {
         })
     }
 
+    /// Conservative raymarch step factor (≤1) for this body — the renderer
+    /// multiplies its march step by this so a thin-walled revolve/shell isn't
+    /// overshot at grazing angles (Ticket 1wnm). 1.0 = full step.
+    #[wasm_bindgen(js_name = bodySdfMarchRelax)]
+    pub fn body_sdf_march_relax(&self, i: usize) -> f32 {
+        self.bodies[i]
+            .compiled_sdf
+            .as_ref()
+            .map_or(1.0, |s| s.march_relax)
+    }
+
     #[wasm_bindgen(js_name = bodySdfAabb)]
     pub fn body_sdf_aabb(&self, i: usize) -> Vec<f32> {
         self.bodies[i]
@@ -6739,6 +6750,50 @@ mod tests {
             warning_for(r#"{"profiles":"qCreatedBy(SKETCH)","operation":"new","depth":{"value":20,"unit":"mm"}}"#)
                 .is_none(),
             "New (standalone) never warns"
+        );
+    }
+
+    #[test]
+    fn first_standalone_add_without_scope_does_not_warn() {
+        // Onshape parity: the very first solid is implicitly "New" even when
+        // the feature defaults to Add — there is no prior body it could have
+        // merged into, so a scope-less first Add must NOT warn (no "red born").
+        // A second Add (a prior body now exists) without a scope DOES warn.
+        let mut k = Kernel::new();
+        let sub = r#"[{"type":"sketch_polygon","id":"100","params":{"vertices":[-5,-5,5,-5,0,5]}}]"#;
+        let s1 = k.add_sketch("qCreatedBy(origin_plane_xy)", sub).unwrap();
+        k.add_feature_call(
+            "extrude",
+            &format!(r#"{{"profiles":"qCreatedBy({s1})","operation":"add","depth":{{"value":20,"unit":"mm"}}}}"#),
+        )
+        .unwrap();
+
+        let warning_of = |k: &Kernel, kind: &str| -> Option<String> {
+            let feats: serde_json::Value =
+                serde_json::from_str(&k.list_features().unwrap()).unwrap();
+            feats
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| f["kind"] == serde_json::json!(kind))
+                .last()
+                .and_then(|f| f["warning"].as_str().map(|s| s.to_string()))
+        };
+        assert!(
+            warning_of(&k, "extrude").is_none(),
+            "first standalone Add (no prior body) must not warn"
+        );
+
+        // Second Add — a body now exists, so a scope-less Add is ambiguous.
+        let s2 = k.add_sketch("qCreatedBy(origin_plane_xy)", sub).unwrap();
+        k.add_feature_call(
+            "extrude",
+            &format!(r#"{{"profiles":"qCreatedBy({s2})","operation":"add","depth":{{"value":20,"unit":"mm"}}}}"#),
+        )
+        .unwrap();
+        assert!(
+            warning_of(&k, "extrude").is_some(),
+            "a second scope-less Add (prior body exists) must warn"
         );
     }
 

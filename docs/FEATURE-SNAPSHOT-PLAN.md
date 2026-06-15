@@ -22,6 +22,16 @@ Status: **PHASEN 1a–1c + 2 UMGESETZT** · Owner: Kernel/Pipeline · Letzte Akt
   in korrekter Reihenfolge nicht (Box+Sphere-Subtract dagegen funktioniert). Nicht
   Teil der Merge/Snapshot-Arbeit — separat verifizieren.
 
+- **Erst-Körper = implizit „New" (v0.6.146):** Ein scope-loses **Add**, das den
+  **ersten/eigenständigen Solid** erzeugt (kein Vorgänger-Körper im Snapshot, in den
+  es mergen könnte), warnt NICHT mehr — analog Onshape, wo der erste Solid implizit
+  „New" ist. Damit wird eine freistehende erste Revolve/Extrude/Helix nicht mehr „rot
+  geboren". `Remove`/`Intersect` ohne Vorgänger warnen weiter (es gibt nichts
+  abzuziehen/zu schneiden); ein **zweites** scope-loses Add (Vorgänger existiert) warnt
+  weiter. Logik in `Context::merge_scope_warning` (prüft `current_body_seed_ids`),
+  freie Fn bekam `has_prior_bodies`. Tests:
+  `first_standalone_add_without_scope_does_not_warn`.
+
 - **Merge-Scope-Warnung (v0.6.139):** Feature-implizite Booleans
   (Extrude/Revolve/Helix/Sweep mit op=Add/Remove/Intersect) ohne gültigen
   Merge-Scope werden sichtbar gewarnt — analog Onshape.

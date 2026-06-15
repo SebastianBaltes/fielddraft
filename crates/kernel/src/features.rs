@@ -191,6 +191,14 @@ impl<'a> Context<'a> {
             .collect()
     }
 
+    /// Merge-scope warning for a feature-implicit boolean, accounting for
+    /// whether any body exists *before* this feature (a scope-less first `Add`
+    /// is an implicit "New", not a warning). See [`merge_scope_warning`].
+    pub fn merge_scope_warning(&self, op: BoolOp, resolved_targets: &[FeatureId]) -> Option<String> {
+        let has_prior_bodies = !self.current_body_seed_ids().is_empty();
+        merge_scope_warning(op, resolved_targets, has_prior_bodies)
+    }
+
     /// Record a non-fatal merge-scope warning for `id` (see
     /// [`Context::feature_warnings`]).
     pub fn warn_feature(&mut self, id: &FeatureId, message: String) {
@@ -1102,7 +1110,7 @@ fn push_primitive(
         .and_then(|v| v.as_str())
         .map(|s| target_ids_from_queries(&MultiQuery::new(s)))
         .unwrap_or_default();
-    if let Some(w) = merge_scope_warning(op, &target_ids) {
+    if let Some(w) = ctx.merge_scope_warning(op, &target_ids) {
         ctx.warn_feature(id, w);
     }
     ctx.features.push(DecodedFeature::from_parts(
@@ -1953,7 +1961,7 @@ impl FeatureKind for SweepFeature {
             target_ids_from_queries(&d.targets),
             d.merge_with_all,
         );
-        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+        if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
             ctx.warn_feature(id, w);
         }
         ctx.features.push(DecodedFeature {
@@ -2758,7 +2766,7 @@ impl FeatureKind for HoleFeature {
         // With none chosen it warns and drills nothing (partition seeds it as
         // a standalone red preview).
         let target_ids = target_ids_from_queries(&d.targets);
-        if let Some(w) = merge_scope_warning(BoolOp::Remove, &target_ids) {
+        if let Some(w) = ctx.merge_scope_warning(BoolOp::Remove, &target_ids) {
             ctx.warn_feature(id, w);
         }
         // Spine entry uses a hierarchical child id (`<hole>/0`)
@@ -3033,7 +3041,7 @@ impl FeatureKind for ExtrudeFeature {
             if target_ids.is_empty() && d.merge_with_all {
                 target_ids = ctx.current_body_seed_ids();
             }
-            if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+            if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
                 ctx.warn_feature(id, w);
             }
             ctx.features.push(DecodedFeature::from_parts(
@@ -3145,7 +3153,7 @@ impl FeatureKind for ExtrudeFeature {
             target_ids_from_queries(&d.targets),
             d.merge_with_all,
         );
-        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+        if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
             ctx.warn_feature(id, w);
         }
         ctx.features.push(DecodedFeature::from_parts(
@@ -3445,7 +3453,7 @@ impl FeatureKind for RevolveFeature {
             target_ids_from_queries(&d.targets),
             d.merge_with_all,
         );
-        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+        if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
             ctx.warn_feature(id, w);
         }
         ctx.features.push(DecodedFeature::from_parts(
@@ -3619,7 +3627,7 @@ impl FeatureKind for HelixFeature {
             target_ids_from_queries(&d.targets),
             d.merge_with_all,
         );
-        if let Some(w) = merge_scope_warning(d.operation, &target_ids) {
+        if let Some(w) = ctx.merge_scope_warning(d.operation, &target_ids) {
             ctx.warn_feature(id, w);
         }
         ctx.features.push(DecodedFeature::from_parts(
@@ -4130,12 +4138,19 @@ fn resolve_merge_scope(
 }
 
 /// Non-fatal warning for a feature-implicit boolean whose merge scope is
-/// empty: `Add`/`Remove`/`Intersect` need a target body (an explicit scope
-/// or "Merge with all"), otherwise the operation has nothing to act on and
-/// the body shows as a red translucent preview. `New` (a standalone body) is
-/// always fine.
-fn merge_scope_warning(op: BoolOp, resolved_targets: &[FeatureId]) -> Option<String> {
+/// empty: `Remove`/`Intersect` need a target body (an explicit scope or
+/// "Merge with all"), otherwise the operation has nothing to act on and the
+/// body shows as a red translucent preview. `New` (a standalone body) is
+/// always fine. A scope-less `Add` is fine **iff it is the first/standalone
+/// solid** — like Onshape, the very first solid is implicitly "New"; only an
+/// `Add` that *could* have merged into an existing body (but didn't pick one)
+/// is flagged. See [`Context::merge_scope_warning`].
+fn merge_scope_warning(op: BoolOp, resolved_targets: &[FeatureId], has_prior_bodies: bool) -> Option<String> {
     if op == BoolOp::New || !resolved_targets.is_empty() {
+        return None;
+    }
+    // First/standalone Add: nothing to merge into yet → implicit New, no warning.
+    if op == BoolOp::Add && !has_prior_bodies {
         return None;
     }
     Some(
