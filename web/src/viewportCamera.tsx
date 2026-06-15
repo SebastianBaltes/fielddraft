@@ -138,22 +138,26 @@ function subscribeCameraQuat(cb: () => void) {
   return () => { cameraQuatState.listeners.delete(cb); };
 }
 
+/** Publish the active camera's orientation to the ViewCube. Shared by the
+ *  WebGPU bridge (useFrame) and the WebGL viewport's manual render loop, which
+ *  bypasses useFrame (ticket r8b4 — the cube tracks whichever path is live). */
+export function publishCameraQuat(q: { x: number; y: number; z: number; w: number }) {
+  if (
+    Math.abs(q.x - cameraQuatState.x) > 1e-4 ||
+    Math.abs(q.y - cameraQuatState.y) > 1e-4 ||
+    Math.abs(q.z - cameraQuatState.z) > 1e-4 ||
+    Math.abs(q.w - cameraQuatState.w) > 1e-4
+  ) {
+    cameraQuatState.x = q.x;
+    cameraQuatState.y = q.y;
+    cameraQuatState.z = q.z;
+    cameraQuatState.w = q.w;
+    for (const cb of cameraQuatState.listeners) cb();
+  }
+}
+
 export function CameraQuaternionBridge() {
-  useFrame(({ camera }) => {
-    const q = camera.quaternion;
-    if (
-      Math.abs(q.x - cameraQuatState.x) > 1e-4 ||
-      Math.abs(q.y - cameraQuatState.y) > 1e-4 ||
-      Math.abs(q.z - cameraQuatState.z) > 1e-4 ||
-      Math.abs(q.w - cameraQuatState.w) > 1e-4
-    ) {
-      cameraQuatState.x = q.x;
-      cameraQuatState.y = q.y;
-      cameraQuatState.z = q.z;
-      cameraQuatState.w = q.w;
-      for (const cb of cameraQuatState.listeners) cb();
-    }
-  });
+  useFrame(({ camera }) => publishCameraQuat(camera.quaternion));
   return null;
 }
 

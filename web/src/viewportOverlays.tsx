@@ -2783,17 +2783,14 @@ export function BRepMeshPreview() {
 export function WebGLBodies() {
   const { store, state } = useKernelStore();
   const fingerprint = useBodyFingerprint();
-  const matRef = useRef<THREE.MeshStandardMaterial | null>(null);
-  if (!matRef.current) {
-    matRef.current = new THREE.MeshStandardMaterial({
-      color: "#94a3b8",
-      side: THREE.DoubleSide,
-      metalness: 0.1,
-      roughness: 0.7,
-    });
-  }
+  // One material per body, so the WebGL path matches WebGPU: distinct part
+  // colours (BODY_COLORS), user materials, and the translucent-red merge-scope
+  // warning material all come through `resolveMaterials` (ticket 59c2).
+  const matsRef = useRef<THREE.MeshStandardMaterial[]>([]);
 
   const meshes = useMemo(() => {
+    for (const m of matsRef.current) m.dispose();
+    matsRef.current = [];
     const out: THREE.Mesh[] = [];
     if (!store) return out;
     let count = 0;
@@ -2802,6 +2799,25 @@ export function WebGLBodies() {
     } catch {
       return out;
     }
+    const userMats = state?.features
+      ? resolveMaterials(store.kernel, state.features)
+      : new Map<number, MaterialProps>();
+    const materialForBody = (i: number): THREE.MeshStandardMaterial => {
+      const um = userMats.get(i);
+      const [r, g, b] = um ? um.color : BODY_COLORS[i % BODY_COLORS.length];
+      const mat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(r, g, b),
+        side: THREE.DoubleSide,
+        metalness: um ? um.metalness : 0.1,
+        roughness: um ? um.roughness : 0.7,
+        emissive: um ? new THREE.Color(um.emissive[0], um.emissive[1], um.emissive[2]) : new THREE.Color(0, 0, 0),
+        transparent: um ? um.opacity < 1 : false,
+        opacity: um ? um.opacity : 1,
+        wireframe: um ? um.wireframe : false,
+      });
+      matsRef.current.push(mat);
+      return mat;
+    };
     for (let i = 0; i < count; i++) {
       let info: { leaves: HybridLeafInfo[] };
       try {
@@ -2809,18 +2825,19 @@ export function WebGLBodies() {
       } catch {
         continue;
       }
+      const mat = materialForBody(i);
       for (const leaf of info.leaves) {
         if (leaf.role === "skip") continue;
         if (leaf.warp) {
           // Twist/Bend: geometry is pre-warped into world space → identity.
           const geo = buildWarpedLeafGeometry(leaf);
           if (!geo) continue;
-          out.push(new THREE.Mesh(geo, matRef.current!));
+          out.push(new THREE.Mesh(geo, mat));
           continue;
         }
         const geo = createPrimitiveGeometry(leaf);
         if (!geo) continue;
-        const mesh = new THREE.Mesh(geo, matRef.current!);
+        const mesh = new THREE.Mesh(geo, mat);
         applyLeafTransform(mesh, leaf);
         out.push(mesh);
       }
@@ -2834,7 +2851,9 @@ export function WebGLBodies() {
       for (const m of meshes) m.geometry.dispose();
     };
   }, [meshes]);
-  useEffect(() => () => matRef.current?.dispose(), []);
+  useEffect(() => () => {
+    for (const m of matsRef.current) m.dispose();
+  }, []);
 
   if (meshes.length === 0) return null;
   return (

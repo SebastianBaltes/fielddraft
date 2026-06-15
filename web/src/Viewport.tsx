@@ -26,6 +26,7 @@ import {
   CameraRig,
   ViewCommandConsumer,
   CameraQuaternionBridge,
+  publishCameraQuat,
   ViewCube,
   ClearColorSync,
 } from "./viewportCamera";
@@ -425,7 +426,12 @@ function WebGLViewport() {
     let raf = 0;
     const tick = () => {
       const st = stateRef.current;
-      if (st) st.gl.render(st.scene, st.camera);
+      if (st) {
+        // useFrame doesn't tick this manual-loop root, so feed the ViewCube
+        // the live WebGL camera orientation here (ticket r8b4).
+        publishCameraQuat(st.camera.quaternion);
+        st.gl.render(st.scene, st.camera);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -447,6 +453,9 @@ function WebGLViewport() {
       >
         <color attach="background" args={["#f6f6f4"]} />
         <WebGLBodies />
+        {/* Default datum planes/origin (ticket 59c2) — plain-material meshes,
+            so they render on the WebGL path just like in WebGPU. */}
+        <DatumOverlay />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         <OrbitControls makeDefault enableDamping={false} />
       </Canvas>
