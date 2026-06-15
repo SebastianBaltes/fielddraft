@@ -13,6 +13,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
@@ -60,7 +61,10 @@ import {
 import { PerfHud } from "./perfMonitor";
 import { SketchCanvas2d } from "./SketchCanvas2d";
 import { invalidateCanvas } from "./viewCommands";
-import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import {
+  getActive as getActiveQueryPicker,
+  subscribe as subscribeQueryPicker,
+} from "./queryPickerBridge";
 import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
@@ -109,8 +113,19 @@ interface SceneProps {
   renderMode: string;
   brepEdgeMode: BRepEdgeMode;
 }
+/** Reactively tracks whether a query-by-click picker is armed. While a picker
+ *  is active the scene transform gizmos are hidden so they can't occlude the
+ *  pickable geometry under them (ticket pqoe). */
+function useQueryPickerActive(): boolean {
+  return useSyncExternalStore(
+    subscribeQueryPicker,
+    () => getActiveQueryPicker() !== null,
+  );
+}
+
 function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
   const { store } = useKernelStore();
+  const queryPickerActive = useQueryPickerActive();
   if (!store) return null;
   return (
     <>
@@ -120,9 +135,13 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
       {renderMode === "brep" && <BRepMeshPreview />}
       <CameraBridgePublisher />
       <PickProbe ndc={ndc} onPick={onPick} />
-      <SelectionTransformGizmo />
-      <ExtrudeDepthGizmo />
-      <SweepPathGizmo />
+      {!queryPickerActive && (
+        <>
+          <SelectionTransformGizmo />
+          <ExtrudeDepthGizmo />
+          <SweepPathGizmo />
+        </>
+      )}
       <SketchOverlay3D />
       <SketchSession3D />
       <SketchHud3D />
