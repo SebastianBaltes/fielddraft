@@ -264,8 +264,10 @@
     align-items: center;
   }
 
-  /* P0.1: context-sensitive constraint palette, shown in select
-   * mode and gated by the current selection. */
+  /* pqoe (part 7): always-visible explicit constraint toolbar, shown in
+   * select mode. Every supported constraint is rendered; each button is
+   * enabled only when it fits the current selection and otherwise greyed
+   * via the shared `.tool:disabled` rule (opacity 0.45). */
   & .sketch-constraint-row {
     flex-wrap: wrap;
     gap: var(--space-2);

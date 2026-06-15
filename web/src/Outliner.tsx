@@ -324,7 +324,33 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
     store.clearSelection();
   };
 
-  const handleRowClick = (e: MouseEvent, id: number) => {
+  const handleRowClick = (e: MouseEvent, feature: FeatureSummary) => {
+    const id = feature.id;
+    // An armed query picker that accepts faces (e.g. an Extrude's
+    // "Profiles" field) takes a sketch row as a pick — selecting all
+    // faces created by that sketch, same affordance as clicking the
+    // committed-sketch region in the viewport. This MUST run before the
+    // normal selection, which would otherwise auto-open the sketch for
+    // editing. Mirrors the datum-row picker pattern above.
+    const picker = getActivePicker();
+    if (
+      picker &&
+      feature.kind === "sketch" &&
+      (!picker.entityFilter || filterAllows("face", picker.entityFilter))
+    ) {
+      // Snapshot semantics: a feature may only reference EARLIER features,
+      // so a picker that carries a `selectableFeatureIds` set rejects a
+      // sketch that isn't in it (don't fall through to selecting/editing it
+      // while a picker is armed — just give the standard transient hint).
+      if (picker.selectableFeatureIds && !picker.selectableFeatureIds.has(id)) {
+        store.showTransientError(
+          "Nur Körper aus früheren Features sind auswählbar — ein Feature darf nichts referenzieren, das später im Baum kommt.",
+        );
+        return;
+      }
+      picker.onPick(`qCreatedBy(${id})`);
+      return;
+    }
     if (e.shiftKey) {
       store.selectRangeTo(id);
     } else if (e.ctrlKey || e.metaKey) {
@@ -1055,7 +1081,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                     else handleFeatureDrop(e);
                   }}
                   onDragEnd={draggingRollback ? handleRollbackDragEnd : handleFeatureDragEnd}
-                  onClick={isRolledBack ? undefined : (e) => handleRowClick(e, feature.id)}
+                  onClick={isRolledBack ? undefined : (e) => handleRowClick(e, feature)}
                   onDoubleClick={isRolledBack ? undefined : () => handleRowDoubleClick(feature)}
                   onContextMenu={isRolledBack ? undefined : (e) => openContextMenu(e, feature.id)}
                 >

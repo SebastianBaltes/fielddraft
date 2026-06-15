@@ -312,6 +312,48 @@ const SKETCH_GROUPED_KEYS = new Set<string>([
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 
+// pqoe (part 7): the full explicit constraint toolbar, Onshape-style.
+// Every constraint the system supports is ALWAYS rendered as a button;
+// each is enabled only when its `type` is offered by
+// `applicableConstraints(current selection)`. The `type` strings are the
+// exact `sketch_constraint_*` values `buildConstraintCall` dispatches on —
+// label/glyph/title mirror `applicableConstraints` so the static buttons
+// read the same as the old contextual palette. `distance` covers both the
+// single-line Length and the two-point Distance dimension (one type), so
+// it's listed once. `sketch_mirror` is deliberately absent: mirror is a
+// sketch TOOL, not a constraint, and is surfaced as its own tool button.
+interface ConstraintButtonMeta {
+  /** Sub-call type, e.g. `sketch_constraint_parallel`. */
+  type: string;
+  /** Short button label. */
+  label: string;
+  /** Single-glyph icon. */
+  glyph: string;
+  /** Tooltip describing the constraint. */
+  title: string;
+}
+
+const SKETCH_CONSTRAINT_BUTTONS: ConstraintButtonMeta[] = [
+  // Geometric.
+  { type: "sketch_constraint_coincident",      label: "Coincident",    glyph: "⊙", title: "Make the two points coincident" },
+  { type: "sketch_constraint_concentric",      label: "Concentric",    glyph: "⊚", title: "Make the two circles/arcs concentric" },
+  { type: "sketch_constraint_parallel",        label: "Parallel",      glyph: "∥", title: "Make the two lines parallel" },
+  { type: "sketch_constraint_perpendicular",   label: "Perpendicular", glyph: "⊥", title: "Make the two lines perpendicular" },
+  { type: "sketch_constraint_tangent",         label: "Tangent",       glyph: "⌒", title: "Make the line tangent to the curve" },
+  { type: "sketch_constraint_equal",           label: "Equal",         glyph: "=", title: "Make the two radii equal" },
+  { type: "sketch_constraint_horizontal",      label: "Horizontal",    glyph: "—", title: "Make this line horizontal" },
+  { type: "sketch_constraint_vertical",        label: "Vertical",      glyph: "|", title: "Make this line vertical" },
+  { type: "sketch_constraint_midpoint",        label: "Midpoint",      glyph: "◎", title: "Pin the point at the midpoint of the line" },
+  { type: "sketch_constraint_point_on_object", label: "On Curve",      glyph: "⊢", title: "Constrain the point onto the line/circle/arc/ellipse/spline" },
+  { type: "sketch_constraint_symmetric",       label: "Symmetric",     glyph: "⇆", title: "Make the two points symmetric across the line" },
+  { type: "sketch_constraint_fix",             label: "Fix",           glyph: "⌖", title: "Fix this point at its position" },
+  // Dimensional.
+  { type: "sketch_constraint_distance",        label: "Distance",      glyph: "↔", title: "Set the distance/length between the picked points or line" },
+  { type: "sketch_constraint_angle",           label: "Angle",         glyph: "∠", title: "Set the angle between the two lines" },
+  { type: "sketch_constraint_radius",          label: "Radius",        glyph: "⟜", title: "Set the radius of this circle or arc" },
+  { type: "sketch_constraint_diameter",        label: "Diameter",      glyph: "⌀", title: "Set the diameter of this circle or arc" },
+];
+
 /* ------------------------------------------------------------------ */
 /*  Main toolbar                                                       */
 /* ------------------------------------------------------------------ */
@@ -929,30 +971,34 @@ export function Toolbar({ store, state }: ToolbarProps) {
           </button>
         </div>
 
+        {/* pqoe (part 7): always-visible explicit constraint toolbar,
+            Onshape-style. Each button is rendered whenever a tool is NOT
+            active (so committed geometry can be picked) and is enabled only
+            when its constraint type fits the current selection — i.e. it's
+            present in `constraintOptions` (the result of
+            `applicableConstraints`). Clicking applies it to the selection. */}
         {!sketchSession.selectedTool ? (
           <div
             className="group sketch-constraint-row"
             data-testid="sketch-constraint-row"
           >
-            {sketchSelection.length === 0 ? (
-              <span className="hint">Select geometry to add a constraint</span>
-            ) : constraintOptions.length === 0 ? (
-              <span className="hint">No constraint fits this selection</span>
-            ) : (
-              constraintOptions.map((o) => (
+            {SKETCH_CONSTRAINT_BUTTONS.map((c) => {
+              const enabled = constraintOptions.some((o) => o.type === c.type);
+              return (
                 <button
-                  key={o.type}
+                  key={c.type}
                   type="button"
                   className="tool"
-                  title={o.title}
-                  data-testid={`sketch-constraint-${o.type.replace(/^sketch_constraint_/, "")}`}
-                  onClick={() => store.applySketchConstraint(o.type)}
+                  title={c.title}
+                  data-testid={`sketch-constraint-${c.type.replace(/^sketch_constraint_/, "")}`}
+                  disabled={!enabled}
+                  onClick={() => store.applySketchConstraint(c.type)}
                 >
-                  <span className="glyph" aria-hidden="true">{o.glyph}</span>
-                  {o.label}
+                  <span className="glyph" aria-hidden="true">{c.glyph}</span>
+                  {c.label}
                 </button>
-              ))
-            )}
+              );
+            })}
           </div>
         ) : null}
       </div>
