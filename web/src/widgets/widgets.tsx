@@ -1008,6 +1008,17 @@ export function MultiQueryWidget({
     for (const f of state.features) m.set(f.id, f.name);
     return m;
   }, [state]);
+  // Snapshot semantics: when editing one feature, only features BEFORE it in
+  // the tree may be referenced. Hand the picker the set of allowed owner ids
+  // so later geometry stays unpickable (e.g. a Boolean can't take a body that
+  // was created after it).
+  const selectableFeatureIds = useMemo<ReadonlySet<number> | undefined>(() => {
+    if (!state || state.selection.size !== 1) return undefined;
+    const editedId = [...state.selection][0];
+    const idx = state.features.findIndex((f) => f.id === editedId);
+    if (idx < 0) return undefined;
+    return new Set(state.features.slice(0, idx).map((f) => f.id));
+  }, [state]);
   const itemsRef = useRef<string[]>(parseMultiQuery(value));
 
   useEffect(() => {
@@ -1036,8 +1047,9 @@ export function MultiQueryWidget({
       ownerId: id,
       onPick: (q: string) => onPickRef.current(q),
       entityFilter,
+      selectableFeatureIds,
     });
-  }, [active, id, entityFilter]);
+  }, [active, id, entityFilter, selectableFeatureIds]);
 
   const [autoArmed, setAutoArmed] = useState<boolean>(
     Boolean(required) && value === "",
@@ -1049,9 +1061,10 @@ export function MultiQueryWidget({
         ownerId: id,
         onPick: (q: string) => onPickRef.current(q),
         entityFilter,
+        selectableFeatureIds,
       });
     }
-  }, [autoArmed, value, active, id, entityFilter]);
+  }, [autoArmed, value, active, id, entityFilter, selectableFeatureIds]);
 
   // Same toggle semantics as QueryWidget: a second click stops picking.
   const activate = () => {
@@ -1063,6 +1076,7 @@ export function MultiQueryWidget({
       ownerId: id,
       onPick: (q: string) => onPickRef.current(q),
       entityFilter,
+      selectableFeatureIds,
     });
   };
 

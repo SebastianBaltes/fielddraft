@@ -230,6 +230,18 @@ function tryQueryPick(
   const picker = getActiveQueryPicker();
   if (!picker) return false;
 
+  // Snapshot semantics: only geometry from features BEFORE the one being
+  // edited may be picked — you cannot reference a feature that comes later in
+  // the tree. `selectableFeatureIds` (undefined = no restriction) holds the
+  // allowed owner features; reject picks of any later geometry.
+  const ownerAllowed = (fid: number): boolean =>
+    !picker.selectableFeatureIds || picker.selectableFeatureIds.has(fid);
+  const anyContributorAllowed = (): boolean => {
+    if (!picker.selectableFeatureIds) return true;
+    if (!click || !click.hit) return false;
+    return click.contributors.some((c: number) => picker.selectableFeatureIds!.has(c));
+  };
+
   const hovered = getHoveredElement();
   if (hovered) {
     const query = mapPickToQuery(hovered, picker.entityFilter);
@@ -241,7 +253,7 @@ function tryQueryPick(
   // between the pointer move and this click (demand frameloop, fast
   // clicks, automation). Resolve the face directly from the click's
   // analytic hit instead of dropping the pick.
-  if (click?.hit && store && filterAllows("face", picker.entityFilter)) {
+  if (click?.hit && store && filterAllows("face", picker.entityFilter) && anyContributorAllowed()) {
     try {
       const count = store.kernel.bodyCount();
       outer: for (let i = 0; i < count; i++) {
@@ -279,6 +291,8 @@ function tryQueryPick(
   if (!click?.hit || click.contributors.length === 0) return false;
   const contributor = click.contributors[0];
   if (contributor <= 0) return false;
+  // Reject a body that belongs to a later feature than the one being edited.
+  if (!ownerAllowed(contributor)) return false;
   return picker.onPick(`qCreatedBy(${contributor})`);
 }
 

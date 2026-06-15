@@ -54,9 +54,23 @@ Status: **PHASE 1a UMGESETZT** · Owner: Kernel/Pipeline · Letzte Aktualisierun
   - Tests: `ticket_9wxs_subtract_cone_from_sphere` (gute Reihenfolge schneidet;
     Forward-Ref → Error, kein Schnitt) — beantwortet „warum fangen Tests das
     nicht?". Cone-Achse ist +Y; korrekte Probe `[0,0,0]`.
-  - OFFEN (Phase 1b-Rest/1c): prefix-skopierte Resolution auch für
-    `qFace`/`qCreatedBy` der übrigen Features; UI-Auswahlfilter
-    (`selectable_before`) + Reorder-Guard.
+  - OFFEN (Phase 1b-Rest): prefix-skopierte Resolution auch für
+    `qFace`/`qCreatedBy` der übrigen Features.
+
+- **Phase 1c — UI-Auswahlfilter + Reorder-Guard (v0.6.141):**
+  - **Reorder-Guard (Kernel, SSOT):** `Kernel::reorder_feature` lehnt eine
+    Umordnung ab, die eine Vorwärts-Referenz erzeugen würde (Feature vor eines
+    seiner referenzierten Features ziehen). Helfer `created_by_references`
+    sammelt alle `qCreatedBy(<id>)` aus den Params (rekursiv, MultiQuery-aware).
+    Test `reorder_rejected_when_it_creates_a_forward_reference`.
+  - **Picker-Filter (Web):** `ActivePicker.selectableFeatureIds` (Features VOR
+    dem editierten); `MultiQueryWidget` berechnet die Menge aus
+    `state.selection` und gibt sie dem Picker mit; `Viewport.tryQueryPick`
+    lehnt qCreatedBy-Picks außerhalb ab (+ qFace via Contributor-Check). Damit
+    bietet ein Boolean spätere Features gar nicht erst zur Auswahl an
+    (Ur-Anforderung des Users).
+  - OFFEN: visuelles Hover-Dimming später Geometrie + Pick-Reject-Feedback
+    (Toast); `QueryWidget` (Single-Query: Sketch-Plane/Face) noch ohne Filter.
 
 ## 1. Anforderung (die eine Invariante)
 

@@ -524,6 +524,38 @@ struct FeatureSummary {
     warning: Option<String>,
 }
 
+/// Collect every `qCreatedBy(<feature_id>)` reference embedded in a feature
+/// call's params, walking nested arrays/objects and comma-separated
+/// MultiQuery strings. Datum references (`qCreatedBy(origin_plane_xy)`) and
+/// other non-numeric targets don't parse to a [`FeatureId`] and are skipped.
+/// Used by [`Kernel::reorder_feature`] to keep the tree a valid program
+/// (every feature references only earlier features).
+fn created_by_references(params: &serde_json::Value) -> Vec<FeatureId> {
+    fn walk(v: &serde_json::Value, out: &mut Vec<FeatureId>) {
+        match v {
+            serde_json::Value::String(s) => {
+                for part in s.split(',') {
+                    if let Some(inner) = part
+                        .trim()
+                        .strip_prefix("qCreatedBy(")
+                        .and_then(|x| x.strip_suffix(')'))
+                    {
+                        if let Ok(fid) = inner.parse::<FeatureId>() {
+                            out.push(fid);
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(params, &mut out);
+    out
+}
+
 /// Owned by the JS side. Holds the canonical document and the
 /// undo/redo stacks.
 #[wasm_bindgen]
@@ -2833,6 +2865,25 @@ impl Kernel {
         let to = target_index.min(self.document.feature_calls.len().saturating_sub(1));
         if from == to {
             return false;
+        }
+        // Snapshot semantics: the feature tree is a program — every feature
+        // may only reference features BEFORE it. Reject a reorder that would
+        // push a feature ahead of a feature it references (or pull a
+        // referenced feature behind its consumer); the UI keeps the original
+        // order and surfaces the rejection.
+        let mut proposed: Vec<_> = self.document.feature_calls.iter().collect();
+        let moved = proposed.remove(from);
+        proposed.insert(to, moved);
+        let pos: std::collections::HashMap<FeatureId, usize> =
+            proposed.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+        for (i, c) in proposed.iter().enumerate() {
+            for r in created_by_references(&c.params) {
+                if let Some(&ri) = pos.get(&r) {
+                    if ri >= i {
+                        return false; // forward reference — illegal order
+                    }
+                }
+            }
         }
         self.snapshot();
         let call = self.document.feature_calls.remove(from);
@@ -6739,6 +6790,45 @@ mod tests {
             bool_row["error"].is_string(),
             "a forward-referencing boolean must report an error: {bool_row}"
         );
+    }
+
+    #[test]
+    fn reorder_rejected_when_it_creates_a_forward_reference() {
+        // The tree is a program: a feature may only reference earlier
+        // features. A drag that would push a boolean ahead of a tool it
+        // references must be rejected, leaving the order untouched.
+        let doc = serde_json::json!({
+            "schema_version":2,"name":"t","next_feature_id":7,
+            "feature_calls":[
+                {"type":"sphere","id":3,"params":{"op":"new","radius":50,"translate":[0,0,0]}},
+                {"type":"cone","id":6,"params":{"half_height":60,"op":"new","r_bottom":40,"r_top":10,"translate":[0,0,0]}},
+                {"type":"boolean","id":5,"params":{"keep_tools":false,"operation":"Subtract","targets":"qCreatedBy(3)","tools":"qCreatedBy(6)"}},
+            ],
+        });
+        let mut k = Kernel::new();
+        k.load_json(&doc.to_string()).unwrap();
+        let order = |k: &Kernel| -> Vec<u64> {
+            serde_json::from_str::<serde_json::Value>(&k.list_features().unwrap())
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["id"].as_u64().unwrap())
+                .collect()
+        };
+        assert_eq!(order(&k), vec![3, 6, 5]);
+
+        // boolean(5) references cone(6) at index 1; moving it to index 1 puts
+        // it BEFORE the cone → forward reference → rejected, order unchanged.
+        assert!(
+            !k.reorder_feature(5, 1),
+            "a forward-referencing reorder must be rejected"
+        );
+        assert_eq!(order(&k), vec![3, 6, 5], "rejected reorder leaves order intact");
+
+        // Moving the cone to index 0 keeps it before the boolean → legal.
+        assert!(k.reorder_feature(6, 0), "a legal reorder is applied");
+        assert_eq!(order(&k), vec![6, 3, 5]);
     }
 
     #[test]

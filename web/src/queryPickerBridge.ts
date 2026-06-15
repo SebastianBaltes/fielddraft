@@ -42,6 +42,11 @@ export interface ActivePicker {
    *  `"BODY"` (or an empty filter that resolves to no element
    *  kinds) falls back to feature-level `qCreatedBy`. */
   entityFilter?: string;
+  /** Snapshot semantics: the feature ids whose geometry may be picked —
+   *  every feature BEFORE the one being edited. A pick whose owner feature
+   *  isn't in this set is rejected (you cannot reference a feature that comes
+   *  later in the tree). `undefined` means no ordering restriction. */
+  selectableFeatureIds?: ReadonlySet<number>;
 }
 
 let active: ActivePicker | null = null;
