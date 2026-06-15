@@ -59,6 +59,7 @@ import {
 import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
+import { publishSketchPickables, clearSketchPickables } from "./sketchPickBridge";
 
 /** Feature kinds that are themselves a transform of another feature — the
  *  gizmo edits THEIR params in place instead of appending a new transform
@@ -176,6 +177,25 @@ export function SketchOverlay3D() {
       fills.forEach((g) => g.dispose());
     };
   }, [fatLines, classicLines, fills]);
+
+  // Publish the world-space pick geometry per visible committed sketch so a
+  // plain click in the viewport can select the sketch — taking priority over
+  // the datum plane behind it (ticket md1e). `linePos`/`fillPos` are already
+  // world-space (both go through `planeToWorld` in `sketchOutline`).
+  useEffect(() => {
+    if (sketches.length === 0) {
+      clearSketchPickables();
+      return;
+    }
+    publishSketchPickables(
+      sketches.map((s) => ({
+        sketchId: s.id,
+        fill: s.fillPos ? new Float32Array(s.fillPos) : null,
+        lines: s.linePos.length ? new Float32Array(s.linePos) : null,
+      })),
+    );
+    return () => clearSketchPickables();
+  }, [sketches]);
 
   // A click on a filled region selects the whole sketch as a profile, but only
   // when a profile-style picker (no filter, or one that accepts faces) is

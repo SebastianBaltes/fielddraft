@@ -64,6 +64,7 @@ import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { getPublishedPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
+import { pickSketchAtRay } from "./sketchPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
 import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
 import { setGpuInfo, type GpuInfo } from "./telemetry";
@@ -722,6 +723,23 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
       invalidateCanvas();
       return;
     }
+    // A click that misses every B-Rep body but lands on a committed sketch's
+    // region (or outline) selects THAT sketch feature — so it can then be
+    // extruded — taking priority over the datum plane behind it (ticket md1e).
+    // `store.kernel.pick()` only knows B-Rep bodies, so committed sketch
+    // overlays never produce a `click.hit`; we ray-cast against the world-space
+    // geometry the overlay published to `sketchPickBridge`. Only on a plain
+    // click (no armed query picker — that path already ran above).
+    if (!getActiveQueryPicker() && !click?.hit) {
+      const ray = rayAtMouse(event, hostRef.current);
+      const sketchHit = ray ? pickSketchAtRay(ray) : null;
+      if (sketchHit) {
+        store.selectOnly(sketchHit.sketchId);
+        invalidateCanvas();
+        return;
+      }
+    }
+
     // Default geometry is selectable in element-selection presets (Onshape
     // UX, ticket r36f): a click that hits no B-Rep element but lands on a
     // visible datum plane (or the origin marker) selects that datum. Runs
