@@ -342,26 +342,38 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
                 });
             }
             BoolOp::Add => {
-                // An untagged Add docks into every body it touches (AABB
-                // overlap); one carrying explicit `target_ids` only into the
-                // touching bodies that hold one of its targets. An Add can
-                // bridge *several* bodies at once: the sphere that joins a
-                // left and a right solid fuses all three into a single Part,
-                // because union is transitive. The link expresses intent,
-                // contact decides the merge — a targeted Add of two
-                // *disjoint* solids stays two Parts.
+                // An Add docks ONLY through an explicit link (`target_ids`):
+                // a face-extrude carries its owner body, a merge-scoped
+                // feature carries the chosen targets, and a Boolean union
+                // routes its non-seed tools in via the seed link. An
+                // *untagged* Add never merges by mere contact — touching or
+                // overlapping solids stay separate Parts unless an explicit
+                // Boolean joins them (hard product rule: no implicit union).
+                // So an untagged Add seeds its own body.
+                if feature.target_ids.is_empty() {
+                    groups.push(BodyPartition {
+                        feature_indices: vec![i],
+                        aabb: feat_aabb,
+                    });
+                    continue;
+                }
+                // Targeted Add: dock into the bodies that hold one of its
+                // targets. It can bridge *several* bodies at once — the
+                // sphere that unions a left and a right solid fuses all
+                // three into one Part, because union is transitive. The
+                // link expresses intent, contact decides the merge — a
+                // targeted Add of two *disjoint* solids stays two Parts.
                 let connected: Vec<usize> = (0..groups.len())
                     .filter(|&idx| {
-                        let targeted = feature.target_ids.is_empty()
-                            || groups[idx].feature_indices.iter().any(|&fi| {
-                                let root = features[fi].id.root_ancestor();
-                                feature.target_ids.iter().any(|tid| root == tid)
-                            });
+                        let targeted = groups[idx].feature_indices.iter().any(|&fi| {
+                            let root = features[fi].id.root_ancestor();
+                            feature.target_ids.iter().any(|tid| root == tid)
+                        });
                         targeted && aabbs_overlap(groups[idx].aabb, feat_aabb)
                     })
                     .collect();
                 match connected.split_first() {
-                    // Nothing touched: this Add seeds its own Part.
+                    // Targets exist but none touched: this Add seeds its own Part.
                     None => groups.push(BodyPartition {
                         feature_indices: vec![i],
                         aabb: feat_aabb,
@@ -1311,31 +1323,58 @@ mod tests {
     }
 
     #[test]
-    fn untagged_add_merges_into_touching_body() {
-        // Onshape semantics: an Add without explicit targets docks into
-        // the body it touches — extruding a box face yields ONE part.
+    fn untagged_add_overlapping_body_stays_separate() {
+        // Hard product rule: touching/overlapping solids NEVER auto-merge.
+        // An untagged Add (no explicit target link) seeds its own body —
+        // merging requires an explicit Boolean feature.
         let features = vec![
             box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(2, BoolOp::Add, [7.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 1, "an overlapping Add merges into the body");
-        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
-        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
+        assert_eq!(bodies.len(), 2, "an untagged Add never merges by contact");
+        assert_eq!(bodies[0].feature_indices, vec![0]);
+        assert_eq!(bodies[1].feature_indices, vec![1]);
     }
 
     #[test]
-    fn untagged_add_bridges_all_touching_bodies() {
-        // Union is transitive: an Add spanning two separate bodies fuses
-        // all three into a single Part.
+    fn untagged_add_spanning_two_bodies_stays_separate() {
+        // No implicit union, even when an untagged Add overlaps two bodies:
+        // all three stay distinct Parts.
         let features = vec![
             box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(2, BoolOp::New, [30.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
             box_feat(3, BoolOp::Add, [15.0, 0.0, 0.0], [12.0, 2.0, 2.0]),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 1, "a spanning Add fuses every touched body");
-        assert_eq!(bodies[0].feature_indices, vec![0, 1, 2]);
+        assert_eq!(bodies.len(), 3, "an untagged Add never fuses touched bodies");
+    }
+
+    #[test]
+    fn tagged_add_docks_into_target_body() {
+        // The legit merge path: an Add carrying an explicit `target_ids`
+        // link (face-extrude owner, Boolean union seed, merge scope) docks
+        // into the body holding that target — this is how face-extrudes
+        // grow their parent body.
+        let features = vec![
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(2),
+                "Add 2".into(),
+                BoolOp::Add,
+                Primitive::Box {
+                    center: [7.0, 0.0, 0.0],
+                    half_extents: [5.0, 5.0, 5.0],
+                },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![FeatureId::from_u32(1)],
+            ),
+        ];
+        let bodies = partition(&features);
+        assert_eq!(bodies.len(), 1, "a targeted Add docks into its target body");
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
+        assert_eq!(bodies[0].seed_id(&features), FeatureId::from_u32(1));
     }
 
     #[test]

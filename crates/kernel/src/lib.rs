@@ -4373,7 +4373,7 @@ mod tests {
     fn helix_feature_threads_a_cylinder() {
         let mut k = Kernel::new();
         // Core cylinder along Y: r = 8.2, height ±10.
-        let _cyl = k
+        let cyl = k
             .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
             .unwrap();
         // Thread profile: ISO-ish 60° triangle in the (r, y) plane —
@@ -4387,7 +4387,19 @@ mod tests {
             }
         ]"#;
         let sketch_id = k.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
-        let helix_id = k.add_helix(sketch_id, BoolOp::TAG_ADD, 2.0, 8.0).unwrap();
+        // The thread fuses onto the core via an EXPLICIT merge scope
+        // (`targets`). Touching solids never auto-merge — the helix would
+        // otherwise stay a separate body (no implicit boolean).
+        let helix_params = format!(
+            r#"{{
+                "profiles": "qCreatedBy({sketch_id})",
+                "operation": "add",
+                "pitch": {{ "value": 2.0, "unit": "mm" }},
+                "turns": 8.0,
+                "targets": "qCreatedBy({cyl})"
+            }}"#
+        );
+        let helix_id = k.add_feature_call("helix", &helix_params).unwrap();
         assert_ne!(helix_id, sketch_id);
 
         // One body: the thread fuses onto the core.
@@ -4426,7 +4438,7 @@ mod tests {
     #[test]
     fn helix_height_input_modes_resolve() {
         let mut k = Kernel::new();
-        let _cyl = k
+        let cyl = k
             .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
             .unwrap();
         let sub_calls = r#"[
@@ -4443,7 +4455,8 @@ mod tests {
                 "input": "turns_height",
                 "turns": 8.0,
                 "height": {{ "value": 16.0, "unit": "mm" }},
-                "operation": "add"
+                "operation": "add",
+                "targets": "qCreatedBy({cyl})"
             }}"#
         );
         k.add_feature_call("helix", &params).unwrap();
@@ -4456,7 +4469,7 @@ mod tests {
 
         // pitch_height: pitch 2 + height 16 → 8 turns, identical field.
         let mut k2 = Kernel::new();
-        let _cyl2 = k2
+        let cyl2 = k2
             .add_primitive(Primitive::KIND_CYLINDER, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 8.2, 10.0, 0.0)
             .unwrap();
         let sketch2 = k2.add_sketch("qCreatedBy(origin_plane_xy)", sub_calls).unwrap();
@@ -4466,7 +4479,8 @@ mod tests {
                 "input": "pitch_height",
                 "pitch": {{ "value": 2.0, "unit": "mm" }},
                 "height": {{ "value": 16.0, "unit": "mm" }},
-                "operation": "add"
+                "operation": "add",
+                "targets": "qCreatedBy({cyl2})"
             }}"#
         );
         k2.add_feature_call("helix", &params2).unwrap();
@@ -4597,12 +4611,18 @@ mod tests {
     #[test]
     fn weave_body_brep_roundtrips_through_import() {
         let mut k = Kernel::new();
-        let _box_id = k
+        let box_id = k
             .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 30.0, 30.0)
             .unwrap();
         let sphere_id = k
-            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_ADD, 25.0, 0.0, 0.0, 20.0, 0.0, 0.0)
+            .add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_NEW, 25.0, 0.0, 0.0, 20.0, 0.0, 0.0)
             .unwrap();
+        // Touching solids never auto-merge — an explicit Boolean union fuses
+        // the box and sphere into the single body this round-trip exercises.
+        let bool_params = format!(
+            r#"{{ "operation": "Union", "tools": "qCreatedBy({box_id}),qCreatedBy({sphere_id})", "targets": "", "keep_tools": false }}"#
+        );
+        k.add_feature_call("boolean", &bool_params).unwrap();
         assert_eq!(k.body_count(), 1);
         let body_id = k.body_id(0);
 
@@ -5097,18 +5117,27 @@ mod tests {
 
 
     #[test]
-    fn add_flush_boss_merges_into_base_body() {
-        // Onshape semantics: a prism added flush onto a bigger box's top
-        // face joins that body (AABBs touch) — ONE part, still watertight.
-        // The coplanar base plane currently leaves duplicate coplanar
-        // faces in the weave (open item: coplanar branch merging); body
-        // count and watertightness are the contract here.
+    fn explicit_union_merges_flush_boss_into_base() {
+        // Touching solids NEVER auto-merge (no implicit boolean): a prism
+        // flush on a box's top face stays a SEPARATE body until an explicit
+        // Boolean union joins them — then it's ONE watertight part. The
+        // coplanar base plane leaves duplicate coplanar faces in the weave
+        // (open item: coplanar branch merging); body count and
+        // watertightness are the contract here.
         let mut k = Kernel::new();
-        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 50.0, 50.0, 50.0)
+        let base = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 50.0, 50.0, 50.0)
             .unwrap();
-        k.add_primitive(Primitive::KIND_BOX, BoolOp::TAG_ADD, 0.0, 0.0, 60.0, 20.0, 20.0, 10.0)
+        let boss = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_ADD, 0.0, 0.0, 60.0, 20.0, 20.0, 10.0)
             .unwrap();
-        assert_eq!(k.body_count(), 1, "flush boss adds into the box body");
+        assert_eq!(k.body_count(), 2, "a flush boss never auto-merges by contact");
+
+        let bool_params = format!(
+            r#"{{ "operation": "Union", "tools": "qCreatedBy({base}),qCreatedBy({boss})", "targets": "", "keep_tools": false }}"#
+        );
+        k.add_feature_call("boolean", &bool_params).unwrap();
+        assert_eq!(k.body_count(), 1, "an explicit union fuses the boss into the base");
         let counts: serde_json::Value =
             serde_json::from_str(&k.body_brep_counts(0)).unwrap();
         assert_eq!(counts["watertight"], serde_json::json!(true), "{counts}");
@@ -6541,6 +6570,58 @@ mod tests {
         assert!(
             worst > -0.5,
             "union mesh has interior vertices (scoop): worst sdf = {worst}"
+        );
+    }
+
+    // Snapshot semantics (ticket 20260615-103929-9wxs): a Boolean may only
+    // reference features that PRECEDE it in the tree. A Subtract whose tool
+    // is ordered AFTER the boolean is a forward reference — the tool does not
+    // exist in the snapshot the boolean sees, so it must NOT carve. The bug
+    // was that the forward tool combined anyway (via the now-removed
+    // contact-merge). Phase 1b will additionally surface this as an explicit
+    // feature error. Uses the box+sphere setup proven by
+    // `boolean_subtract_sdf_is_geometrically_correct` so the test isolates
+    // ordering, not the subtract math.
+    #[test]
+    fn boolean_forward_referenced_tool_does_not_carve() {
+        // box [-50,50]³, sphere center [30,0,0] r40 → the box centre [0,0,0]
+        // is inside the sphere, so a working subtract carves it.
+        let good_order = serde_json::json!({
+            "schema_version": 2, "name": "repro", "next_feature_id": 9,
+            "feature_calls": [
+                {"type":"box","id":1,"params":{"op":"new","half_extents":[50,50,50],"translate":[0,0,0]}},
+                {"type":"sphere","id":2,"params":{"op":"new","radius":40,"translate":[30,0,0]}},
+                {"type":"boolean","id":3,"params":{"keep_tools":false,"operation":"Subtract","targets":"qCreatedBy(1)","tools":"qCreatedBy(2)"}},
+            ],
+        });
+        let bug_order = serde_json::json!({
+            "schema_version": 2, "name": "repro", "next_feature_id": 9,
+            "feature_calls": [
+                {"type":"box","id":1,"params":{"op":"new","half_extents":[50,50,50],"translate":[0,0,0]}},
+                {"type":"boolean","id":3,"params":{"keep_tools":false,"operation":"Subtract","targets":"qCreatedBy(1)","tools":"qCreatedBy(2)"}},
+                {"type":"sphere","id":2,"params":{"op":"new","radius":40,"translate":[30,0,0]}},
+            ],
+        });
+        let probe = [0.0, 0.0, 0.0];
+
+        // Good order: tool before boolean → subtract carves the box centre.
+        let mut kg = Kernel::new();
+        kg.load_json(&good_order.to_string()).unwrap();
+        let tg = csg::CsgNode::from_decoded(&kg.decoded);
+        assert!(
+            tg.sdf(probe, csg::EvalMode::Logical) > 0.0,
+            "tool-before-boolean: subtract carves the box (sanity)"
+        );
+
+        // Bug order: tool after boolean → forward reference. The boolean sees
+        // no such tool in its snapshot, so it must NOT carve — the probe
+        // stays inside the solid box.
+        let mut kb = Kernel::new();
+        kb.load_json(&bug_order.to_string()).unwrap();
+        let tb = csg::CsgNode::from_decoded(&kb.decoded);
+        assert!(
+            tb.sdf(probe, csg::EvalMode::Logical) < 0.0,
+            "forward-referenced tool must NOT carve (snapshot semantics)"
         );
     }
 

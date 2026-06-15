@@ -8531,6 +8531,15 @@ mod tests {
                 "thickness": { "value": 2.0, "unit": "mm" },
             }),
         );
+        // The intermediate regen above (sketch + revolve, run only to expose
+        // the rim face for the shell query) left its decoded features in
+        // `ctx`. Production runs every regenerate on a FRESH Context (see
+        // `Kernel::bootstrap_features_from_calls`), so mirror that here:
+        // without the reset the revolve is decoded twice and — now that
+        // touching solids no longer auto-merge — partitions into two bodies.
+        ctx.features.clear();
+        ctx.edge_fillets.clear();
+        ctx.mate_connectors.clear();
         let calls = vec![sketch_call, revolve_call, shell_call];
         registry.regenerate(ctx, &calls, None).unwrap();
         calls
@@ -8956,6 +8965,13 @@ mod tests {
                 "op": "remove",
             }),
         ));
+        // Fresh decode (mirror production's per-regen Context) — the helper
+        // already populated `ctx` once; re-running the full call list without
+        // clearing would decode the revolve twice and, since touching solids
+        // no longer auto-merge, split the vase into duplicate bodies.
+        ctx.features.clear();
+        ctx.edge_fillets.clear();
+        ctx.mate_connectors.clear();
         registry.regenerate(&mut ctx, &calls, None).unwrap();
 
         let parts = crate::body::partition(&ctx.features);
