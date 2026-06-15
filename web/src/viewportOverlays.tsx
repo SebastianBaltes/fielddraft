@@ -76,14 +76,16 @@ export function findSingleSelectedFeature(state: StoreState | null | undefined):
 export function SketchOverlay3D() {
   const { store, state } = useKernelStore();
   const visibleSketches = state?.visibleSketches;
+  // The committed overlay must look EXACTLY like the active sketch session
+  // (ticket jjmv). The session uses fat node-material lines — those only run on
+  // the WebGPU backend, so the primary path gets identical strokes here; the
+  // WebGL fallback (separate classic-renderer Canvas) draws thin classic lines.
+  const gl = useThree((s) => s.gl);
+  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
 
-  const geometries = useMemo(() => {
+  const sketches = useMemo(() => {
     if (!store || !visibleSketches || visibleSketches.length === 0) return [];
-    const out: {
-      id: number;
-      geometry: THREE.BufferGeometry;
-      fill: THREE.BufferGeometry | null;
-    }[] = [];
+    const out: { id: number; linePos: number[]; fillPos: number[] | null }[] = [];
     const tri = (poly: [number, number][]): number[][] => {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
       return THREE.ShapeUtils.triangulateShape(contour, []);
@@ -103,22 +105,12 @@ export function SketchOverlay3D() {
             store.kernel,
           ) ?? resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)!;
         const subCalls = params.sub_calls ?? [];
-        const points = collectSketchLineSegments(subCalls, frame);
-        if (points.length === 0) continue;
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute(
-          "position",
-          new THREE.Float32BufferAttribute(points, 3),
-        );
-        // Closed regions filled like in sketch mode (ticket jjmv) — so a
-        // region reads as a face and is a pickable profile target.
-        let fill: THREE.BufferGeometry | null = null;
-        const fillPos = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
-        if (fillPos.length) {
-          fill = new THREE.BufferGeometry();
-          fill.setAttribute("position", new THREE.Float32BufferAttribute(fillPos, 3));
-        }
-        out.push({ id: sketchId, geometry, fill });
+        const linePos = collectSketchLineSegments(subCalls, frame);
+        if (linePos.length === 0) continue;
+        // Closed regions filled like in sketch mode — so a region reads as a
+        // face and is a pickable profile target.
+        const fp = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
+        out.push({ id: sketchId, linePos, fillPos: fp.length ? fp : null });
       } catch {
         // Skip invalid sketches
       }
@@ -126,14 +118,64 @@ export function SketchOverlay3D() {
     return out;
   }, [store, visibleSketches, state?.features]);
 
+  // Fat-line material (WebGPU only) — mirrors the session's solid stroke exactly
+  // (same colour + SKETCH_STROKE_WIDTH). Persistent so geometry rebuilds don't
+  // churn it.
+  const lineMatRef = useRef<Line2NodeMaterial | null>(null);
+  if (isWebGPU && !lineMatRef.current) {
+    lineMatRef.current = new Line2NodeMaterial({
+      color: SKETCH_COLOR_UNDER, linewidth: SKETCH_STROKE_WIDTH, worldUnits: false,
+      depthTest: false, depthWrite: false, transparent: true,
+    });
+  }
+  useEffect(() => () => { lineMatRef.current?.dispose(); }, []);
+
+  // WebGPU: fat LineSegments2 (geometry type must match the node material).
+  const fatLines = useMemo(() => {
+    if (!isWebGPU || !lineMatRef.current) return null;
+    const map = new Map<number, LineSegments2>();
+    for (const s of sketches) {
+      const g = new LineSegmentsGeometry();
+      g.setPositions(new Float32Array(s.linePos));
+      const o = new LineSegments2(g, lineMatRef.current);
+      o.frustumCulled = false;
+      o.renderOrder = 997;
+      map.set(s.id, o);
+    }
+    return map;
+  }, [sketches, isWebGPU]);
+
+  // WebGL fallback: thin classic line geometries.
+  const classicLines = useMemo(() => {
+    if (isWebGPU) return null;
+    const map = new Map<number, THREE.BufferGeometry>();
+    for (const s of sketches) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(s.linePos, 3));
+      map.set(s.id, g);
+    }
+    return map;
+  }, [sketches, isWebGPU]);
+
+  // Region fills — classic MeshBasicMaterial renders on either backend.
+  const fills = useMemo(() => {
+    const map = new Map<number, THREE.BufferGeometry>();
+    for (const s of sketches) {
+      if (!s.fillPos) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(s.fillPos, 3));
+      map.set(s.id, g);
+    }
+    return map;
+  }, [sketches]);
+
   useEffect(() => {
     return () => {
-      for (const g of geometries) {
-        g.geometry.dispose();
-        g.fill?.dispose();
-      }
+      fatLines?.forEach((o) => o.geometry.dispose());
+      classicLines?.forEach((g) => g.dispose());
+      fills.forEach((g) => g.dispose());
     };
-  }, [geometries]);
+  }, [fatLines, classicLines, fills]);
 
   // A click on a filled region selects the whole sketch as a profile, but only
   // when a profile-style picker (no filter, or one that accepts faces) is
@@ -146,27 +188,36 @@ export function SketchOverlay3D() {
     picker.onPick(`qCreatedBy(${sketchId})`);
   };
 
-  if (geometries.length === 0) return null;
+  if (sketches.length === 0) return null;
 
   return (
     <group>
-      {geometries.map(({ id, geometry, fill }) => (
+      {sketches.map(({ id }) => (
         <group key={id}>
-          {fill && (
-            <mesh geometry={fill} renderOrder={-1} onClick={pickRegion(id)} onPointerDown={pickRegion(id)}>
+          {fills.get(id) && (
+            <mesh
+              geometry={fills.get(id)}
+              renderOrder={996}
+              onClick={pickRegion(id)}
+              onPointerDown={pickRegion(id)}
+            >
               <meshBasicMaterial
                 color={SKETCH_FILL_COLOR}
                 transparent
-                opacity={0.18}
+                opacity={SKETCH_FILL_OPACITY}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
               />
             </mesh>
           )}
-          <lineSegments geometry={geometry}>
-            <lineBasicMaterial color="#2563eb" linewidth={2} />
-          </lineSegments>
+          {isWebGPU
+            ? fatLines?.get(id) && <primitive object={fatLines.get(id)!} dispose={null} />
+            : classicLines?.get(id) && (
+                <lineSegments geometry={classicLines.get(id)} renderOrder={997}>
+                  <lineBasicMaterial color={SKETCH_COLOR_UNDER} transparent depthTest={false} />
+                </lineSegments>
+              )}
         </group>
       ))}
     </group>
@@ -182,7 +233,13 @@ const SKETCH_COLOR_OVER = 0xdc2626;
 const SKETCH_CONSTRUCTION_COLOR = 0xb07820; // COLOR_CONSTRUCTION
 const SKETCH_GUIDE_COLOR = 0x64748b; // COLOR_GUIDE (rgba .6)
 const SKETCH_LEG_COLOR = 0x7c3aed; // COLOR_TANGENT_LEG
-const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL (rgba .18)
+const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL
+// Shared sketch render parameters so the active sketch mode and the committed
+// 3D overlay look EXACTLY identical (ticket jjmv): one fill opacity, one stroke
+// width. Bumped from the original 0.18 / 2 — the fill was too faint and the
+// stroke too thin to read in 3D.
+const SKETCH_FILL_OPACITY = 0.32;
+const SKETCH_STROKE_WIDTH = 4;
 const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
 const SKETCH_SELECTED_COLOR = 0xf97316; // COLOR_SELECTED
 
@@ -358,7 +415,7 @@ export function SketchSession3D() {
         depthTest: false, depthWrite: false, transparent: true,
       });
     matsRef.current = {
-      solid: fatLine(color, 2),
+      solid: fatLine(color, SKETCH_STROKE_WIDTH),
       construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
       guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
       leg: fatLine(SKETCH_LEG_COLOR, 2),
@@ -368,7 +425,7 @@ export function SketchSession3D() {
       selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
       selPoint: dots(SKETCH_SELECTED_COLOR, 10),
       fill: new MeshBasicNodeMaterial({
-        color: SKETCH_FILL_COLOR, transparent: true, opacity: 0.18,
+        color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
         depthTest: false, depthWrite: false, side: THREE.DoubleSide,
       }),
     };
