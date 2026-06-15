@@ -129,7 +129,7 @@ test.describe("Sketch control-point B-spline tool", () => {
     expect(after!.mode).toBe("control");
     expect(after!.points.length).toBe(8);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

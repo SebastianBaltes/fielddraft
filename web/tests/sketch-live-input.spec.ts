@@ -105,7 +105,7 @@ test.describe("Sketch live numeric input (line)", () => {
     expect(len).toBeCloseTo(50, 1);
 
     // Finish the sketch — the bundle survives into the committed feature.
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await page.evaluate(() => {

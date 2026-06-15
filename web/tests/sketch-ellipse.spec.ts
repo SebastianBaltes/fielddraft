@@ -68,7 +68,7 @@ test.describe("Sketch ellipse tool", () => {
     expect(Number(ellipse!.params.radius_y)).toBeGreaterThan(0);
 
     await page.waitForTimeout(500);
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

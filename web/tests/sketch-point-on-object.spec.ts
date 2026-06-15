@@ -112,7 +112,7 @@ test.describe("Sketch point-on-object constraint", () => {
       "sketch_constraint_point_on_object",
     );
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

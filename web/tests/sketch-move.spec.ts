@@ -95,7 +95,7 @@ test.describe("Sketch move / copy", () => {
     expect(after![0] - before![0]).toBeGreaterThan(20);
     expect(Math.abs(after![1] - before![1])).toBeLessThan(20);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();
@@ -154,7 +154,7 @@ test.describe("Sketch move / copy", () => {
 
     expect(await circleCount()).toBe(2);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     const committed = await committedSketchTypes(page);
     expect(committed).not.toBeNull();

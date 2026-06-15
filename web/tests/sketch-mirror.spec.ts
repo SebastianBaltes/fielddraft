@@ -109,7 +109,7 @@ test.describe("Sketch mirror", () => {
 
     expect(await circleCount()).toBe(2);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

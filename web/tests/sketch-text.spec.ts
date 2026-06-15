@@ -86,7 +86,7 @@ test.describe("Sketch text", () => {
     expect(await subCallTypes(page)).toContain("sketch_path");
 
     // Finish the sketch; the committed feature carries the same paths.
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

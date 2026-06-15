@@ -100,7 +100,7 @@ test.describe("Sketch offset", () => {
     // Outside click → grow.
     expect(newRadius!).toBeGreaterThan(orig!.r);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

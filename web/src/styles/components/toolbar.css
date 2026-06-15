@@ -178,11 +178,9 @@
     }
   }
 
-  /* K6b.2: sketch-mode alternate layout. */
-  &.is-sketch-mode {
-    background: var(--color-bg-hover);
-    border-bottom-color: var(--color-accent);
-  }
+  /* Ticket pqoe: sketch is a feature like any other — the toolbar no
+     longer tints itself in "sketch mode" (the background stays white);
+     only the sketch-tool row changes. */
 
   & .tool.is-primary {
     background: var(--color-accent);

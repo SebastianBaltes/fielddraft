@@ -113,7 +113,7 @@ test.describe("Sketch project (use external geometry)", () => {
     ).toBe(true);
 
     // 5) Finish and assert a clean page.
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await page.waitForTimeout(300);
     expect(pageErrors, `page errors: ${pageErrors.join("; ")}`).toEqual([]);
   });

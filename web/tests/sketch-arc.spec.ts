@@ -51,7 +51,7 @@ test.describe("Sketch arc tool", () => {
     await expect(subSpineRows).toHaveCount(1);
 
     await page.waitForTimeout(700);
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await page.evaluate(() => {

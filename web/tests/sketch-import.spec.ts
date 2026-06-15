@@ -43,7 +43,7 @@ test.describe("Sketch vector import", () => {
     expect(types.filter((t) => t === "sketch_line").length).toBeGreaterThanOrEqual(4);
     expect(types).toContain("sketch_circle");
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect
       .poll(async () => committedSketchTypes(page))
       .not.toBeNull();
@@ -83,7 +83,7 @@ test.describe("Sketch vector import", () => {
     expect(types).toContain("sketch_line");
     expect(types).toContain("sketch_circle");
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect
       .poll(async () => committedSketchTypes(page))
       .not.toBeNull();

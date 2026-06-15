@@ -47,7 +47,7 @@ test.describe("Sketch primitive variants", () => {
 
     expect(count(await subCallTypes(page), "sketch_rectangle")).toBe(1);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     expect(count((await committedSketchTypes(page)) ?? [], "sketch_rectangle")).toBe(1);
 
@@ -77,7 +77,7 @@ test.describe("Sketch primitive variants", () => {
 
     expect(count(await subCallTypes(page), "sketch_circle")).toBe(1);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     expect(count((await committedSketchTypes(page)) ?? [], "sketch_circle")).toBe(1);
 
@@ -108,7 +108,7 @@ test.describe("Sketch primitive variants", () => {
 
     expect(count(await subCallTypes(page), "sketch_line")).toBe(4);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     expect(count((await committedSketchTypes(page)) ?? [], "sketch_line")).toBe(4);
 

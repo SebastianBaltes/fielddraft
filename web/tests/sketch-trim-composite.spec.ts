@@ -70,7 +70,7 @@ test.describe("Sketch trim — composites", () => {
 
     expect(await counts()).toEqual({ rect: 0, line: 3 });
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await page.evaluate(() => {

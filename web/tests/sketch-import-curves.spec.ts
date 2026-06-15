@@ -94,7 +94,7 @@ test.describe("Sketch vector import — curves + transforms", () => {
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
 
     // Finish: the sketch_path flows through to the committed sketch.
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect
       .poll(async () => committedSketchTypes(page))
       .not.toBeNull();

@@ -1579,6 +1579,7 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
+    this.syncSketchSessionToSelection();
     for (const listener of this.listeners) listener();
   }
 
@@ -1597,6 +1598,7 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
+    this.syncSketchSessionToSelection();
     for (const listener of this.listeners) listener();
   }
 
@@ -1636,6 +1638,7 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
+    this.syncSketchSessionToSelection();
     for (const listener of this.listeners) listener();
   }
 
@@ -2170,7 +2173,57 @@ export class KernelStore {
     });
     this.syncActiveBody();
     this.refreshMeshCache();
+    this.syncSketchSessionToSelection();
     for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * Ticket pqoe: a sketch behaves like any other feature — selecting it
+   * IS editing it. Reconcile the active sketch session with the current
+   * feature selection:
+   *  - exactly one sketch feature selected → enter its edit session
+   *    (unless we are already editing that same id);
+   *  - selection moved away → commit the active session so live edits
+   *    persist (the ✗ Cancel button is the explicit discard path).
+   * Idempotent and called only from the explicit selection mutators, so
+   * the selection change that `commitSketch` performs internally cannot
+   * re-trigger it (no loop).
+   */
+  private syncSketchSessionToSelection(): void {
+    const session = this.state.sketchSession;
+    const editingId = session.active ? session.editingFeatureId : null;
+    const sole =
+      this.state.selection.size === 1
+        ? this.state.features.find((f) => this.state.selection.has(f.id)) ?? null
+        : null;
+    const targetSketchId =
+      sole && sole.kind === "sketch" ? sole.id : null;
+
+    // Already editing exactly the selected sketch → nothing to do. (A fresh
+    // draft session has editingFeatureId === null but is NOT "no session",
+    // so it must still be reconciled below when the selection moves.)
+    if (session.active && targetSketchId === editingId && editingId !== null)
+      return;
+    if (!session.active && targetSketchId === null) return;
+
+    // Selection no longer matches the active session → commit it so live
+    // edits persist (the ✗ button is the explicit discard). commitSketch()
+    // routes through `commit()`, which resets the selection to the committed
+    // sketch id; restore the caller's intended selection afterwards so a
+    // switch A→B (or sketch→other feature) doesn't leave the old id selected.
+    if (session.active) {
+      const intended = this.state.selection;
+      const intendedAnchor = this.state.selectionAnchor;
+      this.commitSketch();
+      this.state = {
+        ...this.state,
+        selection: intended,
+        selectionAnchor: intendedAnchor,
+      };
+      this.syncActiveBody();
+    }
+    // A sketch is now the sole selection → enter its edit session.
+    if (targetSketchId !== null) this.editSketch(targetSketchId);
   }
 
   // ── Chunk 3a: persistent B-Rep element selection ──────────────────

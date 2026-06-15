@@ -82,7 +82,7 @@ test.describe("Sketch chamfer", () => {
       `expected 3 sketch_line (2 trimmed + 1 connector), got ${JSON.stringify(types2)}`,
     ).toBe(3);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

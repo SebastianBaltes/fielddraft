@@ -46,7 +46,7 @@ test.describe("Sketch construction geometry", () => {
     await expect(subSpineRows.first()).toHaveClass(/is-construction/);
 
     await page.waitForTimeout(500);
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await page.evaluate(() => {

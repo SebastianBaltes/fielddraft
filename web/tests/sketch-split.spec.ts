@@ -53,7 +53,7 @@ test.describe("Sketch split", () => {
       (await subCallTypes(page)).filter((t) => t === "sketch_line").length,
     ).toBe(2);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

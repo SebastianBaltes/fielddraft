@@ -95,7 +95,7 @@ test.describe("Sketch chain offset", () => {
       `expected the chain offset to add more than one line (got ${after} total)`,
     ).toBeGreaterThan(4);
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

@@ -381,15 +381,12 @@ export function Toolbar({ store, state }: ToolbarProps) {
 
   if (sketchSession.active) {
     return (
-      <div className="fd-toolbar is-sketch-mode" data-testid="fielddraft-toolbar">
+      <div className="fd-toolbar" data-testid="fielddraft-toolbar">
         <div className="group">
           <span className="label" data-testid="sketch-mode-indicator">Sketch</span>
-          <button type="button" className="tool is-primary" title="Finish sketch" data-testid="sketch-finish" onClick={() => store.commitSketch()}>
-            ✓ Finish
-          </button>
-          <button type="button" className="tool" title="Cancel sketch" data-testid="sketch-cancel" onClick={() => store.exitSketch()}>
-            ✗ Cancel
-          </button>
+          {/* Ticket pqoe: a sketch is a feature like any other — commit /
+              discard live on the ✓/✗ in its Detail-panel header, not in
+              the toolbar. The toolbar only carries sketch tools + Import. */}
           {/* F22: import SVG / DXF geometry into the active sketch. A
               visible button triggers the visually-hidden file input. */}
           <button

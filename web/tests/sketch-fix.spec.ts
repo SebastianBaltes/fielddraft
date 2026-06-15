@@ -62,7 +62,7 @@ test.describe("Sketch fix constraint", () => {
 
     expect(await subCallTypes(page)).toContain("sketch_constraint_fix");
 
-    await page.getByTestId("sketch-finish").click();
+    await page.getByTestId("sketch-detail-accept").click();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
 
     const committed = await committedSketchTypes(page);

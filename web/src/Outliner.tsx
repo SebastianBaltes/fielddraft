@@ -566,6 +566,20 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   // prominently on top. Schema fetching for the selected sketch tool
   // happens through the same fd facade as top-level features.
   const sketchSession = state.sketchSession;
+  // Ticket pqoe: a sketch is a feature like any other — selecting it enters
+  // its edit session automatically (store.syncSketchSessionToSelection), and
+  // its Detail panel keeps showing throughout. The Detail panel owns the
+  // sketch's plane field, geometry list and the ✓/✗ commit/discard actions
+  // for ANY active session (a fresh `enter-sketch` draft has no committed
+  // feature yet but is still committed/discarded the same way).
+  const inSketchSession = sketchSession.active;
+  // True while the active session edits a committed sketch that is the sole
+  // current selection — used to source the Detail panel's geometry list from
+  // the live session and to suppress the session panel's duplicate copies.
+  const editingSelectedSketch =
+    inSketchSession &&
+    selectedFeature?.kind === "sketch" &&
+    sketchSession.editingFeatureId === selectedFeature.id;
   const [sketchToolSchema, setSketchToolSchema] =
     useState<FeatureSchema | null>(null);
   useEffect(() => {
@@ -611,18 +625,24 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           <div className="header">
             <span>Sketch</span>
           </div>
-          {/* Ticket yx6a: the sketch plane is an editable feature
-              property — pick a face in the viewport or type a datum
-              query, exactly like the committed sketch's detail view. */}
-          <div className="plane-field" data-testid="sketch-session-plane">
-            <QueryWidget
-              label="Sketch plane"
-              value={sketchSession.planeQuery ?? ""}
-              onChange={(next) => store.setSketchPlane(next)}
-              entityFilter="FACE"
-              deactivateOnPick
-            />
-          </div>
+          {/* Ticket pqoe: when this session edits the currently-selected
+              sketch feature the Detail panel owns the plane field and the
+              geometry list (sketch = feature like any other), so they are
+              suppressed here to avoid duplication. */}
+          {!editingSelectedSketch && (
+            /* Ticket yx6a: the sketch plane is an editable feature
+               property — pick a face in the viewport or type a datum
+               query, exactly like the committed sketch's detail view. */
+            <div className="plane-field" data-testid="sketch-session-plane">
+              <QueryWidget
+                label="Sketch plane"
+                value={sketchSession.planeQuery ?? ""}
+                onChange={(next) => store.setSketchPlane(next)}
+                entityFilter="FACE"
+                deactivateOnPick
+              />
+            </div>
+          )}
           {sketchSession.selectedTool && sketchToolSchema ? (
             <>
               <FeatureDialog
@@ -654,14 +674,19 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               Pick a sketch tool in the toolbar.
             </div>
           )}
-          <SketchSubCalls
-            subCalls={sketchSession.subCalls}
-            diagnostics={sketchSession.diagnostics}
-            selection={sketchSession.selection}
-            onSelect={(refIds) => store.setSketchSelection(refIds)}
-            onToggleConstruction={(i) => store.toggleSketchConstructionAt(i)}
-            onDelete={(i) => store.removeSketchSubCall(i)}
-          />
+          {/* Ticket pqoe: while this session edits the selected sketch the
+              Detail panel owns the geometry list, so the interactive copy
+              here is suppressed (no duplicate list). */}
+          {!editingSelectedSketch && (
+            <SketchSubCalls
+              subCalls={sketchSession.subCalls}
+              diagnostics={sketchSession.diagnostics}
+              selection={sketchSession.selection}
+              onSelect={(refIds) => store.setSketchSelection(refIds)}
+              onToggleConstruction={(i) => store.toggleSketchConstructionAt(i)}
+              onDelete={(i) => store.removeSketchSubCall(i)}
+            />
+          )}
           <ConstraintManagerPanel
             subCalls={sketchSession.subCalls}
             store={store}
@@ -1149,12 +1174,21 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           })()}
         </ul>
       ))}
-      {!sketchSession.active && (
+      {(!inSketchSession || editingSelectedSketch || sketchSession.editingFeatureId === null) && (
         <section className="detail-panel" data-testid="detail-panel">
           <div className="header accordion-header" onClick={() => toggleSection("detail")} data-testid="detail-header">
             <span className="accordion-chevron">{collapsed.has("detail") ? "▸" : "▾"}</span>
             <span>Detail</span>
-            {selectedSchema && (
+            {/* Ticket pqoe: while a sketch session is active its ✓/✗
+                commit/discard the live session (the toolbar no longer
+                carries Finish/Cancel). Every other feature keeps the
+                generic dialog OK/Cancel. */}
+            {inSketchSession ? (
+              <span className="detail-actions" onClick={(e) => e.stopPropagation()}>
+                <button className="detail-ok" data-testid="sketch-detail-accept" onClick={() => store.commitSketch()} title="Accept sketch">✓</button>
+                <button className="detail-cancel" data-testid="sketch-detail-cancel" onClick={() => store.exitSketch()} title="Discard sketch edits">✗</button>
+              </span>
+            ) : selectedSchema && (
               <span className="detail-actions" onClick={(e) => e.stopPropagation()}>
                 <button className="detail-ok" data-testid="detail-ok" onClick={handleDialogOk} title="Accept">✓</button>
                 <button className="detail-cancel" data-testid="detail-cancel" onClick={handleDialogCancel} title="Cancel">✗</button>
@@ -1169,29 +1203,32 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                 onChange={handleDialogChange}
                 error={selectedFeature?.error ?? null}
               />
-              {/* Ticket yx6a: a committed sketch's detail view embeds
-                  its element list (read-only) plus the edit entry —
-                  the sketch tools are a sub-component of the sketch
-                  feature, not a separate mode. */}
+              {/* Ticket pqoe: a sketch's detail view embeds its element
+                  list — selecting the sketch already entered its edit
+                  session, so the list shows the LIVE session sub-calls
+                  while editing (and the committed ones otherwise). The
+                  separate [Edit Sketch] button is gone; commit/discard
+                  live on the ✓/✗ in the Detail header. */}
               {selectedFeature?.kind === "sketch" ? (
-                <>
-                  <SketchSubCalls
-                    subCalls={selectedSketchSubCalls}
-                    diagnostics={emptyDiagnostics()}
-                  />
-                  <div className="actions">
-                    <button
-                      type="button"
-                      className="apply"
-                      data-testid="sketch-detail-edit"
-                      onClick={() => store.editSketch(selectedFeature.id)}
-                    >
-                      Edit sketch
-                    </button>
-                  </div>
-                </>
+                <SketchSubCalls
+                  subCalls={
+                    editingSelectedSketch
+                      ? sketchSession.subCalls
+                      : selectedSketchSubCalls
+                  }
+                  diagnostics={
+                    editingSelectedSketch
+                      ? sketchSession.diagnostics
+                      : emptyDiagnostics()
+                  }
+                />
               ) : null}
             </>
+          ) : inSketchSession ? (
+            // Fresh `enter-sketch` draft (no committed feature yet): the
+            // session panel below carries the plane/tool/geometry; the
+            // Detail header just hosts the ✓/✗ commit/discard actions.
+            <div className="empty" data-testid="sketch-draft-detail">New sketch — pick a tool to draw.</div>
           ) : (
             <div className="empty">No feature selected.</div>
           ))}
