@@ -268,6 +268,93 @@ const EMPTY_TEXT_PARAMS: TextParams = {
 const NOOP_SUBSCRIBE = (): (() => void) => () => {};
 
 /**
+ * Ticket pqoe: the single numeric parameters the corner-op tools (fillet /
+ * chamfer / offset) read live in top-level store state, not in `session`,
+ * so the in-scene tool-param input subscribes to the store. Snapshot the
+ * slice it reads; identity-stable so React bails out when nothing changed.
+ */
+interface ToolParams {
+  filletRadius: number;
+  chamferDistance: number;
+  offsetDistance: number;
+}
+
+const EMPTY_TOOL_PARAMS: ToolParams = {
+  filletRadius: 5,
+  chamferDistance: 5,
+  offsetDistance: 5,
+};
+
+let toolParamsCache: ToolParams = EMPTY_TOOL_PARAMS;
+function toolParamsSnapshot(store: KernelStore): ToolParams {
+  const s = store.getState();
+  const c = toolParamsCache;
+  if (
+    c.filletRadius === s.sketchFilletRadius &&
+    c.chamferDistance === s.sketchChamferDistance &&
+    c.offsetDistance === s.sketchOffsetDistance
+  ) {
+    return c;
+  }
+  toolParamsCache = {
+    filletRadius: s.sketchFilletRadius,
+    chamferDistance: s.sketchChamferDistance,
+    offsetDistance: s.sketchOffsetDistance,
+  };
+  return toolParamsCache;
+}
+
+/**
+ * Ticket pqoe: descriptor for the active corner-op tool's single numeric
+ * param — which testid/label/setter the in-scene input binds to, and the
+ * live value pulled from the `ToolParams` snapshot. `null` for any tool
+ * that has no in-scene param (most tools).
+ */
+interface ToolParamField {
+  testId: string;
+  /** Short label glyph shown before the input (matches the old toolbar). */
+  label: string;
+  /** Tooltip describing the param. */
+  title: string;
+  value: number;
+  set: (store: KernelStore, v: number) => void;
+}
+
+function toolParamField(
+  tool: string | null,
+  params: ToolParams,
+): ToolParamField | null {
+  switch (tool) {
+    case "sketch_fillet":
+      return {
+        testId: "sketch-fillet-radius",
+        label: "R",
+        title: "Fillet radius (mm)",
+        value: params.filletRadius,
+        set: (store, v) => store.setSketchFilletRadius(v),
+      };
+    case "sketch_chamfer":
+      return {
+        testId: "sketch-chamfer-distance",
+        label: "D",
+        title: "Chamfer distance (mm)",
+        value: params.chamferDistance,
+        set: (store, v) => store.setSketchChamferDistance(v),
+      };
+    case "sketch_offset":
+      return {
+        testId: "sketch-offset-distance",
+        label: "D",
+        title: "Offset distance (mm)",
+        value: params.offsetDistance,
+        set: (store, v) => store.setSketchOffsetDistance(v),
+      };
+    default:
+      return null;
+  }
+}
+
+/**
  * Cached `TextParams` snapshot keyed off the store's current values, so
  * `useSyncExternalStore` gets a referentially-stable object while nothing
  * the editor cares about changed (re-creating it every call would loop).
@@ -821,6 +908,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         ? textParamsSnapshot(store)
         : EMPTY_TEXT_PARAMS,
     () => EMPTY_TEXT_PARAMS,
+  );
+
+  // Ticket pqoe: the corner-op tools (fillet / chamfer / offset) carry a
+  // single numeric param that used to live in the toolbar. It now shows as
+  // an in-scene input pinned to the canvas corner while that tool is active
+  // — same store binding, so the two-click flow is unchanged. Subscribe to
+  // the store so the field re-renders when the user edits it.
+  const toolParams = useSyncExternalStore(
+    store ? store.subscribe : NOOP_SUBSCRIBE,
+    () => (store ? toolParamsSnapshot(store) : EMPTY_TOOL_PARAMS),
+    () => EMPTY_TOOL_PARAMS,
   );
 
   // Tickets yx6a/bxoo: resolve the session's plane query to its world
@@ -2518,6 +2616,38 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           </div>
         </div>
       )}
+      {/* Ticket pqoe: in-scene tool-param input for the corner-op tools
+          (fillet / chamfer / offset). The single numeric parameter that used
+          to sit in the toolbar now floats in the canvas corner, visible ONLY
+          while its tool is active. It's bound to the SAME store state/setters
+          (setSketchFilletRadius etc.), so the two-click tool flow is
+          unchanged — only the field moved. The data-testid matches the old
+          toolbar field so the existing e2e selectors keep resolving. */}
+      {store &&
+        (() => {
+          const field = toolParamField(session.selectedTool, toolParams);
+          if (!field) return null;
+          return (
+            <div
+              className="fd-sketch-tool-param"
+              data-testid="sketch-tool-param"
+            >
+              <label className="field" title={field.title}>
+                {field.label}
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  data-testid={field.testId}
+                  value={field.value}
+                  onChange={(e) =>
+                    field.set(store, Number(e.currentTarget.value))
+                  }
+                />
+              </label>
+            </div>
+          );
+        })()}
     </>
   );
 }

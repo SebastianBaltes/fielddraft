@@ -711,19 +711,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_fillet"
             onClick={() => store.selectSketchTool("sketch_fillet", {})}
           />
-          <label className="corner-op-input" title="Fillet radius (mm)">
-            R
-            <input
-              type="number"
-              min="0"
-              step="0.5"
-              data-testid="sketch-fillet-radius"
-              value={state.sketchFilletRadius}
-              onChange={(e) =>
-                store.setSketchFilletRadius(Number(e.currentTarget.value))
-              }
-            />
-          </label>
+          {/* Ticket pqoe: the Fillet radius field moved in-scene — it now
+              floats in the canvas corner while the Fillet tool is active
+              (see SketchCanvas2d's in-scene tool-param input). */}
           {/* Chamfer: straight-edge sibling of Fillet, an interactive
               editing mode, not a kernel tool. Two clicks pick the lines
               whose corner is bevelled by a straight line at the setback
@@ -735,19 +725,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_chamfer"
             onClick={() => store.selectSketchTool("sketch_chamfer", {})}
           />
-          <label className="corner-op-input" title="Chamfer distance (mm)">
-            D
-            <input
-              type="number"
-              min="0"
-              step="0.5"
-              data-testid="sketch-chamfer-distance"
-              value={state.sketchChamferDistance}
-              onChange={(e) =>
-                store.setSketchChamferDistance(Number(e.currentTarget.value))
-              }
-            />
-          </label>
+          {/* Ticket pqoe: the Chamfer distance field moved in-scene — it now
+              floats in the canvas corner while the Chamfer tool is active
+              (see SketchCanvas2d's in-scene tool-param input). */}
           {/* F14: Mirror — interactive editing mode, not a kernel tool.
               Select source geometry first (Select mode), then pick this
               tool and click the axis LINE: every selected line/circle/arc
@@ -774,19 +754,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_offset"
             onClick={() => store.selectSketchTool("sketch_offset", {})}
           />
-          <label className="corner-op-input" title="Offset distance (mm)">
-            D
-            <input
-              type="number"
-              min="0"
-              step="0.5"
-              data-testid="sketch-offset-distance"
-              value={state.sketchOffsetDistance}
-              onChange={(e) =>
-                store.setSketchOffsetDistance(Number(e.currentTarget.value))
-              }
-            />
-          </label>
+          {/* Ticket pqoe: the Offset distance field moved in-scene — it now
+              floats in the canvas corner while the Offset tool is active
+              (see SketchCanvas2d's in-scene tool-param input). */}
           {/* F16: Pattern — interactive editing mode, not a kernel tool.
               Select source geometry first (Select mode), set count +
               spacing / angle, then click Linear X / Linear Y / Circular:

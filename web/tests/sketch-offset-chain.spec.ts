@@ -61,10 +61,12 @@ test.describe("Sketch chain offset", () => {
       (await subCallTypes(page)).filter((t) => t === "sketch_line").length;
     expect(await lineCount()).toBe(3);
 
-    // Pick the Offset tool, set a known distance.
+    // Pick the Offset tool, then set a known distance — the distance field
+    // is now an in-scene input shown only while the tool is active (ticket
+    // pqoe).
     const distance = 8;
-    await page.getByTestId("sketch-offset-distance").fill(String(distance));
     await page.getByTestId("sketch-tool-sketch_offset").click();
+    await page.getByTestId("sketch-offset-distance").fill(String(distance));
     await settleSketchCamera(page);
 
     // Click the FIRST (bottom) segment a little ABOVE it — toward the

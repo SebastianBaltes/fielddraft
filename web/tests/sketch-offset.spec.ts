@@ -64,15 +64,17 @@ test.describe("Sketch offset", () => {
     });
     expect(orig).not.toBeNull();
 
-    // Set a known offset distance.
+    // Pick Offset first — the distance field is now an in-scene input shown
+    // only while the tool is active (ticket pqoe) — then set a known offset
+    // distance.
     const distance = 5;
-    await page.getByTestId("sketch-offset-distance").fill(String(distance));
-
-    // Pick Offset and click clearly OUTSIDE the rim: a point along +x at
-    // radius + (distance/2) so it's near enough to pick the rim but plainly
-    // on the outside, selecting the grow side.
     await page.getByTestId("sketch-tool-sketch_offset").click();
+    await page.getByTestId("sketch-offset-distance").fill(String(distance));
     await settleSketchCamera(page);
+
+    // Click clearly OUTSIDE the rim: a point along +x at radius +
+    // (distance/2) so it's near enough to pick the rim but plainly on the
+    // outside, selecting the grow side.
 
     const clickWorld: [number, number] = [
       orig!.ctr[0] + orig!.r + distance / 2,
