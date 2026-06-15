@@ -78,6 +78,10 @@ export interface DropdownItem {
   kind: string;
   label?: string;
   title?: string;
+  /** Optional stable test id stamped on the menu row. Sketch-tool groups
+   *  use this so existing e2e selectors keep finding the variant buttons
+   *  even though they now live inside the dropdown menu. */
+  testId?: string;
 }
 
 export function FeatureDropdownButton({
@@ -142,6 +146,12 @@ export function FeatureDropdownButton({
   if (!current) return null;
   const cm = meta(current.kind);
 
+  // When any item carries a test id (the sketch-tool groups) the menu stays
+  // mounted even while closed, parked off-screen via `is-collapsed`, so those
+  // ids remain directly reachable. Other dropdowns keep the open-only mount.
+  const keepMounted = items.some((it) => it.testId);
+  const showMenu = open ? pos !== null : keepMounted;
+
   return (
     <div className="split-button" data-testid={testId} ref={wrapperRef}>
       <button
@@ -169,8 +179,12 @@ export function FeatureDropdownButton({
       >
         ▾
       </button>
-      {open && pos && (
-        <div className="split-dropdown" role="menu" style={{ top: pos.top, left: pos.left }}>
+      {showMenu && (
+        <div
+          className={"split-dropdown" + (open && pos ? "" : " is-collapsed")}
+          role="menu"
+          style={open && pos ? { top: pos.top, left: pos.left } : undefined}
+        >
           {items.map((item) => {
             const im = meta(item.kind);
             const isActive = item.key === currentKey;
@@ -181,6 +195,7 @@ export function FeatureDropdownButton({
                 role="menuitem"
                 className={"split-row" + (isActive ? " is-active" : "")}
                 title={item.title ?? im.label}
+                data-testid={item.testId}
                 draggable={draggable}
                 onDragStart={draggable ? dragStartCopy(dragType, item.key) : undefined}
                 onClick={() => {
@@ -270,6 +285,31 @@ const SKETCH_TOOL_KEYS = new Set<string>([
   // interactive Mirror / Offset replace them.
 ]);
 
+// Sketch-tool dropdown groups (ticket pqoe). Each variant keeps the test id
+// it had as a standalone button so existing e2e selectors still resolve it
+// (the menu stays mounted while closed — see FeatureDropdownButton). The
+// dropdown `key` is the tool kind; the toolbar's onSelect dispatches it
+// through the right activation path (kernel tool vs. UI-only variant).
+const SKETCH_CIRCLE_ITEMS: DropdownItem[] = [
+  { key: "sketch_circle",    kind: "sketch_circle",    testId: "sketch-tool-sketch_circle" },
+  { key: "sketch_circle_3p", kind: "sketch_circle_3p", testId: "sketch-tool-sketch_circle_3p" },
+  { key: "sketch_ellipse",   kind: "sketch_ellipse",   testId: "sketch-tool-sketch_ellipse" },
+];
+
+const SKETCH_RECTANGLE_ITEMS: DropdownItem[] = [
+  { key: "sketch_rectangle",        kind: "sketch_rectangle",        testId: "sketch-tool-sketch_rectangle" },
+  { key: "sketch_rectangle_center", kind: "sketch_rectangle_center", testId: "sketch-tool-sketch_rectangle_center" },
+  { key: "sketch_rectangle_3p",     kind: "sketch_rectangle_3p",     testId: "sketch-tool-sketch_rectangle_3p" },
+];
+
+// Variants drawn through dropdowns are pulled out of the flat kernel-driven
+// row so they aren't rendered twice.
+const SKETCH_GROUPED_KEYS = new Set<string>([
+  "sketch_circle",
+  "sketch_rectangle",
+  "sketch_ellipse",
+]);
+
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 
 /* ------------------------------------------------------------------ */
@@ -330,6 +370,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
       const schema = fd.schemaForSketchToolType(typeName);
       store.selectSketchTool(typeName, buildDefaultDefinition(schema));
     } catch { /* ignore */ }
+  };
+
+  // Dispatch a sketch-tool dropdown selection. Kernel tools (circle,
+  // rectangle, ellipse) go through schema defaults; the UI-only variants
+  // (3-point / center) just carry an empty definition like their old
+  // hard-coded buttons did.
+  const handleSketchToolSelect = (kind: string) => {
+    if (SKETCH_TOOL_KEYS.has(kind)) {
+      handleSketchToolPick(kind);
+    } else {
+      store.selectSketchTool(kind, {});
+    }
   };
 
   // P0.1: constraints applicable to the current select-mode pick.
@@ -451,6 +503,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
           </button>
           {sketchToolTypes.map((type) => {
             if (!SKETCH_TOOL_KEYS.has(type)) return null;
+            // Circle / rectangle / ellipse are surfaced through the grouped
+            // dropdowns below instead of as flat buttons.
+            if (SKETCH_GROUPED_KEYS.has(type)) return null;
             return (
               <FeatureButton
                 key={type}
@@ -461,6 +516,36 @@ export function Toolbar({ store, state }: ToolbarProps) {
               />
             );
           })}
+          {/* pqoe: Circle (Circle / 3-pt / Ellipse) and Rectangle
+              (Rectangle / center / 3-pt) variants grouped into split-button
+              dropdowns, matching the main toolbar's primitive/transform
+              dropdowns. activeKey is set only while a member of the group is
+              the selected tool, so the primary button lights up and shows the
+              live variant; otherwise the last-used variant stays the default. */}
+          <FeatureDropdownButton
+            items={SKETCH_CIRCLE_ITEMS}
+            lastUsedStorageKey="fielddraft.lastUsedSketchCircle"
+            defaultKey="sketch_circle"
+            activeKey={
+              SKETCH_CIRCLE_ITEMS.some((it) => it.key === sketchSession.selectedTool)
+                ? (sketchSession.selectedTool ?? undefined)
+                : undefined
+            }
+            onSelect={handleSketchToolSelect}
+            testId="sketch-tool-circle-group"
+          />
+          <FeatureDropdownButton
+            items={SKETCH_RECTANGLE_ITEMS}
+            lastUsedStorageKey="fielddraft.lastUsedSketchRectangle"
+            defaultKey="sketch_rectangle"
+            activeKey={
+              SKETCH_RECTANGLE_ITEMS.some((it) => it.key === sketchSession.selectedTool)
+                ? (sketchSession.selectedTool ?? undefined)
+                : undefined
+            }
+            onSelect={handleSketchToolSelect}
+            testId="sketch-tool-rectangle-group"
+          />
           {/* F23-full: spline-mode toggle. Shown only while the spline
               tool is active. `interpolate` = Catmull-Rom through the
               clicked points; `control` = a real cubic B-spline whose
@@ -501,30 +586,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
               </button>
             </div>
           )}
-          {/* F7: primitive-construction variants. These are UI-only tools
-              (like trim) — they aren't kernel feature tools but emit
-              ordinary sub-calls at commit time (sketch_rectangle /
-              sketch_circle / sketch_line + perpendicular constraints), so
-              they're hard-coded buttons here and the gestures are handled
-              in SketchCanvas2d keyed on the selectedTool string. */}
-          <FeatureButton
-            kind="sketch_rectangle_center"
-            active={sketchSession.selectedTool === "sketch_rectangle_center"}
-            testId="sketch-tool-sketch_rectangle_center"
-            onClick={() => store.selectSketchTool("sketch_rectangle_center", {})}
-          />
-          <FeatureButton
-            kind="sketch_rectangle_3p"
-            active={sketchSession.selectedTool === "sketch_rectangle_3p"}
-            testId="sketch-tool-sketch_rectangle_3p"
-            onClick={() => store.selectSketchTool("sketch_rectangle_3p", {})}
-          />
-          <FeatureButton
-            kind="sketch_circle_3p"
-            active={sketchSession.selectedTool === "sketch_circle_3p"}
-            testId="sketch-tool-sketch_circle_3p"
-            onClick={() => store.selectSketchTool("sketch_circle_3p", {})}
-          />
+          {/* F7: primitive-construction variants (rect center / rect 3-pt /
+              circle 3-pt) are UI-only tools — they aren't kernel feature
+              tools but emit ordinary sub-calls at commit time (sketch_rectangle
+              / sketch_circle / sketch_line + perpendicular constraints), with
+              the gestures handled in SketchCanvas2d keyed on the selectedTool
+              string. They now live inside the Circle / Rectangle dropdowns
+              above (ticket pqoe). */}
           {/* Trim is an interactive editing mode, not a kernel feature
               tool, so it isn't in `sketchToolTypes`. Selecting it makes a
               canvas click cut the curve under the cursor at its nearest

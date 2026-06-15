@@ -66,6 +66,16 @@
       box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.12));
       padding: var(--space-1) 0;
 
+      /* Sketch-tool groups keep their menu mounted so the variant test ids
+         stay reachable while closed. Park it off-screen (still a visible,
+         non-zero box, so e2e selectors can act on the rows) instead of
+         unmounting it. */
+      &.is-collapsed {
+        top: -9999px;
+        left: -9999px;
+        opacity: 0;
+      }
+
       & .split-row {
         background: transparent;
         border: none;

@@ -346,11 +346,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   const [newVarValue, setNewVarValue] = useState<string>("");
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    // Ticket pqoe: the sketch geometry list is collapsed by default, so it
+    // seeds the collapsed set on first run. Once the user toggles it the
+    // choice persists via localStorage like every other accordion section.
     try {
       const raw = localStorage.getItem("fielddraft.outliner.collapsed");
       if (raw) return new Set(JSON.parse(raw));
     } catch { /* ignore */ }
-    return new Set<string>();
+    return new Set<string>(["geometry"]);
   });
   const toggleSection = (id: string) => {
     setCollapsed((prev) => {
@@ -1209,20 +1212,33 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                   while editing (and the committed ones otherwise). The
                   separate [Edit Sketch] button is gone; commit/discard
                   live on the ✓/✗ in the Detail header. */}
-              {selectedFeature?.kind === "sketch" ? (
-                <SketchSubCalls
-                  subCalls={
-                    editingSelectedSketch
-                      ? sketchSession.subCalls
-                      : selectedSketchSubCalls
-                  }
-                  diagnostics={
-                    editingSelectedSketch
-                      ? sketchSession.diagnostics
-                      : emptyDiagnostics()
-                  }
-                />
-              ) : null}
+              {selectedFeature?.kind === "sketch" ? (() => {
+                const geometrySubCalls = editingSelectedSketch
+                  ? sketchSession.subCalls
+                  : selectedSketchSubCalls;
+                return (
+                  /* Ticket pqoe: the geometry list is its own accordion
+                     section, collapsed by default, reusing the same
+                     header/chevron/collapsed-set mechanism as the other
+                     sections in this panel. */
+                  <div className="geometry-section" data-testid="geometry-section">
+                    <div className="header accordion-header" onClick={() => toggleSection("geometry")} data-testid="geometry-header">
+                      <span className="accordion-chevron">{collapsed.has("geometry") ? "▸" : "▾"}</span>
+                      <span>Geometry ({geometrySubCalls.length})</span>
+                    </div>
+                    {!collapsed.has("geometry") && (
+                      <SketchSubCalls
+                        subCalls={geometrySubCalls}
+                        diagnostics={
+                          editingSelectedSketch
+                            ? sketchSession.diagnostics
+                            : emptyDiagnostics()
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })() : null}
             </>
           ) : inSketchSession ? (
             // Fresh `enter-sketch` draft (no committed feature yet): the
