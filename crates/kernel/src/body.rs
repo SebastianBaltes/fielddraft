@@ -412,14 +412,15 @@ pub fn partition(features: &[DecodedFeature]) -> Vec<BodyPartition> {
                         }
                     }
                 } else {
-                    let target = groups
-                        .iter()
-                        .enumerate()
-                        .find(|(_, g)| aabbs_overlap(g.aabb, feat_aabb))
-                        .map(|(idx, _)| idx);
-                    if let Some(idx) = target {
-                        groups[idx].feature_indices.push(i);
-                    }
+                    // No explicit scope: a Remove/Intersect must name what it
+                    // acts on — it does NOT dock by mere contact (that would
+                    // hide ambiguity; Onshape requires a scope). Seed its own
+                    // standalone body so it renders as a red warning preview;
+                    // the feature itself is flagged with a merge-scope warning.
+                    groups.push(BodyPartition {
+                        feature_indices: vec![i],
+                        aabb: feat_aabb,
+                    });
                 }
             }
         }
@@ -1388,29 +1389,41 @@ mod tests {
     }
 
     #[test]
-    fn difference_attaches_to_overlapping_body() {
+    fn untargeted_difference_is_a_standalone_preview() {
+        // Scope is mandatory: a Remove with no explicit target must NOT carve
+        // by contact — it seeds its own (red warning-preview) body. The
+        // feature is flagged with a merge-scope warning at the feature layer.
         let features = vec![
             box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
             sphere_feat(2, BoolOp::Remove, [0.0, 0.0, 0.0], 3.0),
         ];
         let bodies = partition(&features);
-        assert_eq!(bodies.len(), 1);
-        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
+        assert_eq!(bodies.len(), 2, "an unscoped Remove never carves by contact");
+        assert_eq!(bodies[0].feature_indices, vec![0]);
+        assert_eq!(bodies[1].feature_indices, vec![1]);
     }
 
     #[test]
-    fn orphan_difference_is_dropped() {
+    fn targeted_difference_attaches_to_its_target() {
+        // With an explicit target the Remove docks into that body and carves it.
         let features = vec![
-            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [5.0, 5.0, 5.0]),
-            sphere_feat(2, BoolOp::Remove, [100.0, 0.0, 0.0], 3.0),
+            box_feat(1, BoolOp::New, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+            DecodedFeature::from_parts(
+                FeatureId::from_u32(2),
+                "Remove 2".into(),
+                BoolOp::Remove,
+                Primitive::Sphere {
+                    center: [0.0, 0.0, 0.0],
+                    radius: 3.0,
+                },
+                Transform::IDENTITY,
+                PrimitiveModifiers::NONE,
+                vec![FeatureId::from_u32(1)],
+            ),
         ];
         let bodies = partition(&features);
         assert_eq!(bodies.len(), 1);
-        assert_eq!(
-            bodies[0].feature_indices,
-            vec![0],
-            "orphan difference must not attach"
-        );
+        assert_eq!(bodies[0].feature_indices, vec![0, 1]);
     }
 
     #[test]

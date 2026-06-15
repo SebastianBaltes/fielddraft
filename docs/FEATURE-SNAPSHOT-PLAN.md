@@ -98,17 +98,27 @@ Status: **PHASEN 1a–1c + 2 UMGESETZT** · Owner: Kernel/Pipeline · Letzte Akt
     Bodies aus Features VOR ihm (Fold-Struktur), spätere Referenzen sind
     ausgeschlossen (Forward-Ref-Guard Boolean + Reorder-Guard + UI-Filter),
     impliziter Union ist weg.
-  - **Bewusst BEIBEHALTEN:** Der untagged-Remove/Intersect-AABB-Fallback
-    (un-skopierter Subtract dockt an den *früheren* Körper, auf dem er liegt).
-    Das ist KEINE Snapshot-Verletzung (nur frühere Bodies, Left-Fold) und ist
-    gewollte UX — das **Hole**-Feature und Face-Subtracts hängen daran (Loch
-    bohrt den Körper, auf dem es platziert ist). Würde man es entfernen,
-    bräuchte jedes Loch einen expliziten Zielkörper → schlechtere UX, kein
-    Korrektheitsgewinn. No-scope-Fälle werden ohnehin gewarnt (siehe
-    Merge-Scope-Warnung).
   - **Boolean-Sibling-Mutation (B1)** bleibt der partition-interne
     Kommunikationsweg (Tool trägt die op). Funktional korrekt; ein Umbau zu
     „Boolean trägt eigenen Knoten" wäre groß und ohne Nutzen.
+
+- **Phase 2b — Scope ist Pflicht für Remove/Intersect/Hole (v0.6.144):**
+  Korrigiert meine frühere Fehlannahme (Onshape erlaubt KEINEN impliziten
+  AABB-Subtract). Regel: ein Remove/Intersect/Hole ohne expliziten Scope →
+  **Warnung** (Label-Warnfarbe + `title`-Tooltip), **kein** Effekt.
+  - `partition()`: untagged Remove/Intersect dockt NICHT mehr per AABB —
+    seedet einen eigenständigen (roten Preview-)Body. Tests
+    `untargeted_difference_is_a_standalone_preview` +
+    `targeted_difference_attaches_to_its_target`.
+  - **Hole**: neuer Pflicht-Param `Scope` (`targets`, BODY); `execute` warnt
+    bei leer und dockt sonst explizit. Test
+    `hole_without_scope_warns_and_drills_nothing`.
+  - **Boolean**: Multi-Tool-Intersect linkt seine Nicht-Seed-Tools jetzt
+    explizit an den Seed (vorher AABB); Subtract/Single-Tool-Intersect ohne
+    Targets → Warnung.
+  - Generelles Muster gemerkt: Pflicht-Selektor leer ⇒ Feature-Warnung. Siehe
+    [[feedback_features_require_explicit_scope]]. Implizite Vorbelegung pro
+    Feature später optional.
 
 ## 1. Anforderung (die eine Invariante)
 

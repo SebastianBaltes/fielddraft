@@ -1092,6 +1092,19 @@ fn push_primitive(
     let name = optional_display_name(def, || format!("{type_label} {id}"));
     let rotation = optional_rotation(def);
     let scale = optional_scale(def);
+    // A primitive set to Remove/Intersect (or Add) needs an explicit scope —
+    // the body it acts on — just like the other booleans. Read it from the
+    // optional `targets` query (`qCreatedBy(...)`); with none, warn and let
+    // the partition pass seed a standalone (red preview) body. (New = a fresh
+    // standalone solid, never warned.)
+    let target_ids = def
+        .get("targets")
+        .and_then(|v| v.as_str())
+        .map(|s| target_ids_from_queries(&MultiQuery::new(s)))
+        .unwrap_or_default();
+    if let Some(w) = merge_scope_warning(op, &target_ids) {
+        ctx.warn_feature(id, w);
+    }
     ctx.features.push(DecodedFeature::from_parts(
         id.clone(),
         name,
@@ -1099,7 +1112,7 @@ fn push_primitive(
         primitive,
         Transform { translate, rotation, scale },
         mods,
-        vec![],
+        target_ids,
     ));
 }
 
@@ -2706,6 +2719,13 @@ pub struct HoleDef {
     /// World-space position of the hole's centre.
     #[param(default = [0.0, 0.0, 0.0])]
     pub translate: [f32; 3],
+
+    /// Merge scope: the body/bodies the hole drills, as
+    /// `qCreatedBy(<seed_feature>)` queries. MANDATORY — a hole with no scope
+    /// is flagged with a warning and drills nothing (Onshape semantics: scope
+    /// is always explicit).
+    #[param(name = "Scope", default = ::fielddraft_protocol::MultiQuery::new(""), entity_filter = "BODY")]
+    pub targets: ::fielddraft_protocol::MultiQuery,
 }
 
 pub struct HoleFeature;
@@ -2734,6 +2754,13 @@ impl FeatureKind for HoleFeature {
         let name = optional_display_name(def, || format!("Hole {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
+        // Scope is mandatory: a hole drills the bodies named in `targets`.
+        // With none chosen it warns and drills nothing (partition seeds it as
+        // a standalone red preview).
+        let target_ids = target_ids_from_queries(&d.targets);
+        if let Some(w) = merge_scope_warning(BoolOp::Remove, &target_ids) {
+            ctx.warn_feature(id, w);
+        }
         // Spine entry uses a hierarchical child id (`<hole>/0`)
         // so `Document::sync_feature_calls` drops it on the
         // next sync — the authoritative wire form is the
@@ -2756,7 +2783,7 @@ impl FeatureKind for HoleFeature {
                 scale,
             },
             PrimitiveModifiers::NONE,
-            vec![],
+            target_ids,
         ));
         Ok(())
     }
@@ -4261,7 +4288,7 @@ impl FeatureKind for BooleanFeature {
     fn execute(
         &self,
         ctx: &mut Context<'_>,
-        _id: &FeatureId,
+        id: &FeatureId,
         def: &Value,
     ) -> Result<(), FeatureError> {
         let d = BooleanDef::parse(def)?;
@@ -4377,21 +4404,32 @@ impl FeatureKind for BooleanFeature {
                         };
                     } else {
                         feature.op = BoolOp::Intersect;
-                        // Explicit scope wins over AABB guesswork: route the
-                        // tool into exactly the chosen target bodies (snapshot
-                        // semantics — references are the truth, not contact).
-                        for t in &scope_target_ids {
-                            if !feature.target_ids.contains(t) {
-                                feature.target_ids.push(t.clone());
+                        // Route the tool to an EXPLICIT target — never AABB
+                        // contact. Explicit scope wins; otherwise a multi-tool
+                        // intersect links its non-seed tools to the seed so
+                        // they intersect it (the seed body). A lone tool with
+                        // no scope stays untargeted → standalone preview + the
+                        // warning below.
+                        if !scope_target_ids.is_empty() {
+                            for t in &scope_target_ids {
+                                if !feature.target_ids.contains(t) {
+                                    feature.target_ids.push(t.clone());
+                                }
+                            }
+                        } else if tool_ids.len() > 1 {
+                            if let Some(seed) = &first_tool_id {
+                                if !feature.target_ids.contains(seed) {
+                                    feature.target_ids.push(seed.clone());
+                                }
                             }
                         }
                     }
                 }
                 _ => {
                     feature.op = BoolOp::Remove;
-                    // As above: a Subtract with an explicit merge scope carves
-                    // ONLY the named targets, never an unrelated body it
-                    // happens to overlap.
+                    // As above: a Subtract carves ONLY the named targets, never
+                    // an unrelated body it happens to overlap. With no scope it
+                    // stays untargeted → standalone preview + the warning below.
                     for t in &scope_target_ids {
                         if !feature.target_ids.contains(t) {
                             feature.target_ids.push(t.clone());
@@ -4399,6 +4437,24 @@ impl FeatureKind for BooleanFeature {
                     }
                 }
             }
+        }
+
+        // Scope is mandatory for Subtract/Intersect (Onshape semantics): a
+        // Subtract with no targets, or a single-tool Intersect with no target,
+        // has nothing to act on — warn so the empty selector is visible (the
+        // tools render as standalone red previews via the partition pass).
+        let needs_scope = match op {
+            BoolOp::Remove => scope_target_ids.is_empty(),
+            BoolOp::Intersect => scope_target_ids.is_empty() && tool_ids.len() <= 1,
+            _ => false,
+        };
+        if needs_scope {
+            ctx.warn_feature(
+                id,
+                "Kein Zielkörper gewählt — Subtract/Intersect braucht einen Scope. \
+                 Wähle, von welchem Körper abgezogen bzw. womit geschnitten wird."
+                    .to_string(),
+            );
         }
 
         Ok(())
@@ -7713,7 +7769,7 @@ mod tests {
         let bore = FeatureCall::new(
             "cylinder",
             id(2),
-            json!({ "radius": 3.0, "half_height": 5.0, "op": "remove" }),
+            json!({ "radius": 3.0, "half_height": 5.0, "op": "remove", "targets": "qCreatedBy(1)" }),
         );
         let mut doc = empty_ctx();
         let mut ctx = Context::new(&mut doc);
@@ -8229,6 +8285,7 @@ mod tests {
                             "center": [0.0, 0.0, 10.0],
                             "translate": anchor_translate,
                             "op": "remove",
+                            "targets": "qCreatedBy(1)",
                         }),
                     ),
                 ],
@@ -9137,6 +9194,7 @@ mod tests {
                 "half_extents": [42.0, 85.0, 42.0],
                 "translate": [60.0, 0.0, 0.0],
                 "op": "remove",
+                "targets": "qCreatedBy(2)",
             }),
         ));
         // Fresh decode (mirror production's per-regen Context) — the helper

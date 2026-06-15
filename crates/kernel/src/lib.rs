@@ -5062,9 +5062,13 @@ mod tests {
             "cached weave survives a pure move while suppressed"
         );
 
-        // A geometry change (boolean remove) makes the cache stale →
-        // every B-Rep export turns empty instead of weaving.
-        k.add_primitive(Primitive::KIND_SPHERE, BoolOp::TAG_REMOVE, 5.0, 0.0, 0.0, 0.5, 0.0, 0.0)
+        // A geometry change (resizing the box) makes the cache stale → every
+        // B-Rep export turns empty instead of weaving. (A standalone Remove
+        // sphere wouldn't touch this body any more — scope is explicit now.)
+        let mut params: serde_json::Value =
+            serde_json::from_str(&k.get_feature_call_params(box_id).unwrap()).unwrap();
+        params["half_extents"] = serde_json::json!([1.5, 1.0, 1.0]);
+        k.replace_feature_call_params(box_id, &params.to_string(), false)
             .unwrap();
         let v_stale = k.body_version(0);
         let edges: serde_json::Value = serde_json::from_str(&k.body_brep_edges(0)).unwrap();
@@ -6793,6 +6797,31 @@ mod tests {
     }
 
     #[test]
+    fn hole_without_scope_warns_and_drills_nothing() {
+        // Scope is mandatory (Onshape semantics): a hole with no chosen body
+        // warns and drills nothing — the box stays solid and the hole shows as
+        // its own (red preview) body.
+        let mut k = Kernel::new();
+        let _base = k
+            .add_primitive(Primitive::KIND_BOX, BoolOp::TAG_NEW, 0.0, 0.0, 0.0, 30.0, 20.0, 30.0)
+            .unwrap();
+        k.add_hole(10.0, 40.0, 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(k.body_count(), 2, "an unscoped hole drills nothing (own preview body)");
+        let feats: serde_json::Value =
+            serde_json::from_str(&k.list_features().unwrap()).unwrap();
+        let hole_row = feats
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["kind"] == serde_json::json!("hole"))
+            .expect("hole row present");
+        assert!(
+            hole_row["warning"].is_string(),
+            "an unscoped hole must carry a warning: {hole_row}"
+        );
+    }
+
+    #[test]
     fn boolean_subtract_carves_only_the_explicit_target() {
         // Snapshot semantics: a Subtract with an explicit merge scope carves
         // ONLY the named target, never an unrelated body it happens to
@@ -6990,9 +7019,11 @@ mod tests {
         // (2) A CSG body (box minus an overlapping sphere) must also
         // weave without panicking.
         let mut k2 = Kernel::new();
+        let mut carve = sphere_feature(2, BoolOp::Remove, [2.0, 2.0, 2.0], 1.5);
+        carve.target_ids = vec![FeatureId::from_u32(1)]; // explicit scope: carve the box
         k2.decoded = vec![
             box_feature(1, BoolOp::New, [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]),
-            sphere_feature(2, BoolOp::Remove, [2.0, 2.0, 2.0], 1.5),
+            carve,
         ];
         k2.rebuild_mesh_internal();
         assert_eq!(k2.body_count(), 1, "box and carving sphere share one body");
