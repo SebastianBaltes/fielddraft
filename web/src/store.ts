@@ -76,7 +76,7 @@ import {
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
-import { textToSubCalls, reeditTextGroup } from "./sketchText";
+import { textToSubCalls, reeditTextGroup, removeTextGroup } from "./sketchText";
 import {
   DEFAULT_FONT_ID,
   cachedFont,
@@ -3194,6 +3194,27 @@ export class KernelStore {
       return false;
     }
     const rewritten = reeditTextGroup(session.subCalls, font, groupId, next);
+    if (!rewritten) return false;
+    this.replaceSketchSubCalls(rewritten);
+    void solveAndReplace(this);
+    return true;
+  }
+
+  /**
+   * Ticket g91j: delete a previously committed text group in place.
+   * `groupId` is the shared `text.group` id of the placement's glyph
+   * sub-calls (surfaced by the in-scene text editor reopened over a baked
+   * text). Drops every glyph carrying the group via [`removeTextGroup`] and
+   * re-solves, replacing the spine in place. Returns false (a graceful no-op)
+   * when no session is active or no glyph carries the group. Unlike
+   * `updateSketchTextGroup` this needs no font — it only removes geometry — so
+   * it deletes even while a font is mid-load. Called when the editor commits
+   * an empty value over an existing text (edit mode → delete).
+   */
+  deleteSketchTextGroup(groupId: string): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active) return false;
+    const rewritten = removeTextGroup(session.subCalls, groupId);
     if (!rewritten) return false;
     this.replaceSketchSubCalls(rewritten);
     void solveAndReplace(this);

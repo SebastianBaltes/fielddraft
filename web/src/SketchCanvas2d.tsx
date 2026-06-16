@@ -2620,11 +2620,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // way. Keeps the editor mechanism symmetric with commitEditor above.
   const commitTextEditor = () => {
     if (textEditor === null || !store) return;
-    // Ticket lycy: an empty / whitespace-only value never creates (or
-    // mutates) text — just dismiss. In create mode this stops a stray
-    // click-away from dropping an empty object; in edit mode it leaves
-    // the existing text untouched rather than blanking it.
+    // Ticket lycy / g91j: an empty / whitespace-only value behaves by mode.
+    // In CREATE mode (group === null) it never drops an object — a stray
+    // click-away just dismisses (lycy). In EDIT mode (a group is set) the
+    // user cleared an existing text, which now DELETES it: remove the group's
+    // glyph sub-calls and re-solve, then dismiss (g91j).
     if (store.getState().sketchTextValue.trim() === "") {
+      if (textEditor.group !== null) {
+        store.deleteSketchTextGroup(textEditor.group);
+      }
       setTextEditor(null);
       lastCamVersionRef.current = -1;
       return;

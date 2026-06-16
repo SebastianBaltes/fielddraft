@@ -353,3 +353,30 @@ export function reeditTextGroup(
   if (!inserted) out.push(...fresh); // defensive; firstIdx is always hit
   return out;
 }
+
+/**
+ * Ticket g91j: drop every glyph `sketch_path` belonging to a tagged text
+ * group, returning the spine with those sub-calls removed — or null when no
+ * glyph carries the group (nothing to delete). Pure: no solve, no DOM, the
+ * store wraps it with `replaceSketchSubCalls` + a re-solve (see
+ * `store.deleteSketchTextGroup`). Mirrors the removal half of
+ * [`reeditTextGroup`]; surrounding sub-calls are preserved by reference. Used
+ * when the in-scene text editor commits an EMPTY value over an existing text
+ * (edit mode → delete), unlike create mode where empty simply places nothing.
+ */
+export function removeTextGroup(
+  subCalls: ReadonlyArray<SubCall>,
+  groupId: string,
+): SubCall[] | null {
+  let found = false;
+  const out: SubCall[] = [];
+  for (const call of subCalls) {
+    const r = textRecipeOf(call);
+    if (r && r.group === groupId) {
+      found = true;
+      continue;
+    }
+    out.push(call);
+  }
+  return found ? out : null;
+}

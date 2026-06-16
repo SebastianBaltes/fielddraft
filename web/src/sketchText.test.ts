@@ -5,6 +5,7 @@ import opentype, { type Font } from "opentype.js";
 import {
   pathBBox,
   reeditTextGroup,
+  removeTextGroup,
   textRecipeOf,
   textToSubCalls,
 } from "./sketchText";
@@ -311,5 +312,45 @@ describe("text re-edit recipe", () => {
 
   it("pathBBox returns null for a non-path sub-call", () => {
     expect(pathBBox({ type: "sketch_line", params: { start: [0, 0], end: [1, 1] } })).toBeNull();
+  });
+});
+
+// ── Ticket g91j: clearing an existing text to empty deletes it ───────
+
+describe("removeTextGroup (empty edit deletes the text)", () => {
+  it("place a group → remove it → the group's glyphs are gone", () => {
+    const calls = textToSubCalls(font, "AB", {
+      origin: [0, 0],
+      height: 10,
+      fontId: "dejavu-sans",
+    });
+    expect(calls.filter((c) => textRecipeOf(c) !== null).length).toBe(2);
+    const group = textRecipeOf(calls[0])!.group;
+
+    const next = removeTextGroup(calls, group);
+    expect(next).not.toBeNull();
+    // Every glyph of the group is gone — nothing tagged remains.
+    expect(next!.filter((c) => textRecipeOf(c) !== null).length).toBe(0);
+    expect(next!.length).toBe(0);
+  });
+
+  it("removeTextGroup keeps surrounding sub-calls by reference", () => {
+    const text = textToSubCalls(font, "A", { origin: [0, 0], height: 10, fontId: "f" });
+    const line: SubCall = { type: "sketch_line", params: { start: [0, 0], end: [1, 1] } };
+    const circle: SubCall = { type: "sketch_circle", params: { center: [5, 5], radius: 2 } };
+    const spine = [line, ...text, circle];
+    const group = textRecipeOf(text[0])!.group;
+
+    const next = removeTextGroup(spine, group);
+    expect(next).not.toBeNull();
+    // Only the line + circle remain (the tagged glyph was dropped).
+    expect(next).toEqual([line, circle]);
+    expect(next![0]).toBe(line);
+    expect(next![1]).toBe(circle);
+  });
+
+  it("removeTextGroup returns null for an unknown group (nothing deleted)", () => {
+    const calls = textToSubCalls(font, "A", { origin: [0, 0], height: 10, fontId: "f" });
+    expect(removeTextGroup(calls, "nope")).toBeNull();
   });
 });
