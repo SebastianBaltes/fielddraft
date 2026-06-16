@@ -671,8 +671,8 @@ func newID() string {
 // ─── tickets ────────────────────────────────────────────────────
 
 // ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
+// ticket xqll: no title field — all info lives in the description.
 type ticketRequest struct {
-	Title       string             `json:"title"`
 	Description string             `json:"description"`
 	ProjectJSON string             `json:"projectJson"`
 	Screenshot  string             `json:"screenshot"` // PNG data URL, or empty
@@ -719,6 +719,21 @@ func attachmentFilename(index int, name string) string {
 	return fmt.Sprintf("attachment-%02d-%s", index+1, safe)
 }
 
+// ticketHeading derives the ticket.md `# ` heading from the description's
+// first non-empty line (ticket xqll — there is no user title anymore). Falls
+// back to a generic "Issue <id>" when the description is empty.
+func ticketHeading(id, description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			if len(t) > 80 {
+				t = strings.TrimSpace(t[:80]) + "…"
+			}
+			return t
+		}
+	}
+	return "Issue " + id
+}
+
 // ticketsDir is where filed tickets are written. Override with TICKETS_DIR;
 // defaults to "tickets" relative to the server's working directory.
 func ticketsDir() string {
@@ -738,8 +753,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Title) == "" {
-		http.Error(w, `{"error":"title required"}`, http.StatusBadRequest)
+	if strings.TrimSpace(req.Description) == "" {
+		http.Error(w, `{"error":"description required"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -754,18 +769,9 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if ts == "" {
 		ts = time.Now().UTC().Format(time.RFC3339)
 	}
-	meta := map[string]string{
-		"id":        id,
-		"title":     req.Title,
-		"version":   req.Version,
-		"timestamp": ts,
-		"userAgent": req.UserAgent,
-		"url":       req.URL,
-		"status":    "open",
-	}
-	if blob, err := json.MarshalIndent(meta, "", "  "); err == nil {
-		os.WriteFile(filepath.Join(dir, "ticket.json"), blob, 0o644)
-	}
+
+	// ticket xqll: ticket.json is gone — ticket.md (below) carries all the
+	// metadata (ID/version/time/URL/UA) plus the description and attachments.
 
 	// User attachments (ticket 8onw): each data URL becomes a file next to
 	// the screenshot, listed in ticket.md for whoever picks the ticket up.
@@ -785,12 +791,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	desc := req.Description
-	if desc == "" {
-		desc = "_(none)_"
-	}
 	md := fmt.Sprintf("# %s\n\n- **ID:** %s\n- **Version:** %s\n- **Time:** %s\n- **URL:** %s\n- **UA:** %s\n\n## Description\n\n%s\n",
-		req.Title, id, req.Version, ts, req.URL, req.UserAgent, desc)
+		ticketHeading(id, req.Description), id, req.Version, ts, req.URL, req.UserAgent, req.Description)
 	if len(attachmentNames) > 0 {
 		md += "\n## Attachments\n\n"
 		for _, n := range attachmentNames {
@@ -811,7 +813,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("ticket saved: %s — %s", id, req.Title)
+	log.Printf("ticket saved: %s — %s", id, ticketHeading(id, req.Description))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"ticket_id": id})
 }

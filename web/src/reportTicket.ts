@@ -1,7 +1,7 @@
 /**
  * In-app bug / feature-request ticket plumbing.
  *
- * The "Report Issue" dialog (ReportDialog.tsx) collects a user title +
+ * The "Report Issue" dialog (ReportDialog.tsx) collects a free-form
  * description, grabs a screenshot of the whole app window and the live
  * project JSON, and POSTs everything to `/api/tickets`. In local dev that
  * endpoint is served by the `ticketWriter` Vite plugin (vite.config.ts),
@@ -61,7 +61,7 @@ export function fileToAttachment(
 }
 
 export interface TicketPayload {
-  title: string;
+  // ticket xqll: no separate title — all info lives in the description.
   description: string;
   /** Serialized .fdraft project JSON (may be empty if unavailable). */
   projectJson: string;

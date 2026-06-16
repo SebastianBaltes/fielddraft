@@ -73,19 +73,20 @@ afterEach(() => {
 });
 
 describe("ReportDialog", () => {
-  it("disables submit until a title is entered", () => {
+  // ticket xqll: the description is the only required field — there is no
+  // title input anymore.
+  it("disables submit until a description is entered", () => {
     render();
     const submit = container.querySelector<HTMLButtonElement>(
       '[data-testid="report-submit"]',
     )!;
     expect(submit.disabled).toBe(true);
-    typeInto('[data-testid="report-title"]', "Something broke");
+    typeInto('[data-testid="report-description"]', "Something broke");
     expect(submit.disabled).toBe(false);
   });
 
   it("POSTs a ticket and closes without a confirmation step", async () => {
     const onClose = render();
-    typeInto('[data-testid="report-title"]', "Edges missing");
     typeInto('[data-testid="report-description"]', "Repro steps here");
 
     await act(async () => {
@@ -99,7 +100,8 @@ describe("ReportDialog", () => {
     const [url, opts] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/tickets");
     const body = JSON.parse((opts as RequestInit).body as string);
-    expect(body.title).toBe("Edges missing");
+    // ticket xqll: no title is sent anymore.
+    expect(body.title).toBeUndefined();
     expect(body.description).toBe("Repro steps here");
     expect(body.projectJson).toContain("schemaVersion");
     expect(typeof body.version).toBe("string");
@@ -137,7 +139,7 @@ describe("ReportDialog", () => {
 
   it("attaches pasted images via Ctrl+V and submits them in the payload", async () => {
     render();
-    typeInto('[data-testid="report-title"]', "With paste");
+    typeInto('[data-testid="report-description"]', "With paste");
 
     const img = new File([new Uint8Array([137, 80, 78, 71])], "", {
       type: "image/png",
@@ -192,7 +194,7 @@ describe("ReportDialog", () => {
   it("surfaces a server error without closing", async () => {
     const onClose = render();
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
-    typeInto('[data-testid="report-title"]', "Boom");
+    typeInto('[data-testid="report-description"]', "Boom");
 
     await act(async () => {
       container

@@ -109,6 +109,17 @@ function ticketWriter(): Plugin {
     return `attachment-${String(index + 1).padStart(2, "0")}-${safe}`;
   }
 
+  // ticket xqll: the ticket.md `# ` heading is derived from the description's
+  // first non-empty line (there is no user title anymore), falling back to a
+  // generic "Issue <id>" for an empty description.
+  function ticketHeading(id: string, description: string): string {
+    for (const line of description.split("\n")) {
+      const t = line.trim();
+      if (t) return t.length > 80 ? `${t.slice(0, 80).trim()}…` : t;
+    }
+    return `Issue ${id}`;
+  }
+
   return {
     name: "ticket-writer",
     configureServer(server) {
@@ -127,7 +138,6 @@ function ticketWriter(): Plugin {
         req.on("end", () => {
           try {
             const t = JSON.parse(raw) as {
-              title?: string;
               description?: string;
               projectJson?: string;
               screenshot?: string | null;
@@ -141,20 +151,13 @@ function ticketWriter(): Plugin {
             const dir = join(ticketsRoot, id);
             mkdirSync(dir, { recursive: true });
 
-            const meta = {
-              id,
-              title: t.title ?? "",
-              description: t.description ?? "",
-              version: t.version ?? "",
-              timestamp: t.timestamp ?? new Date().toISOString(),
-              userAgent: t.userAgent ?? "",
-              url: t.url ?? "",
-              status: "open",
-            };
-            writeFileSync(
-              join(dir, "ticket.json"),
-              JSON.stringify(meta, null, 2),
-            );
+            // ticket xqll: no ticket.json and no title — ticket.md (below)
+            // carries all metadata plus the description and attachments.
+            const description = t.description ?? "";
+            const version = t.version ?? "";
+            const timestamp = t.timestamp ?? new Date().toISOString();
+            const userAgent = t.userAgent ?? "";
+            const url = t.url ?? "";
 
             // User attachments (ticket 8onw): each data URL becomes a file
             // next to the screenshot, listed in ticket.md for the agent.
@@ -167,16 +170,19 @@ function ticketWriter(): Plugin {
               attachmentNames.push(fname);
             });
 
-            // Human-readable mirror so the ticket reads well in a diff.
+            // Human-readable ticket — the single source of truth now that
+            // ticket.json is gone (ticket xqll). Heading derived from the
+            // description's first line.
+            const heading = ticketHeading(id, description);
             writeFileSync(
               join(dir, "ticket.md"),
-              `# ${meta.title}\n\n` +
+              `# ${heading}\n\n` +
                 `- **ID:** ${id}\n` +
-                `- **Version:** ${meta.version}\n` +
-                `- **Time:** ${meta.timestamp}\n` +
-                `- **URL:** ${meta.url}\n` +
-                `- **UA:** ${meta.userAgent}\n\n` +
-                `## Description\n\n${meta.description || "_(none)_"}\n` +
+                `- **Version:** ${version}\n` +
+                `- **Time:** ${timestamp}\n` +
+                `- **URL:** ${url}\n` +
+                `- **UA:** ${userAgent}\n\n` +
+                `## Description\n\n${description || "_(none)_"}\n` +
                 (attachmentNames.length > 0
                   ? `\n## Attachments\n\n${attachmentNames.map((n) => `- ${n}`).join("\n")}\n`
                   : ""),
@@ -191,7 +197,7 @@ function ticketWriter(): Plugin {
               writeFileSync(join(dir, "screenshot.png"), Buffer.from(b64, "base64"));
             }
 
-            server.config.logger.info(`ticket saved: tickets/open/${id} — ${meta.title}`);
+            server.config.logger.info(`ticket saved: tickets/open/${id} — ${heading}`);
             res.statusCode = 200;
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ ticket_id: id }));

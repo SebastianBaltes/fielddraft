@@ -2,7 +2,7 @@
  * In-app bug / feature-request dialog.
  *
  * Opened from the application menu. On mount it snapshots the whole app
- * window (toolbar, panels and the 3D viewport); the user adds a title +
+ * window (toolbar, panels and the 3D viewport); the user adds a free-form
  * description — plus optional file/image attachments via the file picker or
  * Ctrl+V (ticket 8onw) — and submits. The ticket bundles the screenshot, the
  * attachments, the live project JSON, the app version and a timestamp, and
@@ -27,7 +27,6 @@ interface ReportDialogProps {
 type Phase = "edit" | "sending" | "error";
 
 export function ReportDialog({ store, onClose }: ReportDialogProps) {
-  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [includeShot, setIncludeShot] = useState(true);
   const [screenshot, setScreenshot] = useState<string | null>(null);
@@ -112,14 +111,14 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // ticket xqll: a description is the only required input now (no title).
   const canSubmit =
-    title.trim().length > 0 && (phase === "edit" || phase === "error");
+    description.trim().length > 0 && (phase === "edit" || phase === "error");
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setPhase("sending");
     const payload: TicketPayload = {
-      title: title.trim(),
       description: description.trim(),
       projectJson: store?.exportProjectJson() ?? "",
       screenshot: includeShot ? screenshot : null,
@@ -159,25 +158,13 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
         <div className="body">
             <label className="field">
               <span className="label">
-                Title<span className="required">*</span>
+                Description<span className="required">*</span>
               </span>
-              <input
-                className="input"
-                data-testid="report-title"
-                value={title}
-                autoFocus
-                placeholder="Short summary"
-                disabled={phase === "sending"}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </label>
-
-            <label className="field">
-              <span className="label">Description</span>
               <textarea
                 className="textarea"
                 data-testid="report-description"
                 value={description}
+                autoFocus
                 rows={5}
                 placeholder="What happened? What did you expect? Steps to reproduce…"
                 disabled={phase === "sending"}
