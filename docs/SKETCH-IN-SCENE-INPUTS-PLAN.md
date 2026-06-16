@@ -98,46 +98,85 @@ Still in the toolbar: `sketch-rotate-angle` (`sketchRotateAngle`) →
   a selection exists; (b) keep `sketch-rotate-angle` / `sketch-rotate-apply`
   testids; (c) remove the toolbar block.
 
-## 4. Post-hoc per-entity fillet/chamfer radius (parametric corners)
+## 4. Post-hoc per-entity fillet/chamfer radius (tagged-recipe hybrid) — IMPLEMENTED
 
 The ticket's literal ask: "click the fillet rounding to edit its radius
-in-scene," the way a line's length is click-editable. **This is not possible
-with the current data model.** `store.filletSketchAt` (and `chamferSketchAt`)
-call `filletLines` / `chamferLines`, which return baked geometry —
-`filletSketchAt` trims the two source lines in place and **appends a plain
-`sketch_arc`** (`subCallOfCurve(fillet.arc, …)`), carrying only a construction
-flag. There is no stored radius and no reference to the two lines that produced
-the arc, so a clicked arc cannot be re-solved back into "a fillet of radius R
-between line A and line B." Chamfer is the same with a straight connector line.
+in-scene," the way a line's length is click-editable. The original plan here
+proposed making corners *parametric* (a `sketch_fillet` / `sketch_chamfer`
+sub-call re-derived in `buildDraftSketchState`), which would have touched the
+sketch data model on both the web and kernel sides. **We shipped a lower-risk
+WEB-ONLY hybrid instead — the kernel is untouched.**
 
-To make corners re-editable they must become **parametric sub-calls**:
+### Why the hybrid is safe
 
-- **Data-model change:** introduce a `sketch_fillet` sub-call (and
-  `sketch_chamfer`) whose params are `{ line_a, line_b, radius }` (entity/sub-
-  call refs + the scalar). At solve/derive time the draft builder re-runs
-  `filletLines` from the current positions of the two referenced lines to
-  produce the displayed arc and the trimmed line ends — the arc becomes a
-  *derived* curve, not a stored one. This mirrors how `sketch_arc` etc. are
-  already evaluated from params in `buildDraftSketchState`.
-- **Anchor:** anchored editor overlay (the text/line-length pattern) opened at
-  the derived arc's midpoint `(u, v)` in client px.
-- **Trigger:** in Select mode, a hit-test click on a derived fillet/chamfer arc
-  opens the radius editor (extend `hitTestSketchEntity` so a derived corner
-  reports its owning `sketch_fillet` sub-call index).
-- **Store binding:** a new `store.setSketchFilletRadius(index, radius)`-style
-  per-entity setter that rewrites the sub-call's `radius` param and re-derives
-  (parallels `store.setSketchLineLength(index, len)`).
-- **Steps (rough):** (a) add the `sketch_fillet` / `sketch_chamfer` sub-call
-  types and their evaluation in `buildDraftSketchState` (re-derive arc +
-  trimmed lines from refs); (b) change `filletSketchAt` to emit the parametric
-  sub-call instead of baking lines+arc; (c) teach the hit-test + grips to
-  surface the derived corner and map a click to its sub-call; (d) add the
-  anchored radius editor in `SketchCanvas2d.tsx` + the per-entity setter; (e)
-  migrate/adjust the existing fillet/chamfer E2E specs (they assert a baked
-  `sketch_arc` / connector line appears — under the parametric model the
-  *derived* geometry must be asserted instead, or the assertion shifts to the
-  new sub-call type). This is the largest item; it touches the sketch data
-  model, so it should land as its own change with its own tests.
+`FeatureCall.params` in the kernel is a schema-less `serde_json::Value`, and
+the kernel's `SketchArcDef::parse` / `SketchLineDef::parse` ignore unknown
+fields (no `deny_unknown_fields`). Sub-calls round-trip VERBATIM through
+`replaceSketch` → store → `getSketchSubCalls`, so an extra param attached to a
+baked sub-call survives commit/reopen. The kernel ignores it for geometry; only
+the web reads it to re-edit. This makes the recipe purely additive on the
+params Value — geometry and entity-id allocation are unchanged.
+
+### What was built
+
+The baked flow is unchanged in shape: `store.filletSketchAt` still trims the
+two source lines in place and appends a plain `sketch_arc`; `chamferSketchAt`
+appends a `sketch_line` bevel. The addition is a **re-edit recipe tag** on the
+baked geometry:
+
+- **Stable ids.** Sketch sub-calls carry no `id` field (a `SubCall` is just
+  `{ type, params }`, and entity allocation depends on spine *order*). Adding a
+  real id across the kernel round-trip would have been the big change we were
+  avoiding, so instead each relevant sub-call gets an additive `fd_id` string
+  param (`FD_ID_PARAM` in `sketchFillet.ts`). The two trimmed source lines and
+  the appended arc/bevel are all tagged in one `filletSketchAt`/`chamferSketchAt`
+  call; references are by `fd_id`, not array index, so they survive reordering.
+- **Recipe tag.** The appended arc carries `fillet: { line_a_id, line_b_id,
+  radius, orig_a, orig_b }`; the appended bevel carries `chamfer: {
+  line_a_id, line_b_id, distance, orig_a, orig_b }`. `orig_a` / `orig_b` are the
+  ORIGINAL (pre-trim) line geometries `{ a:[x,y], b:[x,y] }`, captured before
+  trimming, so a radius/distance change re-derives from scratch. Builders and
+  readers: `filletRecipe` / `filletRecipeOf` (`sketchFillet.ts`) and
+  `chamferRecipe` / `chamferRecipeOf` (`sketchChamfer.ts`).
+- **Hit-test → corner.** A fillet arc is NOT a picked solver entity (the draft
+  builder only allocates its centre point), so `hitTestSketchEntity` would never
+  reach it. Instead `hitTestTaggedCorner(subCalls, cursor, tolMm)` in
+  `sketchHitTest.ts` reads the sub-call geometry directly (`curveOfSubCall` +
+  `distToCurve`), finds the nearest recipe-tagged arc/bevel within tolerance,
+  and returns its `fd_id`, current value, and anchor. The Select-mode click path
+  in `SketchCanvas2d.tsx` calls it before the entity hit-test.
+- **Anchored editor.** Reuses the line-length editor pattern + its
+  `.fd-sketch-live-input` styling. Anchor: the fillet arc's midpoint `(u, v)`
+  for a fillet, the bevel line's midpoint for a chamfer (projected to client px
+  via `sketchToScreen`). Enter commits, Esc cancels, and it is dismissed on
+  zoom / tool-change like the existing editors. Testids:
+  `sketch-fillet-edit-radius`, `sketch-chamfer-edit-distance`.
+- **Per-entity setters.** `store.setFilletRadiusAt(arcSubCallId, newRadius)`
+  and `store.setChamferDistanceAt(bevelSubCallId, newDistance)` find the tagged
+  sub-call by `fd_id`, re-run `filletLines(orig_a, orig_b, …)` /
+  `chamferLines(…)` (pure reducers `reeditFilletRadius` / `reeditChamferDistance`),
+  rewrite the two referenced line sub-calls and the arc/bevel (with a refreshed
+  recipe) in place, then go through `replaceSketchSubCalls` + the normal
+  `solveAndReplace`. `rebuildSubCallsFromSolved` spreads `...call.params`, so the
+  recipe + `fd_id` survive the re-solve.
+
+### Known limitation — chained fillets
+
+`orig_a` / `orig_b` snapshot the source lines as they were at FIRST creation.
+If a later fillet/chamfer trimmed one of those same lines again, re-editing this
+corner restores that line to its first-creation length (it does not see the
+second trim). Re-edit chained corners outermost-first, or recreate the corner.
+This is noted in code comments on `reeditFilletRadius` / `reeditChamferDistance`
+and is intentionally not over-engineered.
+
+### Tests
+
+Pure-reducer unit tests live next to the existing fillet/chamfer tests
+(`sketchFillet.test.ts`, `sketchChamfer.test.ts`): bake a recipe-tagged corner,
+read the recipe back, call `reeditFilletRadius` / `reeditChamferDistance` with a
+new value, and assert the arc/bevel + both trimmed lines update (and that the
+re-derivation uses the ORIGINAL geometry, plus the null-return edge cases). The
+store setters are thin wrappers over these reducers plus a re-solve.
 
 ## 5. Re-edit committed TEXT in-scene
 
@@ -174,7 +213,8 @@ Same shape of fix as item 4 — make text **parametric**:
 1. Items 1–3 are pure UI relocations (no store/data-model change) and can ship
    together, ideally folded into one or two pinned overlays (a tool-param slot
    for the polygon, and a selection-transform panel for pattern + rotate).
-2. Items 4 and 5 each require a parametric sub-call and draft-builder support;
-   they are independent of each other and of items 1–3, and each should land as
-   its own change with its own unit + E2E coverage because they alter the
-   sketch data model.
+2. Item 4 shipped as the web-only tagged-recipe hybrid above (kernel untouched);
+   it landed as its own change with pure-reducer unit coverage. Item 5 (re-edit
+   committed text) is still open — the same hybrid shape (a `text` recipe param
+   on the baked glyph contours, web-only) would likely apply, rather than the
+   parametric `sketch_text` sub-call originally sketched there.

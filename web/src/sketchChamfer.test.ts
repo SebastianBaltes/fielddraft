@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { chamferLines, type Curve, type Vec2 } from "./sketchChamfer";
+import {
+  chamferLines,
+  chamferRecipe,
+  chamferRecipeOf,
+  reeditChamferDistance,
+  type Curve,
+  type Vec2,
+} from "./sketchChamfer";
+import { FD_ID_PARAM } from "./sketchFillet";
+import { subCallOfCurve, type SubCall } from "./sketchTrim";
 
 const line = (a: Vec2, b: Vec2): Curve => ({ kind: "line", a, b });
 
@@ -147,5 +156,86 @@ describe("chamferLines — edge cases return null", () => {
     const circle: Curve = { kind: "circle", c: [0, 0], r: 3 };
     const l2 = line([0, 0], [0, 10]);
     expect(chamferLines(circle, l2, 2)).toBeNull();
+  });
+});
+
+// Plan item 4: post-hoc re-edit of a baked chamfer via its recipe tag.
+describe("reeditChamferDistance — recipe-tagged corner", () => {
+  // Build the spine `chamferSketchAt` would produce for a right-angle
+  // corner (L1 along +x, L2 along +y) at setback 2: the two trimmed source
+  // lines (tagged with stable ids) + the bevel carrying the recipe.
+  const ID_A = "lineA";
+  const ID_B = "lineB";
+  const ID_BEVEL = "bevel1";
+  const origA = line([0, 0], [10, 0]) as Extract<Curve, { kind: "line" }>;
+  const origB = line([0, 0], [0, 10]) as Extract<Curve, { kind: "line" }>;
+
+  /** An endpoint list contains `p` within float tolerance. */
+  const hasNearEnd = (ends: unknown[], p: Vec2): boolean =>
+    ends.some(
+      (e) => Array.isArray(e) && Math.hypot(e[0] - p[0], e[1] - p[1]) < 1e-9,
+    );
+
+  const bake = (distance: number): SubCall[] => {
+    const c = chamferLines(origA, origB, distance)!;
+    return [
+      subCallOfCurve(c.trimmed1, { [FD_ID_PARAM]: ID_A }),
+      subCallOfCurve(c.trimmed2, { [FD_ID_PARAM]: ID_B }),
+      subCallOfCurve(c.line, {
+        [FD_ID_PARAM]: ID_BEVEL,
+        chamfer: chamferRecipe(ID_A, ID_B, origA, origB, distance),
+      }),
+    ];
+  };
+
+  it("the baked bevel carries a readable recipe", () => {
+    const recipe = chamferRecipeOf(bake(2)[2]);
+    expect(recipe).not.toBeNull();
+    expect(recipe!.distance).toBe(2);
+    expect(recipe!.line_a_id).toBe(ID_A);
+    expect(recipe!.orig_b.b).toEqual([0, 10]);
+  });
+
+  it("re-edits distance: bevel + both trimmed lines update", () => {
+    const out = reeditChamferDistance(bake(2), ID_BEVEL, 3)!;
+    expect(out).not.toBeNull();
+
+    // Bevel: setback 3 → endpoints (3,0)–(0,3); recipe distance refreshed.
+    const bevel = out[2];
+    expect(bevel.type).toBe("sketch_line");
+    const bevelEnds = [bevel.params.start, bevel.params.end];
+    expect(hasNearEnd(bevelEnds, [3, 0])).toBe(true);
+    expect(hasNearEnd(bevelEnds, [0, 3])).toBe(true);
+    expect(bevel.params[FD_ID_PARAM]).toBe(ID_BEVEL);
+    expect(chamferRecipeOf(bevel)!.distance).toBe(3);
+
+    // Trimmed lines: setback points move to (3,0)/(0,3); ids + far ends kept.
+    expect(out[0].params[FD_ID_PARAM]).toBe(ID_A);
+    expect(out[1].params[FD_ID_PARAM]).toBe(ID_B);
+    const endsA = [out[0].params.start, out[0].params.end];
+    const endsB = [out[1].params.start, out[1].params.end];
+    expect(hasNearEnd(endsA, [3, 0])).toBe(true);
+    expect(hasNearEnd(endsA, [10, 0])).toBe(true);
+    expect(hasNearEnd(endsB, [0, 3])).toBe(true);
+    expect(hasNearEnd(endsB, [0, 10])).toBe(true);
+  });
+
+  it("re-derives from ORIGINAL geometry, not the trimmed remainder", () => {
+    const out = reeditChamferDistance(bake(2), ID_BEVEL, 1)!;
+    const endsA = [out[0].params.start, out[0].params.end];
+    expect(hasNearEnd(endsA, [1, 0])).toBe(true);
+  });
+
+  it("returns null for an unknown bevel id", () => {
+    expect(reeditChamferDistance(bake(2), "nope", 3)).toBeNull();
+  });
+
+  it("returns null when a referenced source line is gone", () => {
+    const spine = bake(2).filter((c) => c.params[FD_ID_PARAM] !== ID_B);
+    expect(reeditChamferDistance(spine, ID_BEVEL, 3)).toBeNull();
+  });
+
+  it("returns null for a geometrically impossible distance", () => {
+    expect(reeditChamferDistance(bake(2), ID_BEVEL, 50)).toBeNull();
   });
 });

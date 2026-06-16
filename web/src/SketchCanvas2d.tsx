@@ -50,7 +50,12 @@ import {
   regularPolygonVertices,
 } from "./sketchSession";
 import { measuredLength, parseField } from "./sketchLiveInput";
-import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
+import {
+  entitiesInBox,
+  hitTestSketchEntity,
+  hitTestTaggedCorner,
+  type TaggedCornerHit,
+} from "./sketchHitTest";
 import { gripsForSelection, type Grip } from "./sketchGrips";
 import {
   angleAbout,
@@ -939,6 +944,25 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     v: number;
   } | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Plan item 4: in-scene re-edit of a baked fillet radius / chamfer
+  // setback. In Select mode, clicking a recipe-tagged rounding arc /
+  // bevel line opens a small input at the corner's anchor (arc midpoint /
+  // bevel midpoint) pre-filled with the current value. Enter commits via
+  // store.setFilletRadiusAt / setChamferDistanceAt, Esc / tool-change
+  // dismisses. Mirrors the line-length `editor` mechanism above; the
+  // anchor `(u, v)` is re-projected on redraw so it tracks pan/zoom.
+  const [cornerEditor, setCornerEditor] = useState<{
+    kind: "fillet" | "chamfer";
+    subCallId: string;
+    u: number;
+    v: number;
+    left: number;
+    top: number;
+    value: string;
+  } | null>(null);
+  const cornerInputRef = useRef<HTMLInputElement | null>(null);
+
   // The text params (value / height / font) live in top-level store state,
   // not in `session`, so subscribe to the store to re-render the in-scene
   // fields when the user types or switches fonts. Snapshot the slice the
@@ -1051,6 +1075,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       setEditor(null);
       // Same for the in-scene text editor (ticket pqoe).
       setTextEditor(null);
+      // …and the corner radius / distance editor (plan item 4): its
+      // anchor is positioned once at open, so a zoom would orphan it.
+      setCornerEditor(null);
       const target = viewportCanvas(canvas);
       if (!target) return;
       target.dispatchEvent(
@@ -1092,6 +1119,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // Ticket pqoe: the in-scene text editor belongs to the Text tool —
     // drop it on any tool change.
     setTextEditor(null);
+    // Plan item 4: the corner editor belongs to Select mode — drop it on
+    // any tool change.
+    setCornerEditor(null);
     // F10: drop a pending first fillet pick when leaving the tool.
     filletFirstRef.current = null;
     // F17: drop a pending Move / Copy base point when leaving the tool.
@@ -1209,6 +1239,25 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       }
 
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+
+      // Plan item 4: a click on a recipe-tagged corner (fillet arc /
+      // chamfer bevel) opens the in-scene radius / distance editor instead
+      // of selecting. The tagged-corner test reads sub-call geometry
+      // directly (a fillet arc isn't a picked entity), so it must run
+      // before the entity hit-test. A click elsewhere while the editor is
+      // open just dismisses it.
+      if (cornerEditor !== null) {
+        setCornerEditor(null);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+      const corner = hitTestTaggedCorner(session.subCalls, [u, v], tolMm);
+      if (corner !== null) {
+        openCornerEditor(corner, cam);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
       if (hit === null) {
@@ -2457,6 +2506,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         setTextEditor(null);
         return;
       }
+      // Plan item 4: Esc dismisses an open corner radius / distance editor.
+      if (cornerEditor !== null) {
+        e.preventDefault();
+        setCornerEditor(null);
+        return;
+      }
       if (dragRef.current.kind === "pending_line") {
         e.preventDefault();
         cancelPendingLine();
@@ -2464,7 +2519,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [session.active, editor, textEditor]);
+  }, [session.active, editor, textEditor, cornerEditor]);
 
   // F23: keyboard finish for the spline gesture — Enter commits the
   // in-progress spline (open, needs ≥ 2 control points); Escape cancels
@@ -2536,6 +2591,48 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     lastCamVersionRef.current = -1;
   };
 
+  // Plan item 4: open the corner radius / distance editor at a tagged
+  // corner's anchor. Projects the sketch-plane anchor `(u, v)` to client
+  // px (relative to the canvas) and pre-fills the current value; focus +
+  // select on the next frame so the field is type-ready.
+  const openCornerEditor = (
+    corner: TaggedCornerHit,
+    cam: Readonly<SketchCameraState>,
+  ) => {
+    const [u, v] = corner.anchor;
+    const [px, py] = sketchToScreen(u, v, cam);
+    setCornerEditor({
+      kind: corner.kind,
+      subCallId: corner.subCallId,
+      u,
+      v,
+      left: px,
+      top: py,
+      value: corner.value.toFixed(2),
+    });
+    requestAnimationFrame(() => {
+      cornerInputRef.current?.focus();
+      cornerInputRef.current?.select();
+    });
+  };
+
+  // Plan item 4: commit the typed radius / distance to the baked corner.
+  // Blank / invalid / non-positive input just dismisses (the setter also
+  // guards). Fillet → setFilletRadiusAt, chamfer → setChamferDistanceAt.
+  const commitCornerEditor = () => {
+    if (cornerEditor === null || !store) return;
+    const value = parseField(cornerEditor.value);
+    if (value !== null && value > 0) {
+      if (cornerEditor.kind === "fillet") {
+        store.setFilletRadiusAt(cornerEditor.subCallId, value);
+      } else {
+        store.setChamferDistanceAt(cornerEditor.subCallId, value);
+      }
+    }
+    setCornerEditor(null);
+    lastCamVersionRef.current = -1;
+  };
+
   return (
     <>
       <canvas
@@ -2577,6 +2674,45 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
                 } else if (e.key === "Escape") {
                   e.preventDefault();
                   setEditor(null);
+                }
+              }}
+            />
+            <span className="unit">mm</span>
+          </label>
+        </div>
+      )}
+      {/* Plan item 4: in-scene re-edit of a baked fillet radius / chamfer
+          setback. Reuses the line-length editor's `.fd-sketch-live-input`
+          styling, anchored at the corner. Enter commits via the store's
+          per-corner setter; Esc dismisses (window keydown effect). */}
+      {cornerEditor !== null && store && (
+        <div
+          className="fd-sketch-live-input"
+          style={{ left: `${cornerEditor.left}px`, top: `${cornerEditor.top}px` }}
+        >
+          <label className="field">
+            <input
+              ref={cornerInputRef}
+              data-testid={
+                cornerEditor.kind === "fillet"
+                  ? "sketch-fillet-edit-radius"
+                  : "sketch-chamfer-edit-distance"
+              }
+              type="text"
+              inputMode="decimal"
+              value={cornerEditor.value}
+              onChange={(e) => {
+                setCornerEditor((prev) =>
+                  prev === null ? prev : { ...prev, value: e.target.value },
+                );
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitCornerEditor();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setCornerEditor(null);
                 }
               }}
             />

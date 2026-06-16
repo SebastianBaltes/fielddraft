@@ -25,7 +25,8 @@
  * endpoint untouched.
  */
 
-import type { Curve, Vec2 } from "./sketchTrim";
+import type { Curve, SubCall, Vec2 } from "./sketchTrim";
+import { subCallOfCurve } from "./sketchTrim";
 
 /** Re-export the shared geometry vocabulary so callers (tests, store)
  *  don't reach into two modules for the same `Curve` / `Vec2` types. */
@@ -33,6 +34,168 @@ export type { Curve, Vec2 } from "./sketchTrim";
 
 const EPS = 1e-9;
 const TAU = Math.PI * 2;
+
+// ── Plan item 4: post-hoc re-edit recipe (web-only hybrid) ──────────
+//
+// A baked fillet is NOT parametric in the kernel — `filletSketchAt`
+// trims the two source lines and appends an ordinary `sketch_arc`. To
+// make that arc re-editable in-scene WITHOUT a kernel change we attach
+// a `fillet` recipe param to the emitted arc sub-call. The kernel's
+// `SketchArcDef::parse` ignores unknown params (no `deny_unknown_fields`)
+// and round-trips them verbatim through `replaceSketch` → store →
+// `getSketchSubCalls`, so the recipe survives commit/reopen; only the
+// web reads it. Geometry/entity allocation is unchanged — this is
+// purely additive on the params Value.
+//
+// The two trimmed line sub-calls are tagged with a stable `fd_id`
+// (array indices shift under reorder, so we reference by id), and the
+// recipe stores the ORIGINAL (pre-trim) line geometry so a radius
+// change can re-derive from scratch.
+
+/** A line referenced by a corner recipe: the original, pre-trim
+ *  endpoints `{ a, b }` in sketch mm. */
+export interface RecipeLine {
+  a: Vec2;
+  b: Vec2;
+}
+
+/** The `fillet` recipe attached to a baked rounding arc's params. */
+export interface FilletRecipe {
+  line_a_id: string;
+  line_b_id: string;
+  radius: number;
+  orig_a: RecipeLine;
+  orig_b: RecipeLine;
+}
+
+/** Param key carrying a sub-call's stable id (additive; kernel-ignored). */
+export const FD_ID_PARAM = "fd_id";
+
+let fdIdCounter = 0;
+
+/** Generate a process-unique stable sub-call id. Not persisted-unique
+ *  across sessions, but a baked corner and its source lines are always
+ *  tagged in one `filletSketchAt`/`chamferSketchAt` call, so the ids
+ *  only need to be unique within the spine at write time. */
+export function nextFdId(): string {
+  fdIdCounter += 1;
+  return `fd${Date.now().toString(36)}_${fdIdCounter.toString(36)}`;
+}
+
+/** Read a sub-call's stable id, or null if it carries none. */
+export function fdIdOf(call: SubCall): string | null {
+  const id = call.params[FD_ID_PARAM];
+  return typeof id === "string" ? id : null;
+}
+
+/** Read the `fillet` recipe off a `sketch_arc` sub-call, or null if the
+ *  call isn't a recipe-tagged fillet arc. Defensive about shape so a
+ *  hand-edited / malformed param never throws at pick time. */
+export function filletRecipeOf(call: SubCall): FilletRecipe | null {
+  if (call.type !== "sketch_arc") return null;
+  const r = call.params.fillet as Partial<FilletRecipe> | undefined;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.line_a_id !== "string" || typeof r.line_b_id !== "string") {
+    return null;
+  }
+  if (!Number.isFinite(r.radius)) return null;
+  if (!isRecipeLine(r.orig_a) || !isRecipeLine(r.orig_b)) return null;
+  return r as FilletRecipe;
+}
+
+function isRecipeLine(v: unknown): v is RecipeLine {
+  if (!v || typeof v !== "object") return false;
+  const l = v as RecipeLine;
+  return (
+    Array.isArray(l.a) &&
+    l.a.length === 2 &&
+    Array.isArray(l.b) &&
+    l.b.length === 2
+  );
+}
+
+/** Build the `fillet` recipe object from the two original (pre-trim)
+ *  line curves, their stable ids, and the radius used. */
+export function filletRecipe(
+  lineAId: string,
+  lineBId: string,
+  origA: Curve & { kind: "line" },
+  origB: Curve & { kind: "line" },
+  radius: number,
+): FilletRecipe {
+  return {
+    line_a_id: lineAId,
+    line_b_id: lineBId,
+    radius,
+    orig_a: { a: origA.a, b: origA.b },
+    orig_b: { a: origB.a, b: origB.b },
+  };
+}
+
+/**
+ * Plan item 4: re-derive a tagged fillet at a new radius and return the
+ * rewritten sub-call list, or null when nothing changes (arc not found /
+ * not a fillet, a referenced source line is gone, or the new radius is
+ * geometrically impossible — see [`filletLines`]).
+ *
+ * Re-runs `filletLines(orig_a, orig_b, newRadius)` from the recipe's
+ * pristine pre-trim geometry, then rewrites the two referenced line
+ * sub-calls (matched by their stable `fd_id`) to the freshly trimmed
+ * remainders and the arc sub-call to the new rounding arc carrying an
+ * updated recipe. Pure: no solve, no DOM — the store wraps it with
+ * `updateSketch` + a re-solve.
+ *
+ * KNOWN LIMITATION (chained fillets): `orig_a` / `orig_b` snapshot the
+ * source lines as they were at FIRST creation. If a later fillet/chamfer
+ * trimmed one of those same lines again, re-editing this corner restores
+ * the line to its first-creation length (it does not see the second
+ * trim). Re-edit corners outermost-first, or recreate the corner, to
+ * avoid surprises. Not over-engineered here by design.
+ */
+export function reeditFilletRadius(
+  subCalls: ReadonlyArray<SubCall>,
+  arcSubCallId: string,
+  newRadius: number,
+): SubCall[] | null {
+  const arcIdx = subCalls.findIndex((c) => fdIdOf(c) === arcSubCallId);
+  if (arcIdx < 0) return null;
+  const recipe = filletRecipeOf(subCalls[arcIdx]);
+  if (!recipe) return null;
+
+  const origA: Curve = { kind: "line", a: recipe.orig_a.a, b: recipe.orig_a.b };
+  const origB: Curve = { kind: "line", a: recipe.orig_b.a, b: recipe.orig_b.b };
+  const fillet = filletLines(origA, origB, newRadius);
+  if (!fillet) return null;
+
+  const idxA = subCalls.findIndex((c) => fdIdOf(c) === recipe.line_a_id);
+  const idxB = subCalls.findIndex((c) => fdIdOf(c) === recipe.line_b_id);
+  if (idxA < 0 || idxB < 0) return null;
+
+  const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+    params.construction !== undefined
+      ? { construction: params.construction }
+      : {};
+
+  const out = subCalls.slice();
+  // Rewrite the two source lines to their new trimmed remainders, keeping
+  // their stable ids so any further re-edit still resolves them.
+  out[idxA] = subCallOfCurve(fillet.trimmed1, {
+    ...carry(subCalls[idxA].params),
+    [FD_ID_PARAM]: recipe.line_a_id,
+  });
+  out[idxB] = subCallOfCurve(fillet.trimmed2, {
+    ...carry(subCalls[idxB].params),
+    [FD_ID_PARAM]: recipe.line_b_id,
+  });
+  // Rewrite the arc, refreshing the recipe's radius (orig geometry and
+  // ids are unchanged — re-edits always derive from first-creation).
+  out[arcIdx] = subCallOfCurve(fillet.arc, {
+    ...carry(subCalls[arcIdx].params),
+    [FD_ID_PARAM]: arcSubCallId,
+    fillet: { ...recipe, radius: newRadius },
+  });
+  return out;
+}
 
 // ── small vector helpers ────────────────────────────────────────────
 

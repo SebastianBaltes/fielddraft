@@ -22,7 +22,13 @@
  * endpoint untouched.
  */
 
-import type { Curve, Vec2 } from "./sketchTrim";
+import type { Curve, SubCall, Vec2 } from "./sketchTrim";
+import { subCallOfCurve } from "./sketchTrim";
+import {
+  FD_ID_PARAM,
+  fdIdOf,
+  type RecipeLine,
+} from "./sketchFillet";
 
 /** Re-export the shared geometry vocabulary so callers (tests, store)
  *  don't reach into two modules for the same `Curve` / `Vec2` types. */
@@ -144,4 +150,121 @@ function lineWithCorner(line: Curve & { kind: "line" }, i: number, to: Vec2): Cu
   return i === 0
     ? { kind: "line", a: to, b: line.b }
     : { kind: "line", a: line.a, b: to };
+}
+
+// ── Plan item 4: post-hoc re-edit recipe (web-only hybrid) ──────────
+//
+// Straight-bevel sibling of the fillet recipe in `sketchFillet.ts`. A
+// baked chamfer trims the two source lines and appends an ordinary
+// `sketch_line` bevel; we tag THAT bevel with a `chamfer` recipe so the
+// distance is re-editable in-scene without a kernel change. The kernel
+// ignores the extra param and round-trips it verbatim (see the fillet
+// recipe doc for the full rationale). Shares `fd_id` / `RecipeLine`
+// vocabulary with the fillet path.
+
+/** The `chamfer` recipe attached to a baked bevel line's params. */
+export interface ChamferRecipe {
+  line_a_id: string;
+  line_b_id: string;
+  distance: number;
+  orig_a: RecipeLine;
+  orig_b: RecipeLine;
+}
+
+/** Read the `chamfer` recipe off a `sketch_line` sub-call, or null if
+ *  the call isn't a recipe-tagged bevel line. Defensive about shape. */
+export function chamferRecipeOf(call: SubCall): ChamferRecipe | null {
+  if (call.type !== "sketch_line") return null;
+  const r = call.params.chamfer as Partial<ChamferRecipe> | undefined;
+  if (!r || typeof r !== "object") return null;
+  if (typeof r.line_a_id !== "string" || typeof r.line_b_id !== "string") {
+    return null;
+  }
+  if (!Number.isFinite(r.distance)) return null;
+  if (!isRecipeLine(r.orig_a) || !isRecipeLine(r.orig_b)) return null;
+  return r as ChamferRecipe;
+}
+
+function isRecipeLine(v: unknown): v is RecipeLine {
+  if (!v || typeof v !== "object") return false;
+  const l = v as RecipeLine;
+  return (
+    Array.isArray(l.a) &&
+    l.a.length === 2 &&
+    Array.isArray(l.b) &&
+    l.b.length === 2
+  );
+}
+
+/** Build the `chamfer` recipe from the two original (pre-trim) line
+ *  curves, their stable ids, and the setback distance used. */
+export function chamferRecipe(
+  lineAId: string,
+  lineBId: string,
+  origA: Curve & { kind: "line" },
+  origB: Curve & { kind: "line" },
+  distance: number,
+): ChamferRecipe {
+  return {
+    line_a_id: lineAId,
+    line_b_id: lineBId,
+    distance,
+    orig_a: { a: origA.a, b: origA.b },
+    orig_b: { a: origB.a, b: origB.b },
+  };
+}
+
+/**
+ * Plan item 4: re-derive a tagged chamfer at a new setback distance and
+ * return the rewritten sub-call list, or null when nothing changes (bevel
+ * not found / not a chamfer, a referenced source line is gone, or the new
+ * distance is geometrically impossible — see [`chamferLines`]).
+ *
+ * Mirrors [`reeditFilletRadius`]: re-runs `chamferLines(orig_a, orig_b,
+ * newDistance)` from the recipe's pristine pre-trim geometry, rewrites
+ * the two referenced line sub-calls (matched by `fd_id`) to the new
+ * trimmed remainders and the bevel sub-call to the new bevel carrying an
+ * updated recipe. Pure (no solve / no DOM). Same chained-corner
+ * limitation as the fillet path — `orig_*` snapshots first-creation
+ * geometry.
+ */
+export function reeditChamferDistance(
+  subCalls: ReadonlyArray<SubCall>,
+  bevelSubCallId: string,
+  newDistance: number,
+): SubCall[] | null {
+  const bevelIdx = subCalls.findIndex((c) => fdIdOf(c) === bevelSubCallId);
+  if (bevelIdx < 0) return null;
+  const recipe = chamferRecipeOf(subCalls[bevelIdx]);
+  if (!recipe) return null;
+
+  const origA: Curve = { kind: "line", a: recipe.orig_a.a, b: recipe.orig_a.b };
+  const origB: Curve = { kind: "line", a: recipe.orig_b.a, b: recipe.orig_b.b };
+  const chamfer = chamferLines(origA, origB, newDistance);
+  if (!chamfer) return null;
+
+  const idxA = subCalls.findIndex((c) => fdIdOf(c) === recipe.line_a_id);
+  const idxB = subCalls.findIndex((c) => fdIdOf(c) === recipe.line_b_id);
+  if (idxA < 0 || idxB < 0) return null;
+
+  const carry = (params: Record<string, unknown>): Record<string, unknown> =>
+    params.construction !== undefined
+      ? { construction: params.construction }
+      : {};
+
+  const out = subCalls.slice();
+  out[idxA] = subCallOfCurve(chamfer.trimmed1, {
+    ...carry(subCalls[idxA].params),
+    [FD_ID_PARAM]: recipe.line_a_id,
+  });
+  out[idxB] = subCallOfCurve(chamfer.trimmed2, {
+    ...carry(subCalls[idxB].params),
+    [FD_ID_PARAM]: recipe.line_b_id,
+  });
+  out[bevelIdx] = subCallOfCurve(chamfer.line, {
+    ...carry(subCalls[bevelIdx].params),
+    [FD_ID_PARAM]: bevelSubCallId,
+    chamfer: { ...recipe, distance: newDistance },
+  });
+  return out;
 }

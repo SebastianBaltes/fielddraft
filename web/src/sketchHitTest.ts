@@ -14,6 +14,9 @@
 
 import type { Entity, SketchState } from "./solver/types";
 import { bsplinePoints } from "./sketchSpline";
+import { curveOfSubCall, distToCurve, type SubCall, type Vec2 } from "./sketchTrim";
+import { fdIdOf, filletRecipeOf } from "./sketchFillet";
+import { chamferRecipeOf } from "./sketchChamfer";
 
 /** Sample a B-spline's drawn polyline from its pole entities, or null
  *  if any pole is missing. Reuses the same sampler the canvas renders
@@ -145,6 +148,81 @@ export function hitTestSketchEntity(
     }
   }
   return bestId;
+}
+
+/**
+ * Plan item 4: a clicked, re-editable corner. `kind` selects the
+ * editor; `subCallId` is the stable `fd_id` of the recipe-tagged
+ * sub-call (passed to `store.setFilletRadiusAt` / `setChamferDistanceAt`);
+ * `value` is the current radius / distance to pre-fill; `anchor` is the
+ * sketch-plane `(u, v)` to position the editor at (arc midpoint for a
+ * fillet, bevel midpoint for a chamfer).
+ */
+export interface TaggedCornerHit {
+  kind: "fillet" | "chamfer";
+  subCallId: string;
+  value: number;
+  anchor: Vec2;
+}
+
+/**
+ * Hit-test a Select-mode click against re-editable baked corners — the
+ * `sketch_arc`s carrying a `fillet` recipe and the `sketch_line`s
+ * carrying a `chamfer` recipe (see `sketchFillet` / `sketchChamfer`).
+ *
+ * Unlike [`hitTestSketchEntity`], this reads the SUB-CALL geometry
+ * directly (`curveOfSubCall` + `distToCurve`): a fillet arc isn't a
+ * picked solver entity at all (the draft state only allocates its centre
+ * point), so an entity-based pick would never reach it. The nearest
+ * tagged corner within `tolMm` wins; ties resolve to the later sub-call
+ * (the corner drawn last sits on top). Returns null when no tagged
+ * corner is under the cursor — the caller then falls back to the normal
+ * entity hit-test.
+ */
+export function hitTestTaggedCorner(
+  subCalls: ReadonlyArray<SubCall>,
+  cursor: Vec2,
+  tolMm: number,
+): TaggedCornerHit | null {
+  let best: TaggedCornerHit | null = null;
+  let bestDist = tolMm;
+  for (const call of subCalls) {
+    const id = fdIdOf(call);
+    if (id === null) continue;
+    const cv = curveOfSubCall(call);
+    if (!cv) continue;
+
+    const fillet = filletRecipeOf(call);
+    if (fillet && cv.kind === "arc") {
+      const d = distToCurve(cursor, cv);
+      if (d <= bestDist) {
+        const a = cv.start + cv.sweep * 0.5;
+        bestDist = d;
+        best = {
+          kind: "fillet",
+          subCallId: id,
+          value: fillet.radius,
+          anchor: [cv.c[0] + cv.r * Math.cos(a), cv.c[1] + cv.r * Math.sin(a)],
+        };
+      }
+      continue;
+    }
+
+    const chamfer = chamferRecipeOf(call);
+    if (chamfer && cv.kind === "line") {
+      const d = distToCurve(cursor, cv);
+      if (d <= bestDist) {
+        bestDist = d;
+        best = {
+          kind: "chamfer",
+          subCallId: id,
+          value: chamfer.distance,
+          anchor: [(cv.a[0] + cv.b[0]) / 2, (cv.a[1] + cv.b[1]) / 2],
+        };
+      }
+    }
+  }
+  return best;
 }
 
 /** Is the point `p` inside (or on the border of) the axis-aligned box? */

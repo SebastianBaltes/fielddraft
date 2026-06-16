@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { filletLines, type Curve, type Vec2 } from "./sketchFillet";
+import {
+  FD_ID_PARAM,
+  filletLines,
+  filletRecipe,
+  filletRecipeOf,
+  reeditFilletRadius,
+  type Curve,
+  type Vec2,
+} from "./sketchFillet";
+import { subCallOfCurve, type SubCall } from "./sketchTrim";
 
 const line = (a: Vec2, b: Vec2): Curve => ({ kind: "line", a, b });
 
@@ -176,5 +185,96 @@ describe("filletLines — edge cases return null", () => {
     const circle: Curve = { kind: "circle", c: [0, 0], r: 3 };
     const l2 = line([0, 0], [0, 10]);
     expect(filletLines(circle, l2, 2)).toBeNull();
+  });
+});
+
+// Plan item 4: post-hoc re-edit of a baked fillet via its recipe tag.
+describe("reeditFilletRadius — recipe-tagged corner", () => {
+  // Build the spine `filletSketchAt` would produce for a right-angle
+  // corner (L1 along +x, L2 along +y) at radius 2: the two trimmed source
+  // lines (tagged with stable ids) + the rounding arc carrying the recipe.
+  const ID_A = "lineA";
+  const ID_B = "lineB";
+  const ID_ARC = "arc1";
+  const origA = line([0, 0], [10, 0]) as Extract<Curve, { kind: "line" }>;
+  const origB = line([0, 0], [0, 10]) as Extract<Curve, { kind: "line" }>;
+
+  /** An endpoint list contains `p` within float tolerance. */
+  const hasNearEnd = (ends: unknown[], p: Vec2): boolean =>
+    ends.some(
+      (e) => Array.isArray(e) && Math.hypot(e[0] - p[0], e[1] - p[1]) < 1e-9,
+    );
+
+  const bake = (radius: number): SubCall[] => {
+    const f = filletLines(origA, origB, radius)!;
+    return [
+      subCallOfCurve(f.trimmed1, { [FD_ID_PARAM]: ID_A }),
+      subCallOfCurve(f.trimmed2, { [FD_ID_PARAM]: ID_B }),
+      subCallOfCurve(f.arc, {
+        [FD_ID_PARAM]: ID_ARC,
+        fillet: filletRecipe(ID_A, ID_B, origA, origB, radius),
+      }),
+    ];
+  };
+
+  it("the baked arc carries a readable recipe", () => {
+    const spine = bake(2);
+    const recipe = filletRecipeOf(spine[2]);
+    expect(recipe).not.toBeNull();
+    expect(recipe!.radius).toBe(2);
+    expect(recipe!.line_a_id).toBe(ID_A);
+    expect(recipe!.orig_a.a).toEqual([0, 0]);
+    expect(recipe!.orig_a.b).toEqual([10, 0]);
+  });
+
+  it("re-edits radius: arc + both trimmed lines update", () => {
+    const spine = bake(2);
+    const out = reeditFilletRadius(spine, ID_ARC, 3)!;
+    expect(out).not.toBeNull();
+
+    // Arc: new radius 3, centre (3,3), recipe radius refreshed, ids kept.
+    const arc = out[2];
+    expect(arc.type).toBe("sketch_arc");
+    expect(Number(arc.params.radius)).toBeCloseTo(3, 9);
+    expect(arc.params.center).toEqual([3, 3]);
+    expect(arc.params[FD_ID_PARAM]).toBe(ID_ARC);
+    expect(filletRecipeOf(arc)!.radius).toBe(3);
+
+    // Trimmed lines: tangent points move to (3,0) and (0,3); ids kept; far
+    // ends preserved.
+    const lineA = out[0];
+    const lineB = out[1];
+    expect(lineA.params[FD_ID_PARAM]).toBe(ID_A);
+    expect(lineB.params[FD_ID_PARAM]).toBe(ID_B);
+    const endsA = [lineA.params.start, lineA.params.end];
+    const endsB = [lineB.params.start, lineB.params.end];
+    expect(hasNearEnd(endsA, [3, 0])).toBe(true);
+    expect(hasNearEnd(endsA, [10, 0])).toBe(true);
+    expect(hasNearEnd(endsB, [0, 3])).toBe(true);
+    expect(hasNearEnd(endsB, [0, 10])).toBe(true);
+  });
+
+  it("re-derives from ORIGINAL geometry, not the trimmed remainder", () => {
+    // Shrinking radius 2 → 1 must restore the line back toward the corner
+    // (tangent at (1,0)), which is only possible from the un-trimmed
+    // original — the radius-2 remainder already started at (2,0).
+    const spine = bake(2);
+    const out = reeditFilletRadius(spine, ID_ARC, 1)!;
+    const endsA = [out[0].params.start, out[0].params.end];
+    expect(hasNearEnd(endsA, [1, 0])).toBe(true);
+  });
+
+  it("returns null for an unknown arc id", () => {
+    expect(reeditFilletRadius(bake(2), "nope", 3)).toBeNull();
+  });
+
+  it("returns null when a referenced source line is gone", () => {
+    const spine = bake(2).filter((c) => c.params[FD_ID_PARAM] !== ID_A);
+    expect(reeditFilletRadius(spine, ID_ARC, 3)).toBeNull();
+  });
+
+  it("returns null for a geometrically impossible radius", () => {
+    // Legs are length 10; a radius of 50 puts the tangent past the far end.
+    expect(reeditFilletRadius(bake(2), ID_ARC, 50)).toBeNull();
   });
 });

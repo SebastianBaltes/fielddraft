@@ -60,8 +60,19 @@ import {
   translateCurve,
   rotateCurve,
 } from "./sketchPattern";
-import { filletLines } from "./sketchFillet";
-import { chamferLines } from "./sketchChamfer";
+import {
+  filletLines,
+  filletRecipe,
+  reeditFilletRadius,
+  nextFdId,
+  fdIdOf,
+  FD_ID_PARAM,
+} from "./sketchFillet";
+import {
+  chamferLines,
+  chamferRecipe,
+  reeditChamferDistance,
+} from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
@@ -2815,6 +2826,14 @@ export class KernelStore {
         ? { construction: params.construction }
         : {};
 
+    // Plan item 4: tag the two source lines with a STABLE id (re-use one
+    // already present, else mint a fresh `fd_id`) so the re-edit recipe can
+    // resolve them by id after reorders. The arc carries the same two ids
+    // plus the ORIGINAL (pre-trim) geometry, so a radius change re-derives
+    // from `cv1`/`cv2` rather than the already-trimmed remainders.
+    const idA = fdIdOf(c1) ?? nextFdId();
+    const idB = fdIdOf(c2) ?? nextFdId();
+
     // Replace the two lines in place (each a single trimmed line), then
     // append the arc. Apply the higher index first so the lower index
     // stays valid across the first rewrite.
@@ -2824,16 +2843,48 @@ export class KernelStore {
     const hiCurve = hi === firstIndex ? fillet.trimmed1 : fillet.trimmed2;
     const loParams = lo === firstIndex ? c1.params : c2.params;
     const hiParams = hi === firstIndex ? c1.params : c2.params;
+    const loId = lo === firstIndex ? idA : idB;
+    const hiId = hi === firstIndex ? idA : idB;
 
     let next = reduceReplaceAt(session, hi, [
-      subCallOfCurve(hiCurve, carry(hiParams)),
+      subCallOfCurve(hiCurve, { ...carry(hiParams), [FD_ID_PARAM]: hiId }),
     ]);
     next = reduceReplaceAt(next, lo, [
-      subCallOfCurve(loCurve, carry(loParams)),
+      subCallOfCurve(loCurve, { ...carry(loParams), [FD_ID_PARAM]: loId }),
     ]);
     this.updateSketch(next);
-    this.pushSketchSubCalls([subCallOfCurve(fillet.arc, carry(c1.params))]);
+    this.pushSketchSubCalls([
+      subCallOfCurve(fillet.arc, {
+        ...carry(c1.params),
+        [FD_ID_PARAM]: nextFdId(),
+        fillet: filletRecipe(idA, idB, cv1, cv2, radius),
+      }),
+    ]);
     void solveAndReplace(this);
+  }
+
+  /**
+   * Plan item 4: re-edit a previously baked fillet's radius in place.
+   * `arcSubCallId` is the stable `fd_id` of the recipe-tagged `sketch_arc`
+   * (surfaced by the in-scene corner editor). Re-derives the rounding arc
+   * + the two trimmed source lines from the recipe via [`reeditFilletRadius`]
+   * and re-solves. No-op (returns false) when the arc isn't a tagged
+   * fillet, a source line is gone, or the new radius is impossible.
+   *
+   * Known limitation (chained fillets): the recipe snapshots the source
+   * lines at first creation, so re-editing a corner whose lines a later
+   * corner also trimmed restores their first-creation length — see
+   * `reeditFilletRadius`.
+   */
+  setFilletRadiusAt(arcSubCallId: string, newRadius: number): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active) return false;
+    if (!Number.isFinite(newRadius) || newRadius <= 0) return false;
+    const rewritten = reeditFilletRadius(session.subCalls, arcSubCallId, newRadius);
+    if (!rewritten) return false;
+    this.replaceSketchSubCalls(rewritten);
+    void solveAndReplace(this);
+    return true;
   }
 
   /** F11: set the setback distance (mm) the two-click `sketch_chamfer`
@@ -2880,6 +2931,12 @@ export class KernelStore {
         ? { construction: params.construction }
         : {};
 
+    // Plan item 4: tag the two source lines with a STABLE id and the bevel
+    // with the same two ids + ORIGINAL geometry, so the setback distance is
+    // re-editable in-scene. Same scheme as `filletSketchAt`.
+    const idA = fdIdOf(c1) ?? nextFdId();
+    const idB = fdIdOf(c2) ?? nextFdId();
+
     // Replace the two lines in place (each a single trimmed line), then
     // append the bevel. Apply the higher index first so the lower index
     // stays valid across the first rewrite.
@@ -2889,16 +2946,48 @@ export class KernelStore {
     const hiCurve = hi === firstIndex ? chamfer.trimmed1 : chamfer.trimmed2;
     const loParams = lo === firstIndex ? c1.params : c2.params;
     const hiParams = hi === firstIndex ? c1.params : c2.params;
+    const loId = lo === firstIndex ? idA : idB;
+    const hiId = hi === firstIndex ? idA : idB;
 
     let next = reduceReplaceAt(session, hi, [
-      subCallOfCurve(hiCurve, carry(hiParams)),
+      subCallOfCurve(hiCurve, { ...carry(hiParams), [FD_ID_PARAM]: hiId }),
     ]);
     next = reduceReplaceAt(next, lo, [
-      subCallOfCurve(loCurve, carry(loParams)),
+      subCallOfCurve(loCurve, { ...carry(loParams), [FD_ID_PARAM]: loId }),
     ]);
     this.updateSketch(next);
-    this.pushSketchSubCalls([subCallOfCurve(chamfer.line, carry(c1.params))]);
+    this.pushSketchSubCalls([
+      subCallOfCurve(chamfer.line, {
+        ...carry(c1.params),
+        [FD_ID_PARAM]: nextFdId(),
+        chamfer: chamferRecipe(idA, idB, cv1, cv2, dist),
+      }),
+    ]);
     void solveAndReplace(this);
+  }
+
+  /**
+   * Plan item 4: re-edit a previously baked chamfer's setback distance in
+   * place. `bevelSubCallId` is the stable `fd_id` of the recipe-tagged
+   * `sketch_line` bevel. Re-derives the bevel + the two trimmed source
+   * lines via [`reeditChamferDistance`] and re-solves. No-op (returns
+   * false) when the line isn't a tagged chamfer, a source line is gone, or
+   * the new distance is impossible. Same chained-corner limitation as the
+   * fillet path.
+   */
+  setChamferDistanceAt(bevelSubCallId: string, newDistance: number): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active) return false;
+    if (!Number.isFinite(newDistance) || newDistance <= 0) return false;
+    const rewritten = reeditChamferDistance(
+      session.subCalls,
+      bevelSubCallId,
+      newDistance,
+    );
+    if (!rewritten) return false;
+    this.replaceSketchSubCalls(rewritten);
+    void solveAndReplace(this);
+    return true;
   }
 
   /** F15: set the distance (mm) the single-click `sketch_offset` tool
