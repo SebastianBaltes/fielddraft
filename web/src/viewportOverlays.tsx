@@ -78,6 +78,16 @@ export function findSingleSelectedFeature(state: StoreState | null | undefined):
 export function SketchOverlay3D() {
   const { store, state } = useKernelStore();
   const visibleSketches = state?.visibleSketches;
+  // While a sketch is actively being edited, its OWN geometry is drawn by the
+  // editable session overlay (`SketchSession3D`). The committed overlay must
+  // skip exactly that sketch — otherwise its loaded geometry is double-drawn on
+  // top of the editable copy AND published to `sketchPickBridge`, so md1e's
+  // "click sketch → select feature" intercepts clicks meant to select/delete a
+  // session entity inside the edited sketch (the loaded circle/line couldn't be
+  // picked there at all). Other visible (non-edited) sketches stay rendered +
+  // pickable; when no session is active nothing is excluded (ticket o2y3).
+  const session = state?.sketchSession;
+  const editingSketchId = session?.active ? session.editingFeatureId : null;
   // The committed overlay must look EXACTLY like the active sketch session
   // (ticket jjmv). The session uses fat node-material lines — those only run on
   // the WebGPU backend, so the primary path gets identical strokes here; the
@@ -93,6 +103,8 @@ export function SketchOverlay3D() {
       return THREE.ShapeUtils.triangulateShape(contour, []);
     };
     for (const sketchId of visibleSketches) {
+      // Skip the actively-edited sketch — the session overlay owns it (o2y3).
+      if (sketchId === editingSketchId) continue;
       try {
         const params = store.kernel.getFeatureCallParams(sketchId) as {
           plane?: string;
@@ -118,7 +130,7 @@ export function SketchOverlay3D() {
       }
     }
     return out;
-  }, [store, visibleSketches, state?.features]);
+  }, [store, visibleSketches, editingSketchId, state?.features]);
 
   // Fat-line material (WebGPU only) — mirrors the session's solid stroke exactly
   // (same colour + SKETCH_STROKE_WIDTH). Persistent so geometry rebuilds don't
