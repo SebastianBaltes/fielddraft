@@ -3800,9 +3800,13 @@ pub struct HelixDef {
     #[param(name = "Merge with all", default = false)]
     pub merge_with_all: bool,
 
-    /// Override for the helix axis centre in world space.
-    #[param(default = [0.0, 0.0, 0.0])]
-    pub center: [f32; 3],
+    /// Helix axis, as a query on a single straight line. Accepts a B-Rep
+    /// edge (`qEdge(hash)`) or a sketch line (`qSketchLine(sketch, line)`)
+    /// — both resolve to a world-space line the profile winds around.
+    /// Empty (the default) falls back to the sketch's local Y axis at
+    /// `x = 0`. Same mechanism as the Revolve axis (see [`RevolveDef`]).
+    #[param(default = ::fielddraft_protocol::Query::new(""), entity_filter = "EDGE,SKETCHLINE")]
+    pub axis: ::fielddraft_protocol::Query,
 }
 
 pub struct HelixFeature;
@@ -3853,7 +3857,7 @@ impl FeatureKind for HelixFeature {
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
-        let transform = crate::compose_transforms(
+        let base_transform = crate::compose_transforms(
             &sketch_frame.to_transform(),
             &Transform {
                 translate: [0.0, 0.0, 0.0],
@@ -3861,6 +3865,31 @@ impl FeatureKind for HelixFeature {
                 scale,
             },
         );
+
+        // Axis query → wind around an arbitrary in-plane line. Same
+        // mechanism as RevolveFeature: align the picked line onto the
+        // canonical local-Y axis with a rigid 2D map `M`, pre-multiply the
+        // profile by `M`, and post-compose `M⁻¹` into the placement so the
+        // helix winds around the chosen axis while the profile stays put.
+        // `helix_profile_anchor` then reads the (now axis-relative) radius
+        // from the transformed sketch. Empty axis → identity → legacy
+        // local-Y behaviour.
+        let axis_2d = (|| -> Option<([f32; 2], [f32; 2])> {
+            let expr = crate::queries::parse_query(d.axis.as_str()).ok()?;
+            let (w0, w1) = ctx.resolve_axis_world_segment(&expr)?;
+            Some((
+                sketch_frame.world_to_local_2d(w0),
+                sketch_frame.world_to_local_2d(w1),
+            ))
+        })();
+        let (sketch, transform) = match axis_2d {
+            None => (sketch, base_transform),
+            Some((a, b)) => {
+                let (m, m_inv) = revolve_axis_alignment(a, b);
+                let aligned = transform_sketch_2d(sketch, &m);
+                (aligned, crate::compose_transforms(&base_transform, &m_inv))
+            }
+        };
 
         // Resolve the (pitch, turns) pair from the chosen input mode —
         // the height variants derive the third quantity Onshape-style.
@@ -3891,7 +3920,9 @@ impl FeatureKind for HelixFeature {
             d.operation,
             Primitive::Helix {
                 sketch,
-                center: d.center,
+                // Axis expressed via profile + placement alignment (above),
+                // so the primitive centre is always the local origin.
+                center: [0.0, 0.0, 0.0],
                 pitch,
                 turns,
                 left_handed: d.left_handed,
@@ -7018,6 +7049,71 @@ mod tests {
                 assert!((aabb.max[0] - 4.0).abs() < 1e-4, "max x = 4, got {}", aabb.max[0]);
             }
             other => panic!("expected Primitive::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn helix_with_sketch_line_axis_realigns_profile() {
+        // A small circular thread profile at r≈5, with an explicit
+        // construction `sketch_line` axis at x = 5. After alignment the
+        // profile's radial extent must run 0..2 (distance from the chosen
+        // axis), proving the helix winds around the picked line.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let helix_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_circle",
+                        "id": "c1",
+                        "params": { "center": [7.0, 0.0], "radius": 1.0 }
+                    },
+                    {
+                        "type": "sketch_line",
+                        "id": "10",
+                        "params": {
+                            "start": [5.0, -10.0],
+                            "end": [5.0, 10.0],
+                            "construction": true
+                        }
+                    }
+                ]
+            }),
+        );
+        let helix_call = FeatureCall::new(
+            "helix",
+            helix_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+                "axis": format!("qSketchLine({sketch_id}, 10)"),
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, helix_call], None)
+            .unwrap();
+
+        let helix_feature = ctx
+            .features
+            .iter()
+            .find(|f| f.id == helix_id)
+            .expect("helix spine entry");
+        match &helix_feature.export_primitive().expect("primitive") {
+            Primitive::Helix { sketch, center, .. } => {
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                let aabb = sketch.aabb();
+                // Circle centre was at x=7, axis at x=5 → centre now x=2,
+                // radius 1 → extent 1..3.
+                assert!((aabb.min[0] - 1.0).abs() < 1e-4, "min x = 1, got {}", aabb.min[0]);
+                assert!((aabb.max[0] - 3.0).abs() < 1e-4, "max x = 3, got {}", aabb.max[0]);
+            }
+            other => panic!("expected Primitive::Helix, got {other:?}"),
         }
     }
 
