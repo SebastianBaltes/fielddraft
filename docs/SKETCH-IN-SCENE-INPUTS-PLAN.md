@@ -1,5 +1,14 @@
 # Sketch In-Scene Inputs — Integration Plan
 
+> **Status: ALL ITEMS IMPLEMENTED** (v0.6.158–0.6.160). Items 1–3 (n-gon /
+> pattern / rotate) are in-scene overlays (v0.6.158). Items 4 (parametric
+> fillet/chamfer re-edit, v0.6.159) and 5 (parametric text re-edit, v0.6.160)
+> were implemented as a **web-only tagged-recipe hybrid** — the baked geometry
+> carries an additive, kernel-ignored recipe that round-trips verbatim — rather
+> than the parametric-kernel approach this doc originally proposed. Sections 4
+> and 5 below document the implemented hybrid; the chained-fillet and
+> font-must-be-loaded limitations are noted there.
+
 Ticket pqoe asks to move the sketch editor's tool-parameter fields out of the
 top toolbar and into the scene, next to where they act. The first batch —
 **fillet radius**, **chamfer distance**, **offset distance**, plus the earlier
