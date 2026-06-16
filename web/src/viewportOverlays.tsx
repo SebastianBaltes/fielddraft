@@ -176,6 +176,11 @@ export function SketchOverlay3D() {
       const o = new LineSegments2(g, lineMatRef.current);
       o.frustumCulled = false;
       o.renderOrder = 997;
+      // Draw in the overlay-only pass (`camera.layers.set(OVERLAY_LAYER)`),
+      // like the session lines and the dots — without this the committed
+      // sketch's lines never render in WebGPU (only the dots showed; the
+      // SDF base pass doesn't draw regular meshes). Ticket fdzj.
+      o.layers.enable(OVERLAY_LAYER);
       map.set(s.id, o);
     }
     return map;
@@ -273,6 +278,13 @@ export function SketchOverlay3D() {
     picker.onPick(`qCreatedBy(${sketchId})`);
   };
 
+  // The committed sketch's fill + classic lines must draw in the overlay-only
+  // pass (`camera.layers.set(OVERLAY_LAYER)`), like the fat lines and dots —
+  // otherwise they never render in WebGPU. Ticket fdzj.
+  const enableOverlayLayer = (o: THREE.Object3D | null) => {
+    if (o) o.layers.enable(OVERLAY_LAYER);
+  };
+
   if (sketches.length === 0) return null;
 
   return (
@@ -283,6 +295,7 @@ export function SketchOverlay3D() {
             <mesh
               geometry={fills.get(id)}
               renderOrder={996}
+              ref={enableOverlayLayer}
               onClick={pickRegion(id)}
               onPointerDown={pickRegion(id)}
             >
@@ -299,7 +312,7 @@ export function SketchOverlay3D() {
           {isWebGPU
             ? fatLines?.get(id) && <primitive object={fatLines.get(id)!} dispose={null} />
             : classicLines?.get(id) && (
-                <lineSegments geometry={classicLines.get(id)} renderOrder={997}>
+                <lineSegments geometry={classicLines.get(id)} renderOrder={997} ref={enableOverlayLayer}>
                   <lineBasicMaterial color={SKETCH_COLOR_UNDER} transparent depthTest={false} />
                 </lineSegments>
               )}
