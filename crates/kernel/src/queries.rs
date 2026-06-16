@@ -95,6 +95,13 @@ pub enum QueryExpr {
     /// `qVertex(id_hash)` — the single B-Rep vertex addressed by its
     /// stable id_hash.
     Vertex(u64),
+    /// `qSketchLine(sketch_id, line_id)` — one straight `sketch_line`
+    /// sub-call of a committed sketch, addressed by the sketch feature
+    /// id and the line's stable entity id. Unlike `qEdge`, this targets
+    /// raw sketch geometry (including construction lines, which never
+    /// reach the B-Rep) — the form the Revolve tool stores when the user
+    /// picks a sketch line as the revolve axis.
+    SketchLine(FeatureId, u32),
 }
 
 impl fmt::Display for QueryExpr {
@@ -112,6 +119,7 @@ impl fmt::Display for QueryExpr {
             QueryExpr::Face(h) => write!(f, "qFace({h})"),
             QueryExpr::Edge(h) => write!(f, "qEdge({h})"),
             QueryExpr::Vertex(h) => write!(f, "qVertex({h})"),
+            QueryExpr::SketchLine(sketch, line) => write!(f, "qSketchLine({sketch}, {line})"),
         }
     }
 }
@@ -237,6 +245,13 @@ pub fn parse_query(input: &str) -> Result<QueryExpr, QueryParseError> {
             &args,
             "qVertex expects one id_hash",
         )?)),
+        "qSketchLine" => {
+            let (a, b) = expect_two_ids(&args, "qSketchLine expects sketch_id and line_id")?;
+            let line = b.as_u32_if_flat().ok_or(QueryParseError::InvalidFeatureId(
+                "line id must be a plain number".to_string(),
+            ))?;
+            Ok(QueryExpr::SketchLine(a, line))
+        }
         other => Err(QueryParseError::UnknownQuery(other.to_string())),
     }
 }
@@ -373,6 +388,18 @@ pub fn evaluate_query(features: &[DecodedFeature], expr: &QueryExpr) -> QueryRes
             kind: QueryElementKind::Set,
             matches: Vec::new(),
         },
+        // A sketch-line query names the sketch feature that owns the
+        // line; the line itself is raw 2D geometry resolved against
+        // sketch data (see `Context::resolve_axis_world_segment`), not
+        // the woven solid. Emit the owning sketch as the contributor.
+        QueryExpr::SketchLine(sketch, _) => QueryResult {
+            kind: QueryElementKind::Set,
+            matches: if feature_exists(features, sketch) {
+                vec![vec![sketch.clone()]]
+            } else {
+                Vec::new()
+            },
+        },
     }
 }
 
@@ -494,9 +521,12 @@ pub fn resolve_query_topo(
                 }
             }
         }
-        // Sketch-region queries resolve against sketch data, not the
-        // woven solid; there is no B-Rep element to hand back.
-        QueryExpr::AllRegions(_) | QueryExpr::Region(_, _) | QueryExpr::Regions(_, _) => {}
+        // Sketch-region and sketch-line queries resolve against sketch
+        // data, not the woven solid; there is no B-Rep element to hand back.
+        QueryExpr::AllRegions(_)
+        | QueryExpr::Region(_, _)
+        | QueryExpr::Regions(_, _)
+        | QueryExpr::SketchLine(_, _) => {}
     }
 
     // Deterministic order: by id_hash, then kind as a stable tie-break.
@@ -634,6 +664,15 @@ mod tests {
     fn tolerates_whitespace_around_arguments() {
         let q = parse_query("  qEdgeBetween(  3 ,  4  )  ").unwrap();
         assert_eq!(q, QueryExpr::EdgeBetween(id(3), id(4)));
+    }
+
+    #[test]
+    fn parses_and_roundtrips_sketch_line() {
+        let q = parse_query("qSketchLine(7, 42)").unwrap();
+        assert_eq!(q, QueryExpr::SketchLine(id(7), 42));
+        // Display is the canonical wire form and must re-parse.
+        assert_eq!(q.to_string(), "qSketchLine(7, 42)");
+        assert_eq!(parse_query(&q.to_string()).unwrap(), q);
     }
 
     #[test]

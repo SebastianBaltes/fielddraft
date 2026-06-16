@@ -388,7 +388,8 @@ pub fn resolve_query_global(query: &str) -> Result<String, ScriptError> {
         | crate::queries::QueryExpr::FaceOf(f)
         | crate::queries::QueryExpr::AllRegions(f)
         | crate::queries::QueryExpr::Region(f, _)
-        | crate::queries::QueryExpr::Regions(f, _) => vec![f.to_string()],
+        | crate::queries::QueryExpr::Regions(f, _)
+        | crate::queries::QueryExpr::SketchLine(f, _) => vec![f.to_string()],
         crate::queries::QueryExpr::EdgeBetween(a, b) => vec![a.to_string(), b.to_string()],
         // id_hash-addressed element queries address a concrete element
         // directly; they carry no contributor FeatureId input.

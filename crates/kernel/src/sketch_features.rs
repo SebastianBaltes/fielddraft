@@ -107,6 +107,23 @@ impl SketchFrame {
         normal: [0.0, 0.0, 1.0],
     };
 
+    /// World point → the frame's `(u, v)` plane coordinates, by
+    /// orthogonal projection: `u = (p − origin)·x_axis`,
+    /// `v = (p − origin)·y_axis`. The inverse of
+    /// `origin + u·x_axis + v·y_axis`; for a point already on the plane
+    /// it round-trips exactly. Off-plane points project orthogonally
+    /// (the normal component is dropped). Used to express a picked axis
+    /// line in the sketch's own 2D coordinates.
+    pub fn world_to_local_2d(&self, p: [f32; 3]) -> [f32; 2] {
+        let d = [
+            p[0] - self.origin[0],
+            p[1] - self.origin[1],
+            p[2] - self.origin[2],
+        ];
+        let dot = |a: [f32; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+        [dot(self.x_axis), dot(self.y_axis)]
+    }
+
     /// Rigid frame→world [`Transform`]: a rotation whose columns are the
     /// frame axes plus a translation to the origin. Composed into the
     /// lowered feature transform so the 2D profile (built in XY) lands on

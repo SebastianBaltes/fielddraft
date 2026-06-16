@@ -38,7 +38,9 @@ import {
   collectSketchLineSegments,
   collectSketchSessionGeometry,
   collectSketchRegionFill,
+  collectSketchLinePickables,
   type SketchSubCall,
+  type SketchLinePickable,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
 import { SketchDots, makeSketchDots } from "./sketchDots";
@@ -63,6 +65,10 @@ import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBrid
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
 import { publishSketchPickables, clearSketchPickables } from "./sketchPickBridge";
+import {
+  publishSketchLinePickables,
+  clearSketchLinePickables,
+} from "./sketchLinePickBridge";
 
 /** Feature kinds that are themselves a transform of another feature — the
  *  gizmo edits THEIR params in place instead of appending a new transform
@@ -99,7 +105,13 @@ export function SketchOverlay3D() {
 
   const sketches = useMemo(() => {
     if (!store || !visibleSketches || visibleSketches.length === 0) return [];
-    const out: { id: number; linePos: number[]; pointPos: number[]; fillPos: number[] | null }[] = [];
+    const out: {
+      id: number;
+      linePos: number[];
+      pointPos: number[];
+      fillPos: number[] | null;
+      linePick: SketchLinePickable[];
+    }[] = [];
     const tri = (poly: [number, number][]): number[][] => {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
       return THREE.ShapeUtils.triangulateShape(contour, []);
@@ -131,7 +143,10 @@ export function SketchOverlay3D() {
         // Closed regions filled like in sketch mode — so a region reads as a
         // face and is a pickable profile target.
         const fp = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
-        out.push({ id: sketchId, linePos, pointPos, fillPos: fp.length ? fp : null });
+        // Per-line pickables (incl. construction lines) for the Revolve
+        // axis picker — `qSketchLine(sketchId, lineId)`.
+        const linePick = collectSketchLinePickables(subCalls as SketchSubCall[], frame);
+        out.push({ id: sketchId, linePos, pointPos, fillPos: fp.length ? fp : null, linePick });
       } catch {
         // Skip invalid sketches
       }
@@ -230,6 +245,21 @@ export function SketchOverlay3D() {
       })),
     );
     return () => clearSketchPickables();
+  }, [sketches]);
+
+  // Publish per-line pickables so the Revolve axis picker can ray-cast a
+  // single sketch line and emit `qSketchLine`. Separate from the
+  // whole-sketch pickables above, which select a sketch as a profile.
+  useEffect(() => {
+    const withLines = sketches.filter((s) => s.linePick.length > 0);
+    if (withLines.length === 0) {
+      clearSketchLinePickables();
+      return;
+    }
+    publishSketchLinePickables(
+      withLines.map((s) => ({ sketchId: s.id, lines: s.linePick })),
+    );
+    return () => clearSketchLinePickables();
   }, [sketches]);
 
   // A click on a filled region selects the whole sketch as a profile, but only

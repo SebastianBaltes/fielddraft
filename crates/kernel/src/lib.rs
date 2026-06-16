@@ -1703,23 +1703,17 @@ impl Kernel {
     /// same `BoolOp::TAG_*` tags as `add_primitive`. Returns
     /// the new feature id.
     #[wasm_bindgen(js_name = addRevolve)]
-    pub fn add_revolve(
-        &mut self,
-        sketch_id: u32,
-        op: u32,
-        cx: f32,
-        cy: f32,
-        cz: f32,
-    ) -> Result<u32, JsError> {
+    pub fn add_revolve(&mut self, sketch_id: u32, op: u32) -> Result<u32, JsError> {
         let op_wire = Self::op_wire_name(op)?;
         // `sketch_id == 0` creates an EMPTY revolve (ticket 1rax): the
         // dialog's query picker fills `profiles` afterwards; until then
-        // the feature reports its regen error (red title + tooltip).
+        // the feature reports its regen error (red title + tooltip). The
+        // revolve axis defaults to the sketch's local Y at x=0; the dialog's
+        // `axis` query field overrides it with a picked edge/sketch line.
         if sketch_id == 0 {
             return self.push_feature_call("revolve", serde_json::json!({
                 "profiles": "",
                 "operation": op_wire,
-                "center": [cx, cy, cz],
             }));
         }
         let sketch_feature_id = FeatureId::from_u32(sketch_id);
@@ -1736,7 +1730,6 @@ impl Kernel {
         self.push_feature_call("revolve", serde_json::json!({
             "profiles": format!("qCreatedBy({sketch_feature_id})"),
             "operation": op_wire,
-            "center": [cx, cy, cz],
         }))
     }
 

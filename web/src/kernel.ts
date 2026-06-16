@@ -932,14 +932,8 @@ export class Kernel {
   /** K8.4: append a revolve feature that consumes the sketch
    *  with id `sketchId` and sweeps its profile around the local
    *  Y axis through `(cx, cy, cz)`. Returns the new feature id. */
-  addRevolve(
-    sketchId: number,
-    op: BoolOpTagValue,
-    cx = 0,
-    cy = 0,
-    cz = 0,
-  ): number {
-    return this.inner.addRevolve(sketchId, op, cx, cy, cz);
+  addRevolve(sketchId: number, op: BoolOpTagValue): number {
+    return this.inner.addRevolve(sketchId, op);
   }
 
   /** Append a helix feature sweeping the sketch's profile along a

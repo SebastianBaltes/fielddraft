@@ -767,6 +767,58 @@ impl<'a> Context<'a> {
         }
         out
     }
+
+    /// Resolve an axis-line query to a single world-space segment
+    /// `(start, end)`. Two query shapes are honoured, both used by the
+    /// Revolve tool's axis field:
+    ///
+    /// * `qEdge(hash)` / `qEdgeBetween(a, b)` — a B-Rep edge. Its sampled
+    ///   world polyline's first and last points become the segment
+    ///   endpoints (a straight edge round-trips exactly; a curved edge
+    ///   degrades to its chord, which is the only sensible axis anyway).
+    /// * `qSketchLine(sketch_id, line_id)` — a raw `sketch_line` sub-call
+    ///   (including construction lines, which never reach the B-Rep). Its
+    ///   2D endpoints are lifted to world through the owning sketch's
+    ///   placement frame.
+    ///
+    /// Returns `None` when the query names nothing resolvable (so the
+    /// caller falls back to the default local-Y axis).
+    pub fn resolve_axis_world_segment(
+        &mut self,
+        expr: &crate::queries::QueryExpr,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        match expr {
+            crate::queries::QueryExpr::Edge(_)
+            | crate::queries::QueryExpr::EdgeBetween(_, _) => {
+                let polylines = self.resolve_edge_polylines(expr);
+                let poly = polylines.into_iter().find(|p| p.len() >= 2)?;
+                Some((poly[0], poly[poly.len() - 1]))
+            }
+            crate::queries::QueryExpr::SketchLine(sketch_id, line_id) => {
+                let sketch = self.sketches.get(sketch_id)?;
+                let frame = &sketch.frame;
+                let lift = |uv: [f32; 2]| -> [f32; 3] {
+                    [
+                        frame.origin[0] + uv[0] * frame.x_axis[0] + uv[1] * frame.y_axis[0],
+                        frame.origin[1] + uv[0] * frame.x_axis[1] + uv[1] * frame.y_axis[1],
+                        frame.origin[2] + uv[0] * frame.x_axis[2] + uv[1] * frame.y_axis[2],
+                    ]
+                };
+                for call in &sketch.sub_calls {
+                    if call.type_name != "sketch_line" {
+                        continue;
+                    }
+                    if call.id.as_u32_if_flat() != Some(*line_id) {
+                        continue;
+                    }
+                    let line = crate::sketch_features::SketchLineDef::parse(&call.params).ok()?;
+                    return Some((lift(line.start), lift(line.end)));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Two world [`SketchFrame`](crate::sketch_features::SketchFrame)s are coplanar
@@ -3361,9 +3413,14 @@ pub struct RevolveDef {
     #[param(default = ::fielddraft_protocol::BoolOp::Add)]
     pub operation: BoolOp,
 
-    /// Override for the revolve centre in world space.
-    #[param(default = [0.0, 0.0, 0.0])]
-    pub center: [f32; 3],
+    /// Revolve axis, as a query on a single straight line. Accepts a
+    /// B-Rep edge (`qEdge(hash)`) or a sketch line (`qSketchLine(sketch,
+    /// line)`) — both resolve to a world-space line the profile sweeps
+    /// around. Empty (the default) falls back to the sketch's local Y
+    /// axis at `x = 0`, the legacy half-profile convention where the
+    /// axis is implied by the profile sitting on `x ≥ 0`.
+    #[param(default = ::fielddraft_protocol::Query::new(""), entity_filter = "EDGE,SKETCHLINE")]
+    pub axis: ::fielddraft_protocol::Query,
 
     /// Wall thickness for hollowing the revolved body. `0` (the
     /// default) leaves it solid; any positive value lowers to a
@@ -3429,17 +3486,12 @@ impl FeatureKind for RevolveFeature {
             feature: RevolveDef::TYPE_NAME,
             name: "profiles",
         })?;
-        // The axis edge of a half-profile is interior after revolving,
-        // not surface — strip it so distances near the axis are real
-        // (shell would otherwise keep a phantom rod along the axis).
-        let sketch = crate::sketch_features::strip_revolve_axis_segments(sketch);
-
         let name = optional_display_name(def, || format!("Revolve {id}"));
         let rotation = optional_rotation(def);
         let scale = optional_scale(def);
 
         // C1: same frame→world composition as ExtrudeFeature.
-        let transform = crate::compose_transforms(
+        let base_transform = crate::compose_transforms(
             &sketch_frame.to_transform(),
             &Transform {
                 translate: [0.0, 0.0, 0.0],
@@ -3447,6 +3499,41 @@ impl FeatureKind for RevolveFeature {
                 scale,
             },
         );
+
+        // Axis query → revolve around an arbitrary in-plane line. We
+        // resolve the picked line (B-Rep edge OR sketch line) to a world
+        // segment, project it into the profile's sketch frame, and apply
+        // the rigid 2D map `M` that carries that line onto the canonical
+        // local-Y axis (`x = 0`). The profile is pre-multiplied by `M`
+        // (so the existing revolve-around-Y machinery is reused verbatim)
+        // and the inverse `M⁻¹` is post-composed into the placement, so
+        // the body lands exactly where the profile was drawn — only the
+        // axis of revolution moves. Empty axis → identity → legacy
+        // local-Y-at-x=0 behaviour.
+        let axis_2d = (|| -> Option<([f32; 2], [f32; 2])> {
+            let expr = crate::queries::parse_query(d.axis.as_str()).ok()?;
+            let (w0, w1) = ctx.resolve_axis_world_segment(&expr)?;
+            Some((
+                sketch_frame.world_to_local_2d(w0),
+                sketch_frame.world_to_local_2d(w1),
+            ))
+        })();
+
+        let (sketch, transform) = match axis_2d {
+            None => (sketch, base_transform),
+            Some((a, b)) => {
+                let (m, m_inv) = revolve_axis_alignment(a, b);
+                let aligned = transform_sketch_2d(sketch, &m);
+                (aligned, crate::compose_transforms(&base_transform, &m_inv))
+            }
+        };
+
+        // The axis edge of a half-profile is interior after revolving,
+        // not surface — strip it so distances near the axis are real
+        // (shell would otherwise keep a phantom rod along the axis). Runs
+        // AFTER `M`, so the picked axis line (now at `x = 0`) is the one
+        // that gets stripped.
+        let sketch = crate::sketch_features::strip_revolve_axis_segments(sketch);
 
         let target_ids = resolve_merge_scope(
             ctx,
@@ -3462,7 +3549,10 @@ impl FeatureKind for RevolveFeature {
             d.operation,
             Primitive::Revolve {
                 sketch,
-                center: d.center,
+                // The revolve axis is now expressed by aligning the
+                // profile + placement (see above), so the primitive's own
+                // centre is always the local origin.
+                center: [0.0, 0.0, 0.0],
             },
             transform,
             PrimitiveModifiers {
@@ -3472,6 +3562,171 @@ impl FeatureKind for RevolveFeature {
             target_ids,
         ));
         Ok(())
+    }
+}
+
+/// A rigid 2D map `p ↦ (c·x − s·y + tx, s·x + c·y + ty)` with rotation
+/// angle `θ = atan2(s, c)` and unit `(c, s) = (cos θ, sin θ)`. Built by
+/// [`revolve_axis_alignment`] to carry a chosen axis line onto the
+/// canonical local-Y axis before revolving; applied to the profile by
+/// [`transform_sketch_2d`].
+#[derive(Debug, Clone, Copy)]
+struct Rigid2d {
+    c: f32,
+    s: f32,
+    tx: f32,
+    ty: f32,
+}
+
+impl Rigid2d {
+    fn apply(&self, p: [f32; 2]) -> [f32; 2] {
+        [
+            self.c * p[0] - self.s * p[1] + self.tx,
+            self.s * p[0] + self.c * p[1] + self.ty,
+        ]
+    }
+    /// The rotation angle baked into this map (radians); arcs and
+    /// sectors add it to their start angle.
+    fn angle(&self) -> f32 {
+        self.s.atan2(self.c)
+    }
+}
+
+/// Build the alignment pair for a revolve whose axis is the in-plane
+/// segment `a → b` (sketch-frame 2D coordinates).
+///
+/// Returns `(M, M_inv)` where `M` is the rigid 2D map that sends the
+/// axis line onto `x = 0` with its direction pointing `+y`, and `M_inv`
+/// is the inverse as a 3D [`Transform`] (a rotation about `+Z` plus an
+/// in-plane translation) that undoes `M` after the revolve so the body
+/// lands back where the profile was drawn. A degenerate (zero-length)
+/// segment yields the identity pair.
+fn revolve_axis_alignment(a: [f32; 2], b: [f32; 2]) -> (Rigid2d, Transform) {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 {
+        return (
+            Rigid2d { c: 1.0, s: 0.0, tx: 0.0, ty: 0.0 },
+            Transform::IDENTITY,
+        );
+    }
+    // Unit axis direction. The rotation R = [[dy,-dx],[dx,dy]] sends this
+    // direction to (0, 1), so c = cos θ = dy, s = sin θ = dx.
+    let (dxu, dyu) = (dx / len, dy / len);
+    let (c, s) = (dyu, dxu);
+    // Translate so the rotated axis line sits on x = 0; slide along the
+    // axis (y) is irrelevant to a revolve, so leave ty = 0.
+    let tx = -(c * a[0] - s * a[1]);
+    let m = Rigid2d { c, s, tx, ty: 0.0 };
+
+    // M_inv = R⁻¹(q − t): rotation by −θ about +Z, translation −R⁻¹·t.
+    let theta = m.angle();
+    let half = -0.5 * theta;
+    let rotation = [0.0, 0.0, half.sin(), half.cos()];
+    // R⁻¹·t with t = (tx, 0): (c·tx, −s·tx); negate for the translation.
+    let m_inv = Transform {
+        translate: [-c * tx, s * tx, 0.0],
+        rotation,
+        scale: [1.0, 1.0, 1.0],
+    };
+    (m, m_inv)
+}
+
+/// Apply a rigid 2D map to every point of a [`Sketch2d`] tree. Rotation
+/// turns axis-aligned rectangles into general quads, so a [`Rectangle`]
+/// is converted to a [`Polygon`] of its four (transformed) corners;
+/// circles are rotation-invariant about their centre, and arc/sector
+/// start angles pick up the map's rotation.
+///
+/// [`Rectangle`]: ::fielddraft_protocol::Sketch2dPrimitive::Rectangle
+/// [`Polygon`]: ::fielddraft_protocol::Sketch2dPrimitive::Polygon
+fn transform_sketch_2d(
+    sketch: ::fielddraft_protocol::Sketch2d,
+    m: &Rigid2d,
+) -> ::fielddraft_protocol::Sketch2d {
+    use ::fielddraft_protocol::{Sketch2d, Sketch2dPrimitive, SketchSegment};
+    let theta = m.angle();
+    let seg = |s: SketchSegment| -> SketchSegment {
+        match s {
+            SketchSegment::Line { start, end } => SketchSegment::Line {
+                start: m.apply(start),
+                end: m.apply(end),
+            },
+            SketchSegment::QuadBezier { p0, p1, p2 } => SketchSegment::QuadBezier {
+                p0: m.apply(p0),
+                p1: m.apply(p1),
+                p2: m.apply(p2),
+            },
+            SketchSegment::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => SketchSegment::Arc {
+                center: m.apply(center),
+                radius,
+                start_angle: start_angle + theta,
+                sweep_angle,
+            },
+        }
+    };
+    match sketch {
+        Sketch2d::Empty => Sketch2d::Empty,
+        Sketch2d::Prim(prim) => Sketch2d::Prim(match prim {
+            Sketch2dPrimitive::Circle { center, radius } => Sketch2dPrimitive::Circle {
+                center: m.apply(center),
+                radius,
+            },
+            Sketch2dPrimitive::Rectangle { center, half_extents } => {
+                // Rotated rect is no longer axis-aligned → emit the four
+                // corners as a polygon.
+                let (cx, cy) = (center[0], center[1]);
+                let (hx, hy) = (half_extents[0], half_extents[1]);
+                Sketch2dPrimitive::Polygon {
+                    vertices: vec![
+                        m.apply([cx - hx, cy - hy]),
+                        m.apply([cx + hx, cy - hy]),
+                        m.apply([cx + hx, cy + hy]),
+                        m.apply([cx - hx, cy + hy]),
+                    ],
+                }
+            }
+            Sketch2dPrimitive::Polygon { vertices } => Sketch2dPrimitive::Polygon {
+                vertices: vertices.into_iter().map(|v| m.apply(v)).collect(),
+            },
+            Sketch2dPrimitive::Sector {
+                center,
+                radius,
+                start_angle,
+                sweep_angle,
+            } => Sketch2dPrimitive::Sector {
+                center: m.apply(center),
+                radius,
+                start_angle: start_angle + theta,
+                sweep_angle,
+            },
+            Sketch2dPrimitive::Path { segments, closed } => Sketch2dPrimitive::Path {
+                segments: segments.into_iter().map(seg).collect(),
+                closed,
+            },
+        }),
+        Sketch2d::Union(a, b) => Sketch2d::Union(
+            Box::new(transform_sketch_2d(*a, m)),
+            Box::new(transform_sketch_2d(*b, m)),
+        ),
+        Sketch2d::Difference(a, b) => Sketch2d::Difference(
+            Box::new(transform_sketch_2d(*a, m)),
+            Box::new(transform_sketch_2d(*b, m)),
+        ),
+        Sketch2d::Intersection(a, b) => Sketch2d::Intersection(
+            Box::new(transform_sketch_2d(*a, m)),
+            Box::new(transform_sketch_2d(*b, m)),
+        ),
+        Sketch2d::Offset { inner, distance } => Sketch2d::Offset {
+            inner: Box::new(transform_sketch_2d(*inner, m)),
+            distance,
+        },
     }
 }
 
@@ -6680,6 +6935,87 @@ mod tests {
                 assert!((aabb.max[0] - 9.0).abs() < 1e-5);
                 assert!((aabb.min[1] - (-10.0)).abs() < 1e-5);
                 assert!((aabb.max[1] - 10.0).abs() < 1e-5);
+            }
+            other => panic!("expected Primitive::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn revolve_axis_alignment_maps_axis_line_onto_local_y() {
+        // Pure-math check of the rigid 2D alignment + its 3D inverse.
+        // A vertical axis at x = 5 must map the profile so x = 5 → x = 0,
+        // and the inverse must translate the revolved body back by +5 in x.
+        let (m, m_inv) = revolve_axis_alignment([5.0, -10.0], [5.0, 10.0]);
+        assert!((m.apply([5.0, 3.0])[0]).abs() < 1e-5, "axis lands on x=0");
+        assert!((m.apply([9.0, 3.0])[0] - 4.0).abs() < 1e-5, "radius preserved");
+        assert!((m_inv.translate[0] - 5.0).abs() < 1e-5, "inverse shifts back +5 x");
+        assert!((m_inv.translate[1]).abs() < 1e-5);
+
+        // A 45° axis through the origin rotates the frame: the axis
+        // direction (1,1) must come out along +y (x = 0 for both ends).
+        let (m2, _) = revolve_axis_alignment([0.0, 0.0], [1.0, 1.0]);
+        assert!((m2.apply([0.0, 0.0])[0]).abs() < 1e-5);
+        assert!((m2.apply([1.0, 1.0])[0]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn revolve_with_sketch_line_axis_realigns_profile() {
+        // Same 4 × 20 tube profile at r = 5..9, but the revolve axis is an
+        // explicit construction `sketch_line` sitting at x = 5. After
+        // alignment the profile's radial extent must run 0..4 (distance
+        // from the chosen axis), not 5..9.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let sketch_id = id(1);
+        let revolve_id = id(2);
+
+        let sketch_call = FeatureCall::new(
+            "sketch",
+            sketch_id.clone(),
+            json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    {
+                        "type": "sketch_rectangle",
+                        "id": "r1",
+                        "params": { "corner_a": [5.0, -10.0], "corner_b": [9.0, 10.0] }
+                    },
+                    {
+                        "type": "sketch_line",
+                        "id": "10",
+                        "params": {
+                            "start": [5.0, -10.0],
+                            "end": [5.0, 10.0],
+                            "construction": true
+                        }
+                    }
+                ]
+            }),
+        );
+        let revolve_call = FeatureCall::new(
+            "revolve",
+            revolve_id.clone(),
+            json!({
+                "profiles": format!("qCreatedBy({sketch_id})"),
+                "axis": format!("qSketchLine({sketch_id}, 10)"),
+            }),
+        );
+        registry
+            .regenerate(&mut ctx, &[sketch_call, revolve_call], None)
+            .unwrap();
+
+        let revolve_feature = ctx
+            .features
+            .iter()
+            .find(|f| f.id == revolve_id)
+            .expect("revolve spine entry");
+        match &revolve_feature.export_primitive().expect("primitive") {
+            Primitive::Revolve { sketch, center } => {
+                assert_eq!(*center, [0.0, 0.0, 0.0]);
+                let aabb = sketch.aabb();
+                assert!((aabb.min[0] - 0.0).abs() < 1e-4, "min x = 0, got {}", aabb.min[0]);
+                assert!((aabb.max[0] - 4.0).abs() < 1e-4, "max x = 4, got {}", aabb.max[0]);
             }
             other => panic!("expected Primitive::Revolve, got {other:?}"),
         }

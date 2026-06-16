@@ -65,6 +65,21 @@ export function filterAllows(kind: ElementKind, entityFilter?: string): boolean 
   return allowedKinds(entityFilter).has(kind);
 }
 
+/**
+ * Does the picker's `entityFilter` opt into committed sketch lines
+ * (`qSketchLine`)? Sketch lines are NOT B-Rep elements — they have no
+ * `id_hash`, so they sit outside {@link allowedKinds} and are addressed by
+ * `(sketchId, lineId)` instead. A filter that contains the `SKETCHLINE`
+ * token (e.g. the Revolve axis field's `"EDGE,SKETCHLINE"`) makes them
+ * pickable; the viewport's sketch-line ray-cast is gated on this.
+ */
+export function filterAllowsSketchLine(entityFilter?: string): boolean {
+  if (!entityFilter) return false;
+  return entityFilter
+    .split(/[,\s|]+/)
+    .some((t) => t.trim().toUpperCase() === "SKETCHLINE");
+}
+
 /** Build the canonical element-query string addressing one element. */
 export function elementQueryString(el: PickedElement): string {
   switch (el.kind) {

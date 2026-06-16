@@ -4239,7 +4239,7 @@ export class KernelStore {
     const sketchId = this.latestSketchId() ?? 0;
     let id: number;
     try {
-      id = this.kernel.addRevolve(sketchId, this.state.nextOp, 0, 0, 0);
+      id = this.kernel.addRevolve(sketchId, this.state.nextOp);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addRevolve failed", err);

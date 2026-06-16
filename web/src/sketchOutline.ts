@@ -19,6 +19,52 @@ import { closedRegionsCached } from "./sketchRegions";
 export interface SketchSubCall {
   type: string;
   params: Record<string, unknown>;
+  /** Stable entity id of the sub-call, shared with the kernel. Present on
+   *  committed-sketch sub-calls; addressable by `qSketchLine`. */
+  id?: number | string;
+}
+
+/** One pickable straight `sketch_line`: its stable entity id plus its two
+ *  world-space endpoints. Drives the Revolve axis picker, which emits
+ *  `qSketchLine(sketchId, lineId)` for the line under the click. */
+export interface SketchLinePickable {
+  lineId: number;
+  a: [number, number, number];
+  b: [number, number, number];
+}
+
+/** Per-line pickables for every straight `sketch_line` sub-call (including
+ *  construction lines — a revolve axis is often a construction line). Only
+ *  `sketch_line`s carry a single, axis-meaningful entity id; rectangles and
+ *  circles are skipped. */
+export function collectSketchLinePickables(
+  subCalls: SketchSubCall[],
+  frame: PlaneFrame,
+): SketchLinePickable[] {
+  const out: SketchLinePickable[] = [];
+  for (const call of subCalls) {
+    if (call.type !== "sketch_line") continue;
+    const lineId = typeof call.id === "string" ? Number(call.id) : call.id;
+    if (typeof lineId !== "number" || !Number.isFinite(lineId)) continue;
+    const p = call.params;
+    const a = p.start;
+    const b = p.end;
+    if (
+      !Array.isArray(a) || !Array.isArray(b) ||
+      typeof a[0] !== "number" || typeof a[1] !== "number" ||
+      typeof b[0] !== "number" || typeof b[1] !== "number"
+    ) {
+      continue;
+    }
+    const wa = planeToWorld(a[0], a[1], frame);
+    const wb = planeToWorld(b[0], b[1], frame);
+    out.push({
+      lineId,
+      a: [wa[0], wa[1], wa[2]],
+      b: [wb[0], wb[1], wb[2]],
+    });
+  }
+  return out;
 }
 
 /** Flat `[ax,ay,az, bx,by,bz, ...]` world-space segment pairs of the

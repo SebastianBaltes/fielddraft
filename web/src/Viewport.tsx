@@ -71,7 +71,8 @@ import { publishSketchCamera } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { pickSketchAtRay } from "./sketchPickBridge";
-import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
+import { pickSketchLineAtRay } from "./sketchLinePickBridge";
+import { mapPickToQuery, filterAllows, filterAllowsSketchLine, elementQueryString, resolveElementClick } from "./elementQuery";
 import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
 import { setGpuInfo, type GpuInfo } from "./telemetry";
 import { bodiesInRect, elementsInRect, type NdcRect, type ProjectFn } from "./boxSelect";
@@ -253,6 +254,7 @@ function tryQueryPick(
   store: { kernel: { bodyCount(): number; bodyBrepFaces(i: number): { branchId: number; idHash: string }[] } } | null,
   datumAtRay?: () => string | null,
   onReject?: (msg: string) => void,
+  sketchLineAtRay?: () => { sketchId: number; lineId: number } | null,
 ): boolean {
   const picker = getActiveQueryPicker();
   if (!picker) return false;
@@ -280,6 +282,16 @@ function tryQueryPick(
   if (hovered) {
     const query = mapPickToQuery(hovered, picker.entityFilter);
     if (query) return picker.onPick(query);
+  }
+
+  // Sketch-line axis pick (`qSketchLine`): the Revolve axis field accepts a
+  // committed sketch line as well as a B-Rep edge. Sketch lines aren't
+  // B-Rep elements (no hover overlay / id_hash), so resolve them by ray
+  // against the overlay-published per-line geometry when the filter opts in.
+  // Runs after the B-Rep hover path so a hovered edge still wins.
+  if (sketchLineAtRay && filterAllowsSketchLine(picker.entityFilter)) {
+    const hit = sketchLineAtRay();
+    if (hit) return picker.onPick(`qSketchLine(${hit.sketchId}, ${hit.lineId})`);
   }
 
   // Click-time face resolution (tickets yx6a/bxoo): the hover overlay
@@ -786,7 +798,20 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
         state?.hiddenDatums ?? new Set<string>(),
       );
     };
-    if (tryQueryPick(click, store, datumAtClick, (msg) => store.showTransientError(msg))) return;
+    const sketchLineAtClick = (): { sketchId: number; lineId: number } | null => {
+      const ray = rayAtMouse(event, hostRef.current);
+      return ray ? pickSketchLineAtRay(ray) : null;
+    };
+    if (
+      tryQueryPick(
+        click,
+        store,
+        datumAtClick,
+        (msg) => store.showTransientError(msg),
+        sketchLineAtClick,
+      )
+    )
+      return;
     if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
     if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
     if (state?.filletMode) { handleFilletClick(store, click); return; }
