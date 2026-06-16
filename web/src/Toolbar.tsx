@@ -757,79 +757,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
           {/* Ticket pqoe: the Offset distance field moved in-scene — it now
               floats in the canvas corner while the Offset tool is active
               (see SketchCanvas2d's in-scene tool-param input). */}
-          {/* F16: Pattern — interactive editing mode, not a kernel tool.
-              Select source geometry first (Select mode), set count +
-              spacing / angle, then click Linear X / Linear Y / Circular:
-              every selected line/circle/arc is repeated as editable copies
-              (see store.linearPatternSketch / circularPatternSketch /
-              sketchPattern.ts). */}
-          <label className="corner-op-input" title="Pattern instance count">
-            N
-            <input
-              type="number"
-              min="1"
-              step="1"
-              data-testid="sketch-pattern-count"
-              value={state.sketchPatternCount}
-              onChange={(e) =>
-                store.setSketchPatternCount(Number(e.currentTarget.value))
-              }
-            />
-          </label>
-          <label className="corner-op-input" title="Linear pattern spacing (mm)">
-            S
-            <input
-              type="number"
-              step="1"
-              data-testid="sketch-pattern-spacing"
-              value={state.sketchPatternSpacing}
-              onChange={(e) =>
-                store.setSketchPatternSpacing(Number(e.currentTarget.value))
-              }
-            />
-          </label>
-          <label className="corner-op-input" title="Circular pattern total angle (deg)">
-            A
-            <input
-              type="number"
-              step="15"
-              data-testid="sketch-pattern-angle"
-              value={state.sketchPatternAngle}
-              onChange={(e) =>
-                store.setSketchPatternAngle(Number(e.currentTarget.value))
-              }
-            />
-          </label>
-          <button
-            type="button"
-            className="tool"
-            title="Linear pattern along X"
-            data-testid="sketch-pattern-linear-x"
-            disabled={sketchSelection.length === 0}
-            onClick={() => store.linearPatternSketch("x")}
-          >
-            Linear X
-          </button>
-          <button
-            type="button"
-            className="tool"
-            title="Linear pattern along Y"
-            data-testid="sketch-pattern-linear-y"
-            disabled={sketchSelection.length === 0}
-            onClick={() => store.linearPatternSketch("y")}
-          >
-            Linear Y
-          </button>
-          <button
-            type="button"
-            className="tool"
-            title="Circular pattern about the origin"
-            data-testid="sketch-pattern-circular"
-            disabled={sketchSelection.length === 0}
-            onClick={() => store.circularPatternSketch()}
-          >
-            Circular
-          </button>
+          {/* Ticket pqoe (plan item 2): the Pattern controls (count /
+              spacing / angle + Linear X / Linear Y / Circular) moved in-scene
+              — they now float in the canvas corner as part of the
+              selection-transform panel, shown while a selection exists in
+              Select mode (see SketchCanvas2d's .fd-sketch-transform-panel). */}
           {/* F17: Move / Copy — interactive transforms, not kernel tools.
               Select source geometry first (Select mode), pick Move or Copy,
               then click a base point and a target point: the selection is
@@ -854,32 +786,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
               Click a base point, then a target point
             </span>
           )}
-          {/* F17: Rotate — rotate the current selection about the sketch
-              origin by the angle below (degrees). Acts immediately on the
-              selection; no canvas gesture (see
-              store.rotateSketchSelection). */}
-          <label className="corner-op-input" title="Rotation angle (deg)">
-            ∠
-            <input
-              type="number"
-              step="15"
-              data-testid="sketch-rotate-angle"
-              value={state.sketchRotateAngle}
-              onChange={(e) =>
-                store.setSketchRotateAngle(Number(e.currentTarget.value))
-              }
-            />
-          </label>
-          <button
-            type="button"
-            className="tool"
-            title="Rotate selection about the origin"
-            data-testid="sketch-rotate-apply"
-            disabled={sketchSelection.length === 0}
-            onClick={() => store.rotateSketchSelection(state.sketchRotateAngle, false)}
-          >
-            Rotate
-          </button>
+          {/* Ticket pqoe (plan item 3): the Rotate controls (angle + Rotate)
+              moved in-scene — they now sit in the selection-transform panel in
+              the canvas corner alongside the Pattern controls, shown while a
+              selection exists in Select mode (see SketchCanvas2d's
+              .fd-sketch-transform-panel). */}
         </div>
 
         {/* pqoe (part 7): always-visible explicit constraint toolbar,

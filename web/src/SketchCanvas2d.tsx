@@ -305,6 +305,48 @@ function toolParamsSnapshot(store: KernelStore): ToolParams {
 }
 
 /**
+ * Ticket pqoe (plan items 2 + 3): the selection-transform values — pattern
+ * count / spacing / angle (F16) and rotate angle (F17) — live in top-level
+ * store state, not in `session`. The in-scene transform panel subscribes to
+ * the store; snapshot the slice it reads, identity-stable so React bails out
+ * when nothing it cares about changed.
+ */
+interface TransformParams {
+  patternCount: number;
+  patternSpacing: number;
+  patternAngle: number;
+  rotateAngle: number;
+}
+
+const EMPTY_TRANSFORM_PARAMS: TransformParams = {
+  patternCount: 3,
+  patternSpacing: 20,
+  patternAngle: 360,
+  rotateAngle: 90,
+};
+
+let transformParamsCache: TransformParams = EMPTY_TRANSFORM_PARAMS;
+function transformParamsSnapshot(store: KernelStore): TransformParams {
+  const s = store.getState();
+  const c = transformParamsCache;
+  if (
+    c.patternCount === s.sketchPatternCount &&
+    c.patternSpacing === s.sketchPatternSpacing &&
+    c.patternAngle === s.sketchPatternAngle &&
+    c.rotateAngle === s.sketchRotateAngle
+  ) {
+    return c;
+  }
+  transformParamsCache = {
+    patternCount: s.sketchPatternCount,
+    patternSpacing: s.sketchPatternSpacing,
+    patternAngle: s.sketchPatternAngle,
+    rotateAngle: s.sketchRotateAngle,
+  };
+  return transformParamsCache;
+}
+
+/**
  * Ticket pqoe: descriptor for the active corner-op tool's single numeric
  * param — which testid/label/setter the in-scene input binds to, and the
  * live value pulled from the `ToolParams` snapshot. `null` for any tool
@@ -919,6 +961,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     store ? store.subscribe : NOOP_SUBSCRIBE,
     () => (store ? toolParamsSnapshot(store) : EMPTY_TOOL_PARAMS),
     () => EMPTY_TOOL_PARAMS,
+  );
+
+  // Ticket pqoe (plan items 2 + 3): the selection-transform values (pattern
+  // count / spacing / angle, rotate angle) used to live in the toolbar. They
+  // now show in an in-scene transform panel, shown while a selection exists in
+  // Select mode. Same store binding (setSketchPattern* / setSketchRotateAngle
+  // + linearPatternSketch / circularPatternSketch / rotateSketchSelection), so
+  // the actions are unchanged — only the controls moved. Subscribe so the panel
+  // re-renders when the user edits a field.
+  const transformParams = useSyncExternalStore(
+    store ? store.subscribe : NOOP_SUBSCRIBE,
+    () => (store ? transformParamsSnapshot(store) : EMPTY_TRANSFORM_PARAMS),
+    () => EMPTY_TRANSFORM_PARAMS,
   );
 
   // Tickets yx6a/bxoo: resolve the session's plane query to its world
@@ -2648,6 +2703,158 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
             </div>
           );
         })()}
+      {/* Ticket pqoe (plan item 1): in-scene tool-param overlay for the
+          regular-polygon tool. Its side count + inscribed/circumscribed flag
+          live in the tool DRAFT (session.toolDraft.sides / .inscribed) and
+          must be set BEFORE the radius drag — there was never a toolbar field
+          for them, so this is a pure addition. Pinned to the same canvas
+          corner as the corner-op tool-param (offset down so the two never
+          overlap, though only one tool is ever active). Bound to the SAME
+          store call the gesture already uses, store.setSketchToolDraft. */}
+      {store && session.selectedTool === "sketch_regular_polygon" && (
+        <div className="fd-sketch-tool-param is-ngon" data-testid="sketch-ngon-param">
+          <label className="field" title="Number of polygon sides">
+            N
+            <input
+              type="number"
+              min="3"
+              step="1"
+              data-testid="sketch-ngon-sides"
+              value={Number(session.toolDraft?.sides) || 6}
+              onChange={(e) =>
+                store.setSketchToolDraft({
+                  sides: Math.max(3, Math.round(Number(e.currentTarget.value))),
+                })
+              }
+            />
+          </label>
+          <label
+            className="field toggle"
+            title="Radius is to the corners (inscribed) or to the edge midpoints (circumscribed)"
+          >
+            <input
+              type="checkbox"
+              data-testid="sketch-ngon-inscribed"
+              checked={session.toolDraft?.inscribed !== false}
+              onChange={(e) =>
+                store.setSketchToolDraft({ inscribed: e.currentTarget.checked })
+              }
+            />
+            Inscribed
+          </label>
+        </div>
+      )}
+      {/* Ticket pqoe (plan items 2 + 3): in-scene selection-transform panel.
+          The Pattern (count / spacing / angle + Linear X / Linear Y /
+          Circular) and Rotate (angle + Rotate) controls used to live in the
+          toolbar; they now float in the canvas corner, shown ONLY in Select
+          mode with a non-empty selection (no active drawing tool) — both
+          operations act on the current selection. Pinned below the tool-param
+          slot so the two never overlap. Bound to the SAME store state/actions
+          (setSketchPattern* / setSketchRotateAngle + linearPatternSketch /
+          circularPatternSketch / rotateSketchSelection), so behaviour is
+          unchanged — only the controls moved. The data-testids match the old
+          toolbar fields so the existing e2e selectors keep resolving. */}
+      {store && selectMode && session.selection.length > 0 && (
+        <div
+          className="fd-sketch-transform-panel"
+          data-testid="sketch-transform-panel"
+        >
+          <div className="row">
+            <label className="field" title="Pattern instance count">
+              N
+              <input
+                type="number"
+                min="1"
+                step="1"
+                data-testid="sketch-pattern-count"
+                value={transformParams.patternCount}
+                onChange={(e) =>
+                  store.setSketchPatternCount(Number(e.currentTarget.value))
+                }
+              />
+            </label>
+            <label className="field" title="Linear pattern spacing (mm)">
+              S
+              <input
+                type="number"
+                step="1"
+                data-testid="sketch-pattern-spacing"
+                value={transformParams.patternSpacing}
+                onChange={(e) =>
+                  store.setSketchPatternSpacing(Number(e.currentTarget.value))
+                }
+              />
+            </label>
+            <label className="field" title="Circular pattern total angle (deg)">
+              A
+              <input
+                type="number"
+                step="15"
+                data-testid="sketch-pattern-angle"
+                value={transformParams.patternAngle}
+                onChange={(e) =>
+                  store.setSketchPatternAngle(Number(e.currentTarget.value))
+                }
+              />
+            </label>
+          </div>
+          <div className="row">
+            <button
+              type="button"
+              className="action"
+              title="Linear pattern along X"
+              data-testid="sketch-pattern-linear-x"
+              onClick={() => store.linearPatternSketch("x")}
+            >
+              Linear X
+            </button>
+            <button
+              type="button"
+              className="action"
+              title="Linear pattern along Y"
+              data-testid="sketch-pattern-linear-y"
+              onClick={() => store.linearPatternSketch("y")}
+            >
+              Linear Y
+            </button>
+            <button
+              type="button"
+              className="action"
+              title="Circular pattern about the origin"
+              data-testid="sketch-pattern-circular"
+              onClick={() => store.circularPatternSketch()}
+            >
+              Circular
+            </button>
+          </div>
+          <div className="row">
+            <label className="field" title="Rotation angle (deg)">
+              ∠
+              <input
+                type="number"
+                step="15"
+                data-testid="sketch-rotate-angle"
+                value={transformParams.rotateAngle}
+                onChange={(e) =>
+                  store.setSketchRotateAngle(Number(e.currentTarget.value))
+                }
+              />
+            </label>
+            <button
+              type="button"
+              className="action"
+              title="Rotate selection about the origin"
+              data-testid="sketch-rotate-apply"
+              onClick={() =>
+                store.rotateSketchSelection(transformParams.rotateAngle, false)
+              }
+            >
+              Rotate
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

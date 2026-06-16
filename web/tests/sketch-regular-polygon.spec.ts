@@ -9,11 +9,13 @@ import {
 /**
  * F6: regular N-gon tool. The gesture is a single drag from the
  * centre outward to set the radius; the side count + inscribed flag
- * come from the tool's parameter dialog (default 6, inscribed). Here
- * we pick the tool, drag centre → radius via pixel offsets from the
- * canvas centre, and assert a single `sketch_regular_polygon` sub-call
- * with sides 6 lands — both live and after Finish. Cold WebGPU
- * first-paint can be slow, so the timeout is generous.
+ * come from the in-scene overlay shown while the tool is active
+ * (ticket pqoe, plan item 1 — default 6, inscribed). Here we pick the
+ * tool, set sides to 5 in the overlay, drag centre → radius via pixel
+ * offsets from the canvas centre, and assert a single
+ * `sketch_regular_polygon` sub-call with sides 5 lands — both live and
+ * after Finish. Cold WebGPU first-paint can be slow, so the timeout is
+ * generous.
  */
 test.describe.configure({ timeout: 120_000 });
 
@@ -32,6 +34,14 @@ test.describe("Sketch regular polygon tool", () => {
     );
     await expect(toolButton).toBeVisible();
     await toolButton.click();
+
+    // Ticket pqoe (plan item 1): the side count + inscribed flag now live in an
+    // in-scene overlay shown while the tool is active (no toolbar field). Set
+    // the sides to 5 there so the committed sub-call carries the chosen value.
+    const sidesInput = page.getByTestId("sketch-ngon-sides");
+    await expect(sidesInput).toBeVisible();
+    await sidesInput.fill("5");
+    await expect(page.getByTestId("sketch-ngon-inscribed")).toBeVisible();
 
     const [cx, cy] = await canvasCentre(page);
 
@@ -70,7 +80,7 @@ test.describe("Sketch regular polygon tool", () => {
     );
     const ngon = subCalls.find((c) => c.type === "sketch_regular_polygon");
     expect(ngon).toBeTruthy();
-    expect(Number(ngon!.params.sides)).toBe(6);
+    expect(Number(ngon!.params.sides)).toBe(5);
 
     await page.waitForTimeout(500);
     await page.getByTestId("sketch-detail-accept").click();
