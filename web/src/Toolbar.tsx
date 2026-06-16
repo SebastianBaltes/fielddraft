@@ -475,59 +475,18 @@ export function Toolbar({ store, state }: ToolbarProps) {
   if (sketchSession.active) {
     return (
       <div className="fd-toolbar" data-testid="fielddraft-toolbar">
-        <div className="group">
-          <span className="label" data-testid="sketch-mode-indicator">Sketch</span>
+        {/* Ticket yuaw: the separate "Sketch | Import | DoF" header row is
+            gone — the sketch tools themselves signal sketch mode. The mode
+            indicator is kept (tests rely on it) as a minimal chip at the head
+            of the tool row, Import moved INTO the tool row next to Project,
+            and the DoF readout relocated to the far right of the row. */}
+        <div className="group sketch-tool-row">
+          {/* Ticket yuaw: minimal sketch-mode chip — was the old header row's
+              title. Kept (restyled) because e2e selectors wait on it. */}
+          <span className="sketch-chip" data-testid="sketch-mode-indicator">Sketch</span>
           {/* Ticket pqoe: a sketch is a feature like any other — commit /
               discard live on the ✓/✗ in its Detail-panel header, not in
               the toolbar. The toolbar only carries sketch tools + Import. */}
-          {/* F22: import SVG / DXF geometry into the active sketch. A
-              visible button triggers the visually-hidden file input. */}
-          <button
-            type="button"
-            className="tool"
-            title="Import SVG / DXF geometry"
-            data-testid="sketch-import"
-            onClick={() => importInputRef.current?.click()}
-          >
-            <span className="glyph" aria-hidden="true">📐</span>
-            <span className="tool-label">Import</span>
-          </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".svg,.dxf"
-            className="hidden-file-input"
-            data-testid="sketch-import-input"
-            onChange={(e) => {
-              void handleImportFile(e.currentTarget.files?.[0]);
-              e.currentTarget.value = "";
-            }}
-          />
-          {importHint && (
-            <span className="hint" data-testid="sketch-import-hint">
-              {importHint}
-            </span>
-          )}
-          {dof !== null && (
-            <span
-              className={
-                "dof" + (dofOver ? " is-over" : dof === 0 ? " is-ok" : "")
-              }
-              data-testid="sketch-dof"
-              title="Remaining degrees of freedom"
-            >
-              {dofOver
-                ? dof < 0
-                  ? `Over-constrained (${dof})`
-                  : "Over-constrained"
-                : dof > 0
-                  ? `${dof} DoF`
-                  : "Fully constrained"}
-            </span>
-          )}
-        </div>
-
-        <div className="group sketch-tool-row">
           {/* P0.1: the Select tool returns to select mode (no drawing
               tool active) so committed geometry can be picked and
               constrained. Without it the constraint palette is
@@ -646,6 +605,36 @@ export function Toolbar({ store, state }: ToolbarProps) {
             testId="sketch-tool-sketch_trim"
             onClick={() => store.selectSketchTool("sketch_trim", {})}
           />
+          {/* Ticket yuaw: Import moved off the old header row INTO the tool
+              row, grouped with Project since both bring outside geometry into
+              the sketch. F22: a visible button triggers the visually-hidden
+              file input; the hint sits inline next to it. */}
+          <button
+            type="button"
+            className="tool"
+            title="Import SVG / DXF geometry"
+            data-testid="sketch-import"
+            onClick={() => importInputRef.current?.click()}
+          >
+            <span className="glyph" aria-hidden="true">📐</span>
+            <span className="tool-label">Import</span>
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".svg,.dxf"
+            className="hidden-file-input"
+            data-testid="sketch-import-input"
+            onChange={(e) => {
+              void handleImportFile(e.currentTarget.files?.[0]);
+              e.currentTarget.value = "";
+            }}
+          />
+          {importHint && (
+            <span className="hint" data-testid="sketch-import-hint">
+              {importHint}
+            </span>
+          )}
           {/* F21: Project / Use — interactive editing mode, not a kernel
               tool. Existing bodies' B-Rep edges are drawn as faint reference
               guides projected onto the sketch plane; a single click adopts
@@ -813,6 +802,27 @@ export function Toolbar({ store, state }: ToolbarProps) {
             title="Finish sketch & revolve it"
             onClick={() => store.revolveFromSketchSession()}
           />
+          {/* Ticket yuaw: the DoF readout moved off the old header row to the
+              far right of the tool row — pushed there by an auto-margin so it
+              stays a non-intrusive status chip. F5 colours: neutral / green
+              (fully constrained) / red (over-constrained). */}
+          {dof !== null && (
+            <span
+              className={
+                "dof" + (dofOver ? " is-over" : dof === 0 ? " is-ok" : "")
+              }
+              data-testid="sketch-dof"
+              title="Remaining degrees of freedom"
+            >
+              {dofOver
+                ? dof < 0
+                  ? `Over-constrained (${dof})`
+                  : "Over-constrained"
+                : dof > 0
+                  ? `${dof} DoF`
+                  : "Fully constrained"}
+            </span>
+          )}
         </div>
 
         {/* pqoe (part 7): always-visible explicit constraint toolbar,

@@ -142,10 +142,27 @@
     margin-right: var(--space-1);
   }
 
+  /* Ticket yuaw: minimal sketch-mode chip at the head of the tool row —
+   * replaces the old header row's "Sketch" title. A subtle accent pill so
+   * the row reads as "sketch mode" without a dedicated row. */
+  & .sketch-chip {
+    align-self: center;
+    flex-shrink: 0;
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    white-space: nowrap;
+  }
+
   /* F5: live degrees-of-freedom readout in sketch mode. Neutral by
    * default (under-constrained), green when fully constrained, red
-   * when over-constrained. */
+   * when over-constrained. Ticket yuaw: pushed to the far right of the
+   * tool row via an auto left margin so it reads as a status chip. */
   & .dof {
+    margin-left: auto;
     font-size: var(--fs-base);
     font-weight: var(--fw-medium);
     color: var(--color-text-muted);
