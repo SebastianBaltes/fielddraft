@@ -65,6 +65,16 @@ export function setHudInvalidate(fn: (() => void) | null): void {
   invalidateFn = fn;
 }
 
+// Direct subscribers, notified on every publish. The WebGL fallback root runs
+// `frameloop="never"` and never ticks `useFrame`, so SketchHud3D can't poll the
+// version there — it subscribes here instead and rebuilds on the React render
+// the notification triggers (ticket x941). Works on the WebGPU backend too.
+const subscribers = new Set<() => void>();
+export function subscribeSketchHud(fn: () => void): () => void {
+  subscribers.add(fn);
+  return () => subscribers.delete(fn);
+}
+
 /** Replace the published transient HUD geometry and bump the version. */
 export function publishSketchHud(next: Omit<SketchHudGeometry, "version">): void {
   hud.previewCalls = next.previewCalls;
@@ -76,6 +86,7 @@ export function publishSketchHud(next: Omit<SketchHudGeometry, "version">): void
   hud.projected = next.projected;
   hud.version += 1;
   invalidateFn?.();
+  for (const fn of subscribers) fn();
 }
 
 /** Clear all transient HUD geometry (sketch session ended / overlay gone). */

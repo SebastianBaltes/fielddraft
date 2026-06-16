@@ -1618,6 +1618,71 @@ export class KernelStore {
     return true;
   }
 
+  // ── sketch-session undo/redo (ticket r3ci) ───────────────────────
+  //
+  // Sketch geometry lives entirely on the UI side as the session's
+  // `subCalls` (it isn't pushed to the kernel until Finish), so the
+  // kernel undo stack — what `undo()`/`redo()` drive — knows nothing
+  // about a line the user just drew. These two stacks give the active
+  // session its own history: each entry is a full `subCalls` snapshot
+  // (the arrays are always replaced immutably, so storing the reference
+  // is a sound snapshot). Checkpoints are captured at the two structural
+  // chokepoints — `updateSketch` (active→active, subCalls changed) and
+  // `pushSketchSubCalls`. The solver's re-coordinate pass goes through
+  // `replaceSketchSubCalls` (NOT these), so a solve never lands as its
+  // own undo step.
+  private sketchUndoStack: SketchSessionState["subCalls"][] = [];
+  private sketchRedoStack: SketchSessionState["subCalls"][] = [];
+
+  /** Snapshot the current sub-spine onto the undo stack and start a fresh
+   *  redo branch. Called just before a user-initiated structural mutation. */
+  private pushSketchUndoCheckpoint(): void {
+    this.sketchUndoStack.push(this.state.sketchSession.subCalls);
+    // Bound the history so a long session can't grow it without limit.
+    if (this.sketchUndoStack.length > 200) this.sketchUndoStack.shift();
+    this.sketchRedoStack = [];
+  }
+
+  /** Clear both sketch history stacks — on session enter/exit, where a
+   *  cross-session undo would make no sense. */
+  private resetSketchHistory(): void {
+    this.sketchUndoStack = [];
+    this.sketchRedoStack = [];
+  }
+
+  /** Undo the last structural sketch edit (drawn geometry, deletes,
+   *  dimension edits). No-op outside a session or with empty history.
+   *  Re-solves so the overlay / inference / DoF reflect the restored
+   *  spine, exactly like every other mutation. */
+  sketchUndo(): boolean {
+    if (!this.state.sketchSession.active) return false;
+    const prev = this.sketchUndoStack.pop();
+    if (prev === undefined) return false;
+    this.sketchRedoStack.push(this.state.sketchSession.subCalls);
+    this.state = {
+      ...this.state,
+      sketchSession: { ...this.state.sketchSession, subCalls: prev, selection: [] },
+    };
+    this.notify();
+    void solveAndReplace(this);
+    return true;
+  }
+
+  /** Redo the last undone sketch edit. */
+  sketchRedo(): boolean {
+    if (!this.state.sketchSession.active) return false;
+    const next = this.sketchRedoStack.pop();
+    if (next === undefined) return false;
+    this.sketchUndoStack.push(this.state.sketchSession.subCalls);
+    this.state = {
+      ...this.state,
+      sketchSession: { ...this.state.sketchSession, subCalls: next, selection: [] },
+    };
+    this.notify();
+    void solveAndReplace(this);
+    return true;
+  }
+
   // ── pending feature (ticket x7af) ─────────────────────────────────
   //
   // A feature created as a suppressed GHOST awaiting confirmation: the
@@ -2545,11 +2610,19 @@ export class KernelStore {
     next: SketchSessionState,
   ): void {
     if (next === this.state.sketchSession) return;
+    // r3ci: a structural sub-spine change within an ongoing session is a
+    // user edit — checkpoint it for sketch undo. Enter/exit transitions
+    // (active flips) reset history separately and must not checkpoint.
+    const cur = this.state.sketchSession;
+    if (cur.active && next.active && next.subCalls !== cur.subCalls) {
+      this.pushSketchUndoCheckpoint();
+    }
     this.patch({ sketchSession: next });
     this.notify();
   }
 
   enterSketch(planeQuery: string): void {
+    this.resetSketchHistory(); // r3ci: fresh session, fresh history
     this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
   }
 
@@ -2594,6 +2667,7 @@ export class KernelStore {
     } catch {
       // params unavailable — keep the XY fallback
     }
+    this.resetSketchHistory(); // r3ci: re-opened sketch starts fresh history
     this.updateSketch(
       reduceEnter(this.state.sketchSession, planeQuery, {
         initialSubCalls: subCalls,
@@ -2609,6 +2683,7 @@ export class KernelStore {
    * here for now.
    */
   exitSketch(): void {
+    this.resetSketchHistory(); // r3ci
     this.updateSketch(reduceExit(this.state.sketchSession));
   }
 
@@ -2657,6 +2732,7 @@ export class KernelStore {
   ): void {
     if (!this.state.sketchSession.active) return;
     if (calls.length === 0) return;
+    this.pushSketchUndoCheckpoint(); // r3ci
     this.state = {
       ...this.state,
       sketchSession: {

@@ -51,6 +51,7 @@ import {
   readSketchHud,
   setHudInvalidate,
   clearSketchHud,
+  subscribeSketchHud,
 } from "./sketchHudBridge";
 import {
   readSketchLabels,
@@ -631,44 +632,57 @@ const SKETCH_SNAP_COLOR = 0xf59e0b; // COLOR_SNAP
  * churn here never re-runs the committed-geometry memos.
  */
 export function SketchHud3D() {
+  const gl = useThree((s) => s.gl);
   const invalidate = useThree((s) => s.invalidate);
+  // ticket x941: on the classic WebGLRenderer fallback the node materials below
+  // don't compile AND `useFrame` never ticks (the WebGL root runs
+  // `frameloop="never"`), so the live drag preview never showed there. Mirror
+  // SketchSession3D: classic Line(Dashed)Material on WebGL, and rebuild from a
+  // direct HUD subscription instead of polling the version in useFrame.
+  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   const groupRef = useRef<THREE.Group>(null);
   const lastVer = useRef(-1);
   const objsRef = useRef<THREE.Object3D[]>([]);
-
-  const matsRef = useRef<{
-    line: Line2NodeMaterial;
-    guide: Line2NodeMaterial;
-    projected: Line2NodeMaterial;
-  } | null>(null);
-  if (!matsRef.current) {
-    const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
-      new Line2NodeMaterial({
-        color: c, linewidth: lw, worldUnits: false,
-        depthTest: false, depthWrite: false, transparent: true, ...extra,
-      });
-    matsRef.current = {
-      line: fatLine(SKETCH_PREVIEW_COLOR, 2),
-      guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
-      projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
-    };
-  }
-  const M = matsRef.current;
-  // Preview/snap markers are dot MESHES too (ticket tdq2 — THREE.Points never
-  // rendered in the overlay pass). Built per HUD rebuild in the useFrame below.
   const dotSetsRef = useRef<SketchDots[]>([]);
 
-  useEffect(() => {
-    setHudInvalidate(invalidate);
-    return () => {
-      setHudInvalidate(null);
-      clearSketchHud();
-      for (const d of dotSetsRef.current) d.dispose();
-      dotSetsRef.current = [];
-    };
-  }, [invalidate]);
+  type LineMat = Line2NodeMaterial | THREE.LineBasicMaterial | THREE.LineDashedMaterial;
+  const matsRef = useRef<{ line: LineMat; guide: LineMat; projected: LineMat } | null>(null);
+  if (!matsRef.current) {
+    if (isWebGPU) {
+      const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+        new Line2NodeMaterial({
+          color: c, linewidth: lw, worldUnits: false,
+          depthTest: false, depthWrite: false, transparent: true, ...extra,
+        });
+      matsRef.current = {
+        line: fatLine(SKETCH_PREVIEW_COLOR, 2),
+        guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
+        projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
+      };
+    } else {
+      matsRef.current = {
+        line: new THREE.LineBasicMaterial({
+          color: SKETCH_PREVIEW_COLOR, transparent: true,
+          depthTest: false, depthWrite: false,
+        }),
+        guide: new THREE.LineDashedMaterial({
+          color: SKETCH_GUIDE_COLOR, transparent: true, opacity: 0.6,
+          depthTest: false, depthWrite: false, dashSize: 3, gapSize: 2,
+        }),
+        projected: new THREE.LineDashedMaterial({
+          color: SKETCH_GUIDE_COLOR, transparent: true, opacity: 0.5,
+          depthTest: false, depthWrite: false, dashSize: 4, gapSize: 4,
+        }),
+      };
+    }
+  }
+  const M = matsRef.current;
 
-  useFrame(() => {
+  // Rebuild the transient HUD geometry from the bridge. Held in a ref so the
+  // single subscription (below) always calls the freshest closure without
+  // re-subscribing every render.
+  const rebuildRef = useRef<() => void>(() => {});
+  rebuildRef.current = () => {
     const hud = readSketchHud();
     if (hud.version === lastVer.current) return;
     lastVer.current = hud.version;
@@ -684,12 +698,22 @@ export function SketchHud3D() {
 
     const frame = getSketchPlaneFrame();
     const w = (uv: [number, number]) => planeToWorld(uv[0], uv[1], frame);
-    const addLines = (pos: number[], mat: Line2NodeMaterial, order: number, dashed: boolean) => {
+    const addLines = (pos: number[], mat: LineMat, order: number, dashed: boolean) => {
       if (pos.length === 0) return;
-      const g = new LineSegmentsGeometry();
-      g.setPositions(new Float32Array(pos));
-      const o = new LineSegments2(g, mat);
-      if (dashed) o.computeLineDistances();
+      let o: THREE.Object3D;
+      if (isWebGPU) {
+        const g = new LineSegmentsGeometry();
+        g.setPositions(new Float32Array(pos));
+        const line = new LineSegments2(g, mat as Line2NodeMaterial);
+        if (dashed) line.computeLineDistances();
+        o = line;
+      } else {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        const line = new THREE.LineSegments(g, mat as THREE.LineBasicMaterial);
+        if (dashed) line.computeLineDistances();
+        o = line;
+      }
       o.frustumCulled = false;
       o.renderOrder = order;
       o.layers.enable(OVERLAY_LAYER);
@@ -727,7 +751,24 @@ export function SketchHud3D() {
     if (hud.snap) addDots([...w(hud.snap)], SKETCH_SNAP_COLOR, 13, 1001);
 
     invalidate();
-  });
+  };
+
+  useEffect(() => {
+    setHudInvalidate(invalidate);
+    // Rebuild on every publish (works without useFrame → drives the WebGL
+    // fallback root too, ticket x941).
+    const unsub = subscribeSketchHud(() => rebuildRef.current());
+    rebuildRef.current(); // initial paint
+    return () => {
+      setHudInvalidate(null);
+      unsub();
+      clearSketchHud();
+      for (const d of dotSetsRef.current) d.dispose();
+      dotSetsRef.current = [];
+      for (const m of Object.values(M)) m.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invalidate]);
 
   return <group ref={groupRef} />;
 }
@@ -2863,7 +2904,7 @@ const WEBGL_DEFAULT_METALNESS = DEFAULT_METALNESS;
  * directionals (key/fill/rim) and scale the raw radiances down for Three.js's
  * BRDF. Exact pixel parity isn't expected — only a close visual match.
  */
-function WebGLSceneLights() {
+export function WebGLSceneLights() {
   return (
     <>
       <ambientLight intensity={0.25} />
@@ -2872,6 +2913,42 @@ function WebGLSceneLights() {
       <directionalLight position={[0, -200, -1000]} intensity={0.3} />
     </>
   );
+}
+
+/** Parametric leaf kinds that `createPrimitiveGeometry` (sdfDeferredRenderer)
+ *  renders as an exact/near-exact analytic hull — far smoother than the general
+ *  DC/SDF mesh. Ticket 55ea: a helix DC-meshes very coarsely; its parametric
+ *  `buildHelixGeometry` (48 segments/turn) is the intended representation. */
+const WEBGL_PARAMETRIC_KINDS = new Set([
+  "box", "sphere", "cylinder", "cone", "torus", "capsule",
+  "extrude", "revolve", "helix", "sweep",
+]);
+
+/**
+ * Ticket 55ea: is WebGL body `i` a SINGLE parametric solid that needs no
+ * boolean compositing? Such a body's analytic hull (createPrimitiveGeometry /
+ * buildHelixGeometry / buildSweepGeometry) is BOTH boolean-correct AND much
+ * finer than the coarse DC mesh in `meshedBodies`, so the WebGL path renders it
+ * parametrically (`WebGLBodies`) instead of from the DC mesh (`MeshPreview`).
+ *
+ * Gate: exactly one non-skip leaf, no residual SDF regions, and a kind that
+ * `createPrimitiveGeometry` handles. Multi-leaf / SDF-region / difference
+ * bodies fail the gate and keep the boolean-correct DC mesh — WebGLBodies does
+ * not composite booleans.
+ */
+export function isWebglParametricBody(
+  kernel: { bodyHybridInfo(i: number): { leaves: HybridLeafInfo[]; sdf_regions?: unknown[] } },
+  i: number,
+): boolean {
+  try {
+    const info = kernel.bodyHybridInfo(i);
+    if (info.sdf_regions && info.sdf_regions.length > 0) return false;
+    const real = info.leaves.filter((l) => l.role !== "skip");
+    if (real.length !== 1) return false;
+    return WEBGL_PARAMETRIC_KINDS.has(real[0].kind);
+  } catch {
+    return false;
+  }
 }
 
 function MeshPreviewBody({ body, mat, bodyIndex }: {
@@ -2916,7 +2993,18 @@ function MeshPreviewBody({ body, mat, bodyIndex }: {
   );
 }
 
-export function MeshPreview() {
+/**
+ * @param parametricSplit Ticket 55ea: when set (the WebGL path), SKIP bodies
+ *   that `isWebglParametricBody` flags — `WebGLBodies` renders those from their
+ *   fine analytic hull instead of this coarse DC mesh. Off in `mesh` render
+ *   mode, where the whole point is to show the DC mesher's output.
+ * @param lights When false the caller provides shared `WebGLSceneLights` (so
+ *   mounting MeshPreview + WebGLBodies together doesn't double the lighting).
+ */
+export function MeshPreview({
+  parametricSplit = false,
+  lights = true,
+}: { parametricSplit?: boolean; lights?: boolean } = {}) {
   const { store, state } = useKernelStore();
   const bodies = state?.meshedBodies;
   const features = state?.features;
@@ -2928,10 +3016,17 @@ export function MeshPreview() {
 
   if (!bodies || bodies.length === 0) return null;
 
+  const rows = bodies
+    .map((body, i) => ({ body, i }))
+    .filter(({ i }) =>
+      !parametricSplit || !store || !isWebglParametricBody(store.kernel, i),
+    );
+  if (rows.length === 0) return null;
+
   return (
     <>
-      <WebGLSceneLights />
-      {bodies.map((body, i) => (
+      {lights ? <WebGLSceneLights /> : null}
+      {rows.map(({ body, i }) => (
         <MeshPreviewBody key={body.id} body={body} mat={materials.get(i)} bodyIndex={i} />
       ))}
     </>
@@ -3004,7 +3099,17 @@ export function BRepMeshPreview() {
  * compositing yet — that is the screen-space-CSG phase); helix/twist parametric
  * meshes and the B-Rep tessellation slot in here later.
  */
-export function WebGLBodies() {
+/**
+ * @param onlyParametric Ticket 55ea: when set (the WebGL path WITH a DC mesh
+ *   available), render ONLY bodies that `isWebglParametricBody` flags — the
+ *   complement of what `MeshPreview parametricSplit` draws. When unset (the
+ *   mesh-pending fallback) every body is drawn from its hulls.
+ * @param lights When false the caller provides shared `WebGLSceneLights`.
+ */
+export function WebGLBodies({
+  onlyParametric = false,
+  lights = true,
+}: { onlyParametric?: boolean; lights?: boolean } = {}) {
   const { store, state } = useKernelStore();
   const fingerprint = useBodyFingerprint();
   // One material per body, so the WebGL path matches WebGPU: distinct part
@@ -3043,6 +3148,9 @@ export function WebGLBodies() {
       return mat;
     };
     for (let i = 0; i < count; i++) {
+      // 55ea: in the split path render only the parametric-clean bodies; the
+      // rest keep their boolean-correct DC mesh via MeshPreview.
+      if (onlyParametric && !isWebglParametricBody(store.kernel, i)) continue;
       let info: { leaves: HybridLeafInfo[] };
       try {
         info = store.kernel.bodyHybridInfo(i);
@@ -3068,7 +3176,7 @@ export function WebGLBodies() {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, fingerprint, state?.features]);
+  }, [store, fingerprint, state?.features, onlyParametric]);
 
   useEffect(() => {
     return () => {
@@ -3082,7 +3190,7 @@ export function WebGLBodies() {
   if (meshes.length === 0) return null;
   return (
     <>
-      <WebGLSceneLights />
+      {lights ? <WebGLSceneLights /> : null}
       {meshes.map((m, i) => (
         <primitive key={i} object={m} dispose={null} />
       ))}

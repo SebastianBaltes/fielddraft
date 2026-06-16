@@ -184,4 +184,56 @@ describe("KernelStore — sketch-session lifecycle", () => {
     expect(session.editingFeatureId).toBeNull();
     expect(session.subCalls).toEqual([]);
   });
+
+  // ── r3ci: sketch-local undo/redo of drawn geometry ──────────────────
+  const line = (i: number) => ({
+    type: "sketch_line",
+    params: { start: [0, 0], end: [i, i] },
+  });
+
+  it("undo removes the last drawn sub-call; redo restores it", () => {
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    store.pushSketchSubCalls([line(1)]);
+    store.pushSketchSubCalls([line(2)]);
+    expect(store.getState().sketchSession.subCalls).toHaveLength(2);
+
+    expect(store.sketchUndo()).toBe(true);
+    expect(store.getState().sketchSession.subCalls).toHaveLength(1);
+
+    expect(store.sketchUndo()).toBe(true);
+    expect(store.getState().sketchSession.subCalls).toHaveLength(0);
+
+    // Nothing left to undo.
+    expect(store.sketchUndo()).toBe(false);
+
+    expect(store.sketchRedo()).toBe(true);
+    expect(store.getState().sketchSession.subCalls).toHaveLength(1);
+    expect(store.sketchRedo()).toBe(true);
+    expect(store.getState().sketchSession.subCalls).toHaveLength(2);
+    expect(store.sketchRedo()).toBe(false);
+  });
+
+  it("a fresh draw after undo clears the redo branch", () => {
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    store.pushSketchSubCalls([line(1)]);
+    store.pushSketchSubCalls([line(2)]);
+    store.sketchUndo(); // back to 1
+    store.pushSketchSubCalls([line(3)]); // new branch — redo of line(2) gone
+    expect(store.getState().sketchSession.subCalls).toHaveLength(2);
+    expect(store.sketchRedo()).toBe(false);
+  });
+
+  it("undo is scoped to the session and resets on enter", () => {
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    store.pushSketchSubCalls([line(1)]);
+    store.exitSketch();
+    // Re-entering starts fresh: no cross-session undo.
+    store.enterSketch("qCreatedBy(origin_plane_xy)");
+    expect(store.sketchUndo()).toBe(false);
+  });
+
+  it("sketchUndo/Redo are no-ops outside a session", () => {
+    expect(store.sketchUndo()).toBe(false);
+    expect(store.sketchRedo()).toBe(false);
+  });
 });

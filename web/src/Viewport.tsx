@@ -40,6 +40,7 @@ import {
   SketchLabels3D,
   BRepMeshPreview,
   WebGLBodies,
+  WebGLSceneLights,
   SelectionTransformGizmo,
   Invalidator,
   BRepEdgeOverlay,
@@ -67,6 +68,8 @@ import {
 } from "./queryPickerBridge";
 import { DATUM_PLANE_QUERIES } from "./queryLabels";
 import { getPublishedPickCamera, publishPickCamera } from "./pickCameraBridge";
+import { publishSketchCamera } from "./sketchCameraBridge";
+import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { pickSketchAtRay } from "./sketchPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
@@ -492,6 +495,20 @@ function WebGLViewport() {
         // but clicking it never fired picker.onPick. Publish the live WebGL
         // camera here so the host-div click path rays through the SAME camera.
         publishPickCamera(st.camera);
+        // Ticket x941: the WebGL root has no <CameraBridgePublisher> either, so
+        // the 2D sketch overlay (SketchCanvas2d) never received a sketch-camera
+        // publish — its bridge width/height/zoom/version stayed stale and its
+        // rAF redraw gate never tripped, so a drawing drag (line/circle/…) only
+        // appeared on mouse-up (the committed 3D geometry), never as a live
+        // preview during the drag. Mirror the WebGPU publisher here: publish the
+        // live camera dimensions and redraw the overlay in lockstep each frame.
+        const canvas = st.gl.domElement;
+        publishSketchCamera({
+          width: canvas.clientWidth,
+          height: canvas.clientHeight,
+          devicePixelRatio: st.gl.getPixelRatio(),
+        });
+        requestOverlayRedraw();
         st.gl.render(st.scene, st.camera);
       }
       raf = requestAnimationFrame(tick);
@@ -524,7 +541,21 @@ function WebGLViewport() {
         {/* Boolean-correct DC meshes once meshed; per-leaf hulls while the
             async mesh is still pending (ticket gcvz). Both carry their own
             lights, so exactly one renders at a time. */}
-        {hasMeshes ? <MeshPreview /> : <WebGLBodies />}
+        {/* Ticket 55ea: once DC meshes exist, render single parametric solids
+            (helix/sweep/revolve/extrude/primitives) from their fine analytic
+            hull and keep the boolean-correct DC mesh only for composited
+            bodies — a helix DC-meshes far too coarsely. Shared lights so the
+            two paths don't double the scene lighting. Before meshing finishes,
+            the hull fallback still draws every body. */}
+        {hasMeshes ? (
+          <>
+            <WebGLSceneLights />
+            <MeshPreview parametricSplit lights={false} />
+            <WebGLBodies onlyParametric lights={false} />
+          </>
+        ) : (
+          <WebGLBodies />
+        )}
         {/* Default datum planes/origin (ticket 59c2) + committed sketches
             (ticket jjmv) — all plain-material meshes, so they render on the
             WebGL path just like in WebGPU. */}

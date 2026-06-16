@@ -100,8 +100,17 @@ export function App() {
         if (store.removeSelected()) e.preventDefault();
         return;
       }
+      // In a sketch session, undo/redo act on the SKETCH history only —
+      // never on 3D features behind the sketch plane (ticket r3ci; mirrors
+      // how Delete is scoped to the sketch selection above). Routed here
+      // unconditionally so an empty sketch history is a no-op, not a fall-
+      // through to the kernel undo.
+      const inSketch = store.getState().sketchSession.active;
       if (ctrl && (e.key === "z" || e.key === "Z")) {
-        if (e.shiftKey) {
+        if (inSketch) {
+          if (e.shiftKey ? store.sketchRedo() : store.sketchUndo())
+            e.preventDefault();
+        } else if (e.shiftKey) {
           if (store.redo()) e.preventDefault();
         } else {
           if (store.undo()) e.preventDefault();
@@ -109,7 +118,7 @@ export function App() {
         return;
       }
       if (ctrl && (e.key === "y" || e.key === "Y")) {
-        if (store.redo()) e.preventDefault();
+        if (inSketch ? store.sketchRedo() : store.redo()) e.preventDefault();
         return;
       }
 
