@@ -2434,7 +2434,7 @@ impl SketchFeature {
                     "name": "Plane",
                     "type": "query",
                     "required": true,
-                    "entityFilter": "FACE",
+                    "entity_filter": "FACE",
                 },
                 {
                     "key": "sub_calls",

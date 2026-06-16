@@ -5814,7 +5814,7 @@ mod tests {
         // Ticket 15f5: optional merge scope (explicit target bodies).
         assert_eq!(map["targets"]["type"], json!("multi_query"));
         assert_eq!(map["targets"]["required"], json!(false));
-        assert_eq!(map["targets"]["entityFilter"], json!("BODY"));
+        assert_eq!(map["targets"]["entity_filter"], json!("BODY"));
     }
 
     #[test]

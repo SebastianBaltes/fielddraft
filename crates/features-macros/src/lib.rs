@@ -286,9 +286,11 @@ struct ParamInfo {
     /// show a suffix inside the input field.
     unit: Option<String>,
     /// Optional `#[param(entity_filter = "FACE")]` topology filter,
-    /// forwarded into the schema JSON as `entityFilter` so the
-    /// viewport element-picker narrows to the right entity kind
-    /// (Brocken B/C — e.g. a sketch plane or mate-connector face).
+    /// forwarded into the schema JSON as `entity_filter` (snake_case,
+    /// like every other schema key — the TS parser in `widgets/schema.ts`
+    /// reads it under that name) so the viewport element-picker narrows
+    /// to the right entity kind (Brocken B/C — e.g. a sketch plane or
+    /// mate-connector face).
     entity_filter: Option<String>,
     /// Optional `#[param(variants = "key=Label,key=Label")]` list for
     /// String-typed fields: the schema reports `type: "enum"` with the
@@ -422,7 +424,7 @@ impl ParamInfo {
         };
 
         let entity_filter_entry = match &self.entity_filter {
-            Some(f) => quote! { "entityFilter": #f, },
+            Some(f) => quote! { "entity_filter": #f, },
             None => quote! {},
         };
 

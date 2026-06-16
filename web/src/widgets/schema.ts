@@ -378,13 +378,18 @@ function parseParam(raw: unknown, where: string): FeatureParamDescriptor {
     descriptor.step = asFiniteNumber(p.step, `${where}.step`, 0.01);
   }
 
-  if (widget === "query") {
+  // `entity_filter` applies to both single- and multi-query pickers
+  // (e.g. the Revolve/Helix axis EDGE,SKETCHLINE field and a BODY merge
+  // scope). `max_picks` is single-query only.
+  if (widget === "query" || widget === "multi_query") {
     if (p.entity_filter !== undefined) {
       descriptor.entityFilter = asString(
         p.entity_filter,
         `${where}.entity_filter`,
       );
     }
+  }
+  if (widget === "query") {
     if (p.max_picks !== undefined) {
       descriptor.maxPicks = asFiniteNumber(
         p.max_picks,
