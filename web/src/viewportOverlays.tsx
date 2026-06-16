@@ -3,8 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial, PointsNodeMaterial, MeshBasicNodeMaterial, SpriteNodeMaterial } from "three/webgpu";
-import { uv, vec2, step } from "three/tsl";
+import { Line2NodeMaterial, MeshBasicNodeMaterial, SpriteNodeMaterial } from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -42,6 +41,7 @@ import {
   type SketchSubCall,
 } from "./sketchOutline";
 import { buildDraftSketchState } from "./sketchSession";
+import { SketchDots, makeSketchDots } from "./sketchDots";
 import type { SketchState } from "./solver/types";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { gripsForSelection } from "./sketchGrips";
@@ -150,19 +150,6 @@ export function SketchOverlay3D() {
   }
   useEffect(() => () => { lineMatRef.current?.dispose(); }, []);
 
-  // Endpoint dot material (WebGPU only) — mirrors the session's `M.point`
-  // exactly (same colour + filled-circle look at double the line width) so
-  // committed vertices read identically to the in-edit ones (ticket n6hg/b78p,
-  // pqoe parity). Persistent like the line mat.
-  const pointMatRef = useRef<PointsNodeMaterial | null>(null);
-  if (isWebGPU && !pointMatRef.current) {
-    pointMatRef.current = roundPointMaterial(new PointsNodeMaterial({
-      color: SKETCH_COLOR_UNDER, size: SKETCH_POINT_SIZE, sizeAttenuation: false,
-      depthTest: false, depthWrite: false, transparent: true,
-    }));
-  }
-  useEffect(() => () => { pointMatRef.current?.dispose(); }, []);
-
   // WebGPU: fat LineSegments2 (geometry type must match the node material).
   const fatLines = useMemo(() => {
     if (!isWebGPU || !lineMatRef.current) return null;
@@ -190,34 +177,19 @@ export function SketchOverlay3D() {
     return map;
   }, [sketches, isWebGPU]);
 
-  // WebGPU: endpoint dots as THREE.Points carrying the node material (n6hg).
-  const fatPoints = useMemo(() => {
-    if (!isWebGPU || !pointMatRef.current) return null;
-    const map = new Map<number, THREE.Points>();
+  // Endpoint/vertex dots as billboarded screen-constant circle MESHES (ticket
+  // tdq2 — the old THREE.Points dots from n6hg/b78p never rendered in the
+  // overlay pass). Mesh-based, so one path serves both backends; mirrors the
+  // session's `M.point` (same colour + SKETCH_POINT_SIZE) for pqoe parity.
+  const dots = useMemo(() => {
+    const map = new Map<number, SketchDots>();
     for (const s of sketches) {
-      if (s.pointPos.length === 0) continue;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(s.pointPos, 3));
-      const o = new THREE.Points(g, pointMatRef.current);
-      o.frustumCulled = false;
-      o.renderOrder = 998; // above fills (996) + lines (997), like the session
-      map.set(s.id, o);
+      // 998: above fills (996) + lines (997), like the session.
+      const d = makeSketchDots(s.pointPos, SKETCH_COLOR_UNDER, SKETCH_POINT_SIZE, 998);
+      if (d) map.set(s.id, d);
     }
     return map;
-  }, [sketches, isWebGPU]);
-
-  // WebGL fallback: thin classic point geometries (material set on the JSX).
-  const classicPoints = useMemo(() => {
-    if (isWebGPU) return null;
-    const map = new Map<number, THREE.BufferGeometry>();
-    for (const s of sketches) {
-      if (s.pointPos.length === 0) continue;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(s.pointPos, 3));
-      map.set(s.id, g);
-    }
-    return map;
-  }, [sketches, isWebGPU]);
+  }, [sketches]);
 
   // Region fills — classic MeshBasicMaterial renders on either backend.
   const fills = useMemo(() => {
@@ -235,11 +207,10 @@ export function SketchOverlay3D() {
     return () => {
       fatLines?.forEach((o) => o.geometry.dispose());
       classicLines?.forEach((g) => g.dispose());
-      fatPoints?.forEach((o) => o.geometry.dispose());
-      classicPoints?.forEach((g) => g.dispose());
+      dots.forEach((d) => d.dispose());
       fills.forEach((g) => g.dispose());
     };
-  }, [fatLines, classicLines, fatPoints, classicPoints, fills]);
+  }, [fatLines, classicLines, dots, fills]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over
@@ -301,17 +272,9 @@ export function SketchOverlay3D() {
                   <lineBasicMaterial color={SKETCH_COLOR_UNDER} transparent depthTest={false} />
                 </lineSegments>
               )}
-          {/* Endpoint/vertex dots (ticket n6hg) — above fills + lines. */}
-          {isWebGPU
-            ? fatPoints?.get(id) && <primitive object={fatPoints.get(id)!} dispose={null} />
-            : classicPoints?.get(id) && (
-                <points geometry={classicPoints.get(id)} renderOrder={998}>
-                  {/* Filled circle at double the line width via radial sprite +
-                      alphaTest (ticket b78p). */}
-                  <pointsMaterial color={SKETCH_COLOR_UNDER} size={SKETCH_POINT_SIZE} sizeAttenuation={false}
-                    map={roundPointTexture()} alphaTest={0.5} transparent depthTest={false} />
-                </points>
-              )}
+          {/* Endpoint/vertex dots (tickets n6hg/b78p/tdq2) — above fills +
+              lines, as a billboarded screen-constant circle mesh. */}
+          {dots.get(id) && <primitive object={dots.get(id)!.mesh} dispose={null} />}
         </group>
       ))}
     </group>
@@ -335,42 +298,13 @@ const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL
 const SKETCH_FILL_OPACITY = 0.32;
 const SKETCH_STROKE_WIDTH = 4;
 // Endpoint dots are filled circles at DOUBLE the line diameter (ticket b78p),
-// derived from the stroke width so they always track it.
+// derived from the stroke width so they always track it. They render as
+// billboarded screen-constant circle meshes via SketchDots (ticket tdq2) — the
+// THREE.Points / PointsNodeMaterial path the dots used before never rendered in
+// the three/webgpu overlay pass.
 const SKETCH_POINT_SIZE = 2 * SKETCH_STROKE_WIDTH;
 const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
 const SKETCH_SELECTED_COLOR = 0xf97316; // COLOR_SELECTED
-
-// Endpoint dots must read as FILLED CIRCLES, not the square the point-sprite
-// renders by default (ticket b78p). WebGPU PointsNodeMaterial: drive the
-// opacity from a hard circular mask of the point-sprite coord (`uv()` is the
-// 0..1 sprite UV) — alpha 1 inside the unit circle, 0 outside. The material
-// is already `transparent`, so this clips the square into a filled disk while
-// keeping its own colour. Shared session + committed overlay (pqoe parity).
-function roundPointMaterial(mat: PointsNodeMaterial): PointsNodeMaterial {
-  // step(edge=d, x=0.5): 1 when 0.5 >= d (inside the circle), 0 otherwise.
-  mat.opacityNode = step(uv().sub(vec2(0.5)).length(), 0.5);
-  return mat;
-}
-
-// WebGL classic pointsMaterial has no shader hook here, so we feed it a small
-// radial-alpha sprite texture + alphaTest to clip the square into a circle
-// (ticket b78p). One shared texture for all classic endpoint dots.
-let _roundPointTexture: THREE.CanvasTexture | null = null;
-function roundPointTexture(): THREE.CanvasTexture {
-  if (_roundPointTexture) return _roundPointTexture;
-  const s = 64;
-  const cv = document.createElement("canvas");
-  cv.width = cv.height = s;
-  const ctx = cv.getContext("2d")!;
-  ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
-  ctx.fill();
-  const tex = new THREE.CanvasTexture(cv);
-  tex.needsUpdate = true;
-  _roundPointTexture = tex;
-  return tex;
-}
 
 /** Selection highlight + grip markers (world-space) for the picked sketch
  *  entities, mirroring drawOverlay's `drawSelectionHighlight` + `drawGrips`.
@@ -526,10 +460,7 @@ export function SketchSession3D() {
     guide: Line2NodeMaterial;
     leg: Line2NodeMaterial;
     axis: Line2NodeMaterial;
-    point: PointsNodeMaterial;
-    handle: PointsNodeMaterial;
     selLine: Line2NodeMaterial;
-    selPoint: PointsNodeMaterial;
     fill: MeshBasicNodeMaterial;
   } | null>(null);
   if (!matsRef.current) {
@@ -538,22 +469,13 @@ export function SketchSession3D() {
         color: c, linewidth: lw, worldUnits: false,
         depthTest: false, depthWrite: false, transparent: true, ...extra,
       });
-    // Filled-circle dots (ticket b78p) — round-masked via TSL.
-    const dots = (c: number, size: number) =>
-      roundPointMaterial(new PointsNodeMaterial({
-        color: c, size, sizeAttenuation: false,
-        depthTest: false, depthWrite: false, transparent: true,
-      }));
     matsRef.current = {
       solid: fatLine(color, SKETCH_STROKE_WIDTH),
       construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
       guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
       leg: fatLine(SKETCH_LEG_COLOR, 2),
       axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
-      point: dots(color, SKETCH_POINT_SIZE), // double the line width (ticket b78p)
-      handle: dots(color, 6),
       selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
-      selPoint: dots(SKETCH_SELECTED_COLOR, 10),
       fill: new MeshBasicNodeMaterial({
         color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
         depthTest: false, depthWrite: false, side: THREE.DoubleSide,
@@ -563,8 +485,6 @@ export function SketchSession3D() {
   const M = matsRef.current;
   useEffect(() => {
     M.solid.color.setHex(color);
-    M.point.color.setHex(color);
-    M.handle.color.setHex(color);
     invalidate();
   }, [color, invalidate, M]);
   // Dispose materials when the component unmounts (session closed).
@@ -572,6 +492,7 @@ export function SketchSession3D() {
 
   const objects = useMemo(() => {
     const objs: THREE.Object3D[] = [];
+    const dotSets: SketchDots[] = [];
     const addLines = (
       pos: number[] | null,
       mat: Line2NodeMaterial,
@@ -588,15 +509,13 @@ export function SketchSession3D() {
       o.layers.enable(OVERLAY_LAYER);
       objs.push(o);
     };
-    const addPoints = (pos: number[] | null, mat: PointsNodeMaterial, order: number) => {
-      if (!pos || pos.length === 0) return;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      const o = new THREE.Points(g, mat);
-      o.frustumCulled = false;
-      o.renderOrder = order;
-      o.layers.enable(OVERLAY_LAYER);
-      objs.push(o);
+    // Vertex/handle/selection dots as billboarded screen-constant circle MESHES
+    // (ticket tdq2 — the old THREE.Points dots never rendered in the overlay
+    // pass). The DOF colour is baked at build time; a colour change rebuilds the
+    // dots via the `color` memo dep below.
+    const addDots = (pos: number[] | null, colorHex: number, diameterPx: number, order: number) => {
+      const d = makeSketchDots(pos, colorHex, diameterPx, order);
+      if (d) { objs.push(d.mesh); dotSets.push(d); }
     };
     addLines(axes, M.axis, 994, false);
     if (fill) {
@@ -613,27 +532,28 @@ export function SketchSession3D() {
       addLines(geom.guide, M.guide, 996, true);
       addLines(geom.legs, M.leg, 996, false);
       addLines(geom.solid, M.solid, 997, false);
-      addPoints(geom.points, M.point, 998);
-      addPoints(geom.handles, M.handle, 998);
+      addDots(geom.points, color, SKETCH_POINT_SIZE, 998); // double the line width (b78p)
+      addDots(geom.handles, color, 6, 998);
     }
     if (selection) {
       addLines(selection.highlight, M.selLine, 999, false);
-      addPoints(selection.markers, M.selPoint, 1000);
+      addDots(selection.markers, SKETCH_SELECTED_COLOR, 10, 1000);
     }
-    return objs;
-  }, [geom, fill, axes, selection, M]);
+    return { objs, dotSets };
+  }, [geom, fill, axes, selection, color, M]);
 
   useEffect(() => {
     invalidate();
     return () => {
-      for (const o of objects) (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
+      for (const o of objects.objs) (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
+      for (const d of objects.dotSets) d.dispose();
     };
   }, [objects, invalidate]);
 
   if (!active) return null;
   return (
     <group>
-      {objects.map((o, i) => (
+      {objects.objs.map((o, i) => (
         <primitive key={i} object={o} dispose={null} />
       ))}
     </group>
@@ -661,8 +581,6 @@ export function SketchHud3D() {
     line: Line2NodeMaterial;
     guide: Line2NodeMaterial;
     projected: Line2NodeMaterial;
-    point: PointsNodeMaterial;
-    snap: PointsNodeMaterial;
   } | null>(null);
   if (!matsRef.current) {
     const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
@@ -674,24 +592,20 @@ export function SketchHud3D() {
       line: fatLine(SKETCH_PREVIEW_COLOR, 2),
       guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
       projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
-      // Filled-circle dots (ticket b78p) — sizes left as preview/snap specifics.
-      point: roundPointMaterial(new PointsNodeMaterial({
-        color: SKETCH_PREVIEW_COLOR, size: 7, sizeAttenuation: false,
-        depthTest: false, depthWrite: false, transparent: true,
-      })),
-      snap: roundPointMaterial(new PointsNodeMaterial({
-        color: SKETCH_SNAP_COLOR, size: 13, sizeAttenuation: false,
-        depthTest: false, depthWrite: false, transparent: true,
-      })),
     };
   }
   const M = matsRef.current;
+  // Preview/snap markers are dot MESHES too (ticket tdq2 — THREE.Points never
+  // rendered in the overlay pass). Built per HUD rebuild in the useFrame below.
+  const dotSetsRef = useRef<SketchDots[]>([]);
 
   useEffect(() => {
     setHudInvalidate(invalidate);
     return () => {
       setHudInvalidate(null);
       clearSketchHud();
+      for (const d of dotSetsRef.current) d.dispose();
+      dotSetsRef.current = [];
     };
   }, [invalidate]);
 
@@ -706,6 +620,8 @@ export function SketchHud3D() {
       (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
     }
     objsRef.current = [];
+    for (const d of dotSetsRef.current) { group.remove(d.mesh); d.dispose(); }
+    dotSetsRef.current = [];
 
     const frame = getSketchPlaneFrame();
     const w = (uv: [number, number]) => planeToWorld(uv[0], uv[1], frame);
@@ -721,16 +637,11 @@ export function SketchHud3D() {
       group.add(o);
       objsRef.current.push(o);
     };
-    const addPoints = (pos: number[], mat: PointsNodeMaterial, order: number) => {
-      if (pos.length === 0) return;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      const o = new THREE.Points(g, mat);
-      o.frustumCulled = false;
-      o.renderOrder = order;
-      o.layers.enable(OVERLAY_LAYER);
-      group.add(o);
-      objsRef.current.push(o);
+    const addDots = (pos: number[], colorHex: number, diameterPx: number, order: number) => {
+      const d = makeSketchDots(pos, colorHex, diameterPx, order);
+      if (!d) return;
+      group.add(d.mesh);
+      dotSetsRef.current.push(d);
     };
 
     // Projected B-Rep edge guides (dashed, behind everything).
@@ -747,14 +658,14 @@ export function SketchHud3D() {
     for (const [a, b] of hud.previewGuides) guides.push(...w(a), ...w(b));
     addLines(guides, M.guide, 996, true);
 
-    // Preview marker points + hover.
+    // Preview marker points + hover (preview colour, 7px).
     const pts = [...prev.points];
     for (const p of hud.previewPoints) pts.push(...w(p));
     if (hud.hover) pts.push(...w(hud.hover));
-    addPoints(pts, M.point, 997);
+    addDots(pts, SKETCH_PREVIEW_COLOR, 7, 997);
 
-    // Snap ring (on top).
-    if (hud.snap) addPoints([...w(hud.snap)], M.snap, 1001);
+    // Snap ring (on top, snap colour, 13px).
+    if (hud.snap) addDots([...w(hud.snap)], SKETCH_SNAP_COLOR, 13, 1001);
 
     invalidate();
   });
