@@ -620,9 +620,22 @@ fn plane_plane(
 
 /// One point on the line `{x : n1·x = c1, n2·x = c2}` with unit direction `dir`.
 fn line_point(n1: [f32; 3], c1: f32, n2: [f32; 3], c2: f32, dir: [f32; 3]) -> [f32; 3] {
+    // Closest point to the origin on the intersection line of planes
+    // `n_i·p = c_i`: `p0 = [c1(n2×dir) + c2(dir×n1)] / det`, with
+    // `det = n1·(n2×dir) = |n1×n2|` for a UNIT `dir`. The division was
+    // previously omitted — harmless when the normals are perpendicular
+    // (`det = 1`: box edges, wall↔cap rims), but for OBLIQUE planes (e.g.
+    // adjacent polygon-extrude walls meeting at a corner) it scaled the
+    // point toward the origin, landing it off the line and outside the
+    // clip box, so the corner seam edge was silently dropped (ticket ifog).
     let n2xd = vcross(n2, dir);
     let dxn1 = vcross(dir, n1);
-    vadd(vscale(n2xd, c1), vscale(dxn1, c2))
+    let num = vadd(vscale(n2xd, c1), vscale(dxn1, c2));
+    let det = vdot(n1, n2xd);
+    if det.abs() < 1e-9 {
+        return num;
+    }
+    vscale(num, 1.0 / det)
 }
 
 // ─── closed-form: plane∩sphere, sphere∩sphere ────────────────────────────────

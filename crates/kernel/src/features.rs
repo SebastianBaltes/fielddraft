@@ -7118,6 +7118,38 @@ mod tests {
     }
 
     #[test]
+    fn ifog_triangle_extrude_pipeline_has_all_wall_seams() {
+        // Ticket ifog: an oblique-angle (triangle) extrude through the real
+        // feature pipeline — loop-inferred Path profile, frame transform,
+        // weave_parametric — must produce all 9 edges (3 vertical wall-wall
+        // seams + 3 top + 3 bottom). It showed only 6 before the line_point
+        // determinant fix dropped every oblique corner seam.
+        let registry = FeatureRegistry::with_builtins();
+        let calls = vec![
+            FeatureCall::new("sketch", id(1), json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "id": "1", "type": "sketch_line", "params": { "start": [-66.25, 384.19], "end": [-30.61, 298.87] } },
+                    { "id": "2", "type": "sketch_line", "params": { "start": [-30.61, 298.87], "end": [-4.31, 499.70] } },
+                    { "id": "3", "type": "sketch_line", "params": { "start": [-4.31, 499.70], "end": [-66.25, 384.19] } }
+                ]
+            })),
+            FeatureCall::new("extrude", id(2), json!({
+                "profiles": "qCreatedBy(1)", "operation": "new",
+                "depth": { "unit": "mm", "value": 240.0 }
+            })),
+        ];
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+        let woven = ctx.brep_cache.ensure(&ctx.features);
+        assert_eq!(woven.len(), 1, "one extrude body");
+        let brep = &woven[0].0;
+        assert_eq!(brep.face_count(), 5, "3 walls + 2 caps");
+        assert_eq!(brep.edge_count(), 9, "3 wall seams + 3 top + 3 bottom");
+    }
+
+    #[test]
     fn revolve_errors_when_sketch_cannot_be_resolved() {
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();

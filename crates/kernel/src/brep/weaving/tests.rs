@@ -1598,6 +1598,34 @@ fn revolve_rectangle_profile_is_tube_with_analytic_sides() {
 }
 
 #[test]
+fn oblique_triangle_extrude_seed_weaves_all_nine_edges() {
+    // Ticket ifog: a triangle EXTRUDE showed only 6 edges (3 top + 3 bottom),
+    // missing the 3 vertical wall-wall corner seams. The L-polygon test above
+    // uses the OCTREE weave; the live app uses weave_parametric → the SEED
+    // weaver, where `plane_plane`'s `line_point` dropped the seam line of two
+    // OBLIQUE walls (it omitted the determinant division, valid only for
+    // perpendicular planes). A triangle's corners are all oblique AND lie on
+    // the body AABB boundary, so every seam was rejected. Guard the seed path.
+    let tri = ProtoSketch2d::Prim(ProtoSketch2dPrim::Path {
+        segments: vec![
+            SketchSegment::Line { start: [-66.25, 384.19], end: [-30.61, 298.87] },
+            SketchSegment::Line { start: [-30.61, 298.87], end: [-4.31, 499.70] },
+            SketchSegment::Line { start: [-4.31, 499.70], end: [-66.25, 384.19] },
+        ],
+        closed: true,
+    });
+    let body = extrude_body(tri, 120.0);
+    let brep = crate::brep::weaving::wireframes::weave_parametric(&body)
+        .expect("triangle extrude must weave analytically (seed path)");
+    assert_eq!(brep.face_count(), 5, "3 walls + 2 caps");
+    assert_eq!(
+        brep.edge_count(),
+        9,
+        "3 vertical wall-wall seams + 3 top + 3 bottom rim edges"
+    );
+}
+
+#[test]
 fn extrude_caps_use_reserved_sub_ids() {
     // The cap branch sub-ids must be the reserved 0x7FF / 0x7FE (top of
     // the outer sub range, below the inner-wall flag 0x800; DL-75).
