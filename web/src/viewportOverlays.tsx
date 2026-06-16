@@ -376,6 +376,13 @@ function collectSelectionGeometry(
 export function SketchSession3D() {
   const { store, state } = useKernelStore();
   const invalidate = useThree((s) => s.invalidate);
+  // Backend detection (ticket uzhr): the fat node materials below
+  // (Line2NodeMaterial / MeshBasicNodeMaterial) only render on the WebGPU
+  // backend, so while sketching in the classic THREE.WebGLRenderer fallback
+  // nothing showed up. Mirror SketchOverlay3D's branch and draw classic
+  // materials on the WebGL path so the in-edit geometry is VISIBLE there too.
+  const gl = useThree((s) => s.gl);
+  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   const session = state?.sketchSession;
   const active = session?.active ?? false;
 
@@ -454,33 +461,71 @@ export function SketchSession3D() {
   // Materials persist across rebuilds (only the DOF-driven colours mutate);
   // the WebGPU backend handles a material colour change fine but never a
   // geometry mutation, so the objects are rebuilt fresh on every change.
+  //
+  // Two parallel material sets (ticket uzhr): the WebGPU path keeps the fat
+  // node materials (Line2NodeMaterial / MeshBasicNodeMaterial) for the exact
+  // unchanged look; the classic WebGLRenderer fallback uses thin classic
+  // THREE.Line(Dashed)Material + MeshBasicMaterial — which is what
+  // SketchOverlay3D draws on its WebGL branch (plain LineSegments +
+  // lineBasicMaterial), so committed + session strokes look consistent there.
+  type LineMat = Line2NodeMaterial | THREE.LineBasicMaterial | THREE.LineDashedMaterial;
+  type FillMat = MeshBasicNodeMaterial | THREE.MeshBasicMaterial;
   const matsRef = useRef<{
-    solid: Line2NodeMaterial;
-    construction: Line2NodeMaterial;
-    guide: Line2NodeMaterial;
-    leg: Line2NodeMaterial;
-    axis: Line2NodeMaterial;
-    selLine: Line2NodeMaterial;
-    fill: MeshBasicNodeMaterial;
+    solid: LineMat;
+    construction: LineMat;
+    guide: LineMat;
+    leg: LineMat;
+    axis: LineMat;
+    selLine: LineMat;
+    fill: FillMat;
   } | null>(null);
   if (!matsRef.current) {
-    const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
-      new Line2NodeMaterial({
-        color: c, linewidth: lw, worldUnits: false,
-        depthTest: false, depthWrite: false, transparent: true, ...extra,
-      });
-    matsRef.current = {
-      solid: fatLine(color, SKETCH_STROKE_WIDTH),
-      construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
-      guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
-      leg: fatLine(SKETCH_LEG_COLOR, 2),
-      axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
-      selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
-      fill: new MeshBasicNodeMaterial({
-        color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
-        depthTest: false, depthWrite: false, side: THREE.DoubleSide,
-      }),
-    };
+    if (isWebGPU) {
+      const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+        new Line2NodeMaterial({
+          color: c, linewidth: lw, worldUnits: false,
+          depthTest: false, depthWrite: false, transparent: true, ...extra,
+        });
+      matsRef.current = {
+        solid: fatLine(color, SKETCH_STROKE_WIDTH),
+        construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
+        guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
+        leg: fatLine(SKETCH_LEG_COLOR, 2),
+        axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
+        selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
+        fill: new MeshBasicNodeMaterial({
+          color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
+          depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+        }),
+      };
+    } else {
+      // Classic WebGL fallback: thin but VISIBLE lines (LineBasicMaterial's
+      // linewidth is ignored on WebGL — fat lines would need LineMaterial with
+      // a per-frame `.resolution`, which SketchOverlay3D deliberately skips, so
+      // we skip it too for the same simple, consistent look). Dashed strokes
+      // use LineDashedMaterial (needs computeLineDistances() on the geometry).
+      const solidLine = (c: number, opacity = 1) =>
+        new THREE.LineBasicMaterial({
+          color: c, transparent: true, opacity, depthTest: false, depthWrite: false,
+        });
+      const dashedLine = (c: number, opacity = 1) =>
+        new THREE.LineDashedMaterial({
+          color: c, transparent: true, opacity, depthTest: false, depthWrite: false,
+          dashSize: 3, gapSize: 2,
+        });
+      matsRef.current = {
+        solid: solidLine(color),
+        construction: dashedLine(SKETCH_CONSTRUCTION_COLOR),
+        guide: dashedLine(SKETCH_GUIDE_COLOR, 0.6),
+        leg: solidLine(SKETCH_LEG_COLOR),
+        axis: solidLine(SKETCH_AXIS_COLOR, 0.22),
+        selLine: solidLine(SKETCH_SELECTED_COLOR),
+        fill: new THREE.MeshBasicMaterial({
+          color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
+          depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+        }),
+      };
+    }
   }
   const M = matsRef.current;
   useEffect(() => {
@@ -495,15 +540,29 @@ export function SketchSession3D() {
     const dotSets: SketchDots[] = [];
     const addLines = (
       pos: number[] | null,
-      mat: Line2NodeMaterial,
+      mat: LineMat,
       order: number,
       dashed: boolean,
     ) => {
       if (!pos || pos.length === 0) return;
-      const g = new LineSegmentsGeometry();
-      g.setPositions(new Float32Array(pos));
-      const o = new LineSegments2(g, mat);
-      if (dashed) o.computeLineDistances();
+      let o: THREE.Object3D;
+      if (isWebGPU) {
+        // WebGPU: fat LineSegments2 (geometry type must match the node material).
+        const g = new LineSegmentsGeometry();
+        g.setPositions(new Float32Array(pos));
+        const line = new LineSegments2(g, mat as Line2NodeMaterial);
+        if (dashed) line.computeLineDistances();
+        o = line;
+      } else {
+        // Classic WebGL fallback (ticket uzhr): plain THREE.LineSegments + a
+        // classic Line(Dashed)Material, exactly like SketchOverlay3D's WebGL
+        // branch. computeLineDistances() feeds the dashed materials.
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        const line = new THREE.LineSegments(g, mat as THREE.LineBasicMaterial);
+        if (dashed) line.computeLineDistances();
+        o = line;
+      }
       o.frustumCulled = false;
       o.renderOrder = order;
       o.layers.enable(OVERLAY_LAYER);
@@ -540,7 +599,7 @@ export function SketchSession3D() {
       addDots(selection.markers, SKETCH_SELECTED_COLOR, 10, 1000);
     }
     return { objs, dotSets };
-  }, [geom, fill, axes, selection, color, M]);
+  }, [geom, fill, axes, selection, color, M, isWebGPU]);
 
   useEffect(() => {
     invalidate();

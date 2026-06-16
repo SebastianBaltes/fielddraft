@@ -66,7 +66,7 @@ import {
   subscribe as subscribeQueryPicker,
 } from "./queryPickerBridge";
 import { DATUM_PLANE_QUERIES } from "./queryLabels";
-import { getPublishedPickCamera } from "./pickCameraBridge";
+import { getPublishedPickCamera, publishPickCamera } from "./pickCameraBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { pickSketchAtRay } from "./sketchPickBridge";
 import { mapPickToQuery, filterAllows, elementQueryString, resolveElementClick } from "./elementQuery";
@@ -435,7 +435,28 @@ function handleSelectionClick(
  */
 function WebGLViewport() {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const { state } = useKernelStore();
+  const { store, state } = useKernelStore();
+
+  // Ticket sqif: the WebGL fallback viewport had NO click handler at all, so a
+  // scene click never reached `tryQueryPick` — an armed query picker (e.g. the
+  // sketch "Sketch plane" field) could never be satisfied by clicking a datum
+  // plane in the scene (only the outliner row worked). Route armed query picks
+  // through the same `tryQueryPick` datum path the WebGPU viewport uses; the
+  // ray comes from the pick camera this viewport now publishes (see the rAF
+  // loop). Non-picker clicks are left alone (WebGL selection is out of scope).
+  const handleQueryPickClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    if (!store || !getActiveQueryPicker()) return;
+    const datumAtRay = (): string | null => {
+      const ray = rayAtMouse(event, wrapRef.current);
+      if (!ray) return null;
+      return pickDatumAtRay(
+        ray.origin,
+        ray.direction,
+        state?.hiddenDatums ?? new Set<string>(),
+      );
+    };
+    tryQueryPick(null, store, datumAtRay, (msg) => store.showTransientError(msg));
+  };
   // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
   // body. When those are available we render them (booleans visible); until the
   // async mesh arrives we fall back to the per-leaf parametric hulls so the view
@@ -463,16 +484,30 @@ function WebGLViewport() {
         // useFrame doesn't tick this manual-loop root, so feed the ViewCube
         // the live WebGL camera orientation here (ticket r8b4).
         publishCameraQuat(st.camera.quaternion);
+        // Ticket sqif: the WebGL root has no <CameraBridgePublisher> (that
+        // lives only in the WebGPU <Scene>), so getPublishedPickCamera() was
+        // null on this backend. rayAtMouse() then returned null, and the
+        // query-picker datum branch in handleClick could never build a ray —
+        // hovering a datum still highlighted it (R3F's own canvas raycaster),
+        // but clicking it never fired picker.onPick. Publish the live WebGL
+        // camera here so the host-div click path rays through the SAME camera.
+        publishPickCamera(st.camera);
         st.gl.render(st.scene, st.camera);
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      // Ticket sqif: drop the published pick camera so a later switch to the
+      // WebGPU backend doesn't briefly ray through this stale WebGL camera
+      // before <CameraBridgePublisher> republishes its own.
+      publishPickCamera(null);
+    };
   }, []);
 
   return (
-    <div ref={wrapRef} style={{ position: "absolute", inset: 0 }}>
+    <div ref={wrapRef} style={{ position: "absolute", inset: 0 }} onClick={handleQueryPickClick}>
       <Canvas
         frameloop="never"
         camera={{ position: [200, 200, 200], fov: 45, near: 1, far: 4000 }}
@@ -495,6 +530,14 @@ function WebGLViewport() {
             WebGL path just like in WebGPU. */}
         <DatumOverlay />
         <SketchOverlay3D />
+        {/* Ticket uzhr: the ACTIVE sketch session (in-edit geometry, HUD,
+            labels) must also render on the WebGL fallback — it was only
+            mounted in the WebGPU Scene, so drawing in WebGL mode showed
+            nothing. SketchSession3D now uses classic materials on this
+            backend (also uzhr). */}
+        <SketchSession3D />
+        <SketchHud3D />
+        <SketchLabels3D />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         <OrbitControls makeDefault enableDamping={false} />
       </Canvas>

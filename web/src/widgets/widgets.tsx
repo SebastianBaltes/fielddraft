@@ -985,6 +985,16 @@ export function QueryWidget({
               registerQueryPicker({ ownerId: id, onPick, entityFilter });
             }
           }}
+          onClick={() => {
+            // Ticket sqif: a one-shot picker (deactivateOnPick — the sketch
+            // plane field) releases the viewport after its pick, but the input
+            // keeps DOM focus, so a SECOND plane pick never re-fires `onFocus`
+            // and the field stays disarmed. Re-arm on a click into the already
+            // focused input whenever no picker is active.
+            if (!active && !getActiveQueryPicker()) {
+              registerQueryPicker({ ownerId: id, onPick, entityFilter });
+            }
+          }}
           onBlur={() => { setFocused(false); commitText(); }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
