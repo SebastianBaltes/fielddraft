@@ -634,6 +634,8 @@ export function Toolbar({ store, state }: ToolbarProps) {
               the gestures handled in SketchCanvas2d keyed on the selectedTool
               string. They now live inside the Circle / Rectangle dropdowns
               above (ticket pqoe). */}
+          {/* Ticket 7hgr (c): draw tools | modify tools — separator. */}
+          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-modify" />
           {/* Trim is an interactive editing mode, not a kernel feature
               tool, so it isn't in `sketchToolTypes`. Selecting it makes a
               canvas click cut the curve under the cursor at its nearest
@@ -662,21 +664,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
               geometry
             </span>
           )}
-          {/* F24-full: Text — interactive editing mode, not a kernel tool.
-              Picking the tool then clicking the canvas opens an IN-SCENE
-              input + param popover (height / font) right at the click
-              location — the text value and params no longer live in this
-              toolbar (ticket pqoe). Each drawn glyph still becomes one
-              sketch_path sub-call (see SketchCanvas2d's in-scene text editor
-              + store.placeSketchText / sketchText.ts). Ticket lycy: the
-              "click to type" hint moved into the button tooltip. */}
-          <FeatureButton
-            kind="sketch_text"
-            active={sketchSession.selectedTool === "sketch_text"}
-            testId="sketch-tool-sketch_text"
-            title="Click in the sketch to type text"
-            onClick={() => store.selectSketchTool("sketch_text", {})}
-          />
           {/* Split: the keep-both sibling of Trim — also an interactive
               editing mode, not a kernel tool. A single click cuts the curve
               under the cursor into two pieces meeting at the click point;
@@ -725,6 +712,21 @@ export function Toolbar({ store, state }: ToolbarProps) {
           {/* Ticket pqoe: the Chamfer distance field moved in-scene — it now
               floats in the canvas corner while the Chamfer tool is active
               (see SketchCanvas2d's in-scene tool-param input). */}
+          {/* F15: Offset — interactive editing mode, not a kernel tool. A
+              single click picks the nearest curve and appends a parallel
+              copy at the distance below, toward the clicked side (see
+              store.offsetSketchAt / sketchOffset.ts). */}
+          <FeatureButton
+            kind="sketch_offset"
+            active={sketchSession.selectedTool === "sketch_offset"}
+            testId="sketch-tool-sketch_offset"
+            onClick={() => store.selectSketchTool("sketch_offset", {})}
+          />
+          {/* Ticket pqoe: the Offset distance field moved in-scene — it now
+              floats in the canvas corner while the Offset tool is active
+              (see SketchCanvas2d's in-scene tool-param input). */}
+          {/* Ticket 7hgr (c): modify tools | transform tools — separator. */}
+          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-transform" />
           {/* F14: Mirror — interactive editing mode, not a kernel tool.
               Select source geometry first (Select mode), then pick this
               tool and click the axis LINE: every selected line/circle/arc
@@ -741,19 +743,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
               Click the axis line to mirror the selected geometry
             </span>
           )}
-          {/* F15: Offset — interactive editing mode, not a kernel tool. A
-              single click picks the nearest curve and appends a parallel
-              copy at the distance below, toward the clicked side (see
-              store.offsetSketchAt / sketchOffset.ts). */}
-          <FeatureButton
-            kind="sketch_offset"
-            active={sketchSession.selectedTool === "sketch_offset"}
-            testId="sketch-tool-sketch_offset"
-            onClick={() => store.selectSketchTool("sketch_offset", {})}
-          />
-          {/* Ticket pqoe: the Offset distance field moved in-scene — it now
-              floats in the canvas corner while the Offset tool is active
-              (see SketchCanvas2d's in-scene tool-param input). */}
           {/* Ticket pqoe (plan item 2): the Pattern controls (count /
               spacing / angle + Linear X / Linear Y / Circular) moved in-scene
               — they now float in the canvas corner as part of the
@@ -788,6 +777,42 @@ export function Toolbar({ store, state }: ToolbarProps) {
               the canvas corner alongside the Pattern controls, shown while a
               selection exists in Select mode (see SketchCanvas2d's
               .fd-sketch-transform-panel). */}
+          {/* Ticket 7hgr (c): transform tools | text — separator. */}
+          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-text" />
+          {/* F24-full: Text — interactive editing mode, not a kernel tool.
+              Picking the tool then clicking the canvas opens an IN-SCENE
+              input + param popover (height / font) right at the click
+              location — the text value and params no longer live in this
+              toolbar (ticket pqoe). Each drawn glyph still becomes one
+              sketch_path sub-call (see SketchCanvas2d's in-scene text editor
+              + store.placeSketchText / sketchText.ts). Ticket lycy: the
+              "click to type" hint moved into the button tooltip. */}
+          <FeatureButton
+            kind="sketch_text"
+            active={sketchSession.selectedTool === "sketch_text"}
+            testId="sketch-tool-sketch_text"
+            title="Click in the sketch to type text"
+            onClick={() => store.selectSketchTool("sketch_text", {})}
+          />
+          {/* Ticket 7hgr (b+c): Extrude / Revolve are available in sketch
+              mode too. Clicking one COMMITS the current sketch, exits sketch
+              mode and starts that tool against the just-committed sketch as
+              its profile, opening the new feature's Detail view
+              (store.extrudeFromSketchSession / revolveFromSketchSession). A
+              separator sets them apart from the drawing/modify tools. */}
+          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-feature" />
+          <FeatureButton
+            kind="extrude"
+            testId="sketch-tool-extrude"
+            title="Finish sketch & extrude it (25 mm)"
+            onClick={() => store.extrudeFromSketchSession(25)}
+          />
+          <FeatureButton
+            kind="revolve"
+            testId="sketch-tool-revolve"
+            title="Finish sketch & revolve it"
+            onClick={() => store.revolveFromSketchSession()}
+          />
         </div>
 
         {/* pqoe (part 7): always-visible explicit constraint toolbar,

@@ -392,14 +392,21 @@ function handleMeasureClick(
 }
 
 function handleSelectionClick(
-  store: { clearSelection(): void; selectRangeTo(id: number): void; toggleSelect(id: number): void; selectOnly(id: number): void },
+  // Ticket 7hgr (a): every selection here is a 3D SCENE click — pass
+  // origin: "scene" so the mutators never end an active sketch session.
+  store: {
+    clearSelection(origin?: "list" | "scene"): void;
+    selectRangeTo(id: number, origin?: "list" | "scene"): void;
+    toggleSelect(id: number, origin?: "list" | "scene"): void;
+    selectOnly(id: number, origin?: "list" | "scene"): void;
+  },
   click: PickResult | null,
   event: React.MouseEvent,
   setMeasurePoints: (pts: MeasurePoints) => void,
 ): void {
   if (!click || !click.hit) {
     if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
-      store.clearSelection();
+      store.clearSelection("scene");
     }
     setMeasurePoints(null);
     invalidateCanvas();
@@ -408,11 +415,11 @@ function handleSelectionClick(
   const featureId = click.contributors[0];
   if (featureId !== undefined && featureId > 0) {
     if (event.shiftKey) {
-      store.selectRangeTo(featureId);
+      store.selectRangeTo(featureId, "scene");
     } else if (event.ctrlKey || event.metaKey) {
-      store.toggleSelect(featureId);
+      store.toggleSelect(featureId, "scene");
     } else {
-      store.selectOnly(featureId);
+      store.selectOnly(featureId, "scene");
     }
   }
   invalidateCanvas();
@@ -763,7 +770,8 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
       const ray = rayAtMouse(event, hostRef.current);
       const sketchHit = ray ? pickSketchAtRay(ray) : null;
       if (sketchHit) {
-        store.selectOnly(sketchHit.sketchId);
+        // Ticket 7hgr (a): scene-origin — must not exit an active session.
+        store.selectOnly(sketchHit.sketchId, "scene");
         invalidateCanvas();
         return;
       }

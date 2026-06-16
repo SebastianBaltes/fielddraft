@@ -124,6 +124,18 @@
     }
   }
 
+  /* Ticket 7hgr (c): thin vertical divider between thematic clusters of
+   * sketch tools INSIDE a single .group row (draw | modify | transform |
+   * text | extrude/revolve). Mirrors the .group border-right divider but
+   * works between siblings of one flex row. */
+  & .tool-sep {
+    align-self: stretch;
+    width: 1px;
+    min-height: var(--space-5);
+    margin: 0 var(--space-1);
+    background: var(--color-divider);
+  }
+
   & .label {
     font-size: var(--fs-base);
     color: var(--color-text-muted);

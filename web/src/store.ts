@@ -143,6 +143,18 @@ import {
 export type MeshedBody = MesherBodyPayload;
 
 /**
+ * Ticket 7hgr (a): where a feature-selection change originated.
+ *  - "list": a deliberate outliner row action (default). Keeps the pqoe
+ *    behaviour of selecting a sketch ⇒ editing it / switching commits the
+ *    previous one.
+ *  - "scene": a 3D viewport click (body / datum / sketch entity / empty
+ *    space). These must NEVER end an active sketch session — the session is
+ *    sticky and only the ✓/✗ buttons, the Extrude/Revolve sketch-toolbar
+ *    buttons, delete (vev1) or New Project (5zd3) exit it.
+ */
+export type SelectionOrigin = "list" | "scene";
+
+/**
  * K6b.2: ephemeral per-sketch-session state. A sketch session is the
  * period between the user clicking the "Sketch" toolbar button (and
  * locking a plane) and clicking Finish/Cancel. While the session is
@@ -1486,6 +1498,14 @@ export class KernelStore {
     let removed = false;
     for (const id of this.state.selection) {
       if (this.kernel.removeFeature(id)) {
+        // Ticket vev1: also close the sketch view when the edited sketch is
+        // among the deleted selection.
+        if (
+          this.state.sketchSession.active &&
+          this.state.sketchSession.editingFeatureId === id
+        ) {
+          this.exitSketch();
+        }
         if (this.pendingFeature === id) this.pendingFeature = null;
         this.meshDataCache.delete(id);
         removed = true;
@@ -1497,6 +1517,16 @@ export class KernelStore {
 
   removeFeature(id: number): boolean {
     if (!this.kernel.removeFeature(id)) return false;
+    // Ticket vev1: deleting the sketch that is currently open for editing
+    // must close the sketch view — otherwise the session lingers, showing a
+    // now-deleted sketch. exitSketch() fully clears the session (active=false,
+    // subCalls empty, editingFeatureId null) — see reduceExit (ticket 5zd3).
+    if (
+      this.state.sketchSession.active &&
+      this.state.sketchSession.editingFeatureId === id
+    ) {
+      this.exitSketch();
+    }
     if (this.pendingFeature === id) this.pendingFeature = null;
     this.meshDataCache.delete(id);
     const next = new Set(this.state.selection);
@@ -1577,7 +1607,7 @@ export class KernelStore {
 
   // ── selection ─────────────────────────────────────────────────────
 
-  selectOnly(id: number): void {
+  selectOnly(id: number, origin: SelectionOrigin = "list"): void {
     if (id !== this.pendingFeature) this.confirmPendingFeature();
     this.state = {
       ...this.state,
@@ -1590,11 +1620,11 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
-    this.syncSketchSessionToSelection();
+    this.syncSketchSessionToSelection(origin);
     for (const listener of this.listeners) listener();
   }
 
-  toggleSelect(id: number): void {
+  toggleSelect(id: number, origin: SelectionOrigin = "list"): void {
     if (id !== this.pendingFeature) this.confirmPendingFeature();
     const next = new Set(this.state.selection);
     if (next.has(id)) next.delete(id);
@@ -1609,7 +1639,7 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
-    this.syncSketchSessionToSelection();
+    this.syncSketchSessionToSelection(origin);
     for (const listener of this.listeners) listener();
   }
 
@@ -1618,7 +1648,7 @@ export class KernelStore {
    * current anchor (inclusive) and the clicked id (inclusive). If no
    * anchor exists yet this falls back to a single selection.
    */
-  selectRangeTo(id: number): void {
+  selectRangeTo(id: number, origin: SelectionOrigin = "list"): void {
     if (id !== this.pendingFeature) this.confirmPendingFeature();
     const features = this.state.features;
     const targetIdx = features.findIndex((f) => f.id === id);
@@ -1626,13 +1656,13 @@ export class KernelStore {
 
     const anchor = this.state.selectionAnchor;
     if (anchor === null) {
-      this.selectOnly(id);
+      this.selectOnly(id, origin);
       return;
     }
     const anchorIdx = features.findIndex((f) => f.id === anchor);
     if (anchorIdx === -1) {
       // Anchor stale; reset.
-      this.selectOnly(id);
+      this.selectOnly(id, origin);
       return;
     }
     const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
@@ -1649,7 +1679,7 @@ export class KernelStore {
     };
     this.syncActiveBody();
     this.refreshMeshCache();
-    this.syncSketchSessionToSelection();
+    this.syncSketchSessionToSelection(origin);
     for (const listener of this.listeners) listener();
   }
 
@@ -1704,6 +1734,9 @@ export class KernelStore {
         activeTab && activeTab.kind === "assembly"
           ? { active: true, document: activeTab.document, selectedPartId: null }
           : INACTIVE_ASSEMBLY,
+      // Ticket 5zd3: loading a project replaces the scene wholesale — drop
+      // any active sketch session so a stale sketch view can't survive.
+      sketchSession: INACTIVE_SKETCH_SESSION,
     };
     this.commit(new Set(), null);
     this.autosave.flush();
@@ -1765,6 +1798,10 @@ export class KernelStore {
       ...this.state,
       project,
       assembly: INACTIVE_ASSEMBLY,
+      // Ticket 5zd3: a fresh project must show no sketch view — drop any
+      // lingering session (e.g. after deleting the open sketch the session
+      // could otherwise survive into the new empty project).
+      sketchSession: INACTIVE_SKETCH_SESSION,
     };
     this.commit(new Set(), null);
     this.autosave.flush();
@@ -2165,7 +2202,7 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
-  clearSelection(): void {
+  clearSelection(origin: SelectionOrigin = "list"): void {
     // Deselecting the pending ghost confirms it (the dialog's OK path).
     this.confirmPendingFeature();
     if (
@@ -2184,7 +2221,7 @@ export class KernelStore {
     });
     this.syncActiveBody();
     this.refreshMeshCache();
-    this.syncSketchSessionToSelection();
+    this.syncSketchSessionToSelection(origin);
     for (const listener of this.listeners) listener();
   }
 
@@ -2199,9 +2236,23 @@ export class KernelStore {
    * Idempotent and called only from the explicit selection mutators, so
    * the selection change that `commitSketch` performs internally cannot
    * re-trigger it (no loop).
+   *
+   * Ticket 7hgr (a): the sketch session is STICKY against the 3D scene. A
+   * scene-origin selection change (clicking a body / datum / sketch entity /
+   * empty space in the viewport) must NEVER commit or exit the active
+   * session — only the ✓/✗ buttons, the Extrude/Revolve sketch-toolbar
+   * buttons, delete (vev1) and New Project (5zd3) end it. So while a session
+   * is active we ignore scene-origin changes entirely. List-origin changes
+   * (clicking a feature row in the outliner — the default) keep the pqoe
+   * behaviour: selecting another sketch enters its edit session, selecting
+   * a non-sketch feature commits the current one.
    */
-  private syncSketchSessionToSelection(): void {
+  private syncSketchSessionToSelection(
+    origin: SelectionOrigin = "list",
+  ): void {
     const session = this.state.sketchSession;
+    // Scene clicks never touch an active session (ticket 7hgr a).
+    if (origin === "scene" && session.active) return;
     const editingId = session.active ? session.editingFeatureId : null;
     const sole =
       this.state.selection.size === 1
@@ -4604,6 +4655,31 @@ export class KernelStore {
     let n = 2;
     while (taken.has(`${base}_${n}`)) n += 1;
     return `${base}_${n}`;
+  }
+
+  /**
+   * Ticket 7hgr (b): commit the active sketch, exit sketch mode, then start
+   * an Extrude referencing the just-committed sketch as its profile. Mirrors
+   * the main toolbar's Extrude path — `commitSketch()` selects the committed
+   * sketch (making it the `latestSketchId`), and `addExtrudeFromLatestSketch`
+   * creates the feature + selects it, which opens its Detail view. No-op when
+   * the sketch has no committable geometry (commitSketch returns null).
+   */
+  extrudeFromSketchSession(depthMm = 25): number | null {
+    if (!this.state.sketchSession.active) return null;
+    if (this.commitSketch() === null) return null;
+    return this.addExtrudeFromLatestSketch(depthMm);
+  }
+
+  /**
+   * Ticket 7hgr (b): commit the active sketch, exit sketch mode, then start
+   * a Revolve referencing the just-committed sketch (same flow as
+   * {@link extrudeFromSketchSession}).
+   */
+  revolveFromSketchSession(): number | null {
+    if (!this.state.sketchSession.active) return null;
+    if (this.commitSketch() === null) return null;
+    return this.addRevolveFromLatestSketch();
   }
 
   commitSketch(): number | null {
