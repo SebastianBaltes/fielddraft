@@ -675,7 +675,9 @@ func newID() string {
 // ticket xqll: no title field — all info lives in the description.
 type ticketRequest struct {
 	Description string             `json:"description"`
-	ProjectJSON string             `json:"projectJson"`
+	// ProjectFdraft: the live project as a base64-encoded .fdraft ZIP (on3k),
+	// written to disk verbatim as project.fdraft.
+	ProjectFdraft string           `json:"projectFdraft"`
 	Screenshot  string             `json:"screenshot"` // PNG data URL, or empty
 	Attachments []ticketAttachment `json:"attachments"`
 	Version     string             `json:"version"`
@@ -804,18 +806,22 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 			md += "- " + n + "\n"
 		}
 	}
-	// Per-device settings (renderMode, controlsPreset, …) as a JSON block so a
-	// report carries the environment that produced it.
+	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
+
+	// ticket 478k: per-device settings (renderMode, controlsPreset, …) go into a
+	// separate settings.json, NOT inline in the markdown.
 	if len(req.Settings) > 0 && string(req.Settings) != "null" {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
-			md += "\n## Settings\n\n```json\n" + pretty.String() + "\n```\n"
+			os.WriteFile(filepath.Join(dir, "settings.json"), pretty.Bytes(), 0o644)
 		}
 	}
-	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)
 
-	if req.ProjectJSON != "" {
-		os.WriteFile(filepath.Join(dir, "project.fdraft"), []byte(req.ProjectJSON), 0o644)
+	// on3k: decode the base64 .fdraft ZIP and write the real binary file.
+	if req.ProjectFdraft != "" {
+		if blob, err := base64.StdEncoding.DecodeString(req.ProjectFdraft); err == nil {
+			os.WriteFile(filepath.Join(dir, "project.fdraft"), blob, 0o644)
+		}
 	}
 
 	if strings.HasPrefix(req.Screenshot, "data:image/") {

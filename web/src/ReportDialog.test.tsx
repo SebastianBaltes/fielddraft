@@ -15,9 +15,11 @@ vi.mock("./reportTicket", async (importOriginal) => ({
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
 
-// Minimal store stub exposing only what ReportDialog touches.
+// Minimal store stub exposing only what ReportDialog touches. on3k: the
+// dialog now ships the project as a .fdraft ZIP (raw bytes → base64), so the
+// stub returns a couple of sentinel bytes we can assert survived the encode.
 const stubStore = {
-  exportProjectJson: () => '{"schemaVersion":1,"tabs":[]}',
+  exportProjectFdraft: () => new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
 } as unknown as KernelStore;
 
 let container: HTMLDivElement;
@@ -103,7 +105,9 @@ describe("ReportDialog", () => {
     // ticket xqll: no title is sent anymore.
     expect(body.title).toBeUndefined();
     expect(body.description).toBe("Repro steps here");
-    expect(body.projectJson).toContain("schemaVersion");
+    // on3k: project rides along as a base64 .fdraft ZIP (PK\x03\x04 → "UEsDBA==").
+    expect(body.projectJson).toBeUndefined();
+    expect(body.projectFdraft).toBe("UEsDBA==");
     expect(typeof body.version).toBe("string");
     expect(typeof body.timestamp).toBe("string");
 

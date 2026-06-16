@@ -1154,11 +1154,15 @@ export class KernelStore {
     return assets;
   }
 
-  /** Public accessor for the live project JSON (.fdraft contents).
-   *  Used by the in-app bug-report flow to attach the exact document
-   *  state to a ticket. */
-  exportProjectJson(): string {
-    return this.serializeProject();
+  /** Public accessor for the live project as a `.fdraft` ZIP (document
+   *  JSON + uploaded font assets), byte-identical to what Save writes.
+   *  Used by the in-app bug-report flow (on3k) so a ticket carries the
+   *  exact, openable project file — assets included — not a stripped
+   *  JSON blob. */
+  exportProjectFdraft(): Uint8Array {
+    const project = this.buildPersistableProject();
+    const assets = this.collectProjectAssets(project);
+    return serializeProjectToZip(project, assets);
   }
 
   /**
@@ -1753,7 +1757,7 @@ export class KernelStore {
    *  wu2v: the file is a ZIP container (document.json + embedded uploaded
    *  font bytes + manifest) so binary assets survive a reload. Legacy JSON
    *  `.fdraft` files still open (the loader sniffs the ZIP magic bytes).
-   *  The bug-report/server path stays plain JSON — see exportProjectJson. */
+   *  The bug-report path uses the same ZIP — see exportProjectFdraft. */
   saveProjectToFile(filename = "project.fdraft"): void {
     if (typeof document === "undefined") return;
     const project = this.buildPersistableProject();

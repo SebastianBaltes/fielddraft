@@ -60,11 +60,25 @@ export function fileToAttachment(
   });
 }
 
+/** Base64-encode raw bytes for JSON transport (the ticket POST is one JSON
+ *  body, so the .fdraft ZIP rides along as base64). Chunked to avoid blowing
+ *  the argument-count limit of `String.fromCharCode(...spread)` on large
+ *  buffers. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 export interface TicketPayload {
   // ticket xqll: no separate title — all info lives in the description.
   description: string;
-  /** Serialized .fdraft project JSON (may be empty if unavailable). */
-  projectJson: string;
+  /** The live project as a `.fdraft` ZIP, base64-encoded (on3k). Empty when
+   *  no project is available. Written to disk verbatim as project.fdraft. */
+  projectFdraft: string;
   /** PNG data URL of the window, or null if capture failed. */
   screenshot: string | null;
   /** Extra user-attached files/images (ticket 8onw). */
@@ -80,7 +94,8 @@ export interface TicketPayload {
   /** Per-device app/UI settings (renderMode, controlsPreset, meshAlgorithm,
    *  theme, …) from localStorage — NOT part of the project. Captured so a
    *  report carries the environment that produced it (e.g. which renderer or
-   *  controls preset was active). Surfaced as a JSON block in ticket.md. */
+   *  controls preset was active). Written as a separate settings.json next to
+   *  ticket.md (ticket 478k). */
   settings?: Record<string, unknown>;
 }
 

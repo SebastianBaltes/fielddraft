@@ -139,7 +139,7 @@ function ticketWriter(): Plugin {
           try {
             const t = JSON.parse(raw) as {
               description?: string;
-              projectJson?: string;
+              projectFdraft?: string;
               screenshot?: string | null;
               attachments?: { name?: string; mime?: string; dataUrl?: string }[];
               version?: string;
@@ -186,17 +186,25 @@ function ticketWriter(): Plugin {
                 `## Description\n\n${description || "_(none)_"}\n` +
                 (attachmentNames.length > 0
                   ? `\n## Attachments\n\n${attachmentNames.map((n) => `- ${n}`).join("\n")}\n`
-                  : "") +
-                // Per-device settings (renderMode, controlsPreset, …) as a JSON
-                // block so a report carries the environment (helps reproduce
-                // renderer-/controls-dependent bugs).
-                (t.settings
-                  ? `\n## Settings\n\n\`\`\`json\n${JSON.stringify(t.settings, null, 2)}\n\`\`\`\n`
                   : ""),
             );
 
-            if (t.projectJson) {
-              writeFileSync(join(dir, "project.fdraft"), t.projectJson);
+            // ticket 478k: per-device settings (renderMode, controlsPreset, …)
+            // live in a separate settings.json, NOT inline in the markdown.
+            if (t.settings) {
+              writeFileSync(
+                join(dir, "settings.json"),
+                JSON.stringify(t.settings, null, 2),
+              );
+            }
+
+            // on3k: the project rides along as a base64 .fdraft ZIP — decode
+            // and write the real binary file (document JSON + font assets).
+            if (t.projectFdraft) {
+              writeFileSync(
+                join(dir, "project.fdraft"),
+                Buffer.from(t.projectFdraft, "base64"),
+              );
             }
 
             if (typeof t.screenshot === "string" && t.screenshot.startsWith("data:image/")) {

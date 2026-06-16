@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KernelStore } from "./store";
 import { loadSettings } from "./SettingsMenu";
 import {
+  bytesToBase64,
   captureWindow,
   fileToAttachment,
   submitTicket,
@@ -121,7 +122,9 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
     setPhase("sending");
     const payload: TicketPayload = {
       description: description.trim(),
-      projectJson: store?.exportProjectJson() ?? "",
+      // on3k: ship the real .fdraft ZIP (document + font assets), base64-encoded
+      // for the JSON POST, so the ticket carries an openable project file.
+      projectFdraft: store ? bytesToBase64(store.exportProjectFdraft()) : "",
       screenshot: includeShot ? screenshot : null,
       attachments,
       version: __APP_VERSION__,
@@ -257,7 +260,7 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
             </div>
 
             <p className="hint">
-              The current project JSON and app version are attached
+              The current project file and app version are attached
               automatically.
             </p>
 
