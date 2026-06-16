@@ -477,7 +477,8 @@ function WebGLViewport() {
           };
         }}
       >
-        <color attach="background" args={["#f6f6f4"]} />
+        {/* ticket xqp3: Szene ist weiß, nicht grau. */}
+        <color attach="background" args={["#ffffff"]} />
         {/* Boolean-correct DC meshes once meshed; per-leaf hulls while the
             async mesh is still pending (ticket gcvz). Both carry their own
             lights, so exactly one renders at a time. */}

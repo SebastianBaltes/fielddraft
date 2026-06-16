@@ -4,6 +4,7 @@ import { TransformControls as ThreeTransformControls } from "three/examples/jsm/
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { Line2NodeMaterial, PointsNodeMaterial, MeshBasicNodeMaterial, SpriteNodeMaterial } from "three/webgpu";
+import { uv, vec2, step } from "three/tsl";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -150,14 +151,15 @@ export function SketchOverlay3D() {
   useEffect(() => () => { lineMatRef.current?.dispose(); }, []);
 
   // Endpoint dot material (WebGPU only) — mirrors the session's `M.point`
-  // exactly (same colour + size 7) so committed vertices read identically to
-  // the in-edit ones (ticket n6hg, pqoe parity). Persistent like the line mat.
+  // exactly (same colour + filled-circle look at double the line width) so
+  // committed vertices read identically to the in-edit ones (ticket n6hg/b78p,
+  // pqoe parity). Persistent like the line mat.
   const pointMatRef = useRef<PointsNodeMaterial | null>(null);
   if (isWebGPU && !pointMatRef.current) {
-    pointMatRef.current = new PointsNodeMaterial({
-      color: SKETCH_COLOR_UNDER, size: 7, sizeAttenuation: false,
+    pointMatRef.current = roundPointMaterial(new PointsNodeMaterial({
+      color: SKETCH_COLOR_UNDER, size: SKETCH_POINT_SIZE, sizeAttenuation: false,
       depthTest: false, depthWrite: false, transparent: true,
-    });
+    }));
   }
   useEffect(() => () => { pointMatRef.current?.dispose(); }, []);
 
@@ -304,7 +306,10 @@ export function SketchOverlay3D() {
             ? fatPoints?.get(id) && <primitive object={fatPoints.get(id)!} dispose={null} />
             : classicPoints?.get(id) && (
                 <points geometry={classicPoints.get(id)} renderOrder={998}>
-                  <pointsMaterial color={SKETCH_COLOR_UNDER} size={7} sizeAttenuation={false} transparent depthTest={false} />
+                  {/* Filled circle at double the line width via radial sprite +
+                      alphaTest (ticket b78p). */}
+                  <pointsMaterial color={SKETCH_COLOR_UNDER} size={SKETCH_POINT_SIZE} sizeAttenuation={false}
+                    map={roundPointTexture()} alphaTest={0.5} transparent depthTest={false} />
                 </points>
               )}
         </group>
@@ -329,8 +334,43 @@ const SKETCH_FILL_COLOR = 0x94a3b8; // COLOR_REGION_FILL
 // stroke too thin to read in 3D.
 const SKETCH_FILL_OPACITY = 0.32;
 const SKETCH_STROKE_WIDTH = 4;
+// Endpoint dots are filled circles at DOUBLE the line diameter (ticket b78p),
+// derived from the stroke width so they always track it.
+const SKETCH_POINT_SIZE = 2 * SKETCH_STROKE_WIDTH;
 const SKETCH_AXIS_COLOR = 0x000000; // origin axes (rgba .25)
 const SKETCH_SELECTED_COLOR = 0xf97316; // COLOR_SELECTED
+
+// Endpoint dots must read as FILLED CIRCLES, not the square the point-sprite
+// renders by default (ticket b78p). WebGPU PointsNodeMaterial: drive the
+// opacity from a hard circular mask of the point-sprite coord (`uv()` is the
+// 0..1 sprite UV) — alpha 1 inside the unit circle, 0 outside. The material
+// is already `transparent`, so this clips the square into a filled disk while
+// keeping its own colour. Shared session + committed overlay (pqoe parity).
+function roundPointMaterial(mat: PointsNodeMaterial): PointsNodeMaterial {
+  // step(edge=d, x=0.5): 1 when 0.5 >= d (inside the circle), 0 otherwise.
+  mat.opacityNode = step(uv().sub(vec2(0.5)).length(), 0.5);
+  return mat;
+}
+
+// WebGL classic pointsMaterial has no shader hook here, so we feed it a small
+// radial-alpha sprite texture + alphaTest to clip the square into a circle
+// (ticket b78p). One shared texture for all classic endpoint dots.
+let _roundPointTexture: THREE.CanvasTexture | null = null;
+function roundPointTexture(): THREE.CanvasTexture {
+  if (_roundPointTexture) return _roundPointTexture;
+  const s = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d")!;
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2);
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  _roundPointTexture = tex;
+  return tex;
+}
 
 /** Selection highlight + grip markers (world-space) for the picked sketch
  *  entities, mirroring drawOverlay's `drawSelectionHighlight` + `drawGrips`.
@@ -498,18 +538,19 @@ export function SketchSession3D() {
         color: c, linewidth: lw, worldUnits: false,
         depthTest: false, depthWrite: false, transparent: true, ...extra,
       });
+    // Filled-circle dots (ticket b78p) — round-masked via TSL.
     const dots = (c: number, size: number) =>
-      new PointsNodeMaterial({
+      roundPointMaterial(new PointsNodeMaterial({
         color: c, size, sizeAttenuation: false,
         depthTest: false, depthWrite: false, transparent: true,
-      });
+      }));
     matsRef.current = {
       solid: fatLine(color, SKETCH_STROKE_WIDTH),
       construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
       guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
       leg: fatLine(SKETCH_LEG_COLOR, 2),
       axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
-      point: dots(color, 7), // overlay POINT_PX radius 3 → ~7px dot
+      point: dots(color, SKETCH_POINT_SIZE), // double the line width (ticket b78p)
       handle: dots(color, 6),
       selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
       selPoint: dots(SKETCH_SELECTED_COLOR, 10),
@@ -633,14 +674,15 @@ export function SketchHud3D() {
       line: fatLine(SKETCH_PREVIEW_COLOR, 2),
       guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
       projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
-      point: new PointsNodeMaterial({
+      // Filled-circle dots (ticket b78p) — sizes left as preview/snap specifics.
+      point: roundPointMaterial(new PointsNodeMaterial({
         color: SKETCH_PREVIEW_COLOR, size: 7, sizeAttenuation: false,
         depthTest: false, depthWrite: false, transparent: true,
-      }),
-      snap: new PointsNodeMaterial({
+      })),
+      snap: roundPointMaterial(new PointsNodeMaterial({
         color: SKETCH_SNAP_COLOR, size: 13, sizeAttenuation: false,
         depthTest: false, depthWrite: false, transparent: true,
-      }),
+      })),
     };
   }
   const M = matsRef.current;

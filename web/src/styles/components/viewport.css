@@ -9,7 +9,8 @@
   flex: 1;
   min-width: 0;
   position: relative;
-  background: var(--color-bg);
+  /* ticket xqp3: 3D-Szene ist weiß, nicht grau (eigener Viewport-Token). */
+  background: var(--color-viewport-bg);
 
   /* Box-select rectangle (rectangle drag from empty space). Window mode
    * draws the accent-blue box; right→left crossing mode (Onshape/Fusion

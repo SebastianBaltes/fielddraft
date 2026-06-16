@@ -204,8 +204,10 @@ export function ClearColorSync() {
 
   useEffect(() => {
     const apply = () => {
+      // ticket xqp3: der 3D-Viewport wird weiß geleert (eigener Token),
+      // während die UI-Shell (--color-bg) grau bleibt.
       const bg = getComputedStyle(document.documentElement)
-        .getPropertyValue("--color-bg")
+        .getPropertyValue("--color-viewport-bg")
         .trim();
       if (bg) {
         gl.setClearColor(new THREE.Color(bg), 1);

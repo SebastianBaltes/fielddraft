@@ -7,6 +7,9 @@
   /* ── Color: neutrals ────────────────────────────────────── */
   --color-bg: #f6f6f4;
   --color-bg-elevated: #ffffff;
+  /* 3D-Viewport-Hintergrund (ticket xqp3): die Szene ist weiß, nicht grau —
+   * eigener Token, damit die UI-Shell (--color-bg) grau bleibt. */
+  --color-viewport-bg: #ffffff;
   --color-bg-sunken: #ecece8;
   --color-bg-hover: #e4e4dc;
   --color-bg-active: #d6d6cc;
@@ -119,6 +122,8 @@
   --color-bg-sunken: #16161a;
   --color-bg-hover: #333339;
   --color-bg-active: #3e3e46;
+  /* ticket xqp3: im Dark Mode bleibt der Viewport dunkel (kein Weiß). */
+  --color-viewport-bg: #1a1a1e;
 
   --color-border: #3e3e46;
   --color-border-strong: #56565e;
