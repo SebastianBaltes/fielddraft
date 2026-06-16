@@ -995,8 +995,15 @@ export function renderDeferredFrame(
   renderer.clear(true, false, false);
   renderer.render(state.transparentBackScene, camera);
 
-  // Pass 3: shade (reads all RTs, composites to screen)
+  // Pass 3: shade (reads all RTs, composites to screen). Ticket xqp3/a2ps:
+  // miss pixels in the shade quad are vec4(0,0,0,0) (transparent), so the
+  // viewport background is whatever the screen was cleared to. Clear it
+  // OPAQUELY to the saved viewport clear colour (white, set by ClearColorSync)
+  // — otherwise the leftover transparent G-buffer clear (0,0,0,0) lets the grey
+  // page body show through and the scene reads grey instead of white.
   renderer.setRenderTarget(null);
+  renderer.setClearColor(_savedClearColor, 1);
+  renderer.clear(true, false, false);
   renderer.render(state.shadeScene, state.shadeCamera);
 
   renderer.setClearColor(_savedClearColor, savedClearAlpha);
