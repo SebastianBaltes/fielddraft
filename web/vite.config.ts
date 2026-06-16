@@ -146,6 +146,7 @@ function ticketWriter(): Plugin {
               timestamp?: string;
               userAgent?: string;
               url?: string;
+              settings?: Record<string, unknown>;
             };
             const id = ticketId();
             const dir = join(ticketsRoot, id);
@@ -185,6 +186,12 @@ function ticketWriter(): Plugin {
                 `## Description\n\n${description || "_(none)_"}\n` +
                 (attachmentNames.length > 0
                   ? `\n## Attachments\n\n${attachmentNames.map((n) => `- ${n}`).join("\n")}\n`
+                  : "") +
+                // Per-device settings (renderMode, controlsPreset, …) as a JSON
+                // block so a report carries the environment (helps reproduce
+                // renderer-/controls-dependent bugs).
+                (t.settings
+                  ? `\n## Settings\n\n\`\`\`json\n${JSON.stringify(t.settings, null, 2)}\n\`\`\`\n`
                   : ""),
             );
 

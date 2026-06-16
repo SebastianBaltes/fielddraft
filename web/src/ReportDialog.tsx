@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { KernelStore } from "./store";
+import { loadSettings } from "./SettingsMenu";
 import {
   captureWindow,
   fileToAttachment,
@@ -127,6 +128,10 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
       timestamp: new Date().toISOString(),
       userAgent: navigator.userAgent,
       url: window.location.href,
+      // Capture the per-device settings (renderMode, controlsPreset, …) so a
+      // report carries the environment that produced it (helps reproduce
+      // renderer-/controls-dependent bugs).
+      settings: loadSettings() as unknown as Record<string, unknown>,
     };
     const result = await submitTicket(payload);
     if (result.ok) {

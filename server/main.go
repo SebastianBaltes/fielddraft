@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -681,6 +682,10 @@ type ticketRequest struct {
 	Timestamp   string             `json:"timestamp"`
 	UserAgent   string             `json:"userAgent"`
 	URL         string             `json:"url"`
+	// Settings: per-device app/UI settings (renderMode, controlsPreset, …).
+	// Captured raw so the ticket carries the environment that produced it;
+	// rendered as a JSON block in ticket.md.
+	Settings json.RawMessage `json:"settings"`
 }
 
 // ticketAttachment is one user-attached file (picked or pasted, ticket 8onw),
@@ -797,6 +802,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		md += "\n## Attachments\n\n"
 		for _, n := range attachmentNames {
 			md += "- " + n + "\n"
+		}
+	}
+	// Per-device settings (renderMode, controlsPreset, …) as a JSON block so a
+	// report carries the environment that produced it.
+	if len(req.Settings) > 0 && string(req.Settings) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
+			md += "\n## Settings\n\n```json\n" + pretty.String() + "\n```\n"
 		}
 	}
 	os.WriteFile(filepath.Join(dir, "ticket.md"), []byte(md), 0o644)

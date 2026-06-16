@@ -77,6 +77,11 @@ export interface TicketPayload {
   userAgent: string;
   /** Page URL the report was filed from. */
   url: string;
+  /** Per-device app/UI settings (renderMode, controlsPreset, meshAlgorithm,
+   *  theme, …) from localStorage — NOT part of the project. Captured so a
+   *  report carries the environment that produced it (e.g. which renderer or
+   *  controls preset was active). Surfaced as a JSON block in ticket.md. */
+  settings?: Record<string, unknown>;
 }
 
 /**
