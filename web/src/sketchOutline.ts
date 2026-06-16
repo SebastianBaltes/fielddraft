@@ -5,10 +5,11 @@
  * pending-sketch-extrude anchor (the suppressed ghost contributes no
  * B-Rep, so its preview prism derives from the raw sketch geometry).
  *
- * Curve coverage mirrors what the overlay has always drawn: lines,
- * rectangles, circles, polygons, arcs. Splines/ellipses fall back to
- * nothing here — the preview outline is approximate by design; the
- * kernel boolean produces the exact geometry on confirm.
+ * Curve coverage: lines, rectangles, circles, polygons, arcs, and
+ * splines (flattened to segments like the session overlay so a
+ * spline-closed loop reads as closed; ticket sc8g). Ellipses still
+ * fall back to nothing — the preview outline is approximate by design;
+ * the kernel boolean produces the exact geometry on confirm.
  */
 
 import { planeToWorld, type PlaneFrame } from "./sketchPlaneFrame";
@@ -168,6 +169,33 @@ export function collectSketchLineSegments(
             ];
             emit(prev, next);
             prev = next;
+          }
+        }
+        break;
+      }
+      case "sketch_spline": {
+        // Flatten the spline to segments exactly like the session overlay
+        // (collectSketchSessionGeometry) — without this a committed sketch
+        // whose loop is closed by a spline shows a gap where the session
+        // draws the curve (ticket sc8g).
+        const raw = p.points;
+        const closed = p.closed === true;
+        const isControl = p.mode === "control";
+        if (Array.isArray(raw) && raw.length >= 4) {
+          const ctrl: Vec2[] = [];
+          for (let i = 0; i + 1 < raw.length; i += 2) {
+            const x = Number(raw[i]);
+            const y = Number(raw[i + 1]);
+            if (Number.isFinite(x) && Number.isFinite(y)) ctrl.push([x, y]);
+          }
+          const sampled = isControl
+            ? bsplinePoints(ctrl, 3, closed, 64)
+            : catmullRomPoints(ctrl, closed, 16);
+          for (let i = 0; i + 1 < sampled.length; i++) {
+            emit(sampled[i], sampled[i + 1]);
+          }
+          if (!isControl && closed && sampled.length >= 2) {
+            emit(sampled[sampled.length - 1], sampled[0]);
           }
         }
         break;

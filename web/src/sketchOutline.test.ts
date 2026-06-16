@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   collectSketchSessionGeometry,
   collectSketchRegionFill,
+  collectSketchLineSegments,
   SESSION_3D_TYPES,
   type SketchSubCall,
 } from "./sketchOutline";
@@ -104,6 +105,38 @@ describe("collectSketchSessionGeometry", () => {
     expect(legs.length).toBe(2 * 6); // start + end tangent legs
     expect(guide.length).toBeGreaterThan(0); // interior control polygon edges
     expect(points.length).toBe(4 * 3); // 4 control points
+  });
+});
+
+describe("collectSketchLineSegments (committed overlay outline)", () => {
+  it("renders a sketch_line as one world segment", () => {
+    const out = collectSketchLineSegments(
+      [{ type: "sketch_line", params: { start: [0, 0], end: [10, 0] } }],
+      XY,
+    );
+    expect(out).toEqual([0, 0, 0, 10, 0, 0]);
+  });
+
+  it("flattens a sketch_spline into segments (ticket sc8g — was empty)", () => {
+    // An interpolate spline closing a loop: the committed overlay used to
+    // skip splines entirely, leaving a visible gap. Now it samples them.
+    const out = collectSketchLineSegments(
+      [
+        {
+          type: "sketch_spline",
+          params: {
+            mode: "interpolate",
+            closed: false,
+            points: [0, 0, 5, 5, 10, 0],
+          },
+        },
+      ],
+      XY,
+    );
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.length % 6).toBe(0); // whole [ax,ay,az, bx,by,bz] segments
+    // First sample sits at the first control point on the XY plane.
+    expect(out.slice(0, 3)).toEqual([0, 0, 0]);
   });
 });
 
