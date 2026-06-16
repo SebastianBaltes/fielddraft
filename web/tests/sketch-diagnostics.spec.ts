@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   canvasCentre,
+  expandGeometrySection,
   freshLoad,
   settleSketchCamera,
   sketchToClientPx,
@@ -39,6 +40,11 @@ test.describe("Sketch conflict diagnostics", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
+
+    // The geometry list, diagnostics summary and per-row conflict/redundant
+    // badges live inside the collapsed-by-default "Geometry & Constraints"
+    // sub-accordion (ticket 87a1).
+    await expandGeometrySection(page);
 
     const [cx, cy] = await canvasCentre(page);
 

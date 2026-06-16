@@ -137,6 +137,25 @@ export async function clickSketchPoint(
   );
 }
 
+/**
+ * Ticket 87a1: the geometry list, per-tool edit block, empty-state and the
+ * constraint manager now live inside the "Geometry & Constraints" sub-accordion
+ * (testid `geometry-section`, header `geometry-header`) which is COLLAPSED BY
+ * DEFAULT. Call this once after entering the sketch / before interacting with
+ * any of those inner elements. Idempotent: expands only when collapsed (detected
+ * via the chevron glyph ▸ = collapsed, ▾ = expanded).
+ */
+export async function expandGeometrySection(page: Page): Promise<void> {
+  const header = page.getByTestId("geometry-header");
+  await expect(header).toBeVisible();
+  const chevron = header.locator(".accordion-chevron");
+  const glyph = (await chevron.textContent())?.trim();
+  if (glyph === "▸") {
+    await header.click();
+    await expect(chevron).toHaveText("▾");
+  }
+}
+
 /** The live session sub-call type list. */
 export async function subCallTypes(page: Page): Promise<string[]> {
   return page.evaluate(

@@ -100,6 +100,9 @@ async function drawLine(
   end: [number, number],
 ) {
   await page.getByTestId("sketch-tool-sketch_line").click();
+  // The per-tool edit block + Apply button live inside the collapsed-by-default
+  // "Geometry & Constraints" sub-accordion (ticket 87a1).
+  await expandGeometrySection(page);
   await page.getByLabel("Start x").fill(String(start[0]));
   await page.getByLabel("Start y").fill(String(start[1]));
   await page.getByLabel("End x").fill(String(end[0]));
@@ -125,6 +128,25 @@ function readCommittedSubCalls(page: import("@playwright/test").Page) {
     if (!sketch) return null;
     return kernel.getSketchSubCalls(sketch.id);
   });
+}
+
+/**
+ * Ticket 87a1: the geometry list, per-tool edit block (Apply/Clear), the
+ * empty-state and the constraint manager now live inside the "Geometry &
+ * Constraints" sub-accordion (header testid `geometry-header`), COLLAPSED BY
+ * DEFAULT inside the generic Detail dialog. Call once after entering the
+ * sketch before touching any of those inner elements. Idempotent: only
+ * expands when collapsed (chevron ▸ = collapsed, ▾ = expanded).
+ */
+async function expandGeometrySection(page: import("@playwright/test").Page) {
+  const header = page.getByTestId("geometry-header");
+  await expect(header).toBeVisible();
+  const chevron = header.locator(".accordion-chevron");
+  const glyph = (await chevron.textContent())?.trim();
+  if (glyph === "▸") {
+    await header.click();
+    await expect(chevron).toHaveText("▾");
+  }
 }
 
 test.describe("Sketch editor smoke", () => {
@@ -158,9 +180,13 @@ test.describe("Sketch editor smoke", () => {
     //    appear immediately as a sibling of the WebGPU canvas.
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-mode-indicator")).toBeVisible();
-    await expect(page.getByTestId("sketch-session-panel")).toBeVisible();
-    await expect(page.getByTestId("sketch-session-empty")).toBeVisible();
+    // Ticket 87a1: the sketch detail now renders inside the generic Detail
+    // dialog; its geometry/empty-state/constraints live in the collapsed-by-
+    // default "Geometry & Constraints" sub-accordion.
+    await expect(page.getByTestId("detail-panel")).toBeVisible();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
+    await expandGeometrySection(page);
+    await expect(page.getByTestId("sketch-session-empty")).toBeVisible();
 
     // 2. Pick the line tool. The outliner should now show the
     //    generic FeatureDialog for sketch_line with Start / End
@@ -192,7 +218,7 @@ test.describe("Sketch editor smoke", () => {
     //    overlay canvas unmounts, the regular toolbar comes
     //    back.
     await page.getByTestId("sketch-detail-accept").click();
-    await expect(page.getByTestId("sketch-session-panel")).toHaveCount(0);
+    await expect(page.getByTestId("detail-panel")).toHaveCount(0);
     await expect(page.getByTestId("sketch-canvas-2d")).toHaveCount(0);
     await expect(page.getByTestId("primitive-split-button")).toBeVisible();
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
@@ -236,6 +262,7 @@ test.describe("Sketch editor smoke", () => {
     // regardless of cursor jitter.
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_line").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     const overlay = page.getByTestId("sketch-canvas-2d");
     const box = await overlay.boundingBox();
@@ -325,6 +352,7 @@ test.describe("Sketch editor smoke", () => {
     // Create the first sketch with one line.
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_line").click();
+    await expandGeometrySection(page); // ticket 87a1: gated tool dialog + list
     await page.getByLabel("Start x").fill("10");
     await page.getByLabel("Start y").fill("10");
     await page.getByLabel("End x").fill("40");
@@ -340,8 +368,10 @@ test.describe("Sketch editor smoke", () => {
     // sub-spine panel must already show the previously applied
     // line and the overlay canvas comes back up.
     await row.dblclick();
-    await expect(page.getByTestId("sketch-session-panel")).toBeVisible();
+    await expect(page.getByTestId("detail-panel")).toBeVisible();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
+    // Reopening renders a fresh (collapsed) detail panel — expand again.
+    await expandGeometrySection(page);
     const initialRows = page.getByTestId("sketch-sub-spine").locator(".row");
     await expect(initialRows).toHaveCount(1);
 
@@ -400,6 +430,7 @@ test.describe("Sketch editor smoke", () => {
 
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_line").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     // Drag a near-horizontal line (small vertical wobble) from
     // off-centre to off-centre so neither endpoint lands inside
@@ -489,6 +520,7 @@ test.describe("Sketch editor smoke", () => {
 
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     // Drag a rectangle across the canvas. The rectangle tool's
     // internal H/V constraints are independent of the cursor
@@ -572,6 +604,7 @@ test.describe("Sketch editor smoke", () => {
 
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_circle").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     const overlay = page.getByTestId("sketch-canvas-2d");
     const box = await overlay.boundingBox();
@@ -649,6 +682,7 @@ test.describe("Sketch editor smoke", () => {
     // Draw a rectangle and a circle in the same session. The
     // sub-spine panel ends up with two rows.
     await page.getByTestId("enter-sketch").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list + delete
     const overlay = page.getByTestId("sketch-canvas-2d");
     const box = await overlay.boundingBox();
     expect(box).not.toBeNull();
@@ -728,6 +762,7 @@ test.describe("Sketch editor smoke", () => {
     // Draw a rectangle via the dialog path (precise coords).
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
     await page.getByLabel("Corner b x").fill("20");
@@ -798,6 +833,7 @@ test.describe("Sketch editor smoke", () => {
 
     await page.getByTestId("enter-sketch").click();
     await page.getByTestId("sketch-tool-sketch_line").click();
+    await expandGeometrySection(page); // ticket 87a1: gated geometry list
 
     // Drag on the 2D overlay canvas. pointerdown → move → up
     // drives the new drag-to-draw path in SketchCanvas2d. We
@@ -976,6 +1012,7 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
+    await expandGeometrySection(page); // ticket 87a1: gated tool dialog + list
 
     // Two free points a short distance apart, both off the origin.
     await page.getByTestId("sketch-tool-sketch_point").click();
@@ -1314,6 +1351,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.getByTestId("enter-sketch").click();
     // A circle at (40, 0) with radius 20, placed precisely via the dialog.
     await page.getByTestId("sketch-tool-sketch_circle").click();
+    await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Center x").fill("40");
     await page.getByLabel("Center y").fill("0");
     await page.getByLabel("Radius").fill("20");
@@ -1369,6 +1407,7 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     await page.getByTestId("enter-sketch").click();
     // A precise rectangle (-20,-10)..(20,10) via the dialog.
     await page.getByTestId("sketch-tool-sketch_rectangle").click();
+    await expandGeometrySection(page); // ticket 87a1: gated tool dialog + apply
     await page.getByLabel("Corner a x").fill("-20");
     await page.getByLabel("Corner a y").fill("-10");
     await page.getByLabel("Corner b x").fill("20");

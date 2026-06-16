@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { expandGeometrySection } from "./sketchHarness";
 
 /**
  * Interactive arc tool (UI gap #1). The arc is a three-click
@@ -46,7 +47,9 @@ test.describe("Sketch arc tool", () => {
     await page.mouse.move(endSx, endSy, { steps: 8 });
     await page.mouse.click(endSx, endSy);
 
-    // One committed sub-call (the arc).
+    // One committed sub-call (the arc). The geometry list lives inside the
+    // collapsed-by-default "Geometry & Constraints" sub-accordion (ticket 87a1).
+    await expandGeometrySection(page);
     const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
     await expect(subSpineRows).toHaveCount(1);
 

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { expandGeometrySection } from "./sketchHarness";
 
 /**
  * Concentric constraint via the palette. The solver, draft-state rebuild,
@@ -116,6 +117,9 @@ test.describe("Sketch concentric constraint", () => {
     await drawCircle(page, project, c1, r1);
     await drawCircle(page, project, c2, r2);
 
+    // The geometry list lives inside the collapsed-by-default
+    // "Geometry & Constraints" sub-accordion (ticket 87a1).
+    await expandGeometrySection(page);
     const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
     await expect(subSpineRows).toHaveCount(2);
     await page.waitForTimeout(400);

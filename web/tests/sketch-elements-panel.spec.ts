@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   canvasCentre,
+  expandGeometrySection,
   freshLoad,
   settleSketchCamera,
   subCallTypes,
@@ -28,6 +29,11 @@ test.describe("Sketch elements panel", () => {
     await freshLoad(page);
     await page.getByTestId("enter-sketch").click();
     await expect(page.getByTestId("sketch-canvas-2d")).toBeVisible();
+
+    // The elements panel (Geometry/Constraints sections + rows + delete) lives
+    // inside the collapsed-by-default "Geometry & Constraints" sub-accordion
+    // (ticket 87a1).
+    await expandGeometrySection(page);
 
     const [cx, cy] = await canvasCentre(page);
 

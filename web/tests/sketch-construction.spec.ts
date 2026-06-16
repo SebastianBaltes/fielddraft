@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { expandGeometrySection } from "./sketchHarness";
 
 /**
  * Construction geometry (UI gap #5). A drawn element can be flagged as
@@ -38,6 +39,9 @@ test.describe("Sketch construction geometry", () => {
     await page.mouse.move(cx + 70, cy, { steps: 8 });
     await page.mouse.up();
 
+    // The geometry list + construction toggle live inside the collapsed-by-
+    // default "Geometry & Constraints" sub-accordion (ticket 87a1).
+    await expandGeometrySection(page);
     const subSpineRows = page.getByTestId("sketch-sub-spine").locator(".row");
     await expect(subSpineRows).toHaveCount(1);
 
