@@ -36,6 +36,7 @@ import {
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
 import { formatQueryDisplay } from "../queryLabels";
+import { queryAcceptedByFilter } from "../elementQuery";
 import {
   ANGLE_UNITS,
   type AngleUnit,
@@ -899,12 +900,17 @@ export function QueryWidget({
   // re-picking the plane (ticket dxrq).
   const onPick = useCallback(
     (query: string) => {
+      // Reject picks whose kind the field's filter doesn't permit (e.g. a
+      // datum plane or body for an "EDGE,SKETCHLINE" axis field) — the single
+      // chokepoint that enforces the filter regardless of which path emitted
+      // the pick. Returning false leaves the picker armed for another try.
+      if (!queryAcceptedByFilter(query, entityFilter)) return false;
       setText(query);
       onChange(query);
       if (deactivateOnPick) deactivateQueryPicker();
       return true;
     },
-    [onChange, deactivateOnPick],
+    [onChange, deactivateOnPick, entityFilter],
   );
 
   // The bridge holds at most one active picker. Registering flips this
@@ -1059,6 +1065,9 @@ export function MultiQueryWidget({
 
   const onPickRef = useRef<(query: string) => boolean>(() => false);
   onPickRef.current = (query: string) => {
+    // Same filter chokepoint as QueryWidget — a BODY merge-scope picker
+    // rejects an edge/face pick, etc.
+    if (!queryAcceptedByFilter(query, entityFilter)) return false;
     const items = itemsRef.current;
     if (items.includes(query)) return true;
     const next = [...items, query];

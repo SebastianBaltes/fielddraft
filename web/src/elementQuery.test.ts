@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   allowedKinds,
   filterAllows,
+  filterAllowsSketchLine,
+  queryAcceptedByFilter,
   elementQueryString,
   mapPickToQuery,
   resolveElementClick,
@@ -95,6 +97,55 @@ describe("mapPickToQuery", () => {
       const q = mapPickToQuery({ kind, idHash: "1" }, undefined);
       expect(q).toMatch(/^q(Face|Edge|Vertex)\(1\)$/);
     }
+  });
+});
+
+describe("filterAllowsSketchLine", () => {
+  it("only the SKETCHLINE token enables sketch lines", () => {
+    expect(filterAllowsSketchLine("EDGE,SKETCHLINE")).toBe(true);
+    expect(filterAllowsSketchLine("sketchline")).toBe(true);
+    expect(filterAllowsSketchLine("EDGE")).toBe(false);
+    expect(filterAllowsSketchLine("FACE")).toBe(false);
+    expect(filterAllowsSketchLine(undefined)).toBe(false);
+    expect(filterAllowsSketchLine("")).toBe(false);
+  });
+});
+
+describe("queryAcceptedByFilter (axis picker hardening)", () => {
+  it("no filter accepts every query", () => {
+    for (const q of ["qEdge(1)", "qFace(1)", "qCreatedBy(2)", "qCreatedBy(origin_plane_xy)"]) {
+      expect(queryAcceptedByFilter(q, undefined)).toBe(true);
+      expect(queryAcceptedByFilter(q, "")).toBe(true);
+    }
+  });
+
+  it("an EDGE,SKETCHLINE axis filter accepts only edges and sketch lines", () => {
+    const f = "EDGE,SKETCHLINE";
+    expect(queryAcceptedByFilter("qEdge(123)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qEdgeBetween(1, 2)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qSketchLine(1, 10)", f)).toBe(true);
+    // The reported leak: a datum plane must be rejected.
+    expect(queryAcceptedByFilter("qCreatedBy(origin_plane_xy)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qFace(123)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qVertex(123)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qCreatedBy(7)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qAllRegions(3)", f)).toBe(false);
+  });
+
+  it("a FACE picker keeps datums, regions and face-level queries", () => {
+    const f = "FACE";
+    expect(queryAcceptedByFilter("qFace(1)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qCreatedBy(origin_plane_xy)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qCreatedBy(5)", f)).toBe(true); // sketch region
+    expect(queryAcceptedByFilter("qAllRegions(5)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qEdge(1)", f)).toBe(false);
+  });
+
+  it("a BODY picker accepts bodies but not datum planes or edges", () => {
+    const f = "BODY";
+    expect(queryAcceptedByFilter("qCreatedBy(7)", f)).toBe(true);
+    expect(queryAcceptedByFilter("qCreatedBy(origin_plane_xy)", f)).toBe(false);
+    expect(queryAcceptedByFilter("qEdge(1)", f)).toBe(false);
   });
 });
 

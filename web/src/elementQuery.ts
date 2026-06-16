@@ -80,6 +80,55 @@ export function filterAllowsSketchLine(entityFilter?: string): boolean {
     .some((t) => t.trim().toUpperCase() === "SKETCHLINE");
 }
 
+/**
+ * Does a canonical query string satisfy a picker's `entityFilter`? The single
+ * chokepoint that keeps a filtered picker from accepting the wrong kind of
+ * pick, no matter which code path emits it (viewport, outliner row, datum
+ * quad, …). Enforced inside the query widgets' `onPick`.
+ *
+ * `entityFilter === undefined`/`""` means no restriction → accept anything.
+ * Otherwise each query form maps to the filter category it belongs to:
+ *   - `qFace` → FACE; `qEdge`/`qEdgeBetween` → EDGE; `qVertex` → VERTEX
+ *   - `qSketchLine` → SKETCHLINE
+ *   - `qFaceOf`/`qRegion`/`qRegions`/`qAllRegions` → FACE (face-level)
+ *   - `qCreatedBy(origin_plane_*)` → FACE (a datum plane is a face-like pick)
+ *   - `qCreatedBy(<other>)` → ambiguous region-or-body → FACE or BODY
+ * So an `"EDGE,SKETCHLINE"` axis picker accepts only `qEdge`/`qSketchLine` and
+ * rejects datum planes (`qCreatedBy(origin_plane_*)`), bodies, faces, etc.,
+ * while a FACE/BODY picker keeps its existing reach.
+ */
+export function queryAcceptedByFilter(query: string, entityFilter?: string): boolean {
+  if (!entityFilter) return true;
+  const tokens = entityFilter
+    .split(/[,\s|]+/)
+    .map((t) => t.trim().toUpperCase())
+    .filter(Boolean);
+  if (tokens.length === 0) return true;
+  const has = (t: string) => tokens.includes(t);
+  const name = query.trim().match(/^q([A-Za-z]+)\s*\(/)?.[1];
+  switch (name) {
+    case "Face":
+      return has("FACE");
+    case "Edge":
+    case "EdgeBetween":
+      return has("EDGE");
+    case "Vertex":
+      return has("VERTEX");
+    case "SketchLine":
+      return has("SKETCHLINE");
+    case "FaceOf":
+    case "Region":
+    case "Regions":
+    case "AllRegions":
+      return has("FACE");
+    case "CreatedBy":
+      return /origin_plane_/.test(query) ? has("FACE") : has("FACE") || has("BODY");
+    default:
+      // Unknown / future query forms: don't block them.
+      return true;
+  }
+}
+
 /** Build the canonical element-query string addressing one element. */
 export function elementQueryString(el: PickedElement): string {
   switch (el.kind) {
