@@ -679,22 +679,12 @@
     }
   }
 
-  /* K6b.2: sketch-session panel lives at the top of the outliner
-     while a sketch is active. */
-  & .sketch-session {
-    border-bottom: 2px solid var(--color-accent);
-    background: var(--color-bg-hover);
-
-    & .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-3);
-      padding: var(--space-3) var(--space-4);
-      background: var(--color-accent-soft);
-      border-bottom: 1px solid var(--color-divider);
-    }
-
+  /* Ticket 87a1: a sketch's details are a Detail dialog like every other
+     feature, so the sketch-specific pieces (plane field, the Geometry &
+     Constraints sub-accordion's per-tool block, geometry list and constraint
+     manager) are styled inside the generic .detail-panel — NO separate top
+     panel, NO grey/tinted background, just the normal white dialog. */
+  & .detail-panel {
     /* Ticket yx6a: editable "Sketch plane" query picker. */
     & .plane-field {
       padding: var(--space-2) var(--space-4);

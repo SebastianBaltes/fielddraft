@@ -23,7 +23,7 @@ import {
   type FeatureSchema,
 } from "./widgets/schema";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
-import { emptyDiagnostics, type SketchDiagnostics } from "./solver/types";
+import { type SketchDiagnostics } from "./solver/types";
 import { buildDraftSketchState } from "./sketchSession";
 import { SketchSubCalls, SKETCH_SUB_LABEL } from "./SketchSubCalls";
 import { getActive as getActivePicker } from "./queryPickerBridge";
@@ -208,23 +208,6 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       return null;
     }
   }, [fd, selectedFeature]);
-
-  // Ticket yx6a: committed sub-calls of the selected sketch, for the
-  // read-only element list in its detail view. `state.features` is in
-  // the dep list because a session commit replaces the feature array.
-  const selectedSketchSubCalls = useMemo<
-    ReadonlyArray<{ type: string; params: Record<string, unknown> }>
-  >(() => {
-    if (selectedFeature?.kind !== "sketch") return [];
-    try {
-      return store.kernel
-        .getSketchSubCalls(selectedFeature.id)
-        .map((c) => ({ type: c.type, params: c.params }));
-    } catch {
-      return [];
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, selectedFeature, state.features]);
 
   // Reload the draft from the kernel whenever the selected
   // feature id changes. The `draftKey` is the feature id plus
@@ -589,11 +572,10 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
     store.removeFeature(id);
   };
 
-  // K6b.2: when a sketch session is active, the outliner leads with a
-  // sketch-session panel (tool FeatureDialog + sub-spine list) so the
-  // user never loses the feature list but sees the sketch workspace
-  // prominently on top. Schema fetching for the selected sketch tool
-  // happens through the same fd facade as top-level features.
+  // Ticket 87a1: a sketch's details are a Detail dialog like every other
+  // feature (no separate top panel). The selected sketch tool's schema is
+  // fetched through the same fd facade as top-level features and feeds the
+  // per-tool edit block inside the sketch's Detail body.
   const sketchSession = state.sketchSession;
   // Ticket pqoe: a sketch is a feature like any other — selecting it enters
   // its edit session automatically (store.syncSketchSessionToSelection), and
@@ -646,83 +628,10 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       {state.selectedElement ? (
         <ElementInfo store={store} state={state} />
       ) : null}
-      {sketchSession.active ? (
-        <section
-          className="sketch-session"
-          data-testid="sketch-session-panel"
-        >
-          <div className="header">
-            <span>Sketch</span>
-          </div>
-          {/* Ticket pqoe: when this session edits the currently-selected
-              sketch feature the Detail panel owns the plane field and the
-              geometry list (sketch = feature like any other), so they are
-              suppressed here to avoid duplication. */}
-          {!editingSelectedSketch && (
-            /* Ticket yx6a: the sketch plane is an editable feature
-               property — pick a face in the viewport or type a datum
-               query, exactly like the committed sketch's detail view. */
-            <div className="plane-field" data-testid="sketch-session-plane">
-              <QueryWidget
-                label="Sketch plane"
-                value={sketchSession.planeQuery ?? ""}
-                onChange={(next) => store.setSketchPlane(next)}
-                entityFilter="FACE"
-                deactivateOnPick
-              />
-            </div>
-          )}
-          {sketchSession.selectedTool && sketchToolSchema ? (
-            <>
-              <FeatureDialog
-                schema={sketchToolSchema}
-                definition={sketchSession.toolDraft}
-                onChange={(next) => store.setSketchToolDraft(next)}
-              />
-              <div className="actions">
-                <button
-                  type="button"
-                  className="apply"
-                  data-testid="sketch-tool-apply"
-                  onClick={() => store.applySketchToolDraft()}
-                >
-                  Apply
-                </button>
-                <button
-                  type="button"
-                  className="clear"
-                  data-testid="sketch-tool-clear"
-                  onClick={() => store.selectSketchTool(null)}
-                >
-                  Clear
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="empty" data-testid="sketch-session-empty">
-              Pick a sketch tool in the toolbar.
-            </div>
-          )}
-          {/* Ticket pqoe: while this session edits the selected sketch the
-              Detail panel owns the geometry list, so the interactive copy
-              here is suppressed (no duplicate list). */}
-          {!editingSelectedSketch && (
-            <SketchSubCalls
-              subCalls={sketchSession.subCalls}
-              diagnostics={sketchSession.diagnostics}
-              selection={sketchSession.selection}
-              onSelect={(refIds) => store.setSketchSelection(refIds)}
-              onToggleConstruction={(i) => store.toggleSketchConstructionAt(i)}
-              onDelete={(i) => store.removeSketchSubCall(i)}
-            />
-          )}
-          <ConstraintManagerPanel
-            subCalls={sketchSession.subCalls}
-            store={store}
-            diagnostics={sketchSession.diagnostics}
-          />
-        </section>
-      ) : null}
+      {/* Ticket 87a1: the old separate top "Sketch" session panel is gone —
+          its plane field, per-tool edit block, geometry list and constraint
+          manager now live inside the sketch's generic Detail dialog below
+          (see SketchDetailBody, rendered from the Detail panel). */}
       {!sketchSession.active ? (
         <section
           className="variables-panel"
@@ -1224,53 +1133,28 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               </span>
             )}
           </div>
-          {!collapsed.has("detail") && (selectedSchema ? (
-            <>
-              <FeatureDialog
-                schema={selectedSchema}
-                definition={dialogDraft}
-                onChange={handleDialogChange}
-                error={selectedFeature?.error ?? null}
-              />
-              {/* Ticket pqoe: a sketch's detail view embeds its element
-                  list — selecting the sketch already entered its edit
-                  session, so the list shows the LIVE session sub-calls
-                  while editing (and the committed ones otherwise). The
-                  separate [Edit Sketch] button is gone; commit/discard
-                  live on the ✓/✗ in the Detail header. */}
-              {selectedFeature?.kind === "sketch" ? (() => {
-                const geometrySubCalls = editingSelectedSketch
-                  ? sketchSession.subCalls
-                  : selectedSketchSubCalls;
-                return (
-                  /* Ticket pqoe: the geometry list is its own accordion
-                     section, collapsed by default, reusing the same
-                     header/chevron/collapsed-set mechanism as the other
-                     sections in this panel. */
-                  <div className="geometry-section" data-testid="geometry-section">
-                    <div className="header accordion-header" onClick={() => toggleSection("geometry")} data-testid="geometry-header">
-                      <span className="accordion-chevron">{collapsed.has("geometry") ? "▸" : "▾"}</span>
-                      <span>Geometry ({geometrySubCalls.length})</span>
-                    </div>
-                    {!collapsed.has("geometry") && (
-                      <SketchSubCalls
-                        subCalls={geometrySubCalls}
-                        diagnostics={
-                          editingSelectedSketch
-                            ? sketchSession.diagnostics
-                            : emptyDiagnostics()
-                        }
-                      />
-                    )}
-                  </div>
-                );
-              })() : null}
-            </>
-          ) : inSketchSession ? (
-            // Fresh `enter-sketch` draft (no committed feature yet): the
-            // session panel below carries the plane/tool/geometry; the
-            // Detail header just hosts the ✓/✗ commit/discard actions.
-            <div className="empty" data-testid="sketch-draft-detail">New sketch — pick a tool to draw.</div>
+          {/* Ticket 87a1: a sketch's details ARE a Detail dialog like any
+              other feature. When a sketch session is active (committed sketch
+              re-entry OR a fresh `enter-sketch` draft) the generic dialog
+              renders the sketch-specific SketchDetailBody — the editable
+              Sketch-plane field plus the collapsed Geometry & Constraints
+              sub-accordion — instead of the schema-driven FeatureDialog.
+              Every other feature keeps the generic schema dialog. */}
+          {!collapsed.has("detail") && (inSketchSession ? (
+            <SketchDetailBody
+              store={store}
+              sketchSession={sketchSession}
+              sketchToolSchema={sketchToolSchema}
+              collapsed={collapsed}
+              toggleSection={toggleSection}
+            />
+          ) : selectedSchema ? (
+            <FeatureDialog
+              schema={selectedSchema}
+              definition={dialogDraft}
+              onChange={handleDialogChange}
+              error={selectedFeature?.error ?? null}
+            />
           ) : (
             <div className="empty">No feature selected.</div>
           ))}
@@ -1745,6 +1629,126 @@ function MateCreator({
         </button>
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ticket 87a1: Sketch-specific Detail-dialog body                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ticket 87a1: a sketch's details are a Detail dialog like every other
+ * feature — this is the sketch-specific subcomponent the generic Detail
+ * dialog references when the selected feature is a sketch. It renders the
+ * editable "Sketch plane" field (an ordinary feature param, ticket yx6a)
+ * plus a collapsed-by-default "Geometry & Constraints" sub-accordion that
+ * holds the per-tool edit block (e.g. "Line" Start/End + Apply/Clear), the
+ * geometry list (SketchSubCalls) and the constraint manager. The pieces are
+ * relocated verbatim from the old top "Sketch" session panel — same
+ * setters, same testids — they just plug into the generic dialog now.
+ */
+function SketchDetailBody({
+  store,
+  sketchSession,
+  sketchToolSchema,
+  collapsed,
+  toggleSection,
+}: {
+  store: KernelStore;
+  sketchSession: StoreState["sketchSession"];
+  sketchToolSchema: FeatureSchema | null;
+  collapsed: Set<string>;
+  toggleSection: (id: string) => void;
+}) {
+  // This body only renders while a sketch session is active (the Detail panel
+  // gates it on `inSketchSession`), covering both a committed sketch's re-entry
+  // and a fresh `enter-sketch` draft. In every case the LIVE session is the
+  // authoritative source for the geometry/constraint list, so the rows stay
+  // fully interactive (select / toggle-construction / delete).
+  const geometrySubCalls = sketchSession.subCalls;
+  const diagnostics = sketchSession.diagnostics;
+  return (
+    <>
+      {/* Ticket yx6a/87a1: the sketch plane is an editable feature property —
+          pick a face in the viewport or type a datum query. It lives at the
+          top of the sketch's Detail body, like every other feature's params. */}
+      <div className="plane-field" data-testid="sketch-session-plane">
+        <QueryWidget
+          label="Sketch plane"
+          value={sketchSession.planeQuery ?? ""}
+          onChange={(next) => store.setSketchPlane(next)}
+          entityFilter="FACE"
+          deactivateOnPick
+        />
+      </div>
+      {/* Ticket 87a1: the per-tool edit block, the geometry list and the
+          constraint manager form one sketch-specific sub-accordion, collapsed
+          by default, reusing the panel's header/chevron/collapsed-set. */}
+      <div className="geometry-section" data-testid="geometry-section">
+        <div
+          className="header accordion-header"
+          onClick={() => toggleSection("geometry")}
+          data-testid="geometry-header"
+        >
+          <span className="accordion-chevron">
+            {collapsed.has("geometry") ? "▸" : "▾"}
+          </span>
+          <span>Geometry &amp; Constraints ({geometrySubCalls.length})</span>
+        </div>
+        {!collapsed.has("geometry") && (
+          <>
+            {/* The per-tool edit block (e.g. "Line" Start/End + Apply/Clear)
+                only shows while a session has a tool armed. */}
+            {sketchSession.active &&
+            sketchSession.selectedTool &&
+            sketchToolSchema ? (
+              <>
+                <FeatureDialog
+                  schema={sketchToolSchema}
+                  definition={sketchSession.toolDraft}
+                  onChange={(next) => store.setSketchToolDraft(next)}
+                />
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="apply"
+                    data-testid="sketch-tool-apply"
+                    onClick={() => store.applySketchToolDraft()}
+                  >
+                    Apply
+                  </button>
+                  <button
+                    type="button"
+                    className="clear"
+                    data-testid="sketch-tool-clear"
+                    onClick={() => store.selectSketchTool(null)}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </>
+            ) : sketchSession.active ? (
+              <div className="empty" data-testid="sketch-session-empty">
+                Pick a sketch tool in the toolbar.
+              </div>
+            ) : null}
+            <SketchSubCalls
+              subCalls={geometrySubCalls}
+              diagnostics={diagnostics}
+              selection={sketchSession.selection}
+              onSelect={(refIds) => store.setSketchSelection(refIds)}
+              onToggleConstruction={(i) => store.toggleSketchConstructionAt(i)}
+              onDelete={(i) => store.removeSketchSubCall(i)}
+            />
+            <ConstraintManagerPanel
+              subCalls={geometrySubCalls}
+              store={store}
+              diagnostics={diagnostics}
+            />
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
