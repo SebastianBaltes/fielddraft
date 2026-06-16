@@ -1345,6 +1345,12 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       if (textEditor !== null) {
         commitTextEditor();
       }
+      // Ticket lycy: every fresh create-mode open starts with an EMPTY
+      // value — the persisted store value must not leak the previously
+      // typed text into a new drop (clicking elsewhere would otherwise
+      // re-place the last string). Edit mode (openTextEditor) still seeds
+      // the clicked text's value, unaffected.
+      store.setSketchTextValue("");
       const canvas = e.currentTarget as HTMLCanvasElement;
       const rect = canvas.getBoundingClientRect();
       setTextEditor({
@@ -2614,6 +2620,15 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // way. Keeps the editor mechanism symmetric with commitEditor above.
   const commitTextEditor = () => {
     if (textEditor === null || !store) return;
+    // Ticket lycy: an empty / whitespace-only value never creates (or
+    // mutates) text — just dismiss. In create mode this stops a stray
+    // click-away from dropping an empty object; in edit mode it leaves
+    // the existing text untouched rather than blanking it.
+    if (store.getState().sketchTextValue.trim() === "") {
+      setTextEditor(null);
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (textEditor.group !== null) {
       // Plan item 5 "edit existing" mode: update the clicked text group in
       // place from the current store params. A graceful no-op (font not
@@ -2844,23 +2859,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
                 )}
               </select>
             </label>
-            <label className="field upload" title="Upload a .ttf/.otf font">
-              ⤓
-              <input
-                type="file"
-                accept=".ttf,.otf,font/ttf,font/otf"
-                data-testid="sketch-text-font-upload"
-                onChange={(e) => {
-                  const file = e.currentTarget.files?.[0];
-                  if (!file) return;
-                  void file.arrayBuffer().then((buf) => {
-                    store.loadUploadedTextFont(file.name, buf);
-                  });
-                  // Reset so re-selecting the same file fires onChange again.
-                  e.currentTarget.value = "";
-                }}
-              />
-            </label>
+            {/* Ticket lycy: the in-scene font file-upload control was
+                removed — only the dropdown of already-available fonts +
+                the height input remain. The store's upload capability
+                (loadUploadedTextFont) is untouched. */}
             {!textParams.fontReady && (
               <span className="hint" data-testid="sketch-text-font-loading">
                 Loading font…

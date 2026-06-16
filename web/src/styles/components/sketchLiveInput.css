@@ -117,11 +117,6 @@
       border-radius: var(--radius-sm);
     }
 
-    & .upload input[type="file"] {
-      width: 8rem;
-      font-size: var(--fs-base);
-    }
-
     & .hint {
       font-size: var(--fs-base);
       color: var(--color-text-subtle);

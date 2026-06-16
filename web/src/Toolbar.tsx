@@ -664,22 +664,19 @@ export function Toolbar({ store, state }: ToolbarProps) {
           )}
           {/* F24-full: Text — interactive editing mode, not a kernel tool.
               Picking the tool then clicking the canvas opens an IN-SCENE
-              input + param popover (height / font / upload) right at the
-              click location — the text value and params no longer live in
-              this toolbar (ticket pqoe). Each drawn glyph still becomes one
+              input + param popover (height / font) right at the click
+              location — the text value and params no longer live in this
+              toolbar (ticket pqoe). Each drawn glyph still becomes one
               sketch_path sub-call (see SketchCanvas2d's in-scene text editor
-              + store.placeSketchText / sketchText.ts). */}
+              + store.placeSketchText / sketchText.ts). Ticket lycy: the
+              "click to type" hint moved into the button tooltip. */}
           <FeatureButton
             kind="sketch_text"
             active={sketchSession.selectedTool === "sketch_text"}
             testId="sketch-tool-sketch_text"
+            title="Click in the sketch to type text"
             onClick={() => store.selectSketchTool("sketch_text", {})}
           />
-          {sketchSession.selectedTool === "sketch_text" && (
-            <span className="hint" data-testid="sketch-text-hint">
-              Click in the sketch to type text
-            </span>
-          )}
           {/* Split: the keep-both sibling of Trim — also an interactive
               editing mode, not a kernel tool. A single click cuts the curve
               under the cursor into two pieces meeting at the click point;
