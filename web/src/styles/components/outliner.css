@@ -685,11 +685,10 @@
      manager) are styled inside the generic .detail-panel — NO separate top
      panel, NO grey/tinted background, just the normal white dialog. */
   & .detail-panel {
-    /* Ticket yx6a: editable "Sketch plane" query picker. */
-    & .plane-field {
-      padding: var(--space-2) var(--space-4);
-      border-bottom: 1px solid var(--color-divider);
-    }
+    /* Ticket 3btx: the "Sketch plane" query picker now renders through the
+       generic `.fd-feature-dialog` chrome (see SketchDetailBody) so it inherits
+       the same `.query-picker` styling as every other feature's query param —
+       no bespoke `.plane-field` wrapper, which used to add a second box. */
 
     & .actions {
       display: flex;

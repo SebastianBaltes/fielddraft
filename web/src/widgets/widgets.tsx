@@ -974,7 +974,17 @@ export function QueryWidget({
           }
           value={focused ? text : formatQueryDisplay(text)}
           onChange={(e) => setText(e.currentTarget.value)}
-          onFocus={() => setFocused(true)}
+          onFocus={() => {
+            setFocused(true);
+            // Ticket bg64: focusing the field arms the viewport picker
+            // (Onshape Selection-Input convention — a focused selection
+            // input already takes the next scene click). Without this only
+            // the ⊕ button armed it, so a user who clicked into the field
+            // and then clicked a datum plane in the scene saw nothing happen.
+            if (!active && !getActiveQueryPicker()) {
+              registerQueryPicker({ ownerId: id, onPick, entityFilter });
+            }
+          }}
           onBlur={() => { setFocused(false); commitText(); }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {

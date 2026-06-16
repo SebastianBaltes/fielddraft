@@ -1671,15 +1671,24 @@ function SketchDetailBody({
     <>
       {/* Ticket yx6a/87a1: the sketch plane is an editable feature property —
           pick a face in the viewport or type a datum query. It lives at the
-          top of the sketch's Detail body, like every other feature's params. */}
-      <div className="plane-field" data-testid="sketch-session-plane">
-        <QueryWidget
-          label="Sketch plane"
-          value={sketchSession.planeQuery ?? ""}
-          onChange={(next) => store.setSketchPlane(next)}
-          entityFilter="FACE"
-          deactivateOnPick
-        />
+          top of the sketch's Detail body, like every other feature's params.
+          Ticket 3btx: render the plane field through the SAME chrome a generic
+          feature dialog uses for its query params (`.fd-feature-dialog > .body`)
+          so the `.query-picker` styles — scoped to `.fd-feature-dialog` — apply
+          and the field looks IDENTICAL (single border, same icon/padding).
+          The earlier `.plane-field` wrapper sat OUTSIDE that scope, so the
+          picker lost its border and the wrapper's own padding/border-bottom
+          read as a second, nested box. */}
+      <div className="fd-feature-dialog" data-testid="sketch-session-plane">
+        <div className="body">
+          <QueryWidget
+            label="Sketch plane"
+            value={sketchSession.planeQuery ?? ""}
+            onChange={(next) => store.setSketchPlane(next)}
+            entityFilter="FACE"
+            deactivateOnPick
+          />
+        </div>
       </div>
       {/* Ticket 87a1: the per-tool edit block, the geometry list and the
           constraint manager form one sketch-specific sub-accordion, collapsed
