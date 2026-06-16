@@ -297,20 +297,32 @@
    * select mode. Every supported constraint is rendered; each button is
    * enabled only when it fits the current selection and otherwise greyed
    * via the shared `.tool:disabled` rule (opacity 0.45). */
+  /* vk8q: the constraint row is now icon-only (no text labels), Onshape
+   * style. Each button is a square swatch holding a 16px SVG glyph. */
   & .sketch-constraint-row {
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: var(--space-1);
     border-left: 1px solid var(--color-border);
     padding-left: var(--space-3);
 
     & .tool {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--space-1);
+      /* Square icon button: drop the label gap and centre the glyph. */
+      gap: 0;
+      padding: var(--space-1);
+      justify-content: center;
 
+      /* vk8q: the SVG must not be clipped by the base .glyph box — give it
+       * room and let the icon fill it. */
       & .glyph {
-        font-size: 1.1rem;
-        line-height: 1;
+        width: 1.25rem;
+        height: 1.25rem;
+        overflow: visible;
+
+        & svg {
+          width: 100%;
+          height: 100%;
+          display: block;
+        }
       }
     }
 

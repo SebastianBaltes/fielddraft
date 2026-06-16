@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactElement,
+} from "react";
 import type { KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { buildDefaultDefinition } from "./widgets/schema";
@@ -311,46 +318,222 @@ const SKETCH_GROUPED_KEYS = new Set<string>([
 
 const DEFAULT_SKETCH_PLANE_QUERY = "qCreatedBy(origin_plane_xy)";
 
-// pqoe (part 7): the full explicit constraint toolbar, Onshape-style.
+/* ------------------------------------------------------------------ */
+/*  Sketch-constraint icons (ticket vk8q)                              */
+/* ------------------------------------------------------------------ */
+
+// vk8q: Onshape-style monochrome SVG glyphs for the constraint toolbar,
+// replacing the old text-symbol `glyph` characters. Each is a crisp 16×16
+// `currentColor` line drawing so it inherits the button's text colour and
+// reads at the small toolbar size. Keyed by the resolved palette KEY (the
+// `sketch_constraint_*` suffix, plus the synthetic `dimension`), so the
+// row, the unified Dimension button, and the unsupported placeholders all
+// pull from one map. `stroke-linecap="round"` keeps the strokes clean.
+const ICON_PROPS = {
+  viewBox: "0 0 16 16",
+  width: 16,
+  height: 16,
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.4,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+const CONSTRAINT_ICONS: Record<string, ReactElement> = {
+  // Two dots merging into one — coincident points.
+  coincident: (
+    <svg {...ICON_PROPS}>
+      <circle cx="6" cy="8" r="2.4" />
+      <circle cx="10" cy="8" r="2.4" />
+    </svg>
+  ),
+  // Concentric rings about a common centre.
+  concentric: (
+    <svg {...ICON_PROPS}>
+      <circle cx="8" cy="8" r="5.5" />
+      <circle cx="8" cy="8" r="2" />
+    </svg>
+  ),
+  // Two parallel slashes.
+  parallel: (
+    <svg {...ICON_PROPS}>
+      <line x1="5" y1="13" x2="9" y2="3" />
+      <line x1="9" y1="13" x2="13" y2="3" />
+    </svg>
+  ),
+  // A right angle — ⊥.
+  perpendicular: (
+    <svg {...ICON_PROPS}>
+      <line x1="4" y1="3" x2="4" y2="12" />
+      <line x1="4" y1="12" x2="13" y2="12" />
+      <path d="M4 9 L7 9 L7 12" />
+    </svg>
+  ),
+  // A straight line just touching an arc — tangent.
+  tangent: (
+    <svg {...ICON_PROPS}>
+      <path d="M3 5 A4 4 0 0 0 13 5" />
+      <line x1="2" y1="11" x2="14" y2="11" />
+    </svg>
+  ),
+  // Equals sign.
+  equal: (
+    <svg {...ICON_PROPS}>
+      <line x1="4" y1="6" x2="12" y2="6" />
+      <line x1="4" y1="10" x2="12" y2="10" />
+    </svg>
+  ),
+  // A horizontal bar.
+  horizontal: (
+    <svg {...ICON_PROPS}>
+      <line x1="3" y1="8" x2="13" y2="8" />
+    </svg>
+  ),
+  // A vertical bar.
+  vertical: (
+    <svg {...ICON_PROPS}>
+      <line x1="8" y1="3" x2="8" y2="13" />
+    </svg>
+  ),
+  // A dot at the middle of a segment — midpoint.
+  midpoint: (
+    <svg {...ICON_PROPS}>
+      <line x1="2" y1="8" x2="14" y2="8" />
+      <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  // A point sitting on a curve — on-curve / point-on-object.
+  point_on_object: (
+    <svg {...ICON_PROPS}>
+      <path d="M2 11 Q8 1 14 11" />
+      <circle cx="8" cy="4.1" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  // Two dots mirrored about a dashed axis — symmetric.
+  symmetric: (
+    <svg {...ICON_PROPS}>
+      <line x1="8" y1="2" x2="8" y2="14" strokeDasharray="2 2" />
+      <circle cx="4" cy="8" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="8" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  // A padlock — fix.
+  fix: (
+    <svg {...ICON_PROPS}>
+      <rect x="4" y="7" width="8" height="6" rx="1" />
+      <path d="M6 7 V5 a2 2 0 0 1 4 0 V7" />
+    </svg>
+  ),
+  // A double-headed arrow with end ticks — a single Dimension tool that
+  // resolves to distance / length / angle / radius / diameter.
+  dimension: (
+    <svg {...ICON_PROPS}>
+      <line x1="3" y1="4" x2="3" y2="12" />
+      <line x1="13" y1="4" x2="13" y2="12" />
+      <line x1="3" y1="8" x2="13" y2="8" />
+      <path d="M5 6 L3 8 L5 10" />
+      <path d="M11 6 L13 8 L11 10" />
+    </svg>
+  ),
+  // The three unsupported Onshape constraints (see vk8q investigation):
+  // rendered DISABLED, so a recognisable glyph is still helpful.
+  // Normal — a line meeting a curve at a right-angle tick.
+  normal: (
+    <svg {...ICON_PROPS}>
+      <path d="M2 12 Q8 2 14 12" />
+      <line x1="8" y1="4" x2="8" y2="13" />
+      <path d="M6 11 L6 13 L8 13" />
+    </svg>
+  ),
+  // Pierce — a point at a crossing, an x-marks-the-spot.
+  pierce: (
+    <svg {...ICON_PROPS}>
+      <line x1="3" y1="3" x2="13" y2="13" />
+      <line x1="13" y1="3" x2="3" y2="13" />
+      <circle cx="8" cy="8" r="1.8" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  // Curvature — two arcs flowing smoothly into each other (G2).
+  curvature: (
+    <svg {...ICON_PROPS}>
+      <path d="M2 12 Q5 4 8 8 T14 4" />
+    </svg>
+  ),
+};
+
+/* ------------------------------------------------------------------ */
+/*  Sketch-constraint toolbar descriptors (ticket vk8q)                */
+/* ------------------------------------------------------------------ */
+
+// pqoe (part 7) / vk8q: the full explicit constraint toolbar, Onshape-style.
 // Every constraint the system supports is ALWAYS rendered as a button;
 // each is enabled only when its `type` is offered by
-// `applicableConstraints(current selection)`. The `type` strings are the
-// exact `sketch_constraint_*` values `buildConstraintCall` dispatches on —
-// label/glyph/title mirror `applicableConstraints` so the static buttons
-// read the same as the old contextual palette. `distance` covers both the
-// single-line Length and the two-point Distance dimension (one type), so
-// it's listed once. `sketch_mirror` is deliberately absent: mirror is a
-// sketch TOOL, not a constraint, and is surfaced as its own tool button.
+// `applicableConstraints(current selection)`. vk8q: text labels are
+// replaced by the inline SVG icons above (keyed by `icon`), a single
+// "Dimension" tool leads the row and infers the dimensional type from the
+// selection, the order matches Onshape, and Normal / Pierce / Curvature
+// appear as DISABLED placeholders (no PlaneGCS constraint exists for them
+// — see the resolution notes below). `sketch_mirror` is deliberately
+// absent: mirror is a sketch TOOL, not a constraint.
 interface ConstraintButtonMeta {
-  /** Sub-call type, e.g. `sketch_constraint_parallel`. */
-  type: string;
-  /** Short button label. */
-  label: string;
-  /** Single-glyph icon. */
-  glyph: string;
+  /** Sub-call type the button applies, e.g. `sketch_constraint_parallel`.
+   *  Null for the unified Dimension button (its type is resolved from the
+   *  selection) and for the unsupported placeholders. */
+  type: string | null;
+  /** Stable test-id suffix (`sketch-constraint-<testid>`). */
+  testid: string;
+  /** Icon key into `CONSTRAINT_ICONS`. */
+  icon: string;
   /** Tooltip describing the constraint. */
   title: string;
+  /** True for Normal / Pierce / Curvature: the solver has no matching
+   *  PlaneGCS constraint, so the button is always disabled (vk8q). */
+  unsupported?: boolean;
 }
 
+// The single dimensional types, ordered most- to least-specific, so the
+// unified Dimension button can pick the right one from the current
+// selection's `applicableConstraints` (radius/diameter before angle before
+// distance). vk8q.
+const DIMENSION_TYPES_BY_SPECIFICITY = [
+  "sketch_constraint_radius",
+  "sketch_constraint_diameter",
+  "sketch_constraint_angle",
+  "sketch_constraint_distance",
+];
+
 const SKETCH_CONSTRAINT_BUTTONS: ConstraintButtonMeta[] = [
-  // Geometric.
-  { type: "sketch_constraint_coincident",      label: "Coincident",    glyph: "⊙", title: "Make the two points coincident" },
-  { type: "sketch_constraint_concentric",      label: "Concentric",    glyph: "⊚", title: "Make the two circles/arcs concentric" },
-  { type: "sketch_constraint_parallel",        label: "Parallel",      glyph: "∥", title: "Make the two lines parallel" },
-  { type: "sketch_constraint_perpendicular",   label: "Perpendicular", glyph: "⊥", title: "Make the two lines perpendicular" },
-  { type: "sketch_constraint_tangent",         label: "Tangent",       glyph: "⌒", title: "Make the line tangent to the curve" },
-  { type: "sketch_constraint_equal",           label: "Equal",         glyph: "=", title: "Make the two radii equal" },
-  { type: "sketch_constraint_horizontal",      label: "Horizontal",    glyph: "—", title: "Make this line horizontal" },
-  { type: "sketch_constraint_vertical",        label: "Vertical",      glyph: "|", title: "Make this line vertical" },
-  { type: "sketch_constraint_midpoint",        label: "Midpoint",      glyph: "◎", title: "Pin the point at the midpoint of the line" },
-  { type: "sketch_constraint_point_on_object", label: "On Curve",      glyph: "⊢", title: "Constrain the point onto the line/circle/arc/ellipse/spline" },
-  { type: "sketch_constraint_symmetric",       label: "Symmetric",     glyph: "⇆", title: "Make the two points symmetric across the line" },
-  { type: "sketch_constraint_fix",             label: "Fix",           glyph: "⌖", title: "Fix this point at its position" },
-  // Dimensional.
-  { type: "sketch_constraint_distance",        label: "Distance",      glyph: "↔", title: "Set the distance/length between the picked points or line" },
-  { type: "sketch_constraint_angle",           label: "Angle",         glyph: "∠", title: "Set the angle between the two lines" },
-  { type: "sketch_constraint_radius",          label: "Radius",        glyph: "⟜", title: "Set the radius of this circle or arc" },
-  { type: "sketch_constraint_diameter",        label: "Diameter",      glyph: "⌀", title: "Set the diameter of this circle or arc" },
+  // Unified Dimension tool — infers distance/length/angle/radius/diameter.
+  { type: null, testid: "dimension", icon: "dimension", title: "Dimension — set distance / angle / radius / diameter from the selection" },
+  // Geometric constraints, in Onshape order.
+  { type: "sketch_constraint_coincident",      testid: "coincident",      icon: "coincident",      title: "Make the two points coincident" },
+  { type: "sketch_constraint_concentric",      testid: "concentric",      icon: "concentric",      title: "Make the two circles/arcs concentric" },
+  { type: "sketch_constraint_parallel",        testid: "parallel",        icon: "parallel",        title: "Make the two lines parallel" },
+  { type: "sketch_constraint_tangent",         testid: "tangent",         icon: "tangent",         title: "Make the line tangent to the curve" },
+  { type: "sketch_constraint_horizontal",      testid: "horizontal",      icon: "horizontal",      title: "Make this line horizontal" },
+  { type: "sketch_constraint_vertical",        testid: "vertical",        icon: "vertical",        title: "Make this line vertical" },
+  { type: "sketch_constraint_perpendicular",   testid: "perpendicular",   icon: "perpendicular",   title: "Make the two lines perpendicular" },
+  { type: "sketch_constraint_equal",           testid: "equal",           icon: "equal",           title: "Make the two radii equal" },
+  { type: "sketch_constraint_midpoint",        testid: "midpoint",        icon: "midpoint",        title: "Pin the point at the midpoint of the line" },
+  // vk8q: "Normal" — Onshape's normal/perpendicular-at-a-point. PlaneGCS
+  // has Perpendicular Line↔Arc variants, but our kernel translator only
+  // emits `perpendicular_ll` (line↔line), so there's no genuine constraint
+  // to apply yet. Rendered disabled rather than faked.
+  { type: null, testid: "normal", icon: "normal", title: "Normal — not yet supported (no kernel constraint)", unsupported: true },
+  // vk8q: "Pierce" — a 3D concept (point where a curve pierces the sketch
+  // plane). No 2D PlaneGCS analog and no kernel sub-call. Disabled.
+  { type: null, testid: "pierce", icon: "pierce", title: "Pierce — not yet supported (no kernel constraint)", unsupported: true },
+  { type: "sketch_constraint_symmetric",       testid: "symmetric",       icon: "symmetric",       title: "Make the two points symmetric across the line" },
+  { type: "sketch_constraint_fix",             testid: "fix",             icon: "fix",             title: "Fix this point at its position" },
+  // vk8q: on-curve isn't in Onshape's list under its own name (Pierce is
+  // its rough analog) but it IS a real, supported constraint here, so it
+  // stays available at the tail of the row.
+  { type: "sketch_constraint_point_on_object", testid: "point_on_object", icon: "point_on_object", title: "Constrain the point onto the line/circle/arc/ellipse/spline" },
+  // vk8q: "Curvature" — G2 continuity between splines. No curvature/G2
+  // constraint exists in PlaneGCS at all. Disabled.
+  { type: null, testid: "curvature", icon: "curvature", title: "Curvature — not yet supported (no kernel constraint)", unsupported: true },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -837,19 +1020,43 @@ export function Toolbar({ store, state }: ToolbarProps) {
             data-testid="sketch-constraint-row"
           >
             {SKETCH_CONSTRAINT_BUTTONS.map((c) => {
-              const enabled = constraintOptions.some((o) => o.type === c.type);
+              // vk8q: the unified Dimension button has no fixed type — it
+              // resolves the most-specific dimensional type that fits the
+              // current selection (radius/diameter > angle > distance) and
+              // stamps THAT type's stable test-id so the existing
+              // distance/angle e2e selectors keep resolving it.
+              const resolvedType =
+                c.type === null && !c.unsupported
+                  ? DIMENSION_TYPES_BY_SPECIFICITY.find((t) =>
+                      constraintOptions.some((o) => o.type === t),
+                    ) ?? null
+                  : c.type;
+              const enabled =
+                !c.unsupported &&
+                resolvedType !== null &&
+                constraintOptions.some((o) => o.type === resolvedType);
+              // The Dimension button carries the resolved type's test-id
+              // (e.g. `sketch-constraint-distance`) when enabled, falling
+              // back to `sketch-constraint-dimension` while nothing fits.
+              const testid =
+                c.testid === "dimension" && resolvedType !== null
+                  ? resolvedType.replace(/^sketch_constraint_/, "")
+                  : c.testid;
               return (
                 <button
-                  key={c.type}
+                  key={c.testid}
                   type="button"
-                  className="tool"
+                  className={"tool" + (c.unsupported ? " is-stub" : "")}
                   title={c.title}
-                  data-testid={`sketch-constraint-${c.type.replace(/^sketch_constraint_/, "")}`}
+                  data-testid={`sketch-constraint-${testid}`}
                   disabled={!enabled}
-                  onClick={() => store.applySketchConstraint(c.type)}
+                  onClick={() =>
+                    resolvedType && store.applySketchConstraint(resolvedType)
+                  }
                 >
-                  <span className="glyph" aria-hidden="true">{c.glyph}</span>
-                  {c.label}
+                  <span className="glyph" aria-hidden="true">
+                    {CONSTRAINT_ICONS[c.icon]}
+                  </span>
                 </button>
               );
             })}
