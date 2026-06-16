@@ -135,6 +135,9 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
       // report carries the environment that produced it (helps reproduce
       // renderer-/controls-dependent bugs).
       settings: loadSettings() as unknown as Record<string, unknown>,
+      // Capture the live UI state (camera, selection, active tool/mode) so the
+      // report reproduces the exact view, not just the document (ticket uz5q).
+      uiState: store ? store.uiStateSnapshot() : undefined,
     };
     const result = await submitTicket(payload);
     if (result.ok) {

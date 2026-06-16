@@ -688,6 +688,9 @@ type ticketRequest struct {
 	// Captured raw so the ticket carries the environment that produced it;
 	// rendered as a JSON block in ticket.md.
 	Settings json.RawMessage `json:"settings"`
+	// UIState: ephemeral live UI state (camera, selection, active tool/mode)
+	// the project file doesn't carry (ticket uz5q); written as ui_state.json.
+	UIState json.RawMessage `json:"uiState"`
 }
 
 // ticketAttachment is one user-attached file (picked or pasted, ticket 8onw),
@@ -814,6 +817,16 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, req.Settings, "", "  ") == nil {
 			os.WriteFile(filepath.Join(dir, "settings.json"), pretty.Bytes(), 0o644)
+		}
+	}
+
+	// ticket uz5q: ephemeral live UI state (camera, selection, active
+	// tool/mode) goes into a separate ui_state.json so a report reproduces
+	// the exact view, not just the document.
+	if len(req.UIState) > 0 && string(req.UIState) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.UIState, "", "  ") == nil {
+			os.WriteFile(filepath.Join(dir, "ui_state.json"), pretty.Bytes(), 0o644)
 		}
 	}
 

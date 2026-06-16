@@ -97,6 +97,12 @@ export interface TicketPayload {
    *  controls preset was active). Written as a separate settings.json next to
    *  ticket.md (ticket 478k). */
   settings?: Record<string, unknown>;
+  /** Ephemeral live UI state — viewport camera, selection, active tool/mode,
+   *  sketch-session context, view toggles — that the project file does NOT
+   *  carry (`store.uiStateSnapshot()`). Lets a report reproduce the exact
+   *  view, not just the document. Written as a separate ui_state.json next to
+   *  ticket.md (ticket uz5q). */
+  uiState?: Record<string, unknown>;
 }
 
 /**

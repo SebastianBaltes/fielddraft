@@ -75,6 +75,7 @@ import {
 } from "./sketchChamfer";
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
+import { getPublishedPickCamera } from "./pickCameraBridge";
 import { importVectorToSubCalls } from "./importVector";
 import { textToSubCalls, reeditTextGroup, removeTextGroup } from "./sketchText";
 import {
@@ -1163,6 +1164,75 @@ export class KernelStore {
     const project = this.buildPersistableProject();
     const assets = this.collectProjectAssets(project);
     return serializeProjectToZip(project, assets);
+  }
+
+  /**
+   * A JSON-serializable snapshot of the *ephemeral UI state* — what the user
+   * is looking at and interacting with, which the project file (`.fdraft`)
+   * deliberately does NOT carry: viewport camera, selection, active tool /
+   * mode, sketch-session context, view toggles. Attached to bug reports
+   * (ticket uz5q) as `ui_state.json` so a report reproduces the exact view,
+   * not just the document.
+   *
+   * Curated on purpose: kernel-derived data (features, meshes, reference
+   * mesh) is redundant with the project and huge, so it's excluded. Sets are
+   * flattened to arrays for JSON.
+   */
+  uiStateSnapshot(): Record<string, unknown> {
+    const s = this.state;
+    const cam = getPublishedPickCamera() as unknown as
+      | {
+          type: string;
+          position: { toArray(): number[] };
+          quaternion: { toArray(): number[] };
+          fov?: number;
+          zoom?: number;
+          near?: number;
+          far?: number;
+        }
+      | null;
+    const camera = cam
+      ? {
+          type: cam.type,
+          position: cam.position.toArray(),
+          quaternion: cam.quaternion.toArray(),
+          fov: cam.fov ?? null,
+          zoom: cam.zoom ?? null,
+          near: cam.near ?? null,
+          far: cam.far ?? null,
+        }
+      : null;
+    return {
+      camera,
+      selection: [...s.selection],
+      selectionAnchor: s.selectionAnchor,
+      selectedElement: s.selectedElement,
+      selectedElements: s.selectedElements,
+      selectedDatum: s.selectedDatum,
+      highlightedBodyIndex: s.highlightedBodyIndex,
+      nextOp: s.nextOp,
+      modes: {
+        measure: s.measureMode,
+        fillet: s.filletMode,
+        mate: s.mateMode,
+        ik: s.ikMode,
+      },
+      sketchSession: {
+        active: s.sketchSession.active,
+        editingFeatureId: s.sketchSession.editingFeatureId,
+        selectedTool: s.sketchSession.selectedTool,
+        selection: [...s.sketchSession.selection],
+      },
+      visibleSketches: [...s.visibleSketches],
+      folders: s.folders,
+      rollbackIndex: s.rollbackIndex,
+      variables: s.variables,
+      sceneSize: s.sceneSize,
+      syncState: s.syncState,
+      projectId: s.projectId,
+      activeTabId: this.state.project.activeTabId,
+      transientError: s.transientError,
+    };
   }
 
   /**

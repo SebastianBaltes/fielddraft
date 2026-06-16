@@ -20,6 +20,7 @@ vi.mock("./reportTicket", async (importOriginal) => ({
 // stub returns a couple of sentinel bytes we can assert survived the encode.
 const stubStore = {
   exportProjectFdraft: () => new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+  uiStateSnapshot: () => ({ camera: null, selection: [] }),
 } as unknown as KernelStore;
 
 let container: HTMLDivElement;

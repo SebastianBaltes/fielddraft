@@ -147,6 +147,7 @@ function ticketWriter(): Plugin {
               userAgent?: string;
               url?: string;
               settings?: Record<string, unknown>;
+              uiState?: Record<string, unknown>;
             };
             const id = ticketId();
             const dir = join(ticketsRoot, id);
@@ -195,6 +196,16 @@ function ticketWriter(): Plugin {
               writeFileSync(
                 join(dir, "settings.json"),
                 JSON.stringify(t.settings, null, 2),
+              );
+            }
+
+            // ticket uz5q: ephemeral live UI state (camera, selection, active
+            // tool/mode) in a separate ui_state.json so a report reproduces
+            // the exact view, not just the document.
+            if (t.uiState) {
+              writeFileSync(
+                join(dir, "ui_state.json"),
+                JSON.stringify(t.uiState, null, 2),
               );
             }
 
