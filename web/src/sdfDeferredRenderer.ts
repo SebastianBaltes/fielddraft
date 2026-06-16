@@ -249,6 +249,7 @@ export interface DeferredPipelineState {
   camPosUniform: ReturnType<typeof uniform>;
   viewMatU: ReturnType<typeof uniform>;
   widthU: ReturnType<typeof uniform>;
+  bgColorU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
   bodyOpaqueMeshes: Map<number, THREE.Mesh[]>;
@@ -352,6 +353,7 @@ function createShadeMaterial(
   widthU: ReturnType<typeof uniform>,
   nearU: ReturnType<typeof uniform>,
   farU: ReturnType<typeof uniform>,
+  bgColorU: ReturnType<typeof uniform>,
   volumeTextures: THREE.Data3DTexture[] = [],
 ): MeshBasicNodeMaterial {
   const sdfEvalRaw = buildVmSdfEvalFn(opcodeBuf, {
@@ -486,7 +488,12 @@ function createShadeMaterial(
       });
     });
 
-    const result = vec4(0, 0, 0, 0).toVar();
+    // Ticket a2ps/qz52: miss pixels paint the viewport background OPAQUELY (was
+    // vec4(0,0,0,0) transparent, which let the grey page body show through →
+    // scene read grey). Done in-shader (not via a screen clear before the shade
+    // pass — that broke SDF body rendering, ticket qz52). `bgColorU` tracks the
+    // ClearColorSync viewport colour.
+    const result = vec4(bgColorU, 1.0).toVar();
 
     If(hasHit.greaterThan(int(0)), () => {
       // Shade the hit (normal → PBR → selection tint → wireframe) via the
@@ -579,6 +586,9 @@ export function initDeferredPipeline(
   const widthU = uniform(width);
   const nearU = uniform(1);
   const farU = uniform(4000);
+  // Viewport background colour for SDF miss pixels (ticket a2ps); set each frame
+  // from the renderer's clear colour (ClearColorSync). White by default.
+  const bgColorU = uniform(new THREE.Color(1, 1, 1));
   const backFaceMaterial = createBackFaceMaterial(camPosUniform);
 
   const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
@@ -604,6 +614,7 @@ export function initDeferredPipeline(
     widthU,
     nearU,
     farU,
+    bgColorU,
   );
 
   const shadeMesh = new THREE.Mesh(
@@ -639,6 +650,7 @@ export function initDeferredPipeline(
     widthU,
     nearU,
     farU,
+    bgColorU,
     bodyOpaqueMeshes: new Map(),
     bodyTransparentMeshes: new Map(),
     bodyBackMeshes: new Map(),
@@ -975,6 +987,9 @@ export function renderDeferredFrame(
 
   renderer.getClearColor(_savedClearColor);
   const savedClearAlpha = renderer.getClearAlpha();
+  // Feed the viewport background (ClearColorSync) into the shade shader so SDF
+  // miss pixels paint it opaquely (ticket a2ps).
+  state.bgColorU.value.copy(_savedClearColor);
 
   // Pass 0: clear body-ID buffer
   renderer.compute(state.clearNode);
@@ -995,15 +1010,8 @@ export function renderDeferredFrame(
   renderer.clear(true, false, false);
   renderer.render(state.transparentBackScene, camera);
 
-  // Pass 3: shade (reads all RTs, composites to screen). Ticket xqp3/a2ps:
-  // miss pixels in the shade quad are vec4(0,0,0,0) (transparent), so the
-  // viewport background is whatever the screen was cleared to. Clear it
-  // OPAQUELY to the saved viewport clear colour (white, set by ClearColorSync)
-  // — otherwise the leftover transparent G-buffer clear (0,0,0,0) lets the grey
-  // page body show through and the scene reads grey instead of white.
+  // Pass 3: shade (reads all RTs, composites to screen)
   renderer.setRenderTarget(null);
-  renderer.setClearColor(_savedClearColor, 1);
-  renderer.clear(true, false, false);
   renderer.render(state.shadeScene, state.shadeCamera);
 
   renderer.setClearColor(_savedClearColor, savedClearAlpha);
