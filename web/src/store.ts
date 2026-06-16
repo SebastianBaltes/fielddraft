@@ -76,7 +76,7 @@ import {
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { importVectorToSubCalls } from "./importVector";
-import { textToSubCalls } from "./sketchText";
+import { textToSubCalls, reeditTextGroup } from "./sketchText";
 import {
   DEFAULT_FONT_ID,
   cachedFont,
@@ -3152,13 +3152,52 @@ export class KernelStore {
       void this.ensureTextFontLoaded();
       return;
     }
+    // Plan item 5: tag every glyph with a `text` recipe (shared group id +
+    // value/height/fontId/origin) so the placement is re-editable in-scene.
+    // The kernel ignores the param and round-trips it (see sketchText.ts).
     const calls = textToSubCalls(font, this.state.sketchTextValue, {
       origin,
       height: this.state.sketchTextHeight,
+      fontId: this.state.sketchTextFontId,
     });
     if (calls.length === 0) return;
     this.pushSketchSubCalls(calls);
     void solveAndReplace(this);
+  }
+
+  /**
+   * Plan item 5: re-edit a previously committed text group in place.
+   * `groupId` is the shared `text.group` id of the placement's glyph
+   * sub-calls (surfaced by the in-scene text editor reopened over a baked
+   * text). Re-derives the glyphs at the new value / height / font via
+   * [`reeditTextGroup`] from the loaded font and re-solves, replacing the
+   * old group's glyphs in place. Returns false (a graceful no-op) when no
+   * session is active, the requested font isn't loaded yet, no glyph
+   * carries the group, or the new text produces no geometry.
+   *
+   * Font availability: re-deriving needs the parsed font in the cache. If
+   * it isn't ready we kick a load (same as `placeSketchText`) and bail —
+   * the old geometry is kept; the caller can retry once the font settles.
+   */
+  updateSketchTextGroup(
+    groupId: string,
+    next: { value: string; height: number; fontId: string },
+  ): boolean {
+    const session = this.state.sketchSession;
+    if (!session.active) return false;
+    if (!Number.isFinite(next.height) || next.height <= 0) return false;
+    const font = cachedFont(next.fontId);
+    if (!font) {
+      // Font not ready — kick a load so a follow-up edit works. Keep the
+      // old geometry for now.
+      void this.ensureTextFontLoaded(next.fontId);
+      return false;
+    }
+    const rewritten = reeditTextGroup(session.subCalls, font, groupId, next);
+    if (!rewritten) return false;
+    this.replaceSketchSubCalls(rewritten);
+    void solveAndReplace(this);
+    return true;
   }
 
   /** F16: set the number of pattern instances (original + copies). Must be

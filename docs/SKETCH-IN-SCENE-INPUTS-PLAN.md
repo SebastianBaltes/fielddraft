@@ -178,43 +178,108 @@ new value, and assert the arc/bevel + both trimmed lines update (and that the
 re-derivation uses the ORIGINAL geometry, plus the null-return edge cases). The
 store setters are thin wrappers over these reducers plus a re-solve.
 
-## 5. Re-edit committed TEXT in-scene
+## 5. Re-edit committed TEXT in-scene (tagged-recipe hybrid) — IMPLEMENTED
 
 A committed text is exploded to per-glyph `sketch_path` contours
 (`store.placeSketchText` → one `sketch_path` per glyph, "carrying its outer
 ring + holes"). The original string, height, and font are **not recoverable**
-from the contours, so a clicked glyph cannot reopen the text editor with its
-text.
+from the contours. The original plan here proposed a parametric `sketch_text`
+sub-call whose glyphs are *derived* in `buildDraftSketchState` — that would have
+touched the sketch data model AND required font support on the kernel side.
+**We shipped the same lower-risk WEB-ONLY hybrid as item 4 — the kernel is
+untouched.**
 
-Same shape of fix as item 4 — make text **parametric**:
+### Why the hybrid is safe
 
-- **Data-model change:** introduce a `sketch_text` sub-call storing
-  `{ origin, value, height, fontId }`. The glyph `sketch_path` contours become
-  *derived* from this sub-call at evaluation time (run the existing glyph-
-  tessellation in the draft builder) rather than baked once at placement. The
-  string/height/font then survive in the sub-call.
-- **Anchor:** the existing `.fd-sketch-text-editor` anchored overlay, reopened
-  at the stored `origin` projected to client px.
-- **Trigger:** in Select mode, a hit-test click on derived text geometry maps
-  to its owning `sketch_text` sub-call and reopens the editor pre-filled with
-  the stored value/height/font.
-- **Store binding:** reuse `setSketchTextValue/Height/FontId`, but committing
-  must update the *existing* sub-call in place (a per-index update) rather than
-  appending a new placement.
-- **Steps (rough):** (a) add the `sketch_text` sub-call + its derivation in
-  `buildDraftSketchState` (string/height/font → glyph contours); (b) change
-  `placeSketchText` to emit/update the parametric sub-call; (c) hit-test +
-  click-to-reopen mapping to the sub-call index; (d) an "update this text"
-  commit path (per-index) alongside the existing "place new" path; (e) tests
-  for create → reselect → edit → re-commit.
+Identical rationale to item 4: `FeatureCall.params` is a schema-less
+`serde_json::Value`, and the kernel's `sketch_path` parse ignores unknown
+fields (no `deny_unknown_fields`). Sub-calls round-trip VERBATIM through
+`replaceSketch` → store → `getSketchSubCalls`, so an extra param attached to a
+baked glyph survives commit/reopen. The kernel ignores it for geometry; only
+the web reads it to re-edit. No Rust font support is needed — re-derivation
+runs entirely in the browser from the loaded `opentype.Font`.
+
+### What was built
+
+- **Recipe tag.** Each glyph `sketch_path` of one placement carries an additive
+  `text: { group, value, height, fontId, origin:[u,v] }` param, where `group`
+  is a single fresh id (`nextFdId()`) shared by ALL glyphs of that text. The
+  glyphs also get a per-sub-call `fd_id`, but `text.group` is what ties them
+  together. Builder/reader: `textToSubCalls(font, value, { …, fontId })` now
+  stamps the recipe, and `textRecipeOf(call)` reads it back (`sketchText.ts`).
+  `nextFdId` / `FD_ID_PARAM` are reused from `sketchFillet.ts` (no duplication).
+  Geometry/contours are unchanged — purely additive on the params Value.
+- **Hit-test → text group.** A baked glyph is NOT a picked solver entity (the
+  draft builder tessellates `sketch_path` into a region, not pick targets), so
+  `hitTestSketchEntity` never reaches it — mirroring item 4. `hitTestTaggedText`
+  (`sketchHitTest.ts`) instead reads the glyph's bounding box directly
+  (`pathBBox` in `sketchText.ts`) grown by the pick tolerance: a click inside
+  (or just outside) any letter returns that glyph's text group + the stored
+  `value`/`height`/`fontId`/`origin`. **Select-mode click priority:** points/
+  entities are handled inside `hitTestSketchEntity`; the click path runs
+  `hitTestTaggedCorner` (small precise targets) FIRST, then `hitTestTaggedText`
+  (clicking glyph ink should edit the text, not pick the region behind it), then
+  the entity hit-test.
+- **Reopen the editor pre-filled.** Clicking tagged text opens the EXISTING
+  `.fd-sketch-text-editor` overlay at the recipe `origin` (projected to client
+  px via the same `sketchToScreen` the corner editor and the create-text editor
+  use), pre-filled with the stored value, and the params popover showing the
+  stored height/font. The editor's `textEditor` state gained a `group` field:
+  `null` = the existing "place new" mode, a set group = "edit existing" mode.
+  Opening pushes the stored value/height/font into the store params (the editor
+  fields read from there, like the create flow).
+- **Commit path: update the group in place.** `store.updateSketchTextGroup(
+  groupId, { value, height, fontId })` finds every glyph whose `text.group ===
+  groupId`, re-runs `reeditTextGroup` (`sketchText.ts`) — which re-lays the
+  glyphs via `textToSubCalls` from the recipe's `origin`, re-stamps the SAME
+  group id, and splices the fresh glyphs in at the first old glyph's position
+  (surrounding sub-calls preserved by reference) — then goes through
+  `replaceSketchSubCalls` + the normal `solveAndReplace`. The editor's
+  `commitTextEditor` dispatches to `updateSketchTextGroup` in edit mode, else
+  `placeSketchText` (the create path is unchanged).
+
+### Font-availability handling
+
+Re-deriving needs the parsed font in the cache. `updateSketchTextGroup` reads
+`cachedFont(fontId)`; if the font isn't ready it kicks `ensureTextFontLoaded`
+and returns false (a graceful no-op) — **the old geometry is kept** and the
+user can retry once the font settles (the existing "Loading font…" hint in the
+params popover surfaces the state). The recipe stores the original `fontId`, so
+re-editing keeps the original font as long as it's still resolvable; if the user
+switches to a different font in the popover, that becomes the new recipe font.
+A genuinely-gone font id (e.g. an uploaded font lost across a reload) simply
+fails to load → the edit no-ops rather than corrupting the text; switching to a
+bundled font in the popover recovers it.
+
+### Tests
+
+Pure-reducer unit tests live in `sketchText.test.ts`: place tagged text, read
+the recipe off the glyphs, assert all glyphs share one group, then
+`reeditTextGroup` with a new value/height and assert the glyphs changed, all
+carry the SAME group id + new value, re-derive from the recipe origin, splice in
+place, and the null edge cases (unknown group, geometry-less value). `pathBBox`
+is covered too. `hitTestTaggedText` is unit-tested in `sketchHitTest.test.ts`
+(font-free hand-built tagged glyph): inside-bbox hit, outside-tolerance miss,
+within-tolerance edge hit, and ignoring untagged paths. An E2E for the edit flow
+is optional and was not added (the create-flow e2e in `tests/sketch-text.spec.ts`
+is unchanged).
+
+### Known limitation
+
+Same web-only spirit as item 4: the recipe is the source of truth for re-editing,
+so a glyph edited by hand (e.g. node-dragging an individual contour) is NOT
+reconciled back into the recipe — re-editing the group re-lays all glyphs from
+the stored value/height/font/origin and discards such manual tweaks. Re-layout
+also uses the recipe `origin`, so the text does not move on a value/height/font
+change (move is a separate, not-yet-built gesture).
 
 ## Sequencing
 
 1. Items 1–3 are pure UI relocations (no store/data-model change) and can ship
    together, ideally folded into one or two pinned overlays (a tool-param slot
    for the polygon, and a selection-transform panel for pattern + rotate).
-2. Item 4 shipped as the web-only tagged-recipe hybrid above (kernel untouched);
-   it landed as its own change with pure-reducer unit coverage. Item 5 (re-edit
-   committed text) is still open — the same hybrid shape (a `text` recipe param
-   on the baked glyph contours, web-only) would likely apply, rather than the
-   parametric `sketch_text` sub-call originally sketched there.
+2. Items 4 and 5 both shipped as the web-only tagged-recipe hybrid above (kernel
+   untouched), each with pure-reducer + hit-test unit coverage. Item 5 followed
+   item 4's vocabulary exactly: a `text` recipe param (shared `group` id) on the
+   baked glyph contours, re-derived in the browser via `reeditTextGroup`, rather
+   than the parametric `sketch_text` sub-call originally sketched there.

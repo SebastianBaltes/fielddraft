@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { entitiesInBox, hitTestSketchEntity } from "./sketchHitTest";
+import {
+  entitiesInBox,
+  hitTestSketchEntity,
+  hitTestTaggedText,
+} from "./sketchHitTest";
 import { buildDraftSketchState } from "./sketchSession";
+import type { SubCall } from "./sketchTrim";
+import type { TextRecipe } from "./sketchText";
 
 describe("hitTestSketchEntity", () => {
   it("returns null when nothing is within tolerance", () => {
@@ -260,5 +266,65 @@ describe("entitiesInBox", () => {
     // Origin (id 0) at (0,0) is inside [-1,-1]-[10,10] but is fixed
     // reference geometry, so a marquee never sweeps it up.
     expect(entitiesInBox(state, [-1, -1], [10, 10], "enclosing")).not.toContain(0);
+  });
+});
+
+describe("hitTestTaggedText", () => {
+  // A tagged glyph `sketch_path` whose ink spans the box [0,0]-[5,8]
+  // (built directly so the test stays font-free).
+  function taggedGlyph(recipe: TextRecipe): SubCall {
+    return {
+      type: "sketch_path",
+      params: {
+        contours: [
+          {
+            start: [0, 0],
+            segments: [
+              { kind: "line", to: [5, 0] },
+              { kind: "line", to: [5, 8] },
+              { kind: "line", to: [0, 8] },
+            ],
+            closed: true,
+          },
+        ],
+        text: recipe,
+      },
+    };
+  }
+
+  const recipe: TextRecipe = {
+    group: "g1",
+    value: "Hi",
+    height: 8,
+    fontId: "dejavu-sans",
+    origin: [0, 0],
+  };
+
+  it("returns the group + recipe for a click inside the glyph bbox", () => {
+    const hit = hitTestTaggedText([taggedGlyph(recipe)], [2, 4], 0.1);
+    expect(hit).not.toBeNull();
+    expect(hit!.group).toBe("g1");
+    expect(hit!.value).toBe("Hi");
+    expect(hit!.height).toBe(8);
+    expect(hit!.fontId).toBe("dejavu-sans");
+    expect(hit!.origin).toEqual([0, 0]);
+  });
+
+  it("returns null for a click well outside the bbox + tolerance", () => {
+    expect(hitTestTaggedText([taggedGlyph(recipe)], [50, 50], 0.5)).toBeNull();
+  });
+
+  it("a click just outside the bbox but within tolerance still hits", () => {
+    // 0.3mm to the right of the right edge, tol 0.5mm → hit.
+    expect(hitTestTaggedText([taggedGlyph(recipe)], [5.3, 4], 0.5)).not.toBeNull();
+  });
+
+  it("ignores untagged sketch_path / non-path sub-calls", () => {
+    const untagged: SubCall = {
+      type: "sketch_path",
+      params: { contours: [{ start: [0, 0], segments: [{ kind: "line", to: [5, 8] }], closed: false }] },
+    };
+    const line: SubCall = { type: "sketch_line", params: { start: [0, 0], end: [5, 8] } };
+    expect(hitTestTaggedText([untagged, line], [2, 4], 1)).toBeNull();
   });
 });

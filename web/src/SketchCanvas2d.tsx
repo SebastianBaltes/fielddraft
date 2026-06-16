@@ -54,7 +54,9 @@ import {
   entitiesInBox,
   hitTestSketchEntity,
   hitTestTaggedCorner,
+  hitTestTaggedText,
   type TaggedCornerHit,
+  type TaggedTextHit,
 } from "./sketchHitTest";
 import { gripsForSelection, type Grip } from "./sketchGrips";
 import {
@@ -937,11 +939,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // pending text value; Enter / blur commits a `sketch_text` placement at
   // `(u, v)` via store.placeSketchText (the same path the toolbar drove
   // before). Mirrors the line-length `editor` mechanism above.
+  // Plan item 5: the editor runs in two modes. `group === null` is the
+  // existing "place new" mode (a click on empty canvas while the Text tool
+  // is active → store.placeSketchText). `group` set is "edit existing" mode
+  // (a Select-mode click on a baked text → store.updateSketchTextGroup),
+  // entered with the editor pre-filled from the clicked text's recipe.
   const [textEditor, setTextEditor] = useState<{
     left: number;
     top: number;
     u: number;
     v: number;
+    group: string | null;
   } | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1258,6 +1266,25 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         return;
       }
 
+      // Plan item 5: a click on a recipe-tagged baked text reopens the
+      // in-scene text editor pre-filled with the stored value/height/font,
+      // in "edit existing group" mode. Runs after the corner test (a tagged
+      // corner is a small precise target) but before the entity hit-test
+      // (clicking a glyph fill should edit the text, not pick a region). A
+      // click while the editor is already open just commits + dismisses
+      // (mirrors the corner editor), rather than falling through to select.
+      if (textEditor !== null) {
+        commitTextEditor();
+        lastCamVersionRef.current = -1;
+        return;
+      }
+      const text = hitTestTaggedText(session.subCalls, [u, v], tolMm);
+      if (text !== null) {
+        openTextEditor(text, cam);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
       if (hit === null) {
@@ -1316,7 +1343,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       // A click while an editor is already open commits the current text
       // first, then re-opens at the new location (Onshape-style).
       if (textEditor !== null) {
-        store.placeSketchText([textEditor.u, textEditor.v]);
+        commitTextEditor();
       }
       const canvas = e.currentTarget as HTMLCanvasElement;
       const rect = canvas.getBoundingClientRect();
@@ -1325,6 +1352,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         top: e.clientY - rect.top,
         u,
         v,
+        group: null,
       });
       requestAnimationFrame(() => {
         textInputRef.current?.focus();
@@ -2586,9 +2614,43 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // way. Keeps the editor mechanism symmetric with commitEditor above.
   const commitTextEditor = () => {
     if (textEditor === null || !store) return;
-    store.placeSketchText([textEditor.u, textEditor.v]);
+    if (textEditor.group !== null) {
+      // Plan item 5 "edit existing" mode: update the clicked text group in
+      // place from the current store params. A graceful no-op (font not
+      // loaded / empty text) leaves the old geometry untouched.
+      const s = store.getState();
+      store.updateSketchTextGroup(textEditor.group, {
+        value: s.sketchTextValue,
+        height: s.sketchTextHeight,
+        fontId: s.sketchTextFontId,
+      });
+    } else {
+      store.placeSketchText([textEditor.u, textEditor.v]);
+    }
     setTextEditor(null);
     lastCamVersionRef.current = -1;
+  };
+
+  // Plan item 5: open the in-scene text editor over a baked text, pre-filled
+  // from its recipe. Pushes the stored value/height/font into the store
+  // params (the editor's fields read from there, like the create flow), then
+  // anchors the overlay at the recipe origin projected to client px. Enters
+  // "edit existing group" mode (commit → updateSketchTextGroup).
+  const openTextEditor = (
+    text: TaggedTextHit,
+    cam: Readonly<SketchCameraState>,
+  ) => {
+    if (!store) return;
+    store.setSketchTextValue(text.value);
+    store.setSketchTextHeight(text.height);
+    store.setSketchTextFontId(text.fontId);
+    const [u, v] = text.origin;
+    const [px, py] = sketchToScreen(u, v, cam);
+    setTextEditor({ left: px, top: py, u, v, group: text.group });
+    requestAnimationFrame(() => {
+      textInputRef.current?.focus();
+      textInputRef.current?.select();
+    });
   };
 
   // Plan item 4: open the corner radius / distance editor at a tagged

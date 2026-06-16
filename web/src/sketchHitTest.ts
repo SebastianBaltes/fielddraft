@@ -17,6 +17,7 @@ import { bsplinePoints } from "./sketchSpline";
 import { curveOfSubCall, distToCurve, type SubCall, type Vec2 } from "./sketchTrim";
 import { fdIdOf, filletRecipeOf } from "./sketchFillet";
 import { chamferRecipeOf } from "./sketchChamfer";
+import { pathBBox, textRecipeOf } from "./sketchText";
 
 /** Sample a B-spline's drawn polyline from its pole entities, or null
  *  if any pole is missing. Reuses the same sampler the canvas renders
@@ -220,6 +221,65 @@ export function hitTestTaggedCorner(
           anchor: [(cv.a[0] + cv.b[0]) / 2, (cv.a[1] + cv.b[1]) / 2],
         };
       }
+    }
+  }
+  return best;
+}
+
+/**
+ * Plan item 5: a clicked, re-editable text group. `group` is the shared
+ * recipe id of every glyph sub-call of one text placement (passed to
+ * `store.updateSketchTextGroup`); `value` / `height` / `fontId` pre-fill
+ * the reopened text editor; `origin` is the placement's baseline-left in
+ * sketch mm, used to anchor the editor.
+ */
+export interface TaggedTextHit {
+  group: string;
+  value: string;
+  height: number;
+  fontId: string;
+  origin: [number, number];
+}
+
+/**
+ * Hit-test a Select-mode click against re-editable baked text — the
+ * `sketch_path` glyphs carrying a `text` recipe (see `sketchText`). Mirrors
+ * [`hitTestTaggedCorner`]: a baked glyph isn't a picked solver entity (the
+ * draft builder tessellates paths into a region, not pick targets), so an
+ * entity hit-test would never reach it. We pick by the glyph's bounding box
+ * (`pathBBox`) grown by `tolMm` — clicking inside (or just outside) a
+ * letter selects its text group. The nearest group wins on a tie by
+ * distance-to-box; ties resolve to the later sub-call (drawn last sits on
+ * top). Returns null when no tagged text is under the cursor — the caller
+ * then falls back to the corner / entity hit-tests.
+ */
+export function hitTestTaggedText(
+  subCalls: ReadonlyArray<SubCall>,
+  cursor: Vec2,
+  tolMm: number,
+): TaggedTextHit | null {
+  let best: TaggedTextHit | null = null;
+  let bestDist = Infinity;
+  for (const call of subCalls) {
+    const recipe = textRecipeOf(call);
+    if (!recipe) continue;
+    const bb = pathBBox(call);
+    if (!bb) continue;
+    // Distance from the cursor to the glyph's AABB (0 inside). Outside the
+    // box, clamp per-axis to the nearest edge.
+    const dx = Math.max(bb.min[0] - cursor[0], 0, cursor[0] - bb.max[0]);
+    const dy = Math.max(bb.min[1] - cursor[1], 0, cursor[1] - bb.max[1]);
+    const d = Math.hypot(dx, dy);
+    if (d > tolMm) continue;
+    if (d <= bestDist) {
+      bestDist = d;
+      best = {
+        group: recipe.group,
+        value: recipe.value,
+        height: recipe.height,
+        fontId: recipe.fontId,
+        origin: recipe.origin,
+      };
     }
   }
   return best;
