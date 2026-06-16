@@ -16,7 +16,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { useKernelStore } from "./store";
 import type { PickHit, PickResult } from "./kernel";
@@ -436,7 +435,7 @@ function handleSelectionClick(
  * container measures width>0 && height>0 (react-three-fiber Canvas gate), so a
  * 0×0 container silently renders nothing.
  */
-function WebGLViewport() {
+function WebGLViewport({ controlsPreset }: { controlsPreset: ControlsPresetId }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { store, state } = useKernelStore();
 
@@ -570,7 +569,12 @@ function WebGLViewport() {
         <SketchHud3D />
         <SketchLabels3D />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
-        <OrbitControls makeDefault enableDamping={false} />
+        {/* Ticket owia: use the SAME preset-aware controls as the WebGPU path
+            (CameraRig applies the active controlsPreset's mouseButtons). A bare
+            <OrbitControls> defaulted to LEFT=rotate / MIDDLE=dolly / RIGHT=pan,
+            ignoring the Onshape preset (MIDDLE=pan, RIGHT=rotate) — so the mouse
+            felt wrong in the WebGL fallback, including in sketch mode. */}
+        <CameraRig preset={controlsPreset} />
       </Canvas>
     </div>
   );
@@ -986,7 +990,7 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           }}
         />
       )}
-      {isWebGL && <WebGLViewport />}
+      {isWebGL && <WebGLViewport controlsPreset={controlsPreset} />}
       {!isWebGL && (
       <CanvasErrorBoundary>
         <Canvas
