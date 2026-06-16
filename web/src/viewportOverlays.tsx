@@ -97,7 +97,7 @@ export function SketchOverlay3D() {
 
   const sketches = useMemo(() => {
     if (!store || !visibleSketches || visibleSketches.length === 0) return [];
-    const out: { id: number; linePos: number[]; fillPos: number[] | null }[] = [];
+    const out: { id: number; linePos: number[]; pointPos: number[]; fillPos: number[] | null }[] = [];
     const tri = (poly: [number, number][]): number[][] => {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
       return THREE.ShapeUtils.triangulateShape(contour, []);
@@ -121,10 +121,15 @@ export function SketchOverlay3D() {
         const subCalls = params.sub_calls ?? [];
         const linePos = collectSketchLineSegments(subCalls, frame);
         if (linePos.length === 0) continue;
+        // Endpoint/vertex dots like the active sketch session (ticket n6hg):
+        // reuse the session geometry collector so every entity's natural
+        // vertices (line endpoints, circle centre, polygon/rect corners, arc
+        // endpoints, …) render identically to the in-edit overlay.
+        const pointPos = collectSketchSessionGeometry(subCalls as SketchSubCall[], frame).points;
         // Closed regions filled like in sketch mode — so a region reads as a
         // face and is a pickable profile target.
         const fp = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
-        out.push({ id: sketchId, linePos, fillPos: fp.length ? fp : null });
+        out.push({ id: sketchId, linePos, pointPos, fillPos: fp.length ? fp : null });
       } catch {
         // Skip invalid sketches
       }
@@ -143,6 +148,18 @@ export function SketchOverlay3D() {
     });
   }
   useEffect(() => () => { lineMatRef.current?.dispose(); }, []);
+
+  // Endpoint dot material (WebGPU only) — mirrors the session's `M.point`
+  // exactly (same colour + size 7) so committed vertices read identically to
+  // the in-edit ones (ticket n6hg, pqoe parity). Persistent like the line mat.
+  const pointMatRef = useRef<PointsNodeMaterial | null>(null);
+  if (isWebGPU && !pointMatRef.current) {
+    pointMatRef.current = new PointsNodeMaterial({
+      color: SKETCH_COLOR_UNDER, size: 7, sizeAttenuation: false,
+      depthTest: false, depthWrite: false, transparent: true,
+    });
+  }
+  useEffect(() => () => { pointMatRef.current?.dispose(); }, []);
 
   // WebGPU: fat LineSegments2 (geometry type must match the node material).
   const fatLines = useMemo(() => {
@@ -171,6 +188,35 @@ export function SketchOverlay3D() {
     return map;
   }, [sketches, isWebGPU]);
 
+  // WebGPU: endpoint dots as THREE.Points carrying the node material (n6hg).
+  const fatPoints = useMemo(() => {
+    if (!isWebGPU || !pointMatRef.current) return null;
+    const map = new Map<number, THREE.Points>();
+    for (const s of sketches) {
+      if (s.pointPos.length === 0) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(s.pointPos, 3));
+      const o = new THREE.Points(g, pointMatRef.current);
+      o.frustumCulled = false;
+      o.renderOrder = 998; // above fills (996) + lines (997), like the session
+      map.set(s.id, o);
+    }
+    return map;
+  }, [sketches, isWebGPU]);
+
+  // WebGL fallback: thin classic point geometries (material set on the JSX).
+  const classicPoints = useMemo(() => {
+    if (isWebGPU) return null;
+    const map = new Map<number, THREE.BufferGeometry>();
+    for (const s of sketches) {
+      if (s.pointPos.length === 0) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(s.pointPos, 3));
+      map.set(s.id, g);
+    }
+    return map;
+  }, [sketches, isWebGPU]);
+
   // Region fills — classic MeshBasicMaterial renders on either backend.
   const fills = useMemo(() => {
     const map = new Map<number, THREE.BufferGeometry>();
@@ -187,9 +233,11 @@ export function SketchOverlay3D() {
     return () => {
       fatLines?.forEach((o) => o.geometry.dispose());
       classicLines?.forEach((g) => g.dispose());
+      fatPoints?.forEach((o) => o.geometry.dispose());
+      classicPoints?.forEach((g) => g.dispose());
       fills.forEach((g) => g.dispose());
     };
-  }, [fatLines, classicLines, fills]);
+  }, [fatLines, classicLines, fatPoints, classicPoints, fills]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over
@@ -250,6 +298,14 @@ export function SketchOverlay3D() {
                 <lineSegments geometry={classicLines.get(id)} renderOrder={997}>
                   <lineBasicMaterial color={SKETCH_COLOR_UNDER} transparent depthTest={false} />
                 </lineSegments>
+              )}
+          {/* Endpoint/vertex dots (ticket n6hg) — above fills + lines. */}
+          {isWebGPU
+            ? fatPoints?.get(id) && <primitive object={fatPoints.get(id)!} dispose={null} />
+            : classicPoints?.get(id) && (
+                <points geometry={classicPoints.get(id)} renderOrder={998}>
+                  <pointsMaterial color={SKETCH_COLOR_UNDER} size={7} sizeAttenuation={false} transparent depthTest={false} />
+                </points>
               )}
         </group>
       ))}
