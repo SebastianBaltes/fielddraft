@@ -781,8 +781,10 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
             onChange={(e) => {
               const file = e.currentTarget.files?.[0];
               if (!file) return;
-              file.text().then((json) => {
-                store.addPartToAssembly(json, file.name.replace(/\.(fdraft|json)$/, ""));
+              // wu2v: read bytes so ZIP `.fdraft` containers import; the
+              // store extracts document.json (or falls back to legacy JSON).
+              file.arrayBuffer().then((buf) => {
+                store.addPartToAssembly(buf, file.name.replace(/\.(fdraft|json)$/, ""));
               });
               e.currentTarget.value = "";
             }}

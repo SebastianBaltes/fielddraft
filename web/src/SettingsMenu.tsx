@@ -595,7 +595,9 @@ export function SettingsMenu({
         onChange={(e) => {
           const file = e.currentTarget.files?.[0];
           if (!file) return;
-          file.text().then((json) => store?.loadProjectFromJson(json));
+          // wu2v: read bytes so ZIP `.fdraft` containers load; the byte
+          // loader falls back to JSON for legacy plain-text files.
+          file.arrayBuffer().then((buf) => store?.loadProjectFromBytes(buf));
           e.currentTarget.value = "";
         }}
       />

@@ -20,6 +20,7 @@
  * from a deterministic module-level counter so saves are reproducible.
  */
 
+import { unzipSync, zipSync, type Zippable } from "fflate";
 import type { FieldSkriptRecord } from "./fieldskript/record";
 import { type AssemblyDocument, createEmptyAssembly } from "./assembly";
 
@@ -169,6 +170,118 @@ export function createDefaultProject(): Project {
 
 export function serializeProject(project: Project): string {
   return JSON.stringify(project);
+}
+
+// ── wu2v: ZIP container ──────────────────────────────────────────
+//
+// A saved `.fdraft` is a ZIP archive (via fflate, exactly like
+// `threemf.ts`) so it can carry uploaded binary assets alongside the
+// document JSON. Layout:
+//
+//   document.json            the serialized Project (verbatim JSON)
+//   assets/fonts/<id>.<ext>  uploaded font bytes, keyed by font id
+//   manifest.json            index of asset types → archive paths
+//
+// Legacy `.fdraft` files are plain JSON (a serialized Project). The
+// loader (`parseProjectBytes`) sniffs the ZIP magic bytes ("PK") and
+// falls back to JSON, so old files keep opening.
+//
+// NOTE: the in-app bug-report / server / vite ticket path keeps writing
+// plain JSON (see store.exportProjectJson) so tickets stay
+// agent-readable; only the user-facing Save/Open uses the ZIP.
+
+const DOCUMENT_PATH = "document.json";
+const MANIFEST_PATH = "manifest.json";
+
+/** Binary assets carried in a `.fdraft` ZIP alongside the document.
+ *  Fonts are keyed by their `sketchTextFontId` (e.g. `uploaded:Foo.ttf`). */
+export interface ProjectAssets {
+  fonts: Map<string, { bytes: Uint8Array; ext: string }>;
+}
+
+/** An empty asset set (legacy JSON loads / projects with no uploads). */
+export function emptyProjectAssets(): ProjectAssets {
+  return { fonts: new Map() };
+}
+
+/** Sanitize a font id into a safe archive filename stem (font ids look
+ *  like `uploaded:Foo Bar.ttf`, which is not a clean path component). */
+function fontAssetStem(id: string): string {
+  return id.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+interface ProjectManifest {
+  /** font id → archive path of its bytes. */
+  fonts: Record<string, string>;
+}
+
+/** wu2v: serialize a project + its assets into a `.fdraft` ZIP. */
+export function serializeProjectToZip(
+  project: Project,
+  assets: ProjectAssets,
+): Uint8Array {
+  const manifest: ProjectManifest = { fonts: {} };
+  const files: Zippable = {
+    [DOCUMENT_PATH]: new TextEncoder().encode(serializeProject(project)),
+  };
+
+  for (const [id, { bytes, ext }] of assets.fonts) {
+    const path = `assets/fonts/${fontAssetStem(id)}.${ext}`;
+    files[path] = bytes;
+    manifest.fonts[id] = path;
+  }
+
+  files[MANIFEST_PATH] = new TextEncoder().encode(JSON.stringify(manifest));
+  return zipSync(files);
+}
+
+/** wu2v: parse `.fdraft` bytes into a project + assets. Detects a ZIP by
+ *  its magic bytes ("PK"); otherwise treats the bytes as legacy JSON
+ *  text. Returns `null` on any malformed input. */
+export function parseProjectBytes(
+  bytes: Uint8Array,
+): { project: Project; assets: ProjectAssets } | null {
+  // ZIP local-file-header magic: 0x50 0x4b ("PK").
+  const isZip = bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+  if (!isZip) {
+    // Legacy / report path: the whole file is the serialized Project JSON.
+    const project = parseProject(new TextDecoder().decode(bytes));
+    if (!project) return null;
+    return { project, assets: emptyProjectAssets() };
+  }
+
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(bytes);
+  } catch {
+    return null;
+  }
+
+  const docBytes = files[DOCUMENT_PATH];
+  if (!docBytes) return null;
+  const project = parseProject(new TextDecoder().decode(docBytes));
+  if (!project) return null;
+
+  const assets = emptyProjectAssets();
+  const manifestBytes = files[MANIFEST_PATH];
+  if (manifestBytes) {
+    let manifest: ProjectManifest | null = null;
+    try {
+      manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as ProjectManifest;
+    } catch {
+      manifest = null;
+    }
+    if (manifest && manifest.fonts && typeof manifest.fonts === "object") {
+      for (const [id, path] of Object.entries(manifest.fonts)) {
+        const fontBytes = files[path];
+        if (!fontBytes) continue;
+        const ext = path.slice(path.lastIndexOf(".") + 1);
+        assets.fonts.set(id, { bytes: fontBytes, ext });
+      }
+    }
+  }
+
+  return { project, assets };
 }
 
 /** Parse + defensively validate a serialized project. Returns `null` on

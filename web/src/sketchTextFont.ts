@@ -47,6 +47,12 @@ export function bundledFont(id: string): FontEntry | undefined {
 const cache = new Map<string, Font>();
 const inflight = new Map<string, Promise<Font>>();
 
+/** wu2v: raw bytes of uploaded fonts, keyed by their synthetic id. The
+ *  parsed `Font` in `cache` can't be re-serialized, so we keep the
+ *  original file bytes here to embed them in the saved `.fdraft` ZIP and
+ *  re-register the font on reload. */
+const uploadedBytes = new Map<string, Uint8Array>();
+
 /** Parse a font from a raw ArrayBuffer (uploaded file or fetched bytes). */
 export function parseFontBuffer(buffer: ArrayBuffer): Font {
   return opentype.parse(buffer);
@@ -91,11 +97,41 @@ export const UPLOADED_FONT_PREFIX = "uploaded:";
 /**
  * Register an already-parsed uploaded font under a synthetic id so the
  * rest of the app treats it like any other cached font. Returns the id.
+ *
+ * wu2v: pass the original file `bytes` to retain them for persistence —
+ * a saved `.fdraft` ZIP embeds these so the uploaded font survives a
+ * reload (previously only the id was kept and the bytes were lost).
  */
-export function registerUploadedFont(name: string, font: Font): string {
+export function registerUploadedFont(
+  name: string,
+  font: Font,
+  bytes?: Uint8Array,
+): string {
   const id = `${UPLOADED_FONT_PREFIX}${name}`;
   cache.set(id, font);
+  if (bytes) uploadedBytes.set(id, bytes);
   return id;
+}
+
+/** wu2v: raw bytes of a previously-uploaded font, or `undefined` when the
+ *  id is unknown or was registered without bytes. */
+export function getUploadedFontBytes(id: string): Uint8Array | undefined {
+  return uploadedBytes.get(id);
+}
+
+/** wu2v: re-register an uploaded font from its persisted bytes (parse →
+ *  cache → retain) so it renders again after a project reload. The id is
+ *  given verbatim (as stored in the project), not re-derived from a name.
+ *  Throws if the bytes aren't a parseable font. */
+export function registerUploadedFontFromBytes(id: string, bytes: Uint8Array): void {
+  // opentype.parse needs an ArrayBuffer; slice to the exact view bounds.
+  const buf = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  const font = opentype.parse(buf);
+  cache.set(id, font);
+  uploadedBytes.set(id, bytes);
 }
 
 /** Synchronously read a parsed font from the cache, or `undefined` when it

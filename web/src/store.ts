@@ -83,6 +83,9 @@ import {
   loadBundledFont,
   parseFontBuffer,
   registerUploadedFont,
+  getUploadedFontBytes,
+  registerUploadedFontFromBytes,
+  UPLOADED_FONT_PREFIX,
 } from "./sketchTextFont";
 import { solveAndReplace } from "./solver/replaySolve";
 import type { SketchDiagnostics } from "./solver/types";
@@ -116,6 +119,10 @@ import {
   projectScripts,
   reseedTabIds,
   serializeProject as serializeProjectJson,
+  serializeProjectToZip,
+  parseProjectBytes,
+  emptyProjectAssets,
+  type ProjectAssets,
   stripScripts,
   type Project,
   type ProjectTab,
@@ -1085,13 +1092,66 @@ export class KernelStore {
    * Everything that persists routes here.
    */
   private serializeProject(): string {
+    return serializeProjectJson(this.buildPersistableProject());
+  }
+
+  /** MT-A: build the persistable {@link Project} (live kernel doc folded
+   *  back into the loaded part tab, scripts stripped). The JSON funnel and
+   *  the wu2v ZIP save both consume this. */
+  private buildPersistableProject(): Project {
     const tabs = this.state.project.tabs.map((t) => {
       if (t.id === this.loadedPartTabId && t.kind === "part") {
         return { ...t, documentJson: stripScripts(this.kernel.toJson()) };
       }
       return t;
     });
-    return serializeProjectJson({ ...this.state.project, tabs });
+    return { ...this.state.project, tabs };
+  }
+
+  /**
+   * wu2v: collect the uploaded fonts actually referenced by a project.
+   * Scans every part tab's document JSON for `sketch_path` sub-calls whose
+   * `text.fontId` is an `uploaded:` id, then pulls the retained raw bytes.
+   * Fonts with no retained bytes (e.g. opened from a legacy JSON that never
+   * carried them) are skipped.
+   */
+  private collectProjectAssets(project: Project): ProjectAssets {
+    const assets = emptyProjectAssets();
+    const ids = new Set<string>();
+    for (const tab of project.tabs) {
+      if (tab.kind !== "part") continue;
+      let doc: unknown;
+      try {
+        doc = JSON.parse(tab.documentJson);
+      } catch {
+        continue;
+      }
+      // Walk the doc collecting any `fontId` field that names an upload.
+      const walk = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          for (const v of value) walk(v);
+          return;
+        }
+        if (value && typeof value === "object") {
+          const obj = value as Record<string, unknown>;
+          const fontId = obj.fontId;
+          if (typeof fontId === "string" && fontId.startsWith(UPLOADED_FONT_PREFIX)) {
+            ids.add(fontId);
+          }
+          for (const v of Object.values(obj)) walk(v);
+        }
+      };
+      walk(doc);
+    }
+    for (const id of ids) {
+      const bytes = getUploadedFontBytes(id);
+      if (!bytes) continue;
+      // Extension from the id tail (`uploaded:Foo.ttf` → `ttf`), default ttf.
+      const dot = id.lastIndexOf(".");
+      const ext = dot >= 0 ? id.slice(dot + 1).toLowerCase() : "ttf";
+      assets.fonts.set(id, { bytes, ext });
+    }
+    return assets;
   }
 
   /** Public accessor for the live project JSON (.fdraft contents).
@@ -1688,11 +1748,19 @@ export class KernelStore {
     for (const listener of this.listeners) listener();
   }
 
-  /** Save the current project as a downloadable .fdraft file. */
+  /** Save the current project as a downloadable .fdraft file.
+   *
+   *  wu2v: the file is a ZIP container (document.json + embedded uploaded
+   *  font bytes + manifest) so binary assets survive a reload. Legacy JSON
+   *  `.fdraft` files still open (the loader sniffs the ZIP magic bytes).
+   *  The bug-report/server path stays plain JSON — see exportProjectJson. */
   saveProjectToFile(filename = "project.fdraft"): void {
     if (typeof document === "undefined") return;
-    const json = this.serializeProject();
-    const blob = new Blob([json], { type: "application/json" });
+    const project = this.buildPersistableProject();
+    const assets = this.collectProjectAssets(project);
+    const zip = serializeProjectToZip(project, assets);
+    // Copy into a fresh ArrayBuffer so Blob doesn't retain the WASM/heap view.
+    const blob = new Blob([zip.slice()], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1703,12 +1771,40 @@ export class KernelStore {
     URL.revokeObjectURL(url);
   }
 
-  /** MT-A: load a project from a .fdraft JSON string. Replaces the
-   *  whole project, rebuilds the kernel's script set, and loads the
-   *  active/first part document. Returns `false` on malformed input. */
+  /** MT-A: load a project from a .fdraft JSON string. Kept for the
+   *  report/tests/legacy callers; routes through {@link loadProjectFromBytes}
+   *  so a JSON string and a ZIP file share one load path (the byte loader
+   *  sniffs the magic bytes and treats non-ZIP bytes as JSON text).
+   *  Returns `false` on malformed input. */
   loadProjectFromJson(json: string): boolean {
-    const project = parseProject(json);
-    if (!project) return false;
+    return this.loadProjectFromBytes(new TextEncoder().encode(json));
+  }
+
+  /** wu2v: load a project from raw `.fdraft` bytes — a ZIP container or
+   *  legacy JSON (auto-detected). Re-registers any embedded uploaded fonts
+   *  so they render again, then applies the project. Returns `false` on
+   *  malformed input. */
+  loadProjectFromBytes(bytes: Uint8Array | ArrayBuffer): boolean {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const parsed = parseProjectBytes(u8);
+    if (!parsed) return false;
+    // Re-register embedded uploaded fonts before applying the project so the
+    // font cache is warm when the scene regenerates its text geometry.
+    for (const [id, { bytes: fontBytes }] of parsed.assets.fonts) {
+      try {
+        registerUploadedFontFromBytes(id, fontBytes);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("fielddraft: embedded font re-register failed", id, err);
+      }
+    }
+    return this.applyLoadedProject(parsed.project);
+  }
+
+  /** Common tail of the load paths: reseed ids, rebuild scripts, load the
+   *  active/first part doc, replace project state. Returns `false` only if
+   *  the project shape is somehow unusable. */
+  private applyLoadedProject(project: Project): boolean {
     reseedTabIds(project.tabs);
 
     // Rebuild the kernel's scripts from scratch.
@@ -1938,9 +2034,27 @@ export class KernelStore {
     if (partTab) this.setActiveTab(partTab.id);
   }
 
-  addPartToAssembly(documentJson: string, name?: string): void {
+  /** Import a `.fdraft` part into the active assembly. Accepts a document
+   *  JSON string or raw `.fdraft` bytes (wu2v: ZIP container → its
+   *  `document.json` is extracted; legacy JSON bytes pass through). */
+  addPartToAssembly(source: string | Uint8Array | ArrayBuffer, name?: string): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
+
+    let documentJson: string;
+    if (typeof source === "string") {
+      documentJson = source;
+    } else {
+      const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
+      const isZip = u8.length >= 2 && u8[0] === 0x50 && u8[1] === 0x4b;
+      if (isZip) {
+        const parsed = parseProjectBytes(u8);
+        if (!parsed) return;
+        documentJson = serializeProjectJson(parsed.project);
+      } else {
+        documentJson = new TextDecoder().decode(u8);
+      }
+    }
 
     const id = allocateAssemblyId();
     // Derive the default name from the highest existing "Part N" so removing a
@@ -3176,7 +3290,9 @@ export class KernelStore {
     let id: string;
     try {
       const font = parseFontBuffer(buffer);
-      id = registerUploadedFont(name, font);
+      // wu2v: retain the raw bytes so this font persists into saved
+      // `.fdraft` ZIPs (previously the bytes were lost on reload).
+      id = registerUploadedFont(name, font, new Uint8Array(buffer.slice(0)));
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: uploaded font parse failed", err);
