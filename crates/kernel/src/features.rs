@@ -7150,6 +7150,40 @@ mod tests {
     }
 
     #[test]
+    fn ifog_hexagon_helix_gets_constructive_edges() {
+        // Ticket ifog: a helix produced NO B-Rep edges (its surface is
+        // weave-excluded / non-Lipschitz). The constructive swept-wireframe
+        // traces the 6 profile corners into helix curves + start/end cap rims:
+        // 6 longitudinal + 6 start-rim + 6 end-rim = 18 edges, 12 vertices.
+        let registry = FeatureRegistry::with_builtins();
+        let calls = vec![
+            FeatureCall::new("sketch", id(1), json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "id": "1", "type": "sketch_line", "params": { "start": [458.72, 406.03], "end": [739.01, 398.37] } },
+                    { "id": "2", "type": "sketch_line", "params": { "start": [739.01, 398.37], "end": [719.85, 126.68] } },
+                    { "id": "4", "type": "sketch_line", "params": { "start": [719.85, 126.68], "end": [601.60, 297.30] } },
+                    { "id": "6", "type": "sketch_line", "params": { "start": [601.60, 297.30], "end": [491.20, 216.28] } },
+                    { "id": "8", "type": "sketch_line", "params": { "start": [491.20, 216.28], "end": [393.08, 295.77] } },
+                    { "id": "10", "type": "sketch_line", "params": { "start": [393.08, 295.77], "end": [458.72, 406.03] } }
+                ]
+            })),
+            FeatureCall::new("helix", id(2), json!({
+                "profiles": "qCreatedBy(1)", "operation": "new",
+                "pitch": { "unit": "mm", "value": 1000.0 }, "turns": 1.0
+            })),
+        ];
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+        let woven = ctx.brep_cache.ensure(&ctx.features);
+        assert_eq!(woven.len(), 1, "one helix body");
+        let brep = &woven[0].0;
+        assert_eq!(brep.edge_count(), 18, "6 longitudinal helix + 6+6 cap rims");
+        assert_eq!(brep.vertex_count(), 12, "6 corners × start/end caps");
+    }
+
+    #[test]
     fn revolve_errors_when_sketch_cannot_be_resolved() {
         let registry = FeatureRegistry::with_builtins();
         let mut doc = empty_ctx();

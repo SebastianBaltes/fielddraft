@@ -182,13 +182,21 @@ impl Body {
             // is non-Lipschitz garbage we discard anyway. Skip the octree+weave
             // outright; the renderer covers the shape. A *separate* clean body
             // (union → its own partition) still weaves normally.
-            let brep = if bounded_contains_space_filling(&bounded) {
-                BRep::new()
-            } else if let Some(parametric_brep) =
+            let brep = if let Some(parametric_brep) =
                 parametric.then(|| weave_parametric(&bounded)).flatten()
             {
-                // Exact analytic weave for a pure grundform — no octree at all.
+                // Constructive/analytic weave — no octree at all. Tried FIRST so
+                // a Helix/Sweep, whose surface is weave-excluded from the octree
+                // path (non-Lipschitz, DL-71), still gets its edges traced
+                // constructively from the profile (ticket ifog). Cheap: it bails
+                // to `None` immediately for anything it can't lift.
                 parametric_brep
+            } else if bounded_contains_space_filling(&bounded) {
+                // Space-filling (gyroid TPMS) or a non-constructible Helix/Sweep
+                // profile: skip the octree+weave outright (it would refine on
+                // tens of thousands of non-Lipschitz seam cells, a wasm stall);
+                // the renderer covers the shape.
+                BRep::new()
             } else {
                 let min_cell = topology_min_cell_size(&self.aabb);
                 let octree = Octree::build(&bounded, min_cell);

@@ -1408,6 +1408,17 @@ fn revolve_body(sketch: ProtoSketch2d) -> BoundedCsg {
     BoundedCsg::from_csg(&csg)
 }
 
+fn sweep_body(sketch: ProtoSketch2d, path: Vec<[f32; 3]>, closed: bool) -> BoundedCsg {
+    let csg = CsgNode::Sweep {
+        id: FeatureId::from_u32(1),
+        sketch: Box::new(sketch),
+        path,
+        closed,
+        twist: 0.0,
+    };
+    BoundedCsg::from_csg(&csg)
+}
+
 fn assert_watertight_solid(brep: &BRep) {
     assert_eq!(brep.validate(), Ok(()), "woven B-Rep must be well-formed");
     assert_eq!(brep.shell_count(), 1);
@@ -1595,6 +1606,57 @@ fn revolve_rectangle_profile_is_tube_with_analytic_sides() {
     }
     assert_eq!(cylinders, 2, "inner + outer wall cylinders");
     assert_eq!(planes, 2, "top + bottom annular planes");
+}
+
+#[test]
+fn parametric_sweep_traces_corner_curves() {
+    // Ticket ifog: a sweep's seam edges are traced constructively from the
+    // profile corners through the spine's RMF frames. Square profile (4
+    // corners). Open path → 4 longitudinal + 4+4 cap rims = 12 edges, 8
+    // vertices. Closed path → 4 closed longitudinal loops, no caps/vertices.
+    let sq = ProtoSketch2d::Prim(ProtoSketch2dPrim::Polygon {
+        vertices: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+    });
+    let open = sweep_body(sq.clone(), vec![[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 10.0]], false);
+    let brep = crate::brep::weaving::wireframes::weave_parametric(&open)
+        .expect("open sweep weaves parametrically");
+    assert_eq!(brep.edge_count(), 12, "4 longitudinal + 4 start + 4 end rim");
+    assert_eq!(brep.vertex_count(), 8, "4 corners × start/end caps");
+
+    let closed = sweep_body(sq, vec![[5.0, 0.0, 0.0], [0.0, 0.0, 5.0], [-5.0, 0.0, 0.0], [0.0, 0.0, -5.0]], true);
+    let brep = crate::brep::weaving::wireframes::weave_parametric(&closed)
+        .expect("closed sweep weaves parametrically");
+    assert_eq!(brep.edge_count(), 4, "4 closed longitudinal loops");
+    assert_eq!(brep.vertex_count(), 0, "closed loops have no vertices");
+}
+
+#[test]
+fn helix_forward_map_inverts_profile_point() {
+    // The swept-wireframe traces a profile corner via the FORWARD helix map;
+    // it must invert `helix_profile_point` (the SDF's reverse map) so the edges
+    // land exactly on the body surface.
+    use std::f32::consts::TAU;
+    let (pitch, turns, taper, y_anchor, r_inner, start_angle) =
+        (10.0f32, 2.0f32, 0.1f32, 0.5f32, 1.0f32, 0.3f32);
+    for &left_handed in &[false, true] {
+        let hand = if left_handed { -1.0f32 } else { 1.0 };
+        for &(cx, cy) in &[(5.0f32, 2.0f32), (3.5, -1.0), (8.0, 0.4)] {
+            for &t in &[0.0f32, 1.5, 3.0, TAU * turns] {
+                // Forward map (local frame), mirroring build_swept_wireframe.
+                let theta = hand * (t + start_angle);
+                let y = cy + pitch * t / TAU;
+                let r = cx + taper * (y - y_anchor);
+                let p = [r * theta.cos(), y, r * theta.sin()];
+                let (prof, _ell, _scale) = crate::helix_profile_point(
+                    p, pitch, turns, left_handed, taper, y_anchor, r_inner, start_angle,
+                );
+                assert!(
+                    (prof[0] - cx).abs() < 1e-3 && (prof[1] - cy).abs() < 1e-3,
+                    "round-trip lh={left_handed} (cx,cy)=({cx},{cy}) t={t}: got {prof:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

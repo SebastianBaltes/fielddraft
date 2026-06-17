@@ -158,8 +158,164 @@ pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
             }
             Some(brep)
         }
+
+        // Helix: each profile corner sweeps into a HELIX curve (longitudinal
+        // seam), plus the start/end profile loops as cap rims. The helix wall
+        // FACES are non-Lipschitz (weave-excluded, no analytic carrier), so this
+        // body has no analytic faces — but the edges carry exact geometry and
+        // `bodyBrepEdges` exports them directly (and a single leaf has no
+        // coincidence pruning), so the helix gets its visible edge topology.
+        BoundedCsg::Helix {
+            id, sketch, pitch, turns, left_handed, taper, start_angle, y_anchor, world_transform, ..
+        } => {
+            let corners = profile_corners(sketch)?;
+            if corners.len() < 2 {
+                return None;
+            }
+            let t_end = std::f32::consts::TAU * turns.max(0.0);
+            if t_end < 1e-6 {
+                return None;
+            }
+            // Forward helix map (inverse of `helix_profile_point`): profile
+            // `(r, w)` at sweep parameter `t` → local 3D, then to body space.
+            let hand = if *left_handed { -1.0_f32 } else { 1.0 };
+            let k_max = (turns.abs() * 48.0).ceil().max(8.0) as usize;
+            let trace = |c: &ProfileCorner, k: usize| -> [f64; 3] {
+                let t = t_end * (k as f32 / k_max as f32);
+                let theta = hand * (t + start_angle);
+                let y = c.p[1] + pitch * t / std::f32::consts::TAU;
+                let r = c.p[0] + taper * (y - y_anchor);
+                xf_point(world_transform, [r * theta.cos(), y, r * theta.sin()])
+            };
+            Some(emit_open_swept_edges(id, &corners, k_max, trace))
+        }
+
+        // General sweep: each profile corner traced through the spine's RMF
+        // frames (inverse of `SweepPath::cross_section`). Closed spine → closed
+        // longitudinal loops, no caps; open spine → longitudinal + cap rims.
+        // Like the helix, the wall faces are non-analytic; the edges still
+        // export.
+        BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {
+            let corners = profile_corners(sketch)?;
+            if corners.len() < 2 {
+                return None;
+            }
+            let m = path.points.len();
+            if m < 2 {
+                return None;
+            }
+            // Forward RMF map at spine vertex `k`: place the profile `(u, v)` in
+            // the {n, b} plane after the linear-by-arclength twist.
+            let trace = |c: &ProfileCorner, k: usize| -> [f64; 3] {
+                let theta = if path.total_len > 1e-6 {
+                    path.twist * path.arclen[k] / path.total_len
+                } else {
+                    0.0
+                };
+                let (sn, cs) = theta.sin_cos();
+                let uw = cs * c.p[0] - sn * c.p[1];
+                let vw = sn * c.p[0] + cs * c.p[1];
+                let (sp, fr) = (path.points[k], &path.frames[k]);
+                xf_point(
+                    world_transform,
+                    [
+                        sp[0] + fr.n[0] * uw + fr.b[0] * vw,
+                        sp[1] + fr.n[1] * uw + fr.b[1] * vw,
+                        sp[2] + fr.n[2] * uw + fr.b[2] * vw,
+                    ],
+                )
+            };
+            if path.closed {
+                // Closed spine: each corner is a closed longitudinal loop, no
+                // caps. Append the first sample so the polyline closes.
+                let mut brep = BRep::new();
+                for c in &corners {
+                    let mut pts: Vec<[f64; 3]> = (0..m).map(|k| trace(c, k)).collect();
+                    pts.push(trace(c, 0));
+                    brep.add_edge(Edge::new(
+                        EdgeGeometry::Polyline(pts),
+                        BranchId::from_feature_sub(id, c.left),
+                        BranchId::from_feature_sub(id, c.right),
+                        None,
+                        None,
+                    ));
+                }
+                Some(brep)
+            } else {
+                Some(emit_open_swept_edges(id, &corners, m - 1, trace))
+            }
+        }
+
         _ => None,
     }
+}
+
+/// Build the wireframe of an OPEN sweep (helix / open general sweep). Each
+/// profile corner traced from sample `0 → k_max` becomes a longitudinal edge
+/// with start/end vertices on the two caps; consecutive corners are joined by a
+/// straight rim edge on each cap. `trace(corner, k)` returns the world point at
+/// sample `k ∈ 0..=k_max`. The wall/cap faces are non-analytic, so only the
+/// edge topology is emitted (exported directly by `bodyBrepEdges`).
+fn emit_open_swept_edges(
+    id: &fielddraft_protocol::FeatureId,
+    corners: &[ProfileCorner],
+    k_max: usize,
+    trace: impl Fn(&ProfileCorner, usize) -> [f64; 3],
+) -> BRep {
+    let n = corners.len();
+    let cap_start = BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_BOTTOM_SUB);
+    let cap_end = BranchId::from_feature_sub(id, BranchId::EXTRUDE_CAP_TOP_SUB);
+    let mut brep = BRep::new();
+    // Corner vertices on the start (k=0) and end (k=k_max) caps.
+    let (mut vs, mut ve, mut ps, mut pe) = (
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+    );
+    for c in corners {
+        let wl = BranchId::from_feature_sub(id, c.left);
+        let wr = BranchId::from_feature_sub(id, c.right);
+        let p0 = trace(c, 0);
+        let p1 = trace(c, k_max);
+        ps.push(p0);
+        pe.push(p1);
+        vs.push(brep.add_vertex(Vertex::new(p0, vec![wl, wr, cap_start])));
+        ve.push(brep.add_vertex(Vertex::new(p1, vec![wl, wr, cap_end])));
+    }
+    // Longitudinal seam edges (one per corner), densely sampled.
+    for (i, c) in corners.iter().enumerate() {
+        let pts: Vec<[f64; 3]> = (0..=k_max).map(|k| trace(c, k)).collect();
+        brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(pts),
+            BranchId::from_feature_sub(id, c.left),
+            BranchId::from_feature_sub(id, c.right),
+            Some(vs[i]),
+            Some(ve[i]),
+        ));
+    }
+    // Cap rim edges: the profile boundary at each cap (straight between
+    // consecutive corners; the boundary leaving corner i belongs to wall
+    // group `right_i`).
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let wall = BranchId::from_feature_sub(id, corners[i].right);
+        brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![ps[i], ps[j]]),
+            wall,
+            cap_start,
+            Some(vs[i]),
+            Some(vs[j]),
+        ));
+        brep.add_edge(Edge::new(
+            EdgeGeometry::Polyline(vec![pe[i], pe[j]]),
+            wall,
+            cap_end,
+            Some(ve[i]),
+            Some(ve[j]),
+        ));
+    }
+    brep
 }
 
 /// Exact 8-corner / 12-edge wireframe of a single axis-aligned Box leaf, in the
