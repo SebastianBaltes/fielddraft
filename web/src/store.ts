@@ -18,7 +18,11 @@ import {
   type FeatureSummary,
   type PrimitiveKindName,
 } from "./kernel";
-import { createAutoSave, loadPersisted, type AutoSaveHandle } from "./persistence";
+import {
+  createAutoSave,
+  loadPersisted,
+  type AutoSaveHandle,
+} from "./persistence";
 import type { PickedElement } from "./elementQuery";
 import type {
   MesherBodiesResponse,
@@ -43,7 +47,13 @@ import {
   subCallsForSelection,
   entityOwnerSubCalls,
 } from "./sketchSession";
-import { buildConstraintCall } from "./sketchConstraints";
+import {
+  buildConstraintCall,
+  applicableConstraints,
+  isConstraintTool,
+  CONSTRAINT_DIMENSION_TOOL,
+  DIMENSION_TYPES_BY_SPECIFICITY,
+} from "./sketchConstraints";
 import { buildLineLengthEdit } from "./sketchLiveInput";
 import {
   computeTrim,
@@ -132,7 +142,12 @@ import {
   type TabKind,
 } from "./project";
 import { parseFeatureSchema, buildDefaultDefinition } from "./widgets/schema";
-import { import3mf, export3mfRoundtrip, extractModelXml, type ThreeMfStash } from "./threemf";
+import {
+  import3mf,
+  export3mfRoundtrip,
+  extractModelXml,
+  type ThreeMfStash,
+} from "./threemf";
 import {
   type MeshOverlayData,
   canTriggerDownload,
@@ -552,10 +567,9 @@ export class KernelStore {
     // projects (spline-revolve + shell). On failure, sync meshing stays on
     // (functionally correct, just blocks the UI on every mesh rebuild).
     try {
-      this.worker = new Worker(
-        new URL("./mesher.worker.ts", import.meta.url),
-        { type: "module" },
-      );
+      this.worker = new Worker(new URL("./mesher.worker.ts", import.meta.url), {
+        type: "module",
+      });
       this.worker.addEventListener("message", (event) => {
         this.handleWorkerMessage(event);
       });
@@ -577,10 +591,9 @@ export class KernelStore {
     // On failure the legacy behaviour remains: overlays weave
     // synchronously on first fetch.
     try {
-      this.weaver = new Worker(
-        new URL("./weaver.worker.ts", import.meta.url),
-        { type: "module" },
-      );
+      this.weaver = new Worker(new URL("./weaver.worker.ts", import.meta.url), {
+        type: "module",
+      });
       this.weaver.addEventListener("message", (event) => {
         this.handleWeaverMessage(event);
       });
@@ -597,7 +610,8 @@ export class KernelStore {
 
     // ── MT-A: build the project + load the active/first part into the
     //   kernel before reading the initial feature list. ──────────────
-    const project = parseProject(persistedProjectJson ?? "") ?? createDefaultProject();
+    const project =
+      parseProject(persistedProjectJson ?? "") ?? createDefaultProject();
     reseedTabIds(project.tabs);
 
     // Mirror every project script into the live kernel so the loaded
@@ -613,12 +627,16 @@ export class KernelStore {
     let partTab =
       activeTab && activeTab.kind === "part"
         ? activeTab
-        : project.tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+        : project.tabs.find(
+            (t): t is import("./project").PartTab => t.kind === "part",
+          );
     if (!partTab) {
       partTab = createPartTab("Part 1");
       project.tabs.push(partTab);
     }
-    kernel.loadJson(injectScripts(partTab.documentJson, projectScripts(project)));
+    kernel.loadJson(
+      injectScripts(partTab.documentJson, projectScripts(project)),
+    );
     this.loadedPartTabId = partTab.id;
 
     const initialAssembly =
@@ -706,7 +724,10 @@ export class KernelStore {
 
   getState = (): StoreState => this.state;
 
-  private commit(nextSelection?: ReadonlySet<number>, nextAnchor?: number | null): void {
+  private commit(
+    nextSelection?: ReadonlySet<number>,
+    nextAnchor?: number | null,
+  ): void {
     // A mutation that moves the selection away from the pending ghost
     // feature confirms it first (e.g. creating the next feature while the
     // ghost's dialog is still open) — see the pending-feature section.
@@ -722,7 +743,8 @@ export class KernelStore {
     this.state = {
       features,
       selection: nextSelection ?? this.state.selection,
-      selectionAnchor: nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
+      selectionAnchor:
+        nextAnchor !== undefined ? nextAnchor : this.state.selectionAnchor,
       // A document mutation invalidates any picked element (its idHash may no
       // longer resolve), and the two selection notions are mutually exclusive.
       selectedElement: null,
@@ -831,7 +853,8 @@ export class KernelStore {
   private meshAlgorithm: string = "mdc";
 
   setDcMeshingEnabled(enabled: boolean, algorithm?: string): void {
-    const algoChanged = algorithm !== undefined && algorithm !== this.meshAlgorithm;
+    const algoChanged =
+      algorithm !== undefined && algorithm !== this.meshAlgorithm;
     if (algorithm !== undefined) this.meshAlgorithm = algorithm;
     if (this.dcMeshingEnabled === enabled && !algoChanged) return;
     this.dcMeshingEnabled = enabled;
@@ -1138,7 +1161,10 @@ export class KernelStore {
         if (value && typeof value === "object") {
           const obj = value as Record<string, unknown>;
           const fontId = obj.fontId;
-          if (typeof fontId === "string" && fontId.startsWith(UPLOADED_FONT_PREFIX)) {
+          if (
+            typeof fontId === "string" &&
+            fontId.startsWith(UPLOADED_FONT_PREFIX)
+          ) {
             ids.add(fontId);
           }
           for (const v of Object.values(obj)) walk(v);
@@ -1182,17 +1208,15 @@ export class KernelStore {
    */
   uiStateSnapshot(): Record<string, unknown> {
     const s = this.state;
-    const cam = getPublishedPickCamera() as unknown as
-      | {
-          type: string;
-          position: { toArray(): number[] };
-          quaternion: { toArray(): number[] };
-          fov?: number;
-          zoom?: number;
-          near?: number;
-          far?: number;
-        }
-      | null;
+    const cam = getPublishedPickCamera() as unknown as {
+      type: string;
+      position: { toArray(): number[] };
+      quaternion: { toArray(): number[] };
+      fov?: number;
+      zoom?: number;
+      near?: number;
+      far?: number;
+    } | null;
     const camera = cam
       ? {
           type: cam.type,
@@ -1277,7 +1301,11 @@ export class KernelStore {
     }
     this.setLoading("Building SDF from mesh…");
     await new Promise((r) => setTimeout(r, 0));
-    const id = this.importMeshAsFeature(mesh.positions, mesh.normals, mesh.indices);
+    const id = this.importMeshAsFeature(
+      mesh.positions,
+      mesh.normals,
+      mesh.indices,
+    );
     this.setLoading(null);
     return id !== null;
   }
@@ -1287,18 +1315,26 @@ export class KernelStore {
    *  geometries into one combined referenceMesh. */
   async loadReferenceGlb(buffer: ArrayBuffer): Promise<boolean> {
     const t0 = performance.now();
-    console.log(`fielddraft: importing GLB reference — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    console.log(
+      `fielddraft: importing GLB reference — ${(buffer.byteLength / 1024).toFixed(0)} KB`,
+    );
     this.setLoading("Loading GLB file…");
     try {
-      const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+      const { GLTFLoader } =
+        await import("three/examples/jsm/loaders/GLTFLoader.js");
       const loader = new GLTFLoader();
-      const gltf = await new Promise<{ scene: { traverse: (cb: (child: unknown) => void) => void } }>(
-        (resolve, reject) => {
-          loader.parse(buffer, "", resolve as never, reject);
-        },
-      );
+      const gltf = await new Promise<{
+        scene: { traverse: (cb: (child: unknown) => void) => void };
+      }>((resolve, reject) => {
+        loader.parse(buffer, "", resolve as never, reject);
+      });
 
-      type GeoLike = { getAttribute: (n: string) => { array: ArrayLike<number>; count: number } | null; getIndex: () => { array: ArrayLike<number> } | null };
+      type GeoLike = {
+        getAttribute: (
+          n: string,
+        ) => { array: ArrayLike<number>; count: number } | null;
+        getIndex: () => { array: ArrayLike<number> } | null;
+      };
       const allPos: Float32Array[] = [];
       const allNor: Float32Array[] = [];
       const allIdx: Uint32Array[] = [];
@@ -1322,7 +1358,8 @@ export class KernelStore {
 
         if (vertexOffset > 0) {
           const offset = new Uint32Array(rawIdx.length);
-          for (let i = 0; i < rawIdx.length; i++) offset[i] = rawIdx[i] + vertexOffset;
+          for (let i = 0; i < rawIdx.length; i++)
+            offset[i] = rawIdx[i] + vertexOffset;
           allIdx.push(offset);
         } else {
           allIdx.push(rawIdx);
@@ -1351,7 +1388,9 @@ export class KernelStore {
         iOff += idx.length;
       }
 
-      console.log(`fielddraft: GLB parsed — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`);
+      console.log(
+        `fielddraft: GLB parsed — ${allPos.length} mesh(es), ${vertexOffset} vertices in ${(performance.now() - t0).toFixed(0)} ms`,
+      );
       this.setLoading("Building SDF from mesh…");
       await new Promise((r) => setTimeout(r, 0));
       const id = this.importMeshAsFeature(positions, normals, indices);
@@ -1369,7 +1408,11 @@ export class KernelStore {
     if (!mesh) return false;
     this.setLoading("Building SDF from mesh…");
     await new Promise((r) => setTimeout(r, 0));
-    const id = this.importMeshAsFeature(mesh.positions, mesh.normals, mesh.indices);
+    const id = this.importMeshAsFeature(
+      mesh.positions,
+      mesh.normals,
+      mesh.indices,
+    );
     this.setLoading(null);
     return id !== null;
   }
@@ -1382,7 +1425,9 @@ export class KernelStore {
     if (!ref_ || ref_.positions.length === 0) return null;
     const t0 = performance.now();
     const triCount = ref_.indices.length / 3;
-    console.log(`fielddraft: converting reference mesh to solid — ${triCount} triangles, building BVH…`);
+    console.log(
+      `fielddraft: converting reference mesh to solid — ${triCount} triangles, building BVH…`,
+    );
     let id: number;
     try {
       id = this.kernel.addImportedMesh(
@@ -1396,7 +1441,9 @@ export class KernelStore {
     }
     this.patch({ referenceMesh: null });
     this.commit(new Set([id]), id);
-    console.log(`fielddraft: reference → solid complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`);
+    console.log(
+      `fielddraft: reference → solid complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`,
+    );
     return id;
   }
 
@@ -1412,7 +1459,9 @@ export class KernelStore {
   ): number | null {
     const t0 = performance.now();
     const triCount = indices.length / 3;
-    console.log(`fielddraft: importing mesh as SDF feature — ${triCount} triangles, building BVH…`);
+    console.log(
+      `fielddraft: importing mesh as SDF feature — ${triCount} triangles, building BVH…`,
+    );
     let id: number;
     try {
       id = this.kernel.addImportedMesh(positions, indices, BoolOpTag.New);
@@ -1422,7 +1471,9 @@ export class KernelStore {
     }
     this.meshDataCache.set(id, { positions, normals, indices });
     this.commit(new Set([id]), id);
-    console.log(`fielddraft: mesh imported as feature #${id} (solid) in ${(performance.now() - t0).toFixed(0)} ms`);
+    console.log(
+      `fielddraft: mesh imported as feature #${id} (solid) in ${(performance.now() - t0).toFixed(0)} ms`,
+    );
     return id;
   }
 
@@ -1601,12 +1652,14 @@ export class KernelStore {
         return this.addHole();
       case "linear_pattern": {
         const pid = this.addLinearPatternOfLatest();
-        if (pid == null) throw new Error("linear_pattern: no valid source feature");
+        if (pid == null)
+          throw new Error("linear_pattern: no valid source feature");
         return pid;
       }
       case "circular_pattern": {
         const pid = this.addCircularPatternOfLatest();
-        if (pid == null) throw new Error("circular_pattern: no valid source feature");
+        if (pid == null)
+          throw new Error("circular_pattern: no valid source feature");
         return pid;
       }
       default: {
@@ -1667,7 +1720,8 @@ export class KernelStore {
     this.meshDataCache.delete(id);
     const next = new Set(this.state.selection);
     next.delete(id);
-    const nextAnchor = this.state.selectionAnchor === id ? null : this.state.selectionAnchor;
+    const nextAnchor =
+      this.state.selectionAnchor === id ? null : this.state.selectionAnchor;
     this.commit(next, nextAnchor);
     return true;
   }
@@ -1733,7 +1787,11 @@ export class KernelStore {
     this.sketchRedoStack.push(this.state.sketchSession.subCalls);
     this.state = {
       ...this.state,
-      sketchSession: { ...this.state.sketchSession, subCalls: prev, selection: [] },
+      sketchSession: {
+        ...this.state.sketchSession,
+        subCalls: prev,
+        selection: [],
+      },
     };
     this.notify();
     void solveAndReplace(this);
@@ -1748,7 +1806,11 @@ export class KernelStore {
     this.sketchUndoStack.push(this.state.sketchSession.subCalls);
     this.state = {
       ...this.state,
-      sketchSession: { ...this.state.sketchSession, subCalls: next, selection: [] },
+      sketchSession: {
+        ...this.state.sketchSession,
+        subCalls: next,
+        selection: [],
+      },
     };
     this.notify();
     void solveAndReplace(this);
@@ -1866,7 +1928,8 @@ export class KernelStore {
       this.selectOnly(id, origin);
       return;
     }
-    const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+    const [lo, hi] =
+      anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
     const next = new Set<number>();
     for (let i = lo; i <= hi; i++) next.add(features[i].id);
     this.state = {
@@ -1956,12 +2019,16 @@ export class KernelStore {
     let partTab =
       activeTab && activeTab.kind === "part"
         ? activeTab
-        : project.tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+        : project.tabs.find(
+            (t): t is import("./project").PartTab => t.kind === "part",
+          );
     if (!partTab) {
       partTab = createPartTab("Part 1");
       project.tabs.push(partTab);
     }
-    this.kernel.loadJson(injectScripts(partTab.documentJson, projectScripts(project)));
+    this.kernel.loadJson(
+      injectScripts(partTab.documentJson, projectScripts(project)),
+    );
     this.loadedPartTabId = partTab.id;
 
     this.state = {
@@ -1999,17 +2066,14 @@ export class KernelStore {
     this.patch({ syncState: "syncing" });
     for (const listener of this.listeners) listener();
     try {
-      const res = await fetch(
-        `/api/projects/${this.state.projectId}`,
-        {
-          method: "PATCH",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            document: JSON.parse(this.kernel.toJson()),
-          }),
-        },
-      );
+      const res = await fetch(`/api/projects/${this.state.projectId}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          document: JSON.parse(this.kernel.toJson()),
+        }),
+      });
       if (!res.ok) throw new Error(`sync failed: ${res.status}`);
       this.patch({ syncState: "clean" });
       for (const listener of this.listeners) listener();
@@ -2100,7 +2164,13 @@ export class KernelStore {
       // so the body keeps its pre-extrude shape — the gizmo renders the
       // would-be prism translucently against the ORIGINAL body — until the
       // detail dialog confirms (OK / deselect). Cancel drops the feature.
-      id = this.kernel.addExtrudeFaces(faceQueries.join(","), depthMm, false, 0, true);
+      id = this.kernel.addExtrudeFaces(
+        faceQueries.join(","),
+        depthMm,
+        false,
+        0,
+        true,
+      );
     } catch (err) {
       console.error("fielddraft: addExtrudeFaces failed", err);
       this.setTransientError(formatKernelError(err, "Extrude failed"));
@@ -2118,11 +2188,21 @@ export class KernelStore {
    *  composite (boolean) non-analytic carriers with a helpful message. Passing
    *  `upToFaceQuery` (a `qFace(<idHash>)` target) switches to up-to-face mode:
    *  the wall grows up to that coaxial face and `thicknessMm` is ignored. */
-  addThicken(faceQueries: string[], thicknessMm = 2, upToFaceQuery = ""): number | null {
+  addThicken(
+    faceQueries: string[],
+    thicknessMm = 2,
+    upToFaceQuery = "",
+  ): number | null {
     if (faceQueries.length === 0) return null;
     let id: number;
     try {
-      id = this.kernel.addThicken(faceQueries.join(","), thicknessMm, false, 0, upToFaceQuery);
+      id = this.kernel.addThicken(
+        faceQueries.join(","),
+        thicknessMm,
+        false,
+        0,
+        upToFaceQuery,
+      );
     } catch (err) {
       console.error("fielddraft: addThicken failed", err);
       this.setTransientError(formatKernelError(err, "Thicken failed"));
@@ -2133,17 +2213,29 @@ export class KernelStore {
   }
 
   toggleMeasureMode(): void {
-    this.patch({ measureMode: !this.state.measureMode, filletMode: false, mateMode: false });
+    this.patch({
+      measureMode: !this.state.measureMode,
+      filletMode: false,
+      mateMode: false,
+    });
     for (const listener of this.listeners) listener();
   }
 
   toggleFilletMode(): void {
-    this.patch({ filletMode: !this.state.filletMode, measureMode: false, mateMode: false });
+    this.patch({
+      filletMode: !this.state.filletMode,
+      measureMode: false,
+      mateMode: false,
+    });
     for (const listener of this.listeners) listener();
   }
 
   toggleMateMode(): void {
-    this.patch({ mateMode: !this.state.mateMode, filletMode: false, measureMode: false });
+    this.patch({
+      mateMode: !this.state.mateMode,
+      filletMode: false,
+      measureMode: false,
+    });
     for (const listener of this.listeners) listener();
   }
 
@@ -2178,7 +2270,10 @@ export class KernelStore {
   /** Import a `.fdraft` part into the active assembly. Accepts a document
    *  JSON string or raw `.fdraft` bytes (wu2v: ZIP container → its
    *  `document.json` is extracted; legacy JSON bytes pass through). */
-  addPartToAssembly(source: string | Uint8Array | ArrayBuffer, name?: string): void {
+  addPartToAssembly(
+    source: string | Uint8Array | ArrayBuffer,
+    name?: string,
+  ): void {
     const asm = this.state.assembly;
     if (!asm.active) return;
 
@@ -2237,7 +2332,10 @@ export class KernelStore {
       try {
         this.kernel.loadJson(savedJson);
       } catch (err) {
-        console.error("fielddraft: failed to restore document after addPartToAssembly", err);
+        console.error(
+          "fielddraft: failed to restore document after addPartToAssembly",
+          err,
+        );
       }
       if (syncChanged) this.kernel.setSyncMeshing(false);
     }
@@ -2362,16 +2460,20 @@ export class KernelStore {
       }
     }
 
-    const result = executeScript(asm.document.script, params, time, dt, currentAngles);
+    const result = executeScript(
+      asm.document.script,
+      params,
+      time,
+      dt,
+      currentAngles,
+    );
 
     if (!result.success) return result.error ?? "script error";
 
     if (result.jointUpdates.size > 0) {
       let newMates = [...asm.document.mates];
       for (const [mateId, angle] of result.jointUpdates) {
-        newMates = newMates.map((m) =>
-          m.id === mateId ? { ...m, angle } : m,
-        );
+        newMates = newMates.map((m) => (m.id === mateId ? { ...m, angle } : m));
       }
       const newDoc = { ...asm.document, mates: newMates };
       const solved = solveAssembly({ ...newDoc, parts: asm.document.parts });
@@ -2395,10 +2497,13 @@ export class KernelStore {
   async publishProject(): Promise<string | null> {
     if (!this.state.projectId) return null;
     try {
-      const resp = await fetch(`/api/projects/${this.state.projectId}/publish`, {
-        method: "POST",
-        credentials: "include",
-      });
+      const resp = await fetch(
+        `/api/projects/${this.state.projectId}/publish`,
+        {
+          method: "POST",
+          credentials: "include",
+        },
+      );
       if (!resp.ok) return null;
       const data = await resp.json();
       const viewUrl = data.view_url ?? `/api/v/${data.snapshot_id}`;
@@ -2502,19 +2607,17 @@ export class KernelStore {
    * behaviour: selecting another sketch enters its edit session, selecting
    * a non-sketch feature commits the current one.
    */
-  private syncSketchSessionToSelection(
-    origin: SelectionOrigin = "list",
-  ): void {
+  private syncSketchSessionToSelection(origin: SelectionOrigin = "list"): void {
     const session = this.state.sketchSession;
     // Scene clicks never touch an active session (ticket 7hgr a).
     if (origin === "scene" && session.active) return;
     const editingId = session.active ? session.editingFeatureId : null;
     const sole =
       this.state.selection.size === 1
-        ? this.state.features.find((f) => this.state.selection.has(f.id)) ?? null
+        ? (this.state.features.find((f) => this.state.selection.has(f.id)) ??
+          null)
         : null;
-    const targetSketchId =
-      sole && sole.kind === "sketch" ? sole.id : null;
+    const targetSketchId = sole && sole.kind === "sketch" ? sole.id : null;
 
     // Already editing exactly the selected sketch → nothing to do. (A fresh
     // draft session has editingFeatureId === null but is NOT "no session",
@@ -2637,7 +2740,11 @@ export class KernelStore {
       this.state.selectedDatum === null
     )
       return;
-    this.patch({ selectedElement: null, selectedElements: [], selectedDatum: null });
+    this.patch({
+      selectedElement: null,
+      selectedElements: [],
+      selectedDatum: null,
+    });
     this.notify();
   }
 
@@ -2704,9 +2811,7 @@ export class KernelStore {
    * already active is a no-op so the viewport can't stack
    * sessions on top of each other.
    */
-  private updateSketch(
-    next: SketchSessionState,
-  ): void {
+  private updateSketch(next: SketchSessionState): void {
     if (next === this.state.sketchSession) return;
     // r3ci: a structural sub-spine change within an ongoing session is a
     // user edit — checkpoint it for sketch undo. Enter/exit transitions
@@ -2983,9 +3088,7 @@ export class KernelStore {
     if (!session.active) return;
     const result = computeTrim(session.subCalls, click, tolMm);
     if (!result) return;
-    this.updateSketch(
-      reduceReplaceAt(session, result.index, result.newCalls),
-    );
+    this.updateSketch(reduceReplaceAt(session, result.index, result.newCalls));
     void solveAndReplace(this);
   }
 
@@ -3113,12 +3216,15 @@ export class KernelStore {
         ? { construction: params.construction }
         : {};
 
-    const mirrored: Array<{ type: string; params: Record<string, unknown> }> = [];
+    const mirrored: Array<{ type: string; params: Record<string, unknown> }> =
+      [];
     for (const i of sources) {
       const call = session.subCalls[i];
       const cv = curveOfSubCall(call);
       if (!cv) continue;
-      mirrored.push(subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)));
+      mirrored.push(
+        subCallOfCurve(mirrorCurve(cv, axisA, axisB), carry(call.params)),
+      );
     }
     if (mirrored.length === 0) return;
 
@@ -3147,7 +3253,11 @@ export class KernelStore {
    * they're the same call, or no fillet is geometrically possible
    * (parallel, radius too large, no shared corner).
    */
-  filletSketchAt(firstIndex: number, secondIndex: number, radius: number): void {
+  filletSketchAt(
+    firstIndex: number,
+    secondIndex: number,
+    radius: number,
+  ): void {
     const session = this.state.sketchSession;
     if (!session.active) return;
     if (firstIndex === secondIndex) return;
@@ -3223,7 +3333,11 @@ export class KernelStore {
     const session = this.state.sketchSession;
     if (!session.active) return false;
     if (!Number.isFinite(newRadius) || newRadius <= 0) return false;
-    const rewritten = reeditFilletRadius(session.subCalls, arcSubCallId, newRadius);
+    const rewritten = reeditFilletRadius(
+      session.subCalls,
+      arcSubCallId,
+      newRadius,
+    );
     if (!rewritten) return false;
     this.replaceSketchSubCalls(rewritten);
     void solveAndReplace(this);
@@ -3362,7 +3476,11 @@ export class KernelStore {
    * chain. No-op when the target isn't a simple curve or no valid offset
    * exists (collapsed offset, degenerate geometry, bad distance).
    */
-  offsetSketchAt(targetIndex: number, clickPoint: Vec2, distance: number): void {
+  offsetSketchAt(
+    targetIndex: number,
+    clickPoint: Vec2,
+    distance: number,
+  ): void {
     const session = this.state.sketchSession;
     if (!session.active) return;
     const target = session.subCalls[targetIndex];
@@ -3371,7 +3489,9 @@ export class KernelStore {
     if (!cv) return;
 
     const carry = (params: Record<string, unknown>): Record<string, unknown> =>
-      params.construction !== undefined ? { construction: params.construction } : {};
+      params.construction !== undefined
+        ? { construction: params.construction }
+        : {};
 
     // A full circle has no endpoints — offset it concentrically.
     if (cv.kind === "circle") {
@@ -3439,7 +3559,10 @@ export class KernelStore {
    */
   async ensureTextFontLoaded(id = this.state.sketchTextFontId): Promise<void> {
     if (cachedFont(id) !== undefined) {
-      if (this.state.sketchTextFontId === id && !this.state.sketchTextFontReady) {
+      if (
+        this.state.sketchTextFontId === id &&
+        !this.state.sketchTextFontReady
+      ) {
         this.patch({ sketchTextFontReady: true });
         for (const listener of this.listeners) listener();
       }
@@ -3741,12 +3864,15 @@ export class KernelStore {
         : {};
 
     if (copy) {
-      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      const copies: Array<{ type: string; params: Record<string, unknown> }> =
+        [];
       for (const i of sources) {
         const call = session.subCalls[i];
         const cv = curveOfSubCall(call);
         if (!cv) continue;
-        copies.push(subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)));
+        copies.push(
+          subCallOfCurve(translateCurve(cv, dx, dy), carry(call.params)),
+        );
       }
       if (copies.length === 0) return;
       this.pushSketchSubCalls(copies);
@@ -3806,7 +3932,8 @@ export class KernelStore {
         : {};
 
     if (copy) {
-      const copies: Array<{ type: string; params: Record<string, unknown> }> = [];
+      const copies: Array<{ type: string; params: Record<string, unknown> }> =
+        [];
       for (const i of sources) {
         const call = session.subCalls[i];
         const cv = curveOfSubCall(call);
@@ -3838,7 +3965,9 @@ export class KernelStore {
    *  selection set. Ids are resolved against
    *  `buildDraftSketchState(subCalls)` by the canvas. */
   toggleSketchSelection(entityId: number): void {
-    this.updateSketch(reduceToggleSelection(this.state.sketchSession, entityId));
+    this.updateSketch(
+      reduceToggleSelection(this.state.sketchSession, entityId),
+    );
   }
 
   /** Replace the sketch selection wholesale. */
@@ -3869,6 +3998,66 @@ export class KernelStore {
     this.pushSketchSubCalls([call]);
     this.clearSketchSelection();
     void solveAndReplace(this);
+  }
+
+  /**
+   * zz1r: enter a constraint TOOL (the tool-first constrain workflow).
+   * The constraint buttons are sketch tools now: pick the tool, then
+   * click the entities one after another and the constraint applies the
+   * moment the running selection satisfies it. Clicking the active
+   * constraint tool again toggles back to plain select mode. The current
+   * selection is kept on entry so a selection-first pick (select the
+   * lines, then click the constraint) still applies at once.
+   */
+  selectSketchConstraintTool(type: string): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    if (session.selectedTool === type) {
+      this.selectSketchTool(null);
+      return;
+    }
+    // Keep the current selection (unlike a drawing tool) so an existing
+    // pick can apply immediately and partial picks accumulate.
+    this.updateSketch({ ...session, selectedTool: type, toolDraft: {} });
+    this.tryApplyConstraintTool();
+  }
+
+  /**
+   * zz1r: route a committed-entity pick while a constraint tool is active
+   * — toggle it into the running selection, then apply the constraint the
+   * instant the selection satisfies it (tool stays active for the next
+   * application).
+   */
+  pickSketchConstraintEntity(entityId: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active || !isConstraintTool(session.selectedTool)) return;
+    this.toggleSketchSelection(entityId);
+    this.tryApplyConstraintTool();
+  }
+
+  /**
+   * zz1r: apply the active constraint tool if the running selection now
+   * satisfies it. The Dimension tool resolves the most-specific
+   * dimensional type that fits; the others apply their own type. No-op
+   * until the selection composition matches (so partial picks accumulate).
+   */
+  private tryApplyConstraintTool(): void {
+    const session = this.state.sketchSession;
+    const tool = session.selectedTool;
+    if (!session.active || !isConstraintTool(tool) || tool === null) return;
+    if (session.selection.length === 0) return;
+    const state = buildDraftSketchState(session.subCalls);
+    const options = applicableConstraints(state, session.selection);
+    const resolved =
+      tool === CONSTRAINT_DIMENSION_TOOL
+        ? (DIMENSION_TYPES_BY_SPECIFICITY.find((t) =>
+            options.some((o) => o.type === t),
+          ) ?? null)
+        : options.some((o) => o.type === tool)
+          ? tool
+          : null;
+    if (!resolved) return;
+    this.applySketchConstraint(resolved);
   }
 
   toggleConstraintDriven(index: number): void {
@@ -4061,7 +4250,13 @@ export class KernelStore {
     return true;
   }
 
-  setFeatureRotation(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+  setFeatureRotation(
+    id: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+  ): boolean {
     if (!this.kernel.setFeatureRotation(id, rx, ry, rz, rw)) return false;
     this.commit();
     return true;
@@ -4079,7 +4274,13 @@ export class KernelStore {
     return true;
   }
 
-  applyGizmoRotate(id: number, rx: number, ry: number, rz: number, rw: number): boolean {
+  applyGizmoRotate(
+    id: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+  ): boolean {
     if (!this.kernel.applyGizmoRotate(id, rx, ry, rz, rw)) return false;
     this.commit();
     return true;
@@ -4253,12 +4454,23 @@ export class KernelStore {
   latestSketchId(): number | null {
     const sketches = this.state.features.filter((f) => f.kind === "sketch");
     if (sketches.length === 0) return null;
-    return sketches.reduce((acc, f) => (f.id > acc ? f.id : acc), sketches[0].id);
+    return sketches.reduce(
+      (acc, f) => (f.id > acc ? f.id : acc),
+      sketches[0].id,
+    );
   }
 
   private static NON_SPINE_KINDS = new Set([
-    "sketch", "linear_pattern", "circular_pattern", "mirror",
-    "mate_connector", "translate", "rotate", "scale", "hole", "fillet_edge",
+    "sketch",
+    "linear_pattern",
+    "circular_pattern",
+    "mirror",
+    "mate_connector",
+    "translate",
+    "rotate",
+    "scale",
+    "hole",
+    "fillet_edge",
   ]);
 
   private latestSpineFeature(): FeatureSummary | null {
@@ -4422,7 +4634,13 @@ export class KernelStore {
       // pre-extrude shape — the gizmo renders the would-be prism from
       // the SKETCH-PLANE anchor — until the detail dialog confirms
       // (OK / deselect). Cancel drops the feature.
-      id = this.kernel.addExtrude(sketchId, depthMm, this.state.nextOp, 0, true);
+      id = this.kernel.addExtrude(
+        sketchId,
+        depthMm,
+        this.state.nextOp,
+        0,
+        true,
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("fielddraft: addExtrude failed", err);
@@ -4483,23 +4701,33 @@ export class KernelStore {
     const bytes = this.kernel.export3mf();
     const copy = new Uint8Array(bytes.length);
     copy.set(bytes);
-    triggerDownload(copy, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml", filename);
+    triggerDownload(
+      copy,
+      "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+      filename,
+    );
   }
 
   /** Import a .3mf file: extract meshes as CSG solids, stash
    *  slicer metadata for roundtrip re-export. */
   import3mfFile(buffer: ArrayBuffer): number[] {
     const t0 = performance.now();
-    console.log(`fielddraft: importing 3MF — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    console.log(
+      `fielddraft: importing 3MF — ${(buffer.byteLength / 1024).toFixed(0)} KB`,
+    );
     this.setLoading("Extracting 3MF archive…");
     try {
       const result = import3mf(buffer);
-      console.log(`fielddraft: 3MF extracted — ${result.meshes.length} mesh(es)`);
+      console.log(
+        `fielddraft: 3MF extracted — ${result.meshes.length} mesh(es)`,
+      );
       const ids: number[] = [];
       for (let i = 0; i < result.meshes.length; i++) {
         const mesh = result.meshes[i];
         this.setLoading(`Building SDF ${i + 1}/${result.meshes.length}…`);
-        console.log(`fielddraft: 3MF mesh ${i + 1} — ${mesh.indices.length / 3} triangles, building BVH…`);
+        console.log(
+          `fielddraft: 3MF mesh ${i + 1} — ${mesh.indices.length / 3} triangles, building BVH…`,
+        );
         const id = this.kernel.addImportedMesh(
           mesh.positions,
           mesh.indices,
@@ -4513,7 +4741,9 @@ export class KernelStore {
       } else {
         this.notify();
       }
-      console.log(`fielddraft: 3MF import complete — ${ids.length} body(ies) in ${(performance.now() - t0).toFixed(0)} ms`);
+      console.log(
+        `fielddraft: 3MF import complete — ${ids.length} body(ies) in ${(performance.now() - t0).toFixed(0)} ms`,
+      );
       return ids;
     } catch (e) {
       this.setLoading(null);
@@ -4539,9 +4769,12 @@ export class KernelStore {
     const bytes = export3mfRoundtrip(modelXmlOnly, stash);
     const blobData = new Uint8Array(bytes.length);
     blobData.set(bytes);
-    triggerDownload(blobData, "application/vnd.ms-package.3dmanufacturing-3dmodel+xml", filename);
+    triggerDownload(
+      blobData,
+      "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+      filename,
+    );
   }
-
 
   /** M14c: export the mechanical core of the scene as STEP via
    *  the OCCT Web Worker. Lazy-loads opencascade.js (~25 MB)
@@ -4566,7 +4799,9 @@ export class KernelStore {
       if (report.degraded > 0 || report.excluded > 0) {
         const lines: string[] = ["STEP Export — Feature Report\n"];
         if (report.excluded > 0) {
-          lines.push(`${report.excluded} feature(s) will be EXCLUDED (not exportable):`);
+          lines.push(
+            `${report.excluded} feature(s) will be EXCLUDED (not exportable):`,
+          );
           for (const f of report.features) {
             if (f.status.startsWith("excluded:")) {
               lines.push(`  • ${f.name}: ${f.status.slice(10)}`);
@@ -4575,7 +4810,9 @@ export class KernelStore {
           lines.push("");
         }
         if (report.degraded > 0) {
-          lines.push(`${report.degraded} feature(s) will be DEGRADED (sharp edges instead of fillets/chamfers):`);
+          lines.push(
+            `${report.degraded} feature(s) will be DEGRADED (sharp edges instead of fillets/chamfers):`,
+          );
           for (const f of report.features) {
             if (f.status.startsWith("degraded:")) {
               lines.push(`  • ${f.name}: ${f.status.slice(10)}`);
@@ -4611,7 +4848,9 @@ export class KernelStore {
   async importStepFile(buffer: ArrayBuffer): Promise<number | null> {
     if (typeof window === "undefined") return null;
     const t0 = performance.now();
-    console.log(`fielddraft: importing STEP — ${(buffer.byteLength / 1024).toFixed(0)} KB`);
+    console.log(
+      `fielddraft: importing STEP — ${(buffer.byteLength / 1024).toFixed(0)} KB`,
+    );
     this.setLoading("Loading STEP importer…");
     try {
       const { importStep } = await import("./stepImport");
@@ -4621,19 +4860,23 @@ export class KernelStore {
         this.setLoading(phase);
       });
 
-      const posF32 = positions instanceof Float32Array ? positions : new Float32Array(positions);
-      const idxU32 = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
+      const posF32 =
+        positions instanceof Float32Array
+          ? positions
+          : new Float32Array(positions);
+      const idxU32 =
+        indices instanceof Uint32Array ? indices : new Uint32Array(indices);
 
-      console.log(`fielddraft: STEP tessellated — ${idxU32.length / 3} triangles, building BVH…`);
-      this.setLoading("Building SDF from mesh…");
-      const id = this.kernel.addImportedMesh(
-        posF32,
-        idxU32,
-        BoolOpTag.New,
+      console.log(
+        `fielddraft: STEP tessellated — ${idxU32.length / 3} triangles, building BVH…`,
       );
+      this.setLoading("Building SDF from mesh…");
+      const id = this.kernel.addImportedMesh(posF32, idxU32, BoolOpTag.New);
       this.setLoading(null);
       this.commit(new Set([id]), id);
-      console.log(`fielddraft: STEP import complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`);
+      console.log(
+        `fielddraft: STEP import complete — feature #${id} in ${(performance.now() - t0).toFixed(0)} ms`,
+      );
       return id;
     } catch (e) {
       this.setLoading(null);
@@ -4649,27 +4892,37 @@ export class KernelStore {
   async downloadGlb(filename = "fielddraft.glb"): Promise<void> {
     if (!canTriggerDownload()) return;
     const THREE = await import("three");
-    const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
+    const { GLTFExporter } =
+      await import("three/examples/jsm/exporters/GLTFExporter.js");
 
     const scene = new THREE.Scene();
     const mat = new THREE.MeshStandardMaterial({ color: 0x8ca6d9 });
     for (const body of this.state.meshedBodies) {
       if (body.positions.length === 0) continue;
       const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.BufferAttribute(body.positions, 3));
+      geo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(body.positions, 3),
+      );
       geo.setAttribute("normal", new THREE.BufferAttribute(body.normals, 3));
       geo.setIndex(new THREE.BufferAttribute(body.indices, 1));
       scene.add(new THREE.Mesh(geo, mat));
     }
 
     const exporter = new GLTFExporter();
-    const glb = await exporter.parseAsync(scene, { binary: true }) as ArrayBuffer;
+    const glb = (await exporter.parseAsync(scene, {
+      binary: true,
+    })) as ArrayBuffer;
     triggerDownload(glb, "model/gltf-binary", filename);
   }
 
   downloadObj(filename = "fielddraft.obj"): void {
     if (!canTriggerDownload()) return;
-    triggerDownload(buildObjExportText(this.state.meshedBodies), "text/plain", filename);
+    triggerDownload(
+      buildObjExportText(this.state.meshedBodies),
+      "text/plain",
+      filename,
+    );
   }
 
   // ── MT-A: project / multi-tab management ──────────────────────
@@ -4731,7 +4984,11 @@ export class KernelStore {
     // assembly
     this.state = {
       ...this.state,
-      assembly: { active: true, document: target.document, selectedPartId: null },
+      assembly: {
+        active: true,
+        document: target.document,
+        selectedPartId: null,
+      },
       project: { ...this.state.project, activeTabId: id },
     };
     this.notify();
@@ -4813,15 +5070,21 @@ export class KernelStore {
     const deletedIndex = project.tabs.findIndex((t) => t.id === id);
 
     // Ensure a part tab still exists to load against.
-    const removedLoadedPart = target.kind === "part" && target.id === this.loadedPartTabId;
+    const removedLoadedPart =
+      target.kind === "part" && target.id === this.loadedPartTabId;
     if (removedLoadedPart) {
-      let fallback = tabs.find((t): t is import("./project").PartTab => t.kind === "part");
+      let fallback = tabs.find(
+        (t): t is import("./project").PartTab => t.kind === "part",
+      );
       if (!fallback) {
         fallback = createPartTab("Part 1");
         tabs = [...tabs, fallback];
       }
       this.kernel.loadJson(
-        injectScripts(fallback.documentJson, projectScripts({ ...project, tabs })),
+        injectScripts(
+          fallback.documentJson,
+          projectScripts({ ...project, tabs }),
+        ),
       );
       this.loadedPartTabId = fallback.id;
     }
@@ -4845,13 +5108,20 @@ export class KernelStore {
     if (newActive?.kind === "assembly") {
       this.state = {
         ...this.state,
-        assembly: { active: true, document: newActive.document, selectedPartId: null },
+        assembly: {
+          active: true,
+          document: newActive.document,
+          selectedPartId: null,
+        },
       };
     } else if (newActive?.kind === "part") {
       // Load the active part if it isn't already loaded.
       if (this.loadedPartTabId !== newActive.id) {
         this.kernel.loadJson(
-          injectScripts(newActive.documentJson, projectScripts(this.state.project)),
+          injectScripts(
+            newActive.documentJson,
+            projectScripts(this.state.project),
+          ),
         );
         this.loadedPartTabId = newActive.id;
       }
@@ -4877,9 +5147,10 @@ export class KernelStore {
    * the kernel, and commits so the live part regenerates + autosave
    * persists. Returns the new record or an error on malformed source.
    */
-  saveScriptTab(tabId: string, source: string):
-    | { ok: true; record: FieldSkriptRecord }
-    | { ok: false; error: string } {
+  saveScriptTab(
+    tabId: string,
+    source: string,
+  ): { ok: true; record: FieldSkriptRecord } | { ok: false; error: string } {
     const tab = this.state.project.tabs.find(
       (t): t is ScriptTab => t.id === tabId && t.kind === "script",
     );
@@ -4943,7 +5214,10 @@ export class KernelStore {
     existing: readonly FieldSkriptRecord[],
   ): string {
     const taken = new Set(existing.map((r) => r.id));
-    const slug = (name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    const slug = (name ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
     const base = slug.length > 0 ? slug : `script_${existing.length + 1}`;
     if (!taken.has(base)) return base;
     let n = 2;
@@ -5007,7 +5281,9 @@ export class KernelStore {
     // Fresh sketch draft: drop on cancel / finish-with-empty.
     if (session.subCalls.length === 0) {
       this.exitSketch();
-      this.setTransientError("Sketch discarded — add geometry before finishing.");
+      this.setTransientError(
+        "Sketch discarded — add geometry before finishing.",
+      );
       return null;
     }
     let id: number | null = null;

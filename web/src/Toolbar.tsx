@@ -12,7 +12,11 @@ import { buildDefaultDefinition } from "./widgets/schema";
 import { FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import { elementQueryString } from "./elementQuery";
 import { buildDraftSketchState } from "./sketchSession";
-import { applicableConstraints } from "./sketchConstraints";
+import {
+  applicableConstraints,
+  CONSTRAINT_DIMENSION_TOOL,
+  DIMENSION_TYPES_BY_SPECIFICITY,
+} from "./sketchConstraints";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 
 /* ------------------------------------------------------------------ */
@@ -69,7 +73,9 @@ export function FeatureButton({
       draggable={draggable}
       onDragStart={draggable ? dragStartCopy(dragType, kind) : undefined}
     >
-      <span className="glyph" aria-hidden="true">{m.glyph}</span>
+      <span className="glyph" aria-hidden="true">
+        {m.glyph}
+      </span>
       <span className="tool-label">{labelOverride ?? m.label}</span>
     </button>
   );
@@ -114,7 +120,9 @@ export function FeatureDropdownButton({
       try {
         const raw = localStorage.getItem(lastUsedStorageKey);
         if (raw && items.some((it) => it.key === raw)) return raw;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     return defaultKey ?? items[0]?.key ?? "";
   });
@@ -129,7 +137,8 @@ export function FeatureDropdownButton({
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node))
+        setOpen(false);
     };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
@@ -145,7 +154,11 @@ export function FeatureDropdownButton({
     onSelect(key);
     if (lastUsedStorageKey && key !== lastUsed) {
       setLastUsed(key);
-      try { localStorage.setItem(lastUsedStorageKey, key); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(lastUsedStorageKey, key);
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -162,13 +175,19 @@ export function FeatureDropdownButton({
     <div className="split-button" data-testid={testId} ref={wrapperRef}>
       <button
         type="button"
-        className={"tool primary" + (activeKey !== undefined ? " is-active" : "")}
+        className={
+          "tool primary" + (activeKey !== undefined ? " is-active" : "")
+        }
         title={current.title ?? cm.label}
         draggable={draggable}
-        onDragStart={draggable ? dragStartCopy(dragType, current.key) : undefined}
+        onDragStart={
+          draggable ? dragStartCopy(dragType, current.key) : undefined
+        }
         onClick={() => invoke(current.key)}
       >
-        <span className="glyph" aria-hidden="true">{cm.glyph}</span>
+        <span className="glyph" aria-hidden="true">
+          {cm.glyph}
+        </span>
         <span className="tool-label">{current.label ?? cm.label}</span>
       </button>
       <button
@@ -203,13 +222,17 @@ export function FeatureDropdownButton({
                 title={item.title ?? im.label}
                 data-testid={item.testId}
                 draggable={draggable}
-                onDragStart={draggable ? dragStartCopy(dragType, item.key) : undefined}
+                onDragStart={
+                  draggable ? dragStartCopy(dragType, item.key) : undefined
+                }
                 onClick={() => {
                   invoke(item.key);
                   setOpen(false);
                 }}
               >
-                <span className="glyph" aria-hidden="true">{im.glyph}</span>
+                <span className="glyph" aria-hidden="true">
+                  {im.glyph}
+                </span>
                 <span className="label">{item.label ?? im.label}</span>
               </button>
             );
@@ -224,17 +247,29 @@ export function FeatureDropdownButton({
 /*  Toolbar item descriptors                                           */
 /* ------------------------------------------------------------------ */
 
-type PrimitiveToolKind = "box" | "sphere" | "cylinder" | "hex_prism" | "ellipsoid" | "capsule" | "cone" | "torus";
+type PrimitiveToolKind =
+  | "box"
+  | "sphere"
+  | "cylinder"
+  | "hex_prism"
+  | "ellipsoid"
+  | "capsule"
+  | "cone"
+  | "torus";
 
 const PRIMITIVE_ITEMS: DropdownItem[] = [
-  { key: "box",       kind: "box",       title: "Add Box" },
-  { key: "sphere",    kind: "sphere",    title: "Add Sphere" },
-  { key: "cylinder",  kind: "cylinder",  title: "Add Cylinder" },
-  { key: "hex_prism", kind: "hex_prism", title: "Add Hex Prism (apothem 25 mm)" },
+  { key: "box", kind: "box", title: "Add Box" },
+  { key: "sphere", kind: "sphere", title: "Add Sphere" },
+  { key: "cylinder", kind: "cylinder", title: "Add Cylinder" },
+  {
+    key: "hex_prism",
+    kind: "hex_prism",
+    title: "Add Hex Prism (apothem 25 mm)",
+  },
   { key: "ellipsoid", kind: "ellipsoid", title: "Add Ellipsoid (40x25x30 mm)" },
-  { key: "capsule",   kind: "capsule",   title: "Add Capsule (R20 x H80 mm)" },
-  { key: "cone",      kind: "cone",      title: "Add Cone (frustum R40/10 x H120 mm)" },
-  { key: "torus",     kind: "torus",     title: "Add Torus (R30 x r10 mm)" },
+  { key: "capsule", kind: "capsule", title: "Add Capsule (R20 x H80 mm)" },
+  { key: "cone", kind: "cone", title: "Add Cone (frustum R40/10 x H120 mm)" },
+  { key: "torus", kind: "torus", title: "Add Torus (R30 x r10 mm)" },
 ];
 
 interface ThreadPreset {
@@ -246,13 +281,13 @@ interface ThreadPreset {
 }
 
 const THREAD_PRESETS: ThreadPreset[] = [
-  { key: "M3",  label: "M3",  radius: 1.5,  pitch: 0.5,  depth: 0.307 },
-  { key: "M4",  label: "M4",  radius: 2.0,  pitch: 0.7,  depth: 0.429 },
-  { key: "M5",  label: "M5",  radius: 2.5,  pitch: 0.8,  depth: 0.491 },
-  { key: "M6",  label: "M6",  radius: 3.0,  pitch: 1.0,  depth: 0.613 },
-  { key: "M8",  label: "M8",  radius: 4.0,  pitch: 1.25, depth: 0.767 },
-  { key: "M10", label: "M10", radius: 5.0,  pitch: 1.5,  depth: 0.920 },
-  { key: "M12", label: "M12", radius: 6.0,  pitch: 1.75, depth: 1.074 },
+  { key: "M3", label: "M3", radius: 1.5, pitch: 0.5, depth: 0.307 },
+  { key: "M4", label: "M4", radius: 2.0, pitch: 0.7, depth: 0.429 },
+  { key: "M5", label: "M5", radius: 2.5, pitch: 0.8, depth: 0.491 },
+  { key: "M6", label: "M6", radius: 3.0, pitch: 1.0, depth: 0.613 },
+  { key: "M8", label: "M8", radius: 4.0, pitch: 1.25, depth: 0.767 },
+  { key: "M10", label: "M10", radius: 5.0, pitch: 1.5, depth: 0.92 },
+  { key: "M12", label: "M12", radius: 6.0, pitch: 1.75, depth: 1.074 },
 ];
 
 const THREAD_ITEMS: DropdownItem[] = THREAD_PRESETS.map((p) => ({
@@ -266,8 +301,8 @@ type GizmoMode = "translate" | "rotate" | "scale";
 
 const TRANSFORM_ITEMS: DropdownItem[] = [
   { key: "translate", kind: "translate", title: "Move (G)" },
-  { key: "rotate",    kind: "rotate",    title: "Rotate (R)" },
-  { key: "scale",     kind: "scale",     title: "Scale" },
+  { key: "rotate", kind: "rotate", title: "Rotate (R)" },
+  { key: "scale", kind: "scale", title: "Scale" },
 ];
 
 // Allowlist of sketch tools the toolbar renders, regardless of what the
@@ -297,15 +332,39 @@ const SKETCH_TOOL_KEYS = new Set<string>([
 // dropdown `key` is the tool kind; the toolbar's onSelect dispatches it
 // through the right activation path (kernel tool vs. UI-only variant).
 const SKETCH_CIRCLE_ITEMS: DropdownItem[] = [
-  { key: "sketch_circle",    kind: "sketch_circle",    testId: "sketch-tool-sketch_circle" },
-  { key: "sketch_circle_3p", kind: "sketch_circle_3p", testId: "sketch-tool-sketch_circle_3p" },
-  { key: "sketch_ellipse",   kind: "sketch_ellipse",   testId: "sketch-tool-sketch_ellipse" },
+  {
+    key: "sketch_circle",
+    kind: "sketch_circle",
+    testId: "sketch-tool-sketch_circle",
+  },
+  {
+    key: "sketch_circle_3p",
+    kind: "sketch_circle_3p",
+    testId: "sketch-tool-sketch_circle_3p",
+  },
+  {
+    key: "sketch_ellipse",
+    kind: "sketch_ellipse",
+    testId: "sketch-tool-sketch_ellipse",
+  },
 ];
 
 const SKETCH_RECTANGLE_ITEMS: DropdownItem[] = [
-  { key: "sketch_rectangle",        kind: "sketch_rectangle",        testId: "sketch-tool-sketch_rectangle" },
-  { key: "sketch_rectangle_center", kind: "sketch_rectangle_center", testId: "sketch-tool-sketch_rectangle_center" },
-  { key: "sketch_rectangle_3p",     kind: "sketch_rectangle_3p",     testId: "sketch-tool-sketch_rectangle_3p" },
+  {
+    key: "sketch_rectangle",
+    kind: "sketch_rectangle",
+    testId: "sketch-tool-sketch_rectangle",
+  },
+  {
+    key: "sketch_rectangle_center",
+    kind: "sketch_rectangle_center",
+    testId: "sketch-tool-sketch_rectangle_center",
+  },
+  {
+    key: "sketch_rectangle_3p",
+    kind: "sketch_rectangle_3p",
+    testId: "sketch-tool-sketch_rectangle_3p",
+  },
 ];
 
 // Variants drawn through dropdowns are pulled out of the flat kernel-driven
@@ -467,73 +526,133 @@ const CONSTRAINT_ICONS: Record<string, ReactElement> = {
 /*  Sketch-constraint toolbar descriptors (ticket vk8q)                */
 /* ------------------------------------------------------------------ */
 
-// pqoe (part 7) / vk8q: the full explicit constraint toolbar, Onshape-style.
-// Every constraint the system supports is ALWAYS rendered as a button;
-// each is enabled only when its `type` is offered by
-// `applicableConstraints(current selection)`. vk8q: text labels are
-// replaced by the inline SVG icons above (keyed by `icon`), a single
-// "Dimension" tool leads the row and infers the dimensional type from the
-// selection, the order matches Onshape, and Normal / Pierce / Curvature
-// appear as DISABLED placeholders (no PlaneGCS constraint exists for them
-// — see the resolution notes below). `sketch_mirror` is deliberately
-// absent: mirror is a sketch TOOL, not a constraint.
+// pqoe / vk8q / zz1r: the explicit constraint toolbar, Onshape-style. Each
+// constraint is a sketch TOOL: it sits in the drawing-tool row with an icon
+// + text label, is always enabled, and on click selects the tool — the user
+// then clicks the entities one after another and the constraint applies the
+// instant the running selection satisfies it (see store.selectSketchConstraintTool).
+// A single "Dimension" tool leads the row and infers the dimensional type
+// (distance / angle / radius / diameter) from the picks. `sketch_mirror` is
+// deliberately absent: mirror is a sketch tool, not a constraint.
 interface ConstraintButtonMeta {
   /** Sub-call type the button applies, e.g. `sketch_constraint_parallel`.
    *  Null for the unified Dimension button (its type is resolved from the
-   *  selection) and for the unsupported placeholders. */
+   *  selection at apply time). */
   type: string | null;
   /** Stable test-id suffix (`sketch-constraint-<testid>`). */
   testid: string;
+  /** Short text label shown next to the icon (zz1r). */
+  label: string;
   /** Icon key into `CONSTRAINT_ICONS`. */
   icon: string;
   /** Tooltip describing the constraint. */
   title: string;
-  /** True for Normal / Pierce / Curvature: the solver has no matching
-   *  PlaneGCS constraint, so the button is always disabled (vk8q). */
-  unsupported?: boolean;
 }
 
-// The single dimensional types, ordered most- to least-specific, so the
-// unified Dimension button can pick the right one from the current
-// selection's `applicableConstraints` (radius/diameter before angle before
-// distance). vk8q.
-const DIMENSION_TYPES_BY_SPECIFICITY = [
-  "sketch_constraint_radius",
-  "sketch_constraint_diameter",
-  "sketch_constraint_angle",
-  "sketch_constraint_distance",
-];
-
+// zz1r: the constraint buttons are sketch TOOLS now (tool-first constrain
+// workflow) — pick the tool, then click the entities one after another and
+// the constraint applies as soon as the selection fits. They carry text
+// labels, live in the drawing-tool row, and are always enabled. The
+// unsupported Onshape placeholders (Normal / Pierce / Curvature) are gone:
+// they had no kernel constraint, and a tool you can never apply has no
+// place as an always-enabled button.
 const SKETCH_CONSTRAINT_BUTTONS: ConstraintButtonMeta[] = [
   // Unified Dimension tool — infers distance/length/angle/radius/diameter.
-  { type: null, testid: "dimension", icon: "dimension", title: "Dimension — set distance / angle / radius / diameter from the selection" },
+  {
+    type: null,
+    testid: "dimension",
+    label: "Dimension",
+    icon: "dimension",
+    title:
+      "Dimension — pick the entities to set distance / angle / radius / diameter",
+  },
   // Geometric constraints, in Onshape order.
-  { type: "sketch_constraint_coincident",      testid: "coincident",      icon: "coincident",      title: "Make the two points coincident" },
-  { type: "sketch_constraint_concentric",      testid: "concentric",      icon: "concentric",      title: "Make the two circles/arcs concentric" },
-  { type: "sketch_constraint_parallel",        testid: "parallel",        icon: "parallel",        title: "Make the two lines parallel" },
-  { type: "sketch_constraint_tangent",         testid: "tangent",         icon: "tangent",         title: "Make the line tangent to the curve" },
-  { type: "sketch_constraint_horizontal",      testid: "horizontal",      icon: "horizontal",      title: "Make this line horizontal" },
-  { type: "sketch_constraint_vertical",        testid: "vertical",        icon: "vertical",        title: "Make this line vertical" },
-  { type: "sketch_constraint_perpendicular",   testid: "perpendicular",   icon: "perpendicular",   title: "Make the two lines perpendicular" },
-  { type: "sketch_constraint_equal",           testid: "equal",           icon: "equal",           title: "Make the two radii equal" },
-  { type: "sketch_constraint_midpoint",        testid: "midpoint",        icon: "midpoint",        title: "Pin the point at the midpoint of the line" },
-  // vk8q: "Normal" — Onshape's normal/perpendicular-at-a-point. PlaneGCS
-  // has Perpendicular Line↔Arc variants, but our kernel translator only
-  // emits `perpendicular_ll` (line↔line), so there's no genuine constraint
-  // to apply yet. Rendered disabled rather than faked.
-  { type: null, testid: "normal", icon: "normal", title: "Normal — not yet supported (no kernel constraint)", unsupported: true },
-  // vk8q: "Pierce" — a 3D concept (point where a curve pierces the sketch
-  // plane). No 2D PlaneGCS analog and no kernel sub-call. Disabled.
-  { type: null, testid: "pierce", icon: "pierce", title: "Pierce — not yet supported (no kernel constraint)", unsupported: true },
-  { type: "sketch_constraint_symmetric",       testid: "symmetric",       icon: "symmetric",       title: "Make the two points symmetric across the line" },
-  { type: "sketch_constraint_fix",             testid: "fix",             icon: "fix",             title: "Fix this point at its position" },
-  // vk8q: on-curve isn't in Onshape's list under its own name (Pierce is
-  // its rough analog) but it IS a real, supported constraint here, so it
-  // stays available at the tail of the row.
-  { type: "sketch_constraint_point_on_object", testid: "point_on_object", icon: "point_on_object", title: "Constrain the point onto the line/circle/arc/ellipse/spline" },
-  // vk8q: "Curvature" — G2 continuity between splines. No curvature/G2
-  // constraint exists in PlaneGCS at all. Disabled.
-  { type: null, testid: "curvature", icon: "curvature", title: "Curvature — not yet supported (no kernel constraint)", unsupported: true },
+  {
+    type: "sketch_constraint_coincident",
+    testid: "coincident",
+    label: "Coincident",
+    icon: "coincident",
+    title: "Coincident — pick two points to make them coincident",
+  },
+  {
+    type: "sketch_constraint_concentric",
+    testid: "concentric",
+    label: "Concentric",
+    icon: "concentric",
+    title: "Concentric — pick two circles/arcs to share a centre",
+  },
+  {
+    type: "sketch_constraint_parallel",
+    testid: "parallel",
+    label: "Parallel",
+    icon: "parallel",
+    title: "Parallel — pick two lines to make them parallel",
+  },
+  {
+    type: "sketch_constraint_tangent",
+    testid: "tangent",
+    label: "Tangent",
+    icon: "tangent",
+    title: "Tangent — pick a line and a curve to make them tangent",
+  },
+  {
+    type: "sketch_constraint_horizontal",
+    testid: "horizontal",
+    label: "Horizontal",
+    icon: "horizontal",
+    title: "Horizontal — pick a line to make it horizontal",
+  },
+  {
+    type: "sketch_constraint_vertical",
+    testid: "vertical",
+    label: "Vertical",
+    icon: "vertical",
+    title: "Vertical — pick a line to make it vertical",
+  },
+  {
+    type: "sketch_constraint_perpendicular",
+    testid: "perpendicular",
+    label: "Perpendicular",
+    icon: "perpendicular",
+    title: "Perpendicular — pick two lines to make them perpendicular",
+  },
+  {
+    type: "sketch_constraint_equal",
+    testid: "equal",
+    label: "Equal",
+    icon: "equal",
+    title: "Equal — pick two entities to equate length / radius",
+  },
+  {
+    type: "sketch_constraint_midpoint",
+    testid: "midpoint",
+    label: "Midpoint",
+    icon: "midpoint",
+    title:
+      "Midpoint — pick a point and a line to pin it at the line's midpoint",
+  },
+  {
+    type: "sketch_constraint_symmetric",
+    testid: "symmetric",
+    label: "Symmetric",
+    icon: "symmetric",
+    title: "Symmetric — pick two points and a line of symmetry",
+  },
+  {
+    type: "sketch_constraint_fix",
+    testid: "fix",
+    label: "Fix",
+    icon: "fix",
+    title: "Fix — pick a point to fix it at its position",
+  },
+  {
+    type: "sketch_constraint_point_on_object",
+    testid: "point_on_object",
+    label: "On Curve",
+    icon: "point_on_object",
+    title:
+      "On Curve — pick a point and a line/circle/arc/ellipse/spline to constrain it onto",
+  },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -593,7 +712,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
     try {
       const schema = fd.schemaForSketchToolType(typeName);
       store.selectSketchTool(typeName, buildDefaultDefinition(schema));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   // Dispatch a sketch-tool dropdown selection. Kernel tools (circle,
@@ -666,7 +787,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
         <div className="group sketch-tool-row">
           {/* Ticket yuaw: minimal sketch-mode chip — was the old header row's
               title. Kept (restyled) because e2e selectors wait on it. */}
-          <span className="sketch-chip" data-testid="sketch-mode-indicator">Sketch</span>
+          <span className="sketch-chip" data-testid="sketch-mode-indicator">
+            Sketch
+          </span>
           {/* Ticket pqoe: a sketch is a feature like any other — commit /
               discard live on the ✓/✗ in its Detail-panel header, not in
               the toolbar. The toolbar only carries sketch tools + Import. */}
@@ -676,12 +799,16 @@ export function Toolbar({ store, state }: ToolbarProps) {
               unreachable once any drawing tool is chosen. */}
           <button
             type="button"
-            className={"tool" + (sketchSession.selectedTool === null ? " is-active" : "")}
+            className={
+              "tool" + (sketchSession.selectedTool === null ? " is-active" : "")
+            }
             title="Select & constrain geometry (Esc)"
             data-testid="sketch-tool-select"
             onClick={() => store.selectSketchTool(null)}
           >
-            <span className="glyph" aria-hidden="true">↖</span>
+            <span className="glyph" aria-hidden="true">
+              ↖
+            </span>
             <span className="tool-label">Select</span>
           </button>
           {sketchToolTypes.map((type) => {
@@ -710,7 +837,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             lastUsedStorageKey="fielddraft.lastUsedSketchCircle"
             defaultKey="sketch_circle"
             activeKey={
-              SKETCH_CIRCLE_ITEMS.some((it) => it.key === sketchSession.selectedTool)
+              SKETCH_CIRCLE_ITEMS.some(
+                (it) => it.key === sketchSession.selectedTool,
+              )
                 ? (sketchSession.selectedTool ?? undefined)
                 : undefined
             }
@@ -722,7 +851,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             lastUsedStorageKey="fielddraft.lastUsedSketchRectangle"
             defaultKey="sketch_rectangle"
             activeKey={
-              SKETCH_RECTANGLE_ITEMS.some((it) => it.key === sketchSession.selectedTool)
+              SKETCH_RECTANGLE_ITEMS.some(
+                (it) => it.key === sketchSession.selectedTool,
+              )
                 ? (sketchSession.selectedTool ?? undefined)
                 : undefined
             }
@@ -777,7 +908,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
               string. They now live inside the Circle / Rectangle dropdowns
               above (ticket pqoe). */}
           {/* Ticket 7hgr (c): draw tools | modify tools — separator. */}
-          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-modify" />
+          <span
+            className="tool-sep"
+            aria-hidden="true"
+            data-testid="sketch-tool-sep-modify"
+          />
           {/* Trim is an interactive editing mode, not a kernel feature
               tool, so it isn't in `sketchToolTypes`. Selecting it makes a
               canvas click cut the curve under the cursor at its nearest
@@ -799,7 +934,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
             data-testid="sketch-import"
             onClick={() => importInputRef.current?.click()}
           >
-            <span className="glyph" aria-hidden="true">📐</span>
+            <span className="glyph" aria-hidden="true">
+              📐
+            </span>
             <span className="tool-label">Import</span>
           </button>
           <input
@@ -898,7 +1035,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
               floats in the canvas corner while the Offset tool is active
               (see SketchCanvas2d's in-scene tool-param input). */}
           {/* Ticket 7hgr (c): modify tools | transform tools — separator. */}
-          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-transform" />
+          <span
+            className="tool-sep"
+            aria-hidden="true"
+            data-testid="sketch-tool-sep-transform"
+          />
           {/* F14: Mirror — interactive editing mode, not a kernel tool.
               Select source geometry first (Select mode), then pick this
               tool and click the axis LINE: every selected line/circle/arc
@@ -950,7 +1091,11 @@ export function Toolbar({ store, state }: ToolbarProps) {
               selection exists in Select mode (see SketchCanvas2d's
               .fd-sketch-transform-panel). */}
           {/* Ticket 7hgr (c): transform tools | text — separator. */}
-          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-text" />
+          <span
+            className="tool-sep"
+            aria-hidden="true"
+            data-testid="sketch-tool-sep-text"
+          />
           {/* F24-full: Text — interactive editing mode, not a kernel tool.
               Picking the tool then clicking the canvas opens an IN-SCENE
               input + param popover (height / font) right at the click
@@ -972,7 +1117,58 @@ export function Toolbar({ store, state }: ToolbarProps) {
               its profile, opening the new feature's Detail view
               (store.extrudeFromSketchSession / revolveFromSketchSession). A
               separator sets them apart from the drawing/modify tools. */}
-          <span className="tool-sep" aria-hidden="true" data-testid="sketch-tool-sep-feature" />
+          {/* zz1r: the constraint tools live IN the drawing-tool row (no
+              separate, selection-gated palette anymore). Each is always
+              enabled and is a tool-selector: clicking it activates the tool,
+              and the user then clicks the entities one after another (see
+              store.selectSketchConstraintTool). The Dimension button keeps a
+              dynamic test-id (`sketch-constraint-distance/angle/…`) resolved
+              from the current selection so the existing dimensional e2e
+              selectors and the selection-first apply path keep working. */}
+          <span
+            className="tool-sep"
+            aria-hidden="true"
+            data-testid="sketch-tool-sep-constraint"
+          />
+          {SKETCH_CONSTRAINT_BUTTONS.map((c) => {
+            const tool = c.type ?? CONSTRAINT_DIMENSION_TOOL;
+            const active = sketchSession.selectedTool === tool;
+            // The Dimension button stamps the resolved dimensional type's
+            // test-id when the selection fits one (e.g. distance/angle),
+            // falling back to `sketch-constraint-dimension` otherwise.
+            const resolvedDim =
+              c.type === null
+                ? (DIMENSION_TYPES_BY_SPECIFICITY.find((t) =>
+                    constraintOptions.some((o) => o.type === t),
+                  ) ?? null)
+                : null;
+            const testid =
+              c.testid === "dimension" && resolvedDim !== null
+                ? resolvedDim.replace(/^sketch_constraint_/, "")
+                : c.testid;
+            return (
+              <button
+                key={c.testid}
+                type="button"
+                className={
+                  "tool constraint-tool" + (active ? " is-active" : "")
+                }
+                title={c.title}
+                data-testid={`sketch-constraint-${testid}`}
+                onClick={() => store.selectSketchConstraintTool(tool)}
+              >
+                <span className="glyph" aria-hidden="true">
+                  {CONSTRAINT_ICONS[c.icon]}
+                </span>
+                <span className="tool-label">{c.label}</span>
+              </button>
+            );
+          })}
+          <span
+            className="tool-sep"
+            aria-hidden="true"
+            data-testid="sketch-tool-sep-feature"
+          />
           <FeatureButton
             kind="extrude"
             testId="sketch-tool-extrude"
@@ -1007,61 +1203,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
             </span>
           )}
         </div>
-
-        {/* pqoe (part 7): always-visible explicit constraint toolbar,
-            Onshape-style. Each button is rendered whenever a tool is NOT
-            active (so committed geometry can be picked) and is enabled only
-            when its constraint type fits the current selection — i.e. it's
-            present in `constraintOptions` (the result of
-            `applicableConstraints`). Clicking applies it to the selection. */}
-        {!sketchSession.selectedTool ? (
-          <div
-            className="group sketch-constraint-row"
-            data-testid="sketch-constraint-row"
-          >
-            {SKETCH_CONSTRAINT_BUTTONS.map((c) => {
-              // vk8q: the unified Dimension button has no fixed type — it
-              // resolves the most-specific dimensional type that fits the
-              // current selection (radius/diameter > angle > distance) and
-              // stamps THAT type's stable test-id so the existing
-              // distance/angle e2e selectors keep resolving it.
-              const resolvedType =
-                c.type === null && !c.unsupported
-                  ? DIMENSION_TYPES_BY_SPECIFICITY.find((t) =>
-                      constraintOptions.some((o) => o.type === t),
-                    ) ?? null
-                  : c.type;
-              const enabled =
-                !c.unsupported &&
-                resolvedType !== null &&
-                constraintOptions.some((o) => o.type === resolvedType);
-              // The Dimension button carries the resolved type's test-id
-              // (e.g. `sketch-constraint-distance`) when enabled, falling
-              // back to `sketch-constraint-dimension` while nothing fits.
-              const testid =
-                c.testid === "dimension" && resolvedType !== null
-                  ? resolvedType.replace(/^sketch_constraint_/, "")
-                  : c.testid;
-              return (
-                <button
-                  key={c.testid}
-                  type="button"
-                  className={"tool" + (c.unsupported ? " is-stub" : "")}
-                  title={c.title}
-                  data-testid={`sketch-constraint-${testid}`}
-                  disabled={!enabled}
-                  onClick={() =>
-                    resolvedType && store.applySketchConstraint(resolvedType)
-                  }
-                >
-                  <span className="glyph" aria-hidden="true">
-                    {CONSTRAINT_ICONS[c.icon]}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
       </div>
     );
   }
@@ -1080,18 +1221,32 @@ export function Toolbar({ store, state }: ToolbarProps) {
           draggable
           dragType="fielddraft/primitive"
         />
-        <FeatureButton kind="hole" title="Add Hole (Ø6 x 40 mm, subtract)" onClick={() => store.addHole()} draggable dragType="fielddraft/primitive" />
+        <FeatureButton
+          kind="hole"
+          title="Add Hole (Ø6 x 40 mm, subtract)"
+          onClick={() => store.addHole()}
+          draggable
+          dragType="fielddraft/primitive"
+        />
         <FeatureDropdownButton
           items={THREAD_ITEMS}
           lastUsedStorageKey="fielddraft.lastUsedThread"
           defaultKey="M6"
           onSelect={(key) => {
-            const p = THREAD_PRESETS.find((t) => t.key === key) ?? THREAD_PRESETS[3];
+            const p =
+              THREAD_PRESETS.find((t) => t.key === key) ?? THREAD_PRESETS[3];
             store.addThreadPreset(p.radius, p.pitch, p.depth);
           }}
           testId="thread-split-button"
         />
-        <FeatureButton kind="sketch" title="Sketch on XY plane" testId="enter-sketch" onClick={handleSketchEnter} draggable dragType="fielddraft/sketch" />
+        <FeatureButton
+          kind="sketch"
+          title="Sketch on XY plane"
+          testId="enter-sketch"
+          onClick={handleSketchEnter}
+          draggable
+          dragType="fielddraft/sketch"
+        />
         {/* Extrude/Revolve stay enabled without a matching selection
             (ticket 1rax): clicking creates the feature with an EMPTY
             profile and the dialog's query picker fills it afterwards —
@@ -1120,14 +1275,22 @@ export function Toolbar({ store, state }: ToolbarProps) {
         />
         <FeatureButton
           kind="revolve"
-          title={hasSketch ? "Revolve latest sketch" : "Revolve — pick a sketch in the dialog"}
+          title={
+            hasSketch
+              ? "Revolve latest sketch"
+              : "Revolve — pick a sketch in the dialog"
+          }
           testId="revolve-latest-sketch"
           disabled={!hasFeatures && !hasSketch}
           onClick={() => store.addRevolveFromLatestSketch()}
         />
         <FeatureButton
           kind="helix"
-          title={hasSketch ? "Helix sweep of the latest sketch (screw threads)" : "Helix — pick a sketch in the dialog"}
+          title={
+            hasSketch
+              ? "Helix sweep of the latest sketch (screw threads)"
+              : "Helix — pick a sketch in the dialog"
+          }
           testId="helix-latest-sketch"
           disabled={!hasFeatures && !hasSketch}
           onClick={() => store.addHelixFromLatestSketch()}
@@ -1138,13 +1301,15 @@ export function Toolbar({ store, state }: ToolbarProps) {
               key: "sweep_sketch",
               kind: "sweep",
               label: "Sweep",
-              title: "Sweep the previous sketch (profile) along the latest sketch (path)",
+              title:
+                "Sweep the previous sketch (profile) along the latest sketch (path)",
             },
             {
               key: "sweep_gizmo",
               kind: "sweep",
               label: "Sweep 3D",
-              title: "Sweep the latest sketch along a 3D control-point path (edit the points in Detail)",
+              title:
+                "Sweep the latest sketch along a 3D control-point path (edit the points in Detail)",
             },
           ]}
           lastUsedStorageKey="fielddraft.lastUsedSweep"
@@ -1156,12 +1321,49 @@ export function Toolbar({ store, state }: ToolbarProps) {
           }
           testId="sweep-split-button"
         />
-        <FeatureButton kind="gyroid" title="Add Gyroid infill" disabled={!hasFeatures} onClick={() => store.addGyroid()} draggable dragType="fielddraft/primitive" />
-        <FeatureButton kind="linear_pattern" title="Linear pattern (+X, 3x, 60 mm)" testId="linear-pattern-latest" disabled={!hasFeatures} onClick={() => store.addLinearPatternOfLatest()} label="Pattern" />
-        <FeatureButton kind="circular_pattern" title="Circular pattern (6x, 360°)" testId="circular-pattern-latest" disabled={!hasFeatures} onClick={() => store.addCircularPatternOfLatest()} label="Circ" />
-        <FeatureButton kind="mirror" title="Mirror through YZ plane" testId="mirror-latest" disabled={!hasFeatures} onClick={() => store.addMirrorOfLatest()} />
-        <FeatureButton kind="boolean" title="Boolean (Union / Subtract / Intersect)" disabled={!hasFeatures} onClick={() => store.addBoolean()} />
-        <FeatureButton kind="material" title="Assign material properties" disabled={!hasFeatures} onClick={() => store.addMaterial()} />
+        <FeatureButton
+          kind="gyroid"
+          title="Add Gyroid infill"
+          disabled={!hasFeatures}
+          onClick={() => store.addGyroid()}
+          draggable
+          dragType="fielddraft/primitive"
+        />
+        <FeatureButton
+          kind="linear_pattern"
+          title="Linear pattern (+X, 3x, 60 mm)"
+          testId="linear-pattern-latest"
+          disabled={!hasFeatures}
+          onClick={() => store.addLinearPatternOfLatest()}
+          label="Pattern"
+        />
+        <FeatureButton
+          kind="circular_pattern"
+          title="Circular pattern (6x, 360°)"
+          testId="circular-pattern-latest"
+          disabled={!hasFeatures}
+          onClick={() => store.addCircularPatternOfLatest()}
+          label="Circ"
+        />
+        <FeatureButton
+          kind="mirror"
+          title="Mirror through YZ plane"
+          testId="mirror-latest"
+          disabled={!hasFeatures}
+          onClick={() => store.addMirrorOfLatest()}
+        />
+        <FeatureButton
+          kind="boolean"
+          title="Boolean (Union / Subtract / Intersect)"
+          disabled={!hasFeatures}
+          onClick={() => store.addBoolean()}
+        />
+        <FeatureButton
+          kind="material"
+          title="Assign material properties"
+          disabled={!hasFeatures}
+          onClick={() => store.addMaterial()}
+        />
       </div>
 
       <div className="group">
@@ -1174,19 +1376,64 @@ export function Toolbar({ store, state }: ToolbarProps) {
       </div>
 
       <div className="group">
-        <button type="button" className="tool" title="Delete selection (Del)" data-testid="delete-selection" disabled={state.selection.size === 0} onClick={() => store.removeSelected()}>
-          <span className="glyph" aria-hidden="true">🗑</span>
+        <button
+          type="button"
+          className="tool"
+          title="Delete selection (Del)"
+          data-testid="delete-selection"
+          disabled={state.selection.size === 0}
+          onClick={() => store.removeSelected()}
+        >
+          <span className="glyph" aria-hidden="true">
+            🗑
+          </span>
           <span className="tool-label">Delete</span>
         </button>
-        <FeatureButton kind="fillet_edge" title="Click an edge to fillet it" testId="fillet-toggle" active={state.filletMode} onClick={() => store.toggleFilletMode()} label="Fillet" />
-        <FeatureButton kind="shell" title="Hollow a body — pick faces to open in the dialog" testId="add-shell" disabled={!hasFeatures} onClick={() => store.addShell()} label="Shell" />
-        <FeatureButton kind="mate_connector" title="Place a mate connector" testId="add-mate-connector" disabled={!hasFeatures} active={state.mateMode} onClick={() => store.toggleMateMode()} label="Mate" />
-        <button type="button" className={"tool" + (state.measureMode ? " is-active" : "")} title="Measure distance (click two points)" data-testid="measure-toggle" onClick={() => store.toggleMeasureMode()}>
-          <span className="glyph" aria-hidden="true">📏</span>
+        <FeatureButton
+          kind="fillet_edge"
+          title="Click an edge to fillet it"
+          testId="fillet-toggle"
+          active={state.filletMode}
+          onClick={() => store.toggleFilletMode()}
+          label="Fillet"
+        />
+        <FeatureButton
+          kind="shell"
+          title="Hollow a body — pick faces to open in the dialog"
+          testId="add-shell"
+          disabled={!hasFeatures}
+          onClick={() => store.addShell()}
+          label="Shell"
+        />
+        <FeatureButton
+          kind="mate_connector"
+          title="Place a mate connector"
+          testId="add-mate-connector"
+          disabled={!hasFeatures}
+          active={state.mateMode}
+          onClick={() => store.toggleMateMode()}
+          label="Mate"
+        />
+        <button
+          type="button"
+          className={"tool" + (state.measureMode ? " is-active" : "")}
+          title="Measure distance (click two points)"
+          data-testid="measure-toggle"
+          onClick={() => store.toggleMeasureMode()}
+        >
+          <span className="glyph" aria-hidden="true">
+            📏
+          </span>
           <span className="tool-label">Measure</span>
         </button>
         {state.referenceMesh && (
-          <FeatureButton kind="imported_mesh" title="Convert reference mesh to solid" testId="convert-to-solid" onClick={() => store.convertReferenceToSolid()} label="Solid" />
+          <FeatureButton
+            kind="imported_mesh"
+            title="Convert reference mesh to solid"
+            testId="convert-to-solid"
+            onClick={() => store.convertReferenceToSolid()}
+            label="Solid"
+          />
         )}
       </div>
 
@@ -1204,7 +1451,9 @@ export function Toolbar({ store, state }: ToolbarProps) {
               data-testid={`add-script-${t.id}`}
               onClick={() => store.insertScriptInstance(t.id)}
             >
-              <span className="glyph" aria-hidden="true">{t.icon}</span>
+              <span className="glyph" aria-hidden="true">
+                {t.icon}
+              </span>
               <span className="tool-label">{t.name}</span>
             </button>
           ))}

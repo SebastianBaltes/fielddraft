@@ -50,6 +50,7 @@ import {
   regularPolygonVertices,
 } from "./sketchSession";
 import { measuredLength, parseField } from "./sketchLiveInput";
+import { isConstraintTool } from "./sketchConstraints";
 import {
   entitiesInBox,
   hitTestSketchEntity,
@@ -59,11 +60,7 @@ import {
   type TaggedTextHit,
 } from "./sketchHitTest";
 import { gripsForSelection, type Grip } from "./sketchGrips";
-import {
-  angleAbout,
-  buildArcSubCall,
-  unwrapSweep,
-} from "./sketchArc";
+import { angleAbout, buildArcSubCall, unwrapSweep } from "./sketchArc";
 import {
   circleThrough3,
   rectCenterCorners,
@@ -977,10 +974,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // editor reads; identity-stable so React bails out when it's unchanged.
   const textParams = useSyncExternalStore(
     store ? store.subscribe : NOOP_SUBSCRIBE,
-    () =>
-      store
-        ? textParamsSnapshot(store)
-        : EMPTY_TEXT_PARAMS,
+    () => (store ? textParamsSnapshot(store) : EMPTY_TEXT_PARAMS),
     () => EMPTY_TEXT_PARAMS,
   );
 
@@ -1223,6 +1217,30 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // committed geometry and toggles it in the selection; clicking
     // empty space clears. Other buttons (pan) are forwarded to the
     // R3F canvas so OrbitControls keeps working under the overlay.
+    // zz1r: a constraint TOOL turns committed-entity clicks into a running
+    // selection that applies the constraint the moment it fits — the
+    // tool-first constrain workflow. Same entity hit-test as select mode,
+    // but no grips / marquee / in-scene editors (those are select-mode
+    // edits). A miss clears the running selection.
+    if (store && session.active && isConstraintTool(session.selectedTool)) {
+      if (e.button !== 0) {
+        forwardPointerToViewport(e);
+        return;
+      }
+      e.preventDefault();
+      const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
+      const [u, v] = screenToSketchFromEvent(e, cam);
+      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      const state = buildDraftSketchState(session.subCalls);
+      const hit = hitTestSketchEntity(state, [u, v], tolMm);
+      if (hit === null) {
+        store.clearSketchSelection();
+      } else {
+        store.pickSketchConstraintEntity(hit);
+      }
+      lastCamVersionRef.current = -1;
+      return;
+    }
     if (store && session.active && !session.selectedTool) {
       if (e.button !== 0) {
         forwardPointerToViewport(e);
@@ -2721,7 +2739,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         data-testid="sketch-canvas-2d"
         className={
           "fd-sketch-canvas" +
-          (toolActive ? " is-tool-active" : selectMode ? " is-select-mode" : "") +
+          (toolActive
+            ? " is-tool-active"
+            : selectMode
+              ? " is-select-mode"
+              : "") +
           (queryPickActive ? " is-query-pick" : "")
         }
         onPointerDown={onPointerDown}
@@ -2769,7 +2791,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       {cornerEditor !== null && store && (
         <div
           className="fd-sketch-live-input"
-          style={{ left: `${cornerEditor.left}px`, top: `${cornerEditor.top}px` }}
+          style={{
+            left: `${cornerEditor.left}px`,
+            top: `${cornerEditor.top}px`,
+          }}
         >
           <label className="field">
             <input
@@ -2849,7 +2874,9 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
               <select
                 data-testid="sketch-text-font"
                 value={textParams.fontId}
-                onChange={(e) => store.setSketchTextFontId(e.currentTarget.value)}
+                onChange={(e) =>
+                  store.setSketchTextFontId(e.currentTarget.value)
+                }
               >
                 {BUNDLED_FONTS.map((f) => (
                   <option key={f.id} value={f.id}>
@@ -2916,7 +2943,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           overlap, though only one tool is ever active). Bound to the SAME
           store call the gesture already uses, store.setSketchToolDraft. */}
       {store && session.selectedTool === "sketch_regular_polygon" && (
-        <div className="fd-sketch-tool-param is-ngon" data-testid="sketch-ngon-param">
+        <div
+          className="fd-sketch-tool-param is-ngon"
+          data-testid="sketch-ngon-param"
+        >
           <label className="field" title="Number of polygon sides">
             N
             <input
@@ -3090,7 +3120,8 @@ function buildSketchHudUv(
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[],
 ): Omit<SketchHudGeometry, "version"> {
-  const previewCalls: Array<{ type: string; params: Record<string, unknown> }> = [];
+  const previewCalls: Array<{ type: string; params: Record<string, unknown> }> =
+    [];
   const previewLines: Array<[[number, number], [number, number]]> = [];
   const previewPoints: Array<[number, number]> = [];
   const previewGuides: Array<[[number, number], [number, number]]> = [];
@@ -3106,7 +3137,10 @@ function buildSketchHudUv(
       C("sketch_rectangle", { corner_a: drag.start, corner_b: drag.current });
       break;
     case "circle": {
-      const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+      const r = Math.hypot(
+        drag.current[0] - drag.center[0],
+        drag.current[1] - drag.center[1],
+      );
       C("sketch_circle", { center: drag.center, radius: r });
       break;
     }
@@ -3123,7 +3157,11 @@ function buildSketchHudUv(
     }
     case "slot": {
       const radius = Number(session.toolDraft?.radius) || 8;
-      C("sketch_slot", { center_a: drag.center_a, center_b: drag.current, radius });
+      C("sketch_slot", {
+        center_a: drag.center_a,
+        center_b: drag.current,
+        radius,
+      });
       break;
     }
     case "rect_center": {
@@ -3165,7 +3203,10 @@ function buildSketchHudUv(
       break;
     }
     case "regular_polygon": {
-      const radius = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+      const radius = Math.hypot(
+        drag.current[0] - drag.center[0],
+        drag.current[1] - drag.center[1],
+      );
       const verts = regularPolygonVertices(
         drag.center,
         radius,
@@ -3219,7 +3260,12 @@ function buildSketchHudUv(
         previewPoints.push(center);
       } else {
         const r = Math.hypot(start[0] - center[0], start[1] - center[1]);
-        C("sketch_arc", { center, radius: r, start_angle: startAngle, sweep_angle: sweep });
+        C("sketch_arc", {
+          center,
+          radius: r,
+          start_angle: startAngle,
+          sweep_angle: sweep,
+        });
         previewLines.push([center, start]);
         previewPoints.push(center, start);
       }
@@ -3237,7 +3283,9 @@ function buildSketchHudUv(
     previewGuides,
     hover: drag.kind === "idle" ? hover : null,
     snap: snap.anchor && snap.candidate ? snap.anchor : null,
-    projected: projectedEdges.map((e) => [e.p0, e.p1] as [[number, number], [number, number]]),
+    projected: projectedEdges.map(
+      (e) => [e.p0, e.p1] as [[number, number], [number, number]],
+    ),
   };
 }
 
@@ -3402,7 +3450,10 @@ function drawOverlay(
   } else if (drag.kind === "rectangle") {
     pushSize(drag.start, drag.current);
   } else if (drag.kind === "circle") {
-    const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+    const r = Math.hypot(
+      drag.current[0] - drag.center[0],
+      drag.current[1] - drag.center[1],
+    );
     pushRadius(drag.center, r);
   } else if (drag.kind === "rect_center") {
     const opp: [number, number] = [
@@ -3416,13 +3467,22 @@ function drawOverlay(
       if (res) pushRadius(res.center, res.radius);
     }
   } else if (drag.kind === "regular_polygon") {
-    const r = Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1]);
+    const r = Math.hypot(
+      drag.current[0] - drag.center[0],
+      drag.current[1] - drag.center[1],
+    );
     pushRadius(drag.center, r);
   } else if (drag.kind === "arc") {
     const r =
       drag.start === null
-        ? Math.hypot(drag.current[0] - drag.center[0], drag.current[1] - drag.center[1])
-        : Math.hypot(drag.start[0] - drag.center[0], drag.start[1] - drag.center[1]);
+        ? Math.hypot(
+            drag.current[0] - drag.center[0],
+            drag.current[1] - drag.center[1],
+          )
+        : Math.hypot(
+            drag.start[0] - drag.center[0],
+            drag.start[1] - drag.center[1],
+          );
     pushRadius(drag.center, r);
   } else if (drag.kind === "marquee") {
     drawMarquee(ctx, drag.start, drag.current, cam);
@@ -3442,7 +3502,6 @@ function drawOverlay(
 
   publishSketchLabels(labels);
 }
-
 
 /**
  * F4: draw the box-select marquee. The drag direction decides the

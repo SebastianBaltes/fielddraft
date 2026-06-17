@@ -20,15 +20,13 @@ import { expect, test } from "@playwright/test";
 
 /** Console error substrings we ignore — they come from third-party
  *  libraries or the WebGPU adapter probing and aren't actionable. */
-const IGNORED_CONSOLE_SUBSTRINGS = [
-  "WebGPU",
-  "webgl",
-  "THREE.Clock",
-];
+const IGNORED_CONSOLE_SUBSTRINGS = ["WebGPU", "webgl", "THREE.Clock"];
 
 function isBlockingConsoleMessage(text: string): boolean {
   const lower = text.toLowerCase();
-  return !IGNORED_CONSOLE_SUBSTRINGS.some((s) => lower.includes(s.toLowerCase()));
+  return !IGNORED_CONSOLE_SUBSTRINGS.some((s) =>
+    lower.includes(s.toLowerCase()),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -55,7 +53,12 @@ async function makeProjector(page: import("@playwright/test").Page) {
       ).__fdSketchCamera;
       const c = hook?.();
       return c
-        ? { zoom: c.zoom, centerU: c.centerU, centerV: c.centerV, version: c.version }
+        ? {
+            zoom: c.zoom,
+            centerU: c.centerU,
+            centerV: c.centerV,
+            version: c.version,
+          }
         : null;
     });
   // The R3F ortho camera publishes its zoom asynchronously after the
@@ -162,7 +165,9 @@ test.describe("Sketch editor smoke", () => {
     await page.reload();
   });
 
-  test("enter sketch mode, draw a line via the dialog, render it", async ({ page }) => {
+  test("enter sketch mode, draw a line via the dialog, render it", async ({
+    page,
+  }) => {
     const consoleErrors: string[] = [];
     const pageErrors: Error[] = [];
     page.on("console", (msg) => {
@@ -224,7 +229,9 @@ test.describe("Sketch editor smoke", () => {
     await expect(page.getByTestId("feature-count")).toHaveText("1 feature");
     // The new row's kind glyph is the sketch pencil. (Datum rows like
     // Origin precede feature rows now, so target the sketch row by kind.)
-    const sketchRow = page.locator('.fd-outliner .row[data-feature-kind="sketch"]');
+    const sketchRow = page.locator(
+      '.fd-outliner .row[data-feature-kind="sketch"]',
+    );
     await expect(sketchRow).toContainText("Sketch");
 
     // 7. No blocking console errors, no uncaught page errors.
@@ -340,7 +347,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("double-click a sketch row to re-open it and append another line", async ({ page }) => {
+  test("double-click a sketch row to re-open it and append another line", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -419,7 +428,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("near-horizontal drag persists a horizontal constraint and solves the line flat", async ({ page }) => {
+  test("near-horizontal drag persists a horizontal constraint and solves the line flat", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -509,7 +520,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("rectangle tool drags a rectangle and solves every side axis-aligned", async ({ page }) => {
+  test("rectangle tool drags a rectangle and solves every side axis-aligned", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -593,7 +606,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("circle tool drags a circle and persists its centre + radius", async ({ page }) => {
+  test("circle tool drags a circle and persists its centre + radius", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -670,7 +685,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("per-sub-call delete removes one entry and leaves the rest intact", async ({ page }) => {
+  test("per-sub-call delete removes one entry and leaves the rest intact", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -746,7 +763,9 @@ test.describe("Sketch editor smoke", () => {
     ).toEqual([]);
   });
 
-  test("K7.4: rectangle → finish → extrude → STL download end-to-end", async ({ page }) => {
+  test("K7.4: rectangle → finish → extrude → STL download end-to-end", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => {
       pageErrors.push(err);
@@ -782,7 +801,11 @@ test.describe("Sketch editor smoke", () => {
       const kernel = (
         window as unknown as {
           __fdKernel?: {
-            listFeatures: () => Array<{ id: number; kind: string; name: string }>;
+            listFeatures: () => Array<{
+              id: number;
+              kind: string;
+              name: string;
+            }>;
           };
         }
       ).__fdKernel;
@@ -905,7 +928,12 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.reload();
   });
 
-  test("Select tool returns to select mode and shows the constraint hint", async ({ page }) => {
+  test("constraint tools live in the tool row and the Select tool toggles active", async ({
+    page,
+  }) => {
+    // zz1r: the constraint buttons are sketch tools now — always present in
+    // the drawing-tool row, no separate selection-gated palette. Picking a
+    // drawing tool doesn't hide them; the Select tool just reads active.
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -913,23 +941,32 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(600);
 
     await page.getByTestId("enter-sketch").click();
-    // Picking a drawing tool leaves select mode — the palette hides.
-    await page.getByTestId("sketch-tool-sketch_line").click();
-    await expect(page.getByTestId("sketch-constraint-row")).toHaveCount(0);
+    // The constraint tools are visible from the start, in select mode.
+    await expect(page.getByTestId("sketch-constraint-parallel")).toBeVisible();
+    await expect(
+      page.getByTestId("sketch-constraint-horizontal"),
+    ).toBeVisible();
 
-    // The Select tool drops back to select mode. The palette returns
-    // with its empty-selection hint, and the Select button reads active.
+    // Picking a drawing tool leaves them in place (they're tools too).
+    await page.getByTestId("sketch-tool-sketch_line").click();
+    await expect(page.getByTestId("sketch-constraint-parallel")).toBeVisible();
+
+    // The Select tool drops back to select mode and reads active.
     await page.getByTestId("sketch-tool-select").click();
-    const row = page.getByTestId("sketch-constraint-row");
-    await expect(row).toBeVisible();
-    await expect(row).toContainText("Select geometry");
-    await expect(page.getByTestId("sketch-tool-select")).toHaveClass(/is-active/);
+    await expect(page.getByTestId("sketch-tool-select")).toHaveClass(
+      /is-active/,
+    );
 
-    // Escape from a drawing tool also returns to select mode.
-    await page.getByTestId("sketch-tool-sketch_line").click();
-    await expect(page.getByTestId("sketch-constraint-row")).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("sketch-constraint-row")).toBeVisible();
+    // Activating a constraint tool marks it active; clicking it again toggles
+    // back to plain select mode.
+    await page.getByTestId("sketch-constraint-horizontal").click();
+    await expect(page.getByTestId("sketch-constraint-horizontal")).toHaveClass(
+      /is-active/,
+    );
+    await page.getByTestId("sketch-constraint-horizontal").click();
+    await expect(page.getByTestId("sketch-tool-select")).toHaveClass(
+      /is-active/,
+    );
 
     expect(
       pageErrors.map((e) => e.message),
@@ -937,7 +974,9 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     ).toEqual([]);
   });
 
-  test("pick two lines, apply Parallel, solver makes them parallel", async ({ page }) => {
+  test("pick two lines, apply Parallel, solver makes them parallel", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -964,7 +1003,9 @@ test.describe("Sketch constraint palette (P0.1)", () => {
 
     // The palette now offers Parallel + Perpendicular for two lines.
     await expect(page.getByTestId("sketch-constraint-parallel")).toBeVisible();
-    await expect(page.getByTestId("sketch-constraint-perpendicular")).toBeVisible();
+    await expect(
+      page.getByTestId("sketch-constraint-perpendicular"),
+    ).toBeVisible();
 
     // Apply Parallel — a third sub-spine row (the constraint) appears.
     await page.getByTestId("sketch-constraint-parallel").click();
@@ -988,7 +1029,9 @@ test.describe("Sketch constraint palette (P0.1)", () => {
 
     // The two line directions must now be parallel: their 2D cross
     // product is ~0.
-    const dir = (l: { params: { start: [number, number]; end: [number, number] } }) => [
+    const dir = (l: {
+      params: { start: [number, number]; end: [number, number] };
+    }) => [
       l.params.end[0] - l.params.start[0],
       l.params.end[1] - l.params.start[1],
     ];
@@ -1004,7 +1047,9 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     ).toEqual([]);
   });
 
-  test("pick two points, apply Coincident, solver merges them", async ({ page }) => {
+  test("pick two points, apply Coincident, solver merges them", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -1035,7 +1080,9 @@ test.describe("Sketch constraint palette (P0.1)", () => {
     await page.waitForTimeout(120); // let the store/overlay settle the pick
     await page.mouse.click(p2x, p2y);
 
-    await expect(page.getByTestId("sketch-constraint-coincident")).toBeVisible();
+    await expect(
+      page.getByTestId("sketch-constraint-coincident"),
+    ).toBeVisible();
     await page.getByTestId("sketch-constraint-coincident").click();
     await expect(subSpineRows).toHaveCount(3);
     await page.waitForTimeout(800);
@@ -1076,20 +1123,29 @@ test.describe("Sketch constraint palette (P0.1)", () => {
 
     await page.getByTestId("sketch-tool-select").click();
     const project = await makeProjector(page);
+    const selectionCount = () =>
+      page.evaluate(() => {
+        const store = (
+          window as unknown as {
+            __fdStore?: {
+              state: { sketchSession: { selection: number[] } };
+            };
+          }
+        ).__fdStore;
+        return store?.state.sketchSession.selection.length ?? -1;
+      });
+
     const [mx, my] = project(50, 35);
     await page.mouse.click(mx, my);
-    // One line selected → it offers Horizontal/Vertical.
-    await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
-
-    // Click far-off empty space → selection clears, palette shows the
-    // empty hint again.
-    const [ex, ey] = project(-90, -90);
     await page.waitForTimeout(120);
+    // The line is selected.
+    expect(await selectionCount()).toBe(1);
+
+    // Click far-off empty space → the selection clears.
+    const [ex, ey] = project(-90, -90);
     await page.mouse.click(ex, ey);
-    await expect(page.getByTestId("sketch-constraint-horizontal")).toHaveCount(0);
-    await expect(page.getByTestId("sketch-constraint-row")).toContainText(
-      "Select geometry",
-    );
+    await page.waitForTimeout(120);
+    expect(await selectionCount()).toBe(0);
 
     expect(
       pageErrors.map((e) => e.message),
@@ -1121,7 +1177,9 @@ test.describe("Sketch dimensions (P0.2)", () => {
     await page.reload();
   });
 
-  test("length dimension on a line drives its length when edited", async ({ page }) => {
+  test("length dimension on a line drives its length when edited", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -1165,7 +1223,9 @@ test.describe("Sketch dimensions (P0.2)", () => {
     expect(dist!.params.value_mm).toBeCloseTo(80, 3);
 
     // The solved line is actually 80 mm long.
-    const line = committed!.find((c) => c.type === "sketch_line") as unknown as {
+    const line = committed!.find(
+      (c) => c.type === "sketch_line",
+    ) as unknown as {
       params: { start: [number, number]; end: [number, number] };
     };
     const len = Math.hypot(
@@ -1180,7 +1240,9 @@ test.describe("Sketch dimensions (P0.2)", () => {
     ).toEqual([]);
   });
 
-  test("angle dimension drives two lines to the edited angle", async ({ page }) => {
+  test("angle dimension drives two lines to the edited angle", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -1215,9 +1277,9 @@ test.describe("Sketch dimensions (P0.2)", () => {
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
-    const ang = committed!.find(
-      (c) => c.type === "sketch_constraint_angle",
-    ) as { params: { value_deg: number } } | undefined;
+    const ang = committed!.find((c) => c.type === "sketch_constraint_angle") as
+      | { params: { value_deg: number } }
+      | undefined;
     expect(ang).toBeDefined();
     expect(ang!.params.value_deg).toBeCloseTo(90, 3);
 
@@ -1228,7 +1290,9 @@ test.describe("Sketch dimensions (P0.2)", () => {
       params: { start: [number, number]; end: [number, number] };
     }>;
     expect(lines.length).toBe(2);
-    const dir = (l: { params: { start: [number, number]; end: [number, number] } }) => [
+    const dir = (l: {
+      params: { start: [number, number]; end: [number, number] };
+    }) => [
       l.params.end[0] - l.params.start[0],
       l.params.end[1] - l.params.start[1],
     ];
@@ -1276,7 +1340,10 @@ test.describe("Sketch grip-drag (P0.3)", () => {
               sketchSession: {
                 active: boolean;
                 selection: ReadonlyArray<number>;
-                subCalls: Array<{ type: string; params: Record<string, unknown> }>;
+                subCalls: Array<{
+                  type: string;
+                  params: Record<string, unknown>;
+                }>;
               };
             };
           };
@@ -1284,7 +1351,11 @@ test.describe("Sketch grip-drag (P0.3)", () => {
       ).__fdStore;
       if (!store) return null;
       const s = store.getState().sketchSession;
-      return { active: s.active, selection: [...s.selection], subCalls: s.subCalls };
+      return {
+        active: s.active,
+        selection: [...s.selection],
+        subCalls: s.subCalls,
+      };
     });
   }
 
@@ -1307,7 +1378,9 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     const project = await makeProjector(page);
     const [mx, my] = project(30, 0);
     await page.mouse.click(mx, my);
-    await expect(page.getByTestId("sketch-constraint-horizontal")).toBeVisible();
+    await expect(
+      page.getByTestId("sketch-constraint-horizontal"),
+    ).toBeVisible();
 
     // Grab the end-point grip at (50, 0) and drag it to (50, 40). The
     // line is unconstrained, so the solver leaves the dragged point put.
@@ -1325,7 +1398,9 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
-    const line = committed!.find((c) => c.type === "sketch_line") as unknown as {
+    const line = committed!.find(
+      (c) => c.type === "sketch_line",
+    ) as unknown as {
       params: { start: [number, number]; end: [number, number] };
     };
     expect(line).toBeDefined();
@@ -1382,7 +1457,9 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
-    const circle = committed!.find((c) => c.type === "sketch_circle") as unknown as {
+    const circle = committed!.find(
+      (c) => c.type === "sketch_circle",
+    ) as unknown as {
       params: { center: [number, number]; radius: number };
     };
     expect(circle).toBeDefined();
@@ -1397,7 +1474,9 @@ test.describe("Sketch grip-drag (P0.3)", () => {
     ).toEqual([]);
   });
 
-  test("drag a rectangle corner grip to resize it, opposite corner fixed", async ({ page }) => {
+  test("drag a rectangle corner grip to resize it, opposite corner fixed", async ({
+    page,
+  }) => {
     const pageErrors: Error[] = [];
     page.on("pageerror", (err) => pageErrors.push(err));
 
@@ -1441,7 +1520,9 @@ test.describe("Sketch grip-drag (P0.3)", () => {
 
     const committed = await readCommittedSubCalls(page);
     expect(committed).not.toBeNull();
-    const rect = committed!.find((c) => c.type === "sketch_rectangle") as unknown as {
+    const rect = committed!.find(
+      (c) => c.type === "sketch_rectangle",
+    ) as unknown as {
       params: { corner_a: [number, number]; corner_b: [number, number] };
     };
     expect(rect).toBeDefined();

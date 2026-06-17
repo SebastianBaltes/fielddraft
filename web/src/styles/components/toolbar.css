@@ -190,7 +190,9 @@
     max-height: calc(var(--toolbar-height) - var(--space-2));
     box-sizing: border-box;
     cursor: pointer;
-    transition: background var(--motion-fast), border-color var(--motion-fast);
+    transition:
+      background var(--motion-fast),
+      border-color var(--motion-fast);
 
     & > .glyph {
       display: inline-flex;
@@ -293,48 +295,18 @@
     align-items: center;
   }
 
-  /* pqoe (part 7): always-visible explicit constraint toolbar, shown in
-   * select mode. Every supported constraint is rendered; each button is
-   * enabled only when it fits the current selection and otherwise greyed
-   * via the shared `.tool:disabled` rule (opacity 0.45). */
-  /* vk8q: the constraint row is now icon-only (no text labels), Onshape
-   * style. Each button is a square swatch holding a 16px SVG glyph. */
-  & .sketch-constraint-row {
-    flex-wrap: wrap;
-    gap: var(--space-1);
-    border-left: 1px solid var(--color-border);
-    padding-left: var(--space-3);
+  /* zz1r: the constraint buttons are sketch tools now (icon + text label),
+   * living inline in the drawing-tool row. They carry an SVG glyph that the
+   * base `.tool > .glyph` box (overflow:hidden) would clip — give it room
+   * and let the icon fill it. */
+  & .tool.constraint-tool > .glyph {
+    overflow: visible;
 
-    & .tool {
-      /* Square icon button: drop the label gap and centre the glyph. */
-      gap: 0;
-      padding: var(--space-1);
-      justify-content: center;
-
-      /* vk8q: the SVG must not be clipped by the base .glyph box — give it
-       * room and let the icon fill it. */
-      & .glyph {
-        width: 1.25rem;
-        height: 1.25rem;
-        overflow: visible;
-
-        & svg {
-          width: 100%;
-          height: 100%;
-          display: block;
-        }
-      }
+    & svg {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
-
-    & .hint {
-      align-self: center;
-      color: var(--color-text-muted);
-      font-size: 1rem;
-    }
-  }
-
-  & .tool.is-stub {
-    opacity: 0.55;
   }
 }
 

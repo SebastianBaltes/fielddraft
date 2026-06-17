@@ -17,6 +17,37 @@
 
 import type { Entity, SketchState } from "./solver/types";
 
+/**
+ * zz1r: the unified Dimension tool's `selectedTool` sentinel. It has no
+ * fixed constraint type — it resolves the most-specific dimensional
+ * constraint that fits the current selection (radius/diameter > angle >
+ * distance) at apply time.
+ */
+export const CONSTRAINT_DIMENSION_TOOL = "sketch_constraint_dimension";
+
+/**
+ * Dimensional constraint types, most- to least-specific, so the unified
+ * Dimension tool can pick the right one from the current selection. zz1r
+ * (moved here from Toolbar so the store can resolve it too).
+ */
+export const DIMENSION_TYPES_BY_SPECIFICITY = [
+  "sketch_constraint_radius",
+  "sketch_constraint_diameter",
+  "sketch_constraint_angle",
+  "sketch_constraint_distance",
+] as const;
+
+/**
+ * zz1r: a constraint TOOL is any `sketch_constraint_*` value used as the
+ * session's `selectedTool` (including the Dimension sentinel above). With
+ * a constraint tool active the canvas turns committed-entity clicks into a
+ * running selection and applies the constraint the moment it fits — the
+ * tool-first constrain workflow (pick the tool, then click the lines).
+ */
+export function isConstraintTool(tool: string | null | undefined): boolean {
+  return typeof tool === "string" && tool.startsWith("sketch_constraint_");
+}
+
 export interface ConstraintOption {
   /** Sub-call type, e.g. `sketch_constraint_parallel`. */
   type: string;
@@ -307,25 +338,44 @@ export function buildConstraintCall(
 
     case "sketch_constraint_parallel":
     case "sketch_constraint_perpendicular":
-      if (selection.length !== 2 || kinds[0] !== "line" || kinds[1] !== "line") {
+      if (
+        selection.length !== 2 ||
+        kinds[0] !== "line" ||
+        kinds[1] !== "line"
+      ) {
         return null;
       }
       return { type, params: { line_a: selection[0], line_b: selection[1] } };
 
     case "sketch_constraint_coincident":
-      if (selection.length !== 2 || !isPointish(kinds[0]) || !isPointish(kinds[1])) {
+      if (
+        selection.length !== 2 ||
+        !isPointish(kinds[0]) ||
+        !isPointish(kinds[1])
+      ) {
         return null;
       }
       return { type, params: { a: selection[0], b: selection[1] } };
 
     case "sketch_constraint_equal":
-      if (selection.length !== 2 || !isCurvish(kinds[0]) || !isCurvish(kinds[1])) {
+      if (
+        selection.length !== 2 ||
+        !isCurvish(kinds[0]) ||
+        !isCurvish(kinds[1])
+      ) {
         return null;
       }
-      return { type, params: { entity_a: selection[0], entity_b: selection[1] } };
+      return {
+        type,
+        params: { entity_a: selection[0], entity_b: selection[1] },
+      };
 
     case "sketch_constraint_concentric":
-      if (selection.length !== 2 || !isCurvish(kinds[0]) || !isCurvish(kinds[1])) {
+      if (
+        selection.length !== 2 ||
+        !isCurvish(kinds[0]) ||
+        !isCurvish(kinds[1])
+      ) {
         return null;
       }
       return { type, params: { a: selection[0], b: selection[1] } };
@@ -361,7 +411,11 @@ export function buildConstraintCall(
     }
 
     case "sketch_constraint_angle": {
-      if (selection.length !== 2 || kinds[0] !== "line" || kinds[1] !== "line") {
+      if (
+        selection.length !== 2 ||
+        kinds[0] !== "line" ||
+        kinds[1] !== "line"
+      ) {
         return null;
       }
       const angA = lineAngle(state, selection[0]);
@@ -379,7 +433,8 @@ export function buildConstraintCall(
       // Order-independent: find the line and the curve.
       const lineIdx = kinds.findIndex((k) => k === "line");
       const curveIdx = kinds.findIndex(isConicCurve);
-      if (lineIdx === -1 || curveIdx === -1 || lineIdx === curveIdx) return null;
+      if (lineIdx === -1 || curveIdx === -1 || lineIdx === curveIdx)
+        return null;
       return {
         type,
         params: { line: selection[lineIdx], curve: selection[curveIdx] },
@@ -396,9 +451,7 @@ export function buildConstraintCall(
       // Order-independent: exactly one point-like, and exactly one of
       // {line, circle, arc} as the host curve.
       const pointIdx = kinds.findIndex(isPointish);
-      const curveIdx = kinds.findIndex(
-        (k) => k === "line" || isOnCurve(k),
-      );
+      const curveIdx = kinds.findIndex((k) => k === "line" || isOnCurve(k));
       if (pointIdx === -1 || curveIdx === -1 || pointIdx === curveIdx) {
         return null;
       }
@@ -449,7 +502,11 @@ export function buildConstraintCall(
       if (pts.length !== 2) return null;
       return {
         type,
-        params: { entity_a: pts[0], entity_b: pts[1], axis: selection[lineIdx] },
+        params: {
+          entity_a: pts[0],
+          entity_b: pts[1],
+          axis: selection[lineIdx],
+        },
       };
     }
 
