@@ -1118,7 +1118,38 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
         <section className="detail-panel" data-testid="detail-panel">
           <div className="header accordion-header" onClick={() => toggleSection("detail")} data-testid="detail-header">
             <span className="accordion-chevron">{collapsed.has("detail") ? "▸" : "▾"}</span>
-            <span>Detail</span>
+            {/* Ticket f7xk: the Detail header shows the selected feature's name
+                (editable inline) instead of a generic "Detail". Empty selection
+                or an active sketch session keeps the plain label. */}
+            {!inSketchSession && selectedFeature ? (
+              <input
+                key={selectedFeature.id}
+                className="detail-title-input"
+                data-testid="detail-title-input"
+                defaultValue={selectedFeature.name}
+                title="Feature umbenennen"
+                onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => {
+                  const v = e.currentTarget.value.trim();
+                  if (v && v !== selectedFeature.name) {
+                    store.renameFeature(selectedFeature.id, v);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.currentTarget.value = selectedFeature.name;
+                    e.currentTarget.blur();
+                  }
+                  e.stopPropagation();
+                }}
+              />
+            ) : (
+              <span>Detail</span>
+            )}
             {/* Ticket pqoe: while a sketch session is active its ✓/✗
                 commit/discard the live session (the toolbar no longer
                 carries Finish/Cancel). Every other feature keeps the

@@ -690,6 +690,31 @@
        the same `.query-picker` styling as every other feature's query param —
        no bespoke `.plane-field` wrapper, which used to add a second box. */
 
+    /* Ticket f7xk: the editable feature-name title in the Detail header. Reads
+       as the header label (bold, transparent) until focused, when it shows the
+       usual input chrome. */
+    & .detail-title-input {
+      flex: 1;
+      min-width: 0;
+      font-size: var(--fs-base);
+      font-weight: 600;
+      color: var(--color-text);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      padding: var(--space-1) var(--space-2);
+
+      &:hover {
+        border-color: var(--color-border);
+      }
+
+      &:focus {
+        background: var(--color-surface);
+        border-color: var(--color-border-strong);
+        outline: none;
+      }
+    }
+
     & .actions {
       display: flex;
       gap: var(--space-2);
