@@ -563,7 +563,7 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let (q, ell, scale) = crate::helix_profile_point(
+                let (q, ell, scale, _) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                     *start_angle,
                 );
@@ -841,23 +841,23 @@ impl BoundedCsg {
                 ..
             } => {
                 let local = world_to_local(world_transform, p);
-                let (q, ell, scale) = crate::helix_profile_point(
+                let (q, ell, scale, cap_side) = crate::helix_profile_point(
                     local, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                     *start_angle,
                 );
                 // Widen the edge band by the inverse Lipschitz scale so
                 // profile-space matching stays comparable to world eps.
+                let beps = eps / scale.max(1e-6);
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_with_edges_retained(q, eps / scale.max(1e-6), &mut |g| {
-                        open.contains_sub(id, g)
-                    })
+                    sketch.sdf_with_edges_retained(q, beps, &mut |g| open.contains_sub(id, g))
                 } else {
-                    sketch.sdf_with_edges(q, eps / scale.max(1e-6))
+                    sketch.sdf_with_edges(q, beps)
                 };
                 let d = crate::helix_compose(band.distance, ell)
                     * scale
                     * world_transform.min_scale();
-                let c = revolve_contributors(id, &band);
+                // Tag the end caps (ell ties) so they are pickable faces (exus).
+                let c = crate::csg::helix_contributors(id, &band, ell, cap_side, beps);
                 (d, c)
             }
             BoundedCsg::Sweep { id, sketch, path, world_transform, .. } => {

@@ -1456,7 +1456,7 @@ impl CsgNode {
                 id, sketch, pitch, turns, left_handed, taper, start_angle,
                 y_anchor, r_inner,
             } => {
-                let (q, ell, scale) = crate::helix_profile_point(
+                let (q, ell, scale, _cap_side) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                     *start_angle,
                 );
@@ -1710,21 +1710,20 @@ impl CsgNode {
                 id, sketch, pitch, turns, left_handed, taper, start_angle,
                 y_anchor, r_inner,
             } => {
-                let (q, ell, scale) = crate::helix_profile_point(
+                let (q, ell, scale, cap_side) = crate::helix_profile_point(
                     p, *pitch, *turns, *left_handed, *taper, *y_anchor, *r_inner,
                     *start_angle,
                 );
                 // The contributor band epsilon lives in WORLD units; widen
                 // it by the inverse Lipschitz scale so profile-space edge
                 // matching stays comparable.
+                let beps = eps / scale.max(1e-6);
                 let band = if open.has_feature(id.as_u32_or_root().unwrap_or(0)) {
-                    sketch.sdf_with_edges_retained(q, eps / scale.max(1e-6), &mut |g| {
-                        open.contains_sub(id, g)
-                    })
+                    sketch.sdf_with_edges_retained(q, beps, &mut |g| open.contains_sub(id, g))
                 } else {
-                    sketch.sdf_with_edges(q, eps / scale.max(1e-6))
+                    sketch.sdf_with_edges(q, beps)
                 };
-                let c = revolve_contributors(id, &band);
+                let c = helix_contributors(id, &band, ell, cap_side, beps);
                 (crate::helix_compose(band.distance, ell) * scale, c)
             }
             CsgNode::Sweep { id, sketch, path, closed, twist, .. } => {
@@ -2023,6 +2022,41 @@ pub(crate) fn extrude_contributors_retained(
 /// caps, so every banded sketch boundary group is a wall contributor; a
 /// sketch corner therefore reports both adjoining walls and the
 /// both-branches gate sees the revolved edge.
+/// Provenance for a helix point: the profile wall group(s) plus the END-CAP
+/// sub when the cap term `ell` ties the dominating distance (ticket exus —
+/// makes the two planar end caps pickable). Mirrors [`extrude_contributors`],
+/// with `ell` as the cap coordinate and `cap_side` choosing which end.
+/// `beps` is the band epsilon already widened by the inverse Lipschitz scale.
+pub(crate) fn helix_contributors(
+    id: &FeatureId,
+    band: &SketchEdgeBand,
+    ell: f32,
+    cap_side: f32,
+    beps: f32,
+) -> Contributors {
+    let wall = band.distance;
+    let d_max = wall.max(ell);
+    let mut c = Contributors::empty();
+    if (wall - d_max).abs() <= beps {
+        for &g in band.groups() {
+            c.push(BranchId::from_feature_sub(id, g));
+        }
+    }
+    if (ell - d_max).abs() <= beps {
+        let sub = if cap_side >= 0.0 {
+            BranchId::EXTRUDE_CAP_TOP_SUB
+        } else {
+            BranchId::EXTRUDE_CAP_BOTTOM_SUB
+        };
+        c.push(BranchId::from_feature_sub(id, sub));
+    }
+    if c.is_empty() {
+        let g = band.groups().first().copied().unwrap_or(0);
+        c.push(BranchId::from_feature_sub(id, g));
+    }
+    c
+}
+
 pub(crate) fn revolve_contributors(id: &FeatureId, band: &SketchEdgeBand) -> Contributors {
     let mut c = Contributors::empty();
     for &g in band.groups() {

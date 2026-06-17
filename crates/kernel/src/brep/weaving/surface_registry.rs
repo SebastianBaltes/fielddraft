@@ -184,9 +184,36 @@ pub(super) fn collect_halfspaces(node: &BoundedCsg, out: &mut BranchSurfaceMap) 
             world_transform,
             ..
         } => collect_revolve_halfspaces(id, sketch, world_transform, out),
-        // Helical sweeps are weave-excluded (non-Lipschitz, DL-71) —
-        // they contribute no analytic carriers.
-        BoundedCsg::Helix { .. } => {}
+        // The helix WALL is non-Lipschitz (no analytic carrier), but its two
+        // open-end CAPS are planar: every profile point at a fixed sweep angle
+        // `θ` lies in the half-plane through the local Y axis at that angle
+        // (taper changes the radius, not the angle). Register them so the end
+        // cap is a real, pickable face bounded by the constructive rim edges
+        // (ticket exus). Sub-ids match `build_swept_wireframe`'s cap branches.
+        BoundedCsg::Helix {
+            id, turns, left_handed, start_angle, world_transform, ..
+        } => {
+            use fielddraft_protocol::HalfSpace;
+            let t_end = std::f32::consts::TAU * turns.max(0.0);
+            if t_end >= 1e-6 {
+                let hand = if *left_handed { -1.0_f32 } else { 1.0 };
+                let theta0 = hand * start_angle;
+                let theta1 = hand * (t_end + start_angle);
+                // Outward azimuthal normals: the start cap faces toward t<0, the
+                // end cap toward t>0 (the body spans t ∈ [0, t_end]).
+                let n_start = [hand * theta0.sin(), 0.0, -hand * theta0.cos()];
+                let n_end = [-hand * theta1.sin(), 0.0, hand * theta1.cos()];
+                for (sub, normal) in [
+                    (BranchId::EXTRUDE_CAP_BOTTOM_SUB, n_start),
+                    (BranchId::EXTRUDE_CAP_TOP_SUB, n_end),
+                ] {
+                    out.insert(
+                        BranchId::from_feature_sub(id, sub).as_u32(),
+                        (HalfSpace::Plane { normal, offset: 0.0 }, *world_transform),
+                    );
+                }
+            }
+        }
         BoundedCsg::Sweep { .. } => {}
         BoundedCsg::Empty => {}
     }

@@ -235,6 +235,10 @@ pub fn helix_profile_anchor(sketch: &fielddraft_protocol::Sketch2d) -> (f32, f32
 /// clamped below by `r_inner` (and a pitch-derived floor) so the
 /// near-axis bound does not collapse the field to zero inside the bore.
 /// Mirrored in the web GPU interpreter (`OP_WARP_HELIX`/`OP_HELIX_SCALE`).
+/// Returns `(profile_point, ell, scale, cap_side)`. `cap_side` names which open
+/// end the query overshoots — `-1` past the START (t < 0), `+1` past the END
+/// (t > t_end), `0` within the swept span — so the provenance eval can tag the
+/// two end caps with distinct sub-branches (pickable faces, ticket exus).
 pub fn helix_profile_point(
     p: [f32; 3],
     pitch: f32,
@@ -244,7 +248,7 @@ pub fn helix_profile_point(
     y_anchor: f32,
     r_inner: f32,
     start_angle: f32,
-) -> ([f32; 2], f32, f32) {
+) -> ([f32; 2], f32, f32, f32) {
     use std::f32::consts::{PI, TAU};
     let pitch = pitch.max(1e-3);
     let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
@@ -271,7 +275,12 @@ pub fn helix_profile_point(
     let ell = l_t.signum() * r.min(rr) * (l_t.abs().min(PI) * 0.5).sin();
     let q = pitch / (TAU * rr);
     let scale = 1.0 / (2.25 + q * q + taper * taper).sqrt();
-    ([rp, w], ell, scale)
+    // Which half of the sweep the pass falls in: −1 = start side, +1 = end
+    // side. Only consulted by the provenance eval when the cap term `ell` ties
+    // (so an interior wall point ignores it); naming the half — not a strict
+    // overshoot — keeps the rim itself (exactly at the cap) tagged.
+    let cap_side = if t_n < t_end * 0.5 { -1.0 } else { 1.0 };
+    ([rp, w], ell, scale, cap_side)
 }
 
 /// Combine a helix profile distance with the signed end-overshoot
@@ -351,7 +360,7 @@ pub fn sdf_primitive(primitive: &Primitive, p: [f32; 3]) -> f32 {
         } => {
             let (y_anchor, r_inner) = helix_profile_anchor(sketch);
             let local = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
-            let (q, ell, scale) = helix_profile_point(
+            let (q, ell, scale, _) = helix_profile_point(
                 local,
                 *pitch,
                 *turns,

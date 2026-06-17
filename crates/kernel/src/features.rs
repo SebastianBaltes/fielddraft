@@ -7189,6 +7189,23 @@ mod tests {
             .filter(|e| matches!(e.geometry, crate::brep::EdgeGeometry::Nurbs(_)))
             .count();
         assert_eq!(nurbs, 6, "6 helical seams are smooth NURBS curves");
+        // Ticket exus: the two open-end caps are now real, PICKABLE analytic
+        // plane faces (before, they materialised as empty tessellated faces and
+        // couldn't be raycast). The helical walls stay non-analytic (mesh-only).
+        let cap_planes = brep
+            .faces
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.surface,
+                    crate::brep::SurfaceGeometry::Analytic {
+                        surface: ::fielddraft_protocol::HalfSpace::Plane { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(cap_planes, 2, "start + end cap are analytic plane faces");
     }
 
     #[test]

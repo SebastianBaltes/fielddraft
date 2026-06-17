@@ -1647,7 +1647,7 @@ fn helix_forward_map_inverts_profile_point() {
                 let y = cy + pitch * t / TAU;
                 let r = cx + taper * (y - y_anchor);
                 let p = [r * theta.cos(), y, r * theta.sin()];
-                let (prof, _ell, _scale) = crate::helix_profile_point(
+                let (prof, _ell, _scale, _cap) = crate::helix_profile_point(
                     p, pitch, turns, left_handed, taper, y_anchor, r_inner, start_angle,
                 );
                 assert!(
