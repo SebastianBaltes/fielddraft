@@ -3510,14 +3510,29 @@ impl FeatureKind for RevolveFeature {
         // the body lands exactly where the profile was drawn — only the
         // axis of revolution moves. Empty axis → identity → legacy
         // local-Y-at-x=0 behaviour.
-        let axis_2d = (|| -> Option<([f32; 2], [f32; 2])> {
+        let axis_world = (|| -> Option<([f32; 3], [f32; 3])> {
             let expr = crate::queries::parse_query(d.axis.as_str()).ok()?;
-            let (w0, w1) = ctx.resolve_axis_world_segment(&expr)?;
-            Some((
+            ctx.resolve_axis_world_segment(&expr)
+        })();
+        // Ticket dnfe: a revolve axis must lie IN the profile plane (the profile
+        // rotates around it). A picked edge off the plane (e.g. a box edge
+        // perpendicular to the sketch) makes the revolve geometrically
+        // undefined — warn and ignore it rather than produce garbage.
+        let axis_2d = match axis_world {
+            Some((w0, w1)) if axis_in_sketch_plane(&sketch_frame, w0, w1) => Some((
                 sketch_frame.world_to_local_2d(w0),
                 sketch_frame.world_to_local_2d(w1),
-            ))
-        })();
+            )),
+            Some(_) => {
+                ctx.warn_feature(
+                    id,
+                    "Revolve-Achse liegt nicht in der Sketch-Ebene und wird ignoriert."
+                        .to_string(),
+                );
+                None
+            }
+            None => None,
+        };
 
         let (sketch, transform) = match axis_2d {
             None => (sketch, base_transform),
@@ -3563,6 +3578,25 @@ impl FeatureKind for RevolveFeature {
         ));
         Ok(())
     }
+}
+
+/// Whether a world-space axis segment lies IN a sketch's plane — both endpoints
+/// within a length-relative tolerance of the plane. A revolve/helix axis must
+/// be coplanar with the profile (the profile rotates/winds around it); an
+/// off-plane pick is rejected (ticket dnfe).
+fn axis_in_sketch_plane(
+    frame: &crate::sketch_features::SketchFrame,
+    w0: [f32; 3],
+    w1: [f32; 3],
+) -> bool {
+    let (n, o) = (frame.normal, frame.origin);
+    let dist = |p: [f32; 3]| {
+        ((p[0] - o[0]) * n[0] + (p[1] - o[1]) * n[1] + (p[2] - o[2]) * n[2]).abs()
+    };
+    let d = [w1[0] - w0[0], w1[1] - w0[1], w1[2] - w0[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let tol = (len * 1e-3).max(1e-3);
+    dist(w0) <= tol && dist(w1) <= tol
 }
 
 /// A rigid 2D map `p ↦ (c·x − s·y + tx, s·x + c·y + ty)` with rotation
@@ -3874,14 +3908,26 @@ impl FeatureKind for HelixFeature {
         // `helix_profile_anchor` then reads the (now axis-relative) radius
         // from the transformed sketch. Empty axis → identity → legacy
         // local-Y behaviour.
-        let axis_2d = (|| -> Option<([f32; 2], [f32; 2])> {
+        let axis_world = (|| -> Option<([f32; 3], [f32; 3])> {
             let expr = crate::queries::parse_query(d.axis.as_str()).ok()?;
-            let (w0, w1) = ctx.resolve_axis_world_segment(&expr)?;
-            Some((
+            ctx.resolve_axis_world_segment(&expr)
+        })();
+        // Ticket dnfe: the helix axis must lie in the profile plane too.
+        let axis_2d = match axis_world {
+            Some((w0, w1)) if axis_in_sketch_plane(&sketch_frame, w0, w1) => Some((
                 sketch_frame.world_to_local_2d(w0),
                 sketch_frame.world_to_local_2d(w1),
-            ))
-        })();
+            )),
+            Some(_) => {
+                ctx.warn_feature(
+                    id,
+                    "Helix-Achse liegt nicht in der Sketch-Ebene und wird ignoriert."
+                        .to_string(),
+                );
+                None
+            }
+            None => None,
+        };
         let (sketch, transform) = match axis_2d {
             None => (sketch, base_transform),
             Some((a, b)) => {
@@ -7115,6 +7161,56 @@ mod tests {
             }
             other => panic!("expected Primitive::Helix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn revolve_axis_not_coplanar_warns_and_falls_back() {
+        // Ticket dnfe: a revolve axis off the profile plane (here a line on the
+        // XY plane used as the axis of a YZ-plane revolve — its x≠0 endpoints
+        // are off the YZ plane) is geometrically invalid → warn + ignore the
+        // axis (fall back to the default local-Y), still producing geometry.
+        let registry = FeatureRegistry::with_builtins();
+        let mut doc = empty_ctx();
+        let mut ctx = Context::new(&mut doc);
+        let profile_sketch = id(1);
+        let revolve_id = id(2);
+        let axis_sketch = id(3);
+
+        let calls = vec![
+            // Profile on the YZ plane (revolve plane), offset from the axis.
+            FeatureCall::new("sketch", profile_sketch.clone(), json!({
+                "plane": "qCreatedBy(origin_plane_yz)",
+                "sub_calls": [
+                    { "type": "sketch_rectangle", "id": "r1",
+                      "params": { "corner_a": [5.0, -10.0], "corner_b": [9.0, 10.0] } }
+                ]
+            })),
+            // Axis line on the XY plane → world x≠0, off the YZ plane.
+            FeatureCall::new("sketch", axis_sketch.clone(), json!({
+                "plane": "qCreatedBy(origin_plane_xy)",
+                "sub_calls": [
+                    { "type": "sketch_line", "id": "20",
+                      "params": { "start": [5.0, -10.0], "end": [5.0, 10.0] } }
+                ]
+            })),
+            FeatureCall::new("revolve", revolve_id.clone(), json!({
+                "profiles": format!("qCreatedBy({profile_sketch})"),
+                "axis": format!("qSketchLine({axis_sketch}, 20)"),
+            })),
+        ];
+        registry.regenerate(&mut ctx, &calls, None).unwrap();
+
+        assert!(
+            ctx.feature_warnings.iter().any(|(fid, msg)| *fid == revolve_id
+                && msg.contains("nicht in der Sketch-Ebene")),
+            "off-plane revolve axis must warn, got {:?}",
+            ctx.feature_warnings
+        );
+        // Still produced a (default-axis) body.
+        assert!(
+            ctx.features.iter().any(|f| f.id == revolve_id),
+            "revolve still produces geometry with the bad axis ignored"
+        );
     }
 
     #[test]
