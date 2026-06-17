@@ -29,6 +29,7 @@ import {
   publishCameraQuat,
   ViewCube,
   ClearColorSync,
+  adaptClipPlanes,
 } from "./viewportCamera";
 import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import { SweepPathGizmo } from "./SweepGizmo";
@@ -495,6 +496,9 @@ function WebGLViewport({ controlsPreset }: { controlsPreset: ControlsPresetId })
     const tick = () => {
       const st = stateRef.current;
       if (st) {
+        // Adapt the clip planes to the scene each frame (ticket lbzq) — the
+        // WebGL root bypasses <CameraBridgePublisher>'s useFrame.
+        adaptClipPlanes(st.camera);
         // useFrame doesn't tick this manual-loop root, so feed the ViewCube
         // the live WebGL camera orientation here (ticket r8b4).
         publishCameraQuat(st.camera.quaternion);

@@ -47,7 +47,6 @@ const MAX_BODIES = 8;
 const GLOBAL_MAX_OPCODES = 16384;
 const MARCH_STEPS = 512;
 const SURFACE_EPS = 0.002;
-const MAX_MARCH_DIST = 3000;
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -218,7 +217,10 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
         Break();
       });
       t.addAssign(max(minD, float(SURFACE_EPS)));
-      If(t.greaterThan(float(MAX_MARCH_DIST)), () => { Break(); });
+      // Stop at the camera far plane (now adapted to the scene each frame,
+      // ticket lbzq) instead of a fixed 3000 mm cap that hid large/zoomed-out
+      // scenes.
+      If(t.greaterThan(state.farU), () => { Break(); });
     });
 
     If(hit.lessThan(float(0.5)), () => { Discard(); });

@@ -76,6 +76,7 @@ import {
 import { extendLine } from "./sketchExtend";
 import { splitCurveAt } from "./sketchSplit";
 import { getPublishedPickCamera } from "./pickCameraBridge";
+import { publishSceneBounds } from "./sceneBoundsBridge";
 import { importVectorToSubCalls } from "./importVector";
 import { textToSubCalls, reeditTextGroup, removeTextGroup } from "./sketchText";
 import {
@@ -982,6 +983,7 @@ export class KernelStore {
       meshedBodies: data.bodies,
       sceneSize: this.kernel.sceneAabb().size as [number, number, number],
     };
+    this.updateSceneBounds();
     for (const listener of this.listeners) listener();
     if (this.workerRebuildQueued) {
       this.pendingRefine = false;
@@ -2661,7 +2663,33 @@ export class KernelStore {
   // ── K6b.2: sketch session ────────────────────────────────────────
 
   private notify(): void {
+    this.updateSceneBounds();
     for (const listener of this.listeners) listener();
+  }
+
+  /** Publish the scene's world AABB centre + bounding radius so the viewport
+   *  can adapt the camera near/far planes to it (ticket lbzq — bodies vanished
+   *  past a fixed far plane on zoom-out). Cheap (9 floats from the kernel) and
+   *  only runs on state changes, never per frame. */
+  private updateSceneBounds(): void {
+    try {
+      const a = this.kernel.sceneAabb();
+      const radius = 0.5 * Math.hypot(a.size[0], a.size[1], a.size[2]);
+      publishSceneBounds(
+        radius > 0
+          ? {
+              center: [
+                (a.min[0] + a.max[0]) / 2,
+                (a.min[1] + a.max[1]) / 2,
+                (a.min[2] + a.max[2]) / 2,
+              ],
+              radius,
+            }
+          : null,
+      );
+    } catch {
+      // Kernel not ready (mid-load) — keep the previous bounds.
+    }
   }
 
   setLoading(phase: string | null): void {

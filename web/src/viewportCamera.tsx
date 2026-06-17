@@ -13,6 +13,7 @@ import {
   type ViewPreset,
 } from "./viewCommands";
 import { publishPickCamera } from "./pickCameraBridge";
+import { getSceneBounds } from "./sceneBoundsBridge";
 import {
   CONTROLS_PRESETS,
   ORBIT_ACTION_CODE,
@@ -20,6 +21,42 @@ import {
   type ControlsPresetId,
   type OrbitMouseButtons,
 } from "./controlsPreset";
+
+/**
+ * Adapt a perspective camera's near/far clip planes to the scene every frame so
+ * bodies never clip when zooming out (ticket lbzq: a fixed `far = 4000` with a
+ * ~3300 mm scene let bodies fall past the far plane once the camera receded).
+ * The planes tightly bracket the scene's bounding sphere from the current
+ * camera position, with a depth-precision floor on the near/far ratio. Empty /
+ * unknown scene → leaves the camera's defaults. Returns true if it changed.
+ */
+export function adaptClipPlanes(camera: THREE.Camera): boolean {
+  const persp = camera as THREE.PerspectiveCamera;
+  if (!persp.isPerspectiveCamera) return false;
+  const b = getSceneBounds();
+  if (!b || b.radius <= 0) return false;
+  const dx = camera.position.x - b.center[0];
+  const dy = camera.position.y - b.center[1];
+  const dz = camera.position.z - b.center[2];
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  // Pad so geometry exactly on the sphere never lands on a clip plane.
+  const pad = b.radius * 0.5 + 1;
+  const far = d + b.radius + pad;
+  // Push near out as far as the scene front allows (best depth precision), but
+  // never behind the camera, below a small floor, or past a 1e-4 ratio (the
+  // f32 depth-buffer limit).
+  const near = Math.max(d - b.radius - pad, far * 1e-4, 0.05);
+  if (
+    Math.abs(persp.near - near) > near * 1e-3 ||
+    Math.abs(persp.far - far) > far * 1e-3
+  ) {
+    persp.near = near;
+    persp.far = far;
+    persp.updateProjectionMatrix();
+    return true;
+  }
+  return false;
+}
 
 export function CameraBridgePublisher() {
   const { camera, size, gl } = useThree();
@@ -32,6 +69,9 @@ export function CameraBridgePublisher() {
   }, [camera]);
 
   useFrame(() => {
+    // Keep the clip planes wrapped around the scene so zooming out never
+    // pushes bodies past the (SDF-deferred) far plane (ticket lbzq).
+    adaptClipPlanes(camera);
     // Bring the camera's world/inverse matrices up to date for THIS frame
     // before anything projects through it. In useFrame these still reflect
     // the previous render until the renderer recomputes them, so the
