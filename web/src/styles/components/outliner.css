@@ -32,7 +32,11 @@
       color: var(--color-difference, #b91c1c);
 
       &:hover {
-        background: color-mix(in srgb, var(--color-difference, #b91c1c) 10%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--color-difference, #b91c1c) 10%,
+          transparent
+        );
       }
     }
   }
@@ -168,7 +172,10 @@
       border-bottom: 1px solid var(--color-divider);
 
       &:hover {
-        background: var(--color-bg-hover, color-mix(in srgb, var(--color-accent) 8%, transparent));
+        background: var(
+          --color-bg-hover,
+          color-mix(in srgb, var(--color-accent) 8%, transparent)
+        );
       }
 
       &.is-selected {
@@ -183,12 +190,24 @@
         flex: 0 0 auto;
       }
 
-      & .swatch[data-body-index="0"] { background: #3b82f6; }
-      & .swatch[data-body-index="1"] { background: #ef4444; }
-      & .swatch[data-body-index="2"] { background: #10b981; }
-      & .swatch[data-body-index="3"] { background: #f59e0b; }
-      & .swatch[data-body-index="4"] { background: #8b5cf6; }
-      & .swatch[data-body-index="5"] { background: #ec4899; }
+      & .swatch[data-body-index="0"] {
+        background: #3b82f6;
+      }
+      & .swatch[data-body-index="1"] {
+        background: #ef4444;
+      }
+      & .swatch[data-body-index="2"] {
+        background: #10b981;
+      }
+      & .swatch[data-body-index="3"] {
+        background: #f59e0b;
+      }
+      & .swatch[data-body-index="4"] {
+        background: #8b5cf6;
+      }
+      & .swatch[data-body-index="5"] {
+        background: #ec4899;
+      }
 
       & .kind {
         font-size: var(--fs-base);
@@ -637,7 +656,9 @@
     padding: 0 var(--space-1);
     line-height: 1;
     border-radius: var(--radius-sm);
-    transition: color var(--motion-fast), background var(--motion-fast);
+    transition:
+      color var(--motion-fast),
+      background var(--motion-fast);
 
     &:hover {
       color: var(--color-text);
@@ -654,7 +675,9 @@
     padding: 0 var(--space-1);
     line-height: 1;
     border-radius: var(--radius-sm);
-    transition: color var(--motion-fast), background var(--motion-fast);
+    transition:
+      color var(--motion-fast),
+      background var(--motion-fast);
 
     &:hover {
       color: var(--color-text);
@@ -671,7 +694,9 @@
     padding: 0 var(--space-1);
     line-height: 1;
     border-radius: var(--radius-sm);
-    transition: color var(--motion-fast), background var(--motion-fast);
+    transition:
+      color var(--motion-fast),
+      background var(--motion-fast);
 
     &:hover {
       color: var(--color-error);
@@ -712,6 +737,13 @@
         background: var(--color-surface);
         border-color: var(--color-border-strong);
         outline: none;
+      }
+
+      /* gqjt: with the FeatureDialog's own title row gone, the feature
+         regen-error signal (was the red dialog title, ticket sx5a) now
+         lives on this name input — red text, message in the tooltip. */
+      &.has-error {
+        color: var(--color-error);
       }
     }
 
@@ -812,7 +844,9 @@
         font-size: var(--fs-base);
         color: var(--color-text-muted);
         opacity: 0.5;
-        transition: opacity var(--motion-fast), color var(--motion-fast);
+        transition:
+          opacity var(--motion-fast),
+          color var(--motion-fast);
 
         &:hover {
           opacity: 1;
@@ -1063,7 +1097,9 @@
       color: var(--color-text-muted);
       font-size: var(--fs-base);
       padding: var(--space-1);
-      &:hover { color: var(--color-danger, #dc2626); }
+      &:hover {
+        color: var(--color-danger, #dc2626);
+      }
     }
 
     & .empty {
@@ -1086,12 +1122,26 @@
       cursor: pointer;
       font-size: var(--fs-base);
 
-      &:hover { background: var(--color-bg-hover); }
-      &.is-selected { background: var(--color-ui-selection); }
+      &:hover {
+        background: var(--color-bg-hover);
+      }
+      &.is-selected {
+        background: var(--color-ui-selection);
+      }
 
-      & .kind { width: 1.25rem; text-align: center; flex-shrink: 0; }
-      & .name { flex: 1; min-width: 0; }
-      & .meta { color: var(--color-text-muted); font-size: var(--fs-sm, 0.85rem); }
+      & .kind {
+        width: 1.25rem;
+        text-align: center;
+        flex-shrink: 0;
+      }
+      & .name {
+        flex: 1;
+        min-width: 0;
+      }
+      & .meta {
+        color: var(--color-text-muted);
+        font-size: var(--fs-sm, 0.85rem);
+      }
 
       & .row-delete {
         background: none;
@@ -1099,9 +1149,13 @@
         cursor: pointer;
         color: var(--color-text-muted);
         opacity: 0;
-        &:hover { color: var(--color-danger, #dc2626); }
+        &:hover {
+          color: var(--color-danger, #dc2626);
+        }
       }
-      &:hover .row-delete { opacity: 1; }
+      &:hover .row-delete {
+        opacity: 1;
+      }
     }
 
     & .tool {
@@ -1116,8 +1170,13 @@
       padding: var(--space-2) var(--space-3);
       font-size: var(--fs-base);
       cursor: pointer;
-      &:hover { background: var(--color-bg-hover); }
-      &:disabled { opacity: 0.45; cursor: not-allowed; }
+      &:hover {
+        background: var(--color-bg-hover);
+      }
+      &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
     }
 
     & .mate-slider {

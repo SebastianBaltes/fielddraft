@@ -85,75 +85,83 @@ export interface FeatureDialogProps {
    *  title red, with the message as the hover tooltip — Onshape-style
    *  feature-error signalling. */
   error?: string | null;
+  /** Whether to render the kind title row (glyph + label) in the header
+   *  (ticket gqjt). Defaults to true. The Outliner's Detail panel sets it
+   *  false because its own panel header already shows the feature's
+   *  (editable) name, making the inner "⧖ Helix"-style line redundant. */
+  showTitle?: boolean;
 }
 
-export const FEATURE_TYPE_META: Record<string, { label: string; glyph: string }> = {
-  box:                { label: "Box",              glyph: "▣" },
-  sphere:             { label: "Sphere",           glyph: "●" },
-  cylinder:           { label: "Cylinder",         glyph: "⬢" },
-  hex_prism:          { label: "Hex Prism",        glyph: "⬡" },
-  ellipsoid:          { label: "Ellipsoid",        glyph: "⬬" },
-  capsule:            { label: "Capsule",          glyph: "⬭" },
-  cone:               { label: "Cone",             glyph: "△" },
-  torus:              { label: "Torus",            glyph: "◎" },
-  sketch:             { label: "Sketch",           glyph: "✎" },
-  extrude:            { label: "Extrude",          glyph: "↥" },
-  revolve:            { label: "Revolve",          glyph: "↻" },
-  helix:              { label: "Helix",            glyph: "⧖" },
-  hole:               { label: "Hole",             glyph: "⊖" },
-  thread:             { label: "Thread",           glyph: "⏍" },
-  gyroid:             { label: "Gyroid",           glyph: "🕸" },
-  linear_pattern:     { label: "Linear Pattern",   glyph: "⎡" },
-  circular_pattern:   { label: "Circular Pattern", glyph: "↻" },
-  mirror:             { label: "Mirror",           glyph: "◫" },
-  mate_connector:     { label: "Mate Connector",   glyph: "⊕" },
-  fillet_edge:        { label: "Fillet Edge",      glyph: "◠" },
-  shell:              { label: "Shell",            glyph: "⬚" },
-  sweep:              { label: "Sweep",            glyph: "↝" },
-  boolean:            { label: "Boolean",          glyph: "⊕" },
-  material:           { label: "Material",         glyph: "🎨" },
-  transform:          { label: "Transform",        glyph: "↔" },
-  imported_mesh:      { label: "Imported Mesh",    glyph: "📦" },
-  translate:          { label: "Move",             glyph: "↔" },
-  rotate:             { label: "Rotate",           glyph: "⟳" },
-  scale:              { label: "Scale",            glyph: "⤡" },
-  sketch_point:       { label: "Point",            glyph: "•" },
-  sketch_line:        { label: "Line",             glyph: "╱" },
-  sketch_rectangle:   { label: "Rectangle",        glyph: "▭" },
-  sketch_rectangle_center: { label: "Rect (center)",  glyph: "▣" },
-  sketch_rectangle_3p: { label: "Rect (3-pt)",      glyph: "◇" },
-  sketch_circle:      { label: "Circle",           glyph: "○" },
-  sketch_circle_3p:   { label: "Circle (3-pt)",    glyph: "◎" },
-  sketch_ellipse:     { label: "Ellipse",          glyph: "⬭" },
-  sketch_slot:        { label: "Slot",             glyph: "▰" },
-  sketch_polygon:     { label: "Polygon",          glyph: "⬠" },
-  sketch_regular_polygon: { label: "N-gon",        glyph: "⬡" },
-  sketch_spline:      { label: "Spline",           glyph: "∿" },
-  sketch_arc:         { label: "Arc",              glyph: "◠" },
-  sketch_mirror:      { label: "Mirror",           glyph: "⇆" },
-  sketch_trim:        { label: "Trim",             glyph: "✂" },
-  sketch_split:       { label: "Split",            glyph: "⊷" },
-  sketch_extend:      { label: "Extend",           glyph: "⊶" },
-  sketch_fillet:      { label: "Fillet",           glyph: "⌒" },
-  sketch_chamfer:     { label: "Chamfer",          glyph: "◣" },
-  sketch_offset:      { label: "Offset",           glyph: "⧉" },
-  sketch_project:     { label: "Project",          glyph: "⇲" },
-  sketch_text:        { label: "Text",             glyph: "T" },
-  sketch_move:        { label: "Move",             glyph: "✥" },
-  sketch_copy:        { label: "Copy",             glyph: "⎘" },
-  sketch_constraint_horizontal:    { label: "Horizontal",    glyph: "—" },
-  sketch_constraint_vertical:      { label: "Vertical",      glyph: "|" },
-  sketch_constraint_coincident:    { label: "Coincident",    glyph: "⊙" },
-  sketch_constraint_distance:      { label: "Distance",      glyph: "↔" },
-  sketch_constraint_angle:         { label: "Angle",         glyph: "∠" },
-  sketch_constraint_equal:         { label: "Equal",         glyph: "=" },
-  sketch_constraint_parallel:      { label: "Parallel",      glyph: "∥" },
+export const FEATURE_TYPE_META: Record<
+  string,
+  { label: string; glyph: string }
+> = {
+  box: { label: "Box", glyph: "▣" },
+  sphere: { label: "Sphere", glyph: "●" },
+  cylinder: { label: "Cylinder", glyph: "⬢" },
+  hex_prism: { label: "Hex Prism", glyph: "⬡" },
+  ellipsoid: { label: "Ellipsoid", glyph: "⬬" },
+  capsule: { label: "Capsule", glyph: "⬭" },
+  cone: { label: "Cone", glyph: "△" },
+  torus: { label: "Torus", glyph: "◎" },
+  sketch: { label: "Sketch", glyph: "✎" },
+  extrude: { label: "Extrude", glyph: "↥" },
+  revolve: { label: "Revolve", glyph: "↻" },
+  helix: { label: "Helix", glyph: "⧖" },
+  hole: { label: "Hole", glyph: "⊖" },
+  thread: { label: "Thread", glyph: "⏍" },
+  gyroid: { label: "Gyroid", glyph: "🕸" },
+  linear_pattern: { label: "Linear Pattern", glyph: "⎡" },
+  circular_pattern: { label: "Circular Pattern", glyph: "↻" },
+  mirror: { label: "Mirror", glyph: "◫" },
+  mate_connector: { label: "Mate Connector", glyph: "⊕" },
+  fillet_edge: { label: "Fillet Edge", glyph: "◠" },
+  shell: { label: "Shell", glyph: "⬚" },
+  sweep: { label: "Sweep", glyph: "↝" },
+  boolean: { label: "Boolean", glyph: "⊕" },
+  material: { label: "Material", glyph: "🎨" },
+  transform: { label: "Transform", glyph: "↔" },
+  imported_mesh: { label: "Imported Mesh", glyph: "📦" },
+  translate: { label: "Move", glyph: "↔" },
+  rotate: { label: "Rotate", glyph: "⟳" },
+  scale: { label: "Scale", glyph: "⤡" },
+  sketch_point: { label: "Point", glyph: "•" },
+  sketch_line: { label: "Line", glyph: "╱" },
+  sketch_rectangle: { label: "Rectangle", glyph: "▭" },
+  sketch_rectangle_center: { label: "Rect (center)", glyph: "▣" },
+  sketch_rectangle_3p: { label: "Rect (3-pt)", glyph: "◇" },
+  sketch_circle: { label: "Circle", glyph: "○" },
+  sketch_circle_3p: { label: "Circle (3-pt)", glyph: "◎" },
+  sketch_ellipse: { label: "Ellipse", glyph: "⬭" },
+  sketch_slot: { label: "Slot", glyph: "▰" },
+  sketch_polygon: { label: "Polygon", glyph: "⬠" },
+  sketch_regular_polygon: { label: "N-gon", glyph: "⬡" },
+  sketch_spline: { label: "Spline", glyph: "∿" },
+  sketch_arc: { label: "Arc", glyph: "◠" },
+  sketch_mirror: { label: "Mirror", glyph: "⇆" },
+  sketch_trim: { label: "Trim", glyph: "✂" },
+  sketch_split: { label: "Split", glyph: "⊷" },
+  sketch_extend: { label: "Extend", glyph: "⊶" },
+  sketch_fillet: { label: "Fillet", glyph: "⌒" },
+  sketch_chamfer: { label: "Chamfer", glyph: "◣" },
+  sketch_offset: { label: "Offset", glyph: "⧉" },
+  sketch_project: { label: "Project", glyph: "⇲" },
+  sketch_text: { label: "Text", glyph: "T" },
+  sketch_move: { label: "Move", glyph: "✥" },
+  sketch_copy: { label: "Copy", glyph: "⎘" },
+  sketch_constraint_horizontal: { label: "Horizontal", glyph: "—" },
+  sketch_constraint_vertical: { label: "Vertical", glyph: "|" },
+  sketch_constraint_coincident: { label: "Coincident", glyph: "⊙" },
+  sketch_constraint_distance: { label: "Distance", glyph: "↔" },
+  sketch_constraint_angle: { label: "Angle", glyph: "∠" },
+  sketch_constraint_equal: { label: "Equal", glyph: "=" },
+  sketch_constraint_parallel: { label: "Parallel", glyph: "∥" },
   sketch_constraint_perpendicular: { label: "Perpendicular", glyph: "⊥" },
-  sketch_constraint_tangent:       { label: "Tangent",       glyph: "⌒" },
-  sketch_constraint_midpoint:      { label: "Midpoint",      glyph: "◆" },
-  sketch_constraint_symmetric:     { label: "Symmetric",     glyph: "⇿" },
-  sketch_constraint_radius:        { label: "Radius",        glyph: "⟜" },
-  sketch_constraint_diameter:      { label: "Diameter",      glyph: "⌀" },
+  sketch_constraint_tangent: { label: "Tangent", glyph: "⌒" },
+  sketch_constraint_midpoint: { label: "Midpoint", glyph: "◆" },
+  sketch_constraint_symmetric: { label: "Symmetric", glyph: "⇿" },
+  sketch_constraint_radius: { label: "Radius", glyph: "⟜" },
+  sketch_constraint_diameter: { label: "Diameter", glyph: "⌀" },
 };
 
 export const FEATURE_TYPE_LABELS: Record<string, string> = Object.fromEntries(
@@ -168,6 +176,7 @@ export function FeatureDialog({
   onCancel,
   footer,
   error,
+  showTitle = true,
 }: FeatureDialogProps) {
   const handleParamChange = (key: string, next: unknown) => {
     if (key === "_material_preset") {
@@ -176,43 +185,52 @@ export function FeatureDialog({
     }
     onChange(updateParam(definition, key, next));
   };
+  // gqjt: skip the whole header when there's nothing to show — no title row
+  // (the Detail panel renders the name itself) and no commit/cancel actions.
+  const hasHeader = showTitle || Boolean(onCommit) || Boolean(onCancel);
   return (
     <div className="fd-feature-dialog" data-feature-type={schema.type}>
-      <div className="header">
-        <div
-          className={"title" + (error ? " has-error" : "")}
-          title={error || undefined}
-        >
-          {FEATURE_TYPE_META[schema.type]?.glyph ? (
-            <span className="glyph" aria-hidden="true">{FEATURE_TYPE_META[schema.type].glyph}</span>
+      {hasHeader ? (
+        <div className="header">
+          {showTitle ? (
+            <div
+              className={"title" + (error ? " has-error" : "")}
+              title={error || undefined}
+            >
+              {FEATURE_TYPE_META[schema.type]?.glyph ? (
+                <span className="glyph" aria-hidden="true">
+                  {FEATURE_TYPE_META[schema.type].glyph}
+                </span>
+              ) : null}
+              {FEATURE_TYPE_META[schema.type]?.label ?? schema.type}
+            </div>
           ) : null}
-          {FEATURE_TYPE_META[schema.type]?.label ?? schema.type}
+          {onCommit || onCancel ? (
+            <div className="header-actions">
+              {onCommit ? (
+                <button
+                  type="button"
+                  className="header-action commit"
+                  aria-label="Confirm"
+                  onClick={onCommit}
+                >
+                  ✓
+                </button>
+              ) : null}
+              {onCancel ? (
+                <button
+                  type="button"
+                  className="header-action cancel"
+                  aria-label="Cancel"
+                  onClick={onCancel}
+                >
+                  ✗
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        {onCommit || onCancel ? (
-          <div className="header-actions">
-            {onCommit ? (
-              <button
-                type="button"
-                className="header-action commit"
-                aria-label="Confirm"
-                onClick={onCommit}
-              >
-                ✓
-              </button>
-            ) : null}
-            {onCancel ? (
-              <button
-                type="button"
-                className="header-action cancel"
-                aria-label="Cancel"
-                onClick={onCancel}
-              >
-                ✗
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      ) : null}
       <div className="body">
         <ParamList
           params={schema.params}
@@ -561,15 +579,21 @@ function MaterialPresetSelect({
         className="select"
         value=""
         onChange={(e) => {
-          const preset = MATERIAL_PRESETS.find((p) => p.name === e.target.value);
+          const preset = MATERIAL_PRESETS.find(
+            (p) => p.name === e.target.value,
+          );
           if (preset) onApply(applyPreset(definition, preset));
         }}
       >
-        <option value="" disabled>Select material...</option>
+        <option value="" disabled>
+          Select material...
+        </option>
         {PRESET_CATEGORIES.map((cat) => (
           <optgroup key={cat} label={cat}>
             {MATERIAL_PRESETS.filter((p) => p.category === cat).map((p) => (
-              <option key={p.name} value={p.name}>{p.name}</option>
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
             ))}
           </optgroup>
         ))}

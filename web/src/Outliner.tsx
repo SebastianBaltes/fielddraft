@@ -17,11 +17,12 @@ import { type FeatureSummary } from "./kernel";
 import type { FeatureFolder, KernelStore, StoreState } from "./store";
 import { createFdApi } from "./api/fd";
 import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
-import { FeatureDialog, FEATURE_TYPE_LABELS, FEATURE_TYPE_META } from "./widgets/FeatureDialog";
 import {
-  buildDefaultDefinition,
-  type FeatureSchema,
-} from "./widgets/schema";
+  FeatureDialog,
+  FEATURE_TYPE_LABELS,
+  FEATURE_TYPE_META,
+} from "./widgets/FeatureDialog";
+import { buildDefaultDefinition, type FeatureSchema } from "./widgets/schema";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
 import { type SketchDiagnostics } from "./solver/types";
 import { buildDraftSketchState } from "./sketchSession";
@@ -46,19 +47,22 @@ function scriptTypeFor(
   return scriptTypes?.find((t) => t.id === kind);
 }
 
-export function kindGlyph(kind: string, scriptTypes?: readonly ScriptType[]): string {
+export function kindGlyph(
+  kind: string,
+  scriptTypes?: readonly ScriptType[],
+): string {
   const script = scriptTypeFor(kind, scriptTypes);
   if (script) return script.icon;
   return FEATURE_TYPE_META[kind]?.glyph ?? "?";
 }
-
 
 export function prettifyFeatureName(
   name: string,
   kind: string,
   scriptTypes?: readonly ScriptType[],
 ): string {
-  const prettyKind = scriptTypeFor(kind, scriptTypes)?.name ?? FEATURE_TYPE_LABELS[kind];
+  const prettyKind =
+    scriptTypeFor(kind, scriptTypes)?.name ?? FEATURE_TYPE_LABELS[kind];
   if (!prettyKind) return name;
   if (name === kind) return prettyKind;
   const suffix = name.startsWith(kind + " ") ? name.slice(kind.length) : null;
@@ -103,7 +107,11 @@ function loadOutlinerWidth(defaultRem: number): number {
   return clampOutlinerWidth(defaultRem * rootFontSize);
 }
 
-export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps) {
+export function Outliner({
+  store,
+  state,
+  mobileNavOpen = false,
+}: OutlinerProps) {
   // Below the phone breakpoint the outliner is an off-canvas drawer whose
   // width comes from CSS, so the splitter-driven inline width is dropped.
   const isMobile = useMediaQuery(MOBILE_QUERY);
@@ -164,9 +172,7 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   // store.updateFeatureParams. Keyed on the feature id so
   // switching between two features of the same kind picks up
   // each one's own values, not a shared default.
-  const [dialogDraft, setDialogDraft] = useState<
-    Record<string, unknown>
-  >({});
+  const [dialogDraft, setDialogDraft] = useState<Record<string, unknown>>({});
   // Element/body selection → related outliner rows (ticket r36f): the
   // features owning the selected B-Rep element (or contributing to the
   // highlighted body) render with the GUI selection background, so picking
@@ -174,12 +180,18 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   const relatedFeatureIds = useMemo<ReadonlySet<number>>(() => {
     if (!store) return new Set<number>();
     if (state.selectedElements.length > 0)
-      return resolveSelectionLinks(store.kernel, state.selectedElements).featureIds;
+      return resolveSelectionLinks(store.kernel, state.selectedElements)
+        .featureIds;
     if (state.highlightedBodyIndex !== null)
       return bodyFeatureIds(store.kernel, state.highlightedBodyIndex);
     return new Set<number>();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, state.selectedElements, state.highlightedBodyIndex, state.features]);
+  }, [
+    store,
+    state.selectedElements,
+    state.highlightedBodyIndex,
+    state.features,
+  ]);
 
   const selectedFeature = useMemo<FeatureSummary | undefined>(
     () =>
@@ -197,7 +209,10 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       // owned by the sketch session and would render as a giant JSON
       // textarea, so it is filtered out of the dialog.
       if (selectedFeature.kind === "sketch") {
-        return { ...schema, params: schema.params.filter((p) => p.key === "plane") };
+        return {
+          ...schema,
+          params: schema.params.filter((p) => p.key === "plane"),
+        };
       }
       return schema;
     } catch {
@@ -249,7 +264,9 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       if (JSON.stringify(storeParams) !== JSON.stringify(dialogDraft)) {
         setDialogDraft(storeParams);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
   prevFeaturesRef.current = state.features;
   const handleDialogChange = (next: Record<string, unknown>) => {
@@ -267,7 +284,10 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
         return;
       }
       if (typeof next.plane === "string" && next.plane !== current.plane) {
-        store.updateFeatureParams(selectedFeature.id, { ...current, plane: next.plane });
+        store.updateFeatureParams(selectedFeature.id, {
+          ...current,
+          plane: next.plane,
+        });
       }
       return;
     }
@@ -361,7 +381,9 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
     try {
       const raw = localStorage.getItem("fielddraft.outliner.collapsed");
       if (raw) return new Set(JSON.parse(raw));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     return new Set<string>(["geometry"]);
   });
   const toggleSection = (id: string) => {
@@ -369,7 +391,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      try { localStorage.setItem("fielddraft.outliner.collapsed", JSON.stringify([...next])); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(
+          "fielddraft.outliner.collapsed",
+          JSON.stringify([...next]),
+        );
+      } catch {
+        /* ignore */
+      }
       return next;
     });
   };
@@ -378,9 +407,11 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
   // `null` when the menu is closed; an object with the click
   // coordinates + target feature id when open. Dismissed on
   // scroll, outside-click, or Escape.
-  const [contextMenu, setContextMenu] = useState<
-    { x: number; y: number; featureId: number } | null
-  >(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    featureId: number;
+  } | null>(null);
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -458,7 +489,9 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
 
   // ── rollback bar drag ──────────────────────────────────────
   const [draggingRollback, setDraggingRollback] = useState(false);
-  const [rollbackDropIndex, _setRollbackDropIndex] = useState<number | null>(null);
+  const [rollbackDropIndex, _setRollbackDropIndex] = useState<number | null>(
+    null,
+  );
   const rollbackDropIndexRef = useRef<number | null>(null);
   const setRollbackDropIndex = (v: number | null) => {
     rollbackDropIndexRef.current = v;
@@ -610,7 +643,11 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
     <aside
       className={"fd-outliner" + (mobileNavOpen ? " is-open" : "")}
       data-testid="fielddraft-outliner"
-      style={isMobile ? undefined : { width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }}
+      style={
+        isMobile
+          ? undefined
+          : { width: `${outlinerWidth}px`, flexBasis: `${outlinerWidth}px` }
+      }
     >
       <div
         className="splitter"
@@ -633,108 +670,119 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           manager now live inside the sketch's generic Detail dialog below
           (see SketchDetailBody, rendered from the Detail panel). */}
       {!sketchSession.active ? (
-        <section
-          className="variables-panel"
-          data-testid="variables-panel"
-        >
-          <div className="header accordion-header" onClick={() => toggleSection("variables")} data-testid="variables-header">
-            <span className="accordion-chevron">{collapsed.has("variables") ? "▸" : "▾"}</span>
+        <section className="variables-panel" data-testid="variables-panel">
+          <div
+            className="header accordion-header"
+            onClick={() => toggleSection("variables")}
+            data-testid="variables-header"
+          >
+            <span className="accordion-chevron">
+              {collapsed.has("variables") ? "▸" : "▾"}
+            </span>
             <span>Variables</span>
           </div>
-          {!collapsed.has("variables") && (<>
-          {state.variables.length === 0 ? (
-            <div
-              className="empty"
-              data-testid="variables-empty"
-            >
-              No variables.
-            </div>
-          ) : (
-            <ul className="list">
-              {state.variables.map((v) => (
-                <li
-                  key={v.name}
-                  className="row"
-                  data-testid={`variable-row-${v.name}`}
-                >
-                  <span className="variable-name">{v.name}</span>
-                  <input
-                    className="variable-value"
-                    type="number"
-                    inputMode="decimal"
-                    aria-label={`Value of ${v.name}`}
-                    data-testid={`variable-value-${v.name}`}
-                    defaultValue={v.value}
-                    onBlur={(e) =>
-                      handleVariableValueChange(v.name, e.currentTarget.value)
+          {!collapsed.has("variables") && (
+            <>
+              {state.variables.length === 0 ? (
+                <div className="empty" data-testid="variables-empty">
+                  No variables.
+                </div>
+              ) : (
+                <ul className="list">
+                  {state.variables.map((v) => (
+                    <li
+                      key={v.name}
+                      className="row"
+                      data-testid={`variable-row-${v.name}`}
+                    >
+                      <span className="variable-name">{v.name}</span>
+                      <input
+                        className="variable-value"
+                        type="number"
+                        inputMode="decimal"
+                        aria-label={`Value of ${v.name}`}
+                        data-testid={`variable-value-${v.name}`}
+                        defaultValue={v.value}
+                        onBlur={(e) =>
+                          handleVariableValueChange(
+                            v.name,
+                            e.currentTarget.value,
+                          )
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="row-delete"
+                        title="Remove variable"
+                        data-testid={`variable-delete-${v.name}`}
+                        onClick={() => store.removeVariable(v.name)}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="variables-add">
+                <input
+                  className="variable-name-input"
+                  placeholder="name"
+                  aria-label="New variable name"
+                  data-testid="variable-new-name"
+                  value={newVarName}
+                  onChange={(e) => setNewVarName(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddVariable();
                     }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        (e.currentTarget as HTMLInputElement).blur();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="row-delete"
-                    title="Remove variable"
-                    data-testid={`variable-delete-${v.name}`}
-                    onClick={() => store.removeVariable(v.name)}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
+                  }}
+                />
+                <input
+                  className="variable-value-input"
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="value"
+                  aria-label="New variable value"
+                  data-testid="variable-new-value"
+                  value={newVarValue}
+                  onChange={(e) => setNewVarValue(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddVariable();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="apply"
+                  data-testid="variable-add"
+                  onClick={handleAddVariable}
+                >
+                  +
+                </button>
+              </div>
+            </>
           )}
-          <div className="variables-add">
-            <input
-              className="variable-name-input"
-              placeholder="name"
-              aria-label="New variable name"
-              data-testid="variable-new-name"
-              value={newVarName}
-              onChange={(e) => setNewVarName(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleAddVariable();
-                }
-              }}
-            />
-            <input
-              className="variable-value-input"
-              type="number"
-              inputMode="decimal"
-              placeholder="value"
-              aria-label="New variable value"
-              data-testid="variable-new-value"
-              value={newVarValue}
-              onChange={(e) => setNewVarValue(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleAddVariable();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="apply"
-              data-testid="variable-add"
-              onClick={handleAddVariable}
-            >
-              +
-            </button>
-          </div>
-          </>)}
         </section>
       ) : null}
       {!sketchSession.active && state.assembly.active && (
         <section className="assembly-panel" data-testid="assembly-panel">
-          <div className="header accordion-header" onClick={() => toggleSection("assembly")} data-testid="assembly-header">
-            <span className="accordion-chevron">{collapsed.has("assembly") ? "▸" : "▾"}</span>
+          <div
+            className="header accordion-header"
+            onClick={() => toggleSection("assembly")}
+            data-testid="assembly-header"
+          >
+            <span className="accordion-chevron">
+              {collapsed.has("assembly") ? "▸" : "▾"}
+            </span>
             <span>Assembly</span>
             <button
               type="button"
@@ -746,133 +794,190 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               ✗
             </button>
           </div>
-          {!collapsed.has("assembly") && (<>
-          {state.assembly.document.parts.length === 0 ? (
-            <div className="empty">No parts. Import a .fdraft file.</div>
-          ) : (
-            <ul className="list">
-              {state.assembly.document.parts.map((part) => (
-                <li
-                  key={part.id}
-                  className={"row" + (part.id === state.assembly.selectedPartId ? " is-selected" : "")}
-                  data-testid={`assembly-part-${part.id}`}
-                  onClick={() => store.selectAssemblyPart(part.id)}
-                >
-                  <span className="kind">▣</span>
-                  <span className="name">{part.name}</span>
-                  <span className="meta">{part.meshBodies.length} bodies</span>
-                  <button
-                    type="button"
-                    className="row-delete"
-                    title="Remove part"
-                    onClick={(e) => { e.stopPropagation(); store.removePartFromAssembly(part.id); }}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <input
-            type="file"
-            accept=".fdraft,.json"
-            className="hidden-file-input"
-            data-testid="assembly-import-input"
-            onChange={(e) => {
-              const file = e.currentTarget.files?.[0];
-              if (!file) return;
-              // wu2v: read bytes so ZIP `.fdraft` containers import; the
-              // store extracts document.json (or falls back to legacy JSON).
-              file.arrayBuffer().then((buf) => {
-                store.addPartToAssembly(buf, file.name.replace(/\.(fdraft|json)$/, ""));
-              });
-              e.currentTarget.value = "";
-            }}
-          />
-          <button
-            type="button"
-            className="tool"
-            title="Add a part (.fdraft file)"
-            data-testid="assembly-add-part"
-            onClick={() => {
-              document.querySelector<HTMLInputElement>('[data-testid="assembly-import-input"]')?.click();
-            }}
-          >
-            + Add Part
-          </button>
-
-          {state.assembly.document.mates.length > 0 && (
+          {!collapsed.has("assembly") && (
             <>
-              <div className="header" style={{ marginTop: "var(--space-3)" }}>
-                <span>Mates</span>
-              </div>
-              <ul className="list">
-                {state.assembly.document.mates.map((mate) => (
-                  <li key={mate.id} className="row" data-testid={`mate-${mate.id}`}>
-                    <span className="kind">
-                      {mate.type === "fixed" ? "🔒" : mate.type === "ball" ? "⚽" : mate.type === "prismatic" ? "↕" : "🔄"}
-                    </span>
-                    <span className="name">{mate.name}</span>
-                    {(mate.type === "revolute" || mate.type === "cylindrical") && (
-                      <input
-                        type="range"
-                        min={mate.minAngle ?? -180}
-                        max={mate.maxAngle ?? 180}
-                        value={mate.angle ?? 0}
-                        title={`${mate.angle ?? 0}°`}
-                        className="mate-slider"
-                        onChange={(e) => store.setMateAngle(mate.id, Number(e.target.value))}
-                      />
-                    )}
-                    {(mate.type === "prismatic" || mate.type === "cylindrical") && (
-                      <input
-                        type="range"
-                        min={-100}
-                        max={100}
-                        value={mate.offset ?? 0}
-                        title={`${mate.offset ?? 0} mm`}
-                        className="mate-slider"
-                        onChange={(e) => store.setMateOffset(mate.id, Number(e.target.value))}
-                      />
-                    )}
-                    <button
-                      type="button"
-                      className="row-delete"
-                      title="Remove mate"
-                      onClick={() => store.removeMate(mate.id)}
+              {state.assembly.document.parts.length === 0 ? (
+                <div className="empty">No parts. Import a .fdraft file.</div>
+              ) : (
+                <ul className="list">
+                  {state.assembly.document.parts.map((part) => (
+                    <li
+                      key={part.id}
+                      className={
+                        "row" +
+                        (part.id === state.assembly.selectedPartId
+                          ? " is-selected"
+                          : "")
+                      }
+                      data-testid={`assembly-part-${part.id}`}
+                      onClick={() => store.selectAssemblyPart(part.id)}
                     >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                      <span className="kind">▣</span>
+                      <span className="name">{part.name}</span>
+                      <span className="meta">
+                        {part.meshBodies.length} bodies
+                      </span>
+                      <button
+                        type="button"
+                        className="row-delete"
+                        title="Remove part"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          store.removePartFromAssembly(part.id);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <input
+                type="file"
+                accept=".fdraft,.json"
+                className="hidden-file-input"
+                data-testid="assembly-import-input"
+                onChange={(e) => {
+                  const file = e.currentTarget.files?.[0];
+                  if (!file) return;
+                  // wu2v: read bytes so ZIP `.fdraft` containers import; the
+                  // store extracts document.json (or falls back to legacy JSON).
+                  file.arrayBuffer().then((buf) => {
+                    store.addPartToAssembly(
+                      buf,
+                      file.name.replace(/\.(fdraft|json)$/, ""),
+                    );
+                  });
+                  e.currentTarget.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="tool"
+                title="Add a part (.fdraft file)"
+                data-testid="assembly-add-part"
+                onClick={() => {
+                  document
+                    .querySelector<HTMLInputElement>(
+                      '[data-testid="assembly-import-input"]',
+                    )
+                    ?.click();
+                }}
+              >
+                + Add Part
+              </button>
+
+              {state.assembly.document.mates.length > 0 && (
+                <>
+                  <div
+                    className="header"
+                    style={{ marginTop: "var(--space-3)" }}
+                  >
+                    <span>Mates</span>
+                  </div>
+                  <ul className="list">
+                    {state.assembly.document.mates.map((mate) => (
+                      <li
+                        key={mate.id}
+                        className="row"
+                        data-testid={`mate-${mate.id}`}
+                      >
+                        <span className="kind">
+                          {mate.type === "fixed"
+                            ? "🔒"
+                            : mate.type === "ball"
+                              ? "⚽"
+                              : mate.type === "prismatic"
+                                ? "↕"
+                                : "🔄"}
+                        </span>
+                        <span className="name">{mate.name}</span>
+                        {(mate.type === "revolute" ||
+                          mate.type === "cylindrical") && (
+                          <input
+                            type="range"
+                            min={mate.minAngle ?? -180}
+                            max={mate.maxAngle ?? 180}
+                            value={mate.angle ?? 0}
+                            title={`${mate.angle ?? 0}°`}
+                            className="mate-slider"
+                            onChange={(e) =>
+                              store.setMateAngle(
+                                mate.id,
+                                Number(e.target.value),
+                              )
+                            }
+                          />
+                        )}
+                        {(mate.type === "prismatic" ||
+                          mate.type === "cylindrical") && (
+                          <input
+                            type="range"
+                            min={-100}
+                            max={100}
+                            value={mate.offset ?? 0}
+                            title={`${mate.offset ?? 0} mm`}
+                            className="mate-slider"
+                            onChange={(e) =>
+                              store.setMateOffset(
+                                mate.id,
+                                Number(e.target.value),
+                              )
+                            }
+                          />
+                        )}
+                        <button
+                          type="button"
+                          className="row-delete"
+                          title="Remove mate"
+                          onClick={() => store.removeMate(mate.id)}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              {state.assembly.document.parts.length >= 2 && (
+                <MateCreator
+                  parts={state.assembly.document.parts}
+                  store={store}
+                />
+              )}
             </>
           )}
-
-          {state.assembly.document.parts.length >= 2 && (
-            <MateCreator parts={state.assembly.document.parts} store={store} />
-          )}
-          </>)}
         </section>
       )}
-      <div className="header accordion-header" onClick={() => toggleSection("datums")} data-testid="datums-header">
-        <span className="accordion-chevron">{collapsed.has("datums") ? "▸" : "▾"}</span>
+      <div
+        className="header accordion-header"
+        onClick={() => toggleSection("datums")}
+        data-testid="datums-header"
+      >
+        <span className="accordion-chevron">
+          {collapsed.has("datums") ? "▸" : "▾"}
+        </span>
         <span>Default geometry</span>
       </div>
       {!collapsed.has("datums") && (
         <ul className="list datum-list">
-          {([
-            { id: "origin", glyph: "⊙", label: "Origin" },
-            { id: "top",    glyph: "┼", label: "Top" },
-            { id: "front",  glyph: "┼", label: "Front" },
-            { id: "right",  glyph: "┼", label: "Right" },
-          ] as const).map((datum) => {
+          {(
+            [
+              { id: "origin", glyph: "⊙", label: "Origin" },
+              { id: "top", glyph: "┼", label: "Top" },
+              { id: "front", glyph: "┼", label: "Front" },
+              { id: "right", glyph: "┼", label: "Right" },
+            ] as const
+          ).map((datum) => {
             const visible = !state.hiddenDatums.has(datum.id);
             const datumSelected = state.selectedDatum === datum.id;
             return (
               <li
                 key={datum.id}
-                className={"row datum-row" + (datumSelected ? " is-selected" : "")}
+                className={
+                  "row datum-row" + (datumSelected ? " is-selected" : "")
+                }
                 data-testid={`datum-${datum.id}`}
                 onClick={() => {
                   // An armed FACE picker (e.g. the sketch-plane field)
@@ -880,7 +985,11 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                   // clicking the plane quad in the viewport.
                   const picker = getActivePicker();
                   const query = DATUM_PLANE_QUERIES[datum.id];
-                  if (picker && query && filterAllows("face", picker.entityFilter)) {
+                  if (
+                    picker &&
+                    query &&
+                    filterAllows("face", picker.entityFilter)
+                  ) {
                     picker.onPick(query);
                     return;
                   }
@@ -891,7 +1000,9 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                 <span className="feature-name">{datum.label}</span>
                 <button
                   type="button"
-                  className={"row-datum-visible" + (visible ? " is-visible" : "")}
+                  className={
+                    "row-datum-visible" + (visible ? " is-visible" : "")
+                  }
                   title={visible ? "Hide" : "Show"}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -905,8 +1016,14 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           })}
         </ul>
       )}
-      <div className="header features-header accordion-header" onClick={() => toggleSection("features")} data-testid="features-header">
-        <span className="accordion-chevron">{collapsed.has("features") ? "▸" : "▾"}</span>
+      <div
+        className="header features-header accordion-header"
+        onClick={() => toggleSection("features")}
+        data-testid="features-header"
+      >
+        <span className="accordion-chevron">
+          {collapsed.has("features") ? "▸" : "▾"}
+        </span>
         <span>Features</span>
         <button
           type="button"
@@ -915,219 +1032,284 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           data-testid="new-folder"
           onClick={() => store.createFolder()}
         >
-          <span className="folder-glyph" aria-hidden="true">📁</span>
-          <span className="plus-glyph" aria-hidden="true">+</span>
+          <span className="folder-glyph" aria-hidden="true">
+            📁
+          </span>
+          <span className="plus-glyph" aria-hidden="true">
+            +
+          </span>
         </button>
       </div>
-      {!collapsed.has("features") && (state.features.length === 0 && state.folders.length === 0 ? (
-        <div className="empty">No features yet.</div>
-      ) : (
-        <ul
-          className="list"
-          onDragOver={draggingRollback ? (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            setRollbackDropIndex(state.features.length);
-          } : undefined}
-          onDrop={draggingRollback ? handleRollbackDrop : undefined}
-        >
-          {(() => {
-            // Set of feature ids that live in some folder — used to
-            // filter the ungrouped list at the bottom.
-            const grouped = new Set<number>();
-            for (const folder of state.folders) {
-              for (const id of folder.memberIds) grouped.add(id);
-            }
-
-            // Render a single feature row. Hoisted from the JSX so
-            // both the folder groups and the ungrouped list can
-            // call it with the same args — keeps row styling,
-            // drag/drop wiring and context-menu plumbing in a
-            // single place.
-            const renderFeatureRow = (
-              feature: FeatureSummary,
-              index: number,
-            ) => {
-              const selected = state.selection.has(feature.id);
-              const related = relatedFeatureIds.has(feature.id);
-              const isDragged = draggingId === feature.id;
-              const isRolledBack = !!feature.rolled_back;
-              const showRbDrop = draggingRollback && rollbackDropIndex === index;
-              const showRbDropBelow = draggingRollback
-                && rollbackDropIndex === state.features.length
-                && index === state.features.length - 1;
-              return (
-                <li
-                  key={feature.id}
-                  className={
-                    "row" +
-                    (selected || related ? " is-selected" : "") +
-                    (feature.suppressed ? " is-suppressed" : "") +
-                    (feature.error ? " has-error" : "") +
-                    (!feature.error && feature.warning ? " has-warning" : "") +
-                    (isRolledBack ? " is-rolled-back" : "") +
-                    (isDragged ? " is-dragging" : "") +
-                    (dropIndex === index ? " drop-above" : "") +
-                    (dropIndex === index + 1 &&
-                    index === state.features.length - 1
-                      ? " drop-below"
-                      : "") +
-                    (showRbDrop ? " rollback-drop-above" : "") +
-                    (showRbDropBelow ? " rollback-drop-below" : "")
+      {!collapsed.has("features") &&
+        (state.features.length === 0 && state.folders.length === 0 ? (
+          <div className="empty">No features yet.</div>
+        ) : (
+          <ul
+            className="list"
+            onDragOver={
+              draggingRollback
+                ? (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setRollbackDropIndex(state.features.length);
                   }
-                  data-testid={`feature-row-${feature.id}`}
-                  data-feature-id={feature.id}
-                  data-feature-kind={feature.kind}
-                  title={feature.error || feature.warning || undefined}
-                  data-feature-suppressed={feature.suppressed ? "true" : "false"}
-                  draggable={!isRolledBack}
-                  onDragStart={isRolledBack ? undefined : (e) => handleFeatureDragStart(e, feature.id)}
-                  onDragOver={(e) => {
-                    if (draggingRollback) handleRollbackDragOverRow(e, index);
-                    else handleFeatureDragOver(e, index);
-                  }}
-                  onDragLeave={draggingRollback ? undefined : handleFeatureDragLeave}
-                  onDrop={(e) => {
-                    if (e.dataTransfer.types.includes("fielddraft/rollback-bar")) handleRollbackDrop(e);
-                    else handleFeatureDrop(e);
-                  }}
-                  onDragEnd={draggingRollback ? handleRollbackDragEnd : handleFeatureDragEnd}
-                  onClick={isRolledBack ? undefined : (e) => handleRowClick(e, feature)}
-                  onDoubleClick={isRolledBack ? undefined : () => handleRowDoubleClick(feature)}
-                  onContextMenu={isRolledBack ? undefined : (e) => openContextMenu(e, feature.id)}
-                >
-                  <span className="kind">
-                    {kindGlyph(feature.kind, state.scriptTypes)}
-                  </span>
-                  {renamingId === feature.id ? (
-                    <input
-                      className="feature-name-input"
-                      data-testid={`feature-rename-${feature.id}`}
-                      value={renameDraft}
-                      autoFocus
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setRenameDraft(e.currentTarget.value)}
-                      onKeyDown={handleRenameKey}
-                      onBlur={commitRename}
-                    />
-                  ) : (
-                    <span
-                      className={"feature-name" + (selected ? " is-editable" : "")}
-                      onClick={selected ? (e) => {
-                        e.stopPropagation();
-                        beginRename(feature);
-                      } : undefined}
-                    >
-                      {prettifyFeatureName(feature.name, feature.kind, state.scriptTypes)}
+                : undefined
+            }
+            onDrop={draggingRollback ? handleRollbackDrop : undefined}
+          >
+            {(() => {
+              // Set of feature ids that live in some folder — used to
+              // filter the ungrouped list at the bottom.
+              const grouped = new Set<number>();
+              for (const folder of state.folders) {
+                for (const id of folder.memberIds) grouped.add(id);
+              }
+
+              // Render a single feature row. Hoisted from the JSX so
+              // both the folder groups and the ungrouped list can
+              // call it with the same args — keeps row styling,
+              // drag/drop wiring and context-menu plumbing in a
+              // single place.
+              const renderFeatureRow = (
+                feature: FeatureSummary,
+                index: number,
+              ) => {
+                const selected = state.selection.has(feature.id);
+                const related = relatedFeatureIds.has(feature.id);
+                const isDragged = draggingId === feature.id;
+                const isRolledBack = !!feature.rolled_back;
+                const showRbDrop =
+                  draggingRollback && rollbackDropIndex === index;
+                const showRbDropBelow =
+                  draggingRollback &&
+                  rollbackDropIndex === state.features.length &&
+                  index === state.features.length - 1;
+                return (
+                  <li
+                    key={feature.id}
+                    className={
+                      "row" +
+                      (selected || related ? " is-selected" : "") +
+                      (feature.suppressed ? " is-suppressed" : "") +
+                      (feature.error ? " has-error" : "") +
+                      (!feature.error && feature.warning
+                        ? " has-warning"
+                        : "") +
+                      (isRolledBack ? " is-rolled-back" : "") +
+                      (isDragged ? " is-dragging" : "") +
+                      (dropIndex === index ? " drop-above" : "") +
+                      (dropIndex === index + 1 &&
+                      index === state.features.length - 1
+                        ? " drop-below"
+                        : "") +
+                      (showRbDrop ? " rollback-drop-above" : "") +
+                      (showRbDropBelow ? " rollback-drop-below" : "")
+                    }
+                    data-testid={`feature-row-${feature.id}`}
+                    data-feature-id={feature.id}
+                    data-feature-kind={feature.kind}
+                    title={feature.error || feature.warning || undefined}
+                    data-feature-suppressed={
+                      feature.suppressed ? "true" : "false"
+                    }
+                    draggable={!isRolledBack}
+                    onDragStart={
+                      isRolledBack
+                        ? undefined
+                        : (e) => handleFeatureDragStart(e, feature.id)
+                    }
+                    onDragOver={(e) => {
+                      if (draggingRollback) handleRollbackDragOverRow(e, index);
+                      else handleFeatureDragOver(e, index);
+                    }}
+                    onDragLeave={
+                      draggingRollback ? undefined : handleFeatureDragLeave
+                    }
+                    onDrop={(e) => {
+                      if (
+                        e.dataTransfer.types.includes("fielddraft/rollback-bar")
+                      )
+                        handleRollbackDrop(e);
+                      else handleFeatureDrop(e);
+                    }}
+                    onDragEnd={
+                      draggingRollback
+                        ? handleRollbackDragEnd
+                        : handleFeatureDragEnd
+                    }
+                    onClick={
+                      isRolledBack
+                        ? undefined
+                        : (e) => handleRowClick(e, feature)
+                    }
+                    onDoubleClick={
+                      isRolledBack
+                        ? undefined
+                        : () => handleRowDoubleClick(feature)
+                    }
+                    onContextMenu={
+                      isRolledBack
+                        ? undefined
+                        : (e) => openContextMenu(e, feature.id)
+                    }
+                  >
+                    <span className="kind">
+                      {kindGlyph(feature.kind, state.scriptTypes)}
                     </span>
-                  )}
-                  {feature.kind === "sketch" ? (
-                    <button
-                      type="button"
-                      className={
-                        "row-sketch-visible" +
-                        (state.visibleSketches.includes(feature.id)
-                          ? " is-visible"
-                          : "")
-                      }
-                      title={
-                        state.visibleSketches.includes(feature.id)
-                          ? "Hide sketch in 3D viewport"
-                          : "Show sketch in 3D viewport"
-                      }
-                      aria-label={
-                        state.visibleSketches.includes(feature.id)
-                          ? "Hide sketch in 3D viewport"
-                          : "Show sketch in 3D viewport"
-                      }
-                      data-testid={`sketch-visible-${feature.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        store.toggleSketchVisible(feature.id);
-                      }}
-                      // Two rapid clicks on the eye icon fire a
-                      // `dblclick` event that bubbles up to the row
-                      // <li> and opens the sketch editor via
-                      // `handleRowDoubleClick`. stopPropagation on
-                      // the plain onClick isn't enough — the
-                      // dblclick dispatches separately. Swallow it
-                      // here so the button only ever toggles.
-                      onDoubleClick={(e) => e.stopPropagation()}
-                    >
-                      {state.visibleSketches.includes(feature.id) ? "◉" : "◎"}
-                    </button>
-                  ) : null}
-                  {/* K7.22 UX-fix (4): suppress toggle moved to the
+                    {renamingId === feature.id ? (
+                      <input
+                        className="feature-name-input"
+                        data-testid={`feature-rename-${feature.id}`}
+                        value={renameDraft}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setRenameDraft(e.currentTarget.value)}
+                        onKeyDown={handleRenameKey}
+                        onBlur={commitRename}
+                      />
+                    ) : (
+                      <span
+                        className={
+                          "feature-name" + (selected ? " is-editable" : "")
+                        }
+                        onClick={
+                          selected
+                            ? (e) => {
+                                e.stopPropagation();
+                                beginRename(feature);
+                              }
+                            : undefined
+                        }
+                      >
+                        {prettifyFeatureName(
+                          feature.name,
+                          feature.kind,
+                          state.scriptTypes,
+                        )}
+                      </span>
+                    )}
+                    {feature.kind === "sketch" ? (
+                      <button
+                        type="button"
+                        className={
+                          "row-sketch-visible" +
+                          (state.visibleSketches.includes(feature.id)
+                            ? " is-visible"
+                            : "")
+                        }
+                        title={
+                          state.visibleSketches.includes(feature.id)
+                            ? "Hide sketch in 3D viewport"
+                            : "Show sketch in 3D viewport"
+                        }
+                        aria-label={
+                          state.visibleSketches.includes(feature.id)
+                            ? "Hide sketch in 3D viewport"
+                            : "Show sketch in 3D viewport"
+                        }
+                        data-testid={`sketch-visible-${feature.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          store.toggleSketchVisible(feature.id);
+                        }}
+                        // Two rapid clicks on the eye icon fire a
+                        // `dblclick` event that bubbles up to the row
+                        // <li> and opens the sketch editor via
+                        // `handleRowDoubleClick`. stopPropagation on
+                        // the plain onClick isn't enough — the
+                        // dblclick dispatches separately. Swallow it
+                        // here so the button only ever toggles.
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        {state.visibleSketches.includes(feature.id) ? "◉" : "◎"}
+                      </button>
+                    ) : null}
+                    {/* K7.22 UX-fix (4): suppress toggle moved to the
                       right-click context menu; the row is quieter
                       without the per-row eye icon. */}
-                  <button
-                    type="button"
-                    className="row-delete"
-                    title="Delete (right-click for more options)"
-                    onClick={(e) => handleDelete(e, feature.id)}
-                  >
-                    ×
-                  </button>
-                </li>
+                    <button
+                      type="button"
+                      className="row-delete"
+                      title="Delete (right-click for more options)"
+                      onClick={(e) => handleDelete(e, feature.id)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              };
+
+              const rbIdx = state.rollbackIndex;
+              const ungrouped = state.features
+                .map((feature, index) => ({ feature, index }))
+                .filter(({ feature }) => !grouped.has(feature.id));
+
+              const rollbackBar = (
+                <li
+                  key="__rollback__"
+                  className={
+                    "rollback-bar" + (draggingRollback ? " is-dragging" : "")
+                  }
+                  draggable
+                  onDragStart={handleRollbackDragStart}
+                  onDragEnd={handleRollbackDragEnd}
+                  title="Rollback bar"
+                />
               );
-            };
 
-            const rbIdx = state.rollbackIndex;
-            const ungrouped = state.features
-              .map((feature, index) => ({ feature, index }))
-              .filter(({ feature }) => !grouped.has(feature.id));
-
-            const rollbackBar = (
-              <li
-                key="__rollback__"
-                className={
-                  "rollback-bar" +
-                  (draggingRollback ? " is-dragging" : "")
-                }
-                draggable
-                onDragStart={handleRollbackDragStart}
-                onDragEnd={handleRollbackDragEnd}
-                title="Rollback bar"
-              />
-            );
-
-            return (
-              <>
-                {state.folders.map((folder) => (
-                  <FolderGroup
-                    key={folder.id}
-                    folder={folder}
-                    features={state.features}
-                    renderFeatureRow={renderFeatureRow}
-                    store={store}
-                  />
-                ))}
-                {rbIdx === 0 && state.features.length > 0 && rollbackBar}
-                {ungrouped.flatMap(({ feature, index }) => {
-                  const row = renderFeatureRow(feature, index);
-                  if (index + 1 === rbIdx && rbIdx > 0 && rbIdx < state.features.length) return [row, rollbackBar];
-                  return [row];
-                })}
-                {rbIdx >= state.features.length && rollbackBar}
-              </>
-            );
-          })()}
-        </ul>
-      ))}
-      {(!inSketchSession || editingSelectedSketch || sketchSession.editingFeatureId === null) && (
+              return (
+                <>
+                  {state.folders.map((folder) => (
+                    <FolderGroup
+                      key={folder.id}
+                      folder={folder}
+                      features={state.features}
+                      renderFeatureRow={renderFeatureRow}
+                      store={store}
+                    />
+                  ))}
+                  {rbIdx === 0 && state.features.length > 0 && rollbackBar}
+                  {ungrouped.flatMap(({ feature, index }) => {
+                    const row = renderFeatureRow(feature, index);
+                    if (
+                      index + 1 === rbIdx &&
+                      rbIdx > 0 &&
+                      rbIdx < state.features.length
+                    )
+                      return [row, rollbackBar];
+                    return [row];
+                  })}
+                  {rbIdx >= state.features.length && rollbackBar}
+                </>
+              );
+            })()}
+          </ul>
+        ))}
+      {(!inSketchSession ||
+        editingSelectedSketch ||
+        sketchSession.editingFeatureId === null) && (
         <section className="detail-panel" data-testid="detail-panel">
-          <div className="header accordion-header" onClick={() => toggleSection("detail")} data-testid="detail-header">
-            <span className="accordion-chevron">{collapsed.has("detail") ? "▸" : "▾"}</span>
+          <div
+            className="header accordion-header"
+            onClick={() => toggleSection("detail")}
+            data-testid="detail-header"
+          >
+            <span className="accordion-chevron">
+              {collapsed.has("detail") ? "▸" : "▾"}
+            </span>
             {/* Ticket f7xk: the Detail header shows the selected feature's name
                 (editable inline) instead of a generic "Detail". Empty selection
                 or an active sketch session keeps the plain label. */}
             {!inSketchSession && selectedFeature ? (
               <input
                 key={selectedFeature.id}
-                className="detail-title-input"
+                className={
+                  "detail-title-input" +
+                  (selectedFeature.error ? " has-error" : "")
+                }
                 data-testid="detail-title-input"
                 defaultValue={selectedFeature.name}
-                title="Feature umbenennen"
+                title={selectedFeature.error || "Feature umbenennen"}
                 onClick={(e) => e.stopPropagation()}
                 onBlur={(e) => {
                   const v = e.currentTarget.value.trim();
@@ -1155,15 +1337,51 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
                 carries Finish/Cancel). Every other feature keeps the
                 generic dialog OK/Cancel. */}
             {inSketchSession ? (
-              <span className="detail-actions" onClick={(e) => e.stopPropagation()}>
-                <button className="detail-ok" data-testid="sketch-detail-accept" onClick={() => store.commitSketch()} title="Accept sketch">✓</button>
-                <button className="detail-cancel" data-testid="sketch-detail-cancel" onClick={() => store.exitSketch()} title="Discard sketch edits">✗</button>
+              <span
+                className="detail-actions"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  className="detail-ok"
+                  data-testid="sketch-detail-accept"
+                  onClick={() => store.commitSketch()}
+                  title="Accept sketch"
+                >
+                  ✓
+                </button>
+                <button
+                  className="detail-cancel"
+                  data-testid="sketch-detail-cancel"
+                  onClick={() => store.exitSketch()}
+                  title="Discard sketch edits"
+                >
+                  ✗
+                </button>
               </span>
-            ) : selectedSchema && (
-              <span className="detail-actions" onClick={(e) => e.stopPropagation()}>
-                <button className="detail-ok" data-testid="detail-ok" onClick={handleDialogOk} title="Accept">✓</button>
-                <button className="detail-cancel" data-testid="detail-cancel" onClick={handleDialogCancel} title="Cancel">✗</button>
-              </span>
+            ) : (
+              selectedSchema && (
+                <span
+                  className="detail-actions"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="detail-ok"
+                    data-testid="detail-ok"
+                    onClick={handleDialogOk}
+                    title="Accept"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    className="detail-cancel"
+                    data-testid="detail-cancel"
+                    onClick={handleDialogCancel}
+                    title="Cancel"
+                  >
+                    ✗
+                  </button>
+                </span>
+              )
             )}
           </div>
           {/* Ticket 87a1: a sketch's details ARE a Detail dialog like any
@@ -1173,24 +1391,26 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
               Sketch-plane field plus the collapsed Geometry & Constraints
               sub-accordion — instead of the schema-driven FeatureDialog.
               Every other feature keeps the generic schema dialog. */}
-          {!collapsed.has("detail") && (inSketchSession ? (
-            <SketchDetailBody
-              store={store}
-              sketchSession={sketchSession}
-              sketchToolSchema={sketchToolSchema}
-              collapsed={collapsed}
-              toggleSection={toggleSection}
-            />
-          ) : selectedSchema ? (
-            <FeatureDialog
-              schema={selectedSchema}
-              definition={dialogDraft}
-              onChange={handleDialogChange}
-              error={selectedFeature?.error ?? null}
-            />
-          ) : (
-            <div className="empty">No feature selected.</div>
-          ))}
+          {!collapsed.has("detail") &&
+            (inSketchSession ? (
+              <SketchDetailBody
+                store={store}
+                sketchSession={sketchSession}
+                sketchToolSchema={sketchToolSchema}
+                collapsed={collapsed}
+                toggleSection={toggleSection}
+              />
+            ) : selectedSchema ? (
+              <FeatureDialog
+                schema={selectedSchema}
+                definition={dialogDraft}
+                onChange={handleDialogChange}
+                error={selectedFeature?.error ?? null}
+                showTitle={false}
+              />
+            ) : (
+              <div className="empty">No feature selected.</div>
+            ))}
         </section>
       )}
       {!sketchSession.active && selectedFeature?.kind === "imported_mesh" ? (
@@ -1213,13 +1433,20 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
           store={store}
           onClose={() => setContextMenu(null)}
           onRename={() => {
-            const f = state.features.find((ff) => ff.id === contextMenu.featureId);
+            const f = state.features.find(
+              (ff) => ff.id === contextMenu.featureId,
+            );
             if (f) beginRename(f);
             setContextMenu(null);
           }}
         />
       ) : null}
-      <PartTree store={store} state={state} collapsed={collapsed.has("parts")} onToggle={() => toggleSection("parts")} />
+      <PartTree
+        store={store}
+        state={state}
+        collapsed={collapsed.has("parts")}
+        onToggle={() => toggleSection("parts")}
+      />
     </aside>
   );
 }
@@ -1235,7 +1462,17 @@ export function Outliner({ store, state, mobileNavOpen = false }: OutlinerProps)
  * editing a multi-body scene, where "which body does this feature
  * belong to" is otherwise invisible.
  */
-function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; state: StoreState; collapsed: boolean; onToggle: () => void }) {
+function PartTree({
+  store,
+  state,
+  collapsed,
+  onToggle,
+}: {
+  store: KernelStore;
+  state: StoreState;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   // Source the part list straight from the kernel body list, not from
   // `meshedBodies`: DC meshing (and thus `meshedBodies`) only runs in mesh
   // render mode, so a body added while in an SDF mode would never show up as
@@ -1271,11 +1508,16 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
   // body, so viewport picks always locate their part in the list.
   const relatedBodyIndex = useMemo<number | null>(() => {
     if (!store || state.selectedElements.length === 0) return null;
-    return resolveSelectionLinks(store.kernel, state.selectedElements).bodyIndex;
+    return resolveSelectionLinks(store.kernel, state.selectedElements)
+      .bodyIndex;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, state.selectedElements, state.features]);
 
-  const handlePartClick = (e: React.MouseEvent, index: number, seedFeature: FeatureSummary | undefined) => {
+  const handlePartClick = (
+    e: React.MouseEvent,
+    index: number,
+    seedFeature: FeatureSummary | undefined,
+  ) => {
     e.stopPropagation();
     if (!seedFeature) return;
     const picker = getActivePicker();
@@ -1288,44 +1530,60 @@ function PartTree({ store, state, collapsed, onToggle }: { store: KernelStore; s
 
   return (
     <section className="part-tree" data-testid="part-tree">
-      <div className="header accordion-header" onClick={onToggle} data-testid="parts-header">
+      <div
+        className="header accordion-header"
+        onClick={onToggle}
+        data-testid="parts-header"
+      >
         <span className="accordion-chevron">{collapsed ? "▸" : "▾"}</span>
         Parts ({bodies.length})
       </div>
-      {!collapsed && (bodies.length === 0 ? (
-        <div className="empty">No parts yet.</div>
-      ) : <ul className="list">
-        {bodies.map((body, index) => {
-          const seedFeature = state.features.find((f) => f.id === body.seedId);
-          const name = seedFeature
-            ? prettifyFeatureName(seedFeature.name, seedFeature.kind, state.scriptTypes)
-            : `Body ${index + 1}`;
-          const kind = seedFeature?.kind ?? "body";
-          const selected = highlighted === index || relatedBodyIndex === index;
-          return (
-            <li
-              key={`${body.id}-${index}`}
-              className={"row" + (selected ? " is-selected" : "")}
-              data-testid={`part-row-${body.id}`}
-              onClick={(e) => handlePartClick(e, index, seedFeature)}
-              onDoubleClick={() => {
-                if (seedFeature) store.selectOnly(seedFeature.id);
-              }}
-            >
-              <span
-                className="swatch"
-                data-body-index={index}
-                aria-hidden="true"
-              />
-              <span className="kind">{kindGlyph(kind, state.scriptTypes)}</span>
-              <span className="name">{name}</span>
-              {body.triangleCount > 0 && (
-                <span className="triangle-count">{body.triangleCount}</span>
-              )}
-            </li>
-          );
-        })}
-      </ul>)}
+      {!collapsed &&
+        (bodies.length === 0 ? (
+          <div className="empty">No parts yet.</div>
+        ) : (
+          <ul className="list">
+            {bodies.map((body, index) => {
+              const seedFeature = state.features.find(
+                (f) => f.id === body.seedId,
+              );
+              const name = seedFeature
+                ? prettifyFeatureName(
+                    seedFeature.name,
+                    seedFeature.kind,
+                    state.scriptTypes,
+                  )
+                : `Body ${index + 1}`;
+              const kind = seedFeature?.kind ?? "body";
+              const selected =
+                highlighted === index || relatedBodyIndex === index;
+              return (
+                <li
+                  key={`${body.id}-${index}`}
+                  className={"row" + (selected ? " is-selected" : "")}
+                  data-testid={`part-row-${body.id}`}
+                  onClick={(e) => handlePartClick(e, index, seedFeature)}
+                  onDoubleClick={() => {
+                    if (seedFeature) store.selectOnly(seedFeature.id);
+                  }}
+                >
+                  <span
+                    className="swatch"
+                    data-body-index={index}
+                    aria-hidden="true"
+                  />
+                  <span className="kind">
+                    {kindGlyph(kind, state.scriptTypes)}
+                  </span>
+                  <span className="name">{name}</span>
+                  {body.triangleCount > 0 && (
+                    <span className="triangle-count">{body.triangleCount}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ))}
     </section>
   );
 }
@@ -1432,10 +1690,7 @@ function FolderGroup({
             }}
           />
         ) : (
-          <span
-            className="folder-name"
-            onDoubleClick={() => setRenaming(true)}
-          >
+          <span className="folder-name" onDoubleClick={() => setRenaming(true)}>
             {folder.name}
           </span>
         )}
@@ -1452,7 +1707,9 @@ function FolderGroup({
       </div>
       {!folder.collapsed && memberRows.length > 0 ? (
         <ul className="folder-members">
-          {memberRows.map(({ feature, index }) => renderFeatureRow(feature, index))}
+          {memberRows.map(({ feature, index }) =>
+            renderFeatureRow(feature, index),
+          )}
         </ul>
       ) : null}
     </li>
@@ -1556,7 +1813,8 @@ function MateCreator({
   store: KernelStore;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [mateType, setMateType] = useState<import("./assembly").MateType>("fixed");
+  const [mateType, setMateType] =
+    useState<import("./assembly").MateType>("fixed");
   const [partAId, setPartAId] = useState(parts[0]?.id ?? "");
   const [connAId, setConnAId] = useState(0);
   const [partBId, setPartBId] = useState(parts[1]?.id ?? "");
@@ -1585,7 +1843,9 @@ function MateCreator({
         <label>Type</label>
         <select
           value={mateType}
-          onChange={(e) => setMateType(e.target.value as import("./assembly").MateType)}
+          onChange={(e) =>
+            setMateType(e.target.value as import("./assembly").MateType)
+          }
         >
           <option value="fixed">Fixed</option>
           <option value="revolute">Revolute</option>
@@ -1598,7 +1858,9 @@ function MateCreator({
         <label>Part A</label>
         <select value={partAId} onChange={(e) => setPartAId(e.target.value)}>
           {parts.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
           ))}
         </select>
       </div>
@@ -1621,7 +1883,9 @@ function MateCreator({
         <label>Part B</label>
         <select value={partBId} onChange={(e) => setPartBId(e.target.value)}>
           {parts.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
           ))}
         </select>
       </div>
@@ -1829,7 +2093,9 @@ function ConstraintManagerPanel({
 
   let dof = 0;
   try {
-    const skState = buildDraftSketchState(subCalls as Array<{ type: string; params: Record<string, unknown> }>);
+    const skState = buildDraftSketchState(
+      subCalls as Array<{ type: string; params: Record<string, unknown> }>,
+    );
     dof = displayDegreesOfFreedom(skState, diagnostics);
   } catch {
     // Malformed sub-calls (e.g. after undo) — fall back to 0 DoF.
@@ -1842,14 +2108,13 @@ function ConstraintManagerPanel({
     diagnostics.conflicting.length > 0 ||
     diagnostics.malformed.length > 0 ||
     dof < 0;
-  const dofLabel =
-    dofOver
-      ? dof < 0
-        ? `Over-constrained (${Math.abs(dof)} excess)`
-        : "Over-constrained (conflict)"
-      : dof > 0
-        ? `Under-constrained (${dof} DoF)`
-        : "Fully constrained";
+  const dofLabel = dofOver
+    ? dof < 0
+      ? `Over-constrained (${Math.abs(dof)} excess)`
+      : "Over-constrained (conflict)"
+    : dof > 0
+      ? `Under-constrained (${dof} DoF)`
+      : "Fully constrained";
   const dofClass = dofOver ? "dof-over" : dof > 0 ? "dof-under" : "dof-full";
 
   const counts: Record<string, number> = {};
@@ -1883,7 +2148,8 @@ function ConstraintManagerPanel({
             call.type === "sketch_constraint_distance" ||
             call.type === "sketch_constraint_radius" ||
             call.type === "sketch_constraint_diameter";
-          const isDimensional = isMmDim || call.type === "sketch_constraint_angle";
+          const isDimensional =
+            isMmDim || call.type === "sketch_constraint_angle";
           const isDriven = isDimensional && Boolean(call.params.driven);
           const dimUnit = isMmDim ? "mm" : "°";
           const dimValue = isDimensional
@@ -1910,11 +2176,10 @@ function ConstraintManagerPanel({
                 });
               }}
             >
-              <span className="glyph">
-                {kindGlyph(call.type)}
-              </span>
+              <span className="glyph">{kindGlyph(call.type)}</span>
               <span className="name">
-                {SKETCH_SUB_LABEL[call.type] ?? call.type.replace("sketch_constraint_", "")}
+                {SKETCH_SUB_LABEL[call.type] ??
+                  call.type.replace("sketch_constraint_", "")}
               </span>
               {isDimensional && (
                 <span className="value">
@@ -1951,7 +2216,11 @@ function ConstraintManagerPanel({
               {isDimensional && (
                 <span
                   className={"driven-tag" + (isDriven ? " is-driven" : "")}
-                  title={isDriven ? "Driven (informational)" : "Driving (controls geometry)"}
+                  title={
+                    isDriven
+                      ? "Driven (informational)"
+                      : "Driving (controls geometry)"
+                  }
                 >
                   {isDriven ? "D" : "⏚"}
                 </span>
