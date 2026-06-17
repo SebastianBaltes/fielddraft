@@ -1219,6 +1219,13 @@ export function Viewport({
         <CanvasErrorBoundary>
           <Canvas
             shadows={false}
+            // ticket 7kht: disable R3F's default ACES tone mapping. The SDF
+            // viewport is flat-shaded (every material sets `toneMapped=false`),
+            // so ACES did nothing to the geometry — but it DID tone-map the
+            // white clear colour down to grey (ACES(1.0)≈0.8), so the scene
+            // background regressed to grey. `flat` → NoToneMapping keeps the
+            // background (and all overlay colours) exactly as authored.
+            flat
             frameloop={frameLoop}
             camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
             gl={async (props) => {
