@@ -160,7 +160,7 @@ export function SketchOverlay3D() {
   const lineMatRef = useRef<Line2NodeMaterial | null>(null);
   if (isWebGPU && !lineMatRef.current) {
     lineMatRef.current = new Line2NodeMaterial({
-      color: SKETCH_COLOR_UNDER, linewidth: SKETCH_STROKE_WIDTH, worldUnits: false,
+      color: SKETCH_COLOR_COMMITTED, linewidth: SKETCH_STROKE_WIDTH, worldUnits: false,
       depthTest: false, depthWrite: false, transparent: true,
     });
   }
@@ -206,7 +206,7 @@ export function SketchOverlay3D() {
     const map = new Map<number, SketchDots>();
     for (const s of sketches) {
       // 998: above fills (996) + lines (997), like the session.
-      const d = makeSketchDots(s.pointPos, SKETCH_COLOR_UNDER, SKETCH_POINT_SIZE, 998);
+      const d = makeSketchDots(s.pointPos, SKETCH_COLOR_COMMITTED, SKETCH_POINT_SIZE, 998);
       if (d) map.set(s.id, d);
     }
     return map;
@@ -313,7 +313,7 @@ export function SketchOverlay3D() {
             ? fatLines?.get(id) && <primitive object={fatLines.get(id)!} dispose={null} />
             : classicLines?.get(id) && (
                 <lineSegments geometry={classicLines.get(id)} renderOrder={997} ref={enableOverlayLayer}>
-                  <lineBasicMaterial color={SKETCH_COLOR_UNDER} transparent depthTest={false} />
+                  <lineBasicMaterial color={SKETCH_COLOR_COMMITTED} transparent depthTest={false} />
                 </lineSegments>
               )}
           {/* Endpoint/vertex dots (tickets n6hg/b78p/tdq2) — above fills +
@@ -329,6 +329,9 @@ export function SketchOverlay3D() {
 // underconstrained, green = fully constrained, red = over/conflicting.
 const SKETCH_COLOR_UNDER = 0x2563eb;
 const SKETCH_COLOR_FULL = 0x16a34a;
+// Committed (visible, NOT being edited) sketches render in slate GRAY, not the
+// DOF blue — blue is reserved for the sketch open for editing (ticket imqf).
+const SKETCH_COLOR_COMMITTED = 0x64748b;
 const SKETCH_COLOR_OVER = 0xdc2626;
 // Fixed (non-DOF) sketch colours, mirroring the canvas tokens in SketchCanvas2d.
 const SKETCH_CONSTRUCTION_COLOR = 0xb07820; // COLOR_CONSTRUCTION
