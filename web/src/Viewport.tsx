@@ -448,7 +448,7 @@ function handleSelectionClick(
  * container measures width>0 && height>0 (react-three-fiber Canvas gate), so a
  * 0×0 container silently renders nothing.
  */
-function WebGLViewport({ controlsPreset }: { controlsPreset: ControlsPresetId }) {
+function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: ControlsPresetId; brepEdgeMode: BRepEdgeMode }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { store, state } = useKernelStore();
 
@@ -584,6 +584,12 @@ function WebGLViewport({ controlsPreset }: { controlsPreset: ControlsPresetId })
         <SketchSession3D />
         <SketchHud3D />
         <SketchLabels3D />
+        {/* Ticket jnej: B-Rep edges must render on the WebGL fallback too. It
+            was only mounted in the WebGPU Scene; BRepEdgeOverlay now draws
+            classic LineSegments on this backend (the fat-line path is
+            WebGPU-only). The WebGL viewport has no host-pointer hover, so the
+            ndc is inactive — the base wireframe still draws. */}
+        <BRepEdgeOverlay ndc={{ x: 0, y: 0, active: false }} mode={brepEdgeMode} />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         {/* Ticket owia: use the SAME preset-aware controls as the WebGPU path
             (CameraRig applies the active controlsPreset's mouseButtons). A bare
@@ -1019,7 +1025,7 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           }}
         />
       )}
-      {isWebGL && <WebGLViewport controlsPreset={controlsPreset} />}
+      {isWebGL && <WebGLViewport controlsPreset={controlsPreset} brepEdgeMode={brepEdgeMode} />}
       {!isWebGL && (
       <CanvasErrorBoundary>
         <Canvas

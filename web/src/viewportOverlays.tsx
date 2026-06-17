@@ -1333,6 +1333,27 @@ export function BRepEdgeOverlay({
   const { store, state } = useKernelStore();
   const camera = useThree((s) => s.camera);
   const invalidate = useThree((s) => s.invalidate);
+  const gl = useThree((s) => s.gl);
+  // The fat-line (Line2NodeMaterial) path only renders on the WebGPU backend;
+  // the classic THREE.WebGLRenderer fallback needs plain LineBasicMaterial
+  // LineSegments, or B-Rep edges don't show at all there (ticket jnej).
+  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const baseClassicRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: 0x1e293b,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
+  const hoverClassicRef = useRef(
+    new THREE.LineBasicMaterial({
+      color: ELEMENT_HOVER_COLOR,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    }),
+  );
   // Base edges render as fat lines too (ticket 8f5z: plain LineBasicMaterial
   // rasterises 1px hairlines on WebGPU that read broken/washed-out up close —
   // "Kanten wirken nicht voll"). 2.5px through the instanced screen-space
@@ -1374,7 +1395,12 @@ export function BRepEdgeOverlay({
   // depth and skip the depth-clear in "visible" mode (see renderOverlayLayer).
   useEffect(() => {
     const depthTest = mode === "visible";
-    for (const m of [baseMaterialRef.current, hoverMaterialRef.current]) {
+    for (const m of [
+      baseMaterialRef.current,
+      hoverMaterialRef.current,
+      baseClassicRef.current,
+      hoverClassicRef.current,
+    ]) {
       if (m.depthTest !== depthTest) {
         m.depthTest = depthTest;
         m.needsUpdate = true;
@@ -1421,7 +1447,7 @@ export function BRepEdgeOverlay({
   // One fresh LineSegments2 for ALL base edges per geometry change — the
   // WebGPU renderer never re-uploads a LineSegmentsGeometry mutated in place
   // (ticket twxw), so the merged buffer gets a brand-new geometry + object.
-  const [baseObj, setBaseObj] = useState<LineSegments2 | null>(null);
+  const [baseObj, setBaseObj] = useState<THREE.Object3D | null>(null);
   useEffect(() => {
     if (edges.length === 0) {
       setBaseObj(null);
@@ -1435,15 +1461,25 @@ export function BRepEdgeOverlay({
       merged.set(e.positions, off);
       off += e.positions.length;
     }
-    const geom = new LineSegmentsGeometry();
-    geom.setPositions(merged);
-    const obj = new LineSegments2(geom, baseMaterialRef.current);
+    let obj: THREE.Object3D;
+    let geom: { dispose(): void };
+    if (isWebGPU) {
+      const g = new LineSegmentsGeometry();
+      g.setPositions(merged);
+      obj = new LineSegments2(g, baseMaterialRef.current);
+      geom = g;
+    } else {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(merged, 3));
+      obj = new THREE.LineSegments(g, baseClassicRef.current);
+      geom = g;
+    }
     obj.frustumCulled = false;
     obj.renderOrder = 998;
     obj.layers.enable(OVERLAY_LAYER);
     setBaseObj(obj);
     return () => geom.dispose();
-  }, [edges]);
+  }, [edges, isWebGPU]);
 
   // Screen-space edge hover. The kernel sphere-trace pick reports the face
   // *behind* the thin edge (1 contributor → "face"), so it can never light up
@@ -1568,29 +1604,41 @@ export function BRepEdgeOverlay({
   // the WebGPU renderer does not re-upload a line geometry mutated in place
   // (same caveat as the selected-edge fat line, ticket twxw), so reusing one
   // object would freeze the highlight on whatever edge it was first built for.
-  const [hoverObj, setHoverObj] = useState<LineSegments2 | null>(null);
+  const [hoverObj, setHoverObj] = useState<THREE.Object3D | null>(null);
   useEffect(() => {
     if (hoveredIdx < 0 || hoveredIdx >= edges.length) {
       setHoverObj(null);
       return;
     }
-    const geom = new LineSegmentsGeometry();
-    geom.setPositions(edges[hoveredIdx].positions);
-    const obj = new LineSegments2(geom, hoverMaterialRef.current);
+    const positions = edges[hoveredIdx].positions;
+    let obj: THREE.Object3D;
+    let geom: { dispose(): void };
+    if (isWebGPU) {
+      const g = new LineSegmentsGeometry();
+      g.setPositions(positions);
+      obj = new LineSegments2(g, hoverMaterialRef.current);
+      geom = g;
+    } else {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      obj = new THREE.LineSegments(g, hoverClassicRef.current);
+      geom = g;
+    }
     obj.frustumCulled = false;
     obj.renderOrder = 999;
     obj.layers.enable(OVERLAY_LAYER);
     setHoverObj(obj);
     return () => geom.dispose();
-  }, [hoveredIdx, edges]);
+  }, [hoveredIdx, edges, isWebGPU]);
 
   useEffect(() => {
-    const bm = baseMaterialRef.current;
-    const hm = hoverMaterialRef.current;
-    return () => {
-      bm.dispose();
-      hm.dispose();
-    };
+    const mats = [
+      baseMaterialRef.current,
+      hoverMaterialRef.current,
+      baseClassicRef.current,
+      hoverClassicRef.current,
+    ];
+    return () => mats.forEach((m) => m.dispose());
   }, []);
 
   if (mode === "none" || !baseObj) return null;
