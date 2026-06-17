@@ -44,9 +44,122 @@ pub fn weave_parametric(body: &BoundedCsg) -> Option<BRep> {
     // octree via `None`.
     let wireframe = build_box_wireframe(body)
         .or_else(|| build_cylinder_wireframe(body))
+        .or_else(|| build_swept_wireframe(body))
         .or_else(|| build_edgeless_wireframe(body))
         .or_else(|| crate::brep::seed_weaver::seed_wireframe(body))?;
     Some(finish_weave(wireframe, body))
+}
+
+/// One profile corner: a 2D boundary point where two adjacent analytic wall
+/// groups meet, plus the two group (= wall branch sub) indices. A sweep traces
+/// each such corner into a longitudinal edge separating the two walls.
+struct ProfileCorner {
+    p: [f32; 2],
+    left: u32,
+    right: u32,
+}
+
+/// Ordered corners of a profile's analytic boundary — the breakpoints between
+/// adjacent wall groups. `None` for anything that isn't a single closed loop of
+/// straight (analytic) walls (booleans, curved/Bézier groups, lone circle,
+/// sector); those keep the seed/octree route.
+fn profile_corners(sketch: &crate::sketch2d::BoundedSketch2d) -> Option<Vec<ProfileCorner>> {
+    use crate::sketch2d::Sketch2dPrimitive as P;
+    use fielddraft_protocol::sketch2d::{g1_group_segments, SketchSegment, PATH_G1_COS_THRESHOLD};
+    let crate::sketch2d::BoundedSketch2d::Prim { primitive, .. } = sketch else {
+        return None;
+    };
+    match primitive {
+        // Polygon: group g = edge v[g]→v[g+1]; corner at v[g] joins g-1 and g.
+        P::Polygon { vertices } => {
+            let n = vertices.len();
+            if n < 3 {
+                return None;
+            }
+            Some(
+                (0..n)
+                    .map(|g| ProfileCorner {
+                        p: vertices[g],
+                        left: ((g + n - 1) % n) as u32,
+                        right: g as u32,
+                    })
+                    .collect(),
+            )
+        }
+        // Rectangle walls +x(0), −x(1), +y(2), −y(3); four geometric corners.
+        P::Rectangle { center, half_extents } => {
+            let [cx, cy] = *center;
+            let [hx, hy] = *half_extents;
+            Some(vec![
+                ProfileCorner { p: [cx + hx, cy + hy], left: 0, right: 2 },
+                ProfileCorner { p: [cx + hx, cy - hy], left: 0, right: 3 },
+                ProfileCorner { p: [cx - hx, cy + hy], left: 1, right: 2 },
+                ProfileCorner { p: [cx - hx, cy - hy], left: 1, right: 3 },
+            ])
+        }
+        // Closed all-line Path: G1 groups (sub = group index); a corner sits at
+        // every group transition. A curved group has no analytic wall, so the
+        // whole profile falls back rather than emit dangling seams.
+        P::Path { segments, closed: true } => {
+            if segments.is_empty()
+                || !segments.iter().all(|s| matches!(s, SketchSegment::Line { .. }))
+            {
+                return None;
+            }
+            let groups = g1_group_segments(segments, PATH_G1_COS_THRESHOLD);
+            let n = segments.len();
+            let n_groups = groups.iter().copied().max()? + 1;
+            if n_groups < 2 {
+                return None; // single straight group — no corner
+            }
+            let mut corners = Vec::new();
+            for i in 0..n {
+                let prev = (i + n - 1) % n;
+                if groups[i] != groups[prev] {
+                    corners.push(ProfileCorner {
+                        p: segments[i].start_point(),
+                        left: groups[prev],
+                        right: groups[i],
+                    });
+                }
+            }
+            Some(corners)
+        }
+        _ => None,
+    }
+}
+
+/// Constructive wireframe for a swept body (Revolve / Helix / Sweep): trace the
+/// profile's corner points through the motion to emit the longitudinal seam
+/// edges directly — no SSI, no octree (ticket ifog). Each profile corner is the
+/// meeting of two wall groups; its trajectory separates those two walls.
+///
+/// Currently handles **Revolve** (full 360°): each corner `(r, y)` sweeps into
+/// a closed circle of radius `r` at height `y` about the local Y axis. Helix and
+/// Sweep (which also need their wall FACES registered, being non-analytic) are
+/// added separately. Returns `None` for unsupported bodies/profiles → seed path.
+pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
+    match body {
+        BoundedCsg::Revolve { id, sketch, world_transform, .. } => {
+            let corners = profile_corners(sketch)?;
+            let mut brep = BRep::new();
+            for c in corners {
+                // A corner ON the axis traces a point, not a circle — skip it.
+                if c.p[0].abs() < 1e-6 {
+                    continue;
+                }
+                brep.add_edge(Edge::new(
+                    EdgeGeometry::Nurbs(nurbs_circle(world_transform, c.p[0], c.p[1])),
+                    BranchId::from_feature_sub(id, c.left),
+                    BranchId::from_feature_sub(id, c.right),
+                    None,
+                    None,
+                ));
+            }
+            Some(brep)
+        }
+        _ => None,
+    }
 }
 
 /// Exact 8-corner / 12-edge wireframe of a single axis-aligned Box leaf, in the

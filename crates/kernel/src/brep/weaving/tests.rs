@@ -1598,6 +1598,36 @@ fn revolve_rectangle_profile_is_tube_with_analytic_sides() {
 }
 
 #[test]
+fn parametric_revolve_traces_corner_circles() {
+    // Ticket ifog: weave_parametric must produce the longitudinal circle edges
+    // of a revolve constructively (one per profile corner), not rely on SSI.
+    // Rectangle profile → 4 corners → 4 closed circles (matches the octree
+    // revolve_rectangle test). Triangle polygon → 3.
+    let rect = ProtoSketch2d::Prim(ProtoSketch2dPrim::Rectangle {
+        center: [4.0, 0.0],
+        half_extents: [1.0, 1.0],
+    });
+    let brep = crate::brep::weaving::wireframes::weave_parametric(&revolve_body(rect))
+        .expect("rectangle revolve weaves parametrically");
+    assert_eq!(brep.edge_count(), 4, "4 corner circles");
+    assert_eq!(brep.face_count(), 4, "2 cylinders + 2 planes");
+    assert_eq!(brep.vertex_count(), 0, "closed circles have no vertices");
+    for e in &brep.edges {
+        assert!(e.start.is_none() && e.end.is_none(), "circle = closed loop");
+    }
+    assert_watertight_solid(&brep);
+
+    // A triangle profile (offset from the axis, all x>0) → 3 corner circles.
+    let tri = ProtoSketch2d::Prim(ProtoSketch2dPrim::Polygon {
+        vertices: vec![[3.0, -1.0], [5.0, 0.0], [3.0, 1.0]],
+    });
+    let brep = crate::brep::weaving::wireframes::weave_parametric(&revolve_body(tri))
+        .expect("triangle revolve weaves parametrically");
+    assert_eq!(brep.edge_count(), 3, "3 corner circles");
+    assert_eq!(brep.face_count(), 3, "3 walls");
+}
+
+#[test]
 fn oblique_triangle_extrude_seed_weaves_all_nine_edges() {
     // Ticket ifog: a triangle EXTRUDE showed only 6 edges (3 top + 3 bottom),
     // missing the 3 vertical wall-wall corner seams. The L-polygon test above
