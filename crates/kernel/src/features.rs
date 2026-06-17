@@ -7181,6 +7181,14 @@ mod tests {
         let brep = &woven[0].0;
         assert_eq!(brep.edge_count(), 18, "6 longitudinal helix + 6+6 cap rims");
         assert_eq!(brep.vertex_count(), 12, "6 corners × start/end caps");
+        // Ticket 1t40: the 6 longitudinal seams are genuine curves → smooth
+        // NURBS after the Hermite upgrade; the 12 cap rims stay straight lines.
+        let nurbs = brep
+            .edges
+            .iter()
+            .filter(|e| matches!(e.geometry, crate::brep::EdgeGeometry::Nurbs(_)))
+            .count();
+        assert_eq!(nurbs, 6, "6 helical seams are smooth NURBS curves");
     }
 
     #[test]

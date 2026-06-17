@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::brep::{
-    BRep, Edge, EdgeGeometry, NurbsCurve, Vertex, VertexId,
+    BRep, Edge, EdgeGeometry, HermiteSample, NurbsCurve, Vertex, VertexId,
 };
 use crate::bvh::BoundedCsg;
 use crate::csg::BranchId;
@@ -179,7 +179,9 @@ pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
             // Forward helix map (inverse of `helix_profile_point`): profile
             // `(r, w)` at sweep parameter `t` → local 3D, then to body space.
             let hand = if *left_handed { -1.0_f32 } else { 1.0 };
-            let k_max = (turns.abs() * 48.0).ceil().max(8.0) as usize;
+            // Cubic Hermite interpolation makes a coarse sampling smooth, so
+            // ~16 control points per turn is plenty.
+            let k_max = (turns.abs() * 16.0).ceil().max(8.0) as usize;
             let trace = |c: &ProfileCorner, k: usize| -> [f64; 3] {
                 let t = t_end * (k as f32 / k_max as f32);
                 let theta = hand * (t + start_angle);
@@ -227,13 +229,23 @@ pub(super) fn build_swept_wireframe(body: &BoundedCsg) -> Option<BRep> {
             };
             if path.closed {
                 // Closed spine: each corner is a closed longitudinal loop, no
-                // caps. Append the first sample so the polyline closes.
+                // caps. Hermite with wrap-around tangents (finish_weave closes
+                // the loop and fits a smooth NURBS).
                 let mut brep = BRep::new();
                 for c in &corners {
-                    let mut pts: Vec<[f64; 3]> = (0..m).map(|k| trace(c, k)).collect();
-                    pts.push(trace(c, 0));
+                    let samples: Vec<HermiteSample> = (0..m)
+                        .map(|k| {
+                            let point = trace(c, k);
+                            let a = trace(c, (k + m - 1) % m);
+                            let b = trace(c, (k + 1) % m);
+                            HermiteSample {
+                                point,
+                                tangent: [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                            }
+                        })
+                        .collect();
                     brep.add_edge(Edge::new(
-                        EdgeGeometry::Polyline(pts),
+                        EdgeGeometry::Hermite(samples),
                         BranchId::from_feature_sub(id, c.left),
                         BranchId::from_feature_sub(id, c.right),
                         None,
@@ -283,11 +295,21 @@ fn emit_open_swept_edges(
         vs.push(brep.add_vertex(Vertex::new(p0, vec![wl, wr, cap_start])));
         ve.push(brep.add_vertex(Vertex::new(p1, vec![wl, wr, cap_end])));
     }
-    // Longitudinal seam edges (one per corner), densely sampled.
+    // Longitudinal seam edges (one per corner). Emitted as a Hermite curve
+    // (point + finite-difference tangent) so `finish_weave` upgrades it to a
+    // smooth cubic NURBS — a swept seam is a genuine curve (helix/RMF path),
+    // not the faceted polyline a coarse sampling would read as (ticket 1t40).
     for (i, c) in corners.iter().enumerate() {
-        let pts: Vec<[f64; 3]> = (0..=k_max).map(|k| trace(c, k)).collect();
+        let samples: Vec<HermiteSample> = (0..=k_max)
+            .map(|k| {
+                let point = trace(c, k);
+                let a = trace(c, k.saturating_sub(1));
+                let b = trace(c, (k + 1).min(k_max));
+                HermiteSample { point, tangent: [b[0] - a[0], b[1] - a[1], b[2] - a[2]] }
+            })
+            .collect();
         brep.add_edge(Edge::new(
-            EdgeGeometry::Polyline(pts),
+            EdgeGeometry::Hermite(samples),
             BranchId::from_feature_sub(id, c.left),
             BranchId::from_feature_sub(id, c.right),
             Some(vs[i]),
