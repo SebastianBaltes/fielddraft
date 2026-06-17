@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { TransformControls as ThreeTransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { LineSegments2 } from "three/examples/jsm/lines/webgpu/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
-import { Line2NodeMaterial, MeshBasicNodeMaterial, SpriteNodeMaterial } from "three/webgpu";
+import {
+  Line2NodeMaterial,
+  MeshBasicNodeMaterial,
+  SpriteNodeMaterial,
+} from "three/webgpu";
 import * as THREE from "three";
 import { useKernelStore, type StoreState } from "./store";
 import {
@@ -61,13 +71,21 @@ import {
   clearSketchLabels,
   type SketchLabel,
 } from "./sketchLabelBridge";
-import { getHoveredElementOfKind, setHoveredElementOfKind } from "./brepPickBridge";
+import {
+  getHoveredElementOfKind,
+  setHoveredElementOfKind,
+} from "./brepPickBridge";
 import { filterAllows } from "./elementQuery";
 import { getActive as getActiveQueryPicker } from "./queryPickerBridge";
-import { publishSketchPickables, clearSketchPickables } from "./sketchPickBridge";
+import {
+  publishSketchPickables,
+  clearSketchPickables,
+} from "./sketchPickBridge";
 import {
   publishSketchLinePickables,
   clearSketchLinePickables,
+  getHoveredSketchLine,
+  subscribeHoveredSketchLine,
 } from "./sketchLinePickBridge";
 
 /** Feature kinds that are themselves a transform of another feature — the
@@ -75,13 +93,14 @@ import {
  *  call onto a geometry feature (ticket p3vh). */
 const TRANSFORM_FEATURE_KINDS = new Set(["translate", "rotate", "scale"]);
 
-export function findSingleSelectedFeature(state: StoreState | null | undefined): FeatureSummary | undefined {
+export function findSingleSelectedFeature(
+  state: StoreState | null | undefined,
+): FeatureSummary | undefined {
   if (!state || state.selection.size !== 1) return undefined;
   const first = state.selection.values().next().value;
   if (first === undefined) return undefined;
   return state.features.find((f) => f.id === first);
 }
-
 
 export function SketchOverlay3D() {
   const { store, state } = useKernelStore();
@@ -101,7 +120,8 @@ export function SketchOverlay3D() {
   // the WebGPU backend, so the primary path gets identical strokes here; the
   // WebGL fallback (separate classic-renderer Canvas) draws thin classic lines.
   const gl = useThree((s) => s.gl);
-  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const isWebGPU =
+    (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
 
   const sketches = useMemo(() => {
     if (!store || !visibleSketches || visibleSketches.length === 0) return [];
@@ -139,14 +159,30 @@ export function SketchOverlay3D() {
         // reuse the session geometry collector so every entity's natural
         // vertices (line endpoints, circle centre, polygon/rect corners, arc
         // endpoints, …) render identically to the in-edit overlay.
-        const pointPos = collectSketchSessionGeometry(subCalls as SketchSubCall[], frame).points;
+        const pointPos = collectSketchSessionGeometry(
+          subCalls as SketchSubCall[],
+          frame,
+        ).points;
         // Closed regions filled like in sketch mode — so a region reads as a
         // face and is a pickable profile target.
-        const fp = collectSketchRegionFill(subCalls as SketchSubCall[], frame, tri);
+        const fp = collectSketchRegionFill(
+          subCalls as SketchSubCall[],
+          frame,
+          tri,
+        );
         // Per-line pickables (incl. construction lines) for the Revolve
         // axis picker — `qSketchLine(sketchId, lineId)`.
-        const linePick = collectSketchLinePickables(subCalls as SketchSubCall[], frame);
-        out.push({ id: sketchId, linePos, pointPos, fillPos: fp.length ? fp : null, linePick });
+        const linePick = collectSketchLinePickables(
+          subCalls as SketchSubCall[],
+          frame,
+        );
+        out.push({
+          id: sketchId,
+          linePos,
+          pointPos,
+          fillPos: fp.length ? fp : null,
+          linePick,
+        });
       } catch {
         // Skip invalid sketches
       }
@@ -160,11 +196,20 @@ export function SketchOverlay3D() {
   const lineMatRef = useRef<Line2NodeMaterial | null>(null);
   if (isWebGPU && !lineMatRef.current) {
     lineMatRef.current = new Line2NodeMaterial({
-      color: SKETCH_COLOR_COMMITTED, linewidth: SKETCH_STROKE_WIDTH, worldUnits: false,
-      depthTest: false, depthWrite: false, transparent: true,
+      color: SKETCH_COLOR_COMMITTED,
+      linewidth: SKETCH_STROKE_WIDTH,
+      worldUnits: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
     });
   }
-  useEffect(() => () => { lineMatRef.current?.dispose(); }, []);
+  useEffect(
+    () => () => {
+      lineMatRef.current?.dispose();
+    },
+    [],
+  );
 
   // WebGPU: fat LineSegments2 (geometry type must match the node material).
   const fatLines = useMemo(() => {
@@ -192,7 +237,10 @@ export function SketchOverlay3D() {
     const map = new Map<number, THREE.BufferGeometry>();
     for (const s of sketches) {
       const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(s.linePos, 3));
+      g.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(s.linePos, 3),
+      );
       map.set(s.id, g);
     }
     return map;
@@ -206,7 +254,12 @@ export function SketchOverlay3D() {
     const map = new Map<number, SketchDots>();
     for (const s of sketches) {
       // 998: above fills (996) + lines (997), like the session.
-      const d = makeSketchDots(s.pointPos, SKETCH_COLOR_COMMITTED, SKETCH_POINT_SIZE, 998);
+      const d = makeSketchDots(
+        s.pointPos,
+        SKETCH_COLOR_COMMITTED,
+        SKETCH_POINT_SIZE,
+        998,
+      );
       if (d) map.set(s.id, d);
     }
     return map;
@@ -218,11 +271,69 @@ export function SketchOverlay3D() {
     for (const s of sketches) {
       if (!s.fillPos) continue;
       const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(s.fillPos, 3));
+      g.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(s.fillPos, 3),
+      );
       map.set(s.id, g);
     }
     return map;
   }, [sketches]);
+
+  // fs23: hover highlight — the sketch line the Viewport published as the
+  // current query target (e.g. the Revolve axis under the cursor). Subscribe to
+  // the bridge and recolour that one segment in the selected colour, so a
+  // sketch line reads as a "potential target" on mouseover just like a B-Rep
+  // edge does. (B-Rep edges already highlight via their own hover overlay.)
+  const hoveredLine = useSyncExternalStore(
+    subscribeHoveredSketchLine,
+    getHoveredSketchLine,
+    () => null,
+  );
+  const hoverSeg = useMemo<number[] | null>(() => {
+    if (!hoveredLine) return null;
+    const sk = sketches.find((s) => s.id === hoveredLine.sketchId);
+    const ln = sk?.linePick.find((l) => l.lineId === hoveredLine.lineId);
+    return ln ? [...ln.a, ...ln.b] : null;
+  }, [hoveredLine, sketches]);
+
+  // A dedicated highlight material (WebGPU fat line): selected colour, a touch
+  // thicker than the base stroke so it stands out under the cursor.
+  const hoverMatRef = useRef<Line2NodeMaterial | null>(null);
+  if (isWebGPU && !hoverMatRef.current) {
+    hoverMatRef.current = new Line2NodeMaterial({
+      color: SKETCH_SELECTED_COLOR,
+      linewidth: SKETCH_STROKE_WIDTH * 1.6,
+      worldUnits: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    });
+  }
+  useEffect(
+    () => () => {
+      hoverMatRef.current?.dispose();
+    },
+    [],
+  );
+
+  const hoverFat = useMemo<LineSegments2 | null>(() => {
+    if (!isWebGPU || !hoverSeg || !hoverMatRef.current) return null;
+    const g = new LineSegmentsGeometry();
+    g.setPositions(new Float32Array(hoverSeg));
+    const o = new LineSegments2(g, hoverMatRef.current);
+    o.frustumCulled = false;
+    o.renderOrder = 999; // above the base lines (997) + dots (998)
+    o.layers.enable(OVERLAY_LAYER);
+    return o;
+  }, [isWebGPU, hoverSeg]);
+
+  const hoverClassic = useMemo<THREE.BufferGeometry | null>(() => {
+    if (isWebGPU || !hoverSeg) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(hoverSeg, 3));
+    return g;
+  }, [isWebGPU, hoverSeg]);
 
   useEffect(() => {
     return () => {
@@ -230,8 +341,10 @@ export function SketchOverlay3D() {
       classicLines?.forEach((g) => g.dispose());
       dots.forEach((d) => d.dispose());
       fills.forEach((g) => g.dispose());
+      hoverFat?.geometry.dispose();
+      hoverClassic?.dispose();
     };
-  }, [fatLines, classicLines, dots, fills]);
+  }, [fatLines, classicLines, dots, fills, hoverFat, hoverClassic]);
 
   // Publish the world-space pick geometry per visible committed sketch so a
   // plain click in the viewport can select the sketch — taking priority over
@@ -270,13 +383,15 @@ export function SketchOverlay3D() {
   // A click on a filled region selects the whole sketch as a profile, but only
   // when a profile-style picker (no filter, or one that accepts faces) is
   // armed — a BODY/edge picker must ignore sketch regions (ticket jjmv).
-  const pickRegion = (sketchId: number) => (e: { stopPropagation: () => void }) => {
-    const picker = getActiveQueryPicker();
-    if (!picker) return;
-    if (picker.entityFilter && !filterAllows("face", picker.entityFilter)) return;
-    e.stopPropagation();
-    picker.onPick(`qCreatedBy(${sketchId})`);
-  };
+  const pickRegion =
+    (sketchId: number) => (e: { stopPropagation: () => void }) => {
+      const picker = getActiveQueryPicker();
+      if (!picker) return;
+      if (picker.entityFilter && !filterAllows("face", picker.entityFilter))
+        return;
+      e.stopPropagation();
+      picker.onPick(`qCreatedBy(${sketchId})`);
+    };
 
   // The committed sketch's fill + classic lines must draw in the overlay-only
   // pass (`camera.layers.set(OVERLAY_LAYER)`), like the fat lines and dots —
@@ -310,17 +425,45 @@ export function SketchOverlay3D() {
             </mesh>
           )}
           {isWebGPU
-            ? fatLines?.get(id) && <primitive object={fatLines.get(id)!} dispose={null} />
+            ? fatLines?.get(id) && (
+                <primitive object={fatLines.get(id)!} dispose={null} />
+              )
             : classicLines?.get(id) && (
-                <lineSegments geometry={classicLines.get(id)} renderOrder={997} ref={enableOverlayLayer}>
-                  <lineBasicMaterial color={SKETCH_COLOR_COMMITTED} transparent depthTest={false} />
+                <lineSegments
+                  geometry={classicLines.get(id)}
+                  renderOrder={997}
+                  ref={enableOverlayLayer}
+                >
+                  <lineBasicMaterial
+                    color={SKETCH_COLOR_COMMITTED}
+                    transparent
+                    depthTest={false}
+                  />
                 </lineSegments>
               )}
           {/* Endpoint/vertex dots (tickets n6hg/b78p/tdq2) — above fills +
               lines, as a billboarded screen-constant circle mesh. */}
-          {dots.get(id) && <primitive object={dots.get(id)!.mesh} dispose={null} />}
+          {dots.get(id) && (
+            <primitive object={dots.get(id)!.mesh} dispose={null} />
+          )}
         </group>
       ))}
+      {/* fs23: the hovered query-target sketch line, recoloured on top. */}
+      {isWebGPU
+        ? hoverFat && <primitive object={hoverFat} dispose={null} />
+        : hoverClassic && (
+            <lineSegments
+              geometry={hoverClassic}
+              renderOrder={999}
+              ref={enableOverlayLayer}
+            >
+              <lineBasicMaterial
+                color={SKETCH_SELECTED_COLOR}
+                transparent
+                depthTest={false}
+              />
+            </lineSegments>
+          )}
     </group>
   );
 }
@@ -391,7 +534,10 @@ function collectSelectionGeometry(
         let prev: [number, number] = [c[0] + r, c[1]];
         for (let i = 1; i <= steps; i++) {
           const t = (i / steps) * Math.PI * 2;
-          const next: [number, number] = [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)];
+          const next: [number, number] = [
+            c[0] + r * Math.cos(t),
+            c[1] + r * Math.sin(t),
+          ];
           highlight.push(...w(prev[0], prev[1]), ...w(next[0], next[1]));
           prev = next;
         }
@@ -429,7 +575,8 @@ export function SketchSession3D() {
   // nothing showed up. Mirror SketchOverlay3D's branch and draw classic
   // materials on the WebGL path so the in-edit geometry is VISIBLE there too.
   const gl = useThree((s) => s.gl);
-  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const isWebGPU =
+    (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   const session = state?.sketchSession;
   const active = session?.active ?? false;
 
@@ -439,8 +586,10 @@ export function SketchSession3D() {
   const frame = useMemo(() => {
     if (!store || !active || !session) return null;
     return (
-      resolvePlaneFrame(session.planeQuery ?? "qCreatedBy(origin_plane_xy)", store.kernel) ??
-      resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)
+      resolvePlaneFrame(
+        session.planeQuery ?? "qCreatedBy(origin_plane_xy)",
+        store.kernel,
+      ) ?? resolvePlaneFrame("qCreatedBy(origin_plane_xy)", store.kernel)
     );
   }, [store, active, session?.planeQuery]);
 
@@ -467,7 +616,11 @@ export function SketchSession3D() {
       }
       if (!skState) return SKETCH_COLOR_UNDER;
       const dof = displayDegreesOfFreedom(skState, session.diagnostics);
-      return dof > 0 ? SKETCH_COLOR_UNDER : dof === 0 ? SKETCH_COLOR_FULL : SKETCH_COLOR_OVER;
+      return dof > 0
+        ? SKETCH_COLOR_UNDER
+        : dof === 0
+          ? SKETCH_COLOR_FULL
+          : SKETCH_COLOR_OVER;
     } catch {
       return SKETCH_COLOR_UNDER;
     }
@@ -475,14 +628,28 @@ export function SketchSession3D() {
 
   const geom = useMemo(() => {
     if (!active || !frame || !session) return null;
-    return collectSketchSessionGeometry(session.subCalls as SketchSubCall[], frame);
+    return collectSketchSessionGeometry(
+      session.subCalls as SketchSubCall[],
+      frame,
+    );
   }, [active, frame, session?.subCalls]);
 
   const selection = useMemo(() => {
-    if (!active || !frame || !session || !skState || session.selection.length === 0) {
+    if (
+      !active ||
+      !frame ||
+      !session ||
+      !skState ||
+      session.selection.length === 0
+    ) {
       return null;
     }
-    const g = collectSelectionGeometry(skState, session.selection, session.subCalls, frame);
+    const g = collectSelectionGeometry(
+      skState,
+      session.selection,
+      session.subCalls,
+      frame,
+    );
     return g.highlight.length || g.markers.length ? g : null;
   }, [active, frame, skState, session?.selection, session?.subCalls]);
 
@@ -492,7 +659,11 @@ export function SketchSession3D() {
       const contour = poly.map((q) => new THREE.Vector2(q[0], q[1]));
       return THREE.ShapeUtils.triangulateShape(contour, []);
     };
-    const pos = collectSketchRegionFill(session.subCalls as SketchSubCall[], frame, tri);
+    const pos = collectSketchRegionFill(
+      session.subCalls as SketchSubCall[],
+      frame,
+      tri,
+    );
     return pos.length ? pos : null;
   }, [active, frame, session?.subCalls]);
 
@@ -500,8 +671,10 @@ export function SketchSession3D() {
     if (!active || !frame) return null;
     const L = 1e5; // long enough to cross the viewport at any usable zoom
     return [
-      ...planeToWorld(-L, 0, frame), ...planeToWorld(L, 0, frame),
-      ...planeToWorld(0, -L, frame), ...planeToWorld(0, L, frame),
+      ...planeToWorld(-L, 0, frame),
+      ...planeToWorld(L, 0, frame),
+      ...planeToWorld(0, -L, frame),
+      ...planeToWorld(0, L, frame),
     ];
   }, [active, frame]);
 
@@ -515,7 +688,10 @@ export function SketchSession3D() {
   // THREE.Line(Dashed)Material + MeshBasicMaterial — which is what
   // SketchOverlay3D draws on its WebGL branch (plain LineSegments +
   // lineBasicMaterial), so committed + session strokes look consistent there.
-  type LineMat = Line2NodeMaterial | THREE.LineBasicMaterial | THREE.LineDashedMaterial;
+  type LineMat =
+    | Line2NodeMaterial
+    | THREE.LineBasicMaterial
+    | THREE.LineDashedMaterial;
   type FillMat = MeshBasicNodeMaterial | THREE.MeshBasicMaterial;
   const matsRef = useRef<{
     solid: LineMat;
@@ -528,21 +704,43 @@ export function SketchSession3D() {
   } | null>(null);
   if (!matsRef.current) {
     if (isWebGPU) {
-      const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+      const fatLine = (
+        c: number,
+        lw: number,
+        extra: Record<string, unknown> = {},
+      ) =>
         new Line2NodeMaterial({
-          color: c, linewidth: lw, worldUnits: false,
-          depthTest: false, depthWrite: false, transparent: true, ...extra,
+          color: c,
+          linewidth: lw,
+          worldUnits: false,
+          depthTest: false,
+          depthWrite: false,
+          transparent: true,
+          ...extra,
         });
       matsRef.current = {
         solid: fatLine(color, SKETCH_STROKE_WIDTH),
-        construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, { dashed: true, dashSize: 3, gapSize: 2 }),
-        guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
+        construction: fatLine(SKETCH_CONSTRUCTION_COLOR, 2, {
+          dashed: true,
+          dashSize: 3,
+          gapSize: 2,
+        }),
+        guide: fatLine(SKETCH_GUIDE_COLOR, 1, {
+          opacity: 0.6,
+          dashed: true,
+          dashSize: 3,
+          gapSize: 2,
+        }),
         leg: fatLine(SKETCH_LEG_COLOR, 2),
         axis: fatLine(SKETCH_AXIS_COLOR, 1, { opacity: 0.22 }),
         selLine: fatLine(SKETCH_SELECTED_COLOR, 4),
         fill: new MeshBasicNodeMaterial({
-          color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
-          depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+          color: SKETCH_FILL_COLOR,
+          transparent: true,
+          opacity: SKETCH_FILL_OPACITY,
+          depthTest: false,
+          depthWrite: false,
+          side: THREE.DoubleSide,
         }),
       };
     } else {
@@ -553,12 +751,21 @@ export function SketchSession3D() {
       // use LineDashedMaterial (needs computeLineDistances() on the geometry).
       const solidLine = (c: number, opacity = 1) =>
         new THREE.LineBasicMaterial({
-          color: c, transparent: true, opacity, depthTest: false, depthWrite: false,
+          color: c,
+          transparent: true,
+          opacity,
+          depthTest: false,
+          depthWrite: false,
         });
       const dashedLine = (c: number, opacity = 1) =>
         new THREE.LineDashedMaterial({
-          color: c, transparent: true, opacity, depthTest: false, depthWrite: false,
-          dashSize: 3, gapSize: 2,
+          color: c,
+          transparent: true,
+          opacity,
+          depthTest: false,
+          depthWrite: false,
+          dashSize: 3,
+          gapSize: 2,
         });
       matsRef.current = {
         solid: solidLine(color),
@@ -568,8 +775,12 @@ export function SketchSession3D() {
         axis: solidLine(SKETCH_AXIS_COLOR, 0.22),
         selLine: solidLine(SKETCH_SELECTED_COLOR),
         fill: new THREE.MeshBasicMaterial({
-          color: SKETCH_FILL_COLOR, transparent: true, opacity: SKETCH_FILL_OPACITY,
-          depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+          color: SKETCH_FILL_COLOR,
+          transparent: true,
+          opacity: SKETCH_FILL_OPACITY,
+          depthTest: false,
+          depthWrite: false,
+          side: THREE.DoubleSide,
         }),
       };
     }
@@ -580,7 +791,12 @@ export function SketchSession3D() {
     invalidate();
   }, [color, invalidate, M]);
   // Dispose materials when the component unmounts (session closed).
-  useEffect(() => () => { for (const m of Object.values(M)) m.dispose(); }, [M]);
+  useEffect(
+    () => () => {
+      for (const m of Object.values(M)) m.dispose();
+    },
+    [M],
+  );
 
   const objects = useMemo(() => {
     const objs: THREE.Object3D[] = [];
@@ -619,9 +835,17 @@ export function SketchSession3D() {
     // (ticket tdq2 — the old THREE.Points dots never rendered in the overlay
     // pass). The DOF colour is baked at build time; a colour change rebuilds the
     // dots via the `color` memo dep below.
-    const addDots = (pos: number[] | null, colorHex: number, diameterPx: number, order: number) => {
+    const addDots = (
+      pos: number[] | null,
+      colorHex: number,
+      diameterPx: number,
+      order: number,
+    ) => {
       const d = makeSketchDots(pos, colorHex, diameterPx, order);
-      if (d) { objs.push(d.mesh); dotSets.push(d); }
+      if (d) {
+        objs.push(d.mesh);
+        dotSets.push(d);
+      }
     };
     addLines(axes, M.axis, 994, false);
     if (fill) {
@@ -651,7 +875,8 @@ export function SketchSession3D() {
   useEffect(() => {
     invalidate();
     return () => {
-      for (const o of objects.objs) (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
+      for (const o of objects.objs)
+        (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
       for (const d of objects.dotSets) d.dispose();
     };
   }, [objects, invalidate]);
@@ -685,39 +910,78 @@ export function SketchHud3D() {
   // `frameloop="never"`), so the live drag preview never showed there. Mirror
   // SketchSession3D: classic Line(Dashed)Material on WebGL, and rebuild from a
   // direct HUD subscription instead of polling the version in useFrame.
-  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const isWebGPU =
+    (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   const groupRef = useRef<THREE.Group>(null);
   const lastVer = useRef(-1);
   const objsRef = useRef<THREE.Object3D[]>([]);
   const dotSetsRef = useRef<SketchDots[]>([]);
 
-  type LineMat = Line2NodeMaterial | THREE.LineBasicMaterial | THREE.LineDashedMaterial;
-  const matsRef = useRef<{ line: LineMat; guide: LineMat; projected: LineMat } | null>(null);
+  type LineMat =
+    | Line2NodeMaterial
+    | THREE.LineBasicMaterial
+    | THREE.LineDashedMaterial;
+  const matsRef = useRef<{
+    line: LineMat;
+    guide: LineMat;
+    projected: LineMat;
+  } | null>(null);
   if (!matsRef.current) {
     if (isWebGPU) {
-      const fatLine = (c: number, lw: number, extra: Record<string, unknown> = {}) =>
+      const fatLine = (
+        c: number,
+        lw: number,
+        extra: Record<string, unknown> = {},
+      ) =>
         new Line2NodeMaterial({
-          color: c, linewidth: lw, worldUnits: false,
-          depthTest: false, depthWrite: false, transparent: true, ...extra,
+          color: c,
+          linewidth: lw,
+          worldUnits: false,
+          depthTest: false,
+          depthWrite: false,
+          transparent: true,
+          ...extra,
         });
       matsRef.current = {
         line: fatLine(SKETCH_PREVIEW_COLOR, 2),
-        guide: fatLine(SKETCH_GUIDE_COLOR, 1, { opacity: 0.6, dashed: true, dashSize: 3, gapSize: 2 }),
-        projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, { opacity: 0.5, dashed: true, dashSize: 4, gapSize: 4 }),
+        guide: fatLine(SKETCH_GUIDE_COLOR, 1, {
+          opacity: 0.6,
+          dashed: true,
+          dashSize: 3,
+          gapSize: 2,
+        }),
+        projected: fatLine(SKETCH_GUIDE_COLOR, 1.5, {
+          opacity: 0.5,
+          dashed: true,
+          dashSize: 4,
+          gapSize: 4,
+        }),
       };
     } else {
       matsRef.current = {
         line: new THREE.LineBasicMaterial({
-          color: SKETCH_PREVIEW_COLOR, transparent: true,
-          depthTest: false, depthWrite: false,
+          color: SKETCH_PREVIEW_COLOR,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
         }),
         guide: new THREE.LineDashedMaterial({
-          color: SKETCH_GUIDE_COLOR, transparent: true, opacity: 0.6,
-          depthTest: false, depthWrite: false, dashSize: 3, gapSize: 2,
+          color: SKETCH_GUIDE_COLOR,
+          transparent: true,
+          opacity: 0.6,
+          depthTest: false,
+          depthWrite: false,
+          dashSize: 3,
+          gapSize: 2,
         }),
         projected: new THREE.LineDashedMaterial({
-          color: SKETCH_GUIDE_COLOR, transparent: true, opacity: 0.5,
-          depthTest: false, depthWrite: false, dashSize: 4, gapSize: 4,
+          color: SKETCH_GUIDE_COLOR,
+          transparent: true,
+          opacity: 0.5,
+          depthTest: false,
+          depthWrite: false,
+          dashSize: 4,
+          gapSize: 4,
         }),
       };
     }
@@ -739,12 +1003,20 @@ export function SketchHud3D() {
       (o as { geometry?: THREE.BufferGeometry }).geometry?.dispose();
     }
     objsRef.current = [];
-    for (const d of dotSetsRef.current) { group.remove(d.mesh); d.dispose(); }
+    for (const d of dotSetsRef.current) {
+      group.remove(d.mesh);
+      d.dispose();
+    }
     dotSetsRef.current = [];
 
     const frame = getSketchPlaneFrame();
     const w = (uv: [number, number]) => planeToWorld(uv[0], uv[1], frame);
-    const addLines = (pos: number[], mat: LineMat, order: number, dashed: boolean) => {
+    const addLines = (
+      pos: number[],
+      mat: LineMat,
+      order: number,
+      dashed: boolean,
+    ) => {
       if (pos.length === 0) return;
       let o: THREE.Object3D;
       if (isWebGPU) {
@@ -766,7 +1038,12 @@ export function SketchHud3D() {
       group.add(o);
       objsRef.current.push(o);
     };
-    const addDots = (pos: number[], colorHex: number, diameterPx: number, order: number) => {
+    const addDots = (
+      pos: number[],
+      colorHex: number,
+      diameterPx: number,
+      order: number,
+    ) => {
       const d = makeSketchDots(pos, colorHex, diameterPx, order);
       if (!d) return;
       group.add(d.mesh);
@@ -779,7 +1056,10 @@ export function SketchHud3D() {
     addLines(proj, M.projected, 993, true);
 
     // Drag preview shapes (via the shared flattener) + extra segments.
-    const prev = collectSketchSessionGeometry(hud.previewCalls as SketchSubCall[], frame);
+    const prev = collectSketchSessionGeometry(
+      hud.previewCalls as SketchSubCall[],
+      frame,
+    );
     const lines = [...prev.solid, ...prev.legs];
     for (const [a, b] of hud.previewLines) lines.push(...w(a), ...w(b));
     addLines(lines, M.line, 996, false);
@@ -842,7 +1122,11 @@ function measureLabelWidth(text: string, font: string): number {
 
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number, r: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
 ): void {
   const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -868,7 +1152,8 @@ function renderLabelCanvas(label: SketchLabel): {
 } {
   const ss = LABEL_SUPERSAMPLE;
   const font = label.style === "constraint" ? CONSTRAINT_FONT : LABEL_FONT;
-  const fontPx = label.style === "constraint" ? CONSTRAINT_FONT_PX : LABEL_FONT_PX;
+  const fontPx =
+    label.style === "constraint" ? CONSTRAINT_FONT_PX : LABEL_FONT_PX;
   const textW = measureLabelWidth(label.text, font);
 
   let boxW: number;
@@ -1008,7 +1293,14 @@ export function SketchLabels3D() {
         sprite.renderOrder = 1002; // above the snap ring (1001)
         sprite.layers.enable(OVERLAY_LAYER);
         group.add(sprite);
-        itemsRef.current.push({ sprite, tex, mat, anchorUv: label.anchorUv, cssW, cssH });
+        itemsRef.current.push({
+          sprite,
+          tex,
+          mat,
+          anchorUv: label.anchorUv,
+          cssW,
+          cssH,
+        });
       }
       invalidate();
     }
@@ -1036,7 +1328,10 @@ export function SketchLabels3D() {
 
 const NO_GIZMO_KINDS: ReadonlySet<string> = new Set([
   // extrude: owns its depth-arrow gizmo (ExtrudeDepthGizmo, ticket qqgo)
-  "boolean", "sketch", "fillet_edge", "extrude",
+  "boolean",
+  "sketch",
+  "fillet_edge",
+  "extrude",
 ]);
 
 export function SelectionTransformGizmo() {
@@ -1053,7 +1348,10 @@ export function SelectionTransformGizmo() {
   const defaultControls = useThree((s) => s.controls);
   const invalidate = useThree((s) => s.invalidate);
 
-  const selectedFeature = useMemo(() => findSingleSelectedFeature(state), [state]);
+  const selectedFeature = useMemo(
+    () => findSingleSelectedFeature(state),
+    [state],
+  );
 
   const gizmoMode = state?.gizmoMode ?? "translate";
 
@@ -1082,13 +1380,17 @@ export function SelectionTransformGizmo() {
     gizmoPendingRef.current = false;
     const p = mesh.position;
     const q = mesh.quaternion;
-    let sx = mesh.scale.x, sy = mesh.scale.y, sz = mesh.scale.z;
+    let sx = mesh.scale.x,
+      sy = mesh.scale.y,
+      sz = mesh.scale.z;
     if (gizmoMode === "translate") {
       syncedTranslateRef.current = [p.x, p.y, p.z];
     }
     if (gizmoMode === "scale" && selectedFeature.kind === "sphere") {
       const u = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
-      sx = u; sy = u; sz = u;
+      sx = u;
+      sy = u;
+      sz = u;
       mesh.scale.set(u, u, u);
     }
     // A selected TRANSFORM feature (Translate/Rotate/Scale row in the
@@ -1150,7 +1452,9 @@ export function SelectionTransformGizmo() {
     tc.attach(mesh);
     tc.setMode(gizmoMode);
     tc.setSize(0.5);
-    helper.traverse((child: THREE.Object3D) => child.layers.enable(OVERLAY_LAYER));
+    helper.traverse((child: THREE.Object3D) =>
+      child.layers.enable(OVERLAY_LAYER),
+    );
 
     const onDragging = (e: { value: boolean }) => {
       if (defaultControls) (defaultControls as any).enabled = !e.value;
@@ -1191,11 +1495,21 @@ export function SelectionTransformGizmo() {
       // active B-Rep suppression; a no-op otherwise (idempotent).
       store.endGizmoDrag();
     };
-  }, [selectedFeature?.id, gizmoMode, camera, gl, scene, defaultControls, invalidate, store]);
+  }, [
+    selectedFeature?.id,
+    gizmoMode,
+    camera,
+    gl,
+    scene,
+    defaultControls,
+    invalidate,
+    store,
+  ]);
 
   useEffect(() => () => clearTimeout(gizmoThrottleRef.current), []);
 
-  if (!selectedFeature || !store || NO_GIZMO_KINDS.has(selectedFeature.kind)) return null;
+  if (!selectedFeature || !store || NO_GIZMO_KINDS.has(selectedFeature.kind))
+    return null;
 
   return (
     <mesh ref={meshRef} visible={false}>
@@ -1204,7 +1518,11 @@ export function SelectionTransformGizmo() {
   );
 }
 
-export function Invalidator({ ndc }: { ndc: { x: number; y: number; active: boolean } }) {
+export function Invalidator({
+  ndc,
+}: {
+  ndc: { x: number; y: number; active: boolean };
+}) {
   const invalidate = useThree((s) => s.invalidate);
   const { state } = useKernelStore();
   const meshedBodies = state?.meshedBodies;
@@ -1337,7 +1655,8 @@ export function BRepEdgeOverlay({
   // The fat-line (Line2NodeMaterial) path only renders on the WebGPU backend;
   // the classic THREE.WebGLRenderer fallback needs plain LineBasicMaterial
   // LineSegments, or B-Rep edges don't show at all there (ticket jnej).
-  const isWebGPU = (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
+  const isWebGPU =
+    (gl as unknown as { isWebGPURenderer?: boolean }).isWebGPURenderer === true;
   const baseClassicRef = useRef(
     new THREE.LineBasicMaterial({
       color: 0x1e293b,
@@ -1421,7 +1740,8 @@ export function BRepEdgeOverlay({
     if (!store) return "";
     const n = store.kernel.bodyCount();
     let fp = String(n);
-    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
     return fp;
   }, [store, state]);
 
@@ -1438,7 +1758,8 @@ export function BRepEdgeOverlay({
       }
       for (const e of bodyEdges) {
         const positions = polylineToSegments(e.points);
-        if (positions.length > 0) out.push({ a: e.a, b: e.b, idHash: e.idHash, positions });
+        if (positions.length > 0)
+          out.push({ a: e.a, b: e.b, idHash: e.idHash, positions });
       }
     }
     return out;
@@ -1560,7 +1881,8 @@ export function BRepEdgeOverlay({
           ];
         }
       }
-      if (bestWorld) candidates.push({ ei, d: bestD, depth: bestDepth, world: bestWorld });
+      if (bestWorld)
+        candidates.push({ ei, d: bestD, depth: bestDepth, world: bestWorld });
     }
     // Nearest cursor distance wins; near-ties resolve to the front-most edge.
     candidates.sort((p, q) =>
@@ -1620,7 +1942,10 @@ export function BRepEdgeOverlay({
       geom = g;
     } else {
       const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      g.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(positions, 3),
+      );
       obj = new THREE.LineSegments(g, hoverClassicRef.current);
       geom = g;
     }
@@ -1663,7 +1988,8 @@ function useBodyFingerprint(): string {
     if (!store) return "";
     const n = store.kernel.bodyCount();
     let fp = String(n);
-    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
     return fp;
   }, [store, state]);
 }
@@ -1697,20 +2023,31 @@ export function BRepEdgePointsOverlay() {
   const polygonGeomRef = useRef(new THREE.BufferGeometry());
   const nodeMatRef = useRef(
     new THREE.PointsMaterial({
-      color: EDGE_NODE_COLOR, size: 9, sizeAttenuation: false,
-      depthTest: false, depthWrite: false, transparent: true,
+      color: EDGE_NODE_COLOR,
+      size: 9,
+      sizeAttenuation: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
     }),
   );
   const handleMatRef = useRef(
     new THREE.PointsMaterial({
-      color: EDGE_HANDLE_COLOR, size: 6, sizeAttenuation: false,
-      depthTest: false, depthWrite: false, transparent: true,
+      color: EDGE_HANDLE_COLOR,
+      size: 6,
+      sizeAttenuation: false,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
     }),
   );
   const polygonMatRef = useRef(
     new THREE.LineBasicMaterial({
-      color: EDGE_POLYGON_COLOR, depthTest: false, depthWrite: false,
-      transparent: true, opacity: 0.6,
+      color: EDGE_POLYGON_COLOR,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.6,
     }),
   );
 
@@ -1732,14 +2069,23 @@ export function BRepEdgePointsOverlay() {
         const d = Math.max(1, e.degree);
         const nCps = Math.floor(cps.length / 3);
         for (let p = 0; p < nCps; p++) {
-          const x = cps[p * 3], y = cps[p * 3 + 1], z = cps[p * 3 + 2];
+          const x = cps[p * 3],
+            y = cps[p * 3 + 1],
+            z = cps[p * 3 + 2];
           // On-curve nodes sit at every `degree`-th control point; the rest
           // are off-curve Bézier handles.
           if (p % d === 0) nodes.push(x, y, z);
           else handles.push(x, y, z);
           // Control polygon: a segment from this control point to the next.
           if (p + 1 < nCps) {
-            polygon.push(x, y, z, cps[(p + 1) * 3], cps[(p + 1) * 3 + 1], cps[(p + 1) * 3 + 2]);
+            polygon.push(
+              x,
+              y,
+              z,
+              cps[(p + 1) * 3],
+              cps[(p + 1) * 3 + 1],
+              cps[(p + 1) * 3 + 2],
+            );
           }
         }
       }
@@ -1757,11 +2103,20 @@ export function BRepEdgePointsOverlay() {
       setReady(false);
       return;
     }
-    nodeGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.nodes, 3));
+    nodeGeomRef.current.setAttribute(
+      "position",
+      new THREE.BufferAttribute(buffers.nodes, 3),
+    );
     nodeGeomRef.current.computeBoundingSphere();
-    handleGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.handles, 3));
+    handleGeomRef.current.setAttribute(
+      "position",
+      new THREE.BufferAttribute(buffers.handles, 3),
+    );
     handleGeomRef.current.computeBoundingSphere();
-    polygonGeomRef.current.setAttribute("position", new THREE.BufferAttribute(buffers.polygon, 3));
+    polygonGeomRef.current.setAttribute(
+      "position",
+      new THREE.BufferAttribute(buffers.polygon, 3),
+    );
     polygonGeomRef.current.computeBoundingSphere();
     setReady(true);
   }, [buffers]);
@@ -1778,7 +2133,9 @@ export function BRepEdgePointsOverlay() {
   }, []);
 
   if (!ready || !buffers) return null;
-  const enableOverlay = (obj: THREE.Object3D | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); };
+  const enableOverlay = (obj: THREE.Object3D | null) => {
+    if (obj) obj.layers.enable(OVERLAY_LAYER);
+  };
   return (
     <>
       <lineSegments
@@ -1827,15 +2184,28 @@ function pushBoxWireframe(
   rgb: [number, number, number],
 ) {
   const c: [number, number, number][] = [
-    [min[0], min[1], min[2]], [max[0], min[1], min[2]],
-    [max[0], max[1], min[2]], [min[0], max[1], min[2]],
-    [min[0], min[1], max[2]], [max[0], min[1], max[2]],
-    [max[0], max[1], max[2]], [min[0], max[1], max[2]],
+    [min[0], min[1], min[2]],
+    [max[0], min[1], min[2]],
+    [max[0], max[1], min[2]],
+    [min[0], max[1], min[2]],
+    [min[0], min[1], max[2]],
+    [max[0], min[1], max[2]],
+    [max[0], max[1], max[2]],
+    [min[0], max[1], max[2]],
   ];
   const edges: [number, number][] = [
-    [0, 1], [1, 2], [2, 3], [3, 0], // bottom face
-    [4, 5], [5, 6], [6, 7], [7, 4], // top face
-    [0, 4], [1, 5], [2, 6], [3, 7], // verticals
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 0], // bottom face
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 4], // top face
+    [0, 4],
+    [1, 5],
+    [2, 6],
+    [3, 7], // verticals
   ];
   for (const [a, b] of edges) {
     pos.push(c[a][0], c[a][1], c[a][2], c[b][0], c[b][1], c[b][2]);
@@ -1871,7 +2241,11 @@ export function OctreeCellOverlay() {
   const bodies = useMemo(() => {
     if (!store) return [];
     const count = store.kernel.bodyCount();
-    const out: { id: string; geometry: THREE.BufferGeometry; placement: OctreeCells }[] = [];
+    const out: {
+      id: string;
+      geometry: THREE.BufferGeometry;
+      placement: OctreeCells;
+    }[] = [];
     for (let i = 0; i < count; i++) {
       let dump: OctreeCells;
       try {
@@ -1887,8 +2261,14 @@ export function OctreeCellOverlay() {
         pushBoxWireframe(pos, col, cell.min, cell.max, rgb);
       }
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
-      geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(pos), 3),
+      );
+      geometry.setAttribute(
+        "color",
+        new THREE.BufferAttribute(new Float32Array(col), 3),
+      );
       out.push({ id: `${store.kernel.bodyId(i)}`, geometry, placement: dump });
     }
     return out;
@@ -1911,7 +2291,11 @@ export function OctreeCellOverlay() {
       {bodies.map((b) => (
         <group
           key={b.id}
-          position={[b.placement.translate[0], b.placement.translate[1], b.placement.translate[2]]}
+          position={[
+            b.placement.translate[0],
+            b.placement.translate[1],
+            b.placement.translate[2],
+          ]}
           quaternion={[
             b.placement.rotation[0],
             b.placement.rotation[1],
@@ -1921,7 +2305,9 @@ export function OctreeCellOverlay() {
           scale={b.placement.scale}
         >
           <lineSegments
-            ref={(obj: THREE.LineSegments | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+            ref={(obj: THREE.LineSegments | null) => {
+              if (obj) obj.layers.enable(OVERLAY_LAYER);
+            }}
             geometry={b.geometry}
             material={materialRef.current}
             frustumCulled={false}
@@ -1991,7 +2377,9 @@ function ScreenSpacePoint({
     if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
       const cam = camera as THREE.PerspectiveCamera;
       const dist = m.getWorldPosition(scratchVec3).distanceTo(cam.position);
-      wpp = (2 * dist * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / size.height;
+      wpp =
+        (2 * dist * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) /
+        size.height;
     } else {
       const cam = camera as THREE.OrthographicCamera;
       wpp = (cam.top - cam.bottom) / cam.zoom / size.height;
@@ -2008,7 +2396,12 @@ function ScreenSpacePoint({
       renderOrder={renderOrder}
     >
       <sphereGeometry args={[1, 12, 12]} />
-      <meshBasicMaterial color={color} depthTest={false} transparent opacity={opacity} />
+      <meshBasicMaterial
+        color={color}
+        depthTest={false}
+        transparent
+        opacity={opacity}
+      />
     </mesh>
   );
 }
@@ -2033,22 +2426,26 @@ interface BodyPickData {
    *  `faces` carries the FACE-precise arena association (== faceIndex,
    *  ticket b91c); the `(a, b)` branch signature stays as the fallback for
    *  picks that only know the branch (coplanar split faces share one). */
-  edges: { a: number; b: number; idHash: string; points: number[]; faces: number[] }[];
+  edges: {
+    a: number;
+    b: number;
+    idHash: string;
+    points: number[];
+    faces: number[];
+  }[];
 }
 
-function buildBodyPickData(
-  kernel: {
-    bodyCount(): number;
-    bodyVertexCount(i: number): number;
-    bodyPositionsView(i: number): Float32Array;
-    bodyIndicesView(i: number): Uint32Array;
-    bodyFaceIndexView(i: number): Uint32Array;
-    bodyBrepFaces(i: number): BRepFace[];
-    bodyBrepVertices(i: number): BRepVertex[];
-    bodyBrepEdges(i: number): BRepEdge[];
-    bodyPlacement(i: number): Placement;
-  },
-): BodyPickData[] {
+function buildBodyPickData(kernel: {
+  bodyCount(): number;
+  bodyVertexCount(i: number): number;
+  bodyPositionsView(i: number): Float32Array;
+  bodyIndicesView(i: number): Uint32Array;
+  bodyFaceIndexView(i: number): Uint32Array;
+  bodyBrepFaces(i: number): BRepFace[];
+  bodyBrepVertices(i: number): BRepVertex[];
+  bodyBrepEdges(i: number): BRepEdge[];
+  bodyPlacement(i: number): Placement;
+}): BodyPickData[] {
   const out: BodyPickData[] = [];
   const count = kernel.bodyCount();
   for (let i = 0; i < count; i++) {
@@ -2078,7 +2475,10 @@ function buildBodyPickData(
         const positions = kernel.bodyPositionsView(i).slice();
         const indices = kernel.bodyIndicesView(i).slice();
         geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute(
+          "position",
+          new THREE.BufferAttribute(positions, 3),
+        );
         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
         geometry.computeBoundingSphere();
       } catch {
@@ -2111,7 +2511,10 @@ function buildBodyPickData(
 /** Flat LineSegments positions (6 floats per segment) for the boundary of
  *  the face with packed branch id `branchId`: every analytic edge whose
  *  signature contains the branch. Mesh-free face highlight (ticket evq2). */
-function faceOutlineSegments(bodies: BodyPickData[], branchId: number): number[] {
+function faceOutlineSegments(
+  bodies: BodyPickData[],
+  branchId: number,
+): number[] {
   const segs: number[] = [];
   for (const body of bodies) {
     for (const e of body.edges) {
@@ -2170,7 +2573,8 @@ export function BRepSelectionOverlay({
     if (!store) return "";
     const n = store.kernel.bodyCount();
     let fp = String(n);
-    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
     return fp;
   }, [store, state]);
 
@@ -2195,7 +2599,9 @@ export function BRepSelectionOverlay({
   }, []);
 
   const [faceHover, setFaceHover] = useState(false);
-  const [vertexHoverIdx, setVertexHoverIdx] = useState<[number, number] | null>(null);
+  const [vertexHoverIdx, setVertexHoverIdx] = useState<[number, number] | null>(
+    null,
+  );
 
   // Build the highlight triangle list for one arena face index. Bodies
   // without a triangle mesh (SDF render modes) contribute no triangles —
@@ -2249,7 +2655,11 @@ export function BRepSelectionOverlay({
   // re-upload a line geometry mutated in place (ticket twxw). The functional
   // setter bails on identical (body, arena, branchId) so the per-frame
   // publish never re-renders.
-  type HoverFace = { body: BodyPickData; arena: number | null; branchId: number };
+  type HoverFace = {
+    body: BodyPickData;
+    arena: number | null;
+    branchId: number;
+  };
   const [hoverFace, setHoverFace] = useState<HoverFace | null>(null);
   const publishHoverFace = (next: HoverFace | null): void => {
     setHoverFace((prev) => {
@@ -2306,8 +2716,14 @@ export function BRepSelectionOverlay({
     // with no active picker. When a picker IS active we honour its
     // entityFilter; with no picker, all kinds are pickable.
     if (!ndc.active || bodies.length === 0) {
-      if (faceHover) { setFaceHover(false); invalidate(); }
-      if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
+      if (faceHover) {
+        setFaceHover(false);
+        invalidate();
+      }
+      if (vertexHoverIdx) {
+        setVertexHoverIdx(null);
+        invalidate();
+      }
       publishHoverFace(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
@@ -2318,7 +2734,8 @@ export function BRepSelectionOverlay({
     // come AFTER the one being edited are not selectable — don't light them on
     // hover (the click handler also rejects them with a message).
     const faceAllowed = (featureId: number): boolean =>
-      !picker?.selectableFeatureIds || picker.selectableFeatureIds.has(featureId);
+      !picker?.selectableFeatureIds ||
+      picker.selectableFeatureIds.has(featureId);
     // An edge inside its pick band beats the face it bounds — the bridge
     // merge already resolves clicks that way (vertex > edge > face), so the
     // visuals must agree: with the face outline now drawn in the same hover
@@ -2327,7 +2744,8 @@ export function BRepSelectionOverlay({
     const edgeWins =
       getHoveredElementOfKind("edge") !== null &&
       (!picker || filterAllows("edge", filter));
-    const wantFace = !edgeWins && (picker ? filterAllows("face", filter) : true);
+    const wantFace =
+      !edgeWins && (picker ? filterAllows("face", filter) : true);
     const wantVertex = picker ? filterAllows("vertex", filter) : true;
 
     raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
@@ -2338,9 +2756,13 @@ export function BRepSelectionOverlay({
     // `pick()` raycast everywhere else (SDF modes keep main-thread meshes
     // empty, which used to make faces and vertices unhoverable). The analytic
     // hit maps its packed branch ids onto `BRepFace.branchId`.
-    let resolvedFace:
-      | { body: BodyPickData; arena: number | null; branchId: number; idHash: string; dist: number }
-      | null = null;
+    let resolvedFace: {
+      body: BodyPickData;
+      arena: number | null;
+      branchId: number;
+      idHash: string;
+      dist: number;
+    } | null = null;
     if (wantFace) {
       for (const body of bodies) {
         if (!body.pickMesh || !body.faceIndexView) continue;
@@ -2353,7 +2775,13 @@ export function BRepSelectionOverlay({
           if (!face) continue;
           if (!faceAllowed(face.featureId)) continue;
           if (!resolvedFace || h.distance < resolvedFace.dist) {
-            resolvedFace = { body, arena, branchId: face.branchId, idHash: face.idHash, dist: h.distance };
+            resolvedFace = {
+              body,
+              arena,
+              branchId: face.branchId,
+              idHash: face.idHash,
+              dist: h.distance,
+            };
           }
           break;
         }
@@ -2367,7 +2795,13 @@ export function BRepSelectionOverlay({
             for (const face of body.faces) {
               if (!hit.branches.includes(face.branchId)) continue;
               if (!faceAllowed(face.featureId)) continue;
-              resolvedFace = { body, arena: null, branchId: face.branchId, idHash: face.idHash, dist: hit.t };
+              resolvedFace = {
+                body,
+                arena: null,
+                branchId: face.branchId,
+                idHash: face.idHash,
+                dist: hit.t,
+              };
               break outer;
             }
           }
@@ -2379,9 +2813,12 @@ export function BRepSelectionOverlay({
     // A vertex within its snap radius wins over the face under the cursor —
     // clicking near a corner selects the corner (ticket evq2) — unless the
     // face hit is clearly in FRONT of it (occluded back-side corner).
-    let resolvedVertex:
-      | { bi: number; vi: number; idHash: string; ndcDist: number }
-      | null = null;
+    let resolvedVertex: {
+      bi: number;
+      vi: number;
+      idHash: string;
+      ndcDist: number;
+    } | null = null;
     if (wantVertex) {
       const v = new THREE.Vector3();
       const camPos = camera.position;
@@ -2391,7 +2828,8 @@ export function BRepSelectionOverlay({
           const w = verts[vi].world;
           v.set(w[0], w[1], w[2]);
           const camDist = v.distanceTo(camPos);
-          if (resolvedFace && camDist > resolvedFace.dist * 1.05 + 1e-3) continue;
+          if (resolvedFace && camDist > resolvedFace.dist * 1.05 + 1e-3)
+            continue;
           v.project(camera);
           if (v.z < -1 || v.z > 1) continue;
           const d = Math.hypot(v.x - ndc.x, v.y - ndc.y);
@@ -2411,23 +2849,48 @@ export function BRepSelectionOverlay({
         arena: resolvedFace.arena,
         branchId: resolvedFace.branchId,
       });
-      if (!faceHover) { setFaceHover(true); invalidate(); }
-      if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
-      setHoveredElementOfKind("face", { kind: "face", idHash: resolvedFace.idHash });
+      if (!faceHover) {
+        setFaceHover(true);
+        invalidate();
+      }
+      if (vertexHoverIdx) {
+        setVertexHoverIdx(null);
+        invalidate();
+      }
+      setHoveredElementOfKind("face", {
+        kind: "face",
+        idHash: resolvedFace.idHash,
+      });
       setHoveredElementOfKind("vertex", null);
     } else if (resolvedVertex) {
-      if (faceHover) { setFaceHover(false); invalidate(); }
+      if (faceHover) {
+        setFaceHover(false);
+        invalidate();
+      }
       publishHoverFace(null);
       const next: [number, number] = [resolvedVertex.bi, resolvedVertex.vi];
-      if (!vertexHoverIdx || vertexHoverIdx[0] !== next[0] || vertexHoverIdx[1] !== next[1]) {
+      if (
+        !vertexHoverIdx ||
+        vertexHoverIdx[0] !== next[0] ||
+        vertexHoverIdx[1] !== next[1]
+      ) {
         setVertexHoverIdx(next);
         invalidate();
       }
       setHoveredElementOfKind("face", null);
-      setHoveredElementOfKind("vertex", { kind: "vertex", idHash: resolvedVertex.idHash });
+      setHoveredElementOfKind("vertex", {
+        kind: "vertex",
+        idHash: resolvedVertex.idHash,
+      });
     } else {
-      if (faceHover) { setFaceHover(false); invalidate(); }
-      if (vertexHoverIdx) { setVertexHoverIdx(null); invalidate(); }
+      if (faceHover) {
+        setFaceHover(false);
+        invalidate();
+      }
+      if (vertexHoverIdx) {
+        setVertexHoverIdx(null);
+        invalidate();
+      }
       publishHoverFace(null);
       setHoveredElementOfKind("face", null);
       setHoveredElementOfKind("vertex", null);
@@ -2441,14 +2904,16 @@ export function BRepSelectionOverlay({
   // click near a corner has visible feedback before the click (ticket evq2).
   const hoveredVertexWorld =
     !showVertexMarkers && vertexHoverIdx !== null
-      ? bodies[vertexHoverIdx[0]]?.vertices[vertexHoverIdx[1]]?.world ?? null
+      ? (bodies[vertexHoverIdx[0]]?.vertices[vertexHoverIdx[1]]?.world ?? null)
       : null;
 
   return (
     <>
       {faceHover && (
         <mesh
-          ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          ref={(obj: THREE.Mesh | null) => {
+            if (obj) obj.layers.enable(OVERLAY_LAYER);
+          }}
           geometry={faceHighlightGeom.current}
           material={faceHighlightMat.current}
           frustumCulled={false}
@@ -2469,7 +2934,9 @@ export function BRepSelectionOverlay({
         bodies.map((b, bi) =>
           b.vertices.map((v, vi) => {
             const hovered =
-              vertexHoverIdx !== null && vertexHoverIdx[0] === bi && vertexHoverIdx[1] === vi;
+              vertexHoverIdx !== null &&
+              vertexHoverIdx[0] === bi &&
+              vertexHoverIdx[1] === vi;
             return (
               <ScreenSpacePoint
                 key={`v-${bi}-${vi}`}
@@ -2505,7 +2972,9 @@ export function BRepSelectedOverlay() {
   // Full multi-select set: a face primary highlights every selected face
   // (the coplanar extrude gather); edges/vertices stay single-primary.
   const selectedList = state?.selectedElements ?? [];
-  const selectedKey = selectedList.map((e) => `${e.kind}:${e.idHash}`).join(",");
+  const selectedKey = selectedList
+    .map((e) => `${e.kind}:${e.idHash}`)
+    .join(",");
 
   const faceGeomRef = useRef(new THREE.BufferGeometry());
   const faceMatRef = useRef(
@@ -2576,7 +3045,8 @@ export function BRepSelectedOverlay() {
     if (!store) return "";
     const n = store.kernel.bodyCount();
     let fp = String(n);
-    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
     return fp;
   }, [store, state]);
 
@@ -2585,10 +3055,12 @@ export function BRepSelectedOverlay() {
   // into the shared face geometry, face outlines + selected edges into one
   // fresh fat-line object, vertices into world positions for the dot
   // markers.
-  const resolved = useMemo<
-    | { hasFace: boolean; hasLines: boolean; hasLeafFill: boolean; vertices: [number, number, number][] }
-    | null
-  >(() => {
+  const resolved = useMemo<{
+    hasFace: boolean;
+    hasLines: boolean;
+    hasLeafFill: boolean;
+    vertices: [number, number, number][];
+  } | null>(() => {
     if (!store || selectedList.length === 0) return null;
     const k = store.kernel;
     const count = k.bodyCount();
@@ -2630,7 +3102,10 @@ export function BRepSelectedOverlay() {
         }
         const wantedFaces = faces.filter((f) => faceHashes.has(f.idHash));
         if (wantedFaces.length > 0) {
-          wantedArenasByBody.set(i, new Set(wantedFaces.map((f) => f.faceIndex)));
+          wantedArenasByBody.set(
+            i,
+            new Set(wantedFaces.map((f) => f.faceIndex)),
+          );
         }
         if (wantedFaces.length > 0 && k.bodyVertexCount(i) > 0) {
           try {
@@ -2670,9 +3145,11 @@ export function BRepSelectedOverlay() {
               // planar profile to fill — tint the nearest hybrid leaf of the
               // same kind, exactly like the body highlight (ticket yiis).
               try {
-                const leaves = k.bodyHybridInfo(i).leaves.filter(
-                  (l) => l.kind === f.surfaceKind && l.role !== "skip",
-                );
+                const leaves = k
+                  .bodyHybridInfo(i)
+                  .leaves.filter(
+                    (l) => l.kind === f.surfaceKind && l.role !== "skip",
+                  );
                 const c = localToWorld(f.centroidLocal, placement);
                 let best: (typeof leaves)[number] | null = null;
                 let bestD = Infinity;
@@ -2740,7 +3217,8 @@ export function BRepSelectedOverlay() {
       const wantedArenas = wantedArenasByBody.get(i);
       for (const e of edges) {
         const boundsSelectedFace =
-          wantedArenas !== undefined && e.faces.some((fi) => wantedArenas.has(fi));
+          wantedArenas !== undefined &&
+          e.faces.some((fi) => wantedArenas.has(fi));
         if (!boundsSelectedFace && !edgeHashes.has(e.idHash)) continue;
         segs.push(...polylineToSegments(e.points));
       }
@@ -2811,7 +3289,9 @@ export function BRepSelectedOverlay() {
     <>
       {resolved.hasFace && (
         <mesh
-          ref={(obj: THREE.Mesh | null) => { if (obj) obj.layers.enable(OVERLAY_LAYER); }}
+          ref={(obj: THREE.Mesh | null) => {
+            if (obj) obj.layers.enable(OVERLAY_LAYER);
+          }}
           geometry={faceGeomRef.current}
           material={faceMatRef.current}
           frustumCulled={false}
@@ -2898,7 +3378,8 @@ export function BodyHighlightOverlay() {
     if (!store) return "";
     const n = store.kernel.bodyCount();
     let fp = String(n);
-    for (let i = 0; i < n; i++) fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
+    for (let i = 0; i < n; i++)
+      fp += `:${store.kernel.bodyId(i)}.${store.kernel.bodyVersion(i)}`;
     return fp;
   }, [store, state]);
 
@@ -2948,15 +3429,28 @@ export function BodyHighlightOverlay() {
         const aabb = k.bodySdfAabb(bodyIndex);
         if (aabb.length >= 6) {
           const c: [number, number, number][] = [
-            [aabb[0], aabb[1], aabb[2]], [aabb[3], aabb[1], aabb[2]],
-            [aabb[3], aabb[4], aabb[2]], [aabb[0], aabb[4], aabb[2]],
-            [aabb[0], aabb[1], aabb[5]], [aabb[3], aabb[1], aabb[5]],
-            [aabb[3], aabb[4], aabb[5]], [aabb[0], aabb[4], aabb[5]],
+            [aabb[0], aabb[1], aabb[2]],
+            [aabb[3], aabb[1], aabb[2]],
+            [aabb[3], aabb[4], aabb[2]],
+            [aabb[0], aabb[4], aabb[2]],
+            [aabb[0], aabb[1], aabb[5]],
+            [aabb[3], aabb[1], aabb[5]],
+            [aabb[3], aabb[4], aabb[5]],
+            [aabb[0], aabb[4], aabb[5]],
           ];
           const boxEdges = [
-            [0, 1], [1, 2], [2, 3], [3, 0],
-            [4, 5], [5, 6], [6, 7], [7, 4],
-            [0, 4], [1, 5], [2, 6], [3, 7],
+            [0, 1],
+            [1, 2],
+            [2, 3],
+            [3, 0],
+            [4, 5],
+            [5, 6],
+            [6, 7],
+            [7, 4],
+            [0, 4],
+            [1, 5],
+            [2, 6],
+            [3, 7],
           ];
           for (const [a, b] of boxEdges) segs.push(...c[a], ...c[b]);
         }
@@ -3014,8 +3508,16 @@ export function WebGLSceneLights() {
  *  DC/SDF mesh. Ticket 55ea: a helix DC-meshes very coarsely; its parametric
  *  `buildHelixGeometry` (48 segments/turn) is the intended representation. */
 const WEBGL_PARAMETRIC_KINDS = new Set([
-  "box", "sphere", "cylinder", "cone", "torus", "capsule",
-  "extrude", "revolve", "helix", "sweep",
+  "box",
+  "sphere",
+  "cylinder",
+  "cone",
+  "torus",
+  "capsule",
+  "extrude",
+  "revolve",
+  "helix",
+  "sweep",
 ]);
 
 /**
@@ -3031,7 +3533,12 @@ const WEBGL_PARAMETRIC_KINDS = new Set([
  * not composite booleans.
  */
 export function isWebglParametricBody(
-  kernel: { bodyHybridInfo(i: number): { leaves: HybridLeafInfo[]; sdf_regions?: unknown[] } },
+  kernel: {
+    bodyHybridInfo(i: number): {
+      leaves: HybridLeafInfo[];
+      sdf_regions?: unknown[];
+    };
+  },
   i: number,
 ): boolean {
   try {
@@ -3045,8 +3552,16 @@ export function isWebglParametricBody(
   }
 }
 
-function MeshPreviewBody({ body, mat, bodyIndex }: {
-  body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+function MeshPreviewBody({
+  body,
+  mat,
+  bodyIndex,
+}: {
+  body: {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+  };
   mat: MaterialProps | undefined;
   bodyIndex: number;
 }) {
@@ -3112,8 +3627,9 @@ export function MeshPreview({
 
   const rows = bodies
     .map((body, i) => ({ body, i }))
-    .filter(({ i }) =>
-      !parametricSplit || !store || !isWebglParametricBody(store.kernel, i),
+    .filter(
+      ({ i }) =>
+        !parametricSplit || !store || !isWebglParametricBody(store.kernel, i),
     );
   if (rows.length === 0) return null;
 
@@ -3121,7 +3637,12 @@ export function MeshPreview({
     <>
       {lights ? <WebGLSceneLights /> : null}
       {rows.map(({ body, i }) => (
-        <MeshPreviewBody key={body.id} body={body} mat={materials.get(i)} bodyIndex={i} />
+        <MeshPreviewBody
+          key={body.id}
+          body={body}
+          mat={materials.get(i)}
+          bodyIndex={i}
+        />
       ))}
     </>
   );
@@ -3144,16 +3665,22 @@ export function BRepMeshPreview() {
   const fingerprint = useBodyFingerprint();
 
   const geometries = useMemo(() => {
-    if (!store) return [] as { bodyIndex: number; geometry: THREE.BufferGeometry }[];
+    if (!store)
+      return [] as { bodyIndex: number; geometry: THREE.BufferGeometry }[];
     let meshes;
     try {
-      meshes = collectAnalyticBodyMeshes(store.kernel as unknown as BrepMeshKernel);
+      meshes = collectAnalyticBodyMeshes(
+        store.kernel as unknown as BrepMeshKernel,
+      );
     } catch {
       return [];
     }
     return meshes.map((m) => {
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(m.positions, 3),
+      );
       geometry.setAttribute("normal", new THREE.BufferAttribute(m.normals, 3));
       geometry.computeBoundingSphere();
       return { bodyIndex: m.bodyIndex, geometry };
@@ -3233,7 +3760,9 @@ export function WebGLBodies({
         side: THREE.DoubleSide,
         metalness: um ? um.metalness : WEBGL_DEFAULT_METALNESS,
         roughness: um ? um.roughness : WEBGL_DEFAULT_ROUGHNESS,
-        emissive: um ? new THREE.Color(um.emissive[0], um.emissive[1], um.emissive[2]) : new THREE.Color(0, 0, 0),
+        emissive: um
+          ? new THREE.Color(um.emissive[0], um.emissive[1], um.emissive[2])
+          : new THREE.Color(0, 0, 0),
         transparent: um ? um.opacity < 1 : false,
         opacity: um ? um.opacity : 1,
         wireframe: um ? um.wireframe : false,
@@ -3277,9 +3806,12 @@ export function WebGLBodies({
       for (const m of meshes) m.geometry.dispose();
     };
   }, [meshes]);
-  useEffect(() => () => {
-    for (const m of matsRef.current) m.dispose();
-  }, []);
+  useEffect(
+    () => () => {
+      for (const m of matsRef.current) m.dispose();
+    },
+    [],
+  );
 
   if (meshes.length === 0) return null;
   return (
@@ -3292,8 +3824,15 @@ export function WebGLBodies({
   );
 }
 
-function AssemblyPartBody({ body, isSelected }: {
-  body: { positions: Float32Array; normals: Float32Array; indices: Uint32Array };
+function AssemblyPartBody({
+  body,
+  isSelected,
+}: {
+  body: {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+  };
   isSelected: boolean;
 }) {
   const geometry = useMemo(() => {
@@ -3327,7 +3866,9 @@ export function AssemblyParts() {
   return (
     <>
       {assembly.document.parts.map((part) => {
-        const rot = part.transform.rotate.map((d: number) => (d * Math.PI) / 180) as [number, number, number];
+        const rot = part.transform.rotate.map(
+          (d: number) => (d * Math.PI) / 180,
+        ) as [number, number, number];
         return (
           <group
             key={part.id}
@@ -3392,7 +3933,9 @@ export function MateConnectorOverlay() {
         ];
         for (const [dir, color] of axes) {
           const positions = new Float32Array([
-            origin[0], origin[1], origin[2],
+            origin[0],
+            origin[1],
+            origin[2],
             origin[0] + dir[0] * size,
             origin[1] + dir[1] * size,
             origin[2] + dir[2] * size,
@@ -3433,9 +3976,9 @@ const DATUM_PLANES: {
   rotation: [number, number, number];
   label: string;
 }[] = [
-  { id: "front", rotation: [0, 0, 0],                     label: "Front" },
-  { id: "top",   rotation: [-Math.PI / 2, 0, 0],          label: "Top" },
-  { id: "right", rotation: [0, Math.PI / 2, 0],           label: "Right" },
+  { id: "front", rotation: [0, 0, 0], label: "Front" },
+  { id: "top", rotation: [-Math.PI / 2, 0, 0], label: "Top" },
+  { id: "right", rotation: [0, Math.PI / 2, 0], label: "Right" },
 ];
 
 const DATUM_LABEL_POS: [number, number, number] = [
@@ -3462,20 +4005,33 @@ function makeLabelMaterial(text: string): THREE.MeshBasicMaterial {
   const tex = new THREE.CanvasTexture(canvas);
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
-  return new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, side: THREE.DoubleSide });
+  return new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    depthTest: false,
+    side: THREE.DoubleSide,
+  });
 }
 
-const datumLabelCache: Record<string, { material: THREE.MeshBasicMaterial; aspect: number }> = {};
+const datumLabelCache: Record<
+  string,
+  { material: THREE.MeshBasicMaterial; aspect: number }
+> = {};
 function getDatumLabel(text: string) {
   if (!datumLabelCache[text]) {
     const mat = makeLabelMaterial(text);
-    const aspect = (mat.map as THREE.CanvasTexture).image.width / (mat.map as THREE.CanvasTexture).image.height;
+    const aspect =
+      (mat.map as THREE.CanvasTexture).image.width /
+      (mat.map as THREE.CanvasTexture).image.height;
     datumLabelCache[text] = { material: mat, aspect };
   }
   return datumLabelCache[text];
 }
 
-const datumEdgesSource = new THREE.PlaneGeometry(DATUM_PLANE_SIZE, DATUM_PLANE_SIZE);
+const datumEdgesSource = new THREE.PlaneGeometry(
+  DATUM_PLANE_SIZE,
+  DATUM_PLANE_SIZE,
+);
 const datumEdgesGeometry = new THREE.EdgesGeometry(datumEdgesSource);
 datumEdgesSource.dispose();
 
@@ -3501,7 +4057,11 @@ export function pickDatumAtRay(
   if (!hidden.has("origin")) {
     const t = -(o[0] * d[0] + o[1] * d[1] + o[2] * d[2]);
     if (t > 0) {
-      const dist = Math.hypot(o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]);
+      const dist = Math.hypot(
+        o[0] + t * d[0],
+        o[1] + t * d[1],
+        o[2] + t * d[2],
+      );
       if (dist <= DATUM_ORIGIN_PICK_RADIUS) return "origin";
     }
   }
@@ -3536,7 +4096,9 @@ export function DatumOverlay() {
   const originVisible = !hidden.has("origin");
   const visiblePlanes = DATUM_PLANES.filter((p) => !hidden.has(p.id));
 
-  useEffect(() => { invalidate(); }, [hidden, selectedDatum, invalidate]);
+  useEffect(() => {
+    invalidate();
+  }, [hidden, selectedDatum, invalidate]);
 
   if (!originVisible && visiblePlanes.length === 0) return null;
 
@@ -3546,7 +4108,9 @@ export function DatumOverlay() {
         <mesh>
           <sphereGeometry args={[1.5, 16, 16]} />
           <meshBasicMaterial
-            color={selectedDatum === "origin" ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
+            color={
+              selectedDatum === "origin" ? ELEMENT_SELECTION_COLOR : DATUM_COLOR
+            }
             transparent
             opacity={selectedDatum === "origin" ? 1 : 0.6}
             depthTest={false}
@@ -3558,16 +4122,28 @@ export function DatumOverlay() {
           <mesh>
             <planeGeometry args={[DATUM_PLANE_SIZE, DATUM_PLANE_SIZE]} />
             <meshBasicMaterial
-              color={selectedDatum === plane.id ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
+              color={
+                selectedDatum === plane.id
+                  ? ELEMENT_SELECTION_COLOR
+                  : DATUM_COLOR
+              }
               transparent
-              opacity={selectedDatum === plane.id ? DATUM_PLANE_OPACITY * 2 : DATUM_PLANE_OPACITY}
+              opacity={
+                selectedDatum === plane.id
+                  ? DATUM_PLANE_OPACITY * 2
+                  : DATUM_PLANE_OPACITY
+              }
               side={THREE.DoubleSide}
               depthWrite={false}
             />
           </mesh>
           <lineSegments geometry={datumEdgesGeometry}>
             <lineBasicMaterial
-              color={selectedDatum === plane.id ? ELEMENT_SELECTION_COLOR : DATUM_COLOR}
+              color={
+                selectedDatum === plane.id
+                  ? ELEMENT_SELECTION_COLOR
+                  : DATUM_COLOR
+              }
               transparent
               opacity={selectedDatum === plane.id ? 0.9 : DATUM_EDGE_OPACITY}
             />
@@ -3596,15 +4172,28 @@ export function WorldGrid() {
   return <primitive object={grid} />;
 }
 
-function MeshOverlayEntry({ data }: { data: { positions: Float32Array; normals: Float32Array; indices: Uint32Array } }) {
+function MeshOverlayEntry({
+  data,
+}: {
+  data: {
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+  };
+}) {
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
 
   useEffect(() => {
-    return () => { geometry.dispose(); };
+    return () => {
+      geometry.dispose();
+    };
   }, [geometry]);
 
   useEffect(() => {
-    geometry.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+    geometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(data.positions, 3),
+    );
     geometry.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
     geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
     geometry.computeBoundingBox();

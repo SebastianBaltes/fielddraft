@@ -72,11 +72,29 @@ import { publishSketchCamera } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import { getHoveredElement, getHoveredElementOfKind } from "./brepPickBridge";
 import { pickSketchAtRay } from "./sketchPickBridge";
-import { pickSketchLineAtRay } from "./sketchLinePickBridge";
-import { mapPickToQuery, filterAllows, filterAllowsSketchLine, elementQueryString, resolveElementClick } from "./elementQuery";
-import { CONTROLS_PRESETS, isAdditiveClick, type ControlsPresetId } from "./controlsPreset";
+import {
+  pickSketchLineAtRay,
+  setHoveredSketchLine,
+} from "./sketchLinePickBridge";
+import {
+  mapPickToQuery,
+  filterAllows,
+  filterAllowsSketchLine,
+  elementQueryString,
+  resolveElementClick,
+} from "./elementQuery";
+import {
+  CONTROLS_PRESETS,
+  isAdditiveClick,
+  type ControlsPresetId,
+} from "./controlsPreset";
 import { setGpuInfo, type GpuInfo } from "./telemetry";
-import { bodiesInRect, elementsInRect, type NdcRect, type ProjectFn } from "./boxSelect";
+import {
+  bodiesInRect,
+  elementsInRect,
+  type NdcRect,
+  type ProjectFn,
+} from "./boxSelect";
 
 const BUILD_VOLUME_SIZE = 600;
 
@@ -95,16 +113,10 @@ function PickProbe({ ndc, onPick }: PickProbeProps) {
       onPick(null);
       return;
     }
-    raycaster.current.setFromCamera(
-      new THREE.Vector2(ndc.x, ndc.y),
-      camera,
-    );
+    raycaster.current.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
     const o = raycaster.current.ray.origin;
     const d = raycaster.current.ray.direction;
-    const result = store.kernel.pick(
-      [o.x, o.y, o.z],
-      [d.x, d.y, d.z],
-    );
+    const result = store.kernel.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
     onPick(result);
   });
 
@@ -134,7 +146,9 @@ function Scene({ ndc, onPick, renderMode, brepEdgeMode }: SceneProps) {
   return (
     <>
       {renderMode === "sdf-vm" && <SdfVmOverlay brepEdgeMode={brepEdgeMode} />}
-      {renderMode === "sdf-deferred" && <SdfDeferredOverlay brepEdgeMode={brepEdgeMode} />}
+      {renderMode === "sdf-deferred" && (
+        <SdfDeferredOverlay brepEdgeMode={brepEdgeMode} />
+      )}
       {renderMode === "mesh" && <MeshPreview />}
       {renderMode === "brep" && <BRepMeshPreview />}
       <CameraBridgePublisher />
@@ -164,7 +178,10 @@ interface CanvasBoundaryProps {
 interface CanvasBoundaryState {
   error: Error | null;
 }
-class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryState> {
+class CanvasErrorBoundary extends Component<
+  CanvasBoundaryProps,
+  CanvasBoundaryState
+> {
   state: CanvasBoundaryState = { error: null };
   static getDerivedStateFromError(error: Error): CanvasBoundaryState {
     return { error };
@@ -175,9 +192,7 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
   render() {
     if (this.state.error) {
       return (
-        <div className="error">
-          viewport error: {this.state.error.message}
-        </div>
+        <div className="error">viewport error: {this.state.error.message}</div>
       );
     }
     return this.props.children;
@@ -188,7 +203,10 @@ class CanvasErrorBoundary extends Component<CanvasBoundaryProps, CanvasBoundaryS
  *  kernel's bodies — cheap (face lists are tiny) and only runs on the
  *  escalation click (ticket evq2). */
 function findBodyIndexForFace(
-  kernel: { bodyCount(): number; bodyBrepFaces(i: number): { idHash: string }[] },
+  kernel: {
+    bodyCount(): number;
+    bodyBrepFaces(i: number): { idHash: string }[];
+  },
   idHash: string,
 ): number | null {
   const count = kernel.bodyCount();
@@ -252,7 +270,12 @@ const SNAPSHOT_PICK_REJECT_MSG =
 
 function tryQueryPick(
   click: PickResult | null,
-  store: { kernel: { bodyCount(): number; bodyBrepFaces(i: number): { branchId: number; idHash: string }[] } } | null,
+  store: {
+    kernel: {
+      bodyCount(): number;
+      bodyBrepFaces(i: number): { branchId: number; idHash: string }[];
+    };
+  } | null,
   datumAtRay?: () => string | null,
   onReject?: (msg: string) => void,
   sketchLineAtRay?: () => { sketchId: number; lineId: number } | null,
@@ -268,7 +291,9 @@ function tryQueryPick(
   const anyContributorAllowed = (): boolean => {
     if (!picker.selectableFeatureIds) return true;
     if (!click || !click.hit) return false;
-    return click.contributors.some((c: number) => picker.selectableFeatureIds!.has(c));
+    return click.contributors.some((c: number) =>
+      picker.selectableFeatureIds!.has(c),
+    );
   };
 
   // Single snapshot gate: a click on geometry whose features are ALL later
@@ -292,7 +317,8 @@ function tryQueryPick(
   // Runs after the B-Rep hover path so a hovered edge still wins.
   if (sketchLineAtRay && filterAllowsSketchLine(picker.entityFilter)) {
     const hit = sketchLineAtRay();
-    if (hit) return picker.onPick(`qSketchLine(${hit.sketchId}, ${hit.lineId})`);
+    if (hit)
+      return picker.onPick(`qSketchLine(${hit.sketchId}, ${hit.lineId})`);
   }
 
   // Click-time face resolution (tickets yx6a/bxoo): the hover overlay
@@ -342,13 +368,29 @@ function tryQueryPick(
 }
 
 function handleIkClick(
-  store: { runIK(opts: { position: [number, number, number]; endEffectorPartId: string; endEffectorConnectorId: number }): void },
-  state: { assembly: { document: { mates: { type: string }[]; parts: { id: string; mateConnectors: { featureId: number }[] }[] } } },
+  store: {
+    runIK(opts: {
+      position: [number, number, number];
+      endEffectorPartId: string;
+      endEffectorConnectorId: number;
+    }): void;
+  },
+  state: {
+    assembly: {
+      document: {
+        mates: { type: string }[];
+        parts: { id: string; mateConnectors: { featureId: number }[] }[];
+      };
+    };
+  },
   click: PickHit,
 ): void {
-  const revMates = state.assembly.document.mates.filter((m) => m.type === "revolute");
+  const revMates = state.assembly.document.mates.filter(
+    (m) => m.type === "revolute",
+  );
   if (revMates.length === 0) return;
-  const lastPart = state.assembly.document.parts[state.assembly.document.parts.length - 1];
+  const lastPart =
+    state.assembly.document.parts[state.assembly.document.parts.length - 1];
   if (!lastPart || lastPart.mateConnectors.length === 0) return;
   store.runIK({
     position: click.point,
@@ -369,14 +411,19 @@ function handleMateClick(
   const hovered = getHoveredElement();
   const query = hovered ? mapPickToQuery(hovered, "FACE") : null;
   if (!query) {
-    store.showTransientError("Mate connector needs a face — hover a B-Rep face and click.");
+    store.showTransientError(
+      "Mate connector needs a face — hover a B-Rep face and click.",
+    );
     return;
   }
   store.addMateConnectorAtFace(query);
 }
 
 function handleFilletClick(
-  store: { addFilletAtEdge(edgeQuery: string, r?: number): void; showTransientError(msg: string): void },
+  store: {
+    addFilletAtEdge(edgeQuery: string, r?: number): void;
+    showTransientError(msg: string): void;
+  },
   _click: PickResult | null,
 ): void {
   // DL-61: a fillet selects a B-Rep EDGE by query. Use the edge the
@@ -385,20 +432,29 @@ function handleFilletClick(
   const edge = getHoveredElementOfKind("edge");
   const query = edge ? elementQueryString(edge) : null;
   if (!query) {
-    store.showTransientError("Fillet needs an edge — hover a B-Rep edge and click.");
+    store.showTransientError(
+      "Fillet needs an edge — hover a B-Rep edge and click.",
+    );
     return;
   }
   store.addFilletAtEdge(query);
 }
 
-type MeasurePoints = { a: [number, number, number]; b?: [number, number, number] } | null;
+type MeasurePoints = {
+  a: [number, number, number];
+  b?: [number, number, number];
+} | null;
 
 function handleMeasureClick(
   click: PickHit,
   measurePoints: MeasurePoints,
   setMeasurePoints: (pts: MeasurePoints) => void,
 ): void {
-  const pt: [number, number, number] = [click.point[0], click.point[1], click.point[2]];
+  const pt: [number, number, number] = [
+    click.point[0],
+    click.point[1],
+    click.point[2],
+  ];
   if (!measurePoints || measurePoints.b) {
     setMeasurePoints({ a: pt });
   } else {
@@ -448,7 +504,13 @@ function handleSelectionClick(
  * container measures width>0 && height>0 (react-three-fiber Canvas gate), so a
  * 0×0 container silently renders nothing.
  */
-function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: ControlsPresetId; brepEdgeMode: BRepEdgeMode }) {
+function WebGLViewport({
+  controlsPreset,
+  brepEdgeMode,
+}: {
+  controlsPreset: ControlsPresetId;
+  brepEdgeMode: BRepEdgeMode;
+}) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const { store, state } = useKernelStore();
 
@@ -459,7 +521,9 @@ function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: Contr
   // through the same `tryQueryPick` datum path the WebGPU viewport uses; the
   // ray comes from the pick camera this viewport now publishes (see the rAF
   // loop). Non-picker clicks are left alone (WebGL selection is out of scope).
-  const handleQueryPickClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+  const handleQueryPickClick = (
+    event: React.MouseEvent<HTMLDivElement>,
+  ): void => {
     if (!store || !getActiveQueryPicker()) return;
     const datumAtRay = (): string | null => {
       const ray = rayAtMouse(event, wrapRef.current);
@@ -470,7 +534,9 @@ function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: Contr
         state?.hiddenDatums ?? new Set<string>(),
       );
     };
-    tryQueryPick(null, store, datumAtRay, (msg) => store.showTransientError(msg));
+    tryQueryPick(null, store, datumAtRay, (msg) =>
+      store.showTransientError(msg),
+    );
   };
   // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
   // body. When those are available we render them (booleans visible); until the
@@ -539,7 +605,11 @@ function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: Contr
   }, []);
 
   return (
-    <div ref={wrapRef} style={{ position: "absolute", inset: 0 }} onClick={handleQueryPickClick}>
+    <div
+      ref={wrapRef}
+      style={{ position: "absolute", inset: 0 }}
+      onClick={handleQueryPickClick}
+    >
       <Canvas
         frameloop="never"
         camera={{ position: [200, 200, 200], fov: 45, near: 1, far: 4000 }}
@@ -589,7 +659,10 @@ function WebGLViewport({ controlsPreset, brepEdgeMode }: { controlsPreset: Contr
             classic LineSegments on this backend (the fat-line path is
             WebGPU-only). The WebGL viewport has no host-pointer hover, so the
             ndc is inactive — the base wireframe still draws. */}
-        <BRepEdgeOverlay ndc={{ x: 0, y: 0, active: false }} mode={brepEdgeMode} />
+        <BRepEdgeOverlay
+          ndc={{ x: 0, y: 0, active: false }}
+          mode={brepEdgeMode}
+        />
         <gridHelper args={[BUILD_VOLUME_SIZE, 30, "#b8b8ae", "#d6d6ce"]} />
         {/* Ticket owia: use the SAME preset-aware controls as the WebGPU path
             (CameraRig applies the active controlsPreset's mouseButtons). A bare
@@ -625,11 +698,24 @@ const WEBGPU_NO_API: WebGpuError = {
 // pipeline. Same user-facing remedy for both.
 const WEBGPU_NO_ADAPTER: WebGpuError = {
   title: "No WebGPU graphics adapter is available on this system.",
-  detail:
-    `Your browser exposes WebGPU but couldn’t initialize a GPU, and FieldDraft has no WebGL fallback. ${WEBGPU_HINT_LINUX}`,
+  detail: `Your browser exposes WebGPU but couldn’t initialize a GPU, and FieldDraft has no WebGL fallback. ${WEBGPU_HINT_LINUX}`,
 };
 
-export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, showOctreeCells, controlsPreset }: { renderMode: string; brepEdgeMode: BRepEdgeMode; frameLoop: FrameLoopMode; showEdgePoints: boolean; showOctreeCells: boolean; controlsPreset: ControlsPresetId }) {
+export function Viewport({
+  renderMode,
+  brepEdgeMode,
+  frameLoop,
+  showEdgePoints,
+  showOctreeCells,
+  controlsPreset,
+}: {
+  renderMode: string;
+  brepEdgeMode: BRepEdgeMode;
+  frameLoop: FrameLoopMode;
+  showEdgePoints: boolean;
+  showOctreeCells: boolean;
+  controlsPreset: ControlsPresetId;
+}) {
   const { store, state } = useKernelStore();
   const suppressBrepOverlays = state?.gizmoDragSuppressed ?? false;
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -669,13 +755,23 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
   // The live rectangle lives in a REF (read synchronously by pointerup —
   // a fast drag finishes before React commits state) and is mirrored into
   // state purely to render the overlay.
-  const boxRectRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const [boxRect, setBoxRect] = useState<
-    { x0: number; y0: number; x1: number; y1: number } | null
-  >(null);
+  const boxRectRef = useRef<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
+  const [boxRect, setBoxRect] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
   const suppressClickRef = useRef(false);
 
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  const handlePointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): void => {
     const host = hostRef.current;
     if (!host) return;
     const rect = host.getBoundingClientRect();
@@ -684,12 +780,45 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     const y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
     setNdc({ x, y, active: true });
 
+    // fs23: while a query field that accepts sketch lines is armed, publish the
+    // sketch line under the cursor so the committed-sketch overlay highlights
+    // it — the "potential target" affordance. A hovered B-Rep element wins only
+    // when it is itself a VALID target for this filter (e.g. a hovered edge for
+    // an EDGE,SKETCHLINE axis) — a face the filter rejects must not block the
+    // sketch line behind it. Cleared whenever no picker/line applies.
+    const picker = getActiveQueryPicker();
+    if (picker && filterAllowsSketchLine(picker.entityFilter)) {
+      const hov = getHoveredElement();
+      const brepWins =
+        hov !== null && filterAllows(hov.kind, picker.entityFilter);
+      const ray = brepWins
+        ? null
+        : rayAtMouse(
+            event as unknown as React.MouseEvent<HTMLDivElement>,
+            host,
+          );
+      const camera = getPublishedPickCamera();
+      setHoveredSketchLine(
+        ray ? pickSketchLineAtRay(ray, camera ?? undefined, rect.height) : null,
+      );
+    } else {
+      setHoveredSketchLine(null);
+    }
+
     const drag = boxDragRef.current;
     if (drag) {
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
-      if (boxRectRef.current !== null || Math.hypot(px - drag.startX, py - drag.startY) > 4) {
-        boxRectRef.current = { x0: drag.startX, y0: drag.startY, x1: px, y1: py };
+      if (
+        boxRectRef.current !== null ||
+        Math.hypot(px - drag.startX, py - drag.startY) > 4
+      ) {
+        boxRectRef.current = {
+          x0: drag.startX,
+          y0: drag.startY,
+          x1: px,
+          y1: py,
+        };
         setBoxRect(boxRectRef.current);
       }
     }
@@ -698,9 +827,12 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
   const handlePointerLeave = (): void => {
     setNdc((prev) => ({ ...prev, active: false }));
     setPickResult(null);
+    setHoveredSketchLine(null); // fs23: drop the sketch-line hover highlight
   };
 
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  const handlePointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): void => {
     if (!store || event.button !== 0) return;
     const selection = CONTROLS_PRESETS[controlsPreset].selection;
     if (!selection.boxSelect) return;
@@ -716,7 +848,11 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
       return;
     // …and only from EMPTY space: nothing hovered, nothing under the ray.
     if (getHoveredElement()) return;
-    const click = pickAtMouse(event as unknown as React.MouseEvent<HTMLDivElement>, hostRef.current, store);
+    const click = pickAtMouse(
+      event as unknown as React.MouseEvent<HTMLDivElement>,
+      hostRef.current,
+      store,
+    );
     if (click?.hit) return;
     const host = hostRef.current;
     if (!host) return;
@@ -769,9 +905,13 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     };
     // Onshape's implicit multi-select accumulates box selections too; the
     // other presets replace unless their additive modifier is held.
-    const additive = selection.implicitMultiSelect || isAdditiveClick(selection, event);
+    const additive =
+      selection.implicitMultiSelect || isAdditiveClick(selection, event);
     if (selection.mode === "element") {
-      store.applyBoxSelection(elementsInRect(store.kernel, project, ndcRect, mode), additive);
+      store.applyBoxSelection(
+        elementsInRect(store.kernel, project, ndcRect, mode),
+        additive,
+      );
     } else {
       const ids = bodiesInRect(store.kernel, project, ndcRect, mode)
         .map((i) => store.kernel.bodySeedFeatureId(i))
@@ -808,9 +948,18 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
         state?.hiddenDatums ?? new Set<string>(),
       );
     };
-    const sketchLineAtClick = (): { sketchId: number; lineId: number } | null => {
+    const sketchLineAtClick = (): {
+      sketchId: number;
+      lineId: number;
+    } | null => {
       const ray = rayAtMouse(event, hostRef.current);
-      return ray ? pickSketchLineAtRay(ray) : null;
+      if (!ray) return null;
+      // fs23: zoom-aware tolerance — pass the live camera + viewport height so
+      // a sketch line is pickable at any model scale (the old fixed 0.5 mm
+      // radius was sub-pixel on metre-scale models).
+      const camera = getPublishedPickCamera();
+      const h = hostRef.current?.getBoundingClientRect().height ?? 0;
+      return pickSketchLineAtRay(ray, camera ?? undefined, h);
     };
     if (
       tryQueryPick(
@@ -822,9 +971,27 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
       )
     )
       return;
-    if (state?.ikMode && state?.assembly.active && click?.hit) { handleIkClick(store, state, click); return; }
-    if (state?.mateMode && click?.hit) { handleMateClick(store, click); return; }
-    if (state?.filletMode) { handleFilletClick(store, click); return; }
+    // fs23: a query field is armed and the click did NOT resolve to a valid
+    // pick (missed the target, or the filter rejected it). That is a no-op —
+    // NOT a feature-deselect, which would clear the selection and close the
+    // Detail view the picker lives in. Swallow the click so the field stays
+    // armed for the next attempt.
+    if (getActiveQueryPicker()) {
+      invalidateCanvas();
+      return;
+    }
+    if (state?.ikMode && state?.assembly.active && click?.hit) {
+      handleIkClick(store, state, click);
+      return;
+    }
+    if (state?.mateMode && click?.hit) {
+      handleMateClick(store, click);
+      return;
+    }
+    if (state?.filletMode) {
+      handleFilletClick(store, click);
+      return;
+    }
     if (state?.measureMode && click?.hit) {
       handleMeasureClick(click, measurePoints, setMeasurePoints);
       return;
@@ -920,8 +1087,25 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
     if (!store) return;
     const kind = e.dataTransfer.getData("fielddraft/primitive");
     if (kind) {
-      type PrimName = "box" | "sphere" | "cylinder" | "torus" | "cone" | "capsule" | "hex_prism" | "ellipsoid";
-      const valid: PrimName[] = ["box", "sphere", "cylinder", "torus", "cone", "capsule", "hex_prism", "ellipsoid"];
+      type PrimName =
+        | "box"
+        | "sphere"
+        | "cylinder"
+        | "torus"
+        | "cone"
+        | "capsule"
+        | "hex_prism"
+        | "ellipsoid";
+      const valid: PrimName[] = [
+        "box",
+        "sphere",
+        "cylinder",
+        "torus",
+        "cone",
+        "capsule",
+        "hex_prism",
+        "ellipsoid",
+      ];
       const translate: [number, number, number] | undefined = pickResult?.hit
         ? [pickResult.point[0], pickResult.point[1], pickResult.point[2]]
         : undefined;
@@ -1012,8 +1196,8 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
         <div
           className={
             "select-rect" +
-            (CONTROLS_PRESETS[controlsPreset].selection.boxSelect === "window-crossing" &&
-            boxRect.x1 < boxRect.x0
+            (CONTROLS_PRESETS[controlsPreset].selection.boxSelect ===
+              "window-crossing" && boxRect.x1 < boxRect.x0
               ? " is-crossing"
               : "")
           }
@@ -1025,125 +1209,154 @@ export function Viewport({ renderMode, brepEdgeMode, frameLoop, showEdgePoints, 
           }}
         />
       )}
-      {isWebGL && <WebGLViewport controlsPreset={controlsPreset} brepEdgeMode={brepEdgeMode} />}
+      {isWebGL && (
+        <WebGLViewport
+          controlsPreset={controlsPreset}
+          brepEdgeMode={brepEdgeMode}
+        />
+      )}
       {!isWebGL && (
-      <CanvasErrorBoundary>
-        <Canvas
-          shadows={false}
-          frameloop={frameLoop}
-          camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
-          gl={async (props) => {
-            const { WebGPURenderer } = await import("three/webgpu");
+        <CanvasErrorBoundary>
+          <Canvas
+            shadows={false}
+            frameloop={frameLoop}
+            camera={{ position: [350, 280, 350], fov: 45, near: 1, far: 4000 }}
+            gl={async (props) => {
+              const { WebGPURenderer } = await import("three/webgpu");
 
-            // WebGPU capability gate. `navigator.gpu` only proves the *API*
-            // exists; a machine can expose it yet have no usable adapter
-            // (WebGPU disabled by flag, missing Vulkan driver, blocklisted
-            // GPU). In that case WebGPURenderer.init() silently falls back to a
-            // WebGL2 backend that can't run our compute/storage-buffer SDF
-            // pipeline — the user then sees a storm of shader errors instead of
-            // a clear message. So we probe for an adapter up front and, belt
-            // and braces, verify the live backend after init.
-            if (!navigator.gpu) {
-              setWebgpuError(WEBGPU_NO_API);
-              throw new Error("WebGPU unavailable: navigator.gpu is undefined");
-            }
-            let adapter: Awaited<ReturnType<typeof navigator.gpu.requestAdapter>> = null;
-            try {
-              adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-            } catch {
-              adapter = null;
-            }
-            if (!adapter) {
-              setWebgpuError(WEBGPU_NO_ADAPTER);
-              throw new Error("WebGPU unavailable: no adapter (navigator.gpu.requestAdapter returned null)");
-            }
-
-            // Telemetry: capture the GPU identity (vendor/architecture) and a
-            // couple of limits so a session can be bucketed into a hardware
-            // tier. Best-effort — never let it block renderer creation.
-            try {
-              const info = (adapter as unknown as { info?: Partial<GpuInfo> }).info;
-              setGpuInfo({
-                vendor: info?.vendor ?? "",
-                architecture: info?.architecture ?? "",
-                device: info?.device ?? "",
-                description: info?.description ?? "",
-                isFallback: (adapter as unknown as { isFallbackAdapter?: boolean }).isFallbackAdapter ?? false,
-                maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-                maxComputeInvocationsPerWorkgroup: adapter.limits.maxComputeInvocationsPerWorkgroup,
-              });
-            } catch {
-              // adapter.info / limits unavailable on this implementation.
-            }
-
-            const renderer = new WebGPURenderer({
-              ...(props as object),
-              antialias: true,
-            });
-            await renderer.init();
-
-            // Guard against three's silent WebGL2 fallback: if the live backend
-            // isn't WebGPU, our SDF pipeline can't run — surface the same
-            // message rather than render a broken scene.
-            const backend = (renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend;
-            if (backend?.isWebGPUBackend !== true) {
-              renderer.dispose();
-              setWebgpuError(WEBGPU_NO_ADAPTER);
-              throw new Error("WebGPU unavailable: backend fell back to WebGL");
-            }
-
-            (window as any).__threeRenderer = renderer;
-            rendererRef.current = renderer;
-
-            const canvas = (props as any).canvas as HTMLCanvasElement;
-            const parent = canvas.parentElement;
-            if (parent) {
-              const { width, height } = parent.getBoundingClientRect();
-              if (width > 0 && height > 0) {
-                renderer.setSize(width, height, false);
+              // WebGPU capability gate. `navigator.gpu` only proves the *API*
+              // exists; a machine can expose it yet have no usable adapter
+              // (WebGPU disabled by flag, missing Vulkan driver, blocklisted
+              // GPU). In that case WebGPURenderer.init() silently falls back to a
+              // WebGL2 backend that can't run our compute/storage-buffer SDF
+              // pipeline — the user then sees a storm of shader errors instead of
+              // a clear message. So we probe for an adapter up front and, belt
+              // and braces, verify the live backend after init.
+              if (!navigator.gpu) {
+                setWebgpuError(WEBGPU_NO_API);
+                throw new Error(
+                  "WebGPU unavailable: navigator.gpu is undefined",
+                );
               }
-            }
-            return renderer;
-          }}
-          onCreated={() => {
-            // Gate the scene graph until the renderer is fully created.
-            // With an async `gl` factory, children that commit before the
-            // renderer/scene are ready never attach to the live scene and
-            // stay invisible (planes, grid and mesh all missing on boot).
-            // Mounting them only after `onCreated` guarantees they land in
-            // the ready scene.
-            setCanvasReady(true);
-          }}
-        >
-          {canvasReady && (
-            <>
-              <ClearColorSync />
-              <Scene ndc={ndc} onPick={setPickResult} renderMode={renderMode} brepEdgeMode={brepEdgeMode} />
-              <ReferenceMesh />
-              {/* All B-Rep overlays hide during a suppressed gizmo drag:
+              let adapter: Awaited<
+                ReturnType<typeof navigator.gpu.requestAdapter>
+              > = null;
+              try {
+                adapter = await navigator.gpu.requestAdapter({
+                  powerPreference: "high-performance",
+                });
+              } catch {
+                adapter = null;
+              }
+              if (!adapter) {
+                setWebgpuError(WEBGPU_NO_ADAPTER);
+                throw new Error(
+                  "WebGPU unavailable: no adapter (navigator.gpu.requestAdapter returned null)",
+                );
+              }
+
+              // Telemetry: capture the GPU identity (vendor/architecture) and a
+              // couple of limits so a session can be bucketed into a hardware
+              // tier. Best-effort — never let it block renderer creation.
+              try {
+                const info = (adapter as unknown as { info?: Partial<GpuInfo> })
+                  .info;
+                setGpuInfo({
+                  vendor: info?.vendor ?? "",
+                  architecture: info?.architecture ?? "",
+                  device: info?.device ?? "",
+                  description: info?.description ?? "",
+                  isFallback:
+                    (adapter as unknown as { isFallbackAdapter?: boolean })
+                      .isFallbackAdapter ?? false,
+                  maxStorageBufferBindingSize:
+                    adapter.limits.maxStorageBufferBindingSize,
+                  maxComputeInvocationsPerWorkgroup:
+                    adapter.limits.maxComputeInvocationsPerWorkgroup,
+                });
+              } catch {
+                // adapter.info / limits unavailable on this implementation.
+              }
+
+              const renderer = new WebGPURenderer({
+                ...(props as object),
+                antialias: true,
+              });
+              await renderer.init();
+
+              // Guard against three's silent WebGL2 fallback: if the live backend
+              // isn't WebGPU, our SDF pipeline can't run — surface the same
+              // message rather than render a broken scene.
+              const backend = (
+                renderer as unknown as {
+                  backend?: { isWebGPUBackend?: boolean };
+                }
+              ).backend;
+              if (backend?.isWebGPUBackend !== true) {
+                renderer.dispose();
+                setWebgpuError(WEBGPU_NO_ADAPTER);
+                throw new Error(
+                  "WebGPU unavailable: backend fell back to WebGL",
+                );
+              }
+
+              (window as any).__threeRenderer = renderer;
+              rendererRef.current = renderer;
+
+              const canvas = (props as any).canvas as HTMLCanvasElement;
+              const parent = canvas.parentElement;
+              if (parent) {
+                const { width, height } = parent.getBoundingClientRect();
+                if (width > 0 && height > 0) {
+                  renderer.setSize(width, height, false);
+                }
+              }
+              return renderer;
+            }}
+            onCreated={() => {
+              // Gate the scene graph until the renderer is fully created.
+              // With an async `gl` factory, children that commit before the
+              // renderer/scene are ready never attach to the live scene and
+              // stay invisible (planes, grid and mesh all missing on boot).
+              // Mounting them only after `onCreated` guarantees they land in
+              // the ready scene.
+              setCanvasReady(true);
+            }}
+          >
+            {canvasReady && (
+              <>
+                <ClearColorSync />
+                <Scene
+                  ndc={ndc}
+                  onPick={setPickResult}
+                  renderMode={renderMode}
+                  brepEdgeMode={brepEdgeMode}
+                />
+                <ReferenceMesh />
+                {/* All B-Rep overlays hide during a suppressed gizmo drag:
                   the kernel serves no fresh weave then, and even cached
                   edges only refresh per 50ms commit — they'd trail the
                   drag. They remount (and refetch) on release. */}
-              {!suppressBrepOverlays && (
-                <>
-                  <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
-                  {showEdgePoints && <BRepEdgePointsOverlay />}
-                  {showOctreeCells && <OctreeCellOverlay />}
-                  <BRepSelectionOverlay ndc={ndc} />
-                  <BRepSelectedOverlay />
-                  <BodyHighlightOverlay />
-                </>
-              )}
-              <MateConnectorOverlay />
-              <AssemblyParts />
-              <WorldGrid />
-              <CameraRig preset={controlsPreset} />
-              <ViewCommandConsumer />
-              <CameraQuaternionBridge />
-            </>
-          )}
-        </Canvas>
-      </CanvasErrorBoundary>
+                {!suppressBrepOverlays && (
+                  <>
+                    <BRepEdgeOverlay ndc={ndc} mode={brepEdgeMode} />
+                    {showEdgePoints && <BRepEdgePointsOverlay />}
+                    {showOctreeCells && <OctreeCellOverlay />}
+                    <BRepSelectionOverlay ndc={ndc} />
+                    <BRepSelectedOverlay />
+                    <BodyHighlightOverlay />
+                  </>
+                )}
+                <MateConnectorOverlay />
+                <AssemblyParts />
+                <WorldGrid />
+                <CameraRig preset={controlsPreset} />
+                <ViewCommandConsumer />
+                <CameraQuaternionBridge />
+              </>
+            )}
+          </Canvas>
+        </CanvasErrorBoundary>
       )}
       {/* The cube stays up during a sketch session — the camera is the
           normal 3D camera there too (sketch-in-3D), and "look straight at
