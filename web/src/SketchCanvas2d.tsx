@@ -2170,7 +2170,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     }
     recentLineRef.current = session.subCalls.length;
     store.pushSketchSubCalls(calls);
-    cancelPendingLine();
+    // Ticket daa8: chain — instead of ending, start a NEW rubber-band line from
+    // the just-placed endpoint, coincident with it, so clicking repeatedly draws
+    // a connected polyline (Esc / tool switch / re-clicking Line ends it via the
+    // tool-change effect + the spline/line Escape handlers).
+    dragRef.current = {
+      kind: "pending_line",
+      start: [current[0], current[1]],
+      current: [current[0], current[1]],
+      startAnchorId: ids.end,
+    };
+    lastCamVersionRef.current = -1;
     scheduleSolverReplay();
     return true;
   };

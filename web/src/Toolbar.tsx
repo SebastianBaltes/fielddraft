@@ -709,6 +709,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
   };
 
   const handleSketchToolPick = (typeName: string) => {
+    // Ticket daa8: re-clicking the ACTIVE tool detaches it (back to select
+    // mode) — this is how the user ends a chained Line/polyline, and matches
+    // the toggle convention of the other sketch tools.
+    if (sketchSession.selectedTool === typeName) {
+      store.selectSketchTool(null);
+      return;
+    }
     try {
       const schema = fd.schemaForSketchToolType(typeName);
       store.selectSketchTool(typeName, buildDefaultDefinition(schema));
