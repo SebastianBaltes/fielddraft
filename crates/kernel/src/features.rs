@@ -3538,8 +3538,29 @@ impl FeatureKind for RevolveFeature {
             None => (sketch, base_transform),
             Some((a, b)) => {
                 let (m, m_inv) = revolve_axis_alignment(a, b);
-                let aligned = transform_sketch_2d(sketch, &m);
-                (aligned, crate::compose_transforms(&base_transform, &m_inv))
+                let aligned = transform_sketch_2d(sketch.clone(), &m);
+                // The revolve SDF folds every query to radius √(x²+z²) ≥ 0 and
+                // tests the profile there, so a profile that the axis-alignment
+                // lands on the NEGATIVE-x side is never reached → an EMPTY solid
+                // (tickets a204/ifn2: the SDF/deferred show only the B-Rep edges,
+                // never a surface; only the WebGL lathe mesh — independent of the
+                // SDF — looked right). Reversing the axis direction flips the
+                // profile onto +x: the SAME revolve line, hence the SAME world
+                // solid (the matching M⁻¹ places it back), so pick whichever
+                // orientation lands the profile on +x.
+                if crate::sketch2d::BoundedSketch2d::from_sketch(&aligned)
+                    .aabb()
+                    .max[0]
+                    <= 0.0
+                {
+                    let (m2, m_inv2) = revolve_axis_alignment(b, a);
+                    (
+                        transform_sketch_2d(sketch, &m2),
+                        crate::compose_transforms(&base_transform, &m_inv2),
+                    )
+                } else {
+                    (aligned, crate::compose_transforms(&base_transform, &m_inv))
+                }
             }
         };
 
