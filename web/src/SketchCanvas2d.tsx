@@ -2052,6 +2052,19 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         anchor: null,
         coincidentTargetId: null,
       };
+    } else if (dragRef.current.kind === "spline") {
+      // Ticket 8vpe: rubber-band the spline preview to the cursor on EVERY
+      // move — including while dragging (button held) after the first point —
+      // so the curve continuously follows the pointer, not only between clicks.
+      const snap = resolveSnap(
+        [u, v],
+        session,
+        null,
+        e.shiftKey,
+        projectedEdgesRef.current,
+      );
+      snapRef.current = snap;
+      dragRef.current = { ...dragRef.current, current: snap.snapped };
     } else {
       // Hover path: show a preview point with snap magnetism so
       // the user sees the same feedback a click-to-place would
