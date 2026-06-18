@@ -55,6 +55,7 @@ import {
   DIMENSION_TYPES_BY_SPECIFICITY,
 } from "./sketchConstraints";
 import { logUserAction } from "./userActionLog";
+import { resolveCornerFillet } from "./sketchCorner";
 import { buildLineLengthEdit } from "./sketchLiveInput";
 import {
   computeTrim,
@@ -3455,6 +3456,31 @@ export class KernelStore {
     this.replaceSketchSubCalls(rewritten);
     void solveAndReplace(this);
     return true;
+  }
+
+  /**
+   * Tickets tqi4 / chfp: single-CLICK corner fillet. Resolve the corner under
+   * the cursor — exploding a Polygon / N-gon / Rectangle into lines if needed —
+   * then fillet the two line edges that meet there. No-op when no corner is
+   * close enough.
+   */
+  filletCornerAt(point: [number, number], radius: number, tolMm: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const r = resolveCornerFillet(session.subCalls, point, tolMm);
+    if (!r) return;
+    if (r.exploded) this.replaceSketchSubCalls(r.subCalls);
+    this.filletSketchAt(r.i1, r.i2, radius);
+  }
+
+  /** Tickets tqi4 / chfp: single-CLICK corner chamfer (see filletCornerAt). */
+  chamferCornerAt(point: [number, number], dist: number, tolMm: number): void {
+    const session = this.state.sketchSession;
+    if (!session.active) return;
+    const r = resolveCornerFillet(session.subCalls, point, tolMm);
+    if (!r) return;
+    if (r.exploded) this.replaceSketchSubCalls(r.subCalls);
+    this.chamferSketchAt(r.i1, r.i2, dist);
   }
 
   /** F15: set the distance (mm) the single-click `sketch_offset` tool

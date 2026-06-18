@@ -1426,49 +1426,26 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       lastCamVersionRef.current = -1;
       return;
     }
-    // Fillet: two-click flow. Each click picks the line sub-call nearest
-    // the cursor (line-only — composites aren't filleted here). The first
-    // pick is held pending in `filletFirstRef`; the second pick applies
-    // the fillet with the current radius and clears the pending state.
+    // Fillet (tickets tqi4/chfp): single CLICK on a CORNER rounds it. The
+    // corner under the cursor resolves to the two line edges meeting there —
+    // exploding a Polygon / N-gon / Rectangle into lines first if needed — and
+    // the fillet applies with the current radius. A generous corner tolerance
+    // (vertices are small targets).
     if (session.selectedTool === "sketch_fillet") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      if (pick !== null) {
-        const first = filletFirstRef.current;
-        if (first === null || first === pick) {
-          filletFirstRef.current = pick;
-        } else {
-          store.filletSketchAt(
-            first,
-            pick,
-            store.getState().sketchFilletRadius,
-          );
-          filletFirstRef.current = null;
-        }
-      }
+      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
+      store.filletCornerAt([u, v], store.getState().sketchFilletRadius, tolMm);
       lastCamVersionRef.current = -1;
       return;
     }
-    // Chamfer: two-click flow. Each click picks the line sub-call nearest
-    // the cursor (line-only — composites aren't chamfered here). The first
-    // pick is held pending in `chamferFirstRef`; the second pick applies
-    // the chamfer with the current setback and clears the pending state.
+    // Chamfer (tickets tqi4/chfp): single CLICK on a corner bevels it — same
+    // corner resolution as fillet, applied with the current setback distance.
     if (session.selectedTool === "sketch_chamfer") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
-      const pick = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      if (pick !== null) {
-        const first = chamferFirstRef.current;
-        if (first === null || first === pick) {
-          chamferFirstRef.current = pick;
-        } else {
-          store.chamferSketchAt(
-            first,
-            pick,
-            store.getState().sketchChamferDistance,
-          );
-          chamferFirstRef.current = null;
-        }
-      }
+      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
+      store.chamferCornerAt(
+        [u, v],
+        store.getState().sketchChamferDistance,
+        tolMm,
+      );
       lastCamVersionRef.current = -1;
       return;
     }
