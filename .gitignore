@@ -56,3 +56,6 @@ CLAUDE.md.bak*
 
 # Large research PDFs — kept local only, not in git history
 /docs/Literatur/
+
+# Compiled Go server binary (build artifact — was accidentally tracked)
+/server/server
