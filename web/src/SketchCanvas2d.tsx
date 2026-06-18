@@ -2120,9 +2120,14 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
-    // Ticket czqf: while the Mirror tool is armed, highlight the line under the
-    // cursor as the axis candidate so the user sees what a click will pick.
-    if (session.selectedTool === "sketch_mirror") {
+    // Highlight the line under the cursor as a pick candidate while the Mirror
+    // tool (czqf) OR a constraint tool — e.g. Dimension (7lxk) — is armed, so
+    // the user sees what a click will target. (Point hover comes from the snap
+    // dot above.)
+    if (
+      session.selectedTool === "sketch_mirror" ||
+      isConstraintTool(session.selectedTool)
+    ) {
       const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
       const idx = nearestLineSubCall(session.subCalls, [u, v], tolMm);
       const cv = idx !== null ? curveOfSubCall(session.subCalls[idx]) : null;
@@ -3546,6 +3551,18 @@ function drawOverlay(
         offsetPx: [0, 10],
       });
     }
+
+    // Ticket 7lxk: render every distance dimension as a Maßlinie — extension
+    // lines, an offset dimension line with arrowheads, and the value — so a
+    // dimension placed by the Dimension tool is actually visible (not just a
+    // DoF change). Onshape-style. Drawn on the 2D overlay in screen space.
+    for (const c of skState.constraints) {
+      if (c.kind !== "distance") continue;
+      const pa = entityPos(c.a);
+      const pb = entityPos(c.b);
+      if (!pa || !pb) continue;
+      drawLinearDimension(ctx, pa, pb, c.value_mm, cam);
+    }
   }
 
   // Dimension readouts. The recent-line readout is click-to-edit (hit-tested
@@ -3649,6 +3666,80 @@ function drawMarquee(
  * label sprite mirrors the same offset). `null` for a (near) zero-length
  * screen segment.
  */
+/**
+ * Ticket 7lxk: draw a linear dimension (Maßlinie) between two sketch points —
+ * extension lines, an offset dimension line with arrowheads, and the value
+ * label — directly on the 2D overlay in screen space. Onshape-style.
+ */
+function drawLinearDimension(
+  ctx: CanvasRenderingContext2D,
+  aUv: [number, number],
+  bUv: [number, number],
+  valueMm: number,
+  cam: Readonly<SketchCameraState>,
+): void {
+  const [ax, ay] = sketchToScreen(aUv[0], aUv[1], cam);
+  const [bx, by] = sketchToScreen(bUv[0], bUv[1], cam);
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len < 2) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  // Perpendicular (screen-left of a→b); offset the dimension line outward.
+  const nx = -uy;
+  const ny = ux;
+  const OFF = 24;
+  const a2: [number, number] = [ax + nx * OFF, ay + ny * OFF];
+  const b2: [number, number] = [bx + nx * OFF, by + ny * OFF];
+
+  ctx.save();
+  ctx.strokeStyle = LABEL_DIM;
+  ctx.fillStyle = LABEL_DIM;
+  ctx.lineWidth = 1;
+
+  // Extension lines from each measured point, slightly past the dim line.
+  ctx.beginPath();
+  ctx.moveTo(ax + nx * 3, ay + ny * 3);
+  ctx.lineTo(a2[0] + nx * 4, a2[1] + ny * 4);
+  ctx.moveTo(bx + nx * 3, by + ny * 3);
+  ctx.lineTo(b2[0] + nx * 4, b2[1] + ny * 4);
+  ctx.stroke();
+
+  // Dimension line + arrowheads pointing outward at each end.
+  ctx.beginPath();
+  ctx.moveTo(a2[0], a2[1]);
+  ctx.lineTo(b2[0], b2[1]);
+  ctx.stroke();
+  const arrow = (p: [number, number], dirx: number, diry: number) => {
+    const s = 7;
+    const px = -diry;
+    const py = dirx;
+    ctx.beginPath();
+    ctx.moveTo(p[0], p[1]);
+    ctx.lineTo(p[0] + dirx * s + px * 2.6, p[1] + diry * s + py * 2.6);
+    ctx.lineTo(p[0] + dirx * s - px * 2.6, p[1] + diry * s - py * 2.6);
+    ctx.closePath();
+    ctx.fill();
+  };
+  arrow(a2, ux, uy);
+  arrow(b2, -ux, -uy);
+
+  // Value label at the dim-line midpoint, on a small readable background.
+  const text = valueMm.toFixed(2);
+  const mx = (a2[0] + b2[0]) / 2;
+  const my = (a2[1] + b2[1]) / 2;
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 8;
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillRect(mx - w / 2, my - 9, w, 18);
+  ctx.fillStyle = LABEL_DIM;
+  ctx.fillText(text, mx, my);
+  ctx.restore();
+}
+
 function distanceLabelAnchorPx(
   start: [number, number],
   end: [number, number],
