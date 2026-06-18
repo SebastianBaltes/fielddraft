@@ -42,17 +42,26 @@ interface KernelLike {
   bodyVolumeDims(i: number, v: number): [number, number, number];
 }
 
-function collectBodyVolumes(k: KernelLike, bodyIndex: number): BodyVolumes | undefined {
+function collectBodyVolumes(
+  k: KernelLike,
+  bodyIndex: number,
+): BodyVolumes | undefined {
   const volCount = k.bodyVolumeCount(bodyIndex);
   if (volCount === 0) return undefined;
   const volumes: BodyVolumes = [];
   for (let v = 0; v < volCount; v++) {
-    volumes.push({ data: k.bodyVolumeDataView(bodyIndex, v), dims: k.bodyVolumeDims(bodyIndex, v) });
+    volumes.push({
+      data: k.bodyVolumeDataView(bodyIndex, v),
+      dims: k.bodyVolumeDims(bodyIndex, v),
+    });
   }
   return volumes;
 }
 
-function computeFingerprints(k: KernelLike, count: number): { volumeFp: string; structFp: string; dataFp: string } {
+function computeFingerprints(
+  k: KernelLike,
+  count: number,
+): { volumeFp: string; structFp: string; dataFp: string } {
   let totalVolumes = 0;
   const structParts: (string | number)[] = [count];
   const dataParts: number[] = [];
@@ -62,7 +71,11 @@ function computeFingerprints(k: KernelLike, count: number): { volumeFp: string; 
     structParts.push(k.bodyId(i), k.bodySdfOpcodesView(i).length, volCount);
     dataParts.push(k.bodyVersion(i));
   }
-  return { volumeFp: String(totalVolumes), structFp: structParts.join(","), dataFp: dataParts.join(",") };
+  return {
+    volumeFp: String(totalVolumes),
+    structFp: structParts.join(","),
+    dataFp: dataParts.join(","),
+  };
 }
 
 function showCompilationStatus(text: string): void {
@@ -82,7 +95,8 @@ function showGpuError(err: unknown): void {
   const label = document.getElementById("fd-shader-compiling-label");
   const spinnerEl = overlay?.querySelector(".spinner") as HTMLElement | null;
   if (spinnerEl) spinnerEl.style.display = "none";
-  if (label) label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
+  if (label)
+    label.textContent = `GPU error: ${err instanceof Error ? err.message : String(err)}`;
   if (overlay) {
     overlay.style.display = "flex";
     overlay.style.opacity = "1";
@@ -159,16 +173,21 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
 
     const { volumeFp, structFp, dataFp } = computeFingerprints(k, count);
     const needsCompile = volumeFp !== volumeFpRef.current;
-    const needsDataUpdate = !needsCompile && (structFp + dataFp) !== dataFpRef.current;
+    const needsDataUpdate =
+      !needsCompile && structFp + dataFp !== dataFpRef.current;
 
     if (needsCompile && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
 
       const bodies = [];
       for (let i = 0; i < count; i++) {
-        bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
+        bodies.push({
+          bodyIndex: i,
+          opcodes: copyOpcodes(k, i),
+          volumes: collectBodyVolumes(k, i),
+        });
       }
-      rebuildVmBodies(pipeline, bodies);
+      rebuildVmBodies(pipeline, bodies, renderer as unknown as WebGPURenderer);
       volumeFpRef.current = volumeFp;
       dataFpRef.current = structFp + dataFp;
 
@@ -198,7 +217,11 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
     if (needsDataUpdate && readyRef.current && !compilingRef.current) {
       const bodies = [];
       for (let i = 0; i < count; i++) {
-        bodies.push({ bodyIndex: i, opcodes: copyOpcodes(k, i), volumes: collectBodyVolumes(k, i) });
+        bodies.push({
+          bodyIndex: i,
+          opcodes: copyOpcodes(k, i),
+          volumes: collectBodyVolumes(k, i),
+        });
       }
       updateVmData(pipeline, bodies);
       dataFpRef.current = structFp + dataFp;
@@ -209,7 +232,11 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
     // resolve+GPU upload behind that so a static scene doesn't re-upload the
     // material buffer every frame.
     const featuresArr = store.getState().features;
-    if (featuresArr !== matFeaturesRef.current || needsCompile || needsDataUpdate) {
+    if (
+      featuresArr !== matFeaturesRef.current ||
+      needsCompile ||
+      needsDataUpdate
+    ) {
       const vmMaterials = resolveMaterials(k, featuresArr);
       applyMaterials(pipeline, vmMaterials, count);
       matFeaturesRef.current = featuresArr;
@@ -227,8 +254,11 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
     ) => probeVmSdf(pipeline, wgpuRenderer, points, bodyIndex);
 
     try {
-      renderOverlayLayer(wgpuRenderer, scene, camera, () =>
-        renderVmFrame(pipeline, wgpuRenderer, camera),
+      renderOverlayLayer(
+        wgpuRenderer,
+        scene,
+        camera,
+        () => renderVmFrame(pipeline, wgpuRenderer, camera),
         brepEdgeMode === "visible",
       );
     } catch (err) {
@@ -246,7 +276,11 @@ export function SdfVmOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
   return null;
 }
 
-export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMode }) {
+export function SdfDeferredOverlay({
+  brepEdgeMode,
+}: {
+  brepEdgeMode: BRepEdgeMode;
+}) {
   const { store } = useKernelStore();
   const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
@@ -314,8 +348,15 @@ export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMod
     if (needsRebuild && !compilingRef.current) {
       showCompilationStatus("Building SDF…");
 
-      rebuildDeferredBodies(pipeline, collectDeferredBodies());
-      rebuildShadeMaterialIfNeeded(pipeline);
+      rebuildDeferredBodies(
+        pipeline,
+        collectDeferredBodies(),
+        renderer as unknown as WebGPURenderer,
+      );
+      rebuildShadeMaterialIfNeeded(
+        pipeline,
+        renderer as unknown as WebGPURenderer,
+      );
       structFpRef.current = structFp;
       dataFpRef.current = dataFp;
 
@@ -347,12 +388,15 @@ export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMod
       dataFpRef.current = dataFp;
     }
 
-
     const storeState = store.getState();
 
     // Re-resolve + re-upload materials only when the feature list changed or
     // geometry rebuilt/updated this frame — not on every static frame.
-    if (storeState.features !== matFeaturesRef.current || needsRebuild || needsDataUpdate) {
+    if (
+      storeState.features !== matFeaturesRef.current ||
+      needsRebuild ||
+      needsDataUpdate
+    ) {
       const materials = resolveMaterials(k, storeState.features);
       applyMaterials(pipeline, materials, count);
       matFeaturesRef.current = storeState.features;
@@ -374,8 +418,11 @@ export function SdfDeferredOverlay({ brepEdgeMode }: { brepEdgeMode: BRepEdgeMod
 
     const wgpuRenderer = renderer as unknown as WebGPURenderer;
     try {
-      renderOverlayLayer(wgpuRenderer, scene, camera, () =>
-        renderDeferredFrame(pipeline, wgpuRenderer, camera),
+      renderOverlayLayer(
+        wgpuRenderer,
+        scene,
+        camera,
+        () => renderDeferredFrame(pipeline, wgpuRenderer, camera),
         brepEdgeMode === "visible",
       );
     } catch (err) {

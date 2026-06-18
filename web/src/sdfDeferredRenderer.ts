@@ -53,17 +53,24 @@ import { MeshBasicNodeMaterial, StorageBufferAttribute } from "three/webgpu";
 import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import { buildHelixGeometry, decodeHelixParams } from "./helixMesh";
 import { buildSweepGeometry } from "./sweepMesh";
-import { subdivideAlongAxis, applyWarp, warpAxis, maxStepForWarp } from "./warpMesh";
+import {
+  subdivideAlongAxis,
+  applyWarp,
+  warpAxis,
+  maxStepForWarp,
+} from "./warpMesh";
 import type { HybridInfo, HybridLeafInfo } from "./kernel";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
+  disposeAfterGpuIdle,
   packOpcodes,
   packMarchRelax,
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
-  MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
+  MAT_DISPLACE_DEPTH,
+  MAT_DISPLACE_FREQ,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
   shadeSdfHit,
@@ -85,16 +92,18 @@ export const BODY_COLORS: [number, number, number][] = [
   [0.55, 0.65, 0.85],
   [0.65, 0.85, 0.55],
   [0.85, 0.55, 0.65],
-  [0.85, 0.75, 0.50],
-  [0.55, 0.80, 0.80],
+  [0.85, 0.75, 0.5],
+  [0.55, 0.8, 0.8],
   [0.75, 0.55, 0.85],
   [0.85, 0.85, 0.55],
-  [0.55, 0.70, 0.70],
+  [0.55, 0.7, 0.7],
 ];
 
 // ── Primitive mesh factory ─────────────────────────────────────────
 
-export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+export function createPrimitiveGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   const p = leaf.params;
   switch (leaf.kind) {
     case "box":
@@ -125,7 +134,9 @@ export function createPrimitiveGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
   }
 }
 
-function createExtrudeGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+function createExtrudeGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   const contour = leaf.contour;
   if (!contour || contour.outer.length < 3) return null;
   const halfHeight = leaf.params[0];
@@ -145,19 +156,25 @@ function createExtrudeGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | nul
   return geo;
 }
 
-function createRevolveGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+function createRevolveGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   const contour = leaf.contour;
   if (!contour || contour.outer.length < 3) return null;
   const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
   return new THREE.LatheGeometry(points, 48);
 }
 
-function createHelixGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+function createHelixGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   if (!leaf.contour) return null;
   return buildHelixGeometry(leaf.contour, decodeHelixParams(leaf.params));
 }
 
-function createSweepGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+function createSweepGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   if (!leaf.contour || !leaf.sweep) return null;
   return buildSweepGeometry(leaf.sweep.points, leaf.contour, {
     closed: leaf.sweep.closed,
@@ -184,7 +201,10 @@ export function leafWorldMatrix(leaf: HybridLeafInfo): THREE.Matrix4 {
   return new THREE.Matrix4().compose(translate, quat, scale);
 }
 
-export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void {
+export function applyLeafTransform(
+  mesh: THREE.Mesh,
+  leaf: HybridLeafInfo,
+): void {
   mesh.matrixAutoUpdate = false;
   mesh.matrix.copy(leafWorldMatrix(leaf));
   mesh.matrixWorldNeedsUpdate = true;
@@ -197,7 +217,9 @@ export function applyLeafTransform(mesh: THREE.Mesh, leaf: HybridLeafInfo): void
  * carries an IDENTITY transform (do NOT call applyLeafTransform on it).
  * Returns null for a leaf with no warp or no meshable primitive.
  */
-export function buildWarpedLeafGeometry(leaf: HybridLeafInfo): THREE.BufferGeometry | null {
+export function buildWarpedLeafGeometry(
+  leaf: HybridLeafInfo,
+): THREE.BufferGeometry | null {
   if (!leaf.warp) return null;
   const geo = createPrimitiveGeometry(leaf);
   if (!geo) return null;
@@ -208,14 +230,21 @@ export function buildWarpedLeafGeometry(leaf: HybridLeafInfo): THREE.BufferGeome
   return geo;
 }
 
-function getCenterOffset(leaf: HybridLeafInfo): [number, number, number] | null {
+function getCenterOffset(
+  leaf: HybridLeafInfo,
+): [number, number, number] | null {
   const p = leaf.params;
   switch (leaf.kind) {
-    case "box": return [p[3], p[4], p[5]];
-    case "sphere": return [p[1], p[2], p[3]];
-    case "cylinder": return [p[2], p[3], p[4]];
-    case "torus": return [p[2], p[3], p[4]];
-    default: return null;
+    case "box":
+      return [p[3], p[4], p[5]];
+    case "sphere":
+      return [p[1], p[2], p[3]];
+    case "cylinder":
+      return [p[2], p[3], p[4]];
+    case "torus":
+      return [p[2], p[3], p[4]];
+    default:
+      return null;
   }
 }
 
@@ -297,7 +326,7 @@ function createTransparentGBufferMaterial(
     const word1Idx = word0Idx.add(1);
     const encodedId = uint(bodyIndex + 1);
     const oldWord0 = atomicAdd(bodyIdBuf.element(word0Idx), uint(0x10000));
-    const oldCount = bitAnd(shiftRight(oldWord0, uint(16)), uint(0xFFFF));
+    const oldCount = bitAnd(shiftRight(oldWord0, uint(16)), uint(0xffff));
     If(oldCount.equal(uint(0)), () => {
       atomicOr(bodyIdBuf.element(word0Idx), encodedId);
     });
@@ -362,13 +391,24 @@ function createShadeMaterial(
     withVolumeBaseIdx: volumeTextures.length > 0,
   });
 
-  const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
-    const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
+  const sdfEval = (args: {
+    p: any;
+    baseOffset: any;
+    volumeBaseIdx: any;
+    bodyIdx?: any;
+  }) => {
+    const d = sdfEvalRaw({
+      p: args.p,
+      baseOffset: args.baseOffset,
+      volumeBaseIdx: args.volumeBaseIdx,
+    });
     if (!args.bodyIdx) return d;
     const matBase = args.bodyIdx.mul(MAT_STRIDE);
     const depth = materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
     const freq = materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
-    const disp = args.p.x.mul(freq).sin()
+    const disp = args.p.x
+      .mul(freq)
+      .sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
     return d.sub(depth.mul(disp));
@@ -377,7 +417,12 @@ function createShadeMaterial(
   const evalBodySdf = (p: any, bodyIdx: any, minD: any, closestBody: any) => {
     const baseOff = int(offsetBuf.element(bodyIdx.mul(2)));
     const volBase = int(volumeBaseBuf.element(bodyIdx));
-    const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
+    const d = sdfEval({
+      p,
+      baseOffset: baseOff,
+      volumeBaseIdx: volBase,
+      bodyIdx,
+    });
     If(d.lessThan(minD), () => {
       minD.assign(d);
       closestBody.assign(bodyIdx);
@@ -400,9 +445,12 @@ function createShadeMaterial(
     const word1Idx = word0Idx.add(1);
     const word0 = atomicLoad(bodyIdBuf.element(word0Idx)).toVar();
     const word1 = atomicLoad(bodyIdBuf.element(word1Idx)).toVar();
-    const transCount = min(bitAnd(shiftRight(word0, uint(16)), uint(0xFFFF)), uint(2)).toVar();
-    const transId0 = bitAnd(word0, uint(0xFFFF)).toVar();
-    const transId1 = bitAnd(word1, uint(0xFFFF)).toVar();
+    const transCount = min(
+      bitAnd(shiftRight(word0, uint(16)), uint(0xffff)),
+      uint(2),
+    ).toVar();
+    const transId0 = bitAnd(word0, uint(0xffff)).toVar();
+    const transId1 = bitAnd(word1, uint(0xffff)).toVar();
     const hasTrans = transCount.greaterThan(uint(0));
 
     const shadePos = vec3(0, 0, 0).toVar();
@@ -421,12 +469,19 @@ function createShadeMaterial(
         If(hasOpaque, () => {
           const opaqueDist = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
           const opaqueBodyEncoded = uint(int(opaqueTag.sub(0.5)).add(1));
-          const opaqueIsAlsoTrans = transId0.equal(opaqueBodyEncoded).or(
-            transCount.greaterThanEqual(uint(2)).and(transId1.equal(opaqueBodyEncoded)),
+          const opaqueIsAlsoTrans = transId0
+            .equal(opaqueBodyEncoded)
+            .or(
+              transCount
+                .greaterThanEqual(uint(2))
+                .and(transId1.equal(opaqueBodyEncoded)),
+            );
+          If(
+            opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()),
+            () => {
+              tMax.assign(min(tMax, opaqueDist));
+            },
           );
-          If(opaqueDist.greaterThan(float(0)).and(opaqueIsAlsoTrans.not()), () => {
-            tMax.assign(min(tMax, opaqueDist));
-          });
         });
 
         const t = float(0).toVar();
@@ -455,21 +510,35 @@ function createShadeMaterial(
           // Per-body conservative step (Ticket 1wnm): a thin-walled
           // revolve/shell declares march_relax < 1 so the ray doesn't overshoot
           // its wall at grazing angles; simple primitives keep 1.0.
-          t.addAssign(max(minD.mul(marchRelaxBuf.element(closestBody)), float(SURFACE_EPS)));
-          If(t.greaterThan(tMax), () => { Break(); });
+          t.addAssign(
+            max(
+              minD.mul(marchRelaxBuf.element(closestBody)),
+              float(SURFACE_EPS),
+            ),
+          );
+          If(t.greaterThan(tMax), () => {
+            Break();
+          });
         });
 
         const opaqueBodyEncoded2 = uint(int(opaqueTag.sub(0.5)).add(1));
-        const opaqueIsAlsoTrans = transId0.equal(opaqueBodyEncoded2).or(
-          transCount.greaterThanEqual(uint(2)).and(transId1.equal(opaqueBodyEncoded2)),
-        );
+        const opaqueIsAlsoTrans = transId0
+          .equal(opaqueBodyEncoded2)
+          .or(
+            transCount
+              .greaterThanEqual(uint(2))
+              .and(transId1.equal(opaqueBodyEncoded2)),
+          );
         const opaqueDist2 = opaqueGbuf.xyz.sub(transWorldPos).dot(rd);
 
         If(hit.greaterThan(float(0.5)), () => {
-          If(hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)), () => {
-            shadePos.assign(opaqueGbuf.xyz);
-            shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
-          }).Else(() => {
+          If(
+            hasOpaque.and(opaqueIsAlsoTrans.not()).and(opaqueDist2.lessThan(t)),
+            () => {
+              shadePos.assign(opaqueGbuf.xyz);
+              shadeBodyIdx.assign(int(opaqueTag.sub(0.5)));
+            },
+          ).Else(() => {
             shadePos.assign(hitPos);
             shadeBodyIdx.assign(hitBody);
           });
@@ -500,17 +569,19 @@ function createShadeMaterial(
       // shared SDF pipeline. The view direction points from the shaded
       // surface point back to the camera.
       const viewDirWorld = normalize(camPosU.sub(shadePos));
-      result.assign(shadeSdfHit({
-        p: shadePos,
-        bi: shadeBodyIdx,
-        offsetBuf,
-        volumeBaseBuf,
-        materialBuf,
-        viewMatU,
-        viewDirWorld,
-        sdfEval,
-        selectionBuf,
-      }));
+      result.assign(
+        shadeSdfHit({
+          p: shadePos,
+          bi: shadeBodyIdx,
+          offsetBuf,
+          volumeBaseBuf,
+          materialBuf,
+          viewMatU,
+          viewDirWorld,
+          sdfEval,
+          selectionBuf,
+        }),
+      );
     });
 
     // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
@@ -556,7 +627,11 @@ export function initDeferredPipeline(
       depthBuffer: true,
     };
     if (withDepthTex) {
-      opts.depthTexture = new THREE.DepthTexture(width, height, THREE.FloatType);
+      opts.depthTexture = new THREE.DepthTexture(
+        width,
+        height,
+        THREE.FloatType,
+      );
     }
     return new THREE.WebGLRenderTarget(width, height, opts);
   };
@@ -593,7 +668,7 @@ export function initDeferredPipeline(
 
   const bodyIdCount = MAX_PIXELS * BODY_ID_WORDS_PER_PIXEL;
   const bodyIdAttr = new StorageBufferAttribute(bodyIdCount, 1, Uint32Array);
-  const bodyIdBuf = storage(bodyIdAttr, 'uint', bodyIdCount).toAtomic();
+  const bodyIdBuf = storage(bodyIdAttr, "uint", bodyIdCount).toAtomic();
   const clearNode = Fn(() => {
     atomicStore(bodyIdBuf.element(instanceIndex), uint(0));
   })().compute(width * height * BODY_ID_WORDS_PER_PIXEL);
@@ -677,7 +752,13 @@ export function updateDeferredData(
     marchRelax?: number;
   }[],
 ): void {
-  const ranges = packOpcodes(state.opcodeData, state.offsetData, bodies, DEFERRED_MAX_OPCODES, MAX_BODIES);
+  const ranges = packOpcodes(
+    state.opcodeData,
+    state.offsetData,
+    bodies,
+    DEFERRED_MAX_OPCODES,
+    MAX_BODIES,
+  );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
   packMarchRelax(state.marchRelaxData, bodies, MAX_BODIES);
@@ -695,15 +776,15 @@ export function updateDeferredData(
       for (const m of meshes) {
         if (m.userData.isAabb) {
           const bodyAABB = aabb
-            ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+            ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
             : computeLeafAABB(hybridInfo.leaves);
           if (bodyAABB) {
             const pad = 0.5;
             m.geometry.dispose();
             m.geometry = new THREE.BoxGeometry(
-              (bodyAABB[3] - bodyAABB[0]) + pad * 2,
-              (bodyAABB[4] - bodyAABB[1]) + pad * 2,
-              (bodyAABB[5] - bodyAABB[2]) + pad * 2,
+              bodyAABB[3] - bodyAABB[0] + pad * 2,
+              bodyAABB[4] - bodyAABB[1] + pad * 2,
+              bodyAABB[5] - bodyAABB[2] + pad * 2,
             );
             m.position.set(
               (bodyAABB[0] + bodyAABB[3]) * 0.5,
@@ -721,7 +802,12 @@ export function updateDeferredData(
     updateMeshList(backMeshes);
   }
 
-  updateVolumeData(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+  updateVolumeData(
+    state.volumeTextures,
+    state.volumeBaseData,
+    bodies,
+    MAX_BODIES,
+  );
   state.volumeBaseAttr.needsUpdate = true;
 }
 
@@ -746,33 +832,61 @@ export function rebuildDeferredBodies(
     aabb?: Float32Array;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
+  renderer?: THREE.WebGPURenderer,
 ): void {
+  // Ticket fg9o: detach the retired meshes from their scenes NOW (they stop
+  // rendering immediately) but defer the geometry/material/texture GPU disposal
+  // until the device confirms it's done with every in-flight submit. Destroying
+  // them synchronously raced the previous frame's submit → "Buffer used in
+  // submit while destroyed" → frozen device.
+  const retired: {
+    geometry: THREE.BufferGeometry;
+    material?: THREE.Material;
+  }[] = [];
   for (const meshes of state.bodyOpaqueMeshes.values()) {
     for (const m of meshes) {
       state.opaqueScene.remove(m);
-      m.geometry.dispose();
-      (m.material as THREE.Material).dispose();
+      retired.push({
+        geometry: m.geometry,
+        material: m.material as THREE.Material,
+      });
     }
   }
   for (const meshes of state.bodyTransparentMeshes.values()) {
     for (const m of meshes) {
       state.transparentScene.remove(m);
-      m.geometry.dispose();
-      (m.material as THREE.Material).dispose();
+      retired.push({
+        geometry: m.geometry,
+        material: m.material as THREE.Material,
+      });
     }
   }
   for (const meshes of state.bodyBackMeshes.values()) {
     for (const m of meshes) {
       state.transparentBackScene.remove(m);
-      m.geometry.dispose();
+      retired.push({ geometry: m.geometry });
     }
   }
+  const retiredTextures = state.volumeTextures;
+  disposeAfterGpuIdle(renderer, () => {
+    for (const r of retired) {
+      r.geometry.dispose();
+      r.material?.dispose();
+    }
+    for (const tex of retiredTextures) tex.dispose();
+  });
   state.bodyOpaqueMeshes.clear();
   state.bodyTransparentMeshes.clear();
   state.bodyBackMeshes.clear();
   state.bodyOpcodeRanges.clear();
 
-  const ranges = packOpcodes(state.opcodeData, state.offsetData, bodies, DEFERRED_MAX_OPCODES, MAX_BODIES);
+  const ranges = packOpcodes(
+    state.opcodeData,
+    state.offsetData,
+    bodies,
+    DEFERRED_MAX_OPCODES,
+    MAX_BODIES,
+  );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
   for (const [bi, range] of ranges) state.bodyOpcodeRanges.set(bi, range);
@@ -783,7 +897,9 @@ export function rebuildDeferredBodies(
 
     const gbufMaterial = createGBufferMaterial(bodyIndex);
     const transMat = createTransparentGBufferMaterial(
-      bodyIndex, state.bodyIdBuf, state.widthU,
+      bodyIndex,
+      state.bodyIdBuf,
+      state.widthU,
     );
     const opaqueMeshes: THREE.Mesh[] = [];
     const transMeshes: THREE.Mesh[] = [];
@@ -791,12 +907,17 @@ export function rebuildDeferredBodies(
 
     if (hybridInfo.needs_full_sdf) {
       const bodyAABB = aabb
-        ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+        ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
         : computeLeafAABB(hybridInfo.leaves);
       if (bodyAABB) {
         addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
         transMeshes[transMeshes.length - 1].userData.isAabb = true;
-        addAabbBox(bodyAABB, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+        addAabbBox(
+          bodyAABB,
+          state.backFaceMaterial,
+          state.transparentBackScene,
+          backMeshes,
+        );
         backMeshes[backMeshes.length - 1].userData.isAabb = true;
       }
     } else {
@@ -845,14 +966,23 @@ export function rebuildDeferredBodies(
         }
       }
 
-      if (opaqueMeshes.length === 0 && transMeshes.length === 0 && opcodes.length > 0) {
+      if (
+        opaqueMeshes.length === 0 &&
+        transMeshes.length === 0 &&
+        opcodes.length > 0
+      ) {
         const bodyAABB = aabb
-          ? [aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const
+          ? ([aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]] as const)
           : computeLeafAABB(hybridInfo.leaves);
         if (bodyAABB) {
           addAabbBox(bodyAABB, transMat, state.transparentScene, transMeshes);
           transMeshes[transMeshes.length - 1].userData.isAabb = true;
-          addAabbBox(bodyAABB, state.backFaceMaterial, state.transparentBackScene, backMeshes);
+          addAabbBox(
+            bodyAABB,
+            state.backFaceMaterial,
+            state.transparentBackScene,
+            backMeshes,
+          );
           backMeshes[backMeshes.length - 1].userData.isAabb = true;
         }
       }
@@ -864,7 +994,11 @@ export function rebuildDeferredBodies(
   }
 
   const { textures, countChanged } = rebuildVolumeTextures(
-    state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES,
+    state.volumeTextures,
+    state.volumeBaseData,
+    bodies,
+    MAX_BODIES,
+    false, // old textures disposed via disposeAfterGpuIdle above (ticket fg9o)
   );
   state.volumeTextures = textures;
   state.volumeBaseAttr.needsUpdate = true;
@@ -878,9 +1012,9 @@ function addAabbBox(
   meshes: THREE.Mesh[],
 ): void {
   const pad = 0.5;
-  const sx = (aabb[3] - aabb[0]) + pad * 2;
-  const sy = (aabb[4] - aabb[1]) + pad * 2;
-  const sz = (aabb[5] - aabb[2]) + pad * 2;
+  const sx = aabb[3] - aabb[0] + pad * 2;
+  const sy = aabb[4] - aabb[1] + pad * 2;
+  const sz = aabb[5] - aabb[2] + pad * 2;
   const geo = new THREE.BoxGeometry(sx, sy, sz);
   const mesh = new THREE.Mesh(geo, material);
   mesh.position.set(
@@ -897,8 +1031,12 @@ function computeLeafAABB(
   leaves: HybridLeafInfo[],
 ): [number, number, number, number, number, number] | null {
   if (leaves.length === 0) return null;
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
   for (const leaf of leaves) {
     const a = leaf.aabb;
     if (a[0] < minX) minX = a[0];
@@ -913,13 +1051,22 @@ function computeLeafAABB(
 
 // ── Shade material rebuild (when volume texture count changes) ──────
 
-export function rebuildShadeMaterialIfNeeded(state: DeferredPipelineState): void {
+export function rebuildShadeMaterialIfNeeded(
+  state: DeferredPipelineState,
+  renderer?: THREE.WebGPURenderer,
+): void {
   if (!state.needsShadeRebuild) return;
   state.needsShadeRebuild = false;
 
-  state.shadeMaterial.dispose();
-  const oldMesh = state.shadeScene.children[0];
+  // Ticket fg9o: the shade material runs in the per-frame shade pass — detach
+  // it now, dispose only once the GPU is done with the frames that used it.
+  const oldShadeMaterial = state.shadeMaterial;
+  const oldMesh = state.shadeScene.children[0] as THREE.Mesh | undefined;
   if (oldMesh) state.shadeScene.remove(oldMesh);
+  disposeAfterGpuIdle(renderer, () => {
+    oldShadeMaterial.dispose();
+    oldMesh?.geometry.dispose();
+  });
 
   state.shadeMaterial = createShadeMaterial(
     state.opaqueRT.texture,

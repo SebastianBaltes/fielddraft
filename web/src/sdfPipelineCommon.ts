@@ -175,6 +175,38 @@ export function packOpcodes(
   return ranges;
 }
 
+// ── Race-free GPU resource disposal ────────────────────────────────
+
+/**
+ * Dispose GPU-backed three.js resources only AFTER the WebGPU device has
+ * finished every submit queued up to *now*. Destroying a buffer/texture/material
+ * that an in-flight submit still references trips WebGPU's
+ * "[Buffer] used in submit while destroyed" validation error, which kills the
+ * device and freezes the app (ticket fg9o).
+ *
+ * `queue.onSubmittedWorkDone()` resolves once all work submitted before this
+ * call completes. Any work queued afterwards is built against the NEW resources,
+ * so once the promise resolves the retired ones are provably unreferenced and
+ * safe to destroy — regardless of how slow the raymarch shader is. This is
+ * strictly correct where the earlier "defer disposal by one rebuild" heuristic
+ * was not: under a heavy shader the GPU can still be mid-flight on the previous
+ * frame when the next rebuild fires, so a fixed one-cycle delay still raced.
+ *
+ * Falls back to synchronous disposal if the device/queue isn't reachable (WebGL
+ * backend, or teardown after the renderer is gone).
+ */
+export function disposeAfterGpuIdle(
+  renderer: unknown,
+  dispose: () => void,
+): void {
+  const queue = (renderer as any)?.backend?.device?.queue;
+  if (queue && typeof queue.onSubmittedWorkDone === "function") {
+    queue.onSubmittedWorkDone().then(dispose, dispose);
+  } else {
+    dispose();
+  }
+}
+
 // ── Shared volume texture helpers ──────────────────────────────────
 
 export function createVolumeTexture(

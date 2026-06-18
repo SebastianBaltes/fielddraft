@@ -33,6 +33,7 @@ import { buildVmSdfEvalFn } from "./sdfVmInterpreter";
 import {
   createMaterialBuffers,
   createOpcodeBuffers,
+  disposeAfterGpuIdle,
   packOpcodes,
   updateVolumeData,
   rebuildVolumeTextures,
@@ -76,15 +77,6 @@ export interface VmPipelineState {
   viewMatU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
-  // Ticket fg9o: GPU resources retired by the PREVIOUS rebuild, disposed only
-  // at the NEXT rebuild — by which time many frames have rendered, so the GPU
-  // is long done with them. Disposing them synchronously raced an in-flight
-  // submit ("Buffer used in submit while destroyed" → freeze).
-  pendingDispose?: {
-    material: MeshBasicNodeMaterial | null;
-    mesh: THREE.Mesh | null;
-    textures: THREE.Data3DTexture[];
-  };
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -153,6 +145,7 @@ export function rebuildVmBodies(
     opcodes: Float32Array;
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
+  renderer?: THREE.WebGPURenderer,
 ): void {
   packOpcodes(
     state.opcodeData,
@@ -164,11 +157,11 @@ export function rebuildVmBodies(
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
 
-  // Ticket fg9o: dispose the resources retired by the PREVIOUS rebuild first
-  // (the GPU has long finished with them), THEN retire the current ones for
-  // disposal at the NEXT rebuild — never destroy a resource that an in-flight
-  // submit might still reference.
-  flushPendingDispose(state);
+  // Ticket fg9o: capture the resources this rebuild retires and dispose them
+  // only once the GPU confirms it's done with every in-flight submit that may
+  // still reference them (disposeAfterGpuIdle). Destroying them synchronously
+  // raced the previous frame's submit → "Buffer used in submit while destroyed"
+  // → frozen device.
   const oldTextures = state.volumeTextures;
   const oldMaterial = state.material;
   const oldMesh = state.mesh;
@@ -178,33 +171,23 @@ export function rebuildVmBodies(
     state.volumeBaseData,
     bodies,
     MAX_BODIES,
-    false, // defer texture disposal (see pendingDispose)
+    false, // defer texture disposal until the GPU is idle (see below)
   );
   state.volumeTextures = textures;
   state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
 
   if (oldMesh) state.scene.remove(oldMesh);
-  state.pendingDispose = {
-    material: oldMaterial,
-    mesh: oldMesh,
-    textures: oldTextures,
-  };
+  disposeAfterGpuIdle(renderer, () => {
+    oldMaterial?.dispose();
+    oldMesh?.geometry.dispose();
+    for (const tex of oldTextures) tex.dispose();
+  });
 
   state.material = createVmMaterial(state);
   state.mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), state.material);
   state.mesh.frustumCulled = false;
   state.scene.add(state.mesh);
-}
-
-/** Dispose the GPU resources retired by the previous rebuild (ticket fg9o). */
-function flushPendingDispose(state: VmPipelineState): void {
-  const pd = state.pendingDispose;
-  if (!pd) return;
-  state.pendingDispose = undefined;
-  pd.material?.dispose();
-  pd.mesh?.geometry.dispose();
-  for (const tex of pd.textures) tex.dispose();
 }
 
 // ── Material ────────────────────────────────────────────────────────
@@ -448,7 +431,6 @@ export async function probeVmSdf(
 // ── Dispose ─────────────────────────────────────────────────────────
 
 export function disposeVmPipeline(state: VmPipelineState): void {
-  flushPendingDispose(state); // ticket fg9o
   if (state.material) state.material.dispose();
   if (state.mesh) state.mesh.geometry.dispose();
   for (const tex of state.volumeTextures) tex.dispose();
