@@ -89,7 +89,10 @@ export function createMaterialBuffers(maxBodies: number): MaterialBufferSet {
   return { materialData, materialAttr, materialBuf };
 }
 
-export function createOpcodeBuffers(maxOpcodes: number, maxBodies: number): OpcodeBufferSet {
+export function createOpcodeBuffers(
+  maxOpcodes: number,
+  maxBodies: number,
+): OpcodeBufferSet {
   const opcodeAttr = new StorageBufferAttribute(maxOpcodes, 1);
   const opcodeData = opcodeAttr.array as Float32Array;
   const opcodeBuf = storage(opcodeAttr, "float", maxOpcodes).toReadOnly();
@@ -101,18 +104,34 @@ export function createOpcodeBuffers(maxOpcodes: number, maxBodies: number): Opco
 
   const volumeBaseAttr = new StorageBufferAttribute(maxBodies, 1);
   const volumeBaseData = volumeBaseAttr.array as Float32Array;
-  const volumeBaseBuf = storage(volumeBaseAttr, "float", maxBodies).toReadOnly();
+  const volumeBaseBuf = storage(
+    volumeBaseAttr,
+    "float",
+    maxBodies,
+  ).toReadOnly();
 
   const marchRelaxAttr = new StorageBufferAttribute(maxBodies, 1);
   const marchRelaxData = marchRelaxAttr.array as Float32Array;
   marchRelaxData.fill(1); // full step until a body declares a conservative factor
-  const marchRelaxBuf = storage(marchRelaxAttr, "float", maxBodies).toReadOnly();
+  const marchRelaxBuf = storage(
+    marchRelaxAttr,
+    "float",
+    maxBodies,
+  ).toReadOnly();
 
   return {
-    opcodeData, opcodeAttr, opcodeBuf,
-    offsetData, offsetAttr, offsetBuf,
-    volumeBaseData, volumeBaseAttr, volumeBaseBuf,
-    marchRelaxData, marchRelaxAttr, marchRelaxBuf,
+    opcodeData,
+    opcodeAttr,
+    opcodeBuf,
+    offsetData,
+    offsetAttr,
+    offsetBuf,
+    volumeBaseData,
+    volumeBaseAttr,
+    volumeBaseBuf,
+    marchRelaxData,
+    marchRelaxAttr,
+    marchRelaxBuf,
     volumeTextures: [],
   };
 }
@@ -164,7 +183,9 @@ export function createVolumeTexture(
 ): THREE.Data3DTexture {
   const tex = new THREE.Data3DTexture(
     new Float32Array(data),
-    dims[0], dims[1], dims[2],
+    dims[0],
+    dims[1],
+    dims[2],
   );
   tex.format = THREE.RedFormat;
   tex.type = THREE.FloatType;
@@ -209,9 +230,13 @@ export function rebuildVolumeTextures(
   volumeBaseData: Float32Array,
   bodies: VolumeBody[],
   maxBodies: number,
+  // Ticket fg9o: callers that DEFER disposal (to avoid destroying a GPU
+  // resource still referenced by an in-flight submit) pass false and dispose
+  // the old textures themselves once the GPU is done with them.
+  disposeExisting = true,
 ): { textures: THREE.Data3DTexture[]; countChanged: boolean } {
   const prevCount = existingTextures.length;
-  for (const tex of existingTextures) tex.dispose();
+  if (disposeExisting) for (const tex of existingTextures) tex.dispose();
 
   const textures: THREE.Data3DTexture[] = [];
   volumeBaseData.fill(0);
@@ -296,14 +321,49 @@ export function shadeSdfHit({
   const ex = vec3(eps, 0, 0);
   const ey = vec3(0, eps, 0);
   const ez = vec3(0, 0, eps);
-  const n = normalize(vec3(
-    sdfEval({ p: p.add(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-      .sub(sdfEval({ p: p.sub(ex), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-    sdfEval({ p: p.add(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-      .sub(sdfEval({ p: p.sub(ey), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-    sdfEval({ p: p.add(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })
-      .sub(sdfEval({ p: p.sub(ez), baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx: bi })),
-  ));
+  const n = normalize(
+    vec3(
+      sdfEval({
+        p: p.add(ex),
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx: bi,
+      }).sub(
+        sdfEval({
+          p: p.sub(ex),
+          baseOffset: baseOff,
+          volumeBaseIdx: volBase,
+          bodyIdx: bi,
+        }),
+      ),
+      sdfEval({
+        p: p.add(ey),
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx: bi,
+      }).sub(
+        sdfEval({
+          p: p.sub(ey),
+          baseOffset: baseOff,
+          volumeBaseIdx: volBase,
+          bodyIdx: bi,
+        }),
+      ),
+      sdfEval({
+        p: p.add(ez),
+        baseOffset: baseOff,
+        volumeBaseIdx: volBase,
+        bodyIdx: bi,
+      }).sub(
+        sdfEval({
+          p: p.sub(ez),
+          baseOffset: baseOff,
+          volumeBaseIdx: volBase,
+          bodyIdx: bi,
+        }),
+      ),
+    ),
+  );
 
   const nView = normalize(viewMatU.mul(vec4(n, 0.0)).xyz);
   const viewDir = normalize(viewMatU.mul(vec4(viewDirWorld, 0.0)).xyz);
@@ -319,7 +379,14 @@ export function shadeSdfHit({
   const eg = materialBuf.element(matBase.add(MAT_EMISSIVE_G));
   const eb = materialBuf.element(matBase.add(MAT_EMISSIVE_B));
   const emissive = vec3(er, eg, eb);
-  const color = pbrShade({ nView, viewDir, baseColor, roughness, metalness, emissive }).toVar();
+  const color = pbrShade({
+    nView,
+    viewDir,
+    baseColor,
+    roughness,
+    metalness,
+    emissive,
+  }).toVar();
 
   // Hemisphere AO (see SDF_AO_TAPS): accumulate, per ray and tap, how
   // far the SDF falls short of the UNOCCLUDED expectation. Over an
@@ -334,7 +401,11 @@ export function shadeSdfHit({
   // interpreter into the shader, and unrolling 4×3 copies blows the
   // WGSL module up far enough to hang the shader compiler (observed
   // as "WebGPU Device Lost" mid-compile on the vase).
-  const helper = select(abs(n.y).greaterThan(float(0.9)), vec3(1, 0, 0), vec3(0, 1, 0));
+  const helper = select(
+    abs(n.y).greaterThan(float(0.9)),
+    vec3(1, 0, 0),
+    vec3(0, 1, 0),
+  );
   const t1 = normalize(cross(n, helper));
   const t2 = cross(n, t1);
   const occ = float(0).toVar();
@@ -342,7 +413,10 @@ export function shadeSdfHit({
   Loop(int(rayCount), ({ i: ray }) => {
     const az = float(ray.sub(int(1))).mul((2 * Math.PI) / 3);
     const tilted = normalize(
-      n.mul(0.6).add(t1.mul(cos(az).mul(0.8))).add(t2.mul(sin(az).mul(0.8))),
+      n
+        .mul(0.6)
+        .add(t1.mul(cos(az).mul(0.8)))
+        .add(t2.mul(sin(az).mul(0.8))),
     );
     const dir = select(ray.equal(int(0)), n, tilted).toVar();
     Loop(int(SDF_AO_TAPS.length), ({ i: tap }) => {
@@ -360,7 +434,9 @@ export function shadeSdfHit({
         bodyIdx: bi,
       });
       const expected = dist.mul(dir.dot(n));
-      occ.addAssign(clamp(expected.sub(d).div(expected), float(0), float(1)).mul(weight));
+      occ.addAssign(
+        clamp(expected.sub(d).div(expected), float(0), float(1)).mul(weight),
+      );
     });
   });
   const ao = clamp(
@@ -382,13 +458,28 @@ export function shadeSdfHit({
   const alpha = bodyOpacity.toVar();
   If(wf.greaterThan(float(0.5)), () => {
     const fresnel = float(1).sub(abs(n.dot(viewDirWorld)));
-    const edgeFactor = smoothstep(float(FRESNEL_EDGE_MIN), float(FRESNEL_EDGE_MAX), fresnel);
+    const edgeFactor = smoothstep(
+      float(FRESNEL_EDGE_MIN),
+      float(FRESNEL_EDGE_MAX),
+      fresnel,
+    );
     const gridSize = float(WIREFRAME_GRID_SIZE);
-    const gx = min(fract(p.x.div(gridSize)), float(1).sub(fract(p.x.div(gridSize))));
-    const gy = min(fract(p.y.div(gridSize)), float(1).sub(fract(p.y.div(gridSize))));
-    const gz = min(fract(p.z.div(gridSize)), float(1).sub(fract(p.z.div(gridSize))));
+    const gx = min(
+      fract(p.x.div(gridSize)),
+      float(1).sub(fract(p.x.div(gridSize))),
+    );
+    const gy = min(
+      fract(p.y.div(gridSize)),
+      float(1).sub(fract(p.y.div(gridSize))),
+    );
+    const gz = min(
+      fract(p.z.div(gridSize)),
+      float(1).sub(fract(p.z.div(gridSize))),
+    );
     const minGrid = min(gx, min(gy, gz));
-    const gridAlpha = float(1).sub(smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid));
+    const gridAlpha = float(1).sub(
+      smoothstep(float(0), float(WIREFRAME_GRID_THRESHOLD), minGrid),
+    );
     alpha.assign(max(edgeFactor, gridAlpha).mul(bodyOpacity));
   });
 

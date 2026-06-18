@@ -37,7 +37,8 @@ import {
   updateVolumeData,
   rebuildVolumeTextures,
   MAT_STRIDE,
-  MAT_DISPLACE_DEPTH, MAT_DISPLACE_FREQ,
+  MAT_DISPLACE_DEPTH,
+  MAT_DISPLACE_FREQ,
   DISPLACE_FREQ_Y,
   DISPLACE_FREQ_Z,
   shadeSdfHit,
@@ -75,6 +76,15 @@ export interface VmPipelineState {
   viewMatU: ReturnType<typeof uniform>;
   nearU: ReturnType<typeof uniform>;
   farU: ReturnType<typeof uniform>;
+  // Ticket fg9o: GPU resources retired by the PREVIOUS rebuild, disposed only
+  // at the NEXT rebuild — by which time many frames have rendered, so the GPU
+  // is long done with them. Disposing them synchronously raced an in-flight
+  // submit ("Buffer used in submit while destroyed" → freeze).
+  pendingDispose?: {
+    material: MeshBasicNodeMaterial | null;
+    mesh: THREE.Mesh | null;
+    textures: THREE.Data3DTexture[];
+  };
 }
 
 // ── Init ────────────────────────────────────────────────────────────
@@ -115,10 +125,21 @@ export function updateVmData(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
-  packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  packOpcodes(
+    state.opcodeData,
+    state.offsetData,
+    bodies,
+    GLOBAL_MAX_OPCODES,
+    MAX_BODIES,
+  );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  updateVolumeData(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+  updateVolumeData(
+    state.volumeTextures,
+    state.volumeBaseData,
+    bodies,
+    MAX_BODIES,
+  );
   state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
 }
@@ -133,19 +154,42 @@ export function rebuildVmBodies(
     volumes?: { data: Float32Array; dims: [number, number, number] }[];
   }[],
 ): void {
-  packOpcodes(state.opcodeData, state.offsetData, bodies, GLOBAL_MAX_OPCODES, MAX_BODIES);
+  packOpcodes(
+    state.opcodeData,
+    state.offsetData,
+    bodies,
+    GLOBAL_MAX_OPCODES,
+    MAX_BODIES,
+  );
   state.opcodeAttr.needsUpdate = true;
   state.offsetAttr.needsUpdate = true;
-  const { textures } = rebuildVolumeTextures(state.volumeTextures, state.volumeBaseData, bodies, MAX_BODIES);
+
+  // Ticket fg9o: dispose the resources retired by the PREVIOUS rebuild first
+  // (the GPU has long finished with them), THEN retire the current ones for
+  // disposal at the NEXT rebuild — never destroy a resource that an in-flight
+  // submit might still reference.
+  flushPendingDispose(state);
+  const oldTextures = state.volumeTextures;
+  const oldMaterial = state.material;
+  const oldMesh = state.mesh;
+
+  const { textures } = rebuildVolumeTextures(
+    state.volumeTextures,
+    state.volumeBaseData,
+    bodies,
+    MAX_BODIES,
+    false, // defer texture disposal (see pendingDispose)
+  );
   state.volumeTextures = textures;
   state.volumeBaseAttr.needsUpdate = true;
   state.bodyCountU.value = bodies.length;
 
-  if (state.material) state.material.dispose();
-  if (state.mesh) {
-    state.scene.remove(state.mesh);
-    state.mesh.geometry.dispose();
-  }
+  if (oldMesh) state.scene.remove(oldMesh);
+  state.pendingDispose = {
+    material: oldMaterial,
+    mesh: oldMesh,
+    textures: oldTextures,
+  };
 
   state.material = createVmMaterial(state);
   state.mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), state.material);
@@ -153,22 +197,44 @@ export function rebuildVmBodies(
   state.scene.add(state.mesh);
 }
 
+/** Dispose the GPU resources retired by the previous rebuild (ticket fg9o). */
+function flushPendingDispose(state: VmPipelineState): void {
+  const pd = state.pendingDispose;
+  if (!pd) return;
+  state.pendingDispose = undefined;
+  pd.material?.dispose();
+  pd.mesh?.geometry.dispose();
+  for (const tex of pd.textures) tex.dispose();
+}
+
 // ── Material ────────────────────────────────────────────────────────
 
 function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
   const sdfEvalRaw = buildVmSdfEvalFn(state.opcodeBuf, {
     withBaseOffset: true,
-    volumeTextures: state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
+    volumeTextures:
+      state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
     withVolumeBaseIdx: state.volumeTextures.length > 0,
   });
 
-  const sdfEval = (args: { p: any; baseOffset: any; volumeBaseIdx: any; bodyIdx?: any }) => {
-    const d = sdfEvalRaw({ p: args.p, baseOffset: args.baseOffset, volumeBaseIdx: args.volumeBaseIdx });
+  const sdfEval = (args: {
+    p: any;
+    baseOffset: any;
+    volumeBaseIdx: any;
+    bodyIdx?: any;
+  }) => {
+    const d = sdfEvalRaw({
+      p: args.p,
+      baseOffset: args.baseOffset,
+      volumeBaseIdx: args.volumeBaseIdx,
+    });
     if (!args.bodyIdx) return d;
     const matBase = args.bodyIdx.mul(MAT_STRIDE);
     const depth = state.materialBuf.element(matBase.add(MAT_DISPLACE_DEPTH));
     const freq = state.materialBuf.element(matBase.add(MAT_DISPLACE_FREQ));
-    const disp = args.p.x.mul(freq).sin()
+    const disp = args.p.x
+      .mul(freq)
+      .sin()
       .mul(args.p.y.mul(freq).mul(DISPLACE_FREQ_Y).sin())
       .mul(args.p.z.mul(freq).mul(DISPLACE_FREQ_Z).sin());
     return d.sub(depth.mul(disp));
@@ -201,7 +267,12 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
           If(int(offLen).greaterThan(int(0)), () => {
             const baseOff = int(state.offsetBuf.element(bodyIdx.mul(2)));
             const volBase = int(state.volumeBaseBuf.element(bodyIdx));
-            const d = sdfEval({ p, baseOffset: baseOff, volumeBaseIdx: volBase, bodyIdx });
+            const d = sdfEval({
+              p,
+              baseOffset: baseOff,
+              volumeBaseIdx: volBase,
+              bodyIdx,
+            });
             If(d.lessThan(minD), () => {
               minD.assign(d);
               closestBody.assign(bodyIdx);
@@ -220,10 +291,14 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
       // Stop at the camera far plane (now adapted to the scene each frame,
       // ticket lbzq) instead of a fixed 3000 mm cap that hid large/zoomed-out
       // scenes.
-      If(t.greaterThan(state.farU), () => { Break(); });
+      If(t.greaterThan(state.farU), () => {
+        Break();
+      });
     });
 
-    If(hit.lessThan(float(0.5)), () => { Discard(); });
+    If(hit.lessThan(float(0.5)), () => {
+      Discard();
+    });
 
     // Write per-pixel canvas depth so the B-Rep edge overlay can occlude in
     // "visible" mode. `hitPos` is the true raymarched surface point;
@@ -235,7 +310,9 @@ function createVmMaterial(state: VmPipelineState): MeshBasicNodeMaterial {
     // 0.1% depth bias behind the true surface so on-surface B-Rep edges
     // win the depth test instead of z-fighting the face (ticket b9xz).
     const viewZHit = state.viewMatU.mul(vec4(hitPos, 1.0)).z.mul(1.001);
-    depth.assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU)).toStack();
+    depth
+      .assign(viewZToPerspectiveDepth(viewZHit, state.nearU, state.farU))
+      .toStack();
 
     // Shade the hit (normal → PBR → wireframe) via the shared SDF pipeline.
     // The view direction is the negated ray direction (a unit vector
@@ -285,7 +362,10 @@ export function renderVmFrame(
   renderer.render(state.scene, state.camera);
 }
 
-function updateCameraUniforms(state: VmPipelineState, camera: THREE.Camera): void {
+function updateCameraUniforms(
+  state: VmPipelineState,
+  camera: THREE.Camera,
+): void {
   const cam = camera as THREE.PerspectiveCamera;
   if (cam.parent) cam.updateMatrixWorld();
   state.camPosU.value.setFromMatrixPosition(cam.matrixWorld);
@@ -325,13 +405,18 @@ function getProbe(state: VmPipelineState): VmProbe {
   const outBuf = storage(outAttr, "float", PROBE_CAP);
   const evalFn = buildVmSdfEvalFn(state.opcodeBuf, {
     withBaseOffset: true,
-    volumeTextures: state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
+    volumeTextures:
+      state.volumeTextures.length > 0 ? state.volumeTextures : undefined,
     withVolumeBaseIdx: state.volumeTextures.length > 0,
   });
   const kernel = Fn(() => {
     // Each point carries its body's opcode base offset in .w.
     const pt = ptsBuf.element(instanceIndex);
-    const d = evalFn({ p: pt.xyz, baseOffset: int(pt.w), volumeBaseIdx: int(0) });
+    const d = evalFn({
+      p: pt.xyz,
+      baseOffset: int(pt.w),
+      volumeBaseIdx: int(0),
+    });
     outBuf.element(instanceIndex).assign(d);
   })().compute(PROBE_CAP);
   const probe: VmProbe = { ptsData, ptsAttr, outAttr, kernel };
@@ -363,6 +448,7 @@ export async function probeVmSdf(
 // ── Dispose ─────────────────────────────────────────────────────────
 
 export function disposeVmPipeline(state: VmPipelineState): void {
+  flushPendingDispose(state); // ticket fg9o
   if (state.material) state.material.dispose();
   if (state.mesh) state.mesh.geometry.dispose();
   for (const tex of state.volumeTextures) tex.dispose();
