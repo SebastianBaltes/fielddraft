@@ -45,6 +45,7 @@ import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
 import { useKernelStore } from "../store";
 import { formatQueryDisplay } from "../queryLabels";
 import { queryAcceptedByFilter } from "../elementQuery";
+import { logUserAction } from "../userActionLog";
 import {
   ANGLE_UNITS,
   type AngleUnit,
@@ -953,12 +954,13 @@ export function QueryWidget({
       // chokepoint that enforces the filter regardless of which path emitted
       // the pick. Returning false leaves the picker armed for another try.
       if (!queryAcceptedByFilter(query, entityFilter)) return false;
+      logUserAction("pick", "query", { field: label, query });
       setText(query);
       onChange(query);
       if (deactivateOnPick) deactivateQueryPicker();
       return true;
     },
-    [onChange, deactivateOnPick, entityFilter],
+    [onChange, deactivateOnPick, entityFilter, label],
   );
 
   // The bridge holds at most one active picker. Registering flips this

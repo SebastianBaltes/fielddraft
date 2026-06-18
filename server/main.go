@@ -72,13 +72,13 @@ type Snapshot struct {
 
 type Store struct {
 	mu          sync.RWMutex
-	users       map[string]*User    // keyed by ID
-	emails      map[string]string   // email → user ID
-	projects    map[string]*Project // keyed by ID
-	sessions    map[string]*Session // token → session
+	users       map[string]*User       // keyed by ID
+	emails      map[string]string      // email → user ID
+	projects    map[string]*Project    // keyed by ID
+	sessions    map[string]*Session    // token → session
 	resetTokens map[string]*ResetToken // token → reset
-	thumbnails  map[string][]byte  // project ID → PNG data
-	snapshots   map[string]*Snapshot // snapshot ID → snapshot
+	thumbnails  map[string][]byte      // project ID → PNG data
+	snapshots   map[string]*Snapshot   // snapshot ID → snapshot
 }
 
 func NewStore() *Store {
@@ -674,16 +674,16 @@ func newID() string {
 // ticketRequest is the payload POSTed by the in-app "Report Issue" dialog.
 // ticket xqll: no title field — all info lives in the description.
 type ticketRequest struct {
-	Description string             `json:"description"`
+	Description string `json:"description"`
 	// ProjectFdraft: the live project as a base64-encoded .fdraft ZIP (on3k),
 	// written to disk verbatim as project.fdraft.
-	ProjectFdraft string           `json:"projectFdraft"`
-	Screenshot  string             `json:"screenshot"` // PNG data URL, or empty
-	Attachments []ticketAttachment `json:"attachments"`
-	Version     string             `json:"version"`
-	Timestamp   string             `json:"timestamp"`
-	UserAgent   string             `json:"userAgent"`
-	URL         string             `json:"url"`
+	ProjectFdraft string             `json:"projectFdraft"`
+	Screenshot    string             `json:"screenshot"` // PNG data URL, or empty
+	Attachments   []ticketAttachment `json:"attachments"`
+	Version       string             `json:"version"`
+	Timestamp     string             `json:"timestamp"`
+	UserAgent     string             `json:"userAgent"`
+	URL           string             `json:"url"`
 	// Settings: per-device app/UI settings (renderMode, controlsPreset, …).
 	// Captured raw so the ticket carries the environment that produced it;
 	// rendered as a JSON block in ticket.md.
@@ -691,6 +691,9 @@ type ticketRequest struct {
 	// UIState: ephemeral live UI state (camera, selection, active tool/mode)
 	// the project file doesn't carry (ticket uz5q); written as ui_state.json.
 	UIState json.RawMessage `json:"uiState"`
+	// ActionLog: replayable user-action trace (semantic actions + raw input)
+	// that led to the bug; written as actions.json.
+	ActionLog json.RawMessage `json:"actionLog"`
 }
 
 // ticketAttachment is one user-attached file (picked or pasted, ticket 8onw),
@@ -827,6 +830,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, req.UIState, "", "  ") == nil {
 			os.WriteFile(filepath.Join(dir, "ui_state.json"), pretty.Bytes(), 0o644)
+		}
+	}
+
+	// Replayable user-action trace (semantic actions + raw input) goes into a
+	// separate actions.json so a report carries the steps that led to the bug.
+	if len(req.ActionLog) > 0 && string(req.ActionLog) != "null" {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.ActionLog, "", "  ") == nil {
+			os.WriteFile(filepath.Join(dir, "actions.json"), pretty.Bytes(), 0o644)
 		}
 	}
 

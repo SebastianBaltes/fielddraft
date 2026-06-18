@@ -20,6 +20,7 @@ import {
   type TicketAttachment,
   type TicketPayload,
 } from "./reportTicket";
+import { serializeActionLog } from "./userActionLog";
 
 interface ReportDialogProps {
   store: KernelStore | null;
@@ -31,6 +32,7 @@ type Phase = "edit" | "sending" | "error";
 export function ReportDialog({ store, onClose }: ReportDialogProps) {
   const [description, setDescription] = useState("");
   const [includeShot, setIncludeShot] = useState(true);
+  const [includeActions, setIncludeActions] = useState(true);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
   const [attachError, setAttachError] = useState("");
@@ -138,6 +140,9 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
       // Capture the live UI state (camera, selection, active tool/mode) so the
       // report reproduces the exact view, not just the document (ticket uz5q).
       uiState: store ? store.uiStateSnapshot() : undefined,
+      // Replayable user-action trace (semantic + raw input) so a report carries
+      // the steps that led to the bug — opt-out via the checkbox.
+      actionLog: includeActions ? serializeActionLog() : undefined,
     };
     const result = await submitTicket(payload);
     if (result.ok) {
@@ -167,131 +172,143 @@ export function ReportDialog({ store, onClose }: ReportDialogProps) {
         </div>
 
         <div className="body">
-            <label className="field">
-              <span className="label">
-                Description<span className="required">*</span>
-              </span>
-              <textarea
-                className="textarea"
-                data-testid="report-description"
-                value={description}
-                autoFocus
-                rows={5}
-                placeholder="What happened? What did you expect? Steps to reproduce…"
+          <label className="field">
+            <span className="label">
+              Description<span className="required">*</span>
+            </span>
+            <textarea
+              className="textarea"
+              data-testid="report-description"
+              value={description}
+              autoFocus
+              rows={5}
+              placeholder="What happened? What did you expect? Steps to reproduce…"
+              disabled={phase === "sending"}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </label>
+
+          <label className="field-inline">
+            <input
+              type="checkbox"
+              checked={includeShot}
+              disabled={phase === "sending" || !screenshot}
+              onChange={(e) => setIncludeShot(e.target.checked)}
+            />
+            <span className="label">
+              Attach screenshot
+              {screenshot ? "" : " (capture unavailable)"}
+            </span>
+          </label>
+
+          {includeShot && screenshot ? (
+            <img
+              className="preview"
+              src={screenshot}
+              alt="Window screenshot preview"
+            />
+          ) : null}
+
+          <label className="field-inline">
+            <input
+              type="checkbox"
+              data-testid="report-include-actions"
+              checked={includeActions}
+              disabled={phase === "sending"}
+              onChange={(e) => setIncludeActions(e.target.checked)}
+            />
+            <span className="label">
+              Attach action log (recent clicks, tools, picks — no typed text)
+            </span>
+          </label>
+
+          <div className="field">
+            <div className="attach-row">
+              <span className="label">Attachments</span>
+              <button
+                type="button"
+                className="secondary attach-button"
+                data-testid="report-attach"
                 disabled={phase === "sending"}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </label>
-
-            <label className="field-inline">
-              <input
-                type="checkbox"
-                checked={includeShot}
-                disabled={phase === "sending" || !screenshot}
-                onChange={(e) => setIncludeShot(e.target.checked)}
-              />
-              <span className="label">
-                Attach screenshot
-                {screenshot ? "" : " (capture unavailable)"}
-              </span>
-            </label>
-
-            {includeShot && screenshot ? (
-              <img
-                className="preview"
-                src={screenshot}
-                alt="Window screenshot preview"
-              />
-            ) : null}
-
-            <div className="field">
-              <div className="attach-row">
-                <span className="label">Attachments</span>
-                <button
-                  type="button"
-                  className="secondary attach-button"
-                  data-testid="report-attach"
-                  disabled={phase === "sending"}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  Add files…
-                </button>
-                <span className="hint">or paste with Ctrl+V</span>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                hidden
-                data-testid="report-file-input"
-                onChange={(e) => {
-                  if (e.target.files) void addFiles(e.target.files);
-                  e.target.value = "";
-                }}
-              />
-              {attachments.length > 0 ? (
-                <div className="attachments" data-testid="report-attachments">
-                  {attachments.map((a, i) => (
-                    <div className="thumb" key={`${a.name}-${i}`} title={a.name}>
-                      {a.mime.startsWith("image/") ? (
-                        <img src={a.dataUrl} alt={a.name} />
-                      ) : (
-                        <span className="file-chip">
-                          {a.name.split(".").pop()?.toUpperCase() ?? "FILE"}
-                        </span>
-                      )}
-                      <span className="thumb-name">{a.name}</span>
-                      <button
-                        type="button"
-                        className="thumb-x"
-                        aria-label={`Remove ${a.name}`}
-                        data-testid={`report-attachment-remove-${i}`}
-                        disabled={phase === "sending"}
-                        onClick={() => removeAttachment(i)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {attachError ? (
-                <p className="error" role="alert">
-                  {attachError}
-                </p>
-              ) : null}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                Add files…
+              </button>
+              <span className="hint">or paste with Ctrl+V</span>
             </div>
-
-            <p className="hint">
-              The current project file and app version are attached
-              automatically.
-            </p>
-
-            {phase === "error" ? (
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              data-testid="report-file-input"
+              onChange={(e) => {
+                if (e.target.files) void addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            {attachments.length > 0 ? (
+              <div className="attachments" data-testid="report-attachments">
+                {attachments.map((a, i) => (
+                  <div className="thumb" key={`${a.name}-${i}`} title={a.name}>
+                    {a.mime.startsWith("image/") ? (
+                      <img src={a.dataUrl} alt={a.name} />
+                    ) : (
+                      <span className="file-chip">
+                        {a.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                      </span>
+                    )}
+                    <span className="thumb-name">{a.name}</span>
+                    <button
+                      type="button"
+                      className="thumb-x"
+                      aria-label={`Remove ${a.name}`}
+                      data-testid={`report-attachment-remove-${i}`}
+                      disabled={phase === "sending"}
+                      onClick={() => removeAttachment(i)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {attachError ? (
               <p className="error" role="alert">
-                Could not save ticket: {errorMsg}
+                {attachError}
               </p>
             ) : null}
+          </div>
 
-            <div className="actions">
-              <button
-                type="button"
-                className="secondary"
-                disabled={phase === "sending"}
-                onClick={onClose}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="primary"
-                data-testid="report-submit"
-                disabled={!canSubmit}
-                onClick={handleSubmit}
-              >
-                {phase === "sending" ? "Sending…" : "Send report"}
-              </button>
-            </div>
+          <p className="hint">
+            The current project file and app version are attached automatically.
+          </p>
+
+          {phase === "error" ? (
+            <p className="error" role="alert">
+              Could not save ticket: {errorMsg}
+            </p>
+          ) : null}
+
+          <div className="actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={phase === "sending"}
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary"
+              data-testid="report-submit"
+              disabled={!canSubmit}
+              onClick={handleSubmit}
+            >
+              {phase === "sending" ? "Sending…" : "Send report"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

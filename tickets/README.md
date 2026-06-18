@@ -19,6 +19,9 @@ In-App gemeldete Fehler und Feature-Wünsche. Erzeugt über den **Report Issue�
           project.fdraft     # exaktes Projekt-JSON zum Reproduzieren
           screenshot.png     # gesamtes App-Fenster zum Zeitpunkt der Meldung
           attachment-NN-*    # optionale vom User angehängte Dateien/Bilder
+          settings.json      # per-device Settings (renderMode, controlsPreset, …)
+          ui_state.json      # Kamera, Selektion, aktives Tool/Mode zum Zeitpunkt
+          actions.json       # optional: replaybare User-Aktions-Spur (semantisch + Roh-Input) VOR dem Report — ideal für Interaktions-Bugs
       done/                  # abgeschlossene Tickets (gitignored)
 
 `<id>` ist `YYYYMMDD-HHMMSS-<rand>`, also chronologisch sortierbar.
@@ -27,8 +30,8 @@ In-App gemeldete Fehler und Feature-Wünsche. Erzeugt über den **Report Issue�
 
 Wenn keine andere Aufgabe ansteht, offene Tickets bearbeiten:
 
-1. `tickets/open/` nach `<id>/` durchsehen (ältestes zuerst).
-2. `ticket.md` lesen, `screenshot.png` ansehen, `project.fdraft` zum Reproduzieren laden.
+1. `tickets/open/` nach `<id>/` durchsehen (Reihenfolge nach Wirkung, siehe `CLAUDE.md`).
+2. `ticket.md` lesen, `screenshot.png` ansehen, `project.fdraft` zum Reproduzieren laden; bei Interaktions-Bugs `actions.json` ansehen (was hat der User Schritt für Schritt getan).
 3. Fix/Feature umsetzen, testen (`just test`), committen + pushen wie üblich.
 4. Ticket-Ordner nach `tickets/done/<id>/` verschieben; eine kurze `resolution.md` mit Commit-Hash + Zusammenfassung hinzufügen.
 

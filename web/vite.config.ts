@@ -56,7 +56,9 @@ function kernelStamp(): Plugin {
     name: "kernel-stamp",
     config(_, { command }) {
       if (command === "build") {
-        return { define: { __KERNEL_EXPECTED__: JSON.stringify(readKernelStamp()) } };
+        return {
+          define: { __KERNEL_EXPECTED__: JSON.stringify(readKernelStamp()) },
+        };
       }
     },
     configureServer(server) {
@@ -71,9 +73,15 @@ function kernelStamp(): Plugin {
       });
     },
     transform(code, id) {
-      if (!id.includes("node_modules") && code.includes("__KERNEL_EXPECTED__")) {
+      if (
+        !id.includes("node_modules") &&
+        code.includes("__KERNEL_EXPECTED__")
+      ) {
         stampModules.add(id);
-        return code.replaceAll("__KERNEL_EXPECTED__", JSON.stringify(readKernelStamp()));
+        return code.replaceAll(
+          "__KERNEL_EXPECTED__",
+          JSON.stringify(readKernelStamp()),
+        );
       }
     },
   };
@@ -141,13 +149,18 @@ function ticketWriter(): Plugin {
               description?: string;
               projectFdraft?: string;
               screenshot?: string | null;
-              attachments?: { name?: string; mime?: string; dataUrl?: string }[];
+              attachments?: {
+                name?: string;
+                mime?: string;
+                dataUrl?: string;
+              }[];
               version?: string;
               timestamp?: string;
               userAgent?: string;
               url?: string;
               settings?: Record<string, unknown>;
               uiState?: Record<string, unknown>;
+              actionLog?: Record<string, unknown>;
             };
             const id = ticketId();
             const dir = join(ticketsRoot, id);
@@ -165,7 +178,11 @@ function ticketWriter(): Plugin {
             // next to the screenshot, listed in ticket.md for the agent.
             const attachmentNames: string[] = [];
             (t.attachments ?? []).forEach((a, i) => {
-              if (typeof a?.dataUrl !== "string" || !a.dataUrl.startsWith("data:")) return;
+              if (
+                typeof a?.dataUrl !== "string" ||
+                !a.dataUrl.startsWith("data:")
+              )
+                return;
               const fname = attachmentFilename(i, a.name ?? "");
               const b64 = a.dataUrl.slice(a.dataUrl.indexOf(",") + 1);
               writeFileSync(join(dir, fname), Buffer.from(b64, "base64"));
@@ -209,6 +226,16 @@ function ticketWriter(): Plugin {
               );
             }
 
+            // Replayable user-action trace (semantic actions + raw input) in a
+            // separate actions.json so a report carries the steps that led to
+            // the bug, not just the end state.
+            if (t.actionLog) {
+              writeFileSync(
+                join(dir, "actions.json"),
+                JSON.stringify(t.actionLog, null, 2),
+              );
+            }
+
             // on3k: the project rides along as a base64 .fdraft ZIP — decode
             // and write the real binary file (document JSON + font assets).
             if (t.projectFdraft) {
@@ -218,12 +245,20 @@ function ticketWriter(): Plugin {
               );
             }
 
-            if (typeof t.screenshot === "string" && t.screenshot.startsWith("data:image/")) {
+            if (
+              typeof t.screenshot === "string" &&
+              t.screenshot.startsWith("data:image/")
+            ) {
               const b64 = t.screenshot.slice(t.screenshot.indexOf(",") + 1);
-              writeFileSync(join(dir, "screenshot.png"), Buffer.from(b64, "base64"));
+              writeFileSync(
+                join(dir, "screenshot.png"),
+                Buffer.from(b64, "base64"),
+              );
             }
 
-            server.config.logger.info(`ticket saved: tickets/open/${id} — ${heading}`);
+            server.config.logger.info(
+              `ticket saved: tickets/open/${id} — ${heading}`,
+            );
             res.statusCode = 200;
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ ticket_id: id }));
@@ -263,9 +298,7 @@ export default defineConfig(({ mode }) => ({
     port: webPort(mode),
     strictPort: true,
     allowedHosts: true,
-    https: hasTailscaleCert
-      ? { cert: certFile, key: keyFile }
-      : undefined,
+    https: hasTailscaleCert ? { cert: certFile, key: keyFile } : undefined,
   },
   optimizeDeps: {
     exclude: ["./src/wasm/fielddraft_kernel.js"],

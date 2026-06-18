@@ -54,6 +54,7 @@ import {
   CONSTRAINT_DIMENSION_TOOL,
   DIMENSION_TYPES_BY_SPECIFICITY,
 } from "./sketchConstraints";
+import { logUserAction } from "./userActionLog";
 import { buildLineLengthEdit } from "./sketchLiveInput";
 import {
   computeTrim,
@@ -1594,6 +1595,7 @@ export class KernelStore {
   }
 
   addHole(diameterMm = 6, depthMm = 40): number {
+    logUserAction("feature", "add", { kind: "hole" });
     const offset: [number, number, number] = [0, 0, 0];
     let id: number;
     try {
@@ -1618,6 +1620,7 @@ export class KernelStore {
     op: BoolOpTagValue = BoolOpTag.New,
     translate?: [number, number, number],
   ): number {
+    logUserAction("feature", "add", { kind });
     const offset: [number, number, number] = translate ?? [0, 0, 0];
     let id: number;
     switch (kind) {
@@ -1871,6 +1874,7 @@ export class KernelStore {
   // ── selection ─────────────────────────────────────────────────────
 
   selectOnly(id: number, origin: SelectionOrigin = "list"): void {
+    logUserAction("feature", "select", { id, origin });
     if (id !== this.pendingFeature) this.confirmPendingFeature();
     this.state = {
       ...this.state,
@@ -1992,6 +1996,7 @@ export class KernelStore {
     const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const parsed = parseProjectBytes(u8);
     if (!parsed) return false;
+    logUserAction("doc", "load-project", { bytes: u8.length });
     // Re-register embedded uploaded fonts before applying the project so the
     // font cache is warm when the scene regenerates its text geometry.
     for (const [id, { bytes: fontBytes }] of parsed.assets.fonts) {
@@ -2717,6 +2722,7 @@ export class KernelStore {
   /** Replace (or extend) the feature-level selection with a set of ids —
    *  the object-mode box-select path (whole bodies → their seed features). */
   selectFeatureSet(ids: number[], additive: boolean): void {
+    logUserAction("feature", "select-set", { ids, additive });
     const next = additive ? new Set(this.state.selection) : new Set<number>();
     for (const id of ids) next.add(id);
     this.state = {
@@ -2825,6 +2831,7 @@ export class KernelStore {
   }
 
   enterSketch(planeQuery: string): void {
+    logUserAction("sketch", "enter", { plane: planeQuery });
     this.resetSketchHistory(); // r3ci: fresh session, fresh history
     this.updateSketch(reduceEnter(this.state.sketchSession, planeQuery));
   }
@@ -2886,6 +2893,7 @@ export class KernelStore {
    * here for now.
    */
   exitSketch(): void {
+    logUserAction("sketch", "exit");
     this.resetSketchHistory(); // r3ci
     this.updateSketch(reduceExit(this.state.sketchSession));
   }
@@ -2899,6 +2907,7 @@ export class KernelStore {
     typeName: string | null,
     initialDraft: Record<string, unknown> = {},
   ): void {
+    logUserAction("sketch", "tool", { tool: typeName });
     this.updateSketch(
       reduceSelect(this.state.sketchSession, typeName, initialDraft),
     );
@@ -2935,6 +2944,7 @@ export class KernelStore {
   ): void {
     if (!this.state.sketchSession.active) return;
     if (calls.length === 0) return;
+    logUserAction("sketch", "draw", { calls: calls.map((c) => c.type) });
     this.pushSketchUndoCheckpoint(); // r3ci
     this.state = {
       ...this.state,
@@ -3995,6 +4005,10 @@ export class KernelStore {
     const state = buildDraftSketchState(session.subCalls);
     const call = buildConstraintCall(type, session.selection, state);
     if (!call) return;
+    logUserAction("sketch", "constraint-apply", {
+      type,
+      entities: session.selection.length,
+    });
     this.pushSketchSubCalls([call]);
     this.clearSketchSelection();
     void solveAndReplace(this);
@@ -4012,6 +4026,7 @@ export class KernelStore {
   selectSketchConstraintTool(type: string): void {
     const session = this.state.sketchSession;
     if (!session.active) return;
+    logUserAction("sketch", "constraint-tool", { type });
     if (session.selectedTool === type) {
       this.selectSketchTool(null);
       return;
@@ -5251,6 +5266,9 @@ export class KernelStore {
   }
 
   commitSketch(): number | null {
+    logUserAction("sketch", "commit", {
+      subCalls: this.state.sketchSession.subCalls.length,
+    });
     const session = this.state.sketchSession;
     if (!session.active || session.planeQuery === null) {
       this.exitSketch();

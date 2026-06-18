@@ -103,6 +103,12 @@ export interface TicketPayload {
    *  view, not just the document. Written as a separate ui_state.json next to
    *  ticket.md (ticket uz5q). */
   uiState?: Record<string, unknown>;
+  /** Replayable user-action trace — semantic actions (entered sketch, picked
+   *  tool, applied constraint, picked entity) interleaved with raw input
+   *  (pointer/key/wheel/resize, with `data-testid` targets) — from
+   *  `serializeActionLog()`. Reconstructs the steps that led to the bug.
+   *  Privacy-conscious (no typed text). Written as a separate actions.json. */
+  actionLog?: Record<string, unknown>;
 }
 
 /**
@@ -138,7 +144,9 @@ export interface SubmitResult {
 
 /** POST a ticket to the backend. Never throws — failures come back as
  *  `{ ok: false, error }` so the dialog can surface them inline. */
-export async function submitTicket(payload: TicketPayload): Promise<SubmitResult> {
+export async function submitTicket(
+  payload: TicketPayload,
+): Promise<SubmitResult> {
   try {
     const res = await fetch("/api/tickets", {
       method: "POST",
@@ -151,6 +159,9 @@ export async function submitTicket(payload: TicketPayload): Promise<SubmitResult
     const data = (await res.json().catch(() => ({}))) as { ticket_id?: string };
     return { ok: true, ticketId: data.ticket_id };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }

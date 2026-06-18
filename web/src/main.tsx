@@ -1,6 +1,13 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { installRawInputCapture } from "./userActionLog";
 import "./styles/index.css";
+
+// Capture raw pointer/keyboard/wheel/resize input into the user-action log so a
+// "Report an issue" can ship a replayable interaction trace. Installed once,
+// before React mounts, so it sees the whole session. Privacy-conscious (no
+// typed text) — see userActionLog.ts.
+installRawInputCapture();
 
 // Silence the upstream three.js deprecation noise we can't fix here.
 // `THREE.Clock` is still used internally by R3F 9; the warning fires
