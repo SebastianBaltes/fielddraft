@@ -525,8 +525,8 @@ function WebGLViewport({
     event: React.MouseEvent<HTMLDivElement>,
   ): void => {
     if (!store || !getActiveQueryPicker()) return;
+    const ray = rayAtMouse(event, wrapRef.current);
     const datumAtRay = (): string | null => {
-      const ray = rayAtMouse(event, wrapRef.current);
       if (!ray) return null;
       return pickDatumAtRay(
         ray.origin,
@@ -534,8 +534,23 @@ function WebGLViewport({
         state?.hiddenDatums ?? new Set<string>(),
       );
     };
-    tryQueryPick(null, store, datumAtRay, (msg) =>
-      store.showTransientError(msg),
+    // Ticket 6vdf: the WebGL pick path resolved ONLY datums, so the Revolve
+    // axis field couldn't pick a sketch line in this backend (you'd focus the
+    // field, click the axis line, and nothing happened). Resolve sketch lines
+    // by ray too, exactly like the WebGPU viewport — zoom-aware tolerance via
+    // the published pick camera + viewport height (fs23).
+    const sketchLineAtRay = (): { sketchId: number; lineId: number } | null => {
+      if (!ray) return null;
+      const camera = getPublishedPickCamera();
+      const h = wrapRef.current?.getBoundingClientRect().height ?? 0;
+      return pickSketchLineAtRay(ray, camera ?? undefined, h);
+    };
+    tryQueryPick(
+      null,
+      store,
+      datumAtRay,
+      (msg) => store.showTransientError(msg),
+      sketchLineAtRay,
     );
   };
   // The kernel's Dual-Contouring mesher produces a boolean-correct mesh of every
