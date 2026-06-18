@@ -19,5 +19,14 @@ Volle Deployment-Anleitung in `DEPLOY.md`.
 
 User melden Fehler/Feature-Wünsche in-App über **Report Issue…** (Menü oben links). Jedes Ticket landet unter `tickets/open/<id>/` (Screenshot, `project.fdraft`, `ticket.md`). Format und Ablauf: `tickets/README.md`.
 
-Wenn keine andere Aufgabe ansteht: offene Tickets in `tickets/open/` abarbeiten (ältestes zuerst) — `ticket.md` lesen, Screenshot ansehen, `project.fdraft` zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen, dann den Ordner nach `tickets/done/<id>/` verschieben und eine `resolution.md` (Commit-Hash + Kurzfassung) ergänzen.
+Wenn keine andere Aufgabe ansteht: offene Tickets in `tickets/open/` abarbeiten — pro Ticket `ticket.md` lesen, Screenshot/Attachments ansehen, `project.fdraft` zum Reproduzieren laden, Fix/Feature umsetzen, testen, committen+pushen, dann den Ordner nach `tickets/done/<id>/` verschieben und eine `resolution.md` (Commit-Hash + Kurzfassung) ergänzen.
+
+**Reihenfolge — nicht stur ältestes-zuerst, sondern nach Wirkung sortieren:**
+1. **Regressionen zuerst** — was eine kürzliche Änderung kaputt gemacht hat, hat oberste Priorität (Arbeitsfähigkeit wiederherstellen).
+2. **Blocker vor Kosmetik** — Crashes, Datenverlust, „Feature komplett kaputt" vor optischen/Komfort-Themen.
+3. **Nach Subsystem gruppieren** — verwandte Tickets (z.B. mehrere Sketch-Tools) zusammen abarbeiten; eine Untersuchung deckt oft mehrere ab, und gemeinsame Ursachen werden sichtbar.
+4. **Innerhalb einer Gruppe** Grundlegendes/Foundational vor Detail (z.B. „Linie persistiert nicht" vor „Linie snappt nicht").
+5. Bei sonst gleichwertigen Tickets das ältere zuerst.
+
+Mehrere Tickets desselben Schwungs dürfen in einem Rutsch (eigene Commits je Ticket) erledigt werden.
 
