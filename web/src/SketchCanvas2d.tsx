@@ -1104,7 +1104,26 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // when the active tool changes, so a stale point can't get committed as
   // the first click of the next gesture.
   useEffect(() => {
-    const k = dragRef.current.kind;
+    const drag = dragRef.current;
+    const k = drag.kind;
+    // Ticket egia: leaving the Spline tool (switching tool, Esc-to-select)
+    // FINISHES the in-progress spline — its placed control points commit as an
+    // open spline instead of vanishing. < 2 points has nothing to commit.
+    if (k === "spline" && drag.points.length >= 2 && store) {
+      store.pushSketchSubCalls([
+        {
+          type: "sketch_spline",
+          params: {
+            points: drag.points.flat(),
+            closed: false,
+            mode: drag.mode,
+          },
+        },
+      ]);
+      scheduleSolverReplay();
+      dragRef.current = { kind: "idle" };
+      lastCamVersionRef.current = -1;
+    }
     if (k === "arc" || k === "circle_3p" || k === "rect_3p") {
       dragRef.current = { kind: "idle" };
       lastCamVersionRef.current = -1;
@@ -2581,7 +2600,13 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     const onKey = (e: KeyboardEvent) => {
       const drag = dragRef.current;
       if (drag.kind !== "spline") return;
-      if (e.key === "Enter" && drag.points.length >= 2) {
+      // Ticket egia: BOTH Enter and Escape FINISH the spline — they commit the
+      // control points placed so far as an open spline instead of discarding
+      // them. Only an Escape with too few points (< 2) cancels outright.
+      if (
+        (e.key === "Enter" || e.key === "Escape") &&
+        drag.points.length >= 2
+      ) {
         e.preventDefault();
         store.pushSketchSubCalls([
           {
