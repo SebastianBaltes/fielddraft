@@ -25,7 +25,15 @@
  *   in one place.
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   register as registerQueryPicker,
   isActive as isQueryPickerActive,
@@ -207,19 +215,26 @@ function UnitInput({
   value: number;
   onCommit: (n: number) => void;
   unit?: string;
-} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+} & Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "value" | "onChange" | "type"
+>) {
   const ws = useWorkspaceUnits();
 
   if (!unit) {
     return <BufferedNumberInput value={value} onCommit={onCommit} {...rest} />;
   }
 
-  const displayUnit = isLengthUnit(unit) ? ws.lengthUnit
-    : isAngleUnit(unit) ? ws.angleUnit
-    : unit;
-  const decimals = isLengthUnit(unit) ? decimalPlaces(ws.lengthDecimals)
-    : isAngleUnit(unit) ? decimalPlaces(ws.angleDecimals)
-    : 3;
+  const displayUnit = isLengthUnit(unit)
+    ? ws.lengthUnit
+    : isAngleUnit(unit)
+      ? ws.angleUnit
+      : unit;
+  const decimals = isLengthUnit(unit)
+    ? decimalPlaces(ws.lengthDecimals)
+    : isAngleUnit(unit)
+      ? decimalPlaces(ws.angleDecimals)
+      : 3;
   const label = unitDisplayLabel(displayUnit);
 
   const internalVal = Number.isFinite(value) ? value : 0;
@@ -264,7 +279,8 @@ function UnitInput({
           const converted = convertUnit(parsed.value, parsed.unit, unit);
           if (converted !== null && Number.isFinite(converted)) {
             onCommit(converted);
-            const newDisplay = convertUnit(converted, unit, displayUnit) ?? converted;
+            const newDisplay =
+              convertUnit(converted, unit, displayUnit) ?? converted;
             setRaw(`${newDisplay.toFixed(decimals)} ${label}`);
           } else {
             setRaw(formatted);
@@ -510,7 +526,10 @@ function LengthInlineInput({
   storedValue: number;
   storedUnit: string;
   onCommit: (value: number, unit: string) => void;
-} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+} & Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "value" | "onChange" | "type"
+>) {
   const ws = useWorkspaceUnits();
   const displayUnit = isLengthUnit(storedUnit) ? storedUnit : ws.lengthUnit;
   const decimals = decimalPlaces(ws.lengthDecimals);
@@ -547,9 +566,15 @@ function LengthInlineInput({
       onBlur={(e) => {
         setEditing(false);
         const parsed = parseValueWithUnit(raw, displayUnit);
-        if (parsed && Number.isFinite(parsed.value) && isLengthUnit(parsed.unit)) {
+        if (
+          parsed &&
+          Number.isFinite(parsed.value) &&
+          isLengthUnit(parsed.unit)
+        ) {
           onCommit(parsed.value, parsed.unit);
-          setRaw(`${parsed.value.toFixed(decimals)} ${unitDisplayLabel(parsed.unit)}`);
+          setRaw(
+            `${parsed.value.toFixed(decimals)} ${unitDisplayLabel(parsed.unit)}`,
+          );
         } else {
           setRaw(formatted);
         }
@@ -574,7 +599,12 @@ export function LengthWidget({
   const id = useId();
   const formula = isFormula(value.value);
   return (
-    <Field label={label} htmlFor={`${id}-value`} error={error} required={required}>
+    <Field
+      label={label}
+      htmlFor={`${id}-value`}
+      error={error}
+      required={required}
+    >
       <div className="unit-row">
         {formula ? (
           <input
@@ -591,7 +621,11 @@ export function LengthWidget({
           <LengthInlineInput
             id={`${id}-value`}
             className="input"
-            storedValue={Number.isFinite(value.value as number) ? (value.value as number) : 0}
+            storedValue={
+              Number.isFinite(value.value as number)
+                ? (value.value as number)
+                : 0
+            }
             storedUnit={value.unit}
             onCommit={(v, u) => onChange({ value: v, unit: u as LengthUnit })}
           />
@@ -632,7 +666,12 @@ export function AngleWidget({
   const id = useId();
   const unitLabel = value.unit === "deg" ? "°" : "rad";
   return (
-    <Field label={label} htmlFor={`${id}-value`} error={error} required={required}>
+    <Field
+      label={label}
+      htmlFor={`${id}-value`}
+      error={error}
+      required={required}
+    >
       <div className="unit-row">
         <UnitInput
           id={`${id}-value`}
@@ -867,8 +906,17 @@ export function QueryWidget({
   error,
   required,
   entityFilter,
-  deactivateOnPick,
-}: WidgetProps<string> & { entityFilter?: string; deactivateOnPick?: boolean }) {
+  // Ticket e9il: a single-value query field is COMPLETE after one pick, so the
+  // picker releases the viewport by default (one-shot, like the sketch-plane
+  // field — ticket dxrq). Leaving it armed forever meant the next click in the
+  // scene was swallowed (fs23 guard) and the hover highlight kept following the
+  // cursor — the "camera/everything feels stuck" symptom after picking a
+  // Revolve axis. Pass `deactivateOnPick={false}` to opt back into re-pick mode.
+  deactivateOnPick = true,
+}: WidgetProps<string> & {
+  entityFilter?: string;
+  deactivateOnPick?: boolean;
+}) {
   const id = useId();
   // NB: the single-query picker is intentionally NOT scoped to
   // `selectableFeatureIds` (unlike MultiQueryWidget). It drives sketch-plane
@@ -1001,7 +1049,10 @@ export function QueryWidget({
               registerQueryPicker({ ownerId: id, onPick, entityFilter });
             }
           }}
-          onBlur={() => { setFocused(false); commitText(); }}
+          onBlur={() => {
+            setFocused(false);
+            commitText();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               (e.currentTarget as HTMLInputElement).blur();
@@ -1017,7 +1068,10 @@ export function QueryWidget({
 
 function parseMultiQuery(raw: string): string[] {
   if (!raw) return [];
-  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function serializeMultiQuery(items: string[]): string {
