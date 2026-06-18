@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
 } from "react";
 import type { KernelStore, StoreState } from "./store";
@@ -18,6 +19,7 @@ import {
   DIMENSION_TYPES_BY_SPECIFICITY,
 } from "./sketchConstraints";
 import { displayDegreesOfFreedom } from "./solver/dofPreflight";
+import { useMediaQuery, MOBILE_QUERY } from "./useMediaQuery";
 
 /* ------------------------------------------------------------------ */
 /*  Meta helper                                                        */
@@ -668,6 +670,51 @@ export function Toolbar({ store, state }: ToolbarProps) {
   const fd = useMemo(() => createFdApi(store.kernel), [store]);
   const sketchSession = state.sketchSession;
 
+  // Ticket apr3: on phone-width viewports the full tool row covers the whole
+  // screen. Below the mobile breakpoint the toolbar collapses to a single
+  // "Tools" menu button that drops the tools down as an overlay on demand.
+  const isMobile = useMediaQuery(MOBILE_QUERY);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Picking a real tool (not a split-button chevron, which opens its own
+  // sub-menu) closes the drawer so the canvas is reachable again.
+  const closeMenuOnPick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!isMobile) return;
+    const btn = (e.target as HTMLElement).closest("button");
+    if (btn && btn.classList.contains("tool") && !btn.classList.contains("chevron")) {
+      setMenuOpen(false);
+    }
+  };
+  const wrapToolbar = (children: ReactElement) => (
+    <div
+      className={
+        "fd-toolbar" +
+        (isMobile ? " is-mobile" : "") +
+        (isMobile && menuOpen ? " is-menu-open" : "")
+      }
+      data-testid="fielddraft-toolbar"
+    >
+      {isMobile ? (
+        <button
+          type="button"
+          className="toolbar-menu-toggle"
+          data-testid="toolbar-menu-toggle"
+          title={menuOpen ? "Close tools" : "Open tools"}
+          aria-expanded={menuOpen}
+          aria-label={menuOpen ? "Close tools" : "Open tools"}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          <span className="glyph" aria-hidden="true">
+            ☰
+          </span>
+          <span>Tools</span>
+        </button>
+      ) : null}
+      <div className="toolbar-tools" onClick={closeMenuOnPick}>
+        {children}
+      </div>
+    </div>
+  );
+
   // F22: hidden file input for SVG / DXF import.
   const importInputRef = useRef<HTMLInputElement>(null);
   const [importHint, setImportHint] = useState<string | null>(null);
@@ -784,14 +831,13 @@ export function Toolbar({ store, state }: ToolbarProps) {
   /* ---------- Sketch mode toolbar ---------- */
 
   if (sketchSession.active) {
-    return (
-      <div className="fd-toolbar" data-testid="fielddraft-toolbar">
-        {/* Ticket yuaw: the separate "Sketch | Import | DoF" header row is
-            gone — the sketch tools themselves signal sketch mode. The mode
-            indicator is kept (tests rely on it) as a minimal chip at the head
-            of the tool row, Import moved INTO the tool row next to Project,
-            and the DoF readout relocated to the far right of the row. */}
-        <div className="group sketch-tool-row">
+    // Ticket yuaw: the separate "Sketch | Import | DoF" header row is gone —
+    // the sketch tools themselves signal sketch mode. The mode indicator is
+    // kept (tests rely on it) as a minimal chip at the head of the tool row,
+    // Import moved INTO the tool row next to Project, and the DoF readout
+    // relocated to the far right of the row.
+    return wrapToolbar(
+      <div className="group sketch-tool-row">
           {/* Ticket yuaw: minimal sketch-mode chip — was the old header row's
               title. Kept (restyled) because e2e selectors wait on it. */}
           <span className="sketch-chip" data-testid="sketch-mode-indicator">
@@ -1209,15 +1255,14 @@ export function Toolbar({ store, state }: ToolbarProps) {
                   : "Fully constrained"}
             </span>
           )}
-        </div>
-      </div>
+        </div>,
     );
   }
 
   /* ---------- Main toolbar ---------- */
 
-  return (
-    <div className="fd-toolbar" data-testid="fielddraft-toolbar">
+  return wrapToolbar(
+    <>
       <div className="group">
         <FeatureDropdownButton
           items={PRIMITIVE_ITEMS}
@@ -1466,6 +1511,6 @@ export function Toolbar({ store, state }: ToolbarProps) {
           ))}
         </div>
       )}
-    </div>
+    </>,
   );
 }

@@ -1,13 +1,30 @@
 .fd-toolbar {
+  position: relative;
   display: flex;
   align-items: center;
-  column-gap: var(--space-3);
-  row-gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
   background: var(--color-bg-elevated);
   border-bottom: 1px solid var(--color-border);
   min-height: var(--toolbar-height);
-  flex-wrap: wrap;
+
+  /* The actual tool row. On desktop this is the wrapping flex row that used
+     to live directly on `.fd-toolbar`; on mobile it collapses into a drawer
+     (see the `.is-mobile` block below). */
+  & .toolbar-tools {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    column-gap: var(--space-3);
+    row-gap: var(--space-1);
+    padding: var(--space-1) var(--space-3);
+    flex-wrap: wrap;
+  }
+
+  /* Ticket apr3: phone-width "Tools" menu trigger — hidden on desktop, shown
+     by the `.is-mobile` block. */
+  & .toolbar-menu-toggle {
+    display: none;
+  }
 
   & .hidden-file-input {
     display: none;
@@ -306,6 +323,74 @@
       width: 100%;
       height: 100%;
       display: block;
+    }
+  }
+}
+
+/* ── Ticket apr3: phone-width collapsed toolbar ──────────────────────
+ * The component sets `.is-mobile` below the shared 768px breakpoint
+ * (useMediaQuery / MOBILE_QUERY). The full tool row would otherwise cover
+ * the whole screen on a phone, so it collapses behind a "Tools" button and
+ * drops down as an overlay only when `.is-menu-open` is set. */
+.fd-toolbar.is-mobile {
+  & .toolbar-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-1) var(--space-3);
+    padding: var(--space-1) var(--space-3);
+    min-height: var(--touch-target);
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: var(--fs-base);
+    font-family: inherit;
+    cursor: pointer;
+
+    & .glyph {
+      font-size: var(--fs-lg, 1.125rem);
+      line-height: 1;
+    }
+
+    &:active {
+      background: var(--color-bg-active);
+    }
+  }
+
+  /* Collapsed by default; the tools live in an overlay below the bar that
+     only renders when the menu is open. */
+  & .toolbar-tools {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    max-height: 70vh;
+    overflow-y: auto;
+    background: var(--color-bg-elevated);
+    border-bottom: 1px solid var(--color-border);
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.12));
+  }
+
+  &.is-menu-open .toolbar-tools {
+    display: flex;
+  }
+
+  /* Stack the thematic groups vertically: swap the desktop right-divider for
+     a bottom rule and give each row breathing room for touch. */
+  & .group {
+    border-right: none;
+    border-bottom: 1px solid var(--color-divider);
+    padding: var(--space-2) 0;
+
+    &:last-child {
+      border-bottom: none;
     }
   }
 }
