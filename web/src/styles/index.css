@@ -11,6 +11,7 @@
 @import "./layout/shell.css";
 
 @import "./components/toolbar.css";
+@import "./components/contextMenu.css";
 @import "./components/outliner.css";
 @import "./components/element-info.css";
 @import "./components/viewport.css";

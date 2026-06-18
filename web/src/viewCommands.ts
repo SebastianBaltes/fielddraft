@@ -1,13 +1,21 @@
 /**
- * Module-level signal bridge between the toolbar (outside the
- * Canvas) and the camera rig (inside). The toolbar writes a
- * view preset name; a small R3F component (`ViewCommandConsumer`)
- * reads it per frame, snaps the camera, and clears the signal.
+ * Module-level signal bridge between UI outside the Canvas (toolbar,
+ * ViewCube, viewport context menu) and the camera rig inside it. A caller
+ * requests a view command; a small R3F component (`ViewCommandConsumer`)
+ * reads it per frame, moves the camera, and clears the signal.
  */
 
-export type ViewPreset = "front" | "back" | "top" | "bottom" | "right" | "left" | "iso" | null;
+export type ViewPreset = "front" | "back" | "top" | "bottom" | "right" | "left" | "iso";
 
-const state: { pending: ViewPreset; invalidate: (() => void) | null } = {
+/** A camera move request. `preset` snaps to a standard view; `fit` frames
+ *  the whole scene along the current view direction; `normal` looks straight
+ *  at the active sketch plane. */
+export type ViewCommand =
+  | { kind: "preset"; preset: ViewPreset }
+  | { kind: "fit" }
+  | { kind: "normal" };
+
+const state: { pending: ViewCommand | null; invalidate: (() => void) | null } = {
   pending: null,
   invalidate: null,
 };
@@ -20,16 +28,30 @@ export function invalidateCanvas(): void {
   state.invalidate?.();
 }
 
-export function requestView(preset: ViewPreset): void {
-  state.pending = preset;
+function request(cmd: ViewCommand): void {
+  state.pending = cmd;
   state.invalidate?.();
 }
 
-export function peekViewCommand(): ViewPreset {
+export function requestView(preset: ViewPreset): void {
+  request({ kind: "preset", preset });
+}
+
+/** Zoom/dolly the camera so the whole scene fits the viewport. */
+export function requestViewFit(): void {
+  request({ kind: "fit" });
+}
+
+/** Orient the camera to look straight down the active sketch plane's normal. */
+export function requestViewNormal(): void {
+  request({ kind: "normal" });
+}
+
+export function peekViewCommand(): ViewCommand | null {
   return state.pending;
 }
 
-export function consumeViewCommand(): ViewPreset {
+export function consumeViewCommand(): ViewCommand | null {
   const cmd = state.pending;
   state.pending = null;
   return cmd;
@@ -40,7 +62,7 @@ export function consumeViewCommand(): ViewPreset {
  *  avoid gimbal-locking when the view axis is parallel to
  *  the world Y axis. */
 export const VIEW_PRESETS: Record<
-  Exclude<ViewPreset, null>,
+  ViewPreset,
   { position: [number, number, number]; up: [number, number, number] }
 > = {
   front:  { position: [0, 0, 500],     up: [0, 1, 0] },

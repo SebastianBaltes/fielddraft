@@ -42,6 +42,7 @@ import {
   deactivate as deactivateQueryPicker,
 } from "../queryPickerBridge";
 import { useWorkspaceUnits, decimalPlaces } from "../SettingsMenu";
+import { LENGTH_TO_MM, isLengthUnit } from "../lengthUnits";
 import { useKernelStore } from "../store";
 import { formatQueryDisplay } from "../queryLabels";
 import { queryAcceptedByFilter } from "../elementQuery";
@@ -150,14 +151,6 @@ function BufferedNumberInput({
 
 // ─── unit conversion helpers ──────────────────────────────────
 
-const LENGTH_TO_M: Record<string, number> = {
-  mm: 0.001,
-  cm: 0.01,
-  m: 1,
-  in: 0.0254,
-  ft: 0.3048,
-};
-
 const ANGLE_TO_DEG: Record<string, number> = {
   deg: 1,
   "°": 1,
@@ -168,8 +161,8 @@ function convertUnit(value: number, from: string, to: string): number | null {
   const f = from.toLowerCase();
   const t = to.toLowerCase();
   if (f === t) return value;
-  const fl = LENGTH_TO_M[f];
-  const tl = LENGTH_TO_M[t];
+  const fl = LENGTH_TO_MM[f];
+  const tl = LENGTH_TO_MM[t];
   if (fl !== undefined && tl !== undefined) return (value * fl) / tl;
   const fa = ANGLE_TO_DEG[f];
   const ta = ANGLE_TO_DEG[t];
@@ -195,10 +188,6 @@ function parseValueWithUnit(
 function unitDisplayLabel(unit: string): string {
   if (unit === "deg") return "°";
   return unit;
-}
-
-function isLengthUnit(unit: string): boolean {
-  return unit.toLowerCase() in LENGTH_TO_M;
 }
 
 function isAngleUnit(unit: string): boolean {

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { publishSketchCamera } from "./sketchCameraBridge";
+import { publishSketchCamera, getSketchPlaneFrame } from "./sketchCameraBridge";
 import { requestOverlayRedraw } from "./sketchOverlayBridge";
 import {
   consumeViewCommand,
@@ -156,19 +156,63 @@ export function ViewCommandConsumer() {
     } | null;
     if (!ctrl) return;
     const cmd = consumeViewCommand()!;
-    const preset = VIEW_PRESETS[cmd];
-    camera.position.set(...preset.position);
-    camera.up.set(...preset.up);
-    camera.lookAt(0, 0, 0);
-    camera.updateProjectionMatrix();
-    if (ctrl.target) {
-      ctrl.target.set(0, 0, 0);
+    const target = ctrl.target ?? new THREE.Vector3(0, 0, 0);
+
+    if (cmd.kind === "preset") {
+      const preset = VIEW_PRESETS[cmd.preset];
+      camera.position.set(...preset.position);
+      camera.up.set(...preset.up);
+      camera.lookAt(0, 0, 0);
+      target.set(0, 0, 0);
+    } else if (cmd.kind === "fit") {
+      const b = getSceneBounds() ?? { center: [0, 0, 0] as [number, number, number], radius: 100 };
+      const center = new THREE.Vector3(...b.center);
+      const radius = Math.max(b.radius, 1);
+      // Keep the current view direction; only dolly to frame the bounds.
+      const dir = camera.position.clone().sub(target);
+      if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
+      dir.normalize();
+      const dist = fitDistance(camera as THREE.PerspectiveCamera, radius);
+      camera.position.copy(center).addScaledVector(dir, dist);
+      camera.lookAt(center);
+      target.copy(center);
+    } else if (cmd.kind === "normal") {
+      const frame = getSketchPlaneFrame();
+      if (!frame) return;
+      const origin = new THREE.Vector3(...frame.origin);
+      let normal = new THREE.Vector3(...frame.normal);
+      if (normal.lengthSq() < 1e-9) return;
+      normal.normalize();
+      // Stay on whichever side of the plane the camera is already on so the
+      // view doesn't flip 180° when looking "normal to" the sketch.
+      if (camera.position.clone().sub(origin).dot(normal) < 0) normal.negate();
+      const b = getSceneBounds();
+      const dist = b && b.radius > 0
+        ? fitDistance(camera as THREE.PerspectiveCamera, b.radius)
+        : Math.max(camera.position.distanceTo(origin), 1);
+      camera.up.set(...frame.yAxis);
+      camera.position.copy(origin).addScaledVector(normal, dist);
+      camera.lookAt(origin);
+      target.copy(origin);
     }
+
+    camera.updateProjectionMatrix();
     if (ctrl.update) {
       ctrl.update();
     }
   });
   return null;
+}
+
+/** Distance at which a perspective camera frames a sphere of `radius`,
+ *  binding on whichever of the vertical/horizontal field-of-view is
+ *  narrower, with a small margin so the geometry isn't flush to the edge. */
+function fitDistance(camera: THREE.PerspectiveCamera, radius: number): number {
+  const vFov = ((camera.isPerspectiveCamera ? camera.fov : 45) * Math.PI) / 180;
+  const aspect = camera.isPerspectiveCamera ? camera.aspect || 1 : 1;
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  const half = Math.min(vFov, hFov) / 2;
+  return (radius / Math.sin(half)) * 1.15;
 }
 
 const cameraQuatState = { x: 0, y: 0, z: 0, w: 1, listeners: new Set<() => void>() };

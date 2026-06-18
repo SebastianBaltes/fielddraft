@@ -51,6 +51,14 @@ import {
 } from "./sketchSession";
 import { measuredLength, parseField } from "./sketchLiveInput";
 import { isConstraintTool } from "./sketchConstraints";
+import { useWorkspaceUnits, decimalPlaces } from "./SettingsMenu";
+import {
+  formatSketchLength,
+  getSketchLengthUnit,
+  setSketchLengthUnit,
+  sketchDisplayLength,
+  sketchLengthToMm,
+} from "./sketchUnitsBridge";
 import {
   entitiesInBox,
   hitTestSketchEntity,
@@ -964,16 +972,31 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   // shows only the unobtrusive numeric readout; once a line is placed,
   // its sub-call index lands in `recentLineRef` and the readout stays
   // visible at the committed line. Clicking the readout opens `editor`
-  // — a small input at the label anchor; Enter applies the exact length
-  // via store.setSketchLineLength, Esc / click-away dismisses.
+  // — a small input at the label anchor; Enter applies the value,
+  // Esc / click-away dismisses. Two kinds share the same widget:
+  //   - "line": the just-drawn line's exact length (store.setSketchLineLength)
+  //   - "dimension": an existing distance-dimension constraint placed by the
+  //     Dimension tool, edited as a CONSTRAINT (store.setSketchConstraintValue).
+  // `value`/`unit` are in the workspace length unit, e.g. "15"/"cm".
   const recentLineRef = useRef<number | null>(null);
   const [editor, setEditor] = useState<{
+    kind: "line" | "dimension";
     index: number;
     left: number;
     top: number;
-    length: string;
+    value: string;
+    unit: string;
   } | null>(null);
   const lengthInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Push the workspace length unit into the overlay's units bridge so the
+  // module-level dimension drawing (drawLinearDimension, the live readouts)
+  // renders "15 cm" etc., and redraw once when it changes.
+  const ws = useWorkspaceUnits();
+  useEffect(() => {
+    setSketchLengthUnit(ws.lengthUnit, decimalPlaces(ws.lengthDecimals));
+    redrawRef.current?.();
+  }, [ws.lengthUnit, ws.lengthDecimals]);
 
   // Ticket pqoe: in-scene text editor. While the Text tool is active a
   // click on empty canvas opens an input field + param popover positioned
@@ -1295,6 +1318,23 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       e.preventDefault();
       const cam = readCamForCanvas(e.currentTarget as HTMLCanvasElement);
       const [u, v] = screenToSketchFromEvent(e, cam);
+      // A click on an existing dimension's value label edits it (constraint),
+      // rather than starting a new constraint pick. A click while the editor
+      // is open just dismisses it.
+      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+      const clickPx: [number, number] = [
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+      ];
+      if (editor !== null) {
+        setEditor(null);
+        lastCamVersionRef.current = -1;
+        return;
+      }
+      if (tryOpenDimensionEditor(clickPx, cam)) {
+        lastCamVersionRef.current = -1;
+        return;
+      }
       const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
       const state = buildDraftSketchState(session.subCalls);
       const hit = hitTestSketchEntity(state, [u, v], tolMm);
@@ -1366,6 +1406,26 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         openTextEditor(text, cam);
         lastCamVersionRef.current = -1;
         return;
+      }
+
+      // A click on an existing dimension's value label re-edits it (constraint
+      // value), before the entity hit-test so it wins over selecting the line.
+      // A click while the editor is open just dismisses it.
+      {
+        const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+        const clickPx: [number, number] = [
+          e.clientX - rect.left,
+          e.clientY - rect.top,
+        ];
+        if (editor !== null) {
+          setEditor(null);
+          lastCamVersionRef.current = -1;
+          return;
+        }
+        if (tryOpenDimensionEditor(clickPx, cam)) {
+          lastCamVersionRef.current = -1;
+          return;
+        }
       }
 
       const state = buildDraftSketchState(session.subCalls);
@@ -1580,11 +1640,16 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
           Math.hypot(clickPx[0] - anchor[0], clickPx[1] - anchor[1]) <=
             DIM_LABEL_HIT_PX
         ) {
+          const u = getSketchLengthUnit();
           setEditor({
+            kind: "line",
             index: recentLineRef.current!,
             left: anchor[0],
             top: anchor[1],
-            length: measuredLength(recent.start, recent.end).toFixed(2),
+            value: sketchDisplayLength(
+              measuredLength(recent.start, recent.end),
+            ).toFixed(u.decimals),
+            unit: u.unit,
           });
           requestAnimationFrame(() => {
             lengthInputRef.current?.focus();
@@ -2721,16 +2786,74 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     () => false,
   );
 
-  // F18: apply the typed exact length from the dimension editor to the
-  // committed line. Blank / invalid input just dismisses.
+  // F18 / ticket: apply the typed value from the dimension editor. The field
+  // is in the workspace unit, so convert back to mm before it reaches the
+  // kernel. "line" rewrites the committed line's exact length; "dimension"
+  // edits an existing distance-constraint value. Blank / invalid dismisses.
   const commitEditor = () => {
     if (editor === null || !store) return;
-    const len = parseField(editor.length);
-    if (len !== null && len > 0) {
-      store.setSketchLineLength(editor.index, len);
+    const typed = parseField(editor.value);
+    if (typed !== null && typed > 0) {
+      const mm = sketchLengthToMm(typed);
+      if (editor.kind === "line") {
+        store.setSketchLineLength(editor.index, mm);
+      } else {
+        store.setSketchConstraintValue(editor.index, mm);
+      }
     }
     setEditor(null);
     lastCamVersionRef.current = -1;
+  };
+
+  // Ticket: click an existing distance-dimension's value label to edit it as a
+  // CONSTRAINT. Hit-tests every committed distance constraint's drawn label
+  // against the click; on a hit opens the shared editor pre-filled in the
+  // workspace unit. Returns true when it handled the click.
+  const tryOpenDimensionEditor = (
+    clickPx: [number, number],
+    cam: Readonly<SketchCameraState>,
+  ): boolean => {
+    const skState = buildDraftSketchState(session.subCalls);
+    const posOf = (id: number): [number, number] | null => {
+      const ent = skState.entities.find((x) => x.id === id);
+      if (!ent) return null;
+      if (ent.kind === "point") return [ent.at.x, ent.at.y];
+      if (ent.kind === "origin") return [0, 0];
+      return null;
+    };
+    for (let i = 0; i < session.subCalls.length; i++) {
+      const c = session.subCalls[i];
+      if (c.type !== "sketch_constraint_distance") continue;
+      // Driven dimensions are informational readouts (the solver doesn't honour
+      // a typed value), so they aren't editable — matches the Outliner panel.
+      if (c.params.driven === true) continue;
+      const a = posOf(c.params.entity_a as number);
+      const b = posOf(c.params.entity_b as number);
+      if (!a || !b) continue;
+      const labelPx = linearDimLabelPx(a, b, cam);
+      if (!labelPx) continue;
+      if (
+        Math.hypot(clickPx[0] - labelPx[0], clickPx[1] - labelPx[1]) <=
+        DIM_LABEL_HIT_PX
+      ) {
+        const mm = c.params.value_mm as number;
+        const u = getSketchLengthUnit();
+        setEditor({
+          kind: "dimension",
+          index: i,
+          left: labelPx[0],
+          top: labelPx[1],
+          value: sketchDisplayLength(mm).toFixed(u.decimals),
+          unit: u.unit,
+        });
+        requestAnimationFrame(() => {
+          lengthInputRef.current?.focus();
+          lengthInputRef.current?.select();
+        });
+        return true;
+      }
+    }
+    return false;
   };
 
   // Ticket pqoe: commit the in-scene text editor — place the current text
@@ -2865,10 +2988,10 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
               data-testid="sketch-live-length"
               type="text"
               inputMode="decimal"
-              value={editor.length}
+              value={editor.value}
               onChange={(e) => {
                 setEditor((prev) =>
-                  prev === null ? prev : { ...prev, length: e.target.value },
+                  prev === null ? prev : { ...prev, value: e.target.value },
                 );
               }}
               onKeyDown={(e) => {
@@ -2881,7 +3004,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
                 }
               }}
             />
-            <span className="unit">mm</span>
+            <span className="unit">{editor.unit}</span>
           </label>
         </div>
       )}
@@ -3483,7 +3606,7 @@ function drawOverlay(
     if (dist < 1e-4) return;
     labels.push({
       anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-      text: dist.toFixed(2),
+      text: formatSketchLength(dist),
       style: "dimension",
       color: LABEL_DIM,
       offsetPx: lineOffsetPx(a, b),
@@ -3493,9 +3616,10 @@ function drawOverlay(
     const w = Math.abs(b[0] - a[0]);
     const h = Math.abs(b[1] - a[1]);
     if (w < 1e-4 && h < 1e-4) return;
+    const u = getSketchLengthUnit();
     labels.push({
       anchorUv: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-      text: `${w.toFixed(2)} × ${h.toFixed(2)}`,
+      text: `${sketchDisplayLength(w).toFixed(u.decimals)} × ${sketchDisplayLength(h).toFixed(u.decimals)} ${u.unit}`,
       style: "dimension",
       color: LABEL_DIM,
       offsetPx: [0, 0],
@@ -3505,7 +3629,7 @@ function drawOverlay(
     if (r < 1e-4) return;
     labels.push({
       anchorUv: center,
-      text: `R ${r.toFixed(2)}`,
+      text: `R ${formatSketchLength(r)}`,
       style: "dimension",
       color: LABEL_DIM,
       offsetPx: [LABEL_OFFSET_PX, LABEL_OFFSET_PX],
@@ -3726,9 +3850,14 @@ function drawLinearDimension(
   arrow(b2, -ux, -uy);
 
   // Value label at the dim-line midpoint, on a small readable background.
-  const text = valueMm.toFixed(2);
-  const mx = (a2[0] + b2[0]) / 2;
-  const my = (a2[1] + b2[1]) / 2;
+  // Kept in lockstep with `linearDimLabelPx` (the click-to-edit hit test).
+  const text = formatSketchLength(valueMm);
+  const label = linearDimLabelPx(aUv, bUv, cam) ?? [
+    (a2[0] + b2[0]) / 2,
+    (a2[1] + b2[1]) / 2,
+  ];
+  const mx = label[0];
+  const my = label[1];
   ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -3738,6 +3867,29 @@ function drawLinearDimension(
   ctx.fillStyle = LABEL_DIM;
   ctx.fillText(text, mx, my);
   ctx.restore();
+}
+
+/**
+ * Screen-px centre of a linear dimension's value label (the readable number on
+ * the Maßlinie). Matches `drawLinearDimension`'s placement exactly — midpoint of
+ * the offset dimension line — so the click-to-edit hit test lands on what's
+ * drawn. `null` for a (near) zero-length screen segment.
+ */
+function linearDimLabelPx(
+  aUv: [number, number],
+  bUv: [number, number],
+  cam: Readonly<SketchCameraState>,
+): [number, number] | null {
+  const [ax, ay] = sketchToScreen(aUv[0], aUv[1], cam);
+  const [bx, by] = sketchToScreen(bUv[0], bUv[1], cam);
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len < 2) return null;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const OFF = 24;
+  return [(ax + bx) / 2 + nx * OFF, (ay + by) / 2 + ny * OFF];
 }
 
 function distanceLabelAnchorPx(

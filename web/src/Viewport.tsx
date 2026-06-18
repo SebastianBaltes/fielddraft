@@ -8,6 +8,7 @@
 import {
   Component,
   type ErrorInfo,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
@@ -33,6 +34,8 @@ import {
 } from "./viewportCamera";
 import { ExtrudeDepthGizmo } from "./ExtrudeGizmo";
 import { SweepPathGizmo } from "./SweepGizmo";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { requestViewFit, requestViewNormal } from "./viewCommands";
 import {
   SketchOverlay3D,
   SketchSession3D,
@@ -761,6 +764,57 @@ export function Viewport({
   const [pickResult, setPickResult] = useState<PickResult | null>(null);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoints>(null);
 
+  // Right-click context menu. Tracked separately from the pointer handlers
+  // because the right button also drives orbit/pan in most controls presets —
+  // we only pop the menu on a stationary right-click, not after a drag.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const rightDownRef = useRef<{ x: number; y: number } | null>(null);
+  const trackRightDown = (e: ReactPointerEvent) => {
+    rightDownRef.current =
+      e.button === 2 ? { x: e.clientX, y: e.clientY } : null;
+  };
+  const handleContextMenu = (e: ReactMouseEvent) => {
+    // Always suppress the browser menu over the 3D scene.
+    e.preventDefault();
+    const down = rightDownRef.current;
+    if (
+      down &&
+      (Math.abs(e.clientX - down.x) > 4 || Math.abs(e.clientY - down.y) > 4)
+    ) {
+      // The right button was dragged (orbit/pan) — not a menu request.
+      return;
+    }
+    setCtxMenu({ x: e.clientX, y: e.clientY });
+  };
+  const inSketch = state?.sketchSession.active ?? false;
+  const contextMenuItems: ContextMenuItem[] = [
+    ...(inSketch
+      ? [
+          {
+            label: "Confirm Sketch",
+            testId: "ctx-confirm-sketch",
+            onSelect: () => {
+              store?.commitSketch();
+            },
+          },
+        ]
+      : []),
+    {
+      label: "Zoom to fit",
+      testId: "ctx-zoom-fit",
+      onSelect: () => requestViewFit(),
+    },
+    ...(inSketch
+      ? [
+          {
+            label: "View Normal to Sketch plane",
+            testId: "ctx-view-normal",
+            onSelect: () => requestViewNormal(),
+          },
+        ]
+      : []),
+  ];
+
   // ── Box select (rectangle drag from empty space) ──────────────────
   // Armed on pointerdown over empty space in presets with `boxSelect`;
   // becomes a visible rectangle once the pointer travels a few px. The
@@ -1196,6 +1250,8 @@ export function Viewport({
       onPointerUp={noHostPointer ? undefined : handlePointerUp}
       onPointerCancel={noHostPointer ? undefined : handlePointerCancel}
       onClick={noHostPointer ? undefined : handleClick}
+      onPointerDownCapture={trackRightDown}
+      onContextMenu={handleContextMenu}
       onDragOver={noHostPointer ? undefined : handleDragOver}
       onDrop={webgpuError ? undefined : handleDrop}
     >
@@ -1422,6 +1478,15 @@ export function Viewport({
         <div className="face-pick-hud" data-testid="ik-mode-hud">
           Click to set IK target position
         </div>
+      )}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={contextMenuItems}
+          onClose={() => setCtxMenu(null)}
+          testId="viewport-context-menu"
+        />
       )}
     </div>
   );
