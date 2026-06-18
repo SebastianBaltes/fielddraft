@@ -1832,7 +1832,13 @@ export function BRepEdgeOverlay({
   };
 
   useFrame(() => {
-    if (!ndc.active || edges.length === 0) {
+    // Ticket 94jk: while editing a sketch, only sketch geometry is interactive
+    // — B-Rep edges must NOT hover/highlight (the 2D sketch canvas owns hover).
+    // Exception: a query picker armed mid-session (e.g. re-picking the sketch
+    // plane) still needs B-Rep hover, so don't suppress then.
+    const sketchBlocksHover =
+      state?.sketchSession?.active === true && getActiveQueryPicker() === null;
+    if (!ndc.active || edges.length === 0 || sketchBlocksHover) {
       if (hoveredIdx !== -1) {
         setHoveredIdx(-1);
         invalidate();
@@ -2715,7 +2721,12 @@ export function BRepSelectionOverlay({
     // element selection (chunk 3a) needs the hovered element published even
     // with no active picker. When a picker IS active we honour its
     // entityFilter; with no picker, all kinds are pickable.
-    if (!ndc.active || bodies.length === 0) {
+    // Ticket 94jk: while editing a sketch, B-Rep faces/vertices must NOT hover
+    // (the 2D sketch canvas owns interaction) — unless a query picker is armed
+    // mid-session (e.g. re-picking the sketch plane).
+    const sketchBlocksHover =
+      state?.sketchSession?.active === true && picker === null;
+    if (!ndc.active || bodies.length === 0 || sketchBlocksHover) {
       if (faceHover) {
         setFaceHover(false);
         invalidate();
