@@ -161,7 +161,20 @@ function createRevolveGeometry(
 ): THREE.BufferGeometry | null {
   const contour = leaf.contour;
   if (!contour || contour.outer.length < 3) return null;
-  const points = contour.outer.map(([x, y]) => new THREE.Vector2(x, y));
+  // Tickets a204/ngj1/ifn2: the kernel aligns the revolve axis onto local-Y,
+  // which can land the whole profile on the NEGATIVE-x side. LatheGeometry
+  // builds each vertex as (x·sinφ, y, x·cosφ): with x<0 the SURFACE is the same
+  // solid of revolution, but the φ-tangent flips, so the normals point INWARD —
+  // the mesh is backface-culled (invisible in the deferred hull = ifn2) or
+  // renders inside-out (garbled in WebGL = ngj1). The SDF revolves |x| (radius),
+  // so it stays correct (a204: "SDF VM korrekt"). Mirror a wholly-negative
+  // profile to +x: identical geometry, normals flipped outward. (Reversing the
+  // point order would flip the normal a SECOND time and re-break it.)
+  let outer = contour.outer;
+  if (Math.max(...outer.map((p) => p[0])) <= 0) {
+    outer = outer.map(([x, y]) => [-x, y] as [number, number]);
+  }
+  const points = outer.map(([x, y]) => new THREE.Vector2(x, y));
   return new THREE.LatheGeometry(points, 48);
 }
 
