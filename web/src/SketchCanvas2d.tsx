@@ -875,6 +875,11 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
   const lastCamVersionRef = useRef<number>(-1);
   const lastSessionRef = useRef<SketchSessionState | null>(null);
   const projectedEdgesRef = useRef<ProjectedEdge[]>([]);
+  // Ticket czqf: the line under the cursor while the Mirror tool is active,
+  // highlighted as the axis candidate. Endpoints in sketch (u,v).
+  const mirrorAxisHoverRef = useRef<
+    [[number, number], [number, number]] | null
+  >(null);
   // F10: the first line picked in the two-click fillet flow (sub-call
   // index), pending the second pick. Reset whenever the tool changes.
   const filletFirstRef = useRef<number | null>(null);
@@ -1813,9 +1818,21 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
     // selected simple-geometry sub-call across it, appending editable
     // mirrored copies (see store.mirrorSketchSelection / sketchMirror.ts).
     if (session.selectedTool === "sketch_mirror") {
-      const tolMm = SELECT_PICK_PX / Math.max(cam.zoom, 1e-6);
+      // Ticket czqf: generous pick tolerance so clicking near a line selects it
+      // as the mirror axis; a no-op when nothing was hit. If the user hasn't
+      // selected any geometry yet, the mirror has nothing to reflect — surface
+      // that instead of doing nothing silently.
+      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
       const axis = nearestLineSubCall(session.subCalls, [u, v], tolMm);
-      if (axis !== null) store.mirrorSketchSelection(axis);
+      if (axis !== null) {
+        if (session.selection.length === 0) {
+          store.showTransientError(
+            "Erst Geometrie auswählen, dann die Spiegel-Achse anklicken.",
+          );
+        } else {
+          store.mirrorSketchSelection(axis);
+        }
+      }
       lastCamVersionRef.current = -1;
       return;
     }
@@ -2049,6 +2066,17 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       snapRef.current = snap;
       hoverRef.current = snap.snapped;
     }
+    // Ticket czqf: while the Mirror tool is armed, highlight the line under the
+    // cursor as the axis candidate so the user sees what a click will pick.
+    if (session.selectedTool === "sketch_mirror") {
+      const tolMm = (SELECT_PICK_PX * 2.5) / Math.max(cam.zoom, 1e-6);
+      const idx = nearestLineSubCall(session.subCalls, [u, v], tolMm);
+      const cv = idx !== null ? curveOfSubCall(session.subCalls[idx]) : null;
+      mirrorAxisHoverRef.current =
+        cv && cv.kind === "line" ? [cv.a, cv.b] : null;
+    } else {
+      mirrorAxisHoverRef.current = null;
+    }
     const canvas = canvasRef.current;
     if (canvas) {
       drawOverlay(
@@ -2060,6 +2088,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
         snapRef.current,
         projectedEdgesRef.current,
         recentLineGeometry(),
+        mirrorAxisHoverRef.current,
       );
     }
   };
@@ -2109,6 +2138,7 @@ export function SketchCanvas2d({ store, session }: Props): ReactElement | null {
       snapRef.current,
       projectedEdgesRef.current,
       recentLineGeometry(),
+      mirrorAxisHoverRef.current,
     );
   };
 
@@ -3121,6 +3151,7 @@ function buildSketchHudUv(
   hover: [number, number] | null,
   snap: SnapResolution,
   projectedEdges: ProjectedEdge[],
+  mirrorAxisHover: [[number, number], [number, number]] | null = null,
 ): Omit<SketchHudGeometry, "version"> {
   const previewCalls: Array<{ type: string; params: Record<string, unknown> }> =
     [];
@@ -3278,6 +3309,9 @@ function buildSketchHudUv(
       break;
   }
 
+  // Ticket czqf: highlight the hovered mirror-axis line in the preview colour.
+  if (mirrorAxisHover) previewLines.push(mirrorAxisHover);
+
   return {
     previewCalls,
     previewLines,
@@ -3303,11 +3337,19 @@ function drawOverlay(
     start: [number, number];
     end: [number, number];
   } | null = null,
+  mirrorAxisHover: [[number, number], [number, number]] | null = null,
 ): void {
   // Publish the transient HUD GEOMETRY (previews/hover/snap-ring/projected)
   // for the 3D layer (SketchHud3D); this overlay draws only text + marquee.
   publishSketchHud(
-    buildSketchHudUv(drag, session, hover, snap, projectedEdges ?? []),
+    buildSketchHudUv(
+      drag,
+      session,
+      hover,
+      snap,
+      projectedEdges ?? [],
+      mirrorAxisHover,
+    ),
   );
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
